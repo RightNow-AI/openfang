@@ -13,7 +13,11 @@
           </div>
         </div>
       </div>
-      <button class="theme-toggle" @click="toggleTheme()" :title="theme === 'dark' ? 'Switch to light' : 'Switch to dark'" x-text="theme === 'dark' ? '\u2600' : '\u263E'"></button>
+      <div class="theme-switcher" role="group" aria-label="Theme">
+        <button class="theme-opt" :class="{ active: theme === 'light' }" @click="setTheme('light')" title="Light">&#9728;</button>
+        <button class="theme-opt" :class="{ active: theme === 'system' }" @click="setTheme('system')" title="System">&#9711;</button>
+        <button class="theme-opt" :class="{ active: theme === 'dark' }" @click="setTheme('dark')" title="Dark">&#9790;</button>
+      </div>
     </div>
 
     <div class="sidebar-status" :class="{ offline: !connected && !$store.app.booting }">

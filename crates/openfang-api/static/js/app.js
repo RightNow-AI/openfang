@@ -154,7 +154,7 @@ document.addEventListener('alpine:init', function() {
 function app() {
   return {
     page: 'agents',
-    theme: localStorage.getItem('openfang-theme') || 'light',
+    theme: ThemeManager.load(),
     sidebarCollapsed: localStorage.getItem('openfang-sidebar') === 'collapsed',
     mobileMenuOpen: false,
     connected: false,
@@ -166,6 +166,9 @@ function app() {
 
     init() {
       var self = this;
+
+      // Theme — init with system preference detection
+      this.theme = ThemeManager.init(this);
 
       // Hash routing
       var validPages = ['overview','agents','sessions','approvals','workflows','scheduler','channels','skills','hands','analytics','logs','settings','wizard'];
@@ -234,9 +237,13 @@ function app() {
       this.mobileMenuOpen = false;
     },
 
+    setTheme(t) {
+      ThemeManager.set(t, this);
+    },
+
     toggleTheme() {
-      this.theme = this.theme === 'dark' ? 'light' : 'dark';
-      localStorage.setItem('openfang-theme', this.theme);
+      // legacy 2-way toggle — kept for backward compat
+      this.setTheme(this.theme === 'dark' ? 'light' : 'dark');
     },
 
     toggleSidebar() {

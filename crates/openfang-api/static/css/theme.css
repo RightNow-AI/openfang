@@ -274,3 +274,36 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Theme Switcher — 3-option pill */
+.theme-switcher {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full, 999px);
+  padding: 2px;
+}
+
+.theme-opt {
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full, 999px);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 7px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.theme-opt:hover {
+  color: var(--text);
+}
+
+.theme-opt.active {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
