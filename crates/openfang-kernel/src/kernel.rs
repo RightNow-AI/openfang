@@ -1083,12 +1083,21 @@ impl OpenFangKernel {
     }
 
     /// Send a message to an agent and get a response.
+    ///
+    /// Automatically provides the kernel handle so agent turns have access
+    /// to kernel tools (cron_create, agent_send, etc.). Falls back to None
+    /// only if the kernel Arc has already been dropped (shutdown).
     pub async fn send_message(
         &self,
         agent_id: AgentId,
         message: &str,
     ) -> KernelResult<AgentLoopResult> {
-        self.send_message_with_handle(agent_id, message, None).await
+        let kh = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+        self.send_message_with_handle(agent_id, message, kh).await
     }
 
     /// Send a message with an optional kernel handle for inter-agent tools.
@@ -3106,9 +3115,11 @@ impl OpenFangKernel {
                                 let timeout_s = timeout_secs.unwrap_or(120);
                                 let timeout = std::time::Duration::from_secs(timeout_s);
                                 let delivery = job.delivery.clone();
+                                let kh: Arc<dyn openfang_runtime::kernel_handle::KernelHandle> =
+                                    kernel.clone() as Arc<dyn openfang_runtime::kernel_handle::KernelHandle>;
                                 match tokio::time::timeout(
                                     timeout,
-                                    kernel.send_message(agent_id, message),
+                                    kernel.send_message_with_handle(agent_id, message, Some(kh)),
                                 )
                                 .await
                                 {

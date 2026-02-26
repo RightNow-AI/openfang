@@ -51,6 +51,7 @@ use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_kernel::OpenFangKernel;
+use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_types::agent::AgentId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -65,9 +66,11 @@ pub struct KernelBridgeAdapter {
 #[async_trait]
 impl ChannelBridgeHandle for KernelBridgeAdapter {
     async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String> {
+        let kernel_handle: Arc<dyn KernelHandle> =
+            self.kernel.clone() as Arc<dyn KernelHandle>;
         let result = self
             .kernel
-            .send_message(agent_id, message)
+            .send_message_with_handle(agent_id, message, Some(kernel_handle))
             .await
             .map_err(|e| format!("{e}"))?;
         Ok(result.response)
@@ -317,8 +320,9 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                 |agent_id, message| {
                     let k = kernel.clone();
                     async move {
+                        let kh: Arc<dyn KernelHandle> = k.clone() as Arc<dyn KernelHandle>;
                         let result = k
-                            .send_message(agent_id, &message)
+                            .send_message_with_handle(agent_id, &message, Some(kh))
                             .await
                             .map_err(|e| format!("{e}"))?;
                         Ok((
@@ -540,7 +544,9 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                                 text.clone()
                             }
                         };
-                        match self.kernel.send_message(j.agent_id, &message).await {
+                        let kh: Arc<dyn KernelHandle> =
+                            self.kernel.clone() as Arc<dyn KernelHandle>;
+                        match self.kernel.send_message_with_handle(j.agent_id, &message, Some(kh)).await {
                             Ok(result) => {
                                 let id_short = &j.id.0.to_string()[..8];
                                 format!("Job [{id_short}] ran:\n{}", result.response)
@@ -807,7 +813,8 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .auto_reply_engine
             .should_reply(message, channel_type, agent_id)?;
         // Fire auto-reply synchronously (bridge already runs in background task)
-        match self.kernel.send_message(agent_id, message).await {
+        let kh: Arc<dyn KernelHandle> = self.kernel.clone() as Arc<dyn KernelHandle>;
+        match self.kernel.send_message_with_handle(agent_id, message, Some(kh)).await {
             Ok(result) => Some(result.response),
             Err(e) => {
                 tracing::warn!(error = %e, "Auto-reply failed");
