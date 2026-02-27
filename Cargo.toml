@@ -122,6 +122,9 @@ argon2 = "0.5"
 # Lightweight regex
 regex-lite = "0.1"
 
+# HTML entity decoding
+html-escape = "0.2"
+
 # Testing
 tokio-test = "0.4"
 tempfile = "3"
