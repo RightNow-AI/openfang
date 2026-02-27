@@ -4,6 +4,7 @@
 //! Otherwise, commands boot an in-process kernel (single-shot mode).
 
 mod bundled_agents;
+mod chatgpt_auth;
 mod dotenv;
 mod launcher;
 mod mcp;
@@ -135,6 +136,9 @@ enum Commands {
     /// Show or edit configuration (show, edit, get, set, keys) [*].
     #[command(subcommand)]
     Config(ConfigCommands),
+    /// ChatGPT subscription authentication (login/status/logout) [*].
+    #[command(subcommand)]
+    Auth(AuthCommands),
     /// Quick chat with the default agent.
     Chat {
         /// Optional agent name or ID to chat with.
@@ -409,6 +413,35 @@ enum ConfigCommands {
         /// Provider name.
         provider: String,
     },
+}
+
+#[derive(Subcommand)]
+enum AuthCommands {
+    /// Save ChatGPT auth tokens (manual entry or OAuth).
+    Login {
+        /// Launch browser OAuth (PKCE) login flow instead of manual paste.
+        #[arg(long)]
+        oauth: bool,
+        /// Access token (if omitted, prompted interactively).
+        #[arg(long)]
+        access_token: Option<String>,
+        /// Refresh token (optional).
+        #[arg(long)]
+        refresh_token: Option<String>,
+        /// ChatGPT account/workspace id (optional).
+        #[arg(long)]
+        account_id: Option<String>,
+        /// ChatGPT plan type label (optional, e.g. "plus", "pro").
+        #[arg(long)]
+        plan_type: Option<String>,
+        /// Access token expiry timestamp (optional, RFC3339).
+        #[arg(long)]
+        expires_at: Option<String>,
+    },
+    /// Show whether ChatGPT auth tokens are configured.
+    Status,
+    /// Remove stored ChatGPT auth tokens.
+    Logout,
 }
 
 #[derive(Subcommand)]
@@ -844,6 +877,25 @@ fn main() {
             ConfigCommands::DeleteKey { provider } => cmd_config_delete_key(&provider),
             ConfigCommands::TestKey { provider } => cmd_config_test_key(&provider),
         },
+        Some(Commands::Auth(sub)) => match sub {
+            AuthCommands::Login {
+                oauth,
+                access_token,
+                refresh_token,
+                account_id,
+                plan_type,
+                expires_at,
+            } => cmd_auth_login(
+                oauth,
+                access_token.as_deref(),
+                refresh_token.as_deref(),
+                account_id.as_deref(),
+                plan_type.as_deref(),
+                expires_at.as_deref(),
+            ),
+            AuthCommands::Status => cmd_auth_status(),
+            AuthCommands::Logout => cmd_auth_logout(),
+        },
         Some(Commands::Chat { agent }) => cmd_quick_chat(cli.config, agent),
         Some(Commands::Status { json }) => cmd_status(cli.config, json),
         Some(Commands::Doctor { json, repair }) => cmd_doctor(json, repair),
@@ -1223,6 +1275,12 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
             "OPENROUTER_API_KEY",
             "openrouter/auto",
             "OpenRouter",
+        ),
+        (
+            "chatgpt",
+            "CHATGPT_ACCESS_TOKEN",
+            "gpt-5.3-codex",
+            "ChatGPT Subscription",
         ),
     ]
 }
@@ -2105,6 +2163,7 @@ decay_rate = 0.05
         ("OPENROUTER_API_KEY", "OpenRouter", "openrouter"),
         ("ANTHROPIC_API_KEY", "Anthropic", "anthropic"),
         ("OPENAI_API_KEY", "OpenAI", "openai"),
+        ("CHATGPT_ACCESS_TOKEN", "ChatGPT Subscription", "chatgpt"),
         ("DEEPSEEK_API_KEY", "DeepSeek", "deepseek"),
         ("GEMINI_API_KEY", "Gemini", "gemini"),
         ("GOOGLE_API_KEY", "Google", "google"),
@@ -3569,7 +3628,9 @@ fn cmd_channel_setup(channel: Option<&str>) {
             println!("     (e.g., register @openfang-bot:matrix.org)");
             println!("  2. Obtain an access token:");
             println!("     curl -X POST https://matrix.org/_matrix/client/r0/login \\");
-            println!("       -d '{{\"type\":\"m.login.password\",\"user\":\"openfang-bot\",\"password\":\"...\"}}'");
+            println!(
+                "       -d '{{\"type\":\"m.login.password\",\"user\":\"openfang-bot\",\"password\":\"...\"}}'"
+            );
             println!("     Copy the access_token from the response.");
             println!("  3. Invite the bot to rooms you want it to monitor.");
             ui::blank();
@@ -3706,6 +3767,7 @@ fn provider_to_env_var(provider: &str) -> String {
         "google" => "GOOGLE_API_KEY".to_string(),
         "deepseek" => "DEEPSEEK_API_KEY".to_string(),
         "openrouter" => "OPENROUTER_API_KEY".to_string(),
+        "chatgpt" => "CHATGPT_ACCESS_TOKEN".to_string(),
         "together" => "TOGETHER_API_KEY".to_string(),
         "mistral" => "MISTRAL_API_KEY".to_string(),
         "fireworks" => "FIREWORKS_API_KEY".to_string(),
@@ -4126,6 +4188,202 @@ fn cmd_config_test_key(provider: &str) {
         println!("{}", "FAILED (401/403)".bright_red());
         ui::hint(&format!("Update key: openfang config set-key {provider}"));
         std::process::exit(1);
+    }
+}
+
+fn cmd_auth_login(
+    oauth: bool,
+    access_token: Option<&str>,
+    refresh_token: Option<&str>,
+    account_id: Option<&str>,
+    plan_type: Option<&str>,
+    expires_at: Option<&str>,
+) {
+    if oauth {
+        if access_token.is_some()
+            || refresh_token.is_some()
+            || account_id.is_some()
+            || plan_type.is_some()
+            || expires_at.is_some()
+        {
+            ui::error("Do not combine --oauth with manual token flags.");
+            std::process::exit(1);
+        }
+        cmd_auth_login_oauth();
+        return;
+    }
+
+    let access = access_token
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| prompt_input("  Paste ChatGPT access token: "));
+    if access.trim().is_empty() {
+        ui::error("Access token is required.");
+        std::process::exit(1);
+    }
+
+    let refresh = match refresh_token {
+        Some(v) => Some(v.to_string()),
+        None => {
+            let entered = prompt_input("  Paste ChatGPT refresh token (optional): ");
+            if entered.trim().is_empty() {
+                None
+            } else {
+                Some(entered)
+            }
+        }
+    };
+
+    let account = match account_id {
+        Some(v) => Some(v.to_string()),
+        None => {
+            let entered = prompt_input("  Paste ChatGPT account/workspace id (optional): ");
+            if entered.trim().is_empty() {
+                None
+            } else {
+                Some(entered)
+            }
+        }
+    };
+
+    let plan = plan_type.map(ToString::to_string);
+    let expiry = expires_at.map(ToString::to_string);
+    let bundle = chatgpt_auth::ChatGptTokenBundle {
+        access_token: access,
+        refresh_token: refresh,
+        account_id: account,
+        plan_type: plan,
+        expires_at: expiry,
+    };
+
+    match chatgpt_auth::save_token_bundle(&bundle) {
+        Ok(()) => {
+            ui::success("Saved ChatGPT auth state to ~/.openfang/.env");
+            ui::hint("Tip: use `openfang auth login --oauth` to authenticate via browser.");
+            cmd_auth_status();
+        }
+        Err(e) => {
+            ui::error(&format!("Failed to save ChatGPT auth state: {e}"));
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_auth_login_oauth() {
+    ui::hint("Starting ChatGPT OAuth login flow...");
+    let tokens = match run_chatgpt_oauth_pkce() {
+        Ok(v) => v,
+        Err(e) => {
+            ui::error(&format!("OAuth login failed: {e}"));
+            std::process::exit(1);
+        }
+    };
+
+    let account_id = tokens
+        .id_token
+        .as_deref()
+        .and_then(chatgpt_auth::extract_chatgpt_account_id_from_jwt)
+        .or_else(|| chatgpt_auth::extract_chatgpt_account_id_from_jwt(&tokens.access_token));
+    let expires_at = chatgpt_auth::compute_expires_at_epoch(tokens.expires_in);
+
+    let bundle = chatgpt_auth::ChatGptTokenBundle {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        account_id,
+        plan_type: None,
+        expires_at,
+    };
+
+    match chatgpt_auth::save_token_bundle(&bundle) {
+        Ok(()) => {
+            ui::success("ChatGPT OAuth login complete. Auth state saved to ~/.openfang/.env");
+            if bundle.account_id.is_none() {
+                ui::check_warn(
+                    "No chatgpt_account_id claim found. Workspace-backed usage may require it.",
+                );
+            }
+            cmd_auth_status();
+        }
+        Err(e) => {
+            ui::error(&format!("Failed to persist OAuth tokens: {e}"));
+            std::process::exit(1);
+        }
+    }
+}
+
+pub(crate) fn run_chatgpt_oauth_pkce() -> Result<openfang_extensions::oauth::OAuthTokens, String> {
+    const CHATGPT_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+    let extra_auth_params = std::collections::HashMap::from([
+        ("id_token_add_organizations".to_string(), "true".to_string()),
+        ("codex_cli_simplified_flow".to_string(), "true".to_string()),
+        ("originator".to_string(), "codex_cli_rs".to_string()),
+    ]);
+    let oauth_template = openfang_extensions::OAuthTemplate {
+        provider: "openai-chatgpt".to_string(),
+        scopes: vec![
+            "openid".to_string(),
+            "profile".to_string(),
+            "email".to_string(),
+            "offline_access".to_string(),
+        ],
+        auth_url: "https://auth.openai.com/oauth/authorize".to_string(),
+        token_url: "https://auth.openai.com/oauth/token".to_string(),
+        callback_path: Some("/auth/callback".to_string()),
+        callback_port: Some(1455),
+        extra_auth_params,
+    };
+
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("Failed to start async runtime: {e}"))?;
+    rt.block_on(openfang_extensions::oauth::run_pkce_flow(
+        &oauth_template,
+        CHATGPT_OAUTH_CLIENT_ID,
+    ))
+    .map_err(|e| e.to_string())
+}
+
+fn cmd_auth_status() {
+    let status = chatgpt_auth::load_status();
+    println!("ChatGPT auth status");
+    println!(
+        "  access_token: {}",
+        if status.has_access_token {
+            "configured"
+        } else {
+            "missing"
+        }
+    );
+    println!(
+        "  refresh_token: {}",
+        if status.has_refresh_token {
+            "configured"
+        } else {
+            "missing"
+        }
+    );
+    println!(
+        "  account_id: {}",
+        status.account_id.as_deref().unwrap_or("(not set)")
+    );
+    println!(
+        "  plan_type: {}",
+        status.plan_type.as_deref().unwrap_or("(not set)")
+    );
+    println!(
+        "  expires_at: {}",
+        status.expires_at.as_deref().unwrap_or("(not set)")
+    );
+}
+
+fn cmd_auth_logout() {
+    match chatgpt_auth::clear_auth_state() {
+        Ok(()) => {
+            ui::success("Cleared ChatGPT auth state from ~/.openfang/.env");
+            cmd_auth_status();
+        }
+        Err(e) => {
+            ui::error(&format!("Failed to clear ChatGPT auth state: {e}"));
+            std::process::exit(1);
+        }
     }
 }
 

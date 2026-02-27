@@ -142,9 +142,7 @@ pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
     let host = extract_host(url);
     // For IPv6 bracket notation like [::1]:80, extract [::1] as hostname
     let hostname = if host.starts_with('[') {
-        host.find(']')
-            .map(|i| &host[..=i])
-            .unwrap_or(&host)
+        host.find(']').map(|i| &host[..=i]).unwrap_or(&host)
     } else {
         host.split(':').next().unwrap_or(&host)
     };

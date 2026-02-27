@@ -5,6 +5,7 @@
 //! Mistral, Fireworks, Ollama, vLLM, and any OpenAI-compatible endpoint.
 
 pub mod anthropic;
+pub mod chatgpt;
 pub mod copilot;
 pub mod fallback;
 pub mod gemini;
@@ -12,10 +13,10 @@ pub mod openai;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
-    AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL,
-    FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
-    OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
+    AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, CHATGPT_CODEX_BASE_URL, COHERE_BASE_URL,
+    DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
+    LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL,
+    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
     REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL, XAI_BASE_URL,
     ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
@@ -130,6 +131,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "github-copilot" | "copilot" => Some(ProviderDefaults {
             base_url: copilot::GITHUB_COPILOT_BASE_URL,
             api_key_env: "GITHUB_TOKEN",
+            key_required: true,
+        }),
+        "chatgpt" => Some(ProviderDefaults {
+            base_url: CHATGPT_CODEX_BASE_URL,
+            api_key_env: "CHATGPT_ACCESS_TOKEN",
             key_required: true,
         }),
         "moonshot" | "kimi" => Some(ProviderDefaults {
@@ -250,6 +256,31 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         )));
     }
 
+    // ChatGPT subscription auth — OAuth access/refresh tokens against ChatGPT Codex backend.
+    if provider == "chatgpt" {
+        let access_token = config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("CHATGPT_ACCESS_TOKEN").ok())
+            .ok_or_else(|| {
+                LlmError::MissingApiKey(
+                    "Set CHATGPT_ACCESS_TOKEN environment variable (or run `openfang auth login --oauth`)".to_string(),
+                )
+            })?;
+        let refresh_token = std::env::var("CHATGPT_REFRESH_TOKEN").ok();
+        let account_id = std::env::var("CHATGPT_ACCOUNT_ID").ok();
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| CHATGPT_CODEX_BASE_URL.to_string());
+        return Ok(Arc::new(chatgpt::ChatGptDriver::new(
+            access_token,
+            refresh_token,
+            account_id,
+            base_url,
+        )));
+    }
+
     // All other providers use OpenAI-compatible format
     if let Some(defaults) = provider_defaults(provider) {
         let api_key = config
@@ -287,7 +318,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         message: format!(
             "Unknown provider '{}'. Supported: anthropic, gemini, openai, groq, openrouter, \
              deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, perplexity, \
-             cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot. \
+             cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot, chatgpt. \
              Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
         ),
@@ -318,6 +349,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "xai",
         "replicate",
         "github-copilot",
+        "chatgpt",
         "moonshot",
         "qwen",
         "minimax",
@@ -411,13 +443,14 @@ mod tests {
         assert!(providers.contains(&"xai"));
         assert!(providers.contains(&"replicate"));
         assert!(providers.contains(&"github-copilot"));
+        assert!(providers.contains(&"chatgpt"));
         assert!(providers.contains(&"moonshot"));
         assert!(providers.contains(&"qwen"));
         assert!(providers.contains(&"minimax"));
         assert!(providers.contains(&"zhipu"));
         assert!(providers.contains(&"zhipu_coding"));
         assert!(providers.contains(&"qianfan"));
-        assert_eq!(providers.len(), 27);
+        assert_eq!(providers.len(), 28);
     }
 
     #[test]

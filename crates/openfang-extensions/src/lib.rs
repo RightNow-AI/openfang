@@ -122,6 +122,15 @@ pub struct OAuthTemplate {
     pub auth_url: String,
     /// Token exchange URL.
     pub token_url: String,
+    /// Optional callback path on localhost (default: "/callback").
+    #[serde(default)]
+    pub callback_path: Option<String>,
+    /// Optional fixed callback port on localhost (default: random free port).
+    #[serde(default)]
+    pub callback_port: Option<u16>,
+    /// Optional extra authorize query parameters.
+    #[serde(default)]
+    pub extra_auth_params: HashMap<String, String>,
 }
 
 /// Health check configuration for an integration.

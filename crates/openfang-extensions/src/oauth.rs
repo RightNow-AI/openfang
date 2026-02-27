@@ -27,9 +27,7 @@ pub fn default_client_ids() -> HashMap<&'static str, &'static str> {
 }
 
 /// Resolve OAuth client IDs with config overrides applied on top of defaults.
-pub fn resolve_client_ids(
-    config: &openfang_types::config::OAuthConfig,
-) -> HashMap<String, String> {
+pub fn resolve_client_ids(config: &openfang_types::config::OAuthConfig) -> HashMap<String, String> {
     let defaults = default_client_ids();
     let mut resolved: HashMap<String, String> = defaults
         .into_iter()
@@ -57,6 +55,9 @@ pub fn resolve_client_ids(
 pub struct OAuthTokens {
     /// Access token for API calls.
     pub access_token: String,
+    /// Optional OpenID ID token (JWT with identity/account claims).
+    #[serde(default)]
+    pub id_token: Option<String>,
     /// Refresh token for renewal (if provided).
     #[serde(default)]
     pub refresh_token: Option<String>,
@@ -131,29 +132,43 @@ pub async fn run_pkce_flow(oauth: &OAuthTemplate, client_id: &str) -> ExtensionR
     let pkce = generate_pkce();
     let state = generate_state();
 
-    // Find an available port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    // Find an available port (or use fixed callback port if configured)
+    let bind_addr = match oauth.callback_port {
+        Some(port) => format!("127.0.0.1:{port}"),
+        None => "127.0.0.1:0".to_string(),
+    };
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .map_err(|e| ExtensionError::OAuth(format!("Failed to bind localhost: {e}")))?;
     let port = listener
         .local_addr()
         .map_err(|e| ExtensionError::OAuth(format!("Failed to get port: {e}")))?
         .port();
-    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+    let callback_path = oauth.callback_path.as_deref().unwrap_or("/callback");
+    let redirect_uri = format!("http://localhost:{port}{callback_path}");
 
     info!("OAuth callback server listening on port {port}");
 
     // Build authorization URL
     let scopes = oauth.scopes.join(" ");
-    let auth_url = format!(
-        "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
-        oauth.auth_url,
-        urlencoding_encode(client_id),
-        urlencoding_encode(&redirect_uri),
-        urlencoding_encode(&scopes),
-        urlencoding_encode(&state),
-        urlencoding_encode(&pkce.challenge),
-    );
+    let mut auth_params: Vec<(String, String)> = vec![
+        ("client_id".to_string(), client_id.to_string()),
+        ("redirect_uri".to_string(), redirect_uri.clone()),
+        ("response_type".to_string(), "code".to_string()),
+        ("scope".to_string(), scopes),
+        ("state".to_string(), state.clone()),
+        ("code_challenge".to_string(), pkce.challenge.clone()),
+        ("code_challenge_method".to_string(), "S256".to_string()),
+    ];
+    for (k, v) in &oauth.extra_auth_params {
+        auth_params.push((k.clone(), v.clone()));
+    }
+    let auth_query = auth_params
+        .iter()
+        .map(|(k, v)| format!("{k}={}", urlencoding_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let auth_url = format!("{}?{}", oauth.auth_url, auth_query);
 
     // Open browser
     info!("Opening browser for OAuth authorization...");
@@ -168,42 +183,47 @@ pub async fn run_pkce_flow(oauth: &OAuthTemplate, client_id: &str) -> ExtensionR
     let expected_state = state.clone();
 
     // Spawn callback handler
-    let server = axum::Router::new().route(
-        "/callback",
-        axum::routing::get({
+    let callback_path = callback_path.to_string();
+    let handler = {
+        let code_tx = code_tx.clone();
+        move |uri: axum::http::Uri, query: axum::extract::Query<CallbackParams>| {
             let code_tx = code_tx.clone();
-            move |query: axum::extract::Query<CallbackParams>| {
-                let code_tx = code_tx.clone();
-                let expected_state = expected_state.clone();
-                async move {
-                    if query.state != expected_state {
-                        return axum::response::Html(
-                            "<h1>Error</h1><p>Invalid state parameter. Possible CSRF attack.</p>"
-                                .to_string(),
-                        );
+            let expected_state = expected_state.clone();
+            let callback_path = callback_path.clone();
+            async move {
+                if uri.path() != callback_path {
+                    return axum::response::Html(
+                        "<h1>Error</h1><p>OAuth callback path mismatch.</p>".to_string(),
+                    );
+                }
+                if query.state != expected_state {
+                    return axum::response::Html(
+                        "<h1>Error</h1><p>Invalid state parameter. Possible CSRF attack.</p>"
+                            .to_string(),
+                    );
+                }
+                if let Some(ref error) = query.error {
+                    return axum::response::Html(format!(
+                        "<h1>Error</h1><p>OAuth error: {error}</p>"
+                    ));
+                }
+                if let Some(ref code) = query.code {
+                    if let Some(tx) = code_tx.lock().await.take() {
+                        let _ = tx.send(code.clone());
                     }
-                    if let Some(ref error) = query.error {
-                        return axum::response::Html(format!(
-                            "<h1>Error</h1><p>OAuth error: {error}</p>"
-                        ));
-                    }
-                    if let Some(ref code) = query.code {
-                        if let Some(tx) = code_tx.lock().await.take() {
-                            let _ = tx.send(code.clone());
-                        }
-                        axum::response::Html(
-                            "<h1>Success!</h1><p>Authorization complete. You can close this tab.</p><script>window.close()</script>"
-                                .to_string(),
-                        )
-                    } else {
-                        axum::response::Html(
-                            "<h1>Error</h1><p>No authorization code received.</p>".to_string(),
-                        )
-                    }
+                    axum::response::Html(
+                        "<h1>Success!</h1><p>Authorization complete. You can close this tab.</p><script>window.close()</script>"
+                            .to_string(),
+                    )
+                } else {
+                    axum::response::Html(
+                        "<h1>Error</h1><p>No authorization code received.</p>".to_string(),
+                    )
                 }
             }
-        }),
-    );
+        }
+    };
+    let server = axum::Router::new().fallback(axum::routing::get(handler));
 
     // Serve with timeout
     let server_handle = tokio::spawn(async move {

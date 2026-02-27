@@ -31,6 +31,7 @@ pub const REPLICATE_BASE_URL: &str = "https://api.replicate.com/v1";
 
 // ── GitHub Copilot ──────────────────────────────────────────────
 pub const GITHUB_COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
+pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
 // ── Chinese providers ─────────────────────────────────────────────
 pub const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";

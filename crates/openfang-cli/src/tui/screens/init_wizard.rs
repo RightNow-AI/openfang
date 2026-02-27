@@ -69,6 +69,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "chatgpt",
+        display: "ChatGPT Sub",
+        env_var: "CHATGPT_ACCESS_TOKEN",
+        default_model: "gpt-5.3-codex",
+        needs_key: true,
+        hint: "plus/pro",
+    },
+    ProviderInfo {
         name: "openrouter",
         display: "OpenRouter",
         env_var: "OPENROUTER_API_KEY",
@@ -212,6 +220,7 @@ struct State {
 
     // API key
     api_key_input: String,
+    api_key_error: Option<String>,
     api_key_from_env: bool,
     key_test: KeyTestState,
     key_test_started: Option<Instant>,
@@ -256,6 +265,7 @@ impl State {
             provider_order: Vec::new(),
             selected_provider: None,
             api_key_input: String::new(),
+            api_key_error: None,
             api_key_from_env: false,
             key_test: KeyTestState::Idle,
             key_test_started: None,
@@ -630,6 +640,7 @@ pub fn run() -> InitResult {
                                 } else {
                                     state.api_key_from_env = false;
                                     state.api_key_input.clear();
+                                    state.api_key_error = None;
                                     state.key_test = KeyTestState::Idle;
                                     state.step = Step::ApiKey;
                                 }
@@ -643,8 +654,111 @@ pub fn run() -> InitResult {
                             continue;
                         }
 
+                        let is_chatgpt = state
+                            .provider()
+                            .map(|p| p.name == "chatgpt")
+                            .unwrap_or(false);
+                        if is_chatgpt {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    state.api_key_error = None;
+                                    state.key_test = KeyTestState::Idle;
+                                    state.step = Step::Provider;
+                                }
+                                KeyCode::Enter => {
+                                    state.api_key_error = None;
+
+                                    // Enter with empty input starts browser OAuth login.
+                                    if state.api_key_input.trim().is_empty() {
+                                        match crate::run_chatgpt_oauth_pkce() {
+                                            Ok(tokens) => {
+                                                let account_id = tokens
+                                                    .id_token
+                                                    .as_deref()
+                                                    .and_then(
+                                                        crate::chatgpt_auth::extract_chatgpt_account_id_from_jwt,
+                                                    )
+                                                    .or_else(|| {
+                                                        crate::chatgpt_auth::extract_chatgpt_account_id_from_jwt(
+                                                            &tokens.access_token,
+                                                        )
+                                                    });
+                                                let expires_at =
+                                                    crate::chatgpt_auth::compute_expires_at_epoch(
+                                                        tokens.expires_in,
+                                                    );
+                                                let access_token = tokens.access_token.clone();
+                                                let bundle =
+                                                    crate::chatgpt_auth::ChatGptTokenBundle {
+                                                        access_token,
+                                                        refresh_token: tokens.refresh_token,
+                                                        account_id,
+                                                        plan_type: None,
+                                                        expires_at,
+                                                    };
+                                                match crate::chatgpt_auth::save_token_bundle(
+                                                    &bundle,
+                                                ) {
+                                                    Ok(()) => {
+                                                        state.api_key_input = bundle.access_token;
+                                                        state.key_test = KeyTestState::Ok;
+                                                        state.key_test_started =
+                                                            Some(Instant::now());
+                                                    }
+                                                    Err(e) => {
+                                                        state.api_key_error = Some(format!(
+                                                            "Failed to save auth state: {e}"
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                state.api_key_error =
+                                                    Some(format!("OAuth login failed: {e}"));
+                                            }
+                                        }
+                                    } else {
+                                        // Manual token fallback for advanced users.
+                                        let bundle = crate::chatgpt_auth::ChatGptTokenBundle {
+                                            access_token: state.api_key_input.trim().to_string(),
+                                            refresh_token: None,
+                                            account_id: None,
+                                            plan_type: None,
+                                            expires_at: None,
+                                        };
+                                        match crate::chatgpt_auth::save_token_bundle(&bundle) {
+                                            Ok(()) => {
+                                                state.key_test = KeyTestState::Ok;
+                                                state.key_test_started = Some(Instant::now());
+                                            }
+                                            Err(e) => {
+                                                state.api_key_error = Some(format!(
+                                                    "Failed to save access token: {e}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                KeyCode::Char(c) => {
+                                    if state.key_test == KeyTestState::Idle {
+                                        state.api_key_error = None;
+                                        state.api_key_input.push(c);
+                                    }
+                                }
+                                KeyCode::Backspace => {
+                                    if state.key_test == KeyTestState::Idle {
+                                        state.api_key_error = None;
+                                        state.api_key_input.pop();
+                                    }
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+
                         match key.code {
                             KeyCode::Esc => {
+                                state.api_key_error = None;
                                 state.key_test = KeyTestState::Idle;
                                 state.step = Step::Provider;
                             }
@@ -676,11 +790,13 @@ pub fn run() -> InitResult {
                             }
                             KeyCode::Char(c) => {
                                 if state.key_test == KeyTestState::Idle {
+                                    state.api_key_error = None;
                                     state.api_key_input.push(c);
                                 }
                             }
                             KeyCode::Backspace => {
                                 if state.key_test == KeyTestState::Idle {
+                                    state.api_key_error = None;
                                     state.api_key_input.pop();
                                 }
                             }
@@ -1628,6 +1744,7 @@ fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
         Some(p) => p,
         None => return,
     };
+    let is_chatgpt = p.name == "chatgpt";
 
     let chunks = Layout::vertical([
         Constraint::Length(2),
@@ -1639,46 +1756,94 @@ fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
     ])
     .split(area);
 
-    let prompt = Paragraph::new(Line::from(vec![Span::raw(format!(
-        "  Enter your {} API key:",
-        p.display
-    ))]));
+    let prompt_text = if is_chatgpt {
+        "  Connect your ChatGPT subscription:".to_string()
+    } else {
+        format!("  Enter your {} API key:", p.display)
+    };
+    let prompt = Paragraph::new(Line::from(vec![Span::raw(prompt_text)]));
     f.render_widget(prompt, chunks[0]);
 
     match state.key_test {
         KeyTestState::Idle => {
             let masked: String = "\u{2022}".repeat(state.api_key_input.len());
-            let input = Paragraph::new(Line::from(vec![
-                Span::raw("  \u{25b8} "),
-                Span::styled(&masked, theme::input_style()),
-                Span::styled(
-                    "\u{2588}",
-                    Style::default()
-                        .fg(theme::GREEN)
-                        .add_modifier(Modifier::SLOW_BLINK),
-                ),
-            ]));
-            f.render_widget(input, chunks[1]);
-            let env_hint = Paragraph::new(Line::from(vec![Span::styled(
-                format!("    Or set {} environment variable", p.env_var),
-                theme::dim_style(),
-            )]));
-            f.render_widget(env_hint, chunks[3]);
+            if is_chatgpt {
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![Span::styled(
+                        "  Press [Enter] to open ChatGPT browser login (recommended)",
+                        theme::dim_style(),
+                    )])),
+                    chunks[1],
+                );
+                let input = Paragraph::new(Line::from(vec![
+                    Span::raw("  Or paste access token: "),
+                    Span::styled(&masked, theme::input_style()),
+                    Span::styled(
+                        "\u{2588}",
+                        Style::default()
+                            .fg(theme::GREEN)
+                            .add_modifier(Modifier::SLOW_BLINK),
+                    ),
+                ]));
+                f.render_widget(input, chunks[2]);
+            } else {
+                let input = Paragraph::new(Line::from(vec![
+                    Span::raw("  \u{25b8} "),
+                    Span::styled(&masked, theme::input_style()),
+                    Span::styled(
+                        "\u{2588}",
+                        Style::default()
+                            .fg(theme::GREEN)
+                            .add_modifier(Modifier::SLOW_BLINK),
+                    ),
+                ]));
+                f.render_widget(input, chunks[1]);
+            }
+
+            if let Some(err) = state.api_key_error.as_ref() {
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled("    ", theme::dim_style()),
+                        Span::styled(err, Style::default().fg(theme::RED)),
+                    ])),
+                    chunks[3],
+                );
+            } else {
+                let env_hint = if is_chatgpt {
+                    format!("    Saved to {} in ~/.openfang/.env", p.env_var)
+                } else {
+                    format!("    Or set {} environment variable", p.env_var)
+                };
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![Span::styled(env_hint, theme::dim_style())])),
+                    chunks[3],
+                );
+            }
         }
         KeyTestState::Testing => {
             let spinner = theme::SPINNER_FRAMES[state.tick % theme::SPINNER_FRAMES.len()];
+            let testing_text = if is_chatgpt {
+                " Opening browser login..."
+            } else {
+                " Testing API key..."
+            };
             let input = Paragraph::new(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(spinner, Style::default().fg(theme::ACCENT)),
-                Span::raw(" Testing API key..."),
+                Span::raw(testing_text),
             ]));
             f.render_widget(input, chunks[1]);
         }
         KeyTestState::Ok => {
+            let ok_text = if is_chatgpt {
+                "Access token saved"
+            } else {
+                "API key verified"
+            };
             f.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled("  \u{2714} ", Style::default().fg(theme::GREEN)),
-                    Span::raw("API key verified"),
+                    Span::raw(ok_text),
                 ])),
                 chunks[1],
             );
@@ -1708,11 +1873,13 @@ fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
         }
     }
 
+    let hint = if is_chatgpt {
+        "  [Enter] Login / Confirm token  [Esc] Back"
+    } else {
+        "  [Enter] Confirm  [Esc] Back"
+    };
     f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            "  [Enter] Confirm  [Esc] Back",
-            theme::hint_style(),
-        )])),
+        Paragraph::new(Line::from(vec![Span::styled(hint, theme::hint_style())])),
         chunks[5],
     );
 }

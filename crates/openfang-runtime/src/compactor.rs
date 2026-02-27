@@ -343,7 +343,11 @@ fn build_conversation_text(messages: &[Message], config: &CompactionConfig) -> S
                     if oversized {
                         let limit = config.max_chunk_chars / 4;
                         let truncated = if s.len() > limit {
-                            format!("{}...[truncated from {} chars]", safe_truncate_str(s, limit), s.len())
+                            format!(
+                                "{}...[truncated from {} chars]",
+                                safe_truncate_str(s, limit),
+                                s.len()
+                            )
                         } else {
                             s.clone()
                         };

@@ -1,16 +1,16 @@
 //! Model catalog — registry of known models with metadata, pricing, and auth detection.
 //!
-//! Provides a comprehensive catalog of 130+ builtin models across 27 providers,
+//! Provides a comprehensive catalog of 130+ builtin models across 29 providers,
 //! with alias resolution, auth status detection, and pricing lookups.
 
 use openfang_types::model_catalog::{
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
-    BEDROCK_BASE_URL, CEREBRAS_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL,
-    GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
-    LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL, XAI_BASE_URL,
-    ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHATGPT_CODEX_BASE_URL, COHERE_BASE_URL,
+    DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
+    HUGGINGFACE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL,
+    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
+    QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL,
+    XAI_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -403,6 +403,15 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             display_name: "GitHub Copilot".into(),
             api_key_env: "GITHUB_TOKEN".into(),
             base_url: GITHUB_COPILOT_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
+            id: "chatgpt".into(),
+            display_name: "ChatGPT Subscription".into(),
+            api_key_env: "CHATGPT_ACCESS_TOKEN".into(),
+            base_url: CHATGPT_CODEX_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -2169,6 +2178,107 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["copilot-gpt4".into()],
         },
         // ══════════════════════════════════════════════════════════════
+        // ChatGPT Codex (7) — subscription-backed
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "gpt-5.3-codex".into(),
+            display_name: "GPT-5.3 Codex".into(),
+            provider: "chatgpt".into(),
+            tier: ModelTier::Frontier,
+            context_window: 272_000,
+            max_output_tokens: 10_000,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["chatgpt-codex".into(), "gpt53-codex".into()],
+        },
+        ModelCatalogEntry {
+            id: "gpt-5.2-codex".into(),
+            display_name: "GPT-5.2 Codex".into(),
+            provider: "chatgpt".into(),
+            tier: ModelTier::Smart,
+            context_window: 272_000,
+            max_output_tokens: 10_000,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["gpt52-codex".into()],
+        },
+        ModelCatalogEntry {
+            id: "gpt-5.1-codex-max".into(),
+            display_name: "GPT-5.1 Codex Max".into(),
+            provider: "chatgpt".into(),
+            tier: ModelTier::Frontier,
+            context_window: 272_000,
+            max_output_tokens: 10_000,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["gpt51-codex-max".into()],
+        },
+        ModelCatalogEntry {
+            id: "gpt-5.1-codex".into(),
+            display_name: "GPT-5.1 Codex".into(),
+            provider: "chatgpt".into(),
+            tier: ModelTier::Smart,
+            context_window: 272_000,
+            max_output_tokens: 10_000,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["gpt51-codex".into()],
+        },
+        ModelCatalogEntry {
+            id: "gpt-5-codex".into(),
+            display_name: "GPT-5 Codex".into(),
+            provider: "chatgpt".into(),
+            tier: ModelTier::Smart,
+            context_window: 272_000,
+            max_output_tokens: 10_000,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["gpt5-codex".into()],
+        },
+        ModelCatalogEntry {
+            id: "gpt-5.1-codex-mini".into(),
+            display_name: "GPT-5.1 Codex Mini".into(),
+            provider: "chatgpt".into(),
+            tier: ModelTier::Fast,
+            context_window: 272_000,
+            max_output_tokens: 10_000,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["gpt51-codex-mini".into()],
+        },
+        ModelCatalogEntry {
+            id: "gpt-5-codex-mini".into(),
+            display_name: "GPT-5 Codex Mini".into(),
+            provider: "chatgpt".into(),
+            tier: ModelTier::Fast,
+            context_window: 272_000,
+            max_output_tokens: 10_000,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["gpt5-codex-mini".into()],
+        },
+        // ══════════════════════════════════════════════════════════════
         // Qwen / Alibaba (6)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
@@ -2597,7 +2707,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 28);
+        assert_eq!(catalog.list_providers().len(), 29);
     }
 
     #[test]
@@ -2632,10 +2742,7 @@ mod tests {
     #[test]
     fn test_resolve_alias() {
         let catalog = ModelCatalog::new();
-        assert_eq!(
-            catalog.resolve_alias("sonnet"),
-            Some("claude-sonnet-4-6")
-        );
+        assert_eq!(catalog.resolve_alias("sonnet"), Some("claude-sonnet-4-6"));
         assert_eq!(
             catalog.resolve_alias("haiku"),
             Some("claude-haiku-4-5-20251001")
@@ -2740,6 +2847,18 @@ mod tests {
         assert!(catalog.get_provider("huggingface").is_some());
         assert!(catalog.get_provider("xai").is_some());
         assert!(catalog.get_provider("replicate").is_some());
+        assert!(catalog.get_provider("chatgpt").is_some());
+    }
+
+    #[test]
+    fn test_chatgpt_models_subscription_pricing() {
+        let catalog = ModelCatalog::new();
+        let chatgpt = catalog.models_by_provider("chatgpt");
+        assert!(chatgpt.len() >= 3);
+        assert!(chatgpt.iter().any(|m| m.id == "gpt-5.3-codex"));
+        assert!(chatgpt
+            .iter()
+            .all(|m| m.input_cost_per_m == 0.0 && m.output_cost_per_m == 0.0));
     }
 
     #[test]
