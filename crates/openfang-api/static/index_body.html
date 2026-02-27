@@ -2439,7 +2439,12 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                     <!-- Actions -->
                     <div class="flex justify-between items-center mt-3">
                       <button class="btn btn-ghost btn-sm" @click="showDetail(hand.id)">Details</button>
-                      <button class="btn btn-primary btn-sm" @click="openSetupWizard(hand.id)" :disabled="setupLoading || activatingId === hand.id" x-text="setupLoading ? 'Loading...' : 'Activate'"></button>
+                      <template x-if="isHandActive(hand.id)">
+                        <button class="btn btn-success btn-sm" disabled style="cursor:default;opacity:0.85">Active</button>
+                      </template>
+                      <template x-if="!isHandActive(hand.id)">
+                        <button class="btn btn-primary btn-sm" @click="openSetupWizard(hand.id)" :disabled="setupLoading || activatingId === hand.id" x-text="setupLoading ? 'Loading...' : 'Activate'"></button>
+                      </template>
                     </div>
                   </div>
                 </template>
@@ -2549,7 +2554,12 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                     </template>
                   </div>
                   <div class="flex gap-2">
-                    <button class="btn btn-primary btn-block" @click="var hid = detailHand.id; detailHand = null; openSetupWizard(hid)" :disabled="setupLoading">Activate</button>
+                    <template x-if="isHandActive(detailHand.id)">
+                      <button class="btn btn-success btn-block" disabled style="cursor:default;opacity:0.85">Active</button>
+                    </template>
+                    <template x-if="!isHandActive(detailHand.id)">
+                      <button class="btn btn-primary btn-block" @click="var hid = detailHand.id; detailHand = null; openSetupWizard(hid)" :disabled="setupLoading">Activate</button>
+                    </template>
                   </div>
                 </div>
               </div>

@@ -120,9 +120,14 @@ async function startConnection() {
     if (type !== 'notify') return;
 
     for (const msg of messages) {
-      // Skip messages from self and status broadcasts
+      // Skip own outgoing messages (prevents echo loop)
       if (msg.key.fromMe) continue;
+      // Skip status broadcasts
       if (msg.key.remoteJid === 'status@broadcast') continue;
+      // Skip group messages — only process direct chats (JID ends with @s.whatsapp.net)
+      if (msg.key.remoteJid && !msg.key.remoteJid.endsWith('@s.whatsapp.net')) continue;
+      // Skip protocol/reaction/receipt messages (no useful text)
+      if (msg.message?.protocolMessage || msg.message?.reactionMessage) continue;
 
       const sender = msg.key.remoteJid || '';
       const text = msg.message?.conversation
@@ -154,10 +159,45 @@ async function startConnection() {
 }
 
 // ---------------------------------------------------------------------------
+// Resolve agent name to UUID (cached)
+// ---------------------------------------------------------------------------
+let resolvedAgentId = null;
+
+function resolveAgentId() {
+  return new Promise((resolve, reject) => {
+    if (resolvedAgentId) return resolve(resolvedAgentId);
+    const url = new URL(`${OPENFANG_URL}/api/agents`);
+    const req = http.request(
+      { hostname: url.hostname, port: url.port || 4200, path: url.pathname, method: 'GET', timeout: 10000 },
+      (res) => {
+        let body = '';
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          try {
+            const agents = JSON.parse(body);
+            const match = agents.find(a => a.name === DEFAULT_AGENT || a.id === DEFAULT_AGENT);
+            if (match) {
+              resolvedAgentId = match.id;
+              console.log(`[gateway] Resolved agent "${DEFAULT_AGENT}" → ${resolvedAgentId}`);
+              resolve(resolvedAgentId);
+            } else {
+              // Fallback: use DEFAULT_AGENT as-is (might be a UUID already)
+              resolve(DEFAULT_AGENT);
+            }
+          } catch (e) { resolve(DEFAULT_AGENT); }
+        });
+      }
+    );
+    req.on('error', () => resolve(DEFAULT_AGENT));
+    req.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Forward incoming message to OpenFang API, return agent response
 // ---------------------------------------------------------------------------
 function forwardToOpenFang(text, phone, pushName) {
-  return new Promise((resolve, reject) => {
+  return resolveAgentId().then((agentId) => new Promise((resolve, reject) => {
     const payload = JSON.stringify({
       message: text,
       metadata: {
@@ -167,7 +207,7 @@ function forwardToOpenFang(text, phone, pushName) {
       },
     });
 
-    const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(DEFAULT_AGENT)}/message`);
+    const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(agentId)}/message`);
 
     const req = http.request(
       {
@@ -203,7 +243,7 @@ function forwardToOpenFang(text, phone, pushName) {
     });
     req.write(payload);
     req.end();
-  });
+  }));
 }
 
 // ---------------------------------------------------------------------------
