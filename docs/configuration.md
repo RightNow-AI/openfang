@@ -470,20 +470,31 @@ allowed_channels = []
 #### `[channels.whatsapp]`
 
 ```toml
+# Linked-devices QR mode (recommended)
 [channels.whatsapp]
-access_token_env = "WHATSAPP_ACCESS_TOKEN"
-verify_token_env = "WHATSAPP_VERIFY_TOKEN"
-phone_number_id = ""
-webhook_port = 8443
+mode = "web_qr"
+gateway_url_env = "WHATSAPP_WEB_GATEWAY_URL"
 allowed_users = []
+
+# Cloud API mode (Meta Business)
+# [channels.whatsapp]
+# mode = "cloud_api"
+# phone_number_id = "123456789012345"
+# access_token_env = "WHATSAPP_ACCESS_TOKEN"
+# verify_token_env = "WHATSAPP_VERIFY_TOKEN"
+# webhook_port = 8443
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `mode` | enum (`auto`\|`web_qr`\|`cloud_api`) | `"auto"` | Delivery mode. `web_qr` for linked devices, `cloud_api` for Meta webhooks, `auto` prefers gateway when available. |
+| `gateway_url` | string or null | `null` | Optional explicit gateway URL for QR mode (e.g., `http://127.0.0.1:3009`). |
+| `gateway_url_env` | string | `"WHATSAPP_WEB_GATEWAY_URL"` | Env var that can provide gateway URL. |
 | `access_token_env` | string | `"WHATSAPP_ACCESS_TOKEN"` | Env var holding the WhatsApp Cloud API access token. |
 | `verify_token_env` | string | `"WHATSAPP_VERIFY_TOKEN"` | Env var holding the webhook verification token. |
-| `phone_number_id` | string | `""` | WhatsApp Business phone number ID. |
-| `webhook_port` | u16 | `8443` | Port to listen for incoming webhook callbacks. |
+| `phone_number_id` | string | `""` | WhatsApp Business phone number ID (Cloud API mode). |
+| `phone_number_id_env` | string or null | `null` | **Legacy compatibility**: env var containing phone number ID from older configs. |
+| `webhook_port` | u16 | `8443` | Port to listen for incoming webhook callbacks (Cloud API mode). |
 | `allowed_users` | list of strings | `[]` | Phone numbers allowed. Empty = allow all. |
 | `default_agent` | string or null | `null` | Agent name to route messages to. |
 
@@ -1321,6 +1332,7 @@ Complete table of all environment variables referenced by the configuration. Non
 | `SLACK_BOT_TOKEN` | Slack | Slack bot token (`xoxb-`) for REST API. |
 | `WHATSAPP_ACCESS_TOKEN` | WhatsApp | WhatsApp Cloud API access token. |
 | `WHATSAPP_VERIFY_TOKEN` | WhatsApp | Webhook verification token. |
+| `WHATSAPP_WEB_GATEWAY_URL` | WhatsApp | Optional linked-devices gateway URL for `web_qr` mode. |
 | `MATRIX_ACCESS_TOKEN` | Matrix | Matrix homeserver access token. |
 | `EMAIL_PASSWORD` | Email | Email account password or app password. |
 | `TEAMS_APP_PASSWORD` | Teams | Azure Bot Framework app password. |
@@ -1376,7 +1388,7 @@ For every **enabled channel** (i.e., its config section is present in the TOML),
 | Telegram | `bot_token_env` |
 | Discord | `bot_token_env` |
 | Slack | `app_token_env`, `bot_token_env` (both checked) |
-| WhatsApp | `access_token_env` |
+| WhatsApp | mode-dependent: `cloud_api` checks `access_token_env`, `verify_token_env`, and `phone_number_id`; `auto` requires gateway or access token; `web_qr` uses gateway URL (`gateway_url`/`gateway_url_env`) |
 | Matrix | `access_token_env` |
 | Email | `password_env` |
 | Teams | `app_password_env` |

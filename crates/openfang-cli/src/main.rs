@@ -3302,9 +3302,9 @@ fn cmd_channel_list() {
         ("telegram", "TELEGRAM_BOT_TOKEN"),
         ("discord", "DISCORD_BOT_TOKEN"),
         ("slack", "SLACK_BOT_TOKEN"),
-        ("whatsapp", "WA_ACCESS_TOKEN"),
+        ("whatsapp", ""),
         ("signal", ""),
-        ("matrix", "MATRIX_TOKEN"),
+        ("matrix", "MATRIX_ACCESS_TOKEN"),
         ("email", "EMAIL_PASSWORD"),
     ];
 
@@ -3344,7 +3344,7 @@ fn cmd_channel_setup(channel: Option<&str>) {
                 ("telegram", "Telegram bot (BotFather)"),
                 ("discord", "Discord bot"),
                 ("slack", "Slack app (Socket Mode)"),
-                ("whatsapp", "WhatsApp Cloud API"),
+                ("whatsapp", "WhatsApp (Linked Devices QR / Cloud API)"),
                 ("email", "Email (IMAP/SMTP)"),
                 ("signal", "Signal (signal-cli)"),
                 ("matrix", "Matrix homeserver"),
@@ -3465,37 +3465,81 @@ fn cmd_channel_setup(channel: Option<&str>) {
         "whatsapp" => {
             ui::section("Setting up WhatsApp");
             ui::blank();
-            println!("  WhatsApp Cloud API (recommended for production):");
-            println!("  1. Go to https://developers.facebook.com");
-            println!("  2. Create a Business App");
-            println!("  3. Add WhatsApp product");
-            println!("  4. Set up a test phone number");
-            println!("  5. Copy Phone Number ID and Access Token");
+            println!("  Choose mode:");
+            println!("  1. Linked Devices QR (recommended, no Meta app setup)");
+            println!("  2. Cloud API (Meta Business / production webhooks)");
             ui::blank();
 
-            let phone_id = prompt_input("  Phone Number ID: ");
-            let access_token = prompt_input("  Access Token: ");
-            let verify_token = prompt_input("  Verify Token: ");
+            let mode = prompt_input("  Mode [1]: ");
+            let cloud_mode = matches!(mode.trim(), "2" | "cloud" | "cloud_api");
 
-            let config_block = "\n[channels.whatsapp]\nmode = \"cloud_api\"\nphone_number_id_env = \"WA_PHONE_ID\"\naccess_token_env = \"WA_ACCESS_TOKEN\"\nverify_token_env = \"WA_VERIFY_TOKEN\"\nwebhook_port = 8443\ndefault_agent = \"assistant\"\n";
-            maybe_write_channel_config("whatsapp", config_block);
+            if cloud_mode {
+                ui::blank();
+                println!("  WhatsApp Cloud API setup:");
+                println!("  1. Go to https://developers.facebook.com");
+                println!("  2. Create a Business App and add WhatsApp product");
+                println!("  3. Copy Phone Number ID + Access Token");
+                ui::blank();
 
-            for (key, val) in [
-                ("WA_PHONE_ID", &phone_id),
-                ("WA_ACCESS_TOKEN", &access_token),
-                ("WA_VERIFY_TOKEN", &verify_token),
-            ] {
-                if !val.is_empty() {
-                    match dotenv::save_env_key(key, val) {
-                        Ok(()) => ui::success(&format!("{key} saved to ~/.openfang/.env")),
-                        Err(_) => println!("    export {key}={val}"),
+                let phone_id = prompt_input("  Phone Number ID: ").replace('\'', "");
+                let access_token = prompt_input("  Access Token: ");
+                let verify_token = prompt_input("  Verify Token (for webhook challenge): ");
+
+                let config_block = format!(
+                    "\n[channels.whatsapp]\nmode = 'cloud_api'\nphone_number_id = '{phone_id}'\naccess_token_env = 'WHATSAPP_ACCESS_TOKEN'\nverify_token_env = 'WHATSAPP_VERIFY_TOKEN'\nwebhook_port = 8443\ndefault_agent = 'assistant'\n"
+                );
+                maybe_write_channel_config("whatsapp", &config_block);
+
+                for (key, val) in [
+                    ("WHATSAPP_ACCESS_TOKEN", &access_token),
+                    ("WHATSAPP_VERIFY_TOKEN", &verify_token),
+                ] {
+                    if !val.is_empty() {
+                        match dotenv::save_env_key(key, val) {
+                            Ok(()) => ui::success(&format!("{key} saved to ~/.openfang/.env")),
+                            Err(_) => println!("    export {key}={val}"),
+                        }
                     }
                 }
-            }
 
-            ui::blank();
-            ui::success("WhatsApp configured");
-            notify_daemon_restart();
+                ui::blank();
+                ui::success("WhatsApp Cloud API configured");
+                notify_daemon_restart();
+            } else {
+                ui::blank();
+                println!("  Linked Devices (QR) mode:");
+                println!("  - OpenFang runs the local WhatsApp Web gateway automatically.");
+                println!("  - Then open the web UI Channels page and scan the QR code.");
+                ui::blank();
+
+                let gateway_url =
+                    prompt_input("  External gateway URL (optional, Enter for embedded default): ")
+                        .replace('\'', "");
+
+                let mut config_block = String::from(
+                    "\n[channels.whatsapp]\nmode = 'web_qr'\ngateway_url_env = 'WHATSAPP_WEB_GATEWAY_URL'\ndefault_agent = 'assistant'\n",
+                );
+                if !gateway_url.trim().is_empty() {
+                    config_block.push_str(&format!("gateway_url = '{}'\n", gateway_url.trim()));
+                }
+                maybe_write_channel_config("whatsapp", &config_block);
+
+                if !gateway_url.trim().is_empty() {
+                    match dotenv::save_env_key("WHATSAPP_WEB_GATEWAY_URL", gateway_url.trim()) {
+                        Ok(()) => ui::success("WHATSAPP_WEB_GATEWAY_URL saved to ~/.openfang/.env"),
+                        Err(_) => {
+                            println!("    export WHATSAPP_WEB_GATEWAY_URL={}", gateway_url.trim())
+                        }
+                    }
+                }
+
+                ui::blank();
+                ui::success("WhatsApp QR mode configured");
+                ui::hint(
+                    "Next: restart daemon, then open the web UI and scan the WhatsApp QR code.",
+                );
+                notify_daemon_restart();
+            }
         }
         "email" => {
             ui::section("Setting up Email");

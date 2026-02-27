@@ -386,6 +386,31 @@ The Slack adapter uses Socket Mode, which establishes a WebSocket connection to 
 
 ## WhatsApp
 
+OpenFang supports two WhatsApp modes:
+
+1. **Linked Devices QR (recommended)** — pair your personal WhatsApp by scanning a QR code.
+2. **Cloud API** — Meta Business webhook flow for production-style bot apps.
+
+### Linked Devices QR (default / first-class)
+
+Add this to config:
+
+```toml
+[channels.whatsapp]
+mode = "web_qr"
+gateway_url_env = "WHATSAPP_WEB_GATEWAY_URL"
+default_agent = "assistant"
+```
+
+Then restart daemon and open the Channels page in Web UI. Click WhatsApp and scan the QR code with:
+- WhatsApp -> **Linked Devices** -> **Link a device**
+
+Notes:
+- If `gateway_url` / `WHATSAPP_WEB_GATEWAY_URL` is not set, OpenFang uses the embedded default gateway at `http://127.0.0.1:3009`.
+- No Meta developer account is required.
+
+### Cloud API mode
+
 ### Prerequisites
 
 - A Meta Business account with WhatsApp Cloud API access
@@ -393,45 +418,41 @@ The Slack adapter uses Socket Mode, which establishes a WebSocket connection to 
 ### Setup
 
 1. Go to [Meta for Developers](https://developers.facebook.com/).
-2. Create a Business App.
-3. Add the WhatsApp product.
-4. Set up a test phone number (or use a production one).
-5. Copy:
+2. Create a Business App and add the WhatsApp product.
+3. Copy:
    - Phone Number ID
    - Permanent Access Token
-   - Choose a Verify Token (any string you choose)
-6. Set environment variables:
+   - Verify Token (your choice)
+4. Set environment variables:
 
 ```bash
-export WA_PHONE_ID=123456789012345
-export WA_ACCESS_TOKEN=EAABs...
-export WA_VERIFY_TOKEN=my-secret-verify-token
+export WHATSAPP_ACCESS_TOKEN=EAABs...
+export WHATSAPP_VERIFY_TOKEN=my-secret-verify-token
 ```
 
-7. Add to config:
+5. Add to config:
 
 ```toml
 [channels.whatsapp]
 mode = "cloud_api"
-phone_number_id_env = "WA_PHONE_ID"
-access_token_env = "WA_ACCESS_TOKEN"
-verify_token_env = "WA_VERIFY_TOKEN"
+phone_number_id = "123456789012345"
+access_token_env = "WHATSAPP_ACCESS_TOKEN"
+verify_token_env = "WHATSAPP_VERIFY_TOKEN"
 webhook_port = 8443
 default_agent = "assistant"
 ```
 
-8. Set up a webhook in the Meta dashboard pointing to your server's public URL:
+6. Configure Meta webhook URL:
    - URL: `https://your-domain.com:8443/webhook/whatsapp`
-   - Verify Token: the value you chose above
+   - Verify token: the same value as above
    - Subscribe to: `messages`
 
-9. Restart the daemon.
+7. Restart daemon.
 
 ### How It Works
 
-The WhatsApp adapter runs an HTTP server (on the configured `webhook_port`) that receives incoming webhooks from the WhatsApp Cloud API. It handles webhook verification (GET) and message reception (POST). Responses are sent via the Cloud API's `messages` endpoint.
-
----
+- In `web_qr`, OpenFang routes WhatsApp traffic through a gateway bridge (linked-devices session).
+- In `cloud_api`, OpenFang runs webhook verification/ingest and sends replies through Meta Cloud API.
 
 ## Signal
 
