@@ -968,6 +968,9 @@ impl OpenFangKernel {
             if !dm.model.is_empty() {
                 manifest.model.model = dm.model.clone();
             }
+            if dm.base_url.is_some() {
+                manifest.model.base_url = dm.base_url.clone();
+            }
         }
 
         // Create workspace directory for the agent
@@ -3484,7 +3487,11 @@ impl OpenFangKernel {
             let driver_config = DriverConfig {
                 provider: agent_provider.clone(),
                 api_key: std::env::var(&api_key_env).ok(),
-                base_url: manifest.model.base_url.clone(),
+                base_url: manifest
+                    .model
+                    .base_url
+                    .clone()
+                    .or_else(|| self.config.default_model.base_url.clone()),
             };
 
             drivers::create_driver(&driver_config).map_err(|e| {
