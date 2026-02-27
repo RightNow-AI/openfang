@@ -5,6 +5,13 @@
 <h1 align="center">CreatorOS</h1>
 <h3 align="center">A Game Development, modding and creator focused Operating System built on top of openfang Agent OS</h3>
 
+---
+
+git clone https://github.com/rustybret/CreatorOS.git
+cd openfang
+cargo install --path crates/openfang-cli
+
+
 <h2 align="center">About Openfang</h2>
 
 <p align="center">
