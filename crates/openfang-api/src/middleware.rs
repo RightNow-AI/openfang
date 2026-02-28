@@ -101,6 +101,7 @@ pub async fn auth(
         || path == "/api/network/status"
         || path == "/api/a2a/agents"
         || path == "/api/approvals"
+        || path.starts_with("/api/approvals/")
         || path == "/api/channels"
         || path == "/api/skills"
         || path == "/api/sessions"

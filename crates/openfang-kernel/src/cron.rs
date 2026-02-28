@@ -255,12 +255,9 @@ impl CronScheduler {
                 meta.job.last_run = Some(Utc::now());
                 meta.last_status = Some("ok".to_string());
                 meta.consecutive_errors = 0;
-                if meta.one_shot {
-                    true
-                } else {
-                    meta.job.next_run = Some(compute_next_run(&meta.job.schedule));
-                    false
-                }
+                // one_shot jobs get removed; recurring jobs keep the next_run
+                // already pre-advanced by due_jobs() — no recompute needed.
+                meta.one_shot
             } else {
                 return;
             }
@@ -277,7 +274,10 @@ impl CronScheduler {
     pub fn record_failure(&self, id: CronJobId, error_msg: &str) {
         if let Some(mut meta) = self.jobs.get_mut(&id) {
             meta.job.last_run = Some(Utc::now());
-            meta.last_status = Some(format!("error: {}", &error_msg[..error_msg.len().min(256)]));
+            meta.last_status = Some(format!(
+                "error: {}",
+                openfang_types::truncate_str(error_msg, 256)
+            ));
             meta.consecutive_errors += 1;
             if meta.consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
                 warn!(
@@ -324,7 +324,7 @@ pub fn compute_next_run(schedule: &CronSchedule) -> chrono::DateTime<Utc> {
 
             match seven_field.parse::<cron::Schedule>() {
                 Ok(sched) => sched
-                    .upcoming(Utc)
+                    .after(&Utc::now())
                     .next()
                     .unwrap_or_else(|| Utc::now() + Duration::hours(1)),
                 Err(e) => {

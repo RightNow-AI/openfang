@@ -996,7 +996,7 @@ pub struct KernelConfig {
     #[serde(default)]
     pub webhook_triggers: Option<WebhookTriggerConfig>,
     /// Execution approval policy.
-    #[serde(default)]
+    #[serde(default, alias = "approval_policy")]
     pub approval: crate::approval::ApprovalPolicy,
     /// Cron scheduler max total jobs across all agents. Default: 500.
     #[serde(default = "default_max_cron_jobs")]
