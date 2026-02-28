@@ -413,12 +413,9 @@ fn append_daily_memory_log(workspace: &Path, response: &str) {
             return;
         }
     }
-    // Truncate long responses for the log
-    let summary = if trimmed.len() > 500 {
-        &trimmed[..500]
-    } else {
-        trimmed
-    };
+    // Truncate long responses for the log (char-safe to avoid panic on multi-byte UTF-8)
+    let summary: String = trimmed.chars().take(500).collect();
+    let summary = summary.as_str();
     let timestamp = chrono::Utc::now().format("%H:%M:%S").to_string();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -2196,7 +2193,7 @@ impl OpenFangKernel {
                 .take(5)
                 .enumerate()
                 .map(|(i, t)| {
-                    let truncated = if t.len() > 200 { &t[..200] } else { t };
+                    let truncated: String = t.chars().take(200).collect();
                     format!("{}. {}", i + 1, truncated)
                 })
                 .collect::<Vec<_>>()
