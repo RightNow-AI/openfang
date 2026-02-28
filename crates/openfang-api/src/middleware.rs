@@ -101,7 +101,6 @@ pub async fn auth(
         || path == "/api/network/status"
         || path == "/api/a2a/agents"
         || path == "/api/approvals"
-        || path.starts_with("/api/approvals/")
         || path == "/api/channels"
         || path == "/api/skills"
         || path == "/api/sessions"
@@ -200,5 +199,50 @@ mod tests {
     #[test]
     fn test_request_id_header_constant() {
         assert_eq!(REQUEST_ID_HEADER, "x-request-id");
+    }
+
+    /// Verify that approval mutation endpoints are NOT in the auth bypass list.
+    /// Regression test for CVE: unauthenticated approve/reject bypass.
+    #[test]
+    fn test_approval_mutation_paths_require_auth() {
+        // These are the paths checked in the auth bypass block.
+        // The listing endpoint is intentionally unauthenticated for the dashboard SPA.
+        let bypass_path = |path: &str| -> bool {
+            path == "/"
+                || path == "/api/health"
+                || path == "/api/health/detail"
+                || path == "/api/status"
+                || path == "/api/version"
+                || path == "/api/agents"
+                || path == "/api/profiles"
+                || path == "/api/config"
+                || path.starts_with("/api/uploads/")
+                || path == "/api/models"
+                || path == "/api/models/aliases"
+                || path == "/api/providers"
+                || path == "/api/budget"
+                || path == "/api/budget/agents"
+                || path.starts_with("/api/budget/agents/")
+                || path == "/api/network/status"
+                || path == "/api/a2a/agents"
+                || path == "/api/approvals"
+                || path == "/api/channels"
+                || path == "/api/skills"
+                || path == "/api/sessions"
+                || path == "/api/integrations"
+                || path == "/api/integrations/available"
+                || path == "/api/integrations/health"
+                || path.starts_with("/api/cron/")
+                || path.starts_with("/api/providers/github-copilot/oauth/")
+        };
+
+        // Listing approvals is OK unauthenticated (dashboard read)
+        assert!(bypass_path("/api/approvals"));
+
+        // Mutating endpoints MUST require authentication
+        assert!(!bypass_path("/api/approvals/some-uuid/approve"));
+        assert!(!bypass_path("/api/approvals/some-uuid/reject"));
+        assert!(!bypass_path("/api/approvals/123e4567-e89b-12d3-a456-426614174000/approve"));
+        assert!(!bypass_path("/api/approvals/123e4567-e89b-12d3-a456-426614174000/reject"));
     }
 }

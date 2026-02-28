@@ -21,8 +21,13 @@ pub struct WebFetchEngine {
 impl WebFetchEngine {
     /// Create a new fetch engine from config with a shared cache.
     pub fn new(config: WebFetchConfig, cache: Arc<WebCache>) -> Self {
+        // SECURITY: Disable automatic redirect following to prevent SSRF bypass.
+        // An attacker could host a public URL that 301-redirects to
+        // http://169.254.169.254/ — the SSRF check passes on the public URL,
+        // then reqwest would follow the redirect to the metadata endpoint.
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_default();
         Self {

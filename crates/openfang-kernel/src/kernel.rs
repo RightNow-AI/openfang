@@ -1075,6 +1075,9 @@ impl OpenFangKernel {
     ///
     /// Call this before `spawn_agent` when a `SignedManifest` JSON is provided
     /// alongside the TOML. Returns the verified manifest TOML string on success.
+    ///
+    /// When `config.trusted_signer_keys` is non-empty, the signer's public key
+    /// must match one of the trusted keys — preventing self-signed bypass attacks.
     pub fn verify_signed_manifest(&self, signed_json: &str) -> KernelResult<String> {
         let signed: openfang_types::manifest_signing::SignedManifest =
             serde_json::from_str(signed_json).map_err(|e| {
@@ -1082,11 +1085,20 @@ impl OpenFangKernel {
                     "Invalid signed manifest JSON: {e}"
                 )))
             })?;
-        signed.verify().map_err(|e| {
-            KernelError::OpenFang(openfang_types::error::OpenFangError::Config(format!(
-                "Manifest signature verification failed: {e}"
-            )))
-        })?;
+        signed
+            .verify_against_trusted_keys(&self.config.trusted_signer_keys)
+            .map_err(|e| {
+                KernelError::OpenFang(openfang_types::error::OpenFangError::Config(format!(
+                    "Manifest signature verification failed: {e}"
+                )))
+            })?;
+        if self.config.trusted_signer_keys.is_empty() {
+            tracing::warn!(
+                signer = %signed.signer_id,
+                "Signed manifest accepted without trusted key verification — \
+                 configure trusted_signer_keys in config.toml for supply chain security"
+            );
+        }
         info!(signer = %signed.signer_id, hash = %signed.content_hash, "Signed manifest verified");
         Ok(signed.manifest)
     }

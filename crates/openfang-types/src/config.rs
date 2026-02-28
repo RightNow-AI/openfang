@@ -1046,6 +1046,11 @@ pub struct KernelConfig {
     /// OAuth client ID overrides for PKCE flows.
     #[serde(default)]
     pub oauth: OAuthConfig,
+    /// Trusted Ed25519 public keys for manifest signing (hex-encoded, 64 hex chars each).
+    /// When non-empty, only manifests signed by one of these keys are accepted.
+    /// When empty (default), any valid Ed25519 signature is accepted.
+    #[serde(default)]
+    pub trusted_signer_keys: Vec<String>,
 }
 
 /// OAuth client ID overrides for PKCE flows.
@@ -1213,6 +1218,7 @@ impl Default for KernelConfig {
             budget: BudgetConfig::default(),
             provider_urls: HashMap::new(),
             oauth: OAuthConfig::default(),
+            trusted_signer_keys: Vec::new(),
         }
     }
 }

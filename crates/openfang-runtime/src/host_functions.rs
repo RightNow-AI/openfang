@@ -129,15 +129,28 @@ fn is_ssrf_target(url: &str) -> Result<(), serde_json::Value> {
     }
 
     let host = extract_host_from_url(url);
-    let hostname = host.split(':').next().unwrap_or(&host);
+    // Handle IPv6 bracket notation: [::1] → extract inside brackets for matching
+    let hostname = if host.starts_with('[') {
+        host.find(']')
+            .map(|i| &host[..=i])
+            .unwrap_or(&host)
+    } else {
+        host.split(':').next().unwrap_or(&host)
+    };
 
     // Check hostname-based blocklist first (catches metadata endpoints)
     let blocked_hostnames = [
         "localhost",
+        "ip6-localhost",
         "metadata.google.internal",
         "metadata.aws.internal",
         "instance-data",
         "169.254.169.254",
+        "100.100.100.200", // Alibaba Cloud IMDS
+        "192.0.0.192",     // Azure IMDS alternative
+        "0.0.0.0",
+        "::1",
+        "[::1]",
     ];
     if blocked_hostnames.contains(&hostname) {
         return Err(json!({"error": format!("SSRF blocked: {hostname} is a restricted hostname")}));
@@ -291,7 +304,13 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
     }
 
     state.tokio_handle.block_on(async {
-        let client = reqwest::Client::new();
+        // SECURITY: Disable automatic redirect following to prevent SSRF bypass.
+        // Without this, an attacker can host a public URL that 301-redirects to
+        // an internal IP (e.g., cloud metadata endpoint), bypassing the SSRF check.
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_default();
         let request = match method.to_uppercase().as_str() {
             "POST" => client.post(url).body(body.to_string()),
             "PUT" => client.put(url).body(body.to_string()),
@@ -312,9 +331,22 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
 }
 
 /// Extract host:port from a URL for capability checking.
+/// Handles IPv6 bracket notation: `http://[::1]:8080/path` → `[::1]:8080`
 fn extract_host_from_url(url: &str) -> String {
     if let Some(after_scheme) = url.split("://").nth(1) {
         let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+        // Handle IPv6 bracket notation: [::1]:8080 or [::1]
+        if host_port.starts_with('[') {
+            if let Some(bracket_end) = host_port.find(']') {
+                let ipv6_host = &host_port[..=bracket_end]; // includes brackets
+                let after_bracket = &host_port[bracket_end + 1..];
+                if let Some(port) = after_bracket.strip_prefix(':') {
+                    return format!("{ipv6_host}:{port}");
+                }
+                let default_port = if url.starts_with("https") { 443 } else { 80 };
+                return format!("{ipv6_host}:{default_port}");
+            }
+        }
         if host_port.contains(':') {
             host_port.to_string()
         } else if url.starts_with("https") {
@@ -664,5 +696,38 @@ mod tests {
             extract_host_from_url("http://example.com"),
             "example.com:80"
         );
+    }
+
+    #[test]
+    fn test_extract_host_ipv6_bracket_notation() {
+        assert_eq!(
+            extract_host_from_url("http://[::1]:8080/path"),
+            "[::1]:8080"
+        );
+        assert_eq!(
+            extract_host_from_url("https://[::1]/path"),
+            "[::1]:443"
+        );
+        assert_eq!(
+            extract_host_from_url("http://[::1]/path"),
+            "[::1]:80"
+        );
+    }
+
+    #[test]
+    fn test_ssrf_blocks_ipv6_localhost() {
+        assert!(is_ssrf_target("http://[::1]/secret").is_err());
+        assert!(is_ssrf_target("http://[::1]:8080/api").is_err());
+        assert!(is_ssrf_target("https://[::1]/admin").is_err());
+    }
+
+    #[test]
+    fn test_ssrf_blocks_cloud_metadata() {
+        // Alibaba Cloud IMDS
+        assert!(is_ssrf_target("http://100.100.100.200/latest/meta-data/").is_err());
+        // Azure IMDS alternative
+        assert!(is_ssrf_target("http://192.0.0.192/metadata/instance").is_err());
+        // Zero IP
+        assert!(is_ssrf_target("http://0.0.0.0/").is_err());
     }
 }

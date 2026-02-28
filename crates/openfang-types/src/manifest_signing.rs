@@ -72,8 +72,41 @@ impl SignedManifest {
     /// 1. The `content_hash` matches a fresh SHA-256 of `manifest`.
     /// 2. The `signature` is valid for `content_hash` under `signer_public_key`.
     ///
+    /// **WARNING:** This only verifies self-consistency (the embedded key signed
+    /// the content). It does NOT verify the signer's identity. For production
+    /// use, call [`verify_against_trusted_keys`] instead.
+    ///
     /// Returns `Ok(())` on success, or `Err(description)` on failure.
     pub fn verify(&self) -> Result<(), String> {
+        self.verify_signature()
+    }
+
+    /// Verifies integrity, signature, AND that the signer is in the trusted key set.
+    ///
+    /// `trusted_keys` is a list of hex-encoded Ed25519 public keys. If the list
+    /// is non-empty, the manifest's `signer_public_key` must match one of them.
+    /// If the list is empty, any valid signature is accepted (backward compatible).
+    pub fn verify_against_trusted_keys(&self, trusted_keys: &[String]) -> Result<(), String> {
+        self.verify_signature()?;
+
+        if trusted_keys.is_empty() {
+            return Ok(());
+        }
+
+        let signer_hex = hex::encode(&self.signer_public_key);
+        if trusted_keys.iter().any(|k| k.eq_ignore_ascii_case(&signer_hex)) {
+            Ok(())
+        } else {
+            Err(format!(
+                "signer public key {} is not in the trusted key set ({} trusted keys configured)",
+                signer_hex,
+                trusted_keys.len()
+            ))
+        }
+    }
+
+    /// Internal: verify content hash and Ed25519 signature.
+    fn verify_signature(&self) -> Result<(), String> {
         // Re-compute the hash and compare.
         let recomputed = hash_manifest(&self.manifest);
         if recomputed != self.content_hash {
@@ -162,5 +195,45 @@ network = false
         assert!(result
             .unwrap_err()
             .contains("signature verification failed"));
+    }
+
+    #[test]
+    fn test_trusted_keys_empty_allows_any() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let manifest = "[agent]\nname = \"test\"\n";
+        let signed = SignedManifest::sign(manifest, &signing_key, "anyone");
+        // Empty trusted key list = backward compatible, any valid sig accepted
+        assert!(signed.verify_against_trusted_keys(&[]).is_ok());
+    }
+
+    #[test]
+    fn test_trusted_keys_accepts_known_signer() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let manifest = "[agent]\nname = \"test\"\n";
+        let signed = SignedManifest::sign(manifest, &signing_key, "trusted-dev");
+        let trusted_hex = hex::encode(signing_key.verifying_key().to_bytes());
+        assert!(signed.verify_against_trusted_keys(&[trusted_hex]).is_ok());
+    }
+
+    #[test]
+    fn test_trusted_keys_rejects_unknown_signer() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let other_key = SigningKey::generate(&mut OsRng);
+        let manifest = "[agent]\nname = \"test\"\n";
+        let signed = SignedManifest::sign(manifest, &signing_key, "attacker");
+        // Only trust the other key
+        let trusted_hex = hex::encode(other_key.verifying_key().to_bytes());
+        let result = signed.verify_against_trusted_keys(&[trusted_hex]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not in the trusted key set"));
+    }
+
+    #[test]
+    fn test_trusted_keys_case_insensitive() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let manifest = "[agent]\nname = \"test\"\n";
+        let signed = SignedManifest::sign(manifest, &signing_key, "dev");
+        let trusted_hex = hex::encode(signing_key.verifying_key().to_bytes()).to_uppercase();
+        assert!(signed.verify_against_trusted_keys(&[trusted_hex]).is_ok());
     }
 }
