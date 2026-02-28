@@ -359,11 +359,11 @@ Roadmap below prioritizes reliability and maintainability across existing module
 - `openfang-runtime`: unify tool execution policy (timeouts, retries, quotas, audit tags) and add deterministic replay traces for agent-loop incidents.
 - `openfang-api`: add contract tests for key REST/SSE/WS flows and harden stream backpressure limits.
 - `openfang-channels`: ship adapter conformance test kit shared by all channel implementations.
-- `openfang-kernel`: standardize internal event contracts and isolate workflow scheduler edge cases.
+- `openfang-kernel`: standardize internal event contracts with explicit schema + versioning to reduce side effects when adding new features.
 
 ### Phase 2 (31-60 days) — Architecture Hardening
 
-- `openfang-kernel`: split orchestration domains (`agent lifecycle`, `workflow`, `governance`) to reduce coupling.
+- `openfang-kernel`: split orchestration into clear sub-domains (`agent lifecycle`, `workflow`, `governance` for approval/capability/metering) to reduce coupling.
 - `openfang-memory`: formalize retention/compaction policies and add pluggable vector backend abstraction.
 - `openfang-types`: enforce schema evolution tests (serde compatibility) in CI for all shared contracts.
 - `openfang-skills` + `openfang-hands`: tighten provenance/signing checks and runtime resource budgets per package.
