@@ -40,7 +40,10 @@ RUN apt-get update && apt-get install -y \
     libatk1.0-0 \
     libdrm2 \
     libgbm1 \
-    && rm -rf /var/lib/apt/lists/* 
+    python3 \
+    yt-dlp \
+    && pip3 install playwright && playwright install chromium  \
+    && rm -rf /var/lib/apt/lists/* \
 
 # 从 builder 阶段提取编译好的文件
 COPY --from=builder /build/target/release/openfang /usr/local/bin/
