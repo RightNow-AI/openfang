@@ -2252,7 +2252,10 @@ impl OpenFangKernel {
                     .map(|entry| entry.provider.clone())
             });
 
-        if let Some(provider) = resolved_provider {
+        // If catalog lookup failed, try to infer provider from model name prefix
+        let provider = resolved_provider.or_else(|| infer_provider_from_model(model));
+
+        if let Some(provider) = provider {
             self.registry
                 .update_model_and_provider(agent_id, model.to_string(), provider.clone())
                 .map_err(KernelError::OpenFang)?;
@@ -2261,7 +2264,7 @@ impl OpenFangKernel {
             self.registry
                 .update_model(agent_id, model.to_string())
                 .map_err(KernelError::OpenFang)?;
-            info!(agent_id = %agent_id, model = %model, "Agent model updated");
+            info!(agent_id = %agent_id, model = %model, "Agent model updated (provider unchanged)");
         }
 
         // Persist the updated entry
@@ -3491,43 +3494,50 @@ impl OpenFangKernel {
         let primary = if agent_provider == default_provider && !has_custom_key && !has_custom_url {
             Arc::clone(&self.default_driver)
         } else {
-            // Create a dedicated driver for this agent
-            // Auth profile rotation: if profiles are configured for this provider,
-            // select the highest-priority profile's key env var.
-            let default_key_env = manifest
-                .model
-                .api_key_env
-                .as_deref()
-                .unwrap_or(&self.config.default_model.api_key_env);
-
-            let api_key_env =
+            // Create a dedicated driver for this agent.
+            //
+            // IMPORTANT: When the agent's provider differs from the default,
+            // we must NOT pass the default provider's API key. Instead, pass None
+            // so create_driver() can look up the correct env var for the target provider.
+            let api_key = if has_custom_key {
+                // Agent explicitly set an API key env var — use it
+                manifest
+                    .model
+                    .api_key_env
+                    .as_ref()
+                    .and_then(|env| std::env::var(env).ok())
+            } else if agent_provider == default_provider {
+                // Same provider — use default key
+                std::env::var(&self.config.default_model.api_key_env).ok()
+            } else {
+                // Different provider — check auth profiles first, then let
+                // create_driver() look up the correct env var automatically.
                 if let Some(profiles) = self.config.auth_profiles.get(agent_provider.as_str()) {
-                    if !profiles.is_empty() {
-                        // Pick highest-priority profile (lowest priority number)
-                        let mut sorted: Vec<_> = profiles.iter().collect();
-                        sorted.sort_by_key(|p| p.priority);
-                        let best = &sorted[0];
-                        // Use the profile's env var if the key exists, otherwise fall back
-                        if std::env::var(&best.api_key_env).is_ok() {
-                            best.api_key_env.clone()
-                        } else {
-                            default_key_env.to_string()
-                        }
-                    } else {
-                        default_key_env.to_string()
-                    }
+                    let mut sorted: Vec<_> = profiles.iter().collect();
+                    sorted.sort_by_key(|p| p.priority);
+                    sorted
+                        .first()
+                        .and_then(|best| std::env::var(&best.api_key_env).ok())
                 } else {
-                    default_key_env.to_string()
-                };
+                    // Pass None — create_driver() has per-provider env var lookups
+                    None
+                }
+            };
+
+            // Don't inherit default provider's base_url when switching providers
+            let base_url = if has_custom_url {
+                manifest.model.base_url.clone()
+            } else if agent_provider == default_provider {
+                self.config.default_model.base_url.clone()
+            } else {
+                // Let create_driver() use the target provider's default base URL
+                None
+            };
 
             let driver_config = DriverConfig {
                 provider: agent_provider.clone(),
-                api_key: std::env::var(&api_key_env).ok(),
-                base_url: manifest
-                    .model
-                    .base_url
-                    .clone()
-                    .or_else(|| self.config.default_model.base_url.clone()),
+                api_key,
+                base_url,
             };
 
             drivers::create_driver(&driver_config).map_err(|e| {
@@ -4229,6 +4239,62 @@ fn manifest_to_capabilities(manifest: &AgentManifest) -> Vec<Capability> {
     }
 
     caps
+}
+
+/// Infer provider from a model name when catalog lookup fails.
+///
+/// Uses well-known model name prefixes to map to the correct provider.
+/// This is a defense-in-depth fallback — models should ideally be in the catalog.
+fn infer_provider_from_model(model: &str) -> Option<String> {
+    let lower = model.to_lowercase();
+    // Check for explicit provider prefix (e.g., "minimax/MiniMax-M2.5")
+    if let Some(prefix) = lower.split('/').next() {
+        match prefix {
+            "minimax" | "gemini" | "anthropic" | "openai" | "groq" | "deepseek" | "mistral"
+            | "cohere" | "xai" | "ollama" | "together" | "fireworks" | "perplexity"
+            | "cerebras" | "sambanova" | "replicate" | "huggingface" | "ai21" | "codex"
+            | "claude-code" | "copilot" | "github-copilot" | "qwen" | "zhipu" | "moonshot"
+            | "openrouter" => {
+                if model.contains('/') {
+                    return Some(prefix.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    // Infer from well-known model name patterns
+    if lower.starts_with("minimax") {
+        Some("minimax".to_string())
+    } else if lower.starts_with("gemini") {
+        Some("gemini".to_string())
+    } else if lower.starts_with("claude") {
+        Some("anthropic".to_string())
+    } else if lower.starts_with("gpt") || lower.starts_with("o1") || lower.starts_with("o3") || lower.starts_with("o4") {
+        Some("openai".to_string())
+    } else if lower.starts_with("llama") || lower.starts_with("mixtral") || lower.starts_with("qwen") {
+        // These could be on multiple providers; don't infer
+        None
+    } else if lower.starts_with("grok") {
+        Some("xai".to_string())
+    } else if lower.starts_with("deepseek") {
+        Some("deepseek".to_string())
+    } else if lower.starts_with("mistral") || lower.starts_with("codestral") || lower.starts_with("pixtral") {
+        Some("mistral".to_string())
+    } else if lower.starts_with("command") || lower.starts_with("embed-") {
+        Some("cohere".to_string())
+    } else if lower.starts_with("jamba") {
+        Some("ai21".to_string())
+    } else if lower.starts_with("sonar") {
+        Some("perplexity".to_string())
+    } else if lower.starts_with("glm") {
+        Some("zhipu".to_string())
+    } else if lower.starts_with("ernie") {
+        Some("qianfan".to_string())
+    } else if lower.starts_with("abab") {
+        Some("minimax".to_string())
+    } else {
+        None
+    }
 }
 
 /// A well-known agent ID used for shared memory operations across agents.

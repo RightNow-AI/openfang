@@ -8703,3 +8703,153 @@ fn validate_webhook_token(headers: &axum::http::HeaderMap, token_env: &str) -> b
     }
     provided.as_bytes().ct_eq(expected.as_bytes()).into()
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// GitHub Copilot OAuth Device Flow
+// ══════════════════════════════════════════════════════════════════════
+
+/// State for an in-progress device flow.
+struct CopilotFlowState {
+    device_code: String,
+    interval: u64,
+    expires_at: Instant,
+}
+
+/// Active device flows, keyed by poll_id. Auto-expire after the flow's TTL.
+static COPILOT_FLOWS: LazyLock<DashMap<String, CopilotFlowState>> = LazyLock::new(DashMap::new);
+
+/// POST /api/providers/github-copilot/oauth/start
+///
+/// Initiates a GitHub device flow for Copilot authentication.
+/// Returns a user code and verification URI that the user visits in their browser.
+pub async fn copilot_oauth_start() -> impl IntoResponse {
+    // Clean up expired flows first
+    COPILOT_FLOWS.retain(|_, state| state.expires_at > Instant::now());
+
+    match openfang_runtime::copilot_oauth::start_device_flow().await {
+        Ok(resp) => {
+            let poll_id = uuid::Uuid::new_v4().to_string();
+
+            COPILOT_FLOWS.insert(
+                poll_id.clone(),
+                CopilotFlowState {
+                    device_code: resp.device_code,
+                    interval: resp.interval,
+                    expires_at: Instant::now()
+                        + std::time::Duration::from_secs(resp.expires_in),
+                },
+            );
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "user_code": resp.user_code,
+                    "verification_uri": resp.verification_uri,
+                    "poll_id": poll_id,
+                    "expires_in": resp.expires_in,
+                    "interval": resp.interval,
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        ),
+    }
+}
+
+/// GET /api/providers/github-copilot/oauth/poll/{poll_id}
+///
+/// Poll the status of a GitHub device flow.
+/// Returns `pending`, `complete`, `expired`, `denied`, or `error`.
+/// On `complete`, saves the token to secrets.env and sets GITHUB_TOKEN.
+pub async fn copilot_oauth_poll(
+    State(state): State<Arc<AppState>>,
+    Path(poll_id): Path<String>,
+) -> impl IntoResponse {
+    let flow = match COPILOT_FLOWS.get(&poll_id) {
+        Some(f) => f,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"status": "not_found", "error": "Unknown poll_id"})),
+            )
+        }
+    };
+
+    if flow.expires_at <= Instant::now() {
+        drop(flow);
+        COPILOT_FLOWS.remove(&poll_id);
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "expired"})),
+        );
+    }
+
+    let device_code = flow.device_code.clone();
+    drop(flow);
+
+    match openfang_runtime::copilot_oauth::poll_device_flow(&device_code).await {
+        openfang_runtime::copilot_oauth::DeviceFlowStatus::Pending => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "pending"})),
+        ),
+        openfang_runtime::copilot_oauth::DeviceFlowStatus::Complete { access_token } => {
+            // Save to secrets.env
+            let secrets_path = state.kernel.config.home_dir.join("secrets.env");
+            if let Err(e) = write_secret_env(&secrets_path, "GITHUB_TOKEN", &access_token) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"status": "error", "error": format!("Failed to save token: {e}")})),
+                );
+            }
+
+            // Set in current process
+            std::env::set_var("GITHUB_TOKEN", access_token.as_str());
+
+            // Refresh auth detection
+            state
+                .kernel
+                .model_catalog
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .detect_auth();
+
+            // Clean up flow state
+            COPILOT_FLOWS.remove(&poll_id);
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "complete"})),
+            )
+        }
+        openfang_runtime::copilot_oauth::DeviceFlowStatus::SlowDown { new_interval } => {
+            // Update interval
+            if let Some(mut f) = COPILOT_FLOWS.get_mut(&poll_id) {
+                f.interval = new_interval;
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "pending", "interval": new_interval})),
+            )
+        }
+        openfang_runtime::copilot_oauth::DeviceFlowStatus::Expired => {
+            COPILOT_FLOWS.remove(&poll_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "expired"})),
+            )
+        }
+        openfang_runtime::copilot_oauth::DeviceFlowStatus::AccessDenied => {
+            COPILOT_FLOWS.remove(&poll_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "denied"})),
+            )
+        }
+        openfang_runtime::copilot_oauth::DeviceFlowStatus::Error(e) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "error", "error": e})),
+        ),
+    }
+}

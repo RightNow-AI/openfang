@@ -48,16 +48,28 @@ impl ModelCatalog {
         for provider in &mut self.providers {
             if !provider.key_required {
                 provider.auth_status = AuthStatus::NotRequired;
-            } else if std::env::var(&provider.api_key_env).is_ok() {
-                provider.auth_status = AuthStatus::Configured;
-            } else {
-                // Special case: Gemini also accepts GOOGLE_API_KEY
-                if provider.id == "gemini" && std::env::var("GOOGLE_API_KEY").is_ok() {
-                    provider.auth_status = AuthStatus::Configured;
-                } else {
-                    provider.auth_status = AuthStatus::Missing;
-                }
+                continue;
             }
+
+            // Primary: check the provider's declared env var
+            let has_key = std::env::var(&provider.api_key_env).is_ok();
+
+            // Secondary: provider-specific fallback auth
+            let has_fallback = match provider.id.as_str() {
+                "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
+                "codex" => {
+                    std::env::var("OPENAI_API_KEY").is_ok()
+                        || read_codex_credential().is_some()
+                }
+                "claude-code" => crate::drivers::claude_code::claude_code_available(),
+                _ => false,
+            };
+
+            provider.auth_status = if has_key || has_fallback {
+                AuthStatus::Configured
+            } else {
+                AuthStatus::Missing
+            };
         }
     }
 
@@ -208,6 +220,53 @@ impl Default for ModelCatalog {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Read an OpenAI API key from the Codex CLI credential file.
+///
+/// Checks `$CODEX_HOME/auth.json` or `~/.codex/auth.json`.
+/// Returns `Some(api_key)` if the file exists and contains a valid, non-expired token.
+/// Only checks presence — the actual key value is used transiently, never stored.
+pub fn read_codex_credential() -> Option<String> {
+    let codex_home = std::env::var("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| {
+            #[cfg(target_os = "windows")]
+            {
+                std::env::var("USERPROFILE")
+                    .ok()
+                    .map(|h| std::path::PathBuf::from(h).join(".codex"))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| std::path::PathBuf::from(h).join(".codex"))
+            }
+        })?;
+
+    let auth_path = codex_home.join("auth.json");
+    let content = std::fs::read_to_string(&auth_path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    // Check expiry if present
+    if let Some(expires_at) = parsed.get("expires_at").and_then(|v| v.as_i64()) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if now >= expires_at {
+            return None; // Expired
+        }
+    }
+
+    parsed
+        .get("api_key")
+        .or_else(|| parsed.get("token"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -472,6 +531,26 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::Missing,
             model_count: 0,
         },
+        // ── OpenAI Codex ────────────────────────────────────────────
+        ProviderInfo {
+            id: "codex".into(),
+            display_name: "OpenAI Codex".into(),
+            api_key_env: "OPENAI_API_KEY".into(),
+            base_url: OPENAI_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        // ── Claude Code CLI ─────────────────────────────────────────
+        ProviderInfo {
+            id: "claude-code".into(),
+            display_name: "Claude Code".into(),
+            api_key_env: String::new(),
+            base_url: String::new(),
+            key_required: false,
+            auth_status: AuthStatus::NotRequired,
+            model_count: 0,
+        },
     ]
 }
 
@@ -526,8 +605,19 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("glm", "glm-4-plus"),
         ("ernie", "ernie-4.5-8k"),
         ("kimi", "moonshot-v1-128k"),
-        ("minimax", "minimax-text-01"),
+        ("minimax", "MiniMax-M2.5"),
+        ("minimax-m2.5", "MiniMax-M2.5"),
+        ("minimax-m2.1", "MiniMax-M2.1"),
         ("codegeex", "codegeex-4"),
+        // Codex aliases
+        ("codex", "codex/gpt-4.1"),
+        ("codex-4.1", "codex/gpt-4.1"),
+        ("codex-o4", "codex/o4-mini"),
+        // Claude Code aliases
+        ("claude-code", "claude-code/sonnet"),
+        ("claude-code-opus", "claude-code/opus"),
+        ("claude-code-sonnet", "claude-code/sonnet"),
+        ("claude-code-haiku", "claude-code/haiku"),
     ];
     pairs
         .into_iter()
@@ -2242,7 +2332,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
-        // MiniMax (3)
+        // MiniMax (4)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
             id: "minimax-text-01".into(),
@@ -2259,6 +2349,20 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["minimax".into()],
         },
         ModelCatalogEntry {
+            id: "MiniMax-M2.5".into(),
+            display_name: "MiniMax M2.5".into(),
+            provider: "minimax".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_048_576,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 1.10,
+            output_cost_per_m: 4.40,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["minimax-m2.5".into()],
+        },
+        ModelCatalogEntry {
             id: "MiniMax-M2.1".into(),
             display_name: "MiniMax M2.1".into(),
             provider: "minimax".into(),
@@ -2270,7 +2374,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec![],
+            aliases: vec!["minimax-m2.1".into()],
         },
         ModelCatalogEntry {
             id: "abab6.5-chat".into(),
@@ -2567,6 +2671,82 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec![],
         },
+        // ══════════════════════════════════════════════════════════════
+        // OpenAI Codex (2) — reuses OpenAI driver
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "codex/gpt-4.1".into(),
+            display_name: "GPT-4.1 (Codex)".into(),
+            provider: "codex".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_047_576,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 2.00,
+            output_cost_per_m: 8.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["codex".into(), "codex-4.1".into()],
+        },
+        ModelCatalogEntry {
+            id: "codex/o4-mini".into(),
+            display_name: "o4-mini (Codex)".into(),
+            provider: "codex".into(),
+            tier: ModelTier::Smart,
+            context_window: 200_000,
+            max_output_tokens: 100_000,
+            input_cost_per_m: 1.10,
+            output_cost_per_m: 4.40,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["codex-o4".into()],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // Claude Code CLI (3) — subprocess-based
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "claude-code/opus".into(),
+            display_name: "Claude Opus (CLI)".into(),
+            provider: "claude-code".into(),
+            tier: ModelTier::Frontier,
+            context_window: 200_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 5.0,
+            output_cost_per_m: 25.0,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["claude-code-opus".into()],
+        },
+        ModelCatalogEntry {
+            id: "claude-code/sonnet".into(),
+            display_name: "Claude Sonnet (CLI)".into(),
+            provider: "claude-code".into(),
+            tier: ModelTier::Smart,
+            context_window: 200_000,
+            max_output_tokens: 64_000,
+            input_cost_per_m: 3.0,
+            output_cost_per_m: 15.0,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["claude-code".into(), "claude-code-sonnet".into()],
+        },
+        ModelCatalogEntry {
+            id: "claude-code/haiku".into(),
+            display_name: "Claude Haiku (CLI)".into(),
+            provider: "claude-code".into(),
+            tier: ModelTier::Fast,
+            context_window: 200_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.25,
+            output_cost_per_m: 1.25,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["claude-code-haiku".into()],
+        },
     ]
 }
 
@@ -2583,7 +2763,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 28);
+        assert_eq!(catalog.list_providers().len(), 30);
     }
 
     #[test]
@@ -2817,6 +2997,14 @@ mod tests {
         assert!(catalog.find_model("codegeex").is_some());
         assert!(catalog.find_model("ernie").is_some());
         assert!(catalog.find_model("minimax").is_some());
+        // MiniMax M2.5 — by exact ID, alias, and case-insensitive
+        let m25 = catalog.find_model("MiniMax-M2.5").unwrap();
+        assert_eq!(m25.provider, "minimax");
+        assert_eq!(m25.tier, ModelTier::Frontier);
+        assert!(catalog.find_model("minimax-m2.5").is_some());
+        // Default "minimax" alias now points to M2.5
+        let default = catalog.find_model("minimax").unwrap();
+        assert_eq!(default.id, "MiniMax-M2.5");
     }
 
     #[test]
@@ -2870,5 +3058,55 @@ mod tests {
             catalog.get_provider("lmstudio").unwrap().base_url,
             LMSTUDIO_BASE_URL
         );
+    }
+
+    #[test]
+    fn test_codex_provider() {
+        let catalog = ModelCatalog::new();
+        let codex = catalog.get_provider("codex").unwrap();
+        assert_eq!(codex.display_name, "OpenAI Codex");
+        assert_eq!(codex.api_key_env, "OPENAI_API_KEY");
+        assert!(codex.key_required);
+    }
+
+    #[test]
+    fn test_codex_models() {
+        let catalog = ModelCatalog::new();
+        let models = catalog.models_by_provider("codex");
+        assert_eq!(models.len(), 2);
+        assert!(models.iter().any(|m| m.id == "codex/gpt-4.1"));
+        assert!(models.iter().any(|m| m.id == "codex/o4-mini"));
+    }
+
+    #[test]
+    fn test_codex_aliases() {
+        let catalog = ModelCatalog::new();
+        let entry = catalog.find_model("codex").unwrap();
+        assert_eq!(entry.id, "codex/gpt-4.1");
+    }
+
+    #[test]
+    fn test_claude_code_provider() {
+        let catalog = ModelCatalog::new();
+        let cc = catalog.get_provider("claude-code").unwrap();
+        assert_eq!(cc.display_name, "Claude Code");
+        assert!(!cc.key_required);
+    }
+
+    #[test]
+    fn test_claude_code_models() {
+        let catalog = ModelCatalog::new();
+        let models = catalog.models_by_provider("claude-code");
+        assert_eq!(models.len(), 3);
+        assert!(models.iter().any(|m| m.id == "claude-code/opus"));
+        assert!(models.iter().any(|m| m.id == "claude-code/sonnet"));
+        assert!(models.iter().any(|m| m.id == "claude-code/haiku"));
+    }
+
+    #[test]
+    fn test_claude_code_aliases() {
+        let catalog = ModelCatalog::new();
+        let entry = catalog.find_model("claude-code").unwrap();
+        assert_eq!(entry.id, "claude-code/sonnet");
     }
 }
