@@ -138,6 +138,10 @@ async function startConnection() {
       if (msg.key.remoteJid === 'status@broadcast') continue;
       // Skip group messages — only process direct chats (JID ends with @s.whatsapp.net)
       if (msg.key.remoteJid && !msg.key.remoteJid.endsWith('@s.whatsapp.net')) continue;
+      // Allowlist: only process messages from specific numbers
+      const ALLOWED_NUMBERS = ['923168934164'];
+      const senderNum = (msg.key.remoteJid || '').replace(/@.*$/, '');
+      if (!ALLOWED_NUMBERS.includes(senderNum)) continue;
       // Skip protocol/reaction/receipt messages (no useful text)
       if (msg.message?.protocolMessage || msg.message?.reactionMessage) continue;
 
@@ -211,12 +215,7 @@ function resolveAgentId() {
 function forwardToOpenFang(text, phone, pushName) {
   return resolveAgentId().then((agentId) => new Promise((resolve, reject) => {
     const payload = JSON.stringify({
-      message: text,
-      metadata: {
-        channel: 'whatsapp',
-        sender: phone,
-        sender_name: pushName,
-      },
+      message: `[WhatsApp from ${pushName} (${phone})]: ${text}`,
     });
 
     const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(agentId)}/message`);
@@ -231,7 +230,7 @@ function forwardToOpenFang(text, phone, pushName) {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(payload),
         },
-        timeout: 120_000, // LLM calls can be slow
+        timeout: 600_000, // Video processing pipelines can take several minutes
       },
       (res) => {
         let body = '';
