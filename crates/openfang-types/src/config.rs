@@ -964,6 +964,13 @@ pub struct KernelConfig {
     /// Usage footer mode (what to show after each response).
     #[serde(default)]
     pub usage_footer: UsageFooterMode,
+    /// Cost optimization mode for stable prompt prefixes.
+    ///
+    /// When enabled, OpenFang avoids volatile system-prompt additions that
+    /// change every turn (for example recalled memory append and canonical
+    /// context injection), improving provider-side prompt cache hit rates.
+    #[serde(default)]
+    pub stable_prefix_mode: bool,
     /// Web tools configuration (search + fetch).
     #[serde(default)]
     pub web: WebConfig,
@@ -1187,6 +1194,7 @@ impl Default for KernelConfig {
             mcp_servers: Vec::new(),
             a2a: None,
             usage_footer: UsageFooterMode::default(),
+            stable_prefix_mode: false,
             web: WebConfig::default(),
             fallback_providers: Vec::new(),
             browser: BrowserConfig::default(),
@@ -1256,6 +1264,7 @@ impl std::fmt::Debug for KernelConfig {
             )
             .field("a2a", &self.a2a.as_ref().map(|a| a.enabled))
             .field("usage_footer", &self.usage_footer)
+            .field("stable_prefix_mode", &self.stable_prefix_mode)
             .field("web", &self.web)
             .field(
                 "fallback_providers",
@@ -3287,6 +3296,21 @@ mod tests {
         };
         assert_eq!(config.mode, KernelMode::Stable);
         assert_eq!(config.language, "ar");
+    }
+
+    #[test]
+    fn test_stable_prefix_mode_default_false() {
+        let config = KernelConfig::default();
+        assert!(!config.stable_prefix_mode);
+    }
+
+    #[test]
+    fn test_stable_prefix_mode_toml_roundtrip() {
+        let mut config = KernelConfig::default();
+        config.stable_prefix_mode = true;
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let back: KernelConfig = toml::from_str(&toml_str).unwrap();
+        assert!(back.stable_prefix_mode);
     }
 
     #[test]

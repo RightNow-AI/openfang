@@ -27,6 +27,7 @@ listen_addr = "127.0.0.1:4200"           # OFP listen address
 
 # Usage tracking display
 # usage_footer = "Full"                   # "Off", "Tokens", "Cost", or "Full"
+# stable_prefix_mode = false              # true = favor prompt-cache hits by removing volatile system-prompt context
 
 # Channel adapters (configure tokens via environment variables)
 # [telegram]

@@ -89,6 +89,7 @@ api_key = ""                         # API Bearer token (empty = unauthenticated
 mode = "default"                     # stable | default | dev
 language = "en"                      # Locale for CLI/messages
 usage_footer = "full"                # off | tokens | cost | full
+stable_prefix_mode = false           # true = favor prompt-cache hits over dynamic memory/canonical context
 
 # --- Default LLM Provider ---
 [default_model]
@@ -233,6 +234,7 @@ These fields sit at the root of `config.toml` (not inside any `[section]`).
 | `mode` | string | `"default"` | Kernel operating mode. See below. |
 | `language` | string | `"en"` | Language/locale code for CLI output and system messages. |
 | `usage_footer` | string | `"full"` | Controls usage info appended to responses. See below. |
+| `stable_prefix_mode` | bool | `false` | Cost mode for stable system-prompt prefixes. Disables volatile system-prompt context (`recalled memories` append in loop and `canonical context` injection) to improve provider prompt-cache hit rates. |
 
 **`mode` values:**
 
