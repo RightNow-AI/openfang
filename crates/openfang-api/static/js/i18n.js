@@ -84,6 +84,9 @@
 
   var _locale = getStoredLocale() || getNavigatorLocale();
   _locale = normalizeLocale(_locale);
+  var _titleOriginal = '';
+  var _textOriginal = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
+  var _attrOriginal = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
 
   function setLocale(loc) {
     _locale = normalizeLocale(loc);
@@ -91,7 +94,10 @@
 
     try {
       document.documentElement.lang = _locale === 'zh-CN' ? 'zh-CN' : 'en';
-      if (document.title) document.title = translateText(document.title);
+      if (document.title) {
+        if (!_titleOriginal) _titleOriginal = document.title;
+        document.title = translateTextForLocale(_titleOriginal, _locale);
+      }
     } catch (e) {}
   }
 
@@ -99,13 +105,11 @@
     return _locale;
   }
 
-  function translateExact(enText) {
-    if (_locale !== 'zh-CN') return enText;
+  function translateExactZh(enText) {
     return zhMap[enText] || enText;
   }
 
-  function translatePatterns(text) {
-    if (_locale !== 'zh-CN') return text;
+  function translatePatternsZh(text) {
     if (!text) return text;
 
     var m = String(text).match(/^\s*(\d+)\s+agent\(s\)\s+running\s*$/);
@@ -157,19 +161,41 @@
     return text;
   }
 
-  function translateText(text) {
+  function translateTextForLocale(text, locale) {
+    var s;
+    var trimmed;
+    var translated;
+    var patterned;
     if (text === null || text === undefined) return text;
-    var s = String(text);
-    var trimmed = s.trim();
+    s = String(text);
+    trimmed = s.trim();
     if (!trimmed) return s;
-    var translated = translateExact(trimmed);
-    translated = translatePatterns(translated);
+    if (locale !== 'zh-CN') return s;
+    translated = translateExactZh(trimmed);
+    translated = translatePatternsZh(translated);
     if (translated !== trimmed) {
       return s.replace(trimmed, translated);
     }
-    var patterned = translatePatterns(trimmed);
+    patterned = translatePatternsZh(trimmed);
     if (patterned !== trimmed) return s.replace(trimmed, patterned);
     return s;
+  }
+
+  function translateText(text) {
+    return translateTextForLocale(text, _locale);
+  }
+
+  function hasOwn(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
+  function hasAnyOwn(obj) {
+    var k;
+    if (!obj) return false;
+    for (k in obj) {
+      if (hasOwn(obj, k)) return true;
+    }
+    return false;
   }
 
   function shouldSkipNode(node) {
@@ -184,17 +210,97 @@
   }
 
   function translateAttributes(el) {
+    var attrs;
+    var i;
+    var attr;
+    var v;
+    var tv;
+    var store;
+    var restored;
     if (!el || !el.getAttribute) return;
-    ['title', 'placeholder', 'aria-label'].forEach(function(attr) {
-      var v = el.getAttribute(attr);
-      if (!v) return;
-      var tv = translateText(v);
-      if (tv !== v) el.setAttribute(attr, tv);
-    });
+    attrs = ['title', 'placeholder', 'aria-label'];
+
+    if (_locale === 'zh-CN') {
+      for (i = 0; i < attrs.length; i++) {
+        attr = attrs[i];
+        v = el.getAttribute(attr);
+        if (!v) continue;
+        if (_attrOriginal) {
+          store = _attrOriginal.get(el);
+          if (!store) {
+            store = {};
+            _attrOriginal.set(el, store);
+          }
+          if (!hasOwn(store, attr)) {
+            store[attr] = v;
+          }
+          tv = translateTextForLocale(store[attr], 'zh-CN');
+        } else {
+          tv = translateTextForLocale(v, 'zh-CN');
+        }
+        if (tv !== v) el.setAttribute(attr, tv);
+      }
+      return;
+    }
+
+    if (!_attrOriginal) return;
+    store = _attrOriginal.get(el);
+    if (!store) return;
+
+    restored = false;
+    for (i = 0; i < attrs.length; i++) {
+      attr = attrs[i];
+      if (!hasOwn(store, attr)) continue;
+      if (store[attr] === null || store[attr] === undefined) {
+        el.removeAttribute(attr);
+      } else {
+        el.setAttribute(attr, store[attr]);
+      }
+      delete store[attr];
+      restored = true;
+    }
+    if (restored && !hasAnyOwn(store)) {
+      _attrOriginal.delete(el);
+    }
+  }
+
+  function translateTextNode(node) {
+    var v;
+    var entry;
+    var source;
+    var translated;
+    if (!node) return;
+    v = node.nodeValue;
+
+    if (_locale === 'zh-CN') {
+      if (!v || !v.trim()) return;
+      source = v;
+      if (_textOriginal) {
+        entry = _textOriginal.get(node);
+        if (entry && v === entry.translated) {
+          source = entry.original;
+        }
+      }
+      translated = translateTextForLocale(source, 'zh-CN');
+      if (translated !== source) {
+        if (_textOriginal) {
+          _textOriginal.set(node, { original: source, translated: translated });
+        }
+        if (translated !== v) node.nodeValue = translated;
+      } else if (_textOriginal) {
+        _textOriginal.delete(node);
+      }
+      return;
+    }
+
+    if (!_textOriginal) return;
+    entry = _textOriginal.get(node);
+    if (!entry) return;
+    if (v !== entry.original) node.nodeValue = entry.original;
+    _textOriginal.delete(node);
   }
 
   function apply(root) {
-    if (_locale === 'en') return;
     if (!root) return;
 
     if (root.nodeType === 1) translateAttributes(root);
@@ -225,9 +331,7 @@
       if (n.nodeType === 1) {
         translateAttributes(n);
       } else if (n.nodeType === 3) {
-        v = n.nodeValue;
-        tv = translateText(v);
-        if (tv !== v) n.nodeValue = tv;
+        translateTextNode(n);
       }
       n = walker.nextNode();
     }
@@ -236,7 +340,6 @@
   var _observer = null;
   var _pending = false;
   function scheduleApply(target) {
-    if (_locale === 'en') return;
     if (_pending) return;
     _pending = true;
     setTimeout(function() {
