@@ -116,6 +116,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         needs_key: false,
         hint: "local",
     },
+    ProviderInfo {
+        name: "custom",
+        display: "Custom",
+        env_var: "OPENAI_COMPAT_API_KEY",
+        default_model: "custom-model",
+        needs_key: false,
+        hint: "openai-compatible",
+    },
 ];
 
 // ── Public result type ─────────────────────────────────────────────────────
@@ -145,6 +153,7 @@ enum Step {
     Welcome,
     Migration,
     Provider,
+    Custom,
     ApiKey,
     Model,
     Routing,
@@ -209,6 +218,11 @@ struct State {
     provider_list: ListState,
     provider_order: Vec<usize>,
     selected_provider: Option<usize>,
+    custom_provider_name: String,
+    custom_env_var: String,
+    custom_base_url: String,
+    custom_model: String,
+    custom_field: usize,
 
     // API key
     api_key_input: String,
@@ -255,6 +269,11 @@ impl State {
             provider_list: ListState::default(),
             provider_order: Vec::new(),
             selected_provider: None,
+            custom_provider_name: "custom-openai".to_string(),
+            custom_env_var: derive_env_var_from_provider("custom-openai"),
+            custom_base_url: "http://localhost:8000/v1".to_string(),
+            custom_model: "gpt-5.2".to_string(),
+            custom_field: 0,
             api_key_input: String::new(),
             api_key_from_env: false,
             key_test: KeyTestState::Idle,
@@ -308,13 +327,14 @@ impl State {
 
     fn step_label(&self) -> &'static str {
         match self.step {
-            Step::Welcome => "1 of 7",
-            Step::Migration => "2 of 7",
-            Step::Provider => "3 of 7",
-            Step::ApiKey => "4 of 7",
-            Step::Model => "5 of 7",
-            Step::Routing => "6 of 7",
-            Step::Complete => "7 of 7",
+            Step::Welcome => "1 of 8",
+            Step::Migration => "2 of 8",
+            Step::Provider => "3 of 8",
+            Step::Custom => "4 of 8",
+            Step::ApiKey => "5 of 8",
+            Step::Model => "6 of 8",
+            Step::Routing => "7 of 8",
+            Step::Complete => "8 of 8",
         }
     }
 
@@ -334,13 +354,89 @@ impl State {
 
     fn is_provider_detected(&self, prov_idx: usize) -> bool {
         let p = &PROVIDERS[prov_idx];
+        if p.name == "custom" {
+            return false;
+        }
         std::env::var(p.env_var).is_ok()
             || (p.name == "gemini" && std::env::var("GOOGLE_API_KEY").is_ok())
+    }
+
+    fn is_custom_provider(&self) -> bool {
+        self.provider().is_some_and(|p| p.name == "custom")
+    }
+
+    fn selected_provider_name(&self) -> String {
+        if self.is_custom_provider() {
+            self.custom_provider_name.trim().to_string()
+        } else {
+            self.provider()
+                .map(|p| p.name.to_string())
+                .unwrap_or_default()
+        }
+    }
+
+    fn selected_provider_display(&self) -> String {
+        if self.is_custom_provider() {
+            if self.custom_provider_name.trim().is_empty() {
+                "Custom".to_string()
+            } else {
+                format!("Custom ({})", self.custom_provider_name.trim())
+            }
+        } else {
+            self.provider()
+                .map(|p| p.display.to_string())
+                .unwrap_or_default()
+        }
+    }
+
+    fn selected_env_var(&self) -> String {
+        if self.is_custom_provider() {
+            self.custom_env_var.trim().to_string()
+        } else {
+            self.provider()
+                .map(|p| p.env_var.to_string())
+                .unwrap_or_default()
+        }
+    }
+
+    fn selected_default_model(&self) -> String {
+        if self.is_custom_provider() {
+            self.custom_model.trim().to_string()
+        } else {
+            self.provider()
+                .map(|p| p.default_model.to_string())
+                .unwrap_or_default()
+        }
+    }
+
+    fn selected_base_url(&self) -> Option<String> {
+        if self.is_custom_provider() {
+            let url = self.custom_base_url.trim().to_string();
+            if url.is_empty() {
+                None
+            } else {
+                Some(url)
+            }
+        } else {
+            None
+        }
     }
 
     /// Populate model_entries from the catalog for the selected provider.
     fn load_models_for_provider(&mut self) {
         self.model_entries.clear();
+        if self.is_custom_provider() {
+            let model = self.selected_default_model();
+            self.model_entries.push(ModelEntry {
+                id: model.clone(),
+                display_name: model,
+                tier: "default",
+                cost: String::new(),
+            });
+            self.model_list.select(Some(0));
+            return;
+        }
+
         let p = match self.provider() {
             Some(p) => p,
             None => return,
@@ -387,9 +483,7 @@ impl State {
                 return entry.id.clone();
             }
         }
-        self.provider()
-            .map(|p| p.default_model.to_string())
-            .unwrap_or_default()
+        self.selected_default_model()
     }
 
     /// Auto-select routing models based on the provider's catalog entries.
@@ -619,7 +713,10 @@ pub fn run() -> InitResult {
                                 state.selected_provider = Some(prov_idx);
                                 let p = &PROVIDERS[prov_idx];
 
-                                if !p.needs_key {
+                                if p.name == "custom" {
+                                    state.custom_field = 0;
+                                    state.step = Step::Custom;
+                                } else if !p.needs_key {
                                     state.api_key_from_env = false;
                                     state.load_models_for_provider();
                                     state.step = Step::Model;
@@ -638,6 +735,72 @@ pub fn run() -> InitResult {
                         _ => {}
                     },
 
+                    Step::Custom => match key.code {
+                        KeyCode::Esc => state.step = Step::Provider,
+                        KeyCode::Tab | KeyCode::Down => {
+                            state.custom_field = (state.custom_field + 1) % 3;
+                        }
+                        KeyCode::Up => {
+                            state.custom_field = if state.custom_field == 0 {
+                                2
+                            } else {
+                                state.custom_field - 1
+                            };
+                        }
+                        KeyCode::Enter => {
+                            if state.custom_field < 2 {
+                                state.custom_field += 1;
+                            } else {
+                                let provider_name = state.custom_provider_name.trim();
+                                let model = state.custom_model.trim();
+                                let base_url = state.custom_base_url.trim();
+                                if provider_name.is_empty() || model.is_empty() {
+                                    state.save_error =
+                                        "Provider name and model cannot be empty".to_string();
+                                    continue;
+                                }
+                                if !base_url.starts_with("http://")
+                                    && !base_url.starts_with("https://")
+                                {
+                                    state.save_error =
+                                        "base_url must start with http:// or https://".to_string();
+                                    continue;
+                                }
+                                state.custom_env_var = derive_env_var_from_provider(provider_name);
+                                state.save_error.clear();
+                                state.api_key_from_env = std::env::var(state.selected_env_var())
+                                    .map(|v| !v.trim().is_empty())
+                                    .unwrap_or(false);
+                                state.api_key_input.clear();
+                                state.key_test = KeyTestState::Idle;
+                                state.step = Step::ApiKey;
+                            }
+                        }
+                        KeyCode::Backspace => match state.custom_field {
+                            0 => {
+                                state.custom_provider_name.pop();
+                                state.custom_env_var =
+                                    derive_env_var_from_provider(&state.custom_provider_name);
+                            }
+                            1 => {
+                                state.custom_base_url.pop();
+                            }
+                            _ => {
+                                state.custom_model.pop();
+                            }
+                        },
+                        KeyCode::Char(c) => match state.custom_field {
+                            0 => {
+                                state.custom_provider_name.push(c);
+                                state.custom_env_var =
+                                    derive_env_var_from_provider(&state.custom_provider_name);
+                            }
+                            1 => state.custom_base_url.push(c),
+                            _ => state.custom_model.push(c),
+                        },
+                        _ => {}
+                    },
+
                     Step::ApiKey => {
                         if matches!(state.key_test, KeyTestState::Ok | KeyTestState::Warn) {
                             continue;
@@ -646,27 +809,28 @@ pub fn run() -> InitResult {
                         match key.code {
                             KeyCode::Esc => {
                                 state.key_test = KeyTestState::Idle;
-                                state.step = Step::Provider;
+                                state.step = if state.is_custom_provider() {
+                                    Step::Custom
+                                } else {
+                                    Step::Provider
+                                };
                             }
                             KeyCode::Enter => {
                                 if !state.api_key_input.is_empty()
                                     && state.key_test == KeyTestState::Idle
                                 {
-                                    if let Some(p) = state.provider() {
-                                        let _ = crate::dotenv::save_env_key(
-                                            p.env_var,
-                                            &state.api_key_input,
-                                        );
+                                    if state.provider().is_some() {
+                                        let env_var = state.selected_env_var();
+                                        if !env_var.is_empty() {
+                                            let _ = crate::dotenv::save_env_key(
+                                                &env_var,
+                                                &state.api_key_input,
+                                            );
+                                        }
                                     }
                                     state.key_test = KeyTestState::Testing;
-                                    let provider_name = state
-                                        .provider()
-                                        .map(|p| p.name.to_string())
-                                        .unwrap_or_default();
-                                    let env_var = state
-                                        .provider()
-                                        .map(|p| p.env_var.to_string())
-                                        .unwrap_or_default();
+                                    let provider_name = state.selected_provider_name();
+                                    let env_var = state.selected_env_var();
                                     let tx = test_tx.clone();
                                     std::thread::spawn(move || {
                                         let ok = crate::test_api_key(&provider_name, &env_var);
@@ -690,7 +854,14 @@ pub fn run() -> InitResult {
 
                     Step::Model => match key.code {
                         KeyCode::Esc => {
-                            if let Some(p) = state.provider() {
+                            if state.is_custom_provider() {
+                                if !state.selected_env_var().is_empty() && !state.api_key_from_env {
+                                    state.key_test = KeyTestState::Idle;
+                                    state.step = Step::ApiKey;
+                                } else {
+                                    state.step = Step::Custom;
+                                }
+                            } else if let Some(p) = state.provider() {
                                 if p.needs_key && !state.api_key_from_env {
                                     state.key_test = KeyTestState::Idle;
                                     state.step = Step::ApiKey;
@@ -761,10 +932,7 @@ pub fn run() -> InitResult {
                                 _ => LaunchChoice::Chat,
                             };
                             break InitResult::Completed {
-                                provider: state
-                                    .provider()
-                                    .map(|p| p.name.to_string())
-                                    .unwrap_or_default(),
+                                provider: state.selected_provider_name(),
                                 model: state.model_input.clone(),
                                 daemon_started: state.daemon_started,
                                 launch: choice,
@@ -772,10 +940,7 @@ pub fn run() -> InitResult {
                         }
                         KeyCode::Esc => {
                             break InitResult::Completed {
-                                provider: state
-                                    .provider()
-                                    .map(|p| p.name.to_string())
-                                    .unwrap_or_default(),
+                                provider: state.selected_provider_name(),
                                 model: state.model_input.clone(),
                                 daemon_started: state.daemon_started,
                                 launch: LaunchChoice::Chat,
@@ -936,13 +1101,10 @@ fn handle_routing_key(state: &mut State, code: KeyCode) {
 // ── Config save ────────────────────────────────────────────────────────────
 
 fn save_config(state: &mut State) {
-    let p = match state.provider() {
-        Some(p) => p,
-        None => {
-            state.save_error = "No provider selected".to_string();
-            return;
-        }
-    };
+    if state.provider().is_none() {
+        state.save_error = "No provider selected".to_string();
+        return;
+    }
 
     let home = match dirs::home_dir() {
         Some(h) => h,
@@ -958,10 +1120,17 @@ fn save_config(state: &mut State) {
     crate::restrict_dir_permissions(&openfang_dir);
 
     let model = if state.model_input.is_empty() {
-        p.default_model
+        state.selected_default_model()
     } else {
-        &state.model_input
+        state.model_input.clone()
     };
+
+    let provider_name = state.selected_provider_name();
+    let env_var = state.selected_env_var();
+    let base_url_line = state
+        .selected_base_url()
+        .map(|u| format!("base_url = \"{}\"\n", toml_escape(&u)))
+        .unwrap_or_default();
 
     let routing_section = if state.routing_enabled {
         format!(
@@ -992,12 +1161,15 @@ api_listen = "127.0.0.1:4200"
 provider = "{provider}"
 model = "{model}"
 api_key_env = "{env_var}"
+{base_url_line}
 
 [memory]
 decay_rate = 0.05
 {routing_section}"#,
-        provider = p.name,
-        env_var = p.env_var,
+        provider = toml_escape(&provider_name),
+        model = toml_escape(&model),
+        env_var = toml_escape(&env_var),
+        base_url_line = base_url_line,
     );
 
     match std::fs::write(&config_path, &config) {
@@ -1039,6 +1211,31 @@ fn find_desktop_binary() -> Option<std::path::PathBuf> {
         Some(path)
     } else {
         None
+    }
+}
+
+fn toml_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn derive_env_var_from_provider(provider: &str) -> String {
+    let mut out = String::new();
+    let mut prev_us = false;
+    for c in provider.chars() {
+        let up = c.to_ascii_uppercase();
+        if up.is_ascii_alphanumeric() {
+            out.push(up);
+            prev_us = false;
+        } else if !prev_us {
+            out.push('_');
+            prev_us = true;
+        }
+    }
+    let out = out.trim_matches('_');
+    if out.is_empty() {
+        "OPENAI_COMPAT_API_KEY".to_string()
+    } else {
+        format!("{out}_API_KEY")
     }
 }
 
@@ -1099,6 +1296,7 @@ fn draw(f: &mut Frame, area: Rect, state: &mut State) {
         Step::Welcome => draw_welcome(f, chunks[3]),
         Step::Migration => draw_migration(f, chunks[3], state),
         Step::Provider => draw_provider(f, chunks[3], state),
+        Step::Custom => draw_custom(f, chunks[3], state),
         Step::ApiKey => draw_api_key(f, chunks[3], state),
         Step::Model => draw_model(f, chunks[3], state),
         Step::Routing => draw_routing(f, chunks[3], state),
@@ -1624,10 +1822,8 @@ fn draw_provider(f: &mut Frame, area: Rect, state: &mut State) {
 }
 
 fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
-    let p = match state.provider() {
-        Some(p) => p,
-        None => return,
-    };
+    let provider_display = state.selected_provider_display();
+    let env_var = state.selected_env_var();
 
     let chunks = Layout::vertical([
         Constraint::Length(2),
@@ -1641,7 +1837,7 @@ fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
 
     let prompt = Paragraph::new(Line::from(vec![Span::raw(format!(
         "  Enter your {} API key:",
-        p.display
+        provider_display
     ))]));
     f.render_widget(prompt, chunks[0]);
 
@@ -1660,7 +1856,7 @@ fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
             ]));
             f.render_widget(input, chunks[1]);
             let env_hint = Paragraph::new(Line::from(vec![Span::styled(
-                format!("    Or set {} environment variable", p.env_var),
+                format!("    Or set {} environment variable", env_var),
                 theme::dim_style(),
             )]));
             f.render_widget(env_hint, chunks[3]);
@@ -1718,10 +1914,8 @@ fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
 }
 
 fn draw_model(f: &mut Frame, area: Rect, state: &mut State) {
-    let p = match state.provider() {
-        Some(p) => p,
-        None => return,
-    };
+    let provider_display = state.selected_provider_display();
+    let default_model = state.selected_default_model();
 
     let chunks = Layout::vertical([
         Constraint::Length(2),
@@ -1733,12 +1927,12 @@ fn draw_model(f: &mut Frame, area: Rect, state: &mut State) {
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::raw(format!(
             "  Choose default model for {}:",
-            p.display
+            provider_display
         ))])),
         chunks[0],
     );
 
-    let items = build_model_list_items(&state.model_entries, Some(p.default_model));
+    let items = build_model_list_items(&state.model_entries, Some(default_model.as_str()));
     let list = List::new(items)
         .highlight_style(theme::selected_style())
         .highlight_symbol("\u{25b8} ");
@@ -1987,16 +2181,12 @@ fn build_model_list_items<'a>(
 }
 
 fn draw_complete(f: &mut Frame, area: Rect, state: &mut State) {
-    let p = match state.provider() {
-        Some(p) => p,
-        None => return,
-    };
-
     let model = if state.model_input.is_empty() {
-        p.default_model
+        state.selected_default_model()
     } else {
-        &state.model_input
+        state.model_input.clone()
     };
+    let provider_display = state.selected_provider_display();
 
     let has_desktop = find_desktop_binary().is_some();
 
@@ -2078,7 +2268,7 @@ fn draw_complete(f: &mut Frame, area: Rect, state: &mut State) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("  Provider:    ", kv_style),
-            Span::styled(p.display, val_style),
+            Span::styled(provider_display, val_style),
         ])),
         chunks[3],
     );
@@ -2205,5 +2395,83 @@ fn draw_complete(f: &mut Frame, area: Rect, state: &mut State) {
             theme::hint_style(),
         )])),
         chunks[15],
+    );
+}
+
+fn draw_custom(f: &mut Frame, area: Rect, state: &mut State) {
+    let chunks = Layout::vertical([
+        Constraint::Length(2), // title
+        Constraint::Length(1), // provider
+        Constraint::Length(1), // env
+        Constraint::Length(1), // base_url
+        Constraint::Length(1), // model
+        Constraint::Length(1), // hint
+        Constraint::Min(0),
+        Constraint::Length(1), // controls
+    ])
+    .split(area);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::raw(
+            "  Configure custom OpenAI-compatible provider:",
+        )])),
+        chunks[0],
+    );
+
+    let field_style = |idx: usize, current: usize| {
+        if idx == current {
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::TEXT_PRIMARY)
+        }
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Provider: ", field_style(0, state.custom_field)),
+            Span::styled(&state.custom_provider_name, theme::input_style()),
+        ])),
+        chunks[1],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  API env:  ", theme::dim_style()),
+            Span::styled(&state.custom_env_var, theme::dim_style()),
+            Span::styled(
+                "  (API key entered next step)",
+                theme::dim_style(),
+            ),
+        ])),
+        chunks[2],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Base URL: ", field_style(1, state.custom_field)),
+            Span::styled(&state.custom_base_url, theme::input_style()),
+        ])),
+        chunks[3],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Model:    ", field_style(2, state.custom_field)),
+            Span::styled(&state.custom_model, theme::input_style()),
+        ])),
+        chunks[4],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            "  Example base_url: http://localhost:8000/v1",
+            theme::dim_style(),
+        )])),
+        chunks[5],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            "  [Tab/\u{2191}\u{2193}] Field  [↵] Next/Confirm  [Esc] Back",
+            theme::hint_style(),
+        )])),
+        chunks[7],
     );
 }
