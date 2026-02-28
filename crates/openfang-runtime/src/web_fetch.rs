@@ -7,40 +7,27 @@
 use crate::web_cache::WebCache;
 use crate::web_content::{html_to_markdown, wrap_external_content};
 use openfang_types::config::WebFetchConfig;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tracing::debug;
 
 /// Enhanced web fetch engine with SSRF protection and readability extraction.
 pub struct WebFetchEngine {
     config: WebFetchConfig,
-    client: reqwest::Client,
     cache: Arc<WebCache>,
 }
 
 impl WebFetchEngine {
     /// Create a new fetch engine from config with a shared cache.
     pub fn new(config: WebFetchConfig, cache: Arc<WebCache>) -> Self {
-        // SECURITY: Disable automatic redirect following to prevent SSRF bypass.
-        // An attacker could host a public URL that 301-redirects to
-        // http://169.254.169.254/ — the SSRF check passes on the public URL,
-        // then reqwest would follow the redirect to the metadata endpoint.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_default();
-        Self {
-            config,
-            client,
-            cache,
-        }
+        Self { config, cache }
     }
 
     /// Fetch a URL with full security pipeline.
     pub async fn fetch(&self, url: &str) -> Result<String, String> {
-        // Step 1: SSRF protection — BEFORE any network I/O
-        check_ssrf(url)?;
+        // Step 1: SSRF protection — BEFORE any network I/O.
+        // Returns resolved addresses to pin in reqwest, preventing DNS rebinding.
+        let ssrf_result = check_ssrf(url)?;
 
         // Step 2: Cache lookup
         let cache_key = format!("fetch:{}", url);
@@ -49,9 +36,18 @@ impl WebFetchEngine {
             return Ok(cached);
         }
 
-        // Step 3: HTTP GET
-        let resp = self
-            .client
+        // Step 3: HTTP GET — build a per-request client with pinned DNS to
+        // prevent TOCTOU DNS rebinding (attacker returns public IP for check,
+        // private IP for actual request with TTL=0).
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(self.config.timeout_secs))
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some((domain, addrs)) = ssrf_result {
+            builder = builder.resolve_to_addrs(&domain, &addrs);
+        }
+        let pinned_client = builder.build().unwrap_or_default();
+
+        let resp = pinned_client
             .get(url)
             .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
             .send()
@@ -138,7 +134,12 @@ fn is_html(content_type: &str, body: &str) -> bool {
 /// Check if a URL targets a private/internal network resource.
 /// Blocks localhost, metadata endpoints, and private IPs.
 /// Must run BEFORE any network I/O.
-pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
+///
+/// Returns `Ok(Some((domain, resolved_addrs)))` on success with DNS results
+/// that should be pinned in the HTTP client to prevent DNS rebinding TOCTOU.
+/// Returns `Ok(None)` if DNS resolution failed (non-resolvable hostnames are
+/// allowed through — reqwest will fail with a connection error).
+pub(crate) fn check_ssrf(url: &str) -> Result<Option<(String, Vec<SocketAddr>)>, String> {
     // Only allow http:// and https:// schemes
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("Only http:// and https:// URLs are allowed".to_string());
@@ -172,11 +173,16 @@ pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
         return Err(format!("SSRF blocked: {hostname} is a restricted hostname"));
     }
 
-    // Resolve DNS and check every returned IP
+    // Resolve DNS and check every returned IP.
+    // SECURITY: Return the resolved addresses so callers can pin them in
+    // the HTTP client, preventing DNS rebinding TOCTOU attacks where an
+    // attacker's DNS server returns a public IP for this check and a
+    // private IP when reqwest resolves independently.
     let port = if url.starts_with("https") { 443 } else { 80 };
     let socket_addr = format!("{hostname}:{port}");
     if let Ok(addrs) = socket_addr.to_socket_addrs() {
-        for addr in addrs {
+        let resolved: Vec<SocketAddr> = addrs.collect();
+        for addr in &resolved {
             let ip = addr.ip();
             if ip.is_loopback() || ip.is_unspecified() || is_private_ip(&ip) {
                 return Err(format!(
@@ -184,9 +190,10 @@ pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
                 ));
             }
         }
+        Ok(Some((hostname.to_string(), resolved)))
+    } else {
+        Ok(None)
     }
-
-    Ok(())
 }
 
 /// Check if an IP address is in a private range.
@@ -268,6 +275,15 @@ mod tests {
         assert!(!is_private_ip(
             &"1.1.1.1".parse::<std::net::IpAddr>().unwrap()
         ));
+    }
+
+    #[test]
+    fn test_ssrf_returns_resolved_addrs() {
+        // check_ssrf for a blocked host should return Err
+        assert!(check_ssrf("http://localhost/foo").is_err());
+        // check_ssrf for a non-blocked host should return Ok with Some or None
+        let result = check_ssrf("https://example.com");
+        assert!(result.is_ok());
     }
 
     #[test]

@@ -79,35 +79,17 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    // Public endpoints that don't require auth (dashboard needs these)
+    // Public endpoints that don't require auth.
+    // SECURITY: Keep this list minimal — only endpoints the SPA needs to
+    // render its login/bootstrap screen, plus health checks and OAuth callbacks.
+    // All data-bearing endpoints (agents, sessions, config, budget, etc.)
+    // MUST require authentication to prevent information disclosure.
     let path = request.uri().path();
     if path == "/"
         || path == "/api/health"
-        || path == "/api/health/detail"
         || path == "/api/status"
         || path == "/api/version"
-        || path == "/api/agents"
-        || path == "/api/profiles"
-        || path == "/api/config"
         || path.starts_with("/api/uploads/")
-        // Dashboard read endpoints — allow unauthenticated so the SPA can
-        // render before the user enters their API key.
-        || path == "/api/models"
-        || path == "/api/models/aliases"
-        || path == "/api/providers"
-        || path == "/api/budget"
-        || path == "/api/budget/agents"
-        || path.starts_with("/api/budget/agents/")
-        || path == "/api/network/status"
-        || path == "/api/a2a/agents"
-        || path == "/api/approvals"
-        || path == "/api/channels"
-        || path == "/api/skills"
-        || path == "/api/sessions"
-        || path == "/api/integrations"
-        || path == "/api/integrations/available"
-        || path == "/api/integrations/health"
-        || path.starts_with("/api/cron/")
         || path.starts_with("/api/providers/github-copilot/oauth/")
     {
         return next.run(request).await;
@@ -201,48 +183,44 @@ mod tests {
         assert_eq!(REQUEST_ID_HEADER, "x-request-id");
     }
 
-    /// Verify that approval mutation endpoints are NOT in the auth bypass list.
-    /// Regression test for CVE: unauthenticated approve/reject bypass.
+    /// Verify that data-bearing endpoints require authentication.
+    /// Regression test for unauthenticated data exposure and approval bypass.
     #[test]
-    fn test_approval_mutation_paths_require_auth() {
-        // These are the paths checked in the auth bypass block.
-        // The listing endpoint is intentionally unauthenticated for the dashboard SPA.
+    fn test_sensitive_endpoints_require_auth() {
+        // Mirror the auth bypass list — must stay in sync with the middleware.
         let bypass_path = |path: &str| -> bool {
             path == "/"
                 || path == "/api/health"
-                || path == "/api/health/detail"
                 || path == "/api/status"
                 || path == "/api/version"
-                || path == "/api/agents"
-                || path == "/api/profiles"
-                || path == "/api/config"
                 || path.starts_with("/api/uploads/")
-                || path == "/api/models"
-                || path == "/api/models/aliases"
-                || path == "/api/providers"
-                || path == "/api/budget"
-                || path == "/api/budget/agents"
-                || path.starts_with("/api/budget/agents/")
-                || path == "/api/network/status"
-                || path == "/api/a2a/agents"
-                || path == "/api/approvals"
-                || path == "/api/channels"
-                || path == "/api/skills"
-                || path == "/api/sessions"
-                || path == "/api/integrations"
-                || path == "/api/integrations/available"
-                || path == "/api/integrations/health"
-                || path.starts_with("/api/cron/")
                 || path.starts_with("/api/providers/github-copilot/oauth/")
         };
 
-        // Listing approvals is OK unauthenticated (dashboard read)
-        assert!(bypass_path("/api/approvals"));
+        // Public endpoints — OK unauthenticated
+        assert!(bypass_path("/"));
+        assert!(bypass_path("/api/health"));
+        assert!(bypass_path("/api/status"));
+        assert!(bypass_path("/api/version"));
+        assert!(bypass_path("/api/uploads/some-uuid"));
 
-        // Mutating endpoints MUST require authentication
+        // Data-bearing endpoints MUST require authentication
+        assert!(!bypass_path("/api/config"));
+        assert!(!bypass_path("/api/agents"));
+        assert!(!bypass_path("/api/sessions"));
+        assert!(!bypass_path("/api/profiles"));
+        assert!(!bypass_path("/api/channels"));
+        assert!(!bypass_path("/api/skills"));
+        assert!(!bypass_path("/api/budget"));
+        assert!(!bypass_path("/api/budget/agents"));
+        assert!(!bypass_path("/api/integrations"));
+        assert!(!bypass_path("/api/approvals"));
+        assert!(!bypass_path("/api/network/status"));
+        assert!(!bypass_path("/api/a2a/agents"));
+        assert!(!bypass_path("/api/models"));
+
+        // Approval mutation endpoints MUST require authentication
         assert!(!bypass_path("/api/approvals/some-uuid/approve"));
         assert!(!bypass_path("/api/approvals/some-uuid/reject"));
-        assert!(!bypass_path("/api/approvals/123e4567-e89b-12d3-a456-426614174000/approve"));
-        assert!(!bypass_path("/api/approvals/123e4567-e89b-12d3-a456-426614174000/reject"));
     }
 }

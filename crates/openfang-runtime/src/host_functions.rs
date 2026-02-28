@@ -121,8 +121,11 @@ fn safe_resolve_parent(path: &str) -> Result<std::path::PathBuf, serde_json::Val
 // ---------------------------------------------------------------------------
 
 /// SSRF protection: check if a hostname resolves to a private/internal IP.
-/// This defeats DNS rebinding by checking the RESOLVED address, not the hostname.
-fn is_ssrf_target(url: &str) -> Result<(), serde_json::Value> {
+///
+/// Returns `Ok(Some((domain, resolved_addrs)))` with the resolved addresses
+/// so callers can pin them in the HTTP client to prevent DNS rebinding TOCTOU.
+/// Returns `Ok(None)` if DNS resolution failed.
+fn is_ssrf_target(url: &str) -> Result<Option<(String, Vec<std::net::SocketAddr>)>, serde_json::Value> {
     // Only allow http:// and https:// schemes (block file://, gopher://, ftp://)
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(json!({"error": "Only http:// and https:// URLs are allowed"}));
@@ -156,11 +159,14 @@ fn is_ssrf_target(url: &str) -> Result<(), serde_json::Value> {
         return Err(json!({"error": format!("SSRF blocked: {hostname} is a restricted hostname")}));
     }
 
-    // Resolve DNS and check every returned IP
+    // Resolve DNS and check every returned IP.
+    // SECURITY: Return the resolved addresses so callers can pin them in
+    // the HTTP client, preventing DNS rebinding TOCTOU attacks.
     let port = if url.starts_with("https") { 443 } else { 80 };
     let socket_addr = format!("{hostname}:{port}");
     if let Ok(addrs) = socket_addr.to_socket_addrs() {
-        for addr in addrs {
+        let resolved: Vec<std::net::SocketAddr> = addrs.collect();
+        for addr in &resolved {
             let ip = addr.ip();
             if ip.is_loopback() || ip.is_unspecified() || is_private_ip(&ip) {
                 return Err(json!({"error": format!(
@@ -168,8 +174,10 @@ fn is_ssrf_target(url: &str) -> Result<(), serde_json::Value> {
                 )}));
             }
         }
+        Ok(Some((hostname.to_string(), resolved)))
+    } else {
+        Ok(None)
     }
-    Ok(())
 }
 
 fn is_private_ip(ip: &std::net::IpAddr) -> bool {
@@ -209,15 +217,17 @@ fn host_fs_read(state: &GuestState, params: &serde_json::Value) -> serde_json::V
         Some(p) => p,
         None => return json!({"error": "Missing 'path' parameter"}),
     };
-    // Check capability with raw path first
-    if let Err(e) = check_capability(&state.capabilities, &Capability::FileRead(path.to_string())) {
-        return e;
-    }
-    // SECURITY: Reject path traversal after capability gate
+    // SECURITY: Canonicalize BEFORE capability check to prevent symlink escape.
+    // If we check capabilities on the raw path and then read the canonical path,
+    // a symlink under a permitted directory can point to arbitrary files.
     let canonical = match safe_resolve_path(path) {
         Ok(c) => c,
         Err(e) => return e,
     };
+    let canonical_str = canonical.to_string_lossy().to_string();
+    if let Err(e) = check_capability(&state.capabilities, &Capability::FileRead(canonical_str)) {
+        return e;
+    }
     match std::fs::read_to_string(&canonical) {
         Ok(content) => json!({"ok": content}),
         Err(e) => json!({"error": format!("fs_read failed: {e}")}),
@@ -233,18 +243,18 @@ fn host_fs_write(state: &GuestState, params: &serde_json::Value) -> serde_json::
         Some(c) => c,
         None => return json!({"error": "Missing 'content' parameter"}),
     };
-    // Check capability with raw path first
-    if let Err(e) = check_capability(
-        &state.capabilities,
-        &Capability::FileWrite(path.to_string()),
-    ) {
-        return e;
-    }
-    // SECURITY: Reject path traversal after capability gate
+    // SECURITY: Canonicalize BEFORE capability check to prevent symlink escape.
     let write_path = match safe_resolve_parent(path) {
         Ok(p) => p,
         Err(e) => return e,
     };
+    let canonical_str = write_path.to_string_lossy().to_string();
+    if let Err(e) = check_capability(
+        &state.capabilities,
+        &Capability::FileWrite(canonical_str),
+    ) {
+        return e;
+    }
     match std::fs::write(&write_path, content) {
         Ok(()) => json!({"ok": true}),
         Err(e) => json!({"error": format!("fs_write failed: {e}")}),
@@ -256,15 +266,15 @@ fn host_fs_list(state: &GuestState, params: &serde_json::Value) -> serde_json::V
         Some(p) => p,
         None => return json!({"error": "Missing 'path' parameter"}),
     };
-    // Check capability with raw path first
-    if let Err(e) = check_capability(&state.capabilities, &Capability::FileRead(path.to_string())) {
-        return e;
-    }
-    // SECURITY: Reject path traversal after capability gate
+    // SECURITY: Canonicalize BEFORE capability check to prevent symlink escape.
     let canonical = match safe_resolve_path(path) {
         Ok(c) => c,
         Err(e) => return e,
     };
+    let canonical_str = canonical.to_string_lossy().to_string();
+    if let Err(e) = check_capability(&state.capabilities, &Capability::FileRead(canonical_str)) {
+        return e;
+    }
     match std::fs::read_dir(&canonical) {
         Ok(entries) => {
             let names: Vec<String> = entries
@@ -292,10 +302,12 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
         .unwrap_or("GET");
     let body = params.get("body").and_then(|b| b.as_str()).unwrap_or("");
 
-    // SECURITY: SSRF protection — check resolved IP against private ranges
-    if let Err(e) = is_ssrf_target(url) {
-        return e;
-    }
+    // SECURITY: SSRF protection — check resolved IP against private ranges.
+    // Returns resolved addresses to pin in reqwest, preventing DNS rebinding.
+    let ssrf_result = match is_ssrf_target(url) {
+        Ok(result) => result,
+        Err(e) => return e,
+    };
 
     // Extract host:port from URL for capability check
     let host = extract_host_from_url(url);
@@ -304,13 +316,15 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
     }
 
     state.tokio_handle.block_on(async {
-        // SECURITY: Disable automatic redirect following to prevent SSRF bypass.
-        // Without this, an attacker can host a public URL that 301-redirects to
-        // an internal IP (e.g., cloud metadata endpoint), bypassing the SSRF check.
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_default();
+        // SECURITY: Build a per-request client with pinned DNS resolution and
+        // disabled redirects to prevent both DNS rebinding and redirect-based
+        // SSRF bypass attacks.
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some((domain, addrs)) = ssrf_result {
+            builder = builder.resolve_to_addrs(&domain, &addrs);
+        }
+        let client = builder.build().unwrap_or_default();
         let request = match method.to_uppercase().as_str() {
             "POST" => client.post(url).body(body.to_string()),
             "PUT" => client.put(url).body(body.to_string()),
@@ -533,6 +547,7 @@ mod tests {
             kernel: None,
             agent_id: "test-agent".to_string(),
             tokio_handle: tokio::runtime::Handle::current(),
+            store_limits: wasmtime::StoreLimitsBuilder::new().build(),
         }
     }
 

@@ -35,7 +35,8 @@ use wasmtime::*;
 pub struct SandboxConfig {
     /// Maximum fuel (CPU instruction budget). 0 = unlimited.
     pub fuel_limit: u64,
-    /// Maximum WASM linear memory in bytes (reserved for future enforcement).
+    /// Maximum WASM linear memory in bytes per linear memory instance.
+    /// Enforced via wasmtime `StoreLimits`. Default: 16 MB.
     pub max_memory_bytes: usize,
     /// Capabilities granted to this sandbox instance.
     pub capabilities: Vec<Capability>,
@@ -65,6 +66,8 @@ pub struct GuestState {
     pub agent_id: String,
     /// Tokio runtime handle for async operations in sync host functions.
     pub tokio_handle: tokio::runtime::Handle,
+    /// Resource limits (memory, tables) enforced by wasmtime.
+    pub store_limits: StoreLimits,
 }
 
 /// Result of executing a WASM module.
@@ -156,7 +159,12 @@ impl WasmSandbox {
         let module = Module::new(engine, wasm_bytes)
             .map_err(|e| SandboxError::Compilation(e.to_string()))?;
 
-        // Create store with guest state
+        // Create store with guest state and resource limits.
+        // SECURITY: Enforce max_memory_bytes via StoreLimits to prevent
+        // malicious WASM modules from allocating unbounded linear memory.
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(config.max_memory_bytes)
+            .build();
         let mut store = Store::new(
             engine,
             GuestState {
@@ -164,8 +172,10 @@ impl WasmSandbox {
                 kernel,
                 agent_id: agent_id.to_string(),
                 tokio_handle,
+                store_limits: limits,
             },
         );
+        store.limiter(|state| &mut state.store_limits);
 
         // Set fuel budget (deterministic metering)
         if config.fuel_limit > 0 {
