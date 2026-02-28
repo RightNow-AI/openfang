@@ -2,6 +2,23 @@
 //!
 //! Full implementation of the Anthropic Messages API with tool use support,
 //! system prompt extraction, and retry on 429/529 errors.
+//!
+//! ## Authentication modes
+//!
+//! This driver supports two authentication modes, detected automatically from
+//! the credential value:
+//!
+//! | Mode | Token prefix | Header |
+//! |------|-------------|--------|
+//! | API key | `sk-ant-api` | `x-api-key: <key>` |
+//! | Claude Max / setup-token | `sk-ant-oat01-` | `Authorization: Bearer <token>` + `anthropic-beta: oauth-2025-04-20` |
+//!
+//! To use Claude Max subscription (no separate API billing), run:
+//! ```sh
+//! claude setup-token          # generates sk-ant-oat01-... token
+//! # set in openfang.toml or as env var:
+//! # ANTHROPIC_API_KEY=sk-ant-oat01-...
+//! ```
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
@@ -16,18 +33,46 @@ use zeroize::Zeroizing;
 
 /// Anthropic Claude API driver.
 pub struct AnthropicDriver {
-    api_key: Zeroizing<String>,
+    /// Credential — either a standard API key (`sk-ant-api…`) or a Claude Max
+    /// setup-token (`sk-ant-oat01-…`). Auth mode is detected automatically.
+    credential: Zeroizing<String>,
     base_url: String,
     client: reqwest::Client,
 }
 
 impl AnthropicDriver {
     /// Create a new Anthropic driver.
-    pub fn new(api_key: String, base_url: String) -> Self {
+    ///
+    /// `credential` accepts both standard API keys and Claude Max setup-tokens.
+    pub fn new(credential: String, base_url: String) -> Self {
         Self {
-            api_key: Zeroizing::new(api_key),
+            credential: Zeroizing::new(credential),
             base_url,
             client: reqwest::Client::new(),
+        }
+    }
+
+    /// Returns `true` when the credential is a Claude Max setup-token.
+    ///
+    /// Setup-tokens are issued by `claude setup-token` and always carry the
+    /// `sk-ant-oat01-` prefix. They use `Authorization: Bearer` instead of
+    /// `x-api-key`, and require the `anthropic-beta: oauth-2025-04-20` header.
+    fn is_claude_max_token(credential: &str) -> bool {
+        credential.trim().starts_with("sk-ant-oat01-")
+    }
+
+    /// Apply authentication headers to a request builder.
+    ///
+    /// - Standard API key  → `x-api-key`
+    /// - Claude Max token  → `Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20`
+    fn apply_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let cred = self.credential.as_str();
+        if Self::is_claude_max_token(cred) {
+            request
+                .header("Authorization", format!("Bearer {cred}"))
+                .header("anthropic-beta", "oauth-2025-04-20")
+        } else {
+            request.header("x-api-key", cred)
         }
     }
 }
@@ -152,7 +197,6 @@ enum ContentBlockAccum {
 #[async_trait]
 impl LlmDriver for AnthropicDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
-        // Extract system prompt from messages or use the provided one
         let system = request.system.clone().or_else(|| {
             request.messages.iter().find_map(|m| {
                 if m.role == Role::System {
@@ -166,7 +210,6 @@ impl LlmDriver for AnthropicDriver {
             })
         });
 
-        // Build API messages, filtering out system messages
         let api_messages: Vec<ApiMessage> = request
             .messages
             .iter()
@@ -174,7 +217,6 @@ impl LlmDriver for AnthropicDriver {
             .map(convert_message)
             .collect();
 
-        // Build tools
         let api_tools: Vec<ApiTool> = request
             .tools
             .iter()
@@ -195,19 +237,20 @@ impl LlmDriver for AnthropicDriver {
             stream: false,
         };
 
-        // Retry loop for rate limits and overloads
         let max_retries = 3;
         for attempt in 0..=max_retries {
             let url = format!("{}/v1/messages", self.base_url);
             debug!(url = %url, attempt, "Sending Anthropic API request");
 
-            let resp = self
+            let req = self
                 .client
                 .post(&url)
-                .header("x-api-key", self.api_key.as_str())
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json")
-                .json(&api_request)
+                .json(&api_request);
+
+            let resp = self
+                .apply_auth(req)
                 .send()
                 .await
                 .map_err(|e| LlmError::Http(e.to_string()))?;
@@ -222,13 +265,9 @@ impl LlmDriver for AnthropicDriver {
                     continue;
                 }
                 return Err(if status == 429 {
-                    LlmError::RateLimited {
-                        retry_after_ms: 5000,
-                    }
+                    LlmError::RateLimited { retry_after_ms: 5000 }
                 } else {
-                    LlmError::Overloaded {
-                        retry_after_ms: 5000,
-                    }
+                    LlmError::Overloaded { retry_after_ms: 5000 }
                 });
             }
 
@@ -261,7 +300,6 @@ impl LlmDriver for AnthropicDriver {
         request: CompletionRequest,
         tx: tokio::sync::mpsc::Sender<StreamEvent>,
     ) -> Result<CompletionResponse, LlmError> {
-        // Build request (same as complete but with stream: true)
         let system = request.system.clone().or_else(|| {
             request.messages.iter().find_map(|m| {
                 if m.role == Role::System {
@@ -302,19 +340,20 @@ impl LlmDriver for AnthropicDriver {
             stream: true,
         };
 
-        // Retry loop for the initial HTTP request
         let max_retries = 3;
         for attempt in 0..=max_retries {
             let url = format!("{}/v1/messages", self.base_url);
             debug!(url = %url, attempt, "Sending Anthropic streaming request");
 
-            let resp = self
+            let req = self
                 .client
                 .post(&url)
-                .header("x-api-key", self.api_key.as_str())
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json")
-                .json(&api_request)
+                .json(&api_request);
+
+            let resp = self
+                .apply_auth(req)
                 .send()
                 .await
                 .map_err(|e| LlmError::Http(e.to_string()))?;
@@ -329,13 +368,9 @@ impl LlmDriver for AnthropicDriver {
                     continue;
                 }
                 return Err(if status == 429 {
-                    LlmError::RateLimited {
-                        retry_after_ms: 5000,
-                    }
+                    LlmError::RateLimited { retry_after_ms: 5000 }
                 } else {
-                    LlmError::Overloaded {
-                        retry_after_ms: 5000,
-                    }
+                    LlmError::Overloaded { retry_after_ms: 5000 }
                 });
             }
 
@@ -347,7 +382,6 @@ impl LlmDriver for AnthropicDriver {
                 return Err(LlmError::Api { status, message });
             }
 
-            // Parse the SSE stream
             let mut buffer = String::new();
             let mut blocks: Vec<ContentBlockAccum> = Vec::new();
             let mut stop_reason = StopReason::EndTurn;
@@ -390,27 +424,21 @@ impl LlmDriver for AnthropicDriver {
                         "content_block_start" => {
                             let block = &json["content_block"];
                             match block["type"].as_str().unwrap_or("") {
-                                "text" => {
-                                    blocks.push(ContentBlockAccum::Text(String::new()));
-                                }
+                                "text" => blocks.push(ContentBlockAccum::Text(String::new())),
                                 "tool_use" => {
                                     let id = block["id"].as_str().unwrap_or("").to_string();
                                     let name = block["name"].as_str().unwrap_or("").to_string();
-                                    let _ = tx
-                                        .send(StreamEvent::ToolUseStart {
-                                            id: id.clone(),
-                                            name: name.clone(),
-                                        })
-                                        .await;
+                                    let _ = tx.send(StreamEvent::ToolUseStart {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                    }).await;
                                     blocks.push(ContentBlockAccum::ToolUse {
                                         id,
                                         name,
                                         input_json: String::new(),
                                     });
                                 }
-                                "thinking" => {
-                                    blocks.push(ContentBlockAccum::Thinking(String::new()));
-                                }
+                                "thinking" => blocks.push(ContentBlockAccum::Thinking(String::new())),
                                 _ => {}
                             }
                         }
@@ -419,39 +447,23 @@ impl LlmDriver for AnthropicDriver {
                             match delta["type"].as_str().unwrap_or("") {
                                 "text_delta" => {
                                     if let Some(text) = delta["text"].as_str() {
-                                        if let Some(ContentBlockAccum::Text(ref mut t)) =
-                                            blocks.last_mut()
-                                        {
+                                        if let Some(ContentBlockAccum::Text(ref mut t)) = blocks.last_mut() {
                                             t.push_str(text);
                                         }
-                                        let _ = tx
-                                            .send(StreamEvent::TextDelta {
-                                                text: text.to_string(),
-                                            })
-                                            .await;
+                                        let _ = tx.send(StreamEvent::TextDelta { text: text.to_string() }).await;
                                     }
                                 }
                                 "input_json_delta" => {
                                     if let Some(partial) = delta["partial_json"].as_str() {
-                                        if let Some(ContentBlockAccum::ToolUse {
-                                            ref mut input_json,
-                                            ..
-                                        }) = blocks.last_mut()
-                                        {
+                                        if let Some(ContentBlockAccum::ToolUse { ref mut input_json, .. }) = blocks.last_mut() {
                                             input_json.push_str(partial);
                                         }
-                                        let _ = tx
-                                            .send(StreamEvent::ToolInputDelta {
-                                                text: partial.to_string(),
-                                            })
-                                            .await;
+                                        let _ = tx.send(StreamEvent::ToolInputDelta { text: partial.to_string() }).await;
                                     }
                                 }
                                 "thinking_delta" => {
                                     if let Some(thinking) = delta["thinking"].as_str() {
-                                        if let Some(ContentBlockAccum::Thinking(ref mut t)) =
-                                            blocks.last_mut()
-                                        {
+                                        if let Some(ContentBlockAccum::Thinking(ref mut t)) = blocks.last_mut() {
                                             t.push_str(thinking);
                                         }
                                     }
@@ -460,21 +472,13 @@ impl LlmDriver for AnthropicDriver {
                             }
                         }
                         "content_block_stop" => {
-                            if let Some(ContentBlockAccum::ToolUse {
-                                id,
-                                name,
-                                input_json,
-                            }) = blocks.last()
-                            {
-                                let input: serde_json::Value =
-                                    serde_json::from_str(input_json).unwrap_or_default();
-                                let _ = tx
-                                    .send(StreamEvent::ToolUseEnd {
-                                        id: id.clone(),
-                                        name: name.clone(),
-                                        input,
-                                    })
-                                    .await;
+                            if let Some(ContentBlockAccum::ToolUse { id, name, input_json }) = blocks.last() {
+                                let input: serde_json::Value = serde_json::from_str(input_json).unwrap_or_default();
+                                let _ = tx.send(StreamEvent::ToolUseEnd {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    input,
+                                }).await;
                             }
                         }
                         "message_delta" => {
@@ -491,49 +495,28 @@ impl LlmDriver for AnthropicDriver {
                                 usage.output_tokens = ot;
                             }
                         }
-                        _ => {} // message_stop, ping, etc.
+                        _ => {}
                     }
                 }
             }
 
-            // Build CompletionResponse from accumulated blocks
             let mut content = Vec::new();
             let mut tool_calls = Vec::new();
             for block in blocks {
                 match block {
-                    ContentBlockAccum::Text(text) => {
-                        content.push(ContentBlock::Text { text });
-                    }
-                    ContentBlockAccum::Thinking(thinking) => {
-                        content.push(ContentBlock::Thinking { thinking });
-                    }
-                    ContentBlockAccum::ToolUse {
-                        id,
-                        name,
-                        input_json,
-                    } => {
-                        let input: serde_json::Value =
-                            serde_json::from_str(&input_json).unwrap_or_default();
-                        content.push(ContentBlock::ToolUse {
-                            id: id.clone(),
-                            name: name.clone(),
-                            input: input.clone(),
-                        });
+                    ContentBlockAccum::Text(text) => content.push(ContentBlock::Text { text }),
+                    ContentBlockAccum::Thinking(thinking) => content.push(ContentBlock::Thinking { thinking }),
+                    ContentBlockAccum::ToolUse { id, name, input_json } => {
+                        let input: serde_json::Value = serde_json::from_str(&input_json).unwrap_or_default();
+                        content.push(ContentBlock::ToolUse { id: id.clone(), name: name.clone(), input: input.clone() });
                         tool_calls.push(ToolCall { id, name, input });
                     }
                 }
             }
 
-            let _ = tx
-                .send(StreamEvent::ContentComplete { stop_reason, usage })
-                .await;
+            let _ = tx.send(StreamEvent::ContentComplete { stop_reason, usage }).await;
 
-            return Ok(CompletionResponse {
-                content,
-                stop_reason,
-                tool_calls,
-                usage,
-            });
+            return Ok(CompletionResponse { content, stop_reason, tool_calls, usage });
         }
 
         Err(LlmError::Api {
@@ -543,12 +526,11 @@ impl LlmDriver for AnthropicDriver {
     }
 }
 
-/// Convert an OpenFang Message to an Anthropic API message.
 fn convert_message(msg: &Message) -> ApiMessage {
     let role = match msg.role {
         Role::User => "user",
         Role::Assistant => "assistant",
-        Role::System => "user", // Should be filtered out, but handle gracefully
+        Role::System => "user",
     };
 
     let content = match &msg.content {
@@ -557,9 +539,7 @@ fn convert_message(msg: &Message) -> ApiMessage {
             let api_blocks: Vec<ApiContentBlock> = blocks
                 .iter()
                 .filter_map(|block| match block {
-                    ContentBlock::Text { text } => {
-                        Some(ApiContentBlock::Text { text: text.clone() })
-                    }
+                    ContentBlock::Text { text } => Some(ApiContentBlock::Text { text: text.clone() }),
                     ContentBlock::Image { media_type, data } => Some(ApiContentBlock::Image {
                         source: ApiImageSource {
                             source_type: "base64".to_string(),
@@ -572,50 +552,35 @@ fn convert_message(msg: &Message) -> ApiMessage {
                         name: name.clone(),
                         input: input.clone(),
                     }),
-                    ContentBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        is_error,
-                    } => Some(ApiContentBlock::ToolResult {
-                        tool_use_id: tool_use_id.clone(),
-                        content: content.clone(),
-                        is_error: *is_error,
-                    }),
-                    ContentBlock::Thinking { .. } => None,
-                    ContentBlock::Unknown => None,
+                    ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                        Some(ApiContentBlock::ToolResult {
+                            tool_use_id: tool_use_id.clone(),
+                            content: content.clone(),
+                            is_error: *is_error,
+                        })
+                    }
+                    ContentBlock::Thinking { .. } | ContentBlock::Unknown => None,
                 })
                 .collect();
             ApiContent::Blocks(api_blocks)
         }
     };
 
-    ApiMessage {
-        role: role.to_string(),
-        content,
-    }
+    ApiMessage { role: role.to_string(), content }
 }
 
-/// Convert an Anthropic API response to our CompletionResponse.
 fn convert_response(api: ApiResponse) -> CompletionResponse {
     let mut content = Vec::new();
     let mut tool_calls = Vec::new();
 
     for block in api.content {
         match block {
-            ResponseContentBlock::Text { text } => {
-                content.push(ContentBlock::Text { text });
-            }
+            ResponseContentBlock::Text { text } => content.push(ContentBlock::Text { text }),
             ResponseContentBlock::ToolUse { id, name, input } => {
-                content.push(ContentBlock::ToolUse {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                });
+                content.push(ContentBlock::ToolUse { id: id.clone(), name: name.clone(), input: input.clone() });
                 tool_calls.push(ToolCall { id, name, input });
             }
-            ResponseContentBlock::Thinking { thinking } => {
-                content.push(ContentBlock::Thinking { thinking });
-            }
+            ResponseContentBlock::Thinking { thinking } => content.push(ContentBlock::Thinking { thinking }),
         }
     }
 
@@ -653,9 +618,7 @@ mod tests {
     fn test_convert_response() {
         let api_response = ApiResponse {
             content: vec![
-                ResponseContentBlock::Text {
-                    text: "I'll help you.".to_string(),
-                },
+                ResponseContentBlock::Text { text: "I'll help you.".to_string() },
                 ResponseContentBlock::ToolUse {
                     id: "tool_1".to_string(),
                     name: "web_search".to_string(),
@@ -663,10 +626,7 @@ mod tests {
                 },
             ],
             stop_reason: "tool_use".to_string(),
-            usage: ApiUsage {
-                input_tokens: 100,
-                output_tokens: 50,
-            },
+            usage: ApiUsage { input_tokens: 100, output_tokens: 50 },
         };
 
         let response = convert_response(api_response);
@@ -674,5 +634,75 @@ mod tests {
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.tool_calls[0].name, "web_search");
         assert_eq!(response.usage.total(), 150);
+    }
+
+    // ── Claude Max / setup-token auth tests ──────────────────────────────────
+
+    #[test]
+    fn test_is_claude_max_token_detects_oat_prefix() {
+        assert!(AnthropicDriver::is_claude_max_token("sk-ant-oat01-abc123"));
+        assert!(AnthropicDriver::is_claude_max_token("sk-ant-oat01-verylongtoken"));
+    }
+
+    #[test]
+    fn test_is_claude_max_token_rejects_api_keys() {
+        assert!(!AnthropicDriver::is_claude_max_token("sk-ant-api03-abc"));
+        assert!(!AnthropicDriver::is_claude_max_token("sk-ant-api-abc"));
+        assert!(!AnthropicDriver::is_claude_max_token(""));
+        assert!(!AnthropicDriver::is_claude_max_token("some-random-token"));
+    }
+
+    #[test]
+    fn test_is_claude_max_token_trims_whitespace() {
+        assert!(AnthropicDriver::is_claude_max_token("  sk-ant-oat01-abc123  "));
+    }
+
+    #[test]
+    fn test_apply_auth_uses_bearer_for_claude_max() {
+        let driver = AnthropicDriver::new(
+            "sk-ant-oat01-test-token".to_string(),
+            "https://api.anthropic.com".to_string(),
+        );
+        let req = driver
+            .apply_auth(driver.client.get("https://api.anthropic.com/v1/messages"))
+            .build()
+            .expect("request should build");
+
+        let headers = req.headers();
+        assert_eq!(
+            headers.get("authorization").and_then(|v| v.to_str().ok()),
+            Some("Bearer sk-ant-oat01-test-token"),
+            "Claude Max token must use Authorization: Bearer"
+        );
+        assert_eq!(
+            headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
+            Some("oauth-2025-04-20"),
+            "Claude Max token must include anthropic-beta header"
+        );
+        assert!(
+            headers.get("x-api-key").is_none(),
+            "Claude Max token must NOT set x-api-key"
+        );
+    }
+
+    #[test]
+    fn test_apply_auth_uses_x_api_key_for_standard_keys() {
+        let driver = AnthropicDriver::new(
+            "sk-ant-api03-standard-key".to_string(),
+            "https://api.anthropic.com".to_string(),
+        );
+        let req = driver
+            .apply_auth(driver.client.get("https://api.anthropic.com/v1/messages"))
+            .build()
+            .expect("request should build");
+
+        let headers = req.headers();
+        assert_eq!(
+            headers.get("x-api-key").and_then(|v| v.to_str().ok()),
+            Some("sk-ant-api03-standard-key"),
+            "Standard API key must use x-api-key"
+        );
+        assert!(headers.get("authorization").is_none(), "Standard key must NOT set Authorization");
+        assert!(headers.get("anthropic-beta").is_none(), "Standard key must NOT set anthropic-beta");
     }
 }
