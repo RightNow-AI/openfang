@@ -42,14 +42,38 @@ pub fn error(msg: &str) {
 // New themed output helpers
 // ---------------------------------------------------------------------------
 
-/// Brand banner: ">> OpenFang Agent OS"
+/// ANSI pixel-art banner embedded at compile time.
+const ANSI_BANNER: &str = include_str!("../../../public/assets/ascii/banner.txt");
+
+/// Brand banner: ANSI pixel-art wolf logo with tagline.
+///
+/// Falls back to a simple text banner if the terminal is narrower than 80 columns
+/// or if stdout is not a TTY.
 pub fn banner() {
-    println!(
-        "  {} {}",
-        ">>".bright_cyan().bold(),
-        "OpenFang Agent OS".bold()
-    );
-    println!("     {}", "The open-source agent operating system".dimmed());
+    use ratatui::crossterm::{terminal, tty::IsTty};
+
+    let is_tty = std::io::stdout().is_tty();
+    let wide_enough = terminal::size().is_ok_and(|(cols, _)| cols >= 80);
+
+    if is_tty && wide_enough {
+        for line in ANSI_BANNER.lines() {
+            // Strip cursor hide/show control sequences
+            let line = line
+                .trim_start_matches("\x1b[?25l")
+                .trim_start_matches("\x1b[?25h")
+                .trim_end_matches("\x1b[?25l")
+                .trim_end_matches("\x1b[?25h");
+            println!("{line}");
+        }
+    } else {
+        // Compact fallback for narrow terminals / piped output
+        println!(
+            "  {} {}",
+            ">>".bright_cyan().bold(),
+            "OpenFang Agent OS".bold()
+        );
+        println!("     {}", "The open-source agent operating system".dimmed());
+    }
 }
 
 /// Section header: ">> Title" in cyan.
