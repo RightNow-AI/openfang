@@ -240,6 +240,27 @@ impl HandRegistry {
         entry.updated_at = chrono::Utc::now();
         Ok(())
     }
+
+    /// Update the config of an active hand instance.
+    /// Merges new config values with existing ones.
+    pub fn update_instance_config(
+        &self,
+        instance_id: Uuid,
+        new_config: HashMap<String, serde_json::Value>,
+    ) -> HandResult<HandInstance> {
+        let mut entry = self
+            .instances
+            .get_mut(&instance_id)
+            .ok_or(HandError::InstanceNotFound(instance_id))?;
+
+        // Merge new config into existing config
+        for (key, value) in new_config {
+            entry.config.insert(key, value);
+        }
+        entry.updated_at = chrono::Utc::now();
+
+        Ok(entry.clone())
+    }
 }
 
 impl Default for HandRegistry {
@@ -433,6 +454,49 @@ mod tests {
         assert!(reg.deactivate(Uuid::new_v4()).is_err());
         assert!(reg.pause(Uuid::new_v4()).is_err());
         assert!(reg.resume(Uuid::new_v4()).is_err());
+        // update_instance_config should also return error for non-existent instance
+        assert!(reg.update_instance_config(Uuid::new_v4(), HashMap::new()).is_err());
+    }
+
+    #[test]
+    fn update_instance_config_merges_and_returns_updated() {
+        let mut reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Activate with initial config
+        let mut initial_config: HashMap<String, serde_json::Value> = HashMap::new();
+        initial_config.insert("key1".to_string(), serde_json::json!("value1"));
+        initial_config.insert("key2".to_string(), serde_json::json!("value2"));
+
+        let instance = reg.activate("clip", initial_config.clone()).unwrap();
+        let id = instance.instance_id;
+
+        // Verify initial config
+        assert_eq!(instance.config.get("key1").unwrap(), "value1");
+        assert_eq!(instance.config.get("key2").unwrap(), "value2");
+
+        // Update config: modify key1, add key3, leave key2 unchanged
+        let mut update: HashMap<String, serde_json::Value> = HashMap::new();
+        update.insert("key1".to_string(), serde_json::json!("updated_value1"));
+        update.insert("key3".to_string(), serde_json::json!("value3"));
+
+        let updated = reg.update_instance_config(id, update).unwrap();
+
+        // Verify merged config
+        assert_eq!(updated.config.get("key1").unwrap(), "updated_value1"); // Modified
+        assert_eq!(updated.config.get("key2").unwrap(), "value2"); // Unchanged
+        assert_eq!(updated.config.get("key3").unwrap(), "value3"); // Added
+
+        // Verify updated_at was changed (should be greater than activated_at)
+        assert!(updated.updated_at >= updated.activated_at);
+
+        // Verify persisted by reading back
+        let retrieved = reg.get_instance(id).unwrap();
+        assert_eq!(retrieved.config.get("key1").unwrap(), "updated_value1");
+        assert_eq!(retrieved.config.get("key2").unwrap(), "value2");
+        assert_eq!(retrieved.config.get("key3").unwrap(), "value3");
+
+        reg.deactivate(id).unwrap();
     }
 
     #[test]

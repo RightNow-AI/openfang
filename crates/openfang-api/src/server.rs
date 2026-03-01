@@ -355,6 +355,12 @@ pub async fn build_router(
             "/api/hands/instances/{id}/browser",
             axum::routing::get(routes::hand_instance_browser),
         )
+        .route(
+            "/api/hands/instances/{id}/settings",
+            axum::routing::get(routes::get_hand_settings)
+                .put(routes::update_hand_settings)
+                .patch(routes::patch_hand_settings),
+        )
         // MCP server endpoints
         .route(
             "/api/mcp/servers",
