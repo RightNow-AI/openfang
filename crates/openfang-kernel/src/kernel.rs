@@ -530,7 +530,8 @@ impl OpenFangKernel {
 
         // If fallback providers are configured, wrap the primary driver in a FallbackDriver
         let driver: Arc<dyn LlmDriver> = if !config.fallback_providers.is_empty() {
-            let mut chain: Vec<Arc<dyn LlmDriver>> = vec![primary_driver.clone()];
+            let mut chain: Vec<(Arc<dyn LlmDriver>, Option<String>)> =
+                vec![(primary_driver.clone(), None)];
             for fb in &config.fallback_providers {
                 let fb_config = DriverConfig {
                     provider: fb.provider.clone(),
@@ -548,7 +549,7 @@ impl OpenFangKernel {
                             model = %fb.model,
                             "Fallback provider configured"
                         );
-                        chain.push(d);
+                        chain.push((d, Some(fb.model.clone())));
                     }
                     Err(e) => {
                         warn!(
@@ -3537,7 +3538,8 @@ impl OpenFangKernel {
 
         // If fallback models are configured, wrap in FallbackDriver
         if !manifest.fallback_models.is_empty() {
-            let mut chain = vec![primary.clone()];
+            let mut chain: Vec<(Arc<dyn LlmDriver>, Option<String>)> =
+                vec![(primary.clone(), None)];
             for fb in &manifest.fallback_models {
                 let config = DriverConfig {
                     provider: fb.provider.clone(),
@@ -3548,7 +3550,7 @@ impl OpenFangKernel {
                     base_url: fb.base_url.clone(),
                 };
                 match drivers::create_driver(&config) {
-                    Ok(d) => chain.push(d),
+                    Ok(d) => chain.push((d, Some(fb.model.clone()))),
                     Err(e) => {
                         warn!("Fallback driver '{}' failed to init: {e}", fb.provider);
                     }
