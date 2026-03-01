@@ -237,7 +237,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # Ensure the GHCR package is public (prevents #12 recurrence).
-      # Requires packages:write — fails gracefully if insufficient permissions.
+      # Requires packages:admin — fails gracefully if GITHUB_TOKEN lacks sufficient scope.
       - name: Set GHCR package visibility to public
         continue-on-error: true
         env:
