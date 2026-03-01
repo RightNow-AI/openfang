@@ -170,8 +170,14 @@ impl ModelCatalog {
     /// Merge dynamically discovered models from a local provider.
     ///
     /// Adds models not already in the catalog with `Local` tier and zero cost.
-    /// Also updates the provider's `model_count`.
-    pub fn merge_discovered_models(&mut self, provider: &str, model_ids: &[String]) {
+    /// For Ollama models with enriched metadata (from `/api/show`), uses real
+    /// context_window, vision/tool support, etc. For unenriched models, falls
+    /// back to sensible defaults. Also updates the provider's `model_count`.
+    pub fn merge_discovered_models(
+        &mut self,
+        provider: &str,
+        models: &[crate::provider_health::DiscoveredModel],
+    ) {
         let existing_ids: std::collections::HashSet<String> = self
             .models
             .iter()
@@ -180,23 +186,23 @@ impl ModelCatalog {
             .collect();
 
         let mut added = 0usize;
-        for id in model_ids {
-            if existing_ids.contains(&id.to_lowercase()) {
+        for model in models {
+            if existing_ids.contains(&model.name.to_lowercase()) {
                 continue;
             }
-            // Generate a human-friendly display name
-            let display = format!("{} ({})", id, provider);
+
+            let display = build_discovered_display_name(&model.name, provider, model);
             self.models.push(ModelCatalogEntry {
-                id: id.clone(),
+                id: model.name.clone(),
                 display_name: display,
                 provider: provider.to_string(),
                 tier: ModelTier::Local,
-                context_window: 32_768,
-                max_output_tokens: 4_096,
+                context_window: model.context_window.unwrap_or(32_768),
+                max_output_tokens: model.max_output_tokens.unwrap_or(4_096),
                 input_cost_per_m: 0.0,
                 output_cost_per_m: 0.0,
-                supports_tools: true,
-                supports_vision: false,
+                supports_tools: model.supports_tools.unwrap_or(true),
+                supports_vision: model.supports_vision.unwrap_or(false),
                 supports_streaming: true,
                 aliases: Vec::new(),
             });
@@ -287,6 +293,25 @@ impl Default for ModelCatalog {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Build an enriched display name for a discovered local model.
+///
+/// Includes parameter size and quantization when available from enrichment.
+/// Examples: `"llama3.2:latest 3B Q4_K_M (ollama)"`, `"qwen2:7b (vllm)"`.
+fn build_discovered_display_name(
+    name: &str,
+    provider: &str,
+    model: &crate::provider_health::DiscoveredModel,
+) -> String {
+    let mut parts = vec![name.to_string()];
+    if let Some(ref size) = model.parameter_size {
+        parts.push(size.clone());
+    }
+    if let Some(ref quant) = model.quantization_level {
+        parts.push(quant.clone());
+    }
+    format!("{} ({})", parts.join(" "), provider)
 }
 
 /// Read an OpenAI API key from the Codex CLI credential file.
@@ -3081,11 +3106,15 @@ mod tests {
 
     #[test]
     fn test_merge_adds_new_models() {
+        use crate::provider_health::DiscoveredModel;
         let mut catalog = ModelCatalog::new();
         let before = catalog.models_by_provider("ollama").len();
         catalog.merge_discovered_models(
             "ollama",
-            &["codestral:latest".to_string(), "qwen2:7b".to_string()],
+            &[
+                DiscoveredModel { name: "codestral:latest".into(), ..Default::default() },
+                DiscoveredModel { name: "qwen2:7b".into(), ..Default::default() },
+            ],
         );
         let after = catalog.models_by_provider("ollama").len();
         assert_eq!(after, before + 2);
@@ -3097,21 +3126,70 @@ mod tests {
 
     #[test]
     fn test_merge_skips_existing() {
+        use crate::provider_health::DiscoveredModel;
         let mut catalog = ModelCatalog::new();
         // "llama3.2" is already a builtin Ollama model
         let before = catalog.list_models().len();
-        catalog.merge_discovered_models("ollama", &["llama3.2".to_string()]);
+        catalog.merge_discovered_models(
+            "ollama",
+            &[DiscoveredModel { name: "llama3.2".into(), ..Default::default() }],
+        );
         let after = catalog.list_models().len();
         assert_eq!(after, before); // no new model added
     }
 
     #[test]
     fn test_merge_updates_model_count() {
+        use crate::provider_health::DiscoveredModel;
         let mut catalog = ModelCatalog::new();
         let before_count = catalog.get_provider("ollama").unwrap().model_count;
-        catalog.merge_discovered_models("ollama", &["new-model:latest".to_string()]);
+        catalog.merge_discovered_models(
+            "ollama",
+            &[DiscoveredModel { name: "new-model:latest".into(), ..Default::default() }],
+        );
         let after_count = catalog.get_provider("ollama").unwrap().model_count;
         assert_eq!(after_count, before_count + 1);
+    }
+
+    #[test]
+    fn test_merge_enriched_ollama_model() {
+        use crate::provider_health::DiscoveredModel;
+        let mut catalog = ModelCatalog::new();
+        let enriched = DiscoveredModel {
+            name: "llava:13b".into(),
+            context_window: Some(131_072),
+            max_output_tokens: None,
+            supports_vision: Some(true),
+            supports_tools: Some(false),
+            family: Some("llava".into()),
+            families: Some(vec!["llava".into(), "clip".into()]),
+            parameter_size: Some("13B".into()),
+            quantization_level: Some("Q4_K_M".into()),
+        };
+        catalog.merge_discovered_models("ollama", &[enriched]);
+        let model = catalog.find_model("llava:13b").unwrap();
+        assert_eq!(model.context_window, 131_072);
+        assert!(model.supports_vision);
+        assert!(!model.supports_tools);
+        assert_eq!(model.tier, ModelTier::Local);
+        assert!(model.display_name.contains("13B"));
+        assert!(model.display_name.contains("Q4_K_M"));
+    }
+
+    #[test]
+    fn test_merge_unenriched_uses_defaults() {
+        use crate::provider_health::DiscoveredModel;
+        let mut catalog = ModelCatalog::new();
+        let unenriched = DiscoveredModel {
+            name: "some-vllm-model".into(),
+            ..Default::default()
+        };
+        catalog.merge_discovered_models("vllm", &[unenriched]);
+        let model = catalog.find_model("some-vllm-model").unwrap();
+        assert_eq!(model.context_window, 32_768);
+        assert_eq!(model.max_output_tokens, 4_096);
+        assert!(model.supports_tools);
+        assert!(!model.supports_vision);
     }
 
     #[test]

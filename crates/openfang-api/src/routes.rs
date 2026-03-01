@@ -4864,7 +4864,9 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
             entry["reachable"] = serde_json::json!(probe.reachable);
             entry["latency_ms"] = serde_json::json!(probe.latency_ms);
             if !probe.discovered_models.is_empty() {
-                entry["discovered_models"] = serde_json::json!(probe.discovered_models);
+                let names: Vec<&str> =
+                    probe.discovered_models.iter().map(|m| m.name.as_str()).collect();
+                entry["discovered_models"] = serde_json::json!(names);
             }
             if let Some(err) = &probe.error {
                 entry["error"] = serde_json::json!(err);
