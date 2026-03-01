@@ -26,11 +26,12 @@ impl AgentRegistry {
 
     /// Register a new agent.
     pub fn register(&self, entry: AgentEntry) -> OpenFangResult<()> {
-        if self.name_index.contains_key(&entry.name) {
+        let key = entry.name.to_lowercase();
+        if self.name_index.contains_key(&key) {
             return Err(OpenFangError::AgentAlreadyExists(entry.name.clone()));
         }
         let id = entry.id;
-        self.name_index.insert(entry.name.clone(), id);
+        self.name_index.insert(key, id);
         for tag in &entry.tags {
             self.tag_index.entry(tag.clone()).or_default().push(id);
         }
@@ -43,10 +44,10 @@ impl AgentRegistry {
         self.agents.get(&id).map(|e| e.value().clone())
     }
 
-    /// Find an agent by name.
+    /// Find an agent by name (case-insensitive).
     pub fn find_by_name(&self, name: &str) -> Option<AgentEntry> {
         self.name_index
-            .get(name)
+            .get(&name.to_lowercase())
             .and_then(|id| self.agents.get(id.value()).map(|e| e.value().clone()))
     }
 
@@ -78,7 +79,7 @@ impl AgentRegistry {
             .agents
             .remove(&id)
             .ok_or_else(|| OpenFangError::AgentNotFound(id.to_string()))?;
-        self.name_index.remove(&entry.name);
+        self.name_index.remove(&entry.name.to_lowercase());
         for tag in &entry.tags {
             if let Some(mut ids) = self.tag_index.get_mut(tag) {
                 ids.retain(|&agent_id| agent_id != id);
@@ -212,21 +213,22 @@ impl AgentRegistry {
 
     /// Update an agent's name (also updates the name index).
     pub fn update_name(&self, id: AgentId, new_name: String) -> OpenFangResult<()> {
-        if self.name_index.contains_key(&new_name) {
+        let new_key = new_name.to_lowercase();
+        if self.name_index.contains_key(&new_key) {
             return Err(OpenFangError::AgentAlreadyExists(new_name));
         }
         let mut entry = self
             .agents
             .get_mut(&id)
             .ok_or_else(|| OpenFangError::AgentNotFound(id.to_string()))?;
-        let old_name = entry.name.clone();
+        let old_key = entry.name.to_lowercase();
         entry.name = new_name.clone();
-        entry.manifest.name = new_name.clone();
+        entry.manifest.name = new_name;
         entry.last_active = chrono::Utc::now();
         // Update name index
         drop(entry);
-        self.name_index.remove(&old_name);
-        self.name_index.insert(new_name, id);
+        self.name_index.remove(&old_key);
+        self.name_index.insert(new_key, id);
         Ok(())
     }
 
@@ -342,5 +344,60 @@ mod tests {
         registry.register(entry).unwrap();
         registry.remove(id).unwrap();
         assert!(registry.get(id).is_none());
+    }
+
+    #[test]
+    fn test_find_by_name_case_insensitive() {
+        let registry = AgentRegistry::new();
+        let entry = test_entry("Data Analyst");
+        registry.register(entry).unwrap();
+
+        // Exact match
+        assert!(registry.find_by_name("Data Analyst").is_some());
+        // All lowercase
+        assert!(registry.find_by_name("data analyst").is_some());
+        // All uppercase
+        assert!(registry.find_by_name("DATA ANALYST").is_some());
+        // Mixed case
+        assert!(registry.find_by_name("data Analyst").is_some());
+    }
+
+    #[test]
+    fn test_duplicate_name_case_insensitive() {
+        let registry = AgentRegistry::new();
+        registry.register(test_entry("Assistant")).unwrap();
+        // Same name different case should be rejected
+        assert!(registry.register(test_entry("assistant")).is_err());
+        assert!(registry.register(test_entry("ASSISTANT")).is_err());
+    }
+
+    #[test]
+    fn test_remove_case_insensitive() {
+        let registry = AgentRegistry::new();
+        let entry = test_entry("My Agent");
+        let id = entry.id;
+        registry.register(entry).unwrap();
+        // Should find it before removal
+        assert!(registry.find_by_name("my agent").is_some());
+        registry.remove(id).unwrap();
+        // Gone after removal
+        assert!(registry.find_by_name("my agent").is_none());
+        assert!(registry.find_by_name("My Agent").is_none());
+    }
+
+    #[test]
+    fn test_update_name_case_insensitive() {
+        let registry = AgentRegistry::new();
+        let entry = test_entry("old-name");
+        let id = entry.id;
+        registry.register(entry).unwrap();
+
+        registry.update_name(id, "New Name".to_string()).unwrap();
+        // Old name gone
+        assert!(registry.find_by_name("old-name").is_none());
+        // New name works case-insensitively
+        assert!(registry.find_by_name("New Name").is_some());
+        assert!(registry.find_by_name("new name").is_some());
+        assert!(registry.find_by_name("NEW NAME").is_some());
     }
 }

@@ -88,17 +88,28 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
     }
 
     async fn spawn_agent_by_name(&self, manifest_name: &str) -> Result<AgentId, String> {
-        // Look for manifest at ~/.openfang/agents/{name}/agent.toml
-        let manifest_path = self
-            .kernel
-            .config
-            .home_dir
-            .join("agents")
-            .join(manifest_name)
-            .join("agent.toml");
+        // Look for manifest at ~/.openfang/agents/{name}/agent.toml (case-insensitive)
+        let agents_dir = self.kernel.config.home_dir.join("agents");
+        let mut manifest_path = agents_dir.join(manifest_name).join("agent.toml");
 
         if !manifest_path.exists() {
-            return Err(format!("Manifest not found: {}", manifest_path.display()));
+            // Case-insensitive fallback: scan agents directory for a matching name
+            let mut found = false;
+            if let Ok(entries) = std::fs::read_dir(&agents_dir) {
+                let target = manifest_name.to_lowercase();
+                for entry in entries.flatten() {
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                        && entry.file_name().to_string_lossy().to_lowercase() == target
+                    {
+                        manifest_path = entry.path().join("agent.toml");
+                        found = manifest_path.exists();
+                        break;
+                    }
+                }
+            }
+            if !found {
+                return Err(format!("Manifest not found: {}", manifest_path.display()));
+            }
         }
 
         let contents = std::fs::read_to_string(&manifest_path)
