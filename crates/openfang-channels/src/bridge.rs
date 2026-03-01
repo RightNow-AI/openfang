@@ -730,15 +730,15 @@ async fn handle_command(
             if args.is_empty() {
                 return "Usage: /agent <name>".to_string();
             }
-            let agent_name = &args[0];
-            match handle.find_agent_by_name(agent_name).await {
+            let agent_name = args.join(" ");
+            match handle.find_agent_by_name(&agent_name).await {
                 Ok(Some(agent_id)) => {
                     router.set_user_default(sender.platform_id.clone(), agent_id);
                     format!("Now talking to agent: {agent_name}")
                 }
                 Ok(None) => {
                     // Try to spawn it
-                    match handle.spawn_agent_by_name(agent_name).await {
+                    match handle.spawn_agent_by_name(&agent_name).await {
                         Ok(agent_id) => {
                             router.set_user_default(sender.platform_id.clone(), agent_id);
                             format!("Spawned and connected to agent: {agent_name}")
