@@ -10,7 +10,7 @@ key = "TWITTER_BEARER_TOKEN"
 label = "Twitter API Bearer Token"
 requirement_type = "api_key"
 check_value = "TWITTER_BEARER_TOKEN"
-description = "A Bearer Token from the Twitter/X Developer Portal. Required for reading and posting tweets via the Twitter API v2."
+description = "A Bearer Token from the Twitter/X Developer Portal. Required for reading tweets via the Twitter API v2."
 
 [requires.install]
 signup_url = "https://developer.twitter.com/en/portal/dashboard"
@@ -25,6 +25,34 @@ steps = [
     "Copy the token and set it as an environment variable",
     "Restart OpenFang or reload config for the change to take effect",
 ]
+
+[[requires]]
+key = "TWITTER_API_KEY"
+label = "Twitter API Key (Consumer Key)"
+requirement_type = "api_key"
+check_value = "TWITTER_API_KEY"
+description = "OAuth 1.0a Consumer Key for posting tweets. Required for write access to the Twitter API v2."
+
+[[requires]]
+key = "TWITTER_API_SECRET"
+label = "Twitter API Secret (Consumer Secret)"
+requirement_type = "api_key"
+check_value = "TWITTER_API_SECRET"
+description = "OAuth 1.0a Consumer Secret for posting tweets."
+
+[[requires]]
+key = "TWITTER_ACCESS_TOKEN"
+label = "Twitter Access Token"
+requirement_type = "api_key"
+check_value = "TWITTER_ACCESS_TOKEN"
+description = "OAuth 1.0a Access Token for posting tweets on behalf of your account."
+
+[[requires]]
+key = "TWITTER_ACCESS_SECRET"
+label = "Twitter Access Token Secret"
+requirement_type = "api_key"
+check_value = "TWITTER_ACCESS_SECRET"
+description = "OAuth 1.0a Access Token Secret for posting tweets on behalf of your account."
 
 # ─── Configurable settings ───────────────────────────────────────────────────
 
@@ -193,12 +221,27 @@ Detect the operating system:
 python -c "import platform; print(platform.system())"
 ```
 
-Verify Twitter API access:
+Verify Twitter API access (read — Bearer Token):
 ```
 curl -s -H "Authorization: Bearer $TWITTER_BEARER_TOKEN" "https://api.twitter.com/2/users/me" -o twitter_me.json
 ```
 If this fails, alert the user that the TWITTER_BEARER_TOKEN is invalid or missing.
 Extract your user_id and username from the response for later API calls.
+
+IMPORTANT — Posting tweets requires OAuth 1.0a (Bearer Token is read-only):
+To POST tweets, you MUST use this Python snippet (OAuth 1.0a):
+```python
+python3 -c "
+from requests_oauthlib import OAuth1Session
+import json, sys
+oauth = OAuth1Session('$TWITTER_API_KEY', client_secret='$TWITTER_API_SECRET', resource_owner_key='$TWITTER_ACCESS_TOKEN', resource_owner_secret='$TWITTER_ACCESS_SECRET')
+text = sys.argv[1]
+r = oauth.post('https://api.twitter.com/2/tweets', json={'text': text})
+print(json.dumps(r.json(), indent=2))
+print(f'Status: {r.status_code}')
+" "YOUR TWEET TEXT HERE"
+```
+Never use Bearer Token for posting — it will return 403 Forbidden.
 
 Recover state:
 1. memory_recall `twitter_hand_state` — load previous posting history, queue, performance data
@@ -285,13 +328,15 @@ If `approval_mode` is ENABLED:
 4. Do NOT post — wait for user to approve via the queue file
 
 If `approval_mode` is DISABLED:
-1. Post each tweet at its scheduled time via the API:
+1. Post each tweet at its scheduled time via OAuth 1.0a:
    ```
-   curl -s -X POST "https://api.twitter.com/2/tweets" \
-     -H "Authorization: Bearer $TWITTER_BEARER_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"text": "tweet content here"}' \
-     -o tweet_response.json
+   python3 -c "
+from requests_oauthlib import OAuth1Session
+import json
+oauth = OAuth1Session('$TWITTER_API_KEY', client_secret='$TWITTER_API_SECRET', resource_owner_key='$TWITTER_ACCESS_TOKEN', resource_owner_secret='$TWITTER_ACCESS_SECRET')
+r = oauth.post('https://api.twitter.com/2/tweets', json={'text': '''TWEET_TEXT_HERE'''})
+print(json.dumps(r.json(), indent=2))
+" > tweet_response.json
    ```
 2. For threads, post sequentially using `reply.in_reply_to_tweet_id`:
    ```
