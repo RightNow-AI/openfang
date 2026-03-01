@@ -3024,10 +3024,72 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
         let dst_path = dst.join(entry.file_name());
         if src_path.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
+        } else if src_path.file_name().is_some_and(|n| n == ".env" || n == "secrets.env") {
+            // Clean OpenClaw .env format during migration
+            // OpenClaw stores keys as: KEY="PROVIDER : actual_key"
+            // OpenFang expects: KEY=actual_key
+            clean_and_copy_env_file(&src_path, &dst_path)?;
         } else {
             std::fs::copy(&src_path, &dst_path)?;
         }
     }
+    Ok(())
+}
+
+/// Clean and copy an .env file from OpenClaw format.
+/// Removes the "PROVIDER : " prefix from API key values.
+fn clean_and_copy_env_file(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
+    let content = std::fs::read_to_string(src)?;
+    let mut cleaned_lines = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            cleaned_lines.push(line.to_string());
+            continue;
+        }
+
+        if let Some(eq_pos) = trimmed.find('=') {
+            let key = trimmed[..eq_pos].trim();
+            let mut value = trimmed[eq_pos + 1..].trim();
+
+            // Strip quotes if present
+            if (value.starts_with('"') && value.ends_with('"') && value.len() >= 2)
+                || (value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2)
+            {
+                value = &value[1..value.len() - 1];
+            }
+
+            // Remove "PROVIDER : " prefix from value if present
+            // Format: "PROVIDER : actual_key" -> "actual_key"
+            if let Some(colon_pos) = value.find(" : ") {
+                let prefix = &value[..colon_pos];
+                // Check if the prefix looks like a provider name (all caps or alphanumeric with underscore)
+                if prefix.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_alphanumeric()) {
+                    value = &value[colon_pos + 3..];
+                }
+            }
+
+            // Write cleaned line
+            if value.contains(' ') || value.contains('"') {
+                cleaned_lines.push(format!("{}=\"{}\"", key, value.replace('"', "\\\"")));
+            } else {
+                cleaned_lines.push(format!("{}={}", key, value));
+            }
+        } else {
+            cleaned_lines.push(line.to_string());
+        }
+    }
+
+    std::fs::write(dst, cleaned_lines.join("\n") + "\n")?;
+
+    // Set 0600 permissions on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dst, std::fs::Permissions::from_mode(0o600));
+    }
+
     Ok(())
 }
 
