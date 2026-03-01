@@ -1,7 +1,9 @@
 //! Fallback driver — tries multiple LLM drivers in sequence.
 //!
 //! If the primary driver fails with a non-retryable error, the fallback driver
-//! moves to the next driver in the chain.
+//! moves to the next driver in the chain. Each driver can optionally override
+//! the model name in the request (e.g., a local model falling back to a cloud
+//! model with a different name).
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
@@ -12,15 +14,21 @@ use tracing::warn;
 ///
 /// On failure, moves to the next driver. Rate-limit and overload errors
 /// are bubbled up for retry logic to handle.
+///
+/// Each entry in the chain is a `(driver, optional_model_override)` pair.
+/// The primary driver (index 0) typically has `None` (uses the request's model),
+/// while fallback drivers specify their own model name.
 pub struct FallbackDriver {
-    drivers: Vec<Arc<dyn LlmDriver>>,
+    drivers: Vec<(Arc<dyn LlmDriver>, Option<String>)>,
 }
 
 impl FallbackDriver {
     /// Create a new fallback driver from an ordered chain of drivers.
     ///
     /// The first driver is the primary; subsequent are fallbacks.
-    pub fn new(drivers: Vec<Arc<dyn LlmDriver>>) -> Self {
+    /// Each entry is `(driver, model_override)` — if `model_override` is `Some`,
+    /// the request's model field is replaced before sending to that driver.
+    pub fn new(drivers: Vec<(Arc<dyn LlmDriver>, Option<String>)>) -> Self {
         Self { drivers }
     }
 }
@@ -30,8 +38,12 @@ impl LlmDriver for FallbackDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let mut last_error = None;
 
-        for (i, driver) in self.drivers.iter().enumerate() {
-            match driver.complete(request.clone()).await {
+        for (i, (driver, model_override)) in self.drivers.iter().enumerate() {
+            let mut req = request.clone();
+            if let Some(ref model) = model_override {
+                req.model = model.clone();
+            }
+            match driver.complete(req).await {
                 Ok(response) => return Ok(response),
                 Err(e @ LlmError::RateLimited { .. }) | Err(e @ LlmError::Overloaded { .. }) => {
                     // Retryable errors — bubble up for the retry loop to handle
@@ -61,8 +73,12 @@ impl LlmDriver for FallbackDriver {
     ) -> Result<CompletionResponse, LlmError> {
         let mut last_error = None;
 
-        for (i, driver) in self.drivers.iter().enumerate() {
-            match driver.stream(request.clone(), tx.clone()).await {
+        for (i, (driver, model_override)) in self.drivers.iter().enumerate() {
+            let mut req = request.clone();
+            if let Some(ref model) = model_override {
+                req.model = model.clone();
+            }
+            match driver.stream(req, tx.clone()).await {
                 Ok(response) => return Ok(response),
                 Err(e @ LlmError::RateLimited { .. }) | Err(e @ LlmError::Overloaded { .. }) => {
                     return Err(e);
@@ -122,6 +138,29 @@ mod tests {
         }
     }
 
+    /// Captures the model name from the request for assertion.
+    struct ModelCapture {
+        expected: String,
+    }
+
+    #[async_trait]
+    impl LlmDriver for ModelCapture {
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+            assert_eq!(req.model, self.expected, "Model override not applied");
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::Text {
+                    text: format!("model={}", req.model),
+                }],
+                stop_reason: StopReason::EndTurn,
+                tool_calls: vec![],
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                },
+            })
+        }
+    }
+
     fn test_request() -> CompletionRequest {
         CompletionRequest {
             model: "test".to_string(),
@@ -137,8 +176,8 @@ mod tests {
     #[tokio::test]
     async fn test_fallback_primary_succeeds() {
         let driver = FallbackDriver::new(vec![
-            Arc::new(OkDriver) as Arc<dyn LlmDriver>,
-            Arc::new(FailDriver) as Arc<dyn LlmDriver>,
+            (Arc::new(OkDriver) as Arc<dyn LlmDriver>, None),
+            (Arc::new(FailDriver) as Arc<dyn LlmDriver>, None),
         ]);
         let result = driver.complete(test_request()).await;
         assert!(result.is_ok());
@@ -148,8 +187,8 @@ mod tests {
     #[tokio::test]
     async fn test_fallback_primary_fails_secondary_succeeds() {
         let driver = FallbackDriver::new(vec![
-            Arc::new(FailDriver) as Arc<dyn LlmDriver>,
-            Arc::new(OkDriver) as Arc<dyn LlmDriver>,
+            (Arc::new(FailDriver) as Arc<dyn LlmDriver>, None),
+            (Arc::new(OkDriver) as Arc<dyn LlmDriver>, None),
         ]);
         let result = driver.complete(test_request()).await;
         assert!(result.is_ok());
@@ -158,8 +197,8 @@ mod tests {
     #[tokio::test]
     async fn test_fallback_all_fail() {
         let driver = FallbackDriver::new(vec![
-            Arc::new(FailDriver) as Arc<dyn LlmDriver>,
-            Arc::new(FailDriver) as Arc<dyn LlmDriver>,
+            (Arc::new(FailDriver) as Arc<dyn LlmDriver>, None),
+            (Arc::new(FailDriver) as Arc<dyn LlmDriver>, None),
         ]);
         let result = driver.complete(test_request()).await;
         assert!(result.is_err());
@@ -182,11 +221,42 @@ mod tests {
         }
 
         let driver = FallbackDriver::new(vec![
-            Arc::new(RateLimitDriver) as Arc<dyn LlmDriver>,
-            Arc::new(OkDriver) as Arc<dyn LlmDriver>,
+            (Arc::new(RateLimitDriver) as Arc<dyn LlmDriver>, None),
+            (Arc::new(OkDriver) as Arc<dyn LlmDriver>, None),
         ]);
         let result = driver.complete(test_request()).await;
         // Rate limit should NOT fall through to next driver
         assert!(matches!(result, Err(LlmError::RateLimited { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_model_override_applied_on_fallback() {
+        let driver = FallbackDriver::new(vec![
+            (Arc::new(FailDriver) as Arc<dyn LlmDriver>, None),
+            (
+                Arc::new(ModelCapture {
+                    expected: "claude-opus-4-6".to_string(),
+                }) as Arc<dyn LlmDriver>,
+                Some("claude-opus-4-6".to_string()),
+            ),
+        ]);
+        let result = driver.complete(test_request()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().text(), "model=claude-opus-4-6");
+    }
+
+    #[tokio::test]
+    async fn test_primary_keeps_original_model() {
+        let driver = FallbackDriver::new(vec![
+            (
+                Arc::new(ModelCapture {
+                    expected: "test".to_string(),
+                }) as Arc<dyn LlmDriver>,
+                None,
+            ),
+        ]);
+        let result = driver.complete(test_request()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().text(), "model=test");
     }
 }
