@@ -225,7 +225,6 @@ jobs:
           images: ghcr.io/rightnow-ai/openfang
           tags: |
             type=semver,pattern={{version}}
-            type=raw,value=latest
       - name: Build and push (multi-arch)
         uses: docker/build-push-action@v6
         with:
