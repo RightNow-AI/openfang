@@ -448,7 +448,7 @@ fn read_identity_file(workspace: &Path, filename: &str) -> Option<String> {
         return None;
     }
     if content.len() > MAX_IDENTITY_FILE_BYTES {
-        Some(content[..MAX_IDENTITY_FILE_BYTES].to_string())
+        Some(openfang_types::truncate_str(&content, MAX_IDENTITY_FILE_BYTES).to_string())
     } else {
         Some(content)
     }
@@ -912,6 +912,29 @@ impl OpenFangKernel {
                         restored_entry.manifest.exec_policy =
                             Some(kernel.config.exec_policy.clone());
                     }
+
+                    // Apply global budget defaults to restored agents
+                    apply_budget_defaults(
+                        &kernel.config.budget,
+                        &mut restored_entry.manifest.resources,
+                    );
+
+                    // Apply default_model to restored agents (same logic as spawn)
+                    if restored_entry.manifest.model.api_key_env.is_none()
+                        && restored_entry.manifest.model.base_url.is_none()
+                    {
+                        let dm = &kernel.config.default_model;
+                        if !dm.provider.is_empty() {
+                            restored_entry.manifest.model.provider = dm.provider.clone();
+                        }
+                        if !dm.model.is_empty() {
+                            restored_entry.manifest.model.model = dm.model.clone();
+                        }
+                        if dm.base_url.is_some() {
+                            restored_entry.manifest.model.base_url = dm.base_url.clone();
+                        }
+                    }
+
                     if let Err(e) = kernel.registry.register(restored_entry) {
                         tracing::warn!(agent = %name, "Failed to restore agent: {e}");
                     } else {
@@ -988,6 +1011,15 @@ impl OpenFangKernel {
                 manifest.model.base_url = dm.base_url.clone();
             }
         }
+
+        // Normalize: strip provider prefix from model name if present
+        let normalized = strip_provider_prefix(&manifest.model.model, &manifest.model.provider);
+        if normalized != manifest.model.model {
+            manifest.model.model = normalized;
+        }
+
+        // Apply global budget defaults to agent resource quotas
+        apply_budget_defaults(&self.config.budget, &mut manifest.resources);
 
         // Create workspace directory for the agent
         let workspace_dir = manifest.workspace.clone().unwrap_or_else(|| {
@@ -1345,6 +1377,19 @@ impl OpenFangKernel {
                 .flatten()
                 .and_then(|v| v.as_str().map(String::from));
 
+            let peer_agents: Vec<(String, String, String)> = self
+                .registry
+                .list()
+                .iter()
+                .map(|a| {
+                    (
+                        a.name.clone(),
+                        format!("{:?}", a.state),
+                        a.manifest.model.model.clone(),
+                    )
+                })
+                .collect();
+
             let prompt_ctx = openfang_runtime::prompt_builder::PromptContext {
                 agent_name: manifest.name.clone(),
                 agent_description: manifest.description.clone(),
@@ -1409,6 +1454,7 @@ impl OpenFangKernel {
                 } else {
                     None
                 },
+                peer_agents,
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -1803,6 +1849,19 @@ impl OpenFangKernel {
                 .flatten()
                 .and_then(|v| v.as_str().map(String::from));
 
+            let peer_agents: Vec<(String, String, String)> = self
+                .registry
+                .list()
+                .iter()
+                .map(|a| {
+                    (
+                        a.name.clone(),
+                        format!("{:?}", a.state),
+                        a.manifest.model.model.clone(),
+                    )
+                })
+                .collect();
+
             let prompt_ctx = openfang_runtime::prompt_builder::PromptContext {
                 agent_name: manifest.name.clone(),
                 agent_description: manifest.description.clone(),
@@ -1867,6 +1926,7 @@ impl OpenFangKernel {
                 } else {
                     None
                 },
+                peer_agents,
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -2086,6 +2146,35 @@ impl OpenFangKernel {
         Ok(())
     }
 
+    /// Clear ALL conversation history for an agent (sessions + canonical).
+    ///
+    /// Creates a fresh empty session afterward so the agent is still usable.
+    pub fn clear_agent_history(&self, agent_id: AgentId) -> KernelResult<()> {
+        let _entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+
+        // Delete all regular sessions
+        let _ = self.memory.delete_agent_sessions(agent_id);
+
+        // Delete canonical (cross-channel) session
+        let _ = self.memory.delete_canonical_session(agent_id);
+
+        // Create a fresh session
+        let new_session = self
+            .memory
+            .create_session(agent_id)
+            .map_err(KernelError::OpenFang)?;
+
+        // Update registry with new session ID
+        self.registry
+            .update_session_id(agent_id, new_session.id)
+            .map_err(KernelError::OpenFang)?;
+
+        info!(agent_id = %agent_id, "All agent history cleared");
+        Ok(())
+    }
+
     /// List all sessions for a specific agent.
     pub fn list_agent_sessions(&self, agent_id: AgentId) -> KernelResult<Vec<serde_json::Value>> {
         // Verify agent exists
@@ -2265,16 +2354,23 @@ impl OpenFangKernel {
         // If catalog lookup failed, try to infer provider from model name prefix
         let provider = resolved_provider.or_else(|| infer_provider_from_model(model));
 
+        // Strip the provider prefix from the model name (e.g. "openrouter/deepseek/deepseek-chat" → "deepseek/deepseek-chat")
+        let normalized_model = if let Some(ref prov) = provider {
+            strip_provider_prefix(model, prov)
+        } else {
+            model.to_string()
+        };
+
         if let Some(provider) = provider {
             self.registry
-                .update_model_and_provider(agent_id, model.to_string(), provider.clone())
+                .update_model_and_provider(agent_id, normalized_model.clone(), provider.clone())
                 .map_err(KernelError::OpenFang)?;
-            info!(agent_id = %agent_id, model = %model, provider = %provider, "Agent model+provider updated");
+            info!(agent_id = %agent_id, model = %normalized_model, provider = %provider, "Agent model+provider updated");
         } else {
             self.registry
-                .update_model(agent_id, model.to_string())
+                .update_model(agent_id, normalized_model.clone())
                 .map_err(KernelError::OpenFang)?;
-            info!(agent_id = %agent_id, model = %model, "Agent model updated (provider unchanged)");
+            info!(agent_id = %agent_id, model = %normalized_model, "Agent model updated (provider unchanged)");
         }
 
         // Persist the updated entry
@@ -4249,6 +4345,27 @@ fn manifest_to_capabilities(manifest: &AgentManifest) -> Vec<Capability> {
     }
 
     caps
+}
+
+/// Apply global budget defaults to an agent's resource quota.
+///
+/// When the global budget config specifies limits and the agent still has
+/// the built-in defaults, override them so agents respect the user's config.
+fn apply_budget_defaults(
+    budget: &openfang_types::config::BudgetConfig,
+    resources: &mut ResourceQuota,
+) {
+    // Only override hourly if agent has the built-in default (1.0) and global is set
+    if budget.max_hourly_usd > 0.0 && resources.max_cost_per_hour_usd == 1.0 {
+        resources.max_cost_per_hour_usd = budget.max_hourly_usd;
+    }
+    // Only override daily/monthly if agent has unlimited (0.0) and global is set
+    if budget.max_daily_usd > 0.0 && resources.max_cost_per_day_usd == 0.0 {
+        resources.max_cost_per_day_usd = budget.max_daily_usd;
+    }
+    if budget.max_monthly_usd > 0.0 && resources.max_cost_per_month_usd == 0.0 {
+        resources.max_cost_per_month_usd = budget.max_monthly_usd;
+    }
 }
 
 /// Infer provider from a model name when catalog lookup fails.

@@ -213,10 +213,17 @@ fn convert_messages(
                                 },
                             });
                         }
-                        ContentBlock::ToolResult { content, .. } => {
+                        ContentBlock::ToolResult {
+                            content, tool_name, ..
+                        } => {
+                            let fn_name = if tool_name.is_empty() {
+                                "unknown_function".to_string()
+                            } else {
+                                tool_name.clone()
+                            };
                             parts.push(GeminiPart::FunctionResponse {
                                 function_response: GeminiFunctionResponseData {
-                                    name: String::new(),
+                                    name: fn_name,
                                     response: serde_json::json!({ "result": content }),
                                 },
                             });

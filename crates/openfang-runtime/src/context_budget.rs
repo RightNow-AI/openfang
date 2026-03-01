@@ -64,12 +64,23 @@ pub fn truncate_tool_result_dynamic(content: &str, budget: &ContextBudget) -> St
         return content.to_string();
     }
 
-    // Find last newline before the cap to break cleanly
-    let search_start = cap.saturating_sub(200);
-    let break_point = content[search_start..cap]
+    // Find last newline before the cap to break cleanly (char-boundary safe)
+    let safe_cap = if content.is_char_boundary(cap) {
+        cap
+    } else {
+        content[..cap].char_indices().next_back().map(|(i, _)| i).unwrap_or(0)
+    };
+    let search_start = safe_cap.saturating_sub(200);
+    let break_point = content[search_start..safe_cap]
         .rfind('\n')
         .map(|pos| search_start + pos)
-        .unwrap_or(cap.saturating_sub(100));
+        .unwrap_or(safe_cap.saturating_sub(100));
+    // Ensure break_point is also a char boundary
+    let break_point = if content.is_char_boundary(break_point) {
+        break_point
+    } else {
+        content[..break_point].char_indices().next_back().map(|(i, _)| i).unwrap_or(0)
+    };
 
     format!(
         "{}\n\n[TRUNCATED: result was {} chars, showing first {} (budget: {}% of {}K context window)]",
@@ -248,6 +259,7 @@ mod tests {
                 role: openfang_types::message::Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
+                    tool_name: String::new(),
                     content: big_result.clone(),
                     is_error: false,
                 }]),
@@ -256,6 +268,7 @@ mod tests {
                 role: openfang_types::message::Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "t2".to_string(),
+                    tool_name: String::new(),
                     content: big_result,
                     is_error: false,
                 }]),

@@ -3072,4 +3072,16 @@ mark.search-highlight {
   max-height: 400px;
   overflow-y: auto;
 }
-.flex-col { flex-direction: column; }
+/* Comms page */
+.comms-topo-tree { padding: 4px 0 4px 8px; }
+.comms-topo-child { padding: 0 0 0 20px; display: flex; align-items: center; gap: 4px; }
+.comms-topo-branch { color: var(--text-dim); font-family: var(--font-mono); white-space: pre; }
+.comms-topo-node { display: flex; align-items: center; gap: 4px; padding: 2px 0; }
+.comms-event-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border-bottom: 1px solid var(--border);
+  font-size: 12px; transition: background var(--transition-fast);
+}
+.comms-event-row:hover { background: var(--bg-hover); }
+.comms-event-time { min-width: 50px; text-align: right; }
+.comms-event-detail { margin-left: auto; }

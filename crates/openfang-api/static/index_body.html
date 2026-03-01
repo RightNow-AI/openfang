@@ -96,6 +96,10 @@
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg></span>
               <span class="nav-label">Approvals</span>
             </a>
+            <a class="nav-item" :class="{ active: page === 'comms' }" @click="navigate('comms')" :aria-current="page === 'comms' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg></span>
+              <span class="nav-label">Comms</span>
+            </a>
           </div>
         </template>
       </div>
@@ -565,7 +569,7 @@
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
                 </button>
                 <button class="btn btn-ghost btn-sm" @click="$store.app.toggleFocusMode()" title="Ctrl+Shift+F">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><template x-if="!$store.app.focusMode"><g><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></g></template><template x-if="$store.app.focusMode"><g><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></g></template></svg>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><g x-show="!$store.app.focusMode"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></g><g x-show="$store.app.focusMode"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></g></svg>
                 </button>
                 <button class="btn btn-danger btn-sm" @click="killAgent()">Stop</button>
               </div>
@@ -4014,6 +4018,176 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <h4>No audit entries yet</h4>
               <p class="hint">Activity will appear here as agents operate.</p>
             </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Page: Comms -->
+    <template x-if="page === 'comms'">
+      <div x-data="commsPage" x-init="loadData()" @page-leave.window="stopSSE()">
+        <div class="page-header">
+          <h2>Agent Comms</h2>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-primary btn-sm" @click="openSendModal()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>
+              Send Message
+            </button>
+            <button class="btn btn-ghost btn-sm" @click="openTaskModal()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+              Post Task
+            </button>
+            <button class="btn btn-ghost btn-sm" @click="loadData()" title="Refresh">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15 6.7L3 16"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="page-body">
+          <!-- Loading -->
+          <div x-show="loading" style="animation:fadeIn 0.2s">
+            <div class="card mb-4"><div class="skeleton skeleton-text" style="width:160px;margin-bottom:8px"></div><div class="skeleton skeleton-card" style="height:120px"></div></div>
+            <div class="card"><div class="skeleton skeleton-text" style="width:120px;margin-bottom:8px"></div><div class="skeleton skeleton-card" style="height:200px"></div></div>
+          </div>
+          <!-- Error -->
+          <div x-show="!loading && loadError" class="error-state" style="animation:fadeIn 0.3s">
+            <h3 style="color:var(--error)">Connection Error</h3>
+            <p class="text-xs text-dim" x-text="loadError"></p>
+            <button class="btn btn-primary btn-sm" @click="loadData()" style="margin-top:8px">Retry</button>
+          </div>
+          <!-- Content -->
+          <div x-show="!loading && !loadError" style="animation:fadeIn 0.3s">
+            <!-- Topology -->
+            <div class="card mb-4">
+              <div class="card-header">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>
+                Agent Topology
+                <span class="badge badge-dim" style="margin-left:8px;font-weight:400" x-text="topology.nodes.length + ' agents'"></span>
+              </div>
+              <div style="padding:8px 0;font-family:var(--font-mono);font-size:12px;line-height:1.8">
+                <template x-if="topology.nodes.length === 0">
+                  <div class="text-dim" style="text-align:center;padding:24px">No agents running</div>
+                </template>
+                <template x-for="root in rootNodes()" :key="root.id">
+                  <div class="comms-topo-tree">
+                    <div class="comms-topo-node" :title="root.id">
+                      <span :class="stateBadgeClass(root.state)" style="font-size:10px;padding:1px 6px" x-text="root.state"></span>
+                      <strong x-text="root.name" style="margin:0 4px"></strong>
+                      <span class="text-dim" x-text="root.model"></span>
+                      <template x-for="peer in peersOf(root.id)" :key="peer.id">
+                        <span class="text-dim" style="margin-left:8px" x-text="'\u2194 ' + peer.name"></span>
+                      </template>
+                    </div>
+                    <template x-for="(child, ci) in childrenOf(root.id)" :key="child.id">
+                      <div class="comms-topo-child">
+                        <span class="comms-topo-branch" x-text="ci < childrenOf(root.id).length - 1 ? '\u251c\u2500\u2500 ' : '\u2514\u2500\u2500 '"></span>
+                        <span :class="stateBadgeClass(child.state)" style="font-size:10px;padding:1px 6px" x-text="child.state"></span>
+                        <strong x-text="child.name" style="margin:0 4px"></strong>
+                        <span class="text-dim" x-text="child.model"></span>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <!-- Live Event Feed -->
+            <div class="card">
+              <div class="card-header flex justify-between items-center">
+                <div>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                  Live Event Feed
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="badge badge-success" style="font-size:9px;padding:2px 6px;animation:pulse-ring 2s infinite">LIVE</span>
+                  <span class="text-xs text-dim" x-text="events.length + ' events'"></span>
+                </div>
+              </div>
+              <div style="max-height:400px;overflow-y:auto">
+                <template x-if="events.length === 0">
+                  <div class="text-dim" style="text-align:center;padding:24px">No inter-agent events yet</div>
+                </template>
+                <template x-for="ev in events" :key="ev.id">
+                  <div class="comms-event-row">
+                    <span class="comms-event-time text-xs text-dim" x-text="timeAgo(ev.timestamp)"></span>
+                    <span :class="eventBadgeClass(ev.kind)" style="font-size:10px;padding:1px 6px;min-width:70px;text-align:center" x-text="eventLabel(ev.kind)"></span>
+                    <span style="font-weight:600;font-size:12px" x-text="ev.source_name"></span>
+                    <span class="text-dim" x-show="ev.target_name" x-text="'\u2192 ' + ev.target_name"></span>
+                    <span class="comms-event-detail text-dim text-xs" x-text="ev.detail" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <!-- Send Message Modal -->
+          <div x-show="showSendModal" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)" @click.self="showSendModal=false" x-transition>
+            <div class="card" style="width:420px;max-width:90vw" @click.stop>
+              <div class="card-header">Send Agent Message</div>
+              <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
+                <div>
+                  <label class="text-xs text-dim" style="display:block;margin-bottom:4px">From Agent</label>
+                  <select x-model="sendFrom" class="input" style="width:100%">
+                    <option value="">Select agent...</option>
+                    <template x-for="n in topology.nodes" :key="n.id">
+                      <option :value="n.id" x-text="n.name + ' (' + n.state + ')'"></option>
+                    </template>
+                  </select>
+                </div>
+                <div>
+                  <label class="text-xs text-dim" style="display:block;margin-bottom:4px">To Agent</label>
+                  <select x-model="sendTo" class="input" style="width:100%">
+                    <option value="">Select agent...</option>
+                    <template x-for="n in topology.nodes" :key="n.id">
+                      <option :value="n.id" x-text="n.name + ' (' + n.state + ')'"></option>
+                    </template>
+                  </select>
+                </div>
+                <div>
+                  <label class="text-xs text-dim" style="display:block;margin-bottom:4px">Message</label>
+                  <textarea x-model="sendMsg" class="input" rows="3" placeholder="Type a message..." style="width:100%;resize:vertical"></textarea>
+                </div>
+                <div class="flex gap-2" style="justify-content:flex-end">
+                  <button class="btn btn-ghost btn-sm" @click="showSendModal=false">Cancel</button>
+                  <button class="btn btn-primary btn-sm" @click="submitSend()" :disabled="sendLoading || !sendFrom || !sendTo || !sendMsg.trim()">
+                    <span x-show="sendLoading">Sending...</span>
+                    <span x-show="!sendLoading">Send</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Post Task Modal -->
+          <div x-show="showTaskModal" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)" @click.self="showTaskModal=false" x-transition>
+            <div class="card" style="width:420px;max-width:90vw" @click.stop>
+              <div class="card-header">Post Task</div>
+              <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
+                <div>
+                  <label class="text-xs text-dim" style="display:block;margin-bottom:4px">Title</label>
+                  <input type="text" x-model="taskTitle" class="input" placeholder="Task title..." style="width:100%">
+                </div>
+                <div>
+                  <label class="text-xs text-dim" style="display:block;margin-bottom:4px">Description</label>
+                  <textarea x-model="taskDesc" class="input" rows="3" placeholder="Task description..." style="width:100%;resize:vertical"></textarea>
+                </div>
+                <div>
+                  <label class="text-xs text-dim" style="display:block;margin-bottom:4px">Assign To (optional)</label>
+                  <select x-model="taskAssign" class="input" style="width:100%">
+                    <option value="">Unassigned</option>
+                    <template x-for="n in topology.nodes" :key="n.id">
+                      <option :value="n.id" x-text="n.name"></option>
+                    </template>
+                  </select>
+                </div>
+                <div class="flex gap-2" style="justify-content:flex-end">
+                  <button class="btn btn-ghost btn-sm" @click="showTaskModal=false">Cancel</button>
+                  <button class="btn btn-primary btn-sm" @click="submitTask()" :disabled="taskLoading || !taskTitle.trim()">
+                    <span x-show="taskLoading">Posting...</span>
+                    <span x-show="!taskLoading">Post Task</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

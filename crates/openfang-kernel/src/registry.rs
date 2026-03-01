@@ -241,6 +241,31 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Update an agent's resource quota (budget limits).
+    pub fn update_resources(
+        &self,
+        id: AgentId,
+        hourly: Option<f64>,
+        daily: Option<f64>,
+        monthly: Option<f64>,
+    ) -> OpenFangResult<()> {
+        let mut entry = self
+            .agents
+            .get_mut(&id)
+            .ok_or_else(|| OpenFangError::AgentNotFound(id.to_string()))?;
+        if let Some(v) = hourly {
+            entry.manifest.resources.max_cost_per_hour_usd = v;
+        }
+        if let Some(v) = daily {
+            entry.manifest.resources.max_cost_per_day_usd = v;
+        }
+        if let Some(v) = monthly {
+            entry.manifest.resources.max_cost_per_month_usd = v;
+        }
+        entry.last_active = chrono::Utc::now();
+        Ok(())
+    }
+
     /// Mark an agent's onboarding as complete.
     pub fn mark_onboarding_complete(&self, id: AgentId) -> OpenFangResult<()> {
         let mut entry = self

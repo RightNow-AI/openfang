@@ -102,9 +102,15 @@ impl StreamChunker {
             }
         }
 
-        // Priority 4: Forced break at max_chunk_chars
+        // Priority 4: Forced break at max_chunk_chars (char-boundary safe)
         if self.buffer.len() >= self.max_chunk_chars {
-            let break_at = self.max_chunk_chars;
+            let mut break_at = self.max_chunk_chars;
+            while break_at > 0 && !self.buffer.is_char_boundary(break_at) {
+                break_at -= 1;
+            }
+            if break_at == 0 {
+                break_at = self.buffer.len();
+            }
             let chunk = self.buffer[..break_at].to_string();
             self.buffer = self.buffer[break_at..].to_string();
             return Some(chunk);

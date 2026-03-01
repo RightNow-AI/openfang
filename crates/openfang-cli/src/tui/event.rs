@@ -189,6 +189,17 @@ pub enum AppEvent {
     AgentSkillsUpdated(String),
     /// Agent MCP servers updated.
     AgentMcpServersUpdated(String),
+    /// Comms topology loaded.
+    CommsTopologyLoaded {
+        nodes: Vec<super::screens::comms::CommsNode>,
+        edges: Vec<super::screens::comms::CommsEdge>,
+    },
+    /// Comms events loaded.
+    CommsEventsLoaded(Vec<super::screens::comms::CommsEventItem>),
+    /// Comms send result.
+    CommsSendResult(String),
+    /// Comms task post result.
+    CommsTaskResult(String),
 }
 
 /// Spawn the crossterm polling + tick thread. Returns sender + receiver.
@@ -2588,6 +2599,179 @@ pub fn spawn_reconnect_extension(backend: BackendRef, id: String, tx: mpsc::Send
         BackendRef::InProcess(_) => {
             let _ = tx.send(AppEvent::FetchError(
                 "Reconnect via in-process mode not supported".to_string(),
+            ));
+        }
+    });
+}
+
+/// Fetch comms topology + events.
+pub fn spawn_fetch_comms(backend: BackendRef, tx: mpsc::Sender<AppEvent>) {
+    use super::screens::comms::{CommsEdge, CommsEventItem, CommsNode};
+
+    std::thread::spawn(move || match backend {
+        BackendRef::Daemon(base_url) => {
+            let client = daemon_client();
+            // Fetch topology
+            if let Ok(resp) = client.get(format!("{base_url}/api/comms/topology")).send() {
+                if let Ok(body) = resp.json::<serde_json::Value>() {
+                    let nodes: Vec<CommsNode> = body["nodes"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|n| CommsNode {
+                                    id: n["id"].as_str().unwrap_or("").to_string(),
+                                    name: n["name"].as_str().unwrap_or("").to_string(),
+                                    state: n["state"].as_str().unwrap_or("").to_string(),
+                                    model: n["model"].as_str().unwrap_or("").to_string(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let edges: Vec<CommsEdge> = body["edges"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|e| CommsEdge {
+                                    from: e["from"].as_str().unwrap_or("").to_string(),
+                                    to: e["to"].as_str().unwrap_or("").to_string(),
+                                    kind: e["kind"].as_str().unwrap_or("").to_string(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let _ = tx.send(AppEvent::CommsTopologyLoaded { nodes, edges });
+                }
+            }
+            // Fetch events
+            if let Ok(resp) = client
+                .get(format!("{base_url}/api/comms/events?limit=100"))
+                .send()
+            {
+                if let Ok(body) = resp.json::<serde_json::Value>() {
+                    let events: Vec<CommsEventItem> = body
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|e| CommsEventItem {
+                                    id: e["id"].as_str().unwrap_or("").to_string(),
+                                    timestamp: e["timestamp"].as_str().unwrap_or("").to_string(),
+                                    kind: e["kind"].as_str().unwrap_or("").to_string(),
+                                    source_name: e["source_name"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    target_name: e["target_name"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    detail: e["detail"].as_str().unwrap_or("").to_string(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let _ = tx.send(AppEvent::CommsEventsLoaded(events));
+                }
+            }
+        }
+        BackendRef::InProcess(_) => {
+            let _ = tx.send(AppEvent::CommsTopologyLoaded {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+            });
+            let _ = tx.send(AppEvent::CommsEventsLoaded(Vec::new()));
+        }
+    });
+}
+
+/// Send a message between agents via comms endpoint.
+pub fn spawn_comms_send(
+    backend: BackendRef,
+    from: String,
+    to: String,
+    msg: String,
+    tx: mpsc::Sender<AppEvent>,
+) {
+    std::thread::spawn(move || match backend {
+        BackendRef::Daemon(base_url) => {
+            let client = daemon_client();
+            let body = serde_json::json!({
+                "from_agent_id": from,
+                "to_agent_id": to,
+                "message": msg,
+            });
+            match client
+                .post(format!("{base_url}/api/comms/send"))
+                .json(&body)
+                .send()
+            {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        let _ = tx.send(AppEvent::CommsSendResult("Message sent".to_string()));
+                    } else {
+                        let err = resp
+                            .json::<serde_json::Value>()
+                            .ok()
+                            .and_then(|v| v["error"].as_str().map(String::from))
+                            .unwrap_or_else(|| "Send failed".to_string());
+                        let _ = tx.send(AppEvent::CommsSendResult(err));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::CommsSendResult(format!("Error: {e}")));
+                }
+            }
+        }
+        BackendRef::InProcess(_) => {
+            let _ = tx.send(AppEvent::CommsSendResult(
+                "Send not supported in-process".to_string(),
+            ));
+        }
+    });
+}
+
+/// Post a task via comms endpoint.
+pub fn spawn_comms_task(
+    backend: BackendRef,
+    title: String,
+    desc: String,
+    assign: String,
+    tx: mpsc::Sender<AppEvent>,
+) {
+    std::thread::spawn(move || match backend {
+        BackendRef::Daemon(base_url) => {
+            let client = daemon_client();
+            let mut body = serde_json::json!({
+                "title": title,
+                "description": desc,
+            });
+            if !assign.is_empty() {
+                body["assigned_to"] = serde_json::Value::String(assign);
+            }
+            match client
+                .post(format!("{base_url}/api/comms/task"))
+                .json(&body)
+                .send()
+            {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        let _ = tx.send(AppEvent::CommsTaskResult("Task posted".to_string()));
+                    } else {
+                        let err = resp
+                            .json::<serde_json::Value>()
+                            .ok()
+                            .and_then(|v| v["error"].as_str().map(String::from))
+                            .unwrap_or_else(|| "Post failed".to_string());
+                        let _ = tx.send(AppEvent::CommsTaskResult(err));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::CommsTaskResult(format!("Error: {e}")));
+                }
+            }
+        }
+        BackendRef::InProcess(_) => {
+            let _ = tx.send(AppEvent::CommsTaskResult(
+                "Task post not supported in-process".to_string(),
             ));
         }
     });

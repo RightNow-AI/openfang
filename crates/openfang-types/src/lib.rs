@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod approval;
 pub mod capability;
+pub mod comms;
 pub mod config;
 pub mod error;
 pub mod event;

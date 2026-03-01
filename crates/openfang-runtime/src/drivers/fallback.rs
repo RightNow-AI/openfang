@@ -10,8 +10,8 @@ use tracing::warn;
 
 /// A driver that wraps multiple LLM drivers and tries each in order.
 ///
-/// On failure, moves to the next driver. Rate-limit and overload errors
-/// are bubbled up for retry logic to handle.
+/// On failure (including rate-limit and overload), moves to the next driver.
+/// Only returns an error when ALL drivers in the chain are exhausted.
 pub struct FallbackDriver {
     drivers: Vec<Arc<dyn LlmDriver>>,
 }
@@ -34,8 +34,12 @@ impl LlmDriver for FallbackDriver {
             match driver.complete(request.clone()).await {
                 Ok(response) => return Ok(response),
                 Err(e @ LlmError::RateLimited { .. }) | Err(e @ LlmError::Overloaded { .. }) => {
-                    // Retryable errors — bubble up for the retry loop to handle
-                    return Err(e);
+                    warn!(
+                        driver_index = i,
+                        error = %e,
+                        "Driver rate-limited/overloaded, trying next fallback"
+                    );
+                    last_error = Some(e);
                 }
                 Err(e) => {
                     warn!(
@@ -65,7 +69,12 @@ impl LlmDriver for FallbackDriver {
             match driver.stream(request.clone(), tx.clone()).await {
                 Ok(response) => return Ok(response),
                 Err(e @ LlmError::RateLimited { .. }) | Err(e @ LlmError::Overloaded { .. }) => {
-                    return Err(e);
+                    warn!(
+                        driver_index = i,
+                        error = %e,
+                        "Driver rate-limited/overloaded (stream), trying next fallback"
+                    );
+                    last_error = Some(e);
                 }
                 Err(e) => {
                     warn!(
@@ -166,7 +175,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rate_limit_bubbles_up() {
+    async fn test_rate_limit_falls_through() {
         struct RateLimitDriver;
 
         #[async_trait]
@@ -186,7 +195,33 @@ mod tests {
             Arc::new(OkDriver) as Arc<dyn LlmDriver>,
         ]);
         let result = driver.complete(test_request()).await;
-        // Rate limit should NOT fall through to next driver
+        // Rate limit should fall through to the OkDriver fallback
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().text(), "OK");
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_all_fail() {
+        struct RateLimitDriver;
+
+        #[async_trait]
+        impl LlmDriver for RateLimitDriver {
+            async fn complete(
+                &self,
+                _req: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                Err(LlmError::RateLimited {
+                    retry_after_ms: 5000,
+                })
+            }
+        }
+
+        let driver = FallbackDriver::new(vec![
+            Arc::new(RateLimitDriver) as Arc<dyn LlmDriver>,
+            Arc::new(RateLimitDriver) as Arc<dyn LlmDriver>,
+        ]);
+        let result = driver.complete(test_request()).await;
+        // All drivers rate-limited — error should bubble up
         assert!(matches!(result, Err(LlmError::RateLimited { .. })));
     }
 }

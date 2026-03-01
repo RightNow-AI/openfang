@@ -103,6 +103,9 @@ pub async fn auth(
         || path == "/api/approvals"
         || path.starts_with("/api/approvals/")
         || path == "/api/channels"
+        || path == "/api/hands"
+        || path == "/api/hands/active"
+        || path.starts_with("/api/hands/")
         || path == "/api/skills"
         || path == "/api/sessions"
         || path == "/api/integrations"

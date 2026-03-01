@@ -51,6 +51,8 @@ pub struct PromptContext {
     pub identity_md: Option<String>,
     /// HEARTBEAT.md content (autonomous agent checklist).
     pub heartbeat_md: Option<String>,
+    /// Peer agents visible to this agent: (name, state, model).
+    pub peer_agents: Vec<(String, String, String)>,
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -137,6 +139,11 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
         if let Some(ref channel) = ctx.channel_type {
             sections.push(build_channel_section(channel));
         }
+    }
+
+    // Section 9.5 — Peer Agent Awareness (skip for subagents)
+    if !ctx.is_subagent && !ctx.peer_agents.is_empty() {
+        sections.push(build_peer_agents_section(&ctx.agent_name, &ctx.peer_agents));
     }
 
     // Section 10 — Safety & Oversight (skip for subagents)
@@ -390,6 +397,24 @@ fn build_channel_section(channel: &str) -> String {
          You are responding via {channel}. Keep messages under {limit} chars.\n\
          {hints}"
     )
+}
+
+fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]) -> String {
+    let mut out = String::from(
+        "## Peer Agents\n\
+         You are part of a multi-agent system. These agents are running alongside you:\n",
+    );
+    for (name, state, model) in peers {
+        if name == self_name {
+            continue; // Don't list yourself
+        }
+        out.push_str(&format!("- **{}** ({}) — model: {}\n", name, state, model));
+    }
+    out.push_str(
+        "\nYou can communicate with them using `agent_send` (by name) and see all agents with `agent_list`. \
+         Delegate tasks to specialized agents when appropriate.",
+    );
+    out
 }
 
 /// Static safety section.

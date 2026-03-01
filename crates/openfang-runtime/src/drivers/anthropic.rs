@@ -576,6 +576,7 @@ fn convert_message(msg: &Message) -> ApiMessage {
                         tool_use_id,
                         content,
                         is_error,
+                        ..
                     } => Some(ApiContentBlock::ToolResult {
                         tool_use_id: tool_use_id.clone(),
                         content: content.clone(),

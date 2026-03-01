@@ -12,8 +12,8 @@ use openfang_kernel::OpenFangKernel;
 use openfang_runtime::llm_driver::StreamEvent;
 use openfang_types::agent::AgentId;
 use screens::{
-    agents, audit, channels, chat, dashboard, extensions, hands, logs, memory, peers, security,
-    sessions, settings, skills, templates, triggers, usage, welcome, wizard, workflows,
+    agents, audit, channels, chat, comms, dashboard, extensions, hands, logs, memory, peers,
+    security, sessions, settings, skills, templates, triggers, usage, welcome, wizard, workflows,
 };
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
@@ -53,6 +53,7 @@ enum Tab {
     Extensions,
     Templates,
     Peers,
+    Comms,
     Security,
     Audit,
     Usage,
@@ -74,6 +75,7 @@ const TABS: &[Tab] = &[
     Tab::Extensions,
     Tab::Templates,
     Tab::Peers,
+    Tab::Comms,
     Tab::Security,
     Tab::Audit,
     Tab::Usage,
@@ -97,6 +99,7 @@ impl Tab {
             Tab::Extensions => "Extensions",
             Tab::Templates => "Templates",
             Tab::Peers => "Peers",
+            Tab::Comms => "Comms",
             Tab::Security => "Security",
             Tab::Audit => "Audit",
             Tab::Usage => "Usage",
@@ -169,6 +172,7 @@ struct App {
     usage: usage::UsageState,
     settings: settings::SettingsState,
     peers: peers::PeersState,
+    comms: comms::CommsState,
     logs: logs::LogsState,
 
     kernel_booting: bool,
@@ -207,6 +211,7 @@ impl App {
             usage: usage::UsageState::new(),
             settings: settings::SettingsState::new(),
             peers: peers::PeersState::new(),
+            comms: comms::CommsState::new(),
             logs: logs::LogsState::new(),
             kernel_booting: false,
             kernel_boot_error: None,
@@ -503,6 +508,26 @@ impl App {
                     self.peers.list_state.select(Some(0));
                 }
                 self.peers.loading = false;
+            }
+            AppEvent::CommsTopologyLoaded { nodes, edges } => {
+                self.comms.nodes = nodes;
+                self.comms.edges = edges;
+                self.comms.loading = false;
+            }
+            AppEvent::CommsEventsLoaded(events) => {
+                self.comms.events = events;
+                if !self.comms.events.is_empty()
+                    && self.comms.event_list_state.selected().is_none()
+                {
+                    self.comms.event_list_state.select(Some(0));
+                }
+            }
+            AppEvent::CommsSendResult(msg) => {
+                self.comms.status_msg = msg;
+                self.refresh_comms();
+            }
+            AppEvent::CommsTaskResult(msg) => {
+                self.comms.status_msg = msg;
             }
             AppEvent::LogsLoaded(entries) => {
                 self.logs.entries = entries;
@@ -845,6 +870,10 @@ impl App {
                     let action = self.peers.handle_key(key);
                     self.handle_peers_action(action);
                 }
+                Tab::Comms => {
+                    let action = self.comms.handle_key(key);
+                    self.handle_comms_action(action);
+                }
                 Tab::Logs => {
                     let action = self.logs.handle_key(key);
                     self.handle_logs_action(action);
@@ -876,6 +905,7 @@ impl App {
         self.usage.tick();
         self.settings.tick();
         self.peers.tick();
+        self.comms.tick();
         self.logs.tick();
 
         // Auto-poll for active tabs
@@ -883,6 +913,7 @@ impl App {
             match self.active_tab {
                 Tab::Logs if self.logs.should_poll() => self.refresh_logs(),
                 Tab::Peers if self.peers.should_poll() => self.refresh_peers(),
+                Tab::Comms if self.comms.should_poll() => self.refresh_comms(),
                 _ => {}
             }
         }
@@ -932,6 +963,7 @@ impl App {
             Tab::Usage => self.refresh_usage(),
             Tab::Settings => self.refresh_settings_providers(),
             Tab::Peers => self.refresh_peers(),
+            Tab::Comms => self.refresh_comms(),
             Tab::Logs => self.refresh_logs(),
             Tab::Chat => {} // Chat doesn't need refresh on enter
         }
@@ -1086,6 +1118,13 @@ impl App {
         if let Some(backend) = self.backend.to_ref() {
             self.peers.loading = true;
             event::spawn_fetch_peers(backend, self.event_tx.clone());
+        }
+    }
+
+    fn refresh_comms(&mut self) {
+        if let Some(backend) = self.backend.to_ref() {
+            self.comms.loading = true;
+            event::spawn_fetch_comms(backend, self.event_tx.clone());
         }
     }
 
@@ -1660,6 +1699,27 @@ impl App {
         }
     }
 
+    fn handle_comms_action(&mut self, action: comms::CommsAction) {
+        match action {
+            comms::CommsAction::Continue => {}
+            comms::CommsAction::Refresh => self.refresh_comms(),
+            comms::CommsAction::SendMessage { from, to, msg } => {
+                if let Some(backend) = self.backend.to_ref() {
+                    event::spawn_comms_send(backend, from, to, msg, self.event_tx.clone());
+                }
+            }
+            comms::CommsAction::PostTask {
+                title,
+                desc,
+                assign,
+            } => {
+                if let Some(backend) = self.backend.to_ref() {
+                    event::spawn_comms_task(backend, title, desc, assign, self.event_tx.clone());
+                }
+            }
+        }
+    }
+
     fn handle_logs_action(&mut self, action: logs::LogsAction) {
         match action {
             logs::LogsAction::Continue => {}
@@ -2029,6 +2089,7 @@ impl App {
                     Tab::Usage => usage::draw(frame, chunks[1], &mut self.usage),
                     Tab::Settings => settings::draw(frame, chunks[1], &mut self.settings),
                     Tab::Peers => peers::draw(frame, chunks[1], &mut self.peers),
+                    Tab::Comms => comms::draw(frame, chunks[1], &mut self.comms),
                     Tab::Logs => logs::draw(frame, chunks[1], &mut self.logs),
                 }
             }
