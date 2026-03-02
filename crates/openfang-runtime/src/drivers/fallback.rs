@@ -8,20 +8,57 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::warn;
 
+/// An entry in the fallback chain: a driver paired with an optional model
+/// override. When `model_override` is `Some`, the request's `model` field is
+/// replaced before forwarding to this driver.
+struct FallbackEntry {
+    driver: Arc<dyn LlmDriver>,
+    /// Model name to inject into the request for this driver, or `None` to
+    /// keep the original request model (i.e. the primary).
+    model_override: Option<String>,
+}
+
 /// A driver that wraps multiple LLM drivers and tries each in order.
 ///
 /// On failure (including rate-limit and overload), moves to the next driver.
 /// Only returns an error when ALL drivers in the chain are exhausted.
 pub struct FallbackDriver {
-    drivers: Vec<Arc<dyn LlmDriver>>,
+    entries: Vec<FallbackEntry>,
 }
 
 impl FallbackDriver {
     /// Create a new fallback driver from an ordered chain of drivers.
     ///
     /// The first driver is the primary; subsequent are fallbacks.
+    /// All drivers share the same request model (legacy behaviour).
     pub fn new(drivers: Vec<Arc<dyn LlmDriver>>) -> Self {
-        Self { drivers }
+        let entries = drivers
+            .into_iter()
+            .map(|driver| FallbackEntry {
+                driver,
+                model_override: None,
+            })
+            .collect();
+        Self { entries }
+    }
+
+    /// Create a fallback driver where each driver has an associated model name.
+    ///
+    /// The first entry's model is treated as the primary (no override needed
+    /// because the request already carries it). Subsequent entries override
+    /// `request.model` with their own model name before forwarding.
+    pub fn with_models(drivers_and_models: Vec<(Arc<dyn LlmDriver>, String)>) -> Self {
+        let entries = drivers_and_models
+            .into_iter()
+            .enumerate()
+            .map(|(i, (driver, model))| FallbackEntry {
+                driver,
+                // The primary (index 0) keeps the original request model;
+                // fallbacks override it.
+                model_override: if i == 0 { None } else { Some(model) },
+            })
+            .collect();
+        Self { entries }
     }
 }
 
@@ -30,8 +67,12 @@ impl LlmDriver for FallbackDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let mut last_error = None;
 
-        for (i, driver) in self.drivers.iter().enumerate() {
-            match driver.complete(request.clone()).await {
+        for (i, entry) in self.entries.iter().enumerate() {
+            let mut req = request.clone();
+            if let Some(ref model) = entry.model_override {
+                req.model = model.clone();
+            }
+            match entry.driver.complete(req).await {
                 Ok(response) => return Ok(response),
                 Err(e @ LlmError::RateLimited { .. }) | Err(e @ LlmError::Overloaded { .. }) => {
                     warn!(
@@ -65,8 +106,12 @@ impl LlmDriver for FallbackDriver {
     ) -> Result<CompletionResponse, LlmError> {
         let mut last_error = None;
 
-        for (i, driver) in self.drivers.iter().enumerate() {
-            match driver.stream(request.clone(), tx.clone()).await {
+        for (i, entry) in self.entries.iter().enumerate() {
+            let mut req = request.clone();
+            if let Some(ref model) = entry.model_override {
+                req.model = model.clone();
+            }
+            match entry.driver.stream(req, tx.clone()).await {
                 Ok(response) => return Ok(response),
                 Err(e @ LlmError::RateLimited { .. }) | Err(e @ LlmError::Overloaded { .. }) => {
                     warn!(
@@ -223,5 +268,60 @@ mod tests {
         let result = driver.complete(test_request()).await;
         // All drivers rate-limited — error should bubble up
         assert!(matches!(result, Err(LlmError::RateLimited { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_with_models_overrides_model_on_fallback() {
+        /// A driver that captures the model name from the request.
+        struct ModelCapture {
+            expected_model: String,
+        }
+
+        #[async_trait]
+        impl LlmDriver for ModelCapture {
+            async fn complete(
+                &self,
+                req: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                if req.model == self.expected_model {
+                    Ok(CompletionResponse {
+                        content: vec![ContentBlock::Text {
+                            text: format!("model={}", req.model),
+                        }],
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        usage: TokenUsage {
+                            input_tokens: 1,
+                            output_tokens: 1,
+                        },
+                    })
+                } else {
+                    Err(LlmError::Api {
+                        status: 400,
+                        message: format!(
+                            "wrong model: got '{}', expected '{}'",
+                            req.model, self.expected_model
+                        ),
+                    })
+                }
+            }
+        }
+
+        // Primary fails, fallback should receive its own model name
+        let driver = FallbackDriver::with_models(vec![
+            (Arc::new(FailDriver) as Arc<dyn LlmDriver>, "primary-model".to_string()),
+            (
+                Arc::new(ModelCapture {
+                    expected_model: "fallback-model".to_string(),
+                }) as Arc<dyn LlmDriver>,
+                "fallback-model".to_string(),
+            ),
+        ]);
+
+        let mut req = test_request();
+        req.model = "primary-model".to_string();
+        let result = driver.complete(req).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().text(), "model=fallback-model");
     }
 }

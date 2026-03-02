@@ -537,7 +537,9 @@ impl OpenFangKernel {
 
         // If fallback providers are configured, wrap the primary driver in a FallbackDriver
         let driver: Arc<dyn LlmDriver> = if !config.fallback_providers.is_empty() {
-            let mut chain: Vec<Arc<dyn LlmDriver>> = vec![primary_driver.clone()];
+            let primary_model = config.default_model.model.clone();
+            let mut chain: Vec<(Arc<dyn LlmDriver>, String)> =
+                vec![(primary_driver.clone(), primary_model)];
             for fb in &config.fallback_providers {
                 let fb_config = DriverConfig {
                     provider: fb.provider.clone(),
@@ -555,7 +557,7 @@ impl OpenFangKernel {
                             model = %fb.model,
                             "Fallback provider configured"
                         );
-                        chain.push(d);
+                        chain.push((d, fb.model.clone()));
                     }
                     Err(e) => {
                         warn!(
@@ -567,7 +569,7 @@ impl OpenFangKernel {
                 }
             }
             if chain.len() > 1 {
-                Arc::new(openfang_runtime::drivers::fallback::FallbackDriver::new(
+                Arc::new(openfang_runtime::drivers::fallback::FallbackDriver::with_models(
                     chain,
                 ))
             } else {
@@ -3680,9 +3682,11 @@ impl OpenFangKernel {
             })?
         };
 
-        // If fallback models are configured, wrap in FallbackDriver
+        // If fallback models are configured, wrap in FallbackDriver with model overrides
         if !manifest.fallback_models.is_empty() {
-            let mut chain = vec![primary.clone()];
+            let primary_model = manifest.model.model.clone();
+            let mut chain: Vec<(Arc<dyn LlmDriver>, String)> =
+                vec![(primary.clone(), primary_model)];
             for fb in &manifest.fallback_models {
                 let config = DriverConfig {
                     provider: fb.provider.clone(),
@@ -3693,7 +3697,7 @@ impl OpenFangKernel {
                     base_url: fb.base_url.clone(),
                 };
                 match drivers::create_driver(&config) {
-                    Ok(d) => chain.push(d),
+                    Ok(d) => chain.push((d, fb.model.clone())),
                     Err(e) => {
                         warn!("Fallback driver '{}' failed to init: {e}", fb.provider);
                     }
@@ -3701,7 +3705,7 @@ impl OpenFangKernel {
             }
             if chain.len() > 1 {
                 return Ok(Arc::new(
-                    openfang_runtime::drivers::fallback::FallbackDriver::new(chain),
+                    openfang_runtime::drivers::fallback::FallbackDriver::with_models(chain),
                 ));
             }
         }
