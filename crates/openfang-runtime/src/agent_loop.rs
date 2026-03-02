@@ -57,9 +57,19 @@ const MAX_HISTORY_MESSAGES: usize = 20;
 /// but the upstream API expects just `org/model`. This also handles special routers
 /// like `openrouter/auto` → `auto`.
 pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
-    let prefix = format!("{}/", provider);
-    if model.starts_with(&prefix) {
-        model[prefix.len()..].to_string()
+    let model = model.trim();
+    let provider = provider.trim();
+
+    if provider.is_empty() {
+        return model.to_string();
+    }
+
+    let prefix_len = provider.len();
+    if model.len() > prefix_len
+        && model.as_bytes().get(prefix_len) == Some(&b'/')
+        && model[..prefix_len].eq_ignore_ascii_case(provider)
+    {
+        model[prefix_len + 1..].to_string()
     } else {
         model.to_string()
     }
@@ -682,10 +692,13 @@ pub async fn run_agent_loop(
                 }
 
                 // Detect approval denials and inject guidance to prevent infinite retry loops
-                let denial_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
+                let denial_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| {
+                        matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
                         if content.contains("requires human approval and was denied"))
-                }).count();
+                    })
+                    .count();
                 if denial_count > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
                         text: format!(
@@ -1605,10 +1618,13 @@ pub async fn run_agent_loop_streaming(
                 }
 
                 // Detect approval denials and inject guidance to prevent infinite retry loops
-                let denial_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
+                let denial_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| {
+                        matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
                         if content.contains("requires human approval and was denied"))
-                }).count();
+                    })
+                    .count();
                 if denial_count > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
                         text: format!(
@@ -1895,6 +1911,18 @@ mod tests {
     #[test]
     fn test_max_history_messages() {
         assert_eq!(MAX_HISTORY_MESSAGES, 20);
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_openrouter() {
+        let got = strip_provider_prefix("openrouter/google/gemini-2.5-flash", "openrouter");
+        assert_eq!(got, "google/gemini-2.5-flash");
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_case_insensitive_and_trimmed() {
+        let got = strip_provider_prefix(" openrouter/deepseek/deepseek-chat ", " OpenRouter ");
+        assert_eq!(got, "deepseek/deepseek-chat");
     }
 
     // --- Integration tests for empty response guards ---
