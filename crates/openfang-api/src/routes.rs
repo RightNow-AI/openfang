@@ -1977,7 +1977,7 @@ pub async fn configure_channel(
 
         if let Some(env_var) = field_def.env_var {
             // Secret field — write to secrets.env and set in process
-            if let Err(e) = write_secret_env(&secrets_path, env_var, value) {
+            if let Err(e) = write_secret_env(&secrets_path, env_var, value, &state.kernel.vault) {
                 tracing::error!("configure_channel: failed to write secret for {env_var}: {e}");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -2061,7 +2061,7 @@ pub async fn remove_channel(
     // Remove all secret env vars for this channel
     for field_def in meta.fields {
         if let Some(env_var) = field_def.env_var {
-            let _ = remove_secret_env(&secrets_path, env_var);
+            let _ = remove_secret_env(&secrets_path, env_var, &state.kernel.vault);
             // SAFETY: env var mutation is inherently unsafe in multi-threaded Rust 2024.
             // The ENV_MUTEX serializes all set_var/remove_var calls.
             {
@@ -6347,10 +6347,11 @@ pub async fn set_provider_key(
 
     // Write to secrets.env file
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
-    if let Err(e) = write_secret_env(&secrets_path, &env_var, &key) {
+    if let Err(e) = write_secret_env(&secrets_path, &env_var, &key, &state.kernel.vault) {
+        tracing::error!("set_api_key: failed to write secret for {env_var}: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to write secrets.env: {e}")})),
+            Json(serde_json::json!({"error": "Failed to write secret"})),
         );
     }
 
@@ -6402,10 +6403,11 @@ pub async fn delete_provider_key(
 
     // Remove from secrets.env
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
-    if let Err(e) = remove_secret_env(&secrets_path, &env_var) {
+    if let Err(e) = remove_secret_env(&secrets_path, &env_var, &state.kernel.vault) {
+        tracing::error!("remove_api_key: failed to remove secret for {env_var}: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to update secrets.env: {e}")})),
+            Json(serde_json::json!({"error": "Failed to remove secret"})),
         );
     }
 
@@ -6735,9 +6737,38 @@ pub async fn create_skill(
 
 // ── Helper functions for secrets.env management ────────────────────────
 
-/// Write or update a key in the secrets.env file.
-/// File format: one `KEY=value` per line. Existing keys are overwritten.
-fn write_secret_env(path: &std::path::Path, key: &str, value: &str) -> Result<(), std::io::Error> {
+/// Write or update a key in the credential vault (preferred) or secrets.env file (fallback).
+/// If the vault is available and unlocked, the secret is stored encrypted in the vault.
+/// Otherwise, falls back to the plaintext `KEY=value` file format (one per line, existing keys overwritten).
+fn write_secret_env(
+    path: &std::path::Path,
+    key: &str,
+    value: &str,
+    vault: &std::sync::RwLock<Option<openfang_extensions::vault::CredentialVault>>,
+) -> Result<(), std::io::Error> {
+    // Try vault first
+    if let Ok(mut guard) = vault.write() {
+        if let Some(ref mut v) = *guard {
+            if v.is_unlocked() {
+                match v.set(
+                    key.to_string(),
+                    zeroize::Zeroizing::new(value.to_string()),
+                ) {
+                    Ok(()) => {
+                        tracing::debug!("Secret {key} stored in encrypted vault");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Vault write failed for {key}: {e}, falling back to file"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: write to plaintext file (existing behavior)
     let mut lines: Vec<String> = if path.exists() {
         std::fs::read_to_string(path)?
             .lines()
@@ -6770,8 +6801,34 @@ fn write_secret_env(path: &std::path::Path, key: &str, value: &str) -> Result<()
     Ok(())
 }
 
-/// Remove a key from the secrets.env file.
-fn remove_secret_env(path: &std::path::Path, key: &str) -> Result<(), std::io::Error> {
+/// Remove a key from the credential vault (preferred) or secrets.env file (fallback).
+/// If the vault is available and unlocked, the secret is removed from the vault.
+/// Otherwise, falls back to removing from the plaintext file.
+fn remove_secret_env(
+    path: &std::path::Path,
+    key: &str,
+    vault: &std::sync::RwLock<Option<openfang_extensions::vault::CredentialVault>>,
+) -> Result<(), std::io::Error> {
+    // Try vault first
+    if let Ok(mut guard) = vault.write() {
+        if let Some(ref mut v) = *guard {
+            if v.is_unlocked() {
+                match v.remove(key) {
+                    Ok(_) => {
+                        tracing::debug!("Secret {key} removed from vault");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Vault remove failed for {key}: {e}, falling back to file"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: remove from plaintext file (existing behavior)
     if !path.exists() {
         return Ok(());
     }
@@ -9519,10 +9576,11 @@ pub async fn copilot_oauth_poll(
         openfang_runtime::copilot_oauth::DeviceFlowStatus::Complete { access_token } => {
             // Save to secrets.env
             let secrets_path = state.kernel.config.home_dir.join("secrets.env");
-            if let Err(e) = write_secret_env(&secrets_path, "GITHUB_TOKEN", &access_token) {
+            if let Err(e) = write_secret_env(&secrets_path, "GITHUB_TOKEN", &access_token, &state.kernel.vault) {
+                tracing::error!("github_device_poll: failed to save GITHUB_TOKEN: {e}");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"status": "error", "error": format!("Failed to save token: {e}")})),
+                    Json(serde_json::json!({"status": "error", "error": "Failed to save token"})),
                 );
             }
 

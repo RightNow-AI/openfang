@@ -11,16 +11,50 @@ pub fn env_file_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".openfang").join(".env"))
 }
 
-/// Load `~/.openfang/.env` and `~/.openfang/secrets.env` into `std::env`.
+/// Load `~/.openfang/.env`, `~/.openfang/secrets.env`, and vault secrets into `std::env`.
 ///
 /// System env vars take priority — existing vars are NOT overridden.
 /// `secrets.env` is loaded second so `.env` values take priority over secrets
 /// (but both yield to system env vars).
-/// Silently does nothing if the files don't exist.
+/// Vault secrets are loaded last with the same precedence rule.
+/// Silently does nothing if the files don't exist or the vault can't be unlocked.
 pub fn load_dotenv() {
     load_env_file(env_file_path());
     // Also load secrets.env (written by dashboard "Set API Key" button)
     load_env_file(secrets_env_path());
+    // Also load from encrypted vault (if it exists and can be unlocked)
+    load_vault_secrets();
+}
+
+/// Try to load secrets from the encrypted vault at `~/.openfang/vault.enc`.
+///
+/// Called after `load_dotenv()` loads plaintext env files. Vault secrets do NOT
+/// override existing env vars (same precedence rule as secrets.env).
+/// Silently does nothing if the vault file doesn't exist or can't be unlocked.
+pub fn load_vault_secrets() {
+    let vault_path = match dirs::home_dir() {
+        Some(h) => h.join(".openfang").join("vault.enc"),
+        None => return,
+    };
+
+    if !vault_path.exists() {
+        return;
+    }
+
+    let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path);
+    if let Err(e) = vault.unlock() {
+        // Vault exists but can't unlock — keyring issue or missing key
+        tracing::debug!("Could not unlock vault: {e}");
+        return;
+    }
+
+    for key in vault.list_keys() {
+        if let Some(value) = vault.get(key) {
+            if std::env::var(key).is_err() {
+                std::env::set_var(key, value.as_str());
+            }
+        }
+    }
 }
 
 /// Return the path to `~/.openfang/secrets.env`.

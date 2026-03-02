@@ -135,6 +135,8 @@ pub struct OpenFangKernel {
     pub channel_adapters: dashmap::DashMap<String, Arc<dyn openfang_channels::types::ChannelAdapter>>,
     /// Hot-reloadable default model override (set via config hot-reload, read at agent spawn).
     pub default_model_override: std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
+    /// Encrypted credential vault (AES-256-GCM, OS keyring key management).
+    pub vault: Arc<std::sync::RwLock<Option<openfang_extensions::vault::CredentialVault>>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
 }
@@ -896,8 +898,12 @@ impl OpenFangKernel {
             whatsapp_gateway_health: Arc::new(std::sync::RwLock::new(None)),
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
+            vault: Arc::new(std::sync::RwLock::new(None)),
             self_handle: OnceLock::new(),
         };
+
+        // Initialize credential vault (decrypt secrets, migrate from secrets.env)
+        kernel.init_vault();
 
         // Restore persisted agents from SQLite
         match kernel.memory.load_all_agents() {
@@ -1062,6 +1068,86 @@ impl OpenFangKernel {
 
         info!("OpenFang kernel booted successfully");
         Ok(kernel)
+    }
+
+    /// Initialize the credential vault — auto-creates if needed, migrates from secrets.env.
+    ///
+    /// This is called once during boot, after dotenv loading but before agents start.
+    /// If the vault cannot be initialized or unlocked, the system continues working
+    /// with plaintext secrets in secrets.env (graceful degradation).
+    fn init_vault(&self) {
+        let vault_path = self.config.home_dir.join("vault.enc");
+        let secrets_env_path = self.config.home_dir.join("secrets.env");
+
+        let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path.clone());
+
+        // Initialize or unlock
+        if !vault.exists() {
+            // First time — create vault
+            if let Err(e) = vault.init() {
+                warn!("Could not initialize credential vault: {e}. Secrets will remain in plaintext.");
+                return;
+            }
+            info!("Credential vault created at {:?}", vault_path);
+        } else {
+            // Existing vault — try to unlock
+            if let Err(e) = vault.unlock() {
+                warn!("Could not unlock credential vault: {e}. Falling back to secrets.env.");
+                return;
+            }
+        }
+
+        // Migrate entries from secrets.env if it exists
+        if secrets_env_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&secrets_env_path) {
+                let mut migrated = 0u32;
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
+                    }
+                    if let Some(eq_pos) = trimmed.find('=') {
+                        let key = trimmed[..eq_pos].trim();
+                        let value = trimmed[eq_pos + 1..].trim();
+                        if !key.is_empty() && vault.get(key).is_none() {
+                            if let Err(e) = vault.set(
+                                key.to_string(),
+                                zeroize::Zeroizing::new(value.to_string()),
+                            ) {
+                                warn!("Failed to migrate secret {key} to vault: {e}");
+                            } else {
+                                migrated += 1;
+                            }
+                        }
+                    }
+                }
+                if migrated > 0 {
+                    info!("Migrated {migrated} secrets from secrets.env to encrypted vault");
+                    // Rename the old file so it's not used again
+                    let backup = secrets_env_path.with_extension("env.migrated");
+                    if let Err(e) = std::fs::rename(&secrets_env_path, &backup) {
+                        warn!("Could not rename secrets.env: {e}");
+                    }
+                }
+            }
+        }
+
+        // Load all vault secrets into process environment.
+        // SAFETY: env var mutation runs once at startup before any concurrent HTTP
+        // handlers are active, so there is no data race. We use `unsafe` to be
+        // explicit about the env mutation (mirrors routes.rs ENV_MUTEX pattern).
+        for key in vault.list_keys() {
+            if let Some(value) = vault.get(key) {
+                if std::env::var(key).is_err() {
+                    unsafe { std::env::set_var(key, value.as_str()); }
+                }
+            }
+        }
+
+        // Store in kernel
+        if let Ok(mut guard) = self.vault.write() {
+            *guard = Some(vault);
+        }
     }
 
     /// Spawn a new agent from a manifest, optionally linking to a parent agent.
