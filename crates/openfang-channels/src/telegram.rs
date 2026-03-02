@@ -85,6 +85,7 @@ impl TelegramAdapter {
             let body = serde_json::json!({
                 "chat_id": chat_id,
                 "text": chunk,
+                "parse_mode": "HTML",
             });
 
             let resp = self.client.post(&url).json(&body).send().await?;
@@ -110,6 +111,105 @@ impl TelegramAdapter {
         let _ = self.client.post(&url).json(&body).send().await?;
         Ok(())
     }
+
+    /// Call `sendMessage` with an inline keyboard.
+    async fn api_send_message_with_keyboard(
+        &self,
+        chat_id: i64,
+        text: &str,
+        keyboard: Vec<Vec<serde_json::Value>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendMessage",
+            self.token.as_str()
+        );
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": keyboard,
+            },
+        });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram sendMessage (keyboard) failed ({status}): {body_text}");
+        }
+        Ok(())
+    }
+
+    /// Call `editMessageText` to update an existing message's text and keyboard.
+    async fn api_edit_message_with_keyboard(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+        keyboard: Vec<Vec<serde_json::Value>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/editMessageText",
+            self.token.as_str()
+        );
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": keyboard,
+            },
+        });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram editMessageText failed: {body_text}");
+        }
+        Ok(())
+    }
+
+    /// Call `setMyCommands` to register bot commands in the Telegram menu.
+    async fn api_set_my_commands(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/setMyCommands",
+            self.token.as_str()
+        );
+        let body = serde_json::json!({
+            "commands": [
+                { "command": "agents", "description": "List available agents" },
+                { "command": "agent", "description": "Switch to a specific agent" },
+                { "command": "help", "description": "Show help" },
+                { "command": "status", "description": "Show agent status" },
+            ]
+        });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram setMyCommands failed: {body_text}");
+        }
+        Ok(())
+    }
+
+    /// Call `answerCallbackQuery` to dismiss the loading spinner on the button.
+    async fn api_answer_callback(
+        &self,
+        callback_query_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/answerCallbackQuery",
+            self.token.as_str()
+        );
+        let body = serde_json::json!({
+            "callback_query_id": callback_query_id,
+        });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram answerCallbackQuery failed: {body_text}");
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -129,6 +229,11 @@ impl ChannelAdapter for TelegramAdapter {
         // Validate token first (fail fast)
         let bot_name = self.validate_token().await?;
         info!("Telegram bot @{bot_name} connected");
+
+        // Register bot commands in Telegram's menu
+        if let Err(e) = self.api_set_my_commands().await {
+            warn!("Failed to set Telegram bot commands: {e}");
+        }
 
         let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
 
@@ -152,7 +257,7 @@ impl ChannelAdapter for TelegramAdapter {
                 let url = format!("https://api.telegram.org/bot{}/getUpdates", token.as_str());
                 let mut params = serde_json::json!({
                     "timeout": LONG_POLL_TIMEOUT,
-                    "allowed_updates": ["message", "edited_message"],
+                    "allowed_updates": ["message", "edited_message", "callback_query"],
                 });
                 if let Some(off) = offset {
                     params["offset"] = serde_json::json!(off);
@@ -285,9 +390,91 @@ impl ChannelAdapter for TelegramAdapter {
             ChannelContent::Text(text) => {
                 self.api_send_message(chat_id, &text).await?;
             }
+            ChannelContent::Menu { text, buttons } => {
+                let keyboard: Vec<Vec<serde_json::Value>> = buttons
+                    .into_iter()
+                    .map(|row| {
+                        row.into_iter()
+                            .map(|btn| {
+                                serde_json::json!({
+                                    "text": btn.text,
+                                    "callback_data": btn.callback_data,
+                                })
+                            })
+                            .collect()
+                    })
+                    .collect();
+                self.api_send_message_with_keyboard(chat_id, &text, keyboard)
+                    .await?;
+            }
             _ => {
                 self.api_send_message(chat_id, "(Unsupported content type)")
                     .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn answer_callback(
+        &self,
+        callback_query_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.api_answer_callback(callback_query_id).await
+    }
+
+    async fn edit_message(
+        &self,
+        user: &ChannelUser,
+        message_id: &str,
+        content: ChannelContent,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let chat_id: i64 = user
+            .platform_id
+            .parse()
+            .map_err(|_| format!("Invalid Telegram chat_id: {}", user.platform_id))?;
+        let msg_id: i64 = message_id
+            .parse()
+            .map_err(|_| format!("Invalid message_id: {message_id}"))?;
+
+        match content {
+            ChannelContent::Menu { text, buttons } => {
+                let keyboard: Vec<Vec<serde_json::Value>> = buttons
+                    .into_iter()
+                    .map(|row| {
+                        row.into_iter()
+                            .map(|btn| {
+                                serde_json::json!({
+                                    "text": btn.text,
+                                    "callback_data": btn.callback_data,
+                                })
+                            })
+                            .collect()
+                    })
+                    .collect();
+                self.api_edit_message_with_keyboard(chat_id, msg_id, &text, keyboard)
+                    .await?;
+            }
+            ChannelContent::Text(text) => {
+                // For plain text edits, use editMessageText without keyboard
+                let url = format!(
+                    "https://api.telegram.org/bot{}/editMessageText",
+                    self.token.as_str()
+                );
+                let body = serde_json::json!({
+                    "chat_id": chat_id,
+                    "message_id": msg_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                });
+                let resp = self.client.post(&url).json(&body).send().await?;
+                if !resp.status().is_success() {
+                    let body_text = resp.text().await.unwrap_or_default();
+                    warn!("Telegram editMessageText failed: {body_text}");
+                }
+            }
+            _ => {
+                // Fallback: send new message
+                self.send(user, content).await?;
             }
         }
         Ok(())
@@ -308,11 +495,16 @@ impl ChannelAdapter for TelegramAdapter {
 }
 
 /// Parse a Telegram update JSON into a `ChannelMessage`, or `None` if filtered/unparseable.
-/// Handles both `message` and `edited_message` update types.
+/// Handles `message`, `edited_message`, and `callback_query` update types.
 fn parse_telegram_update(
     update: &serde_json::Value,
     allowed_users: &[i64],
 ) -> Option<ChannelMessage> {
+    // Handle callback_query (inline button press) first
+    if let Some(callback) = update.get("callback_query") {
+        return parse_callback_query(callback, allowed_users);
+    }
+
     let message = update
         .get("message")
         .or_else(|| update.get("edited_message"))?;
@@ -385,6 +577,73 @@ fn parse_telegram_update(
         is_group,
         thread_id: None,
         metadata: HashMap::new(),
+    })
+}
+
+/// Parse a Telegram callback_query into a `ChannelMessage`.
+/// Maps `callback_data` format `"action:value"` to `Command { name: action, args: [value] }`.
+fn parse_callback_query(
+    callback: &serde_json::Value,
+    allowed_users: &[i64],
+) -> Option<ChannelMessage> {
+    let from = callback.get("from")?;
+    let user_id = from["id"].as_i64()?;
+
+    if !allowed_users.is_empty() && !allowed_users.contains(&user_id) {
+        debug!("Telegram: ignoring callback from unlisted user {user_id}");
+        return None;
+    }
+
+    let callback_query_id = callback["id"].as_str()?;
+    let data = callback["data"].as_str()?;
+    let cb_message = callback.get("message")?;
+    let chat_id = cb_message.get("chat")?["id"].as_i64()?;
+    let cb_message_id = cb_message["message_id"].as_i64();
+
+    let first_name = from["first_name"].as_str().unwrap_or("Unknown");
+    let last_name = from["last_name"].as_str().unwrap_or("");
+    let display_name = if last_name.is_empty() {
+        first_name.to_string()
+    } else {
+        format!("{first_name} {last_name}")
+    };
+
+    let (cmd_name, cmd_arg) = data.split_once(':').unwrap_or((data, ""));
+    let args = if cmd_arg.is_empty() {
+        vec![]
+    } else {
+        vec![cmd_arg.to_string()]
+    };
+
+    let mut metadata = HashMap::new();
+    metadata.insert(
+        "callback_query_id".to_string(),
+        serde_json::Value::String(callback_query_id.to_string()),
+    );
+    if let Some(mid) = cb_message_id {
+        metadata.insert(
+            "message_id".to_string(),
+            serde_json::Value::String(mid.to_string()),
+        );
+    }
+
+    Some(ChannelMessage {
+        channel: ChannelType::Telegram,
+        platform_message_id: callback_query_id.to_string(),
+        sender: ChannelUser {
+            platform_id: chat_id.to_string(),
+            display_name,
+            openfang_user: None,
+        },
+        content: ChannelContent::Command {
+            name: cmd_name.to_string(),
+            args,
+        },
+        target_agent: None,
+        timestamp: chrono::Utc::now(),
+        is_group: false,
+        thread_id: None,
+        metadata,
     })
 }
 
@@ -530,6 +789,85 @@ mod tests {
 
         let b4 = calculate_backoff(Duration::from_secs(60));
         assert_eq!(b4, Duration::from_secs(60)); // stays at cap
+    }
+
+    #[test]
+    fn test_parse_telegram_callback_query() {
+        let update = serde_json::json!({
+            "update_id": 123460,
+            "callback_query": {
+                "id": "cb_12345",
+                "from": {
+                    "id": 111222333,
+                    "first_name": "Alice",
+                    "last_name": "Smith"
+                },
+                "message": {
+                    "message_id": 50,
+                    "chat": { "id": 111222333, "type": "private" },
+                    "date": 1700000000,
+                    "text": "Pick an agent:"
+                },
+                "data": "agent:coder"
+            }
+        });
+
+        let msg = parse_telegram_update(&update, &[]).unwrap();
+        assert_eq!(msg.sender.platform_id, "111222333");
+        match &msg.content {
+            ChannelContent::Command { name, args } => {
+                assert_eq!(name, "agent");
+                assert_eq!(args, &["coder"]);
+            }
+            other => panic!("Expected Command, got {other:?}"),
+        }
+        assert!(msg.metadata.contains_key("callback_query_id"));
+    }
+
+    #[test]
+    fn test_parse_callback_query_filtered() {
+        let update = serde_json::json!({
+            "update_id": 123461,
+            "callback_query": {
+                "id": "cb_999",
+                "from": { "id": 999, "first_name": "Bob" },
+                "message": {
+                    "message_id": 51,
+                    "chat": { "id": 999, "type": "private" },
+                    "date": 1700000000
+                },
+                "data": "agent:coder"
+            }
+        });
+
+        assert!(parse_telegram_update(&update, &[111]).is_none());
+        assert!(parse_telegram_update(&update, &[999]).is_some());
+    }
+
+    #[test]
+    fn test_parse_callback_query_pagination() {
+        let update = serde_json::json!({
+            "update_id": 123462,
+            "callback_query": {
+                "id": "cb_page",
+                "from": { "id": 123, "first_name": "X" },
+                "message": {
+                    "message_id": 52,
+                    "chat": { "id": 123, "type": "private" },
+                    "date": 1700000000
+                },
+                "data": "agents_page:2"
+            }
+        });
+
+        let msg = parse_telegram_update(&update, &[]).unwrap();
+        match &msg.content {
+            ChannelContent::Command { name, args } => {
+                assert_eq!(name, "agents_page");
+                assert_eq!(args, &["2"]);
+            }
+            other => panic!("Expected Command, got {other:?}"),
+        }
     }
 
     #[test]

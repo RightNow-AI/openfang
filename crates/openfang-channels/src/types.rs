@@ -61,6 +61,21 @@ pub enum ChannelContent {
         name: String,
         args: Vec<String>,
     },
+    /// Interactive menu with inline buttons (e.g., Telegram inline keyboard).
+    /// `buttons` is a grid: each inner Vec is one row.
+    Menu {
+        text: String,
+        buttons: Vec<Vec<InlineButton>>,
+    },
+}
+
+/// A single inline button for interactive channel menus.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineButton {
+    /// Button label shown to the user.
+    pub text: String,
+    /// Callback data sent when button is pressed (max 64 bytes for Telegram).
+    pub callback_data: String,
 }
 
 /// A unified message from any channel.
@@ -242,6 +257,26 @@ pub trait ChannelAdapter: Send + Sync {
         _reaction: &LifecycleReaction,
     ) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
+    }
+
+    /// Acknowledge a callback query (e.g., Telegram inline button press).
+    /// Default is no-op for channels that don't support callbacks.
+    async fn answer_callback(
+        &self,
+        _callback_query_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    /// Edit an existing message (e.g. update inline keyboard on pagination).
+    /// Default impl falls back to sending a new message.
+    async fn edit_message(
+        &self,
+        user: &ChannelUser,
+        _message_id: &str,
+        content: ChannelContent,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.send(user, content).await
     }
 
     /// Stop the adapter and clean up resources.
@@ -443,6 +478,39 @@ mod tests {
         let back: DeliveryReceipt = serde_json::from_str(&json).unwrap();
         assert_eq!(back.message_id, "msg-123");
         assert_eq!(back.status, DeliveryStatus::Sent);
+    }
+
+    #[test]
+    fn test_inline_button_serde() {
+        let btn = InlineButton {
+            text: "Click me".to_string(),
+            callback_data: "agent:coder".to_string(),
+        };
+        let json = serde_json::to_string(&btn).unwrap();
+        let back: InlineButton = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.text, "Click me");
+        assert_eq!(back.callback_data, "agent:coder");
+    }
+
+    #[test]
+    fn test_channel_content_menu_variant() {
+        let menu = ChannelContent::Menu {
+            text: "Pick an agent:".to_string(),
+            buttons: vec![vec![
+                InlineButton {
+                    text: "coder".to_string(),
+                    callback_data: "agent:coder".to_string(),
+                },
+                InlineButton {
+                    text: "researcher".to_string(),
+                    callback_data: "agent:researcher".to_string(),
+                },
+            ]],
+        };
+        let json = serde_json::to_string(&menu).unwrap();
+        assert!(json.contains("coder"));
+        let back: ChannelContent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ChannelContent::Menu { .. }));
     }
 
     #[test]

@@ -5,7 +5,9 @@
 
 use crate::formatter;
 use crate::router::AgentRouter;
-use crate::types::{ChannelAdapter, ChannelContent, ChannelMessage, ChannelUser};
+use crate::types::{
+    ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser, InlineButton,
+};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
@@ -359,6 +361,104 @@ async fn send_response(
     }
 }
 
+/// Build an interactive agent-selection menu with 2-column layout and pagination.
+/// Returns `ChannelContent::Menu` if agents exist, `ChannelContent::Text` if empty.
+fn build_agents_menu(agents: &[(AgentId, String)], page: usize) -> ChannelContent {
+    if agents.is_empty() {
+        return ChannelContent::Text("No agents running.".to_string());
+    }
+
+    let per_page = 6;
+    let total_pages = agents.len().div_ceil(per_page);
+    let page = page.min(total_pages.saturating_sub(1));
+    let start = page * per_page;
+    let end = (start + per_page).min(agents.len());
+    let page_agents = &agents[start..end];
+
+    let text = format!(
+        "<b>Select an agent</b> ({}/{})",
+        page + 1,
+        total_pages
+    );
+
+    // Build 2-column rows of agent buttons
+    let mut rows: Vec<Vec<InlineButton>> = Vec::new();
+    for chunk in page_agents.chunks(2) {
+        let row: Vec<InlineButton> = chunk
+            .iter()
+            .map(|(_, name)| InlineButton {
+                text: name.clone(),
+                callback_data: format!("agent:{name}"),
+            })
+            .collect();
+        rows.push(row);
+    }
+
+    // Add pagination row if needed
+    if total_pages > 1 {
+        let mut nav_row = Vec::new();
+        if page > 0 {
+            nav_row.push(InlineButton {
+                text: "\u{00AB}".to_string(), // «
+                callback_data: format!("agents_page:{}", page - 1),
+            });
+        }
+        if page + 1 < total_pages {
+            nav_row.push(InlineButton {
+                text: "\u{00BB}".to_string(), // »
+                callback_data: format!("agents_page:{}", page + 1),
+            });
+        }
+        rows.push(nav_row);
+    }
+
+    ChannelContent::Menu {
+        text,
+        buttons: rows,
+    }
+}
+
+/// Send rich content (Menu or Text). Non-Telegram channels degrade Menu to text list.
+async fn send_rich_response(
+    adapter: &dyn ChannelAdapter,
+    user: &ChannelUser,
+    content: ChannelContent,
+    thread_id: Option<&str>,
+    output_format: OutputFormat,
+    edit_message_id: Option<&str>,
+) {
+    match &content {
+        ChannelContent::Menu { text, buttons } => {
+            if adapter.channel_type() == crate::types::ChannelType::Telegram {
+                let result = if let Some(mid) = edit_message_id {
+                    // Edit existing message (pagination) instead of sending new one
+                    adapter.edit_message(user, mid, content).await
+                } else if let Some(tid) = thread_id {
+                    adapter.send_in_thread(user, content, tid).await
+                } else {
+                    adapter.send(user, content).await
+                };
+                if let Err(e) = result {
+                    error!("Failed to send menu response: {e}");
+                }
+            } else {
+                // Degrade to text list for non-Telegram channels
+                let mut lines = vec![text.clone()];
+                for row in buttons {
+                    for btn in row {
+                        lines.push(format!("  - {}", btn.text));
+                    }
+                }
+                send_response(adapter, user, lines.join("\n"), thread_id, output_format).await;
+            }
+        }
+        ChannelContent::Text(t) => {
+            send_response(adapter, user, t.clone(), thread_id, output_format).await;
+        }
+        _ => {}
+    }
+}
+
 /// Dispatch a single incoming message — handles bot commands or routes to an agent.
 ///
 /// Applies per-channel policies (DM/group filtering, rate limiting, formatting, threading).
@@ -376,7 +476,11 @@ async fn dispatch_message(
     let output_format = overrides
         .as_ref()
         .and_then(|o| o.output_format)
-        .unwrap_or(OutputFormat::Markdown);
+        .unwrap_or_else(|| match adapter.channel_type() {
+            ChannelType::Telegram => OutputFormat::TelegramHtml,
+            ChannelType::Slack => OutputFormat::SlackMrkdwn,
+            _ => OutputFormat::Markdown,
+        });
     let threading_enabled = overrides.as_ref().map(|o| o.threading).unwrap_or(false);
     let thread_id = if threading_enabled {
         message.thread_id.as_deref()
@@ -437,6 +541,49 @@ async fn dispatch_message(
     let text = match &message.content {
         ChannelContent::Text(t) => t.clone(),
         ChannelContent::Command { name, args } => {
+            // Interactive agent list with inline keyboard
+            if name == "agents" || name == "agents_page" {
+                let page: usize = if name == "agents_page" {
+                    args.first().and_then(|a| a.parse().ok()).unwrap_or(0)
+                } else {
+                    0
+                };
+                let agents = handle.list_agents().await.unwrap_or_default();
+                let content = build_agents_menu(&agents, page);
+                // For pagination callbacks, edit the existing message instead of sending new
+                let edit_id = if name == "agents_page" {
+                    message.metadata.get("message_id").and_then(|v| v.as_str())
+                } else {
+                    None
+                };
+                send_rich_response(
+                    adapter,
+                    &message.sender,
+                    content,
+                    thread_id,
+                    output_format,
+                    edit_id,
+                )
+                .await;
+                // Answer callback query if present (dismiss loading spinner)
+                if let Some(cqid) = message.metadata.get("callback_query_id") {
+                    if let Some(cqid_str) = cqid.as_str() {
+                        let _ = adapter.answer_callback(cqid_str).await;
+                    }
+                }
+                return;
+            }
+            // Agent selection via callback also needs answer_callback
+            if name == "agent" && message.metadata.contains_key("callback_query_id") {
+                let result = handle_command(name, args, handle, router, &message.sender).await;
+                send_response(adapter, &message.sender, result, thread_id, output_format).await;
+                if let Some(cqid) = message.metadata.get("callback_query_id") {
+                    if let Some(cqid_str) = cqid.as_str() {
+                        let _ = adapter.answer_callback(cqid_str).await;
+                    }
+                }
+                return;
+            }
             let result = handle_command(name, args, handle, router, &message.sender).await;
             send_response(adapter, &message.sender, result, thread_id, output_format).await;
             return;
@@ -494,6 +641,14 @@ async fn dispatch_message(
                 | "peers"
                 | "a2a"
         ) {
+            // Interactive agent list for /agents typed as text
+            if cmd == "agents" {
+                let agents = handle.list_agents().await.unwrap_or_default();
+                let content = build_agents_menu(&agents, 0);
+                send_rich_response(adapter, &message.sender, content, thread_id, output_format, None)
+                    .await;
+                return;
+            }
             let result = handle_command(cmd, &args, handle, router, &message.sender).await;
             send_response(adapter, &message.sender, result, thread_id, output_format).await;
             return;
@@ -614,11 +769,23 @@ async fn dispatch_message(
         return;
     }
 
-    // Send typing indicator (best-effort)
+    // Send typing indicator (best-effort) and keep sending every 5s during LLM processing.
     let _ = adapter.send_typing(&message.sender).await;
 
+    // Poll LLM call alongside a periodic typing indicator using select!
+    let msg_fut = handle.send_message(agent_id, &text);
+    tokio::pin!(msg_fut);
+    let result = loop {
+        tokio::select! {
+            res = &mut msg_fut => break res,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                let _ = adapter.send_typing(&message.sender).await;
+            }
+        }
+    };
+
     // Send to agent and relay response
-    match handle.send_message(agent_id, &text).await {
+    match result {
         Ok(response) => {
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
             handle
@@ -1087,5 +1254,61 @@ mod tests {
             channel_type_str(&ChannelType::Custom("irc".to_string())),
             "irc"
         );
+    }
+
+    #[test]
+    fn test_build_agents_menu_empty() {
+        let content = build_agents_menu(&[], 0);
+        assert!(matches!(content, ChannelContent::Text(ref t) if t.contains("No agents")));
+    }
+
+    #[test]
+    fn test_build_agents_menu_single_page() {
+        let agents: Vec<(AgentId, String)> = (0..4)
+            .map(|i| (AgentId::new(), format!("agent-{i}")))
+            .collect();
+        let content = build_agents_menu(&agents, 0);
+        match content {
+            ChannelContent::Menu { text, buttons } => {
+                assert!(text.contains("1/1"));
+                assert_eq!(buttons.len(), 2); // 4 agents / 2 cols = 2 rows, no nav
+            }
+            _ => panic!("Expected Menu"),
+        }
+    }
+
+    #[test]
+    fn test_build_agents_menu_pagination() {
+        let agents: Vec<(AgentId, String)> = (0..10)
+            .map(|i| (AgentId::new(), format!("agent-{i}")))
+            .collect();
+
+        // Page 0: 6 agents + nav row
+        let content = build_agents_menu(&agents, 0);
+        match content {
+            ChannelContent::Menu { text, buttons } => {
+                assert!(text.contains("1/2"));
+                // 3 agent rows (6/2) + 1 nav row = 4
+                assert_eq!(buttons.len(), 4);
+                let nav = buttons.last().unwrap();
+                assert_eq!(nav.len(), 1); // Only "Next" on first page
+                assert!(nav[0].callback_data.contains("agents_page:1"));
+            }
+            _ => panic!("Expected Menu"),
+        }
+
+        // Page 1: 4 agents + nav row
+        let content = build_agents_menu(&agents, 1);
+        match content {
+            ChannelContent::Menu { text, buttons } => {
+                assert!(text.contains("2/2"));
+                // 2 agent rows (4/2) + 1 nav row = 3
+                assert_eq!(buttons.len(), 3);
+                let nav = buttons.last().unwrap();
+                assert_eq!(nav.len(), 1); // Only "Prev" on last page
+                assert!(nav[0].callback_data.contains("agents_page:0"));
+            }
+            _ => panic!("Expected Menu"),
+        }
     }
 }
