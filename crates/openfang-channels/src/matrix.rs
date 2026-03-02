@@ -3,6 +3,7 @@
 //! Uses the Matrix Client-Server API (via reqwest) for sending and receiving messages.
 //! Implements /sync long-polling for real-time message reception.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -10,7 +11,6 @@ use futures::Stream;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
@@ -122,6 +122,131 @@ impl MatrixAdapter {
     }
 }
 
+/// Run the Matrix /sync long-polling loop.
+///
+/// Continuously polls the Matrix /sync endpoint, processing room timeline events
+/// and forwarding messages to the channel sender.
+async fn run_matrix_sync(
+    homeserver: &str,
+    access_token: &Zeroizing<String>,
+    user_id: &str,
+    allowed_rooms: &[String],
+    client: &reqwest::Client,
+    since_token: &Arc<RwLock<Option<String>>>,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    loop {
+        // Build /sync URL
+        let since = since_token.read().await.clone();
+        let mut url = format!(
+            "{}/_matrix/client/v3/sync?timeout={}&filter={{\"room\":{{\"timeline\":{{\"limit\":10}}}}}}",
+            homeserver, SYNC_TIMEOUT_MS
+        );
+        if let Some(ref token) = since {
+            url.push_str(&format!("&since={token}"));
+        }
+
+        let resp = tokio::select! {
+            _ = shutdown_rx.changed() => {
+                info!("Matrix adapter shutting down");
+                return Ok(false);
+            }
+            result = client.get(&url).bearer_auth(&**access_token).send() => {
+                match result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Err(format!("Matrix sync error: {e}"));
+                    }
+                }
+            }
+        };
+
+        if !resp.status().is_success() {
+            return Err(format!("Matrix sync returned {}", resp.status()));
+        }
+
+        let body: serde_json::Value = match resp.json().await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("Matrix sync parse error: {e}");
+                continue;
+            }
+        };
+
+        // Update since token
+        if let Some(next) = body["next_batch"].as_str() {
+            *since_token.write().await = Some(next.to_string());
+        }
+
+        // Process room events
+        if let Some(rooms) = body["rooms"]["join"].as_object() {
+            for (room_id, room_data) in rooms {
+                if !allowed_rooms.is_empty() && !allowed_rooms.iter().any(|r| r == room_id)
+                {
+                    continue;
+                }
+
+                if let Some(events) = room_data["timeline"]["events"].as_array() {
+                    for event in events {
+                        let event_type = event["type"].as_str().unwrap_or("");
+                        if event_type != "m.room.message" {
+                            continue;
+                        }
+
+                        let sender = event["sender"].as_str().unwrap_or("");
+                        if sender == user_id {
+                            continue; // Skip own messages
+                        }
+
+                        let content = event["content"]["body"].as_str().unwrap_or("");
+                        if content.is_empty() {
+                            continue;
+                        }
+
+                        let msg_content = if content.starts_with('/') {
+                            let parts: Vec<&str> = content.splitn(2, ' ').collect();
+                            let cmd = parts[0].trim_start_matches('/');
+                            let args: Vec<String> = parts
+                                .get(1)
+                                .map(|a| a.split_whitespace().map(String::from).collect())
+                                .unwrap_or_default();
+                            ChannelContent::Command {
+                                name: cmd.to_string(),
+                                args,
+                            }
+                        } else {
+                            ChannelContent::Text(content.to_string())
+                        };
+
+                        let event_id = event["event_id"].as_str().unwrap_or("").to_string();
+
+                        let channel_msg = ChannelMessage {
+                            channel: ChannelType::Matrix,
+                            platform_message_id: event_id,
+                            sender: ChannelUser {
+                                platform_id: room_id.clone(),
+                                display_name: sender.to_string(),
+                                openfang_user: None,
+                            },
+                            content: msg_content,
+                            target_agent: None,
+                            timestamp: Utc::now(),
+                            is_group: true,
+                            thread_id: None,
+                            metadata: HashMap::new(),
+                        };
+
+                        if tx.send(channel_msg).await.is_err() {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl ChannelAdapter for MatrixAdapter {
     fn name(&self) -> &str {
@@ -140,135 +265,36 @@ impl ChannelAdapter for MatrixAdapter {
         let validated_user = self.validate().await?;
         info!("Matrix adapter authenticated as {validated_user}");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let homeserver = self.homeserver_url.clone();
         let access_token = self.access_token.clone();
         let user_id = self.user_id.clone();
         let allowed_rooms = self.allowed_rooms.clone();
         let client = self.client.clone();
         let since_token = Arc::clone(&self.since_token);
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                // Build /sync URL
-                let since = since_token.read().await.clone();
-                let mut url = format!(
-                    "{}/_matrix/client/v3/sync?timeout={}&filter={{\"room\":{{\"timeline\":{{\"limit\":10}}}}}}",
-                    homeserver, SYNC_TIMEOUT_MS
-                );
-                if let Some(ref token) = since {
-                    url.push_str(&format!("&since={token}"));
-                }
-
-                let resp = tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        info!("Matrix adapter shutting down");
-                        break;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Matrix"),
+                shutdown_rx.clone(),
+                || {
+                    let homeserver = homeserver.clone();
+                    let access_token = access_token.clone();
+                    let user_id = user_id.clone();
+                    let allowed_rooms = allowed_rooms.clone();
+                    let client = client.clone();
+                    let since_token = since_token.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_matrix_sync(
+                            &homeserver, &access_token, &user_id, &allowed_rooms,
+                            &client, &since_token, &tx, &mut shutdown_rx,
+                        ).await
                     }
-                    result = client.get(&url).bearer_auth(&*access_token).send() => {
-                        match result {
-                            Ok(r) => r,
-                            Err(e) => {
-                                warn!("Matrix sync error: {e}");
-                                tokio::time::sleep(backoff).await;
-                                backoff = (backoff * 2).min(Duration::from_secs(60));
-                                continue;
-                            }
-                        }
-                    }
-                };
-
-                if !resp.status().is_success() {
-                    warn!("Matrix sync returned {}", resp.status());
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(60));
-                    continue;
-                }
-
-                backoff = Duration::from_secs(1);
-
-                let body: serde_json::Value = match resp.json().await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        warn!("Matrix sync parse error: {e}");
-                        continue;
-                    }
-                };
-
-                // Update since token
-                if let Some(next) = body["next_batch"].as_str() {
-                    *since_token.write().await = Some(next.to_string());
-                }
-
-                // Process room events
-                if let Some(rooms) = body["rooms"]["join"].as_object() {
-                    for (room_id, room_data) in rooms {
-                        if !allowed_rooms.is_empty() && !allowed_rooms.iter().any(|r| r == room_id)
-                        {
-                            continue;
-                        }
-
-                        if let Some(events) = room_data["timeline"]["events"].as_array() {
-                            for event in events {
-                                let event_type = event["type"].as_str().unwrap_or("");
-                                if event_type != "m.room.message" {
-                                    continue;
-                                }
-
-                                let sender = event["sender"].as_str().unwrap_or("");
-                                if sender == user_id {
-                                    continue; // Skip own messages
-                                }
-
-                                let content = event["content"]["body"].as_str().unwrap_or("");
-                                if content.is_empty() {
-                                    continue;
-                                }
-
-                                let msg_content = if content.starts_with('/') {
-                                    let parts: Vec<&str> = content.splitn(2, ' ').collect();
-                                    let cmd = parts[0].trim_start_matches('/');
-                                    let args: Vec<String> = parts
-                                        .get(1)
-                                        .map(|a| a.split_whitespace().map(String::from).collect())
-                                        .unwrap_or_default();
-                                    ChannelContent::Command {
-                                        name: cmd.to_string(),
-                                        args,
-                                    }
-                                } else {
-                                    ChannelContent::Text(content.to_string())
-                                };
-
-                                let event_id = event["event_id"].as_str().unwrap_or("").to_string();
-
-                                let channel_msg = ChannelMessage {
-                                    channel: ChannelType::Matrix,
-                                    platform_message_id: event_id,
-                                    sender: ChannelUser {
-                                        platform_id: room_id.clone(),
-                                        display_name: sender.to_string(),
-                                        openfang_user: None,
-                                    },
-                                    content: msg_content,
-                                    target_agent: None,
-                                    timestamp: Utc::now(),
-                                    is_group: true,
-                                    thread_id: None,
-                                    metadata: HashMap::new(),
-                                };
-
-                                if tx.send(channel_msg).await.is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

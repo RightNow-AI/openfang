@@ -3,6 +3,7 @@
 //! Uses Slack Socket Mode WebSocket (app token) for receiving events and the
 //! Web API (bot token) for sending responses. No external Slack crate.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -11,14 +12,11 @@ use futures::{SinkExt, Stream, StreamExt};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroizing;
 
 const SLACK_API_BASE: &str = "https://slack.com/api";
-const MAX_BACKOFF: Duration = Duration::from_secs(60);
-const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const SLACK_MSG_LIMIT: usize = 3000;
 
 /// Slack Socket Mode adapter.
@@ -126,155 +124,33 @@ impl ChannelAdapter for SlackAdapter {
         *self.bot_user_id.write().await = Some(bot_user_id_val.clone());
         info!("Slack bot authenticated (user_id: {bot_user_id_val})");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
 
         let app_token = self.app_token.clone();
         let bot_user_id = self.bot_user_id.clone();
         let allowed_channels = self.allowed_channels.clone();
         let client = self.client.clone();
-        let mut shutdown = self.shutdown_rx.clone();
+        let shutdown = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let mut backoff = INITIAL_BACKOFF;
-
-            loop {
-                if *shutdown.borrow() {
-                    break;
-                }
-
-                // Get a fresh WebSocket URL
-                let ws_url_result = get_socket_mode_url(&client, &app_token)
-                    .await
-                    .map_err(|e| e.to_string());
-                let ws_url = match ws_url_result {
-                    Ok(url) => url,
-                    Err(err_msg) => {
-                        warn!("Slack: failed to get WebSocket URL: {err_msg}, retrying in {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(MAX_BACKOFF);
-                        continue;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Slack"),
+                shutdown.clone(),
+                || {
+                    let app_token = app_token.clone();
+                    let bot_user_id = bot_user_id.clone();
+                    let allowed_channels = allowed_channels.clone();
+                    let client = client.clone();
+                    let tx = tx.clone();
+                    let shutdown = shutdown.clone();
+                    async move {
+                        run_slack_socket_mode(
+                            &app_token, &bot_user_id, &allowed_channels, &client,
+                            &tx, &mut shutdown.clone(),
+                        ).await
                     }
-                };
-
-                info!("Connecting to Slack Socket Mode...");
-
-                let ws_result = tokio_tungstenite::connect_async(&ws_url).await;
-                let ws_stream = match ws_result {
-                    Ok((stream, _)) => stream,
-                    Err(e) => {
-                        warn!("Slack WebSocket connection failed: {e}, retrying in {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(MAX_BACKOFF);
-                        continue;
-                    }
-                };
-
-                backoff = INITIAL_BACKOFF;
-                info!("Slack Socket Mode connected");
-
-                let (mut ws_tx, mut ws_rx) = ws_stream.split();
-
-                let should_reconnect = 'inner: loop {
-                    let msg = tokio::select! {
-                        msg = ws_rx.next() => msg,
-                        _ = shutdown.changed() => {
-                            if *shutdown.borrow() {
-                                let _ = ws_tx.close().await;
-                                return;
-                            }
-                            continue;
-                        }
-                    };
-
-                    let msg = match msg {
-                        Some(Ok(m)) => m,
-                        Some(Err(e)) => {
-                            warn!("Slack WebSocket error: {e}");
-                            break 'inner true;
-                        }
-                        None => {
-                            info!("Slack WebSocket closed");
-                            break 'inner true;
-                        }
-                    };
-
-                    let text = match msg {
-                        tokio_tungstenite::tungstenite::Message::Text(t) => t,
-                        tokio_tungstenite::tungstenite::Message::Close(_) => {
-                            info!("Slack Socket Mode closed by server");
-                            break 'inner true;
-                        }
-                        _ => continue,
-                    };
-
-                    let payload: serde_json::Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!("Slack: failed to parse message: {e}");
-                            continue;
-                        }
-                    };
-
-                    let envelope_type = payload["type"].as_str().unwrap_or("");
-
-                    match envelope_type {
-                        "hello" => {
-                            debug!("Slack Socket Mode hello received");
-                        }
-
-                        "events_api" => {
-                            // Acknowledge the envelope
-                            let envelope_id = payload["envelope_id"].as_str().unwrap_or("");
-                            if !envelope_id.is_empty() {
-                                let ack = serde_json::json!({ "envelope_id": envelope_id });
-                                if let Err(e) = ws_tx
-                                    .send(tokio_tungstenite::tungstenite::Message::Text(
-                                        serde_json::to_string(&ack).unwrap(),
-                                    ))
-                                    .await
-                                {
-                                    error!("Slack: failed to send ack: {e}");
-                                    break 'inner true;
-                                }
-                            }
-
-                            // Extract the event
-                            let event = &payload["payload"]["event"];
-                            if let Some(msg) =
-                                parse_slack_event(event, &bot_user_id, &allowed_channels).await
-                            {
-                                debug!(
-                                    "Slack message from {}: {:?}",
-                                    msg.sender.display_name, msg.content
-                                );
-                                if tx.send(msg).await.is_err() {
-                                    return;
-                                }
-                            }
-                        }
-
-                        "disconnect" => {
-                            let reason = payload["reason"].as_str().unwrap_or("unknown");
-                            info!("Slack disconnect request: {reason}");
-                            break 'inner true;
-                        }
-
-                        _ => {
-                            debug!("Slack envelope type: {envelope_type}");
-                        }
-                    }
-                };
-
-                if !should_reconnect || *shutdown.borrow() {
-                    break;
-                }
-
-                warn!("Slack: reconnecting in {backoff:?}");
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-            }
-
-            info!("Slack Socket Mode loop stopped");
+                },
+            ).await;
         });
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -303,6 +179,122 @@ impl ChannelAdapter for SlackAdapter {
         let _ = self.shutdown_tx.send(true);
         Ok(())
     }
+}
+
+/// Run a single Slack Socket Mode WebSocket session until disconnect.
+///
+/// Returns `Ok(true)` to reconnect, `Ok(false)` to stop permanently.
+async fn run_slack_socket_mode(
+    app_token: &Zeroizing<String>,
+    bot_user_id: &Arc<RwLock<Option<String>>>,
+    allowed_channels: &[String],
+    client: &reqwest::Client,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    let ws_url = get_socket_mode_url(client, app_token)
+        .await
+        .map_err(|e| format!("Failed to get WebSocket URL: {e}"))?;
+
+    info!("Connecting to Slack Socket Mode...");
+
+    let ws_stream = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .map_err(|e| format!("Slack WebSocket connection failed: {e}"))?
+        .0;
+
+    info!("Slack Socket Mode connected");
+
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+
+    let should_reconnect = 'inner: loop {
+        let msg = tokio::select! {
+            msg = ws_rx.next() => msg,
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    let _ = ws_tx.close().await;
+                    return Ok(false);
+                }
+                continue;
+            }
+        };
+
+        let msg = match msg {
+            Some(Ok(m)) => m,
+            Some(Err(e)) => {
+                warn!("Slack WebSocket error: {e}");
+                break 'inner true;
+            }
+            None => {
+                info!("Slack WebSocket closed");
+                break 'inner true;
+            }
+        };
+
+        let text = match msg {
+            tokio_tungstenite::tungstenite::Message::Text(t) => t,
+            tokio_tungstenite::tungstenite::Message::Close(_) => {
+                info!("Slack Socket Mode closed by server");
+                break 'inner true;
+            }
+            _ => continue,
+        };
+
+        let payload: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Slack: failed to parse message: {e}");
+                continue;
+            }
+        };
+
+        let envelope_type = payload["type"].as_str().unwrap_or("");
+
+        match envelope_type {
+            "hello" => {
+                debug!("Slack Socket Mode hello received");
+            }
+
+            "events_api" => {
+                let envelope_id = payload["envelope_id"].as_str().unwrap_or("");
+                if !envelope_id.is_empty() {
+                    let ack = serde_json::json!({ "envelope_id": envelope_id });
+                    if let Err(e) = ws_tx
+                        .send(tokio_tungstenite::tungstenite::Message::Text(
+                            serde_json::to_string(&ack).unwrap(),
+                        ))
+                        .await
+                    {
+                        error!("Slack: failed to send ack: {e}");
+                        break 'inner true;
+                    }
+                }
+
+                let event = &payload["payload"]["event"];
+                if let Some(msg) = parse_slack_event(event, bot_user_id, allowed_channels).await {
+                    debug!(
+                        "Slack message from {}: {:?}",
+                        msg.sender.display_name, msg.content
+                    );
+                    if tx.send(msg).await.is_err() {
+                        return Ok(false);
+                    }
+                }
+            }
+
+            "disconnect" => {
+                let reason = payload["reason"].as_str().unwrap_or("unknown");
+                info!("Slack disconnect request: {reason}");
+                break 'inner true;
+            }
+
+            _ => {
+                debug!("Slack envelope type: {envelope_type}");
+            }
+        }
+    };
+
+    Ok(should_reconnect)
 }
 
 /// Helper to get Socket Mode WebSocket URL.

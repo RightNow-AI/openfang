@@ -4,6 +4,7 @@
 //! messages and publishes replies by POSTing to the same topic endpoint.
 //! Supports self-hosted ntfy instances and optional Bearer token auth.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -13,7 +14,6 @@ use futures::Stream;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
@@ -137,6 +137,136 @@ impl NtfyAdapter {
     }
 }
 
+/// Run a single ntfy SSE connection cycle.
+async fn run_ntfy_sse(
+    server_url: &str,
+    topic: &str,
+    token: &Zeroizing<String>,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    use futures::StreamExt;
+    use std::time::Duration;
+
+    let sse_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(0))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/{}/sse", server_url, topic);
+    let mut builder = sse_client.get(&url);
+    if !token.is_empty() {
+        builder = builder.bearer_auth(token.as_str());
+    }
+
+    let response = builder.send().await
+        .map_err(|e| format!("ntfy SSE connection error: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("ntfy SSE returned HTTP {}", response.status()));
+    }
+
+    info!("ntfy: SSE stream connected for topic {topic}");
+
+    let mut stream = response.bytes_stream();
+    let mut line_buffer = String::new();
+    let mut current_data = String::new();
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("ntfy adapter shutting down");
+                    return Ok(false);
+                }
+            }
+            chunk = stream.next() => {
+                match chunk {
+                    Some(Ok(bytes)) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        line_buffer.push_str(&text);
+
+                        while let Some(newline_pos) = line_buffer.find('\n') {
+                            let line = line_buffer[..newline_pos].trim_end_matches('\r').to_string();
+                            line_buffer = line_buffer[newline_pos + 1..].to_string();
+
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                current_data = data.to_string();
+                            } else if line.is_empty() && !current_data.is_empty() {
+                                if let Some((id, message, _topic, title)) =
+                                    NtfyAdapter::parse_sse_data(&current_data)
+                                {
+                                    let sender_name = title
+                                        .as_deref()
+                                        .unwrap_or("ntfy-user");
+
+                                    let content = if message.starts_with('/') {
+                                        let parts: Vec<&str> =
+                                            message.splitn(2, ' ').collect();
+                                        let cmd = parts[0].trim_start_matches('/');
+                                        let args: Vec<String> = parts
+                                            .get(1)
+                                            .map(|a| {
+                                                a.split_whitespace()
+                                                    .map(String::from)
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default();
+                                        ChannelContent::Command {
+                                            name: cmd.to_string(),
+                                            args,
+                                        }
+                                    } else {
+                                        ChannelContent::Text(message)
+                                    };
+
+                                    let msg = ChannelMessage {
+                                        channel: ChannelType::Custom("ntfy".to_string()),
+                                        platform_message_id: id,
+                                        sender: ChannelUser {
+                                            platform_id: sender_name.to_string(),
+                                            display_name: sender_name.to_string(),
+                                            openfang_user: None,
+                                        },
+                                        content,
+                                        target_agent: None,
+                                        timestamp: Utc::now(),
+                                        is_group: true,
+                                        thread_id: None,
+                                        metadata: {
+                                            let mut m = HashMap::new();
+                                            m.insert(
+                                                "topic".to_string(),
+                                                serde_json::Value::String(
+                                                    topic.to_string(),
+                                                ),
+                                            );
+                                            m
+                                        },
+                                    };
+
+                                    if tx.send(msg).await.is_err() {
+                                        return Ok(false);
+                                    }
+                                }
+                                current_data.clear();
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        warn!("ntfy: SSE read error: {e}");
+                        return Ok(true);
+                    }
+                    None => {
+                        info!("ntfy: SSE stream ended");
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl ChannelAdapter for NtfyAdapter {
     fn name(&self) -> &str {
@@ -156,165 +286,30 @@ impl ChannelAdapter for NtfyAdapter {
             self.server_url, self.topic
         );
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let server_url = self.server_url.clone();
         let topic = self.topic.clone();
         let token = self.token.clone();
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let sse_client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(0)) // No timeout for SSE
-                .build()
-                .unwrap_or_default();
-
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                let url = format!("{}/{}/sse", server_url, topic);
-                let mut builder = sse_client.get(&url);
-                if !token.is_empty() {
-                    builder = builder.bearer_auth(token.as_str());
-                }
-
-                let response = match builder.send().await {
-                    Ok(r) => {
-                        if !r.status().is_success() {
-                            warn!("ntfy: SSE returned HTTP {}", r.status());
-                            tokio::time::sleep(backoff).await;
-                            backoff = (backoff * 2).min(Duration::from_secs(120));
-                            continue;
-                        }
-                        backoff = Duration::from_secs(1);
-                        r
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("ntfy"),
+                shutdown_rx.clone(),
+                || {
+                    let server_url = server_url.clone();
+                    let topic = topic.clone();
+                    let token = token.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_ntfy_sse(
+                            &server_url, &topic, &token,
+                            &tx, &mut shutdown_rx,
+                        ).await
                     }
-                    Err(e) => {
-                        warn!("ntfy: SSE connection error: {e}, backing off {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(120));
-                        continue;
-                    }
-                };
-
-                info!("ntfy: SSE stream connected for topic {topic}");
-
-                let mut stream = response.bytes_stream();
-                use futures::StreamExt;
-
-                let mut line_buffer = String::new();
-                let mut current_data = String::new();
-
-                loop {
-                    tokio::select! {
-                        _ = shutdown_rx.changed() => {
-                            if *shutdown_rx.borrow() {
-                                info!("ntfy adapter shutting down");
-                                return;
-                            }
-                        }
-                        chunk = stream.next() => {
-                            match chunk {
-                                Some(Ok(bytes)) => {
-                                    let text = String::from_utf8_lossy(&bytes);
-                                    line_buffer.push_str(&text);
-
-                                    // SSE parsing: process complete lines
-                                    while let Some(newline_pos) = line_buffer.find('\n') {
-                                        let line = line_buffer[..newline_pos].trim_end_matches('\r').to_string();
-                                        line_buffer = line_buffer[newline_pos + 1..].to_string();
-
-                                        if let Some(data) = line.strip_prefix("data: ") {
-                                            current_data = data.to_string();
-                                        } else if line.is_empty() && !current_data.is_empty() {
-                                            // Empty line = end of SSE event
-                                            if let Some((id, message, _topic, title)) =
-                                                Self::parse_sse_data(&current_data)
-                                            {
-                                                let sender_name = title
-                                                    .as_deref()
-                                                    .unwrap_or("ntfy-user");
-
-                                                let content = if message.starts_with('/') {
-                                                    let parts: Vec<&str> =
-                                                        message.splitn(2, ' ').collect();
-                                                    let cmd =
-                                                        parts[0].trim_start_matches('/');
-                                                    let args: Vec<String> = parts
-                                                        .get(1)
-                                                        .map(|a| {
-                                                            a.split_whitespace()
-                                                                .map(String::from)
-                                                                .collect()
-                                                        })
-                                                        .unwrap_or_default();
-                                                    ChannelContent::Command {
-                                                        name: cmd.to_string(),
-                                                        args,
-                                                    }
-                                                } else {
-                                                    ChannelContent::Text(message)
-                                                };
-
-                                                let msg = ChannelMessage {
-                                                    channel: ChannelType::Custom(
-                                                        "ntfy".to_string(),
-                                                    ),
-                                                    platform_message_id: id,
-                                                    sender: ChannelUser {
-                                                        platform_id: sender_name.to_string(),
-                                                        display_name: sender_name.to_string(),
-                                                        openfang_user: None,
-                                                    },
-                                                    content,
-                                                    target_agent: None,
-                                                    timestamp: Utc::now(),
-                                                    is_group: true,
-                                                    thread_id: None,
-                                                    metadata: {
-                                                        let mut m = HashMap::new();
-                                                        m.insert(
-                                                            "topic".to_string(),
-                                                            serde_json::Value::String(
-                                                                topic.clone(),
-                                                            ),
-                                                        );
-                                                        m
-                                                    },
-                                                };
-
-                                                if tx.send(msg).await.is_err() {
-                                                    return;
-                                                }
-                                            }
-                                            current_data.clear();
-                                        }
-                                    }
-                                }
-                                Some(Err(e)) => {
-                                    warn!("ntfy: SSE read error: {e}");
-                                    break;
-                                }
-                                None => {
-                                    info!("ntfy: SSE stream ended, reconnecting...");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Backoff before reconnect
-                if !*shutdown_rx.borrow() {
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(60));
-                }
-            }
-
-            info!("ntfy SSE loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

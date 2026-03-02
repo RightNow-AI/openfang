@@ -4,6 +4,7 @@
 //! Bearer token authentication. Polls for new messages and sends replies
 //! via the REST API.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -15,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch, RwLock};
-use tracing::{info, warn};
+use tracing::info;
 use zeroize::Zeroizing;
 
 const POLL_INTERVAL_SECS: u64 = 10;
@@ -229,134 +230,37 @@ impl ChannelAdapter for LinkedInAdapter {
         let org_name = self.validate().await?;
         info!("LinkedIn adapter authenticated for org: {org_name}");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let access_token = self.access_token.clone();
         let organization_id = self.organization_id.clone();
         let client = self.client.clone();
         let last_seen_ts = Arc::clone(&self.last_seen_ts);
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         // Initialize last_seen_ts to now so we only get new messages
         {
             *last_seen_ts.write().await = Utc::now().timestamp_millis();
         }
 
-        let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
-
         tokio::spawn(async move {
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() {
-                            info!("LinkedIn adapter shutting down");
-                            break;
-                        }
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("LinkedIn"),
+                shutdown_rx.clone(),
+                || {
+                    let access_token = access_token.clone();
+                    let organization_id = organization_id.clone();
+                    let client = client.clone();
+                    let last_seen_ts = last_seen_ts.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_linkedin_poll(
+                            &access_token, &organization_id, &client,
+                            &last_seen_ts, &tx, &mut shutdown_rx,
+                        ).await
                     }
-                    _ = tokio::time::sleep(poll_interval) => {}
-                }
-
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                let after_ts = *last_seen_ts.read().await;
-
-                let poll_result =
-                    Self::fetch_messages(&client, &access_token, &organization_id, after_ts)
-                        .await
-                        .map_err(|e| e.to_string());
-
-                let messages = match poll_result {
-                    Ok(m) => {
-                        backoff = Duration::from_secs(1);
-                        m
-                    }
-                    Err(msg) => {
-                        warn!("LinkedIn: poll error: {msg}, backing off {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(300));
-                        continue;
-                    }
-                };
-
-                let mut max_ts = after_ts;
-
-                for element in &messages {
-                    let (id, body_text, sender_urn, sender_name, created_at) =
-                        match Self::parse_message_element(element) {
-                            Some(parsed) => parsed,
-                            None => continue,
-                        };
-
-                    // Skip messages from own organization
-                    if sender_urn.contains(&organization_id) {
-                        continue;
-                    }
-
-                    if created_at > max_ts {
-                        max_ts = created_at;
-                    }
-
-                    let thread_id = element["conversationId"]
-                        .as_str()
-                        .or_else(|| element["threadId"].as_str())
-                        .map(String::from);
-
-                    let content = if body_text.starts_with('/') {
-                        let parts: Vec<&str> = body_text.splitn(2, ' ').collect();
-                        let cmd = parts[0].trim_start_matches('/');
-                        let args: Vec<String> = parts
-                            .get(1)
-                            .map(|a| a.split_whitespace().map(String::from).collect())
-                            .unwrap_or_default();
-                        ChannelContent::Command {
-                            name: cmd.to_string(),
-                            args,
-                        }
-                    } else {
-                        ChannelContent::Text(body_text)
-                    };
-
-                    let msg = ChannelMessage {
-                        channel: ChannelType::Custom("linkedin".to_string()),
-                        platform_message_id: id,
-                        sender: ChannelUser {
-                            platform_id: sender_urn.clone(),
-                            display_name: sender_name,
-                            openfang_user: None,
-                        },
-                        content,
-                        target_agent: None,
-                        timestamp: Utc::now(),
-                        is_group: false,
-                        thread_id,
-                        metadata: {
-                            let mut m = HashMap::new();
-                            m.insert(
-                                "sender_urn".to_string(),
-                                serde_json::Value::String(sender_urn),
-                            );
-                            m.insert(
-                                "organization_id".to_string(),
-                                serde_json::Value::String(organization_id.clone()),
-                            );
-                            m
-                        },
-                    };
-
-                    if tx.send(msg).await.is_err() {
-                        return;
-                    }
-                }
-
-                if max_ts > after_ts {
-                    *last_seen_ts.write().await = max_ts;
-                }
-            }
-
-            info!("LinkedIn polling loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
@@ -384,6 +288,115 @@ impl ChannelAdapter for LinkedInAdapter {
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
+    }
+}
+
+/// Run the LinkedIn message polling loop.
+async fn run_linkedin_poll(
+    access_token: &Zeroizing<String>,
+    organization_id: &str,
+    client: &reqwest::Client,
+    last_seen_ts: &Arc<RwLock<i64>>,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("LinkedIn adapter shutting down");
+                    return Ok(false);
+                }
+            }
+            _ = tokio::time::sleep(poll_interval) => {}
+        }
+
+        if *shutdown_rx.borrow() {
+            return Ok(false);
+        }
+
+        let after_ts = *last_seen_ts.read().await;
+
+        let messages =
+            LinkedInAdapter::fetch_messages(client, access_token, organization_id, after_ts)
+                .await
+                .map_err(|e| e.to_string())?;
+
+        let mut max_ts = after_ts;
+
+        for element in &messages {
+            let (id, body_text, sender_urn, sender_name, created_at) =
+                match LinkedInAdapter::parse_message_element(element) {
+                    Some(parsed) => parsed,
+                    None => continue,
+                };
+
+            // Skip messages from own organization
+            if sender_urn.contains(organization_id) {
+                continue;
+            }
+
+            if created_at > max_ts {
+                max_ts = created_at;
+            }
+
+            let thread_id = element["conversationId"]
+                .as_str()
+                .or_else(|| element["threadId"].as_str())
+                .map(String::from);
+
+            let content = if body_text.starts_with('/') {
+                let parts: Vec<&str> = body_text.splitn(2, ' ').collect();
+                let cmd = parts[0].trim_start_matches('/');
+                let args: Vec<String> = parts
+                    .get(1)
+                    .map(|a| a.split_whitespace().map(String::from).collect())
+                    .unwrap_or_default();
+                ChannelContent::Command {
+                    name: cmd.to_string(),
+                    args,
+                }
+            } else {
+                ChannelContent::Text(body_text)
+            };
+
+            let msg = ChannelMessage {
+                channel: ChannelType::Custom("linkedin".to_string()),
+                platform_message_id: id,
+                sender: ChannelUser {
+                    platform_id: sender_urn.clone(),
+                    display_name: sender_name,
+                    openfang_user: None,
+                },
+                content,
+                target_agent: None,
+                timestamp: Utc::now(),
+                is_group: false,
+                thread_id,
+                metadata: {
+                    let mut m = HashMap::new();
+                    m.insert(
+                        "sender_urn".to_string(),
+                        serde_json::Value::String(sender_urn),
+                    );
+                    m.insert(
+                        "organization_id".to_string(),
+                        serde_json::Value::String(organization_id.to_string()),
+                    );
+                    m
+                },
+            };
+
+            if tx.send(msg).await.is_err() {
+                return Ok(false);
+            }
+        }
+
+        if max_ts > after_ts {
+            *last_seen_ts.write().await = max_ts;
+        }
     }
 }
 

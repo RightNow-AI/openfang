@@ -4,6 +4,7 @@
 //! Receives messages via Zulip's event queue system (register + long-poll) and
 //! sends messages via the `/api/v1/messages` endpoint.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -177,6 +178,217 @@ impl ZulipAdapter {
     }
 }
 
+/// Run the Zulip event queue long-polling loop.
+async fn run_zulip_events(
+    server_url: &str,
+    bot_email: &str,
+    api_key: &Zeroizing<String>,
+    streams: &[String],
+    client: &reqwest::Client,
+    queue_id_lock: &Arc<RwLock<Option<String>>>,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+    current_queue_id: &Arc<RwLock<String>>,
+    last_event_id: &Arc<RwLock<i64>>,
+) -> Result<bool, String> {
+    loop {
+        let qid = current_queue_id.read().await.clone();
+        let eid = *last_event_id.read().await;
+        let url = format!(
+            "{}/api/v1/events?queue_id={}&last_event_id={}&dont_block=false",
+            server_url, qid, eid
+        );
+
+        let resp = tokio::select! {
+            _ = shutdown_rx.changed() => {
+                info!("Zulip adapter shutting down");
+                return Ok(false);
+            }
+            result = client
+                .get(&url)
+                .basic_auth(bot_email, Some(api_key.as_str()))
+                .timeout(Duration::from_secs(POLL_TIMEOUT_SECS + 10))
+                .send() => {
+                match result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Err(format!("Zulip poll error: {e}"));
+                    }
+                }
+            }
+        };
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            warn!("Zulip poll returned {status}");
+
+            // If the queue is expired (BAD_EVENT_QUEUE_ID), re-register
+            if status == reqwest::StatusCode::BAD_REQUEST {
+                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                if body["code"].as_str() == Some("BAD_EVENT_QUEUE_ID") {
+                    info!("Zulip: event queue expired, re-registering");
+                    let register_url = format!("{}/api/v1/register", server_url);
+
+                    let mut params = vec![("event_types", r#"["message"]"#.to_string())];
+                    if !streams.is_empty() {
+                        let narrow: Vec<serde_json::Value> = streams
+                            .iter()
+                            .map(|s| serde_json::json!(["stream", s]))
+                            .collect();
+                        if let Ok(narrow_str) = serde_json::to_string(&narrow) {
+                            params.push(("narrow", narrow_str));
+                        }
+                    }
+
+                    match client
+                        .post(&register_url)
+                        .basic_auth(bot_email, Some(api_key.as_str()))
+                        .form(&params)
+                        .send()
+                        .await
+                    {
+                        Ok(reg_resp) => {
+                            let reg_body: serde_json::Value =
+                                reg_resp.json().await.unwrap_or_default();
+                            if let (Some(new_qid), Some(lid)) = (
+                                reg_body["queue_id"].as_str(),
+                                reg_body["last_event_id"].as_i64(),
+                            ) {
+                                *current_queue_id.write().await = new_qid.to_string();
+                                *last_event_id.write().await = lid;
+                                *queue_id_lock.write().await =
+                                    Some(new_qid.to_string());
+                                info!("Zulip: re-registered queue {new_qid}");
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Zulip: re-register failed: {e}");
+                        }
+                    }
+                }
+            }
+
+            return Err(format!("Zulip poll returned {status}"));
+        }
+
+        let body: serde_json::Value = match resp.json().await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("Zulip: failed to parse events: {e}");
+                continue;
+            }
+        };
+
+        let events = match body["events"].as_array() {
+            Some(arr) => arr,
+            None => continue,
+        };
+
+        for event in events {
+            // Update last_event_id
+            if let Some(event_id) = event["id"].as_i64() {
+                let mut eid_guard = last_event_id.write().await;
+                if event_id > *eid_guard {
+                    *eid_guard = event_id;
+                }
+            }
+
+            let event_type = event["type"].as_str().unwrap_or("");
+            if event_type != "message" {
+                continue;
+            }
+
+            let message = &event["message"];
+            let msg_type = message["type"].as_str().unwrap_or("");
+
+            // Filter by stream if configured
+            let stream_name = message["display_recipient"].as_str().unwrap_or("");
+            if msg_type == "stream"
+                && !streams.is_empty()
+                && !streams.iter().any(|s| s == stream_name)
+            {
+                continue;
+            }
+
+            // Skip messages from the bot itself
+            let sender_email = message["sender_email"].as_str().unwrap_or("");
+            if sender_email == bot_email {
+                continue;
+            }
+
+            let content = message["content"].as_str().unwrap_or("");
+            if content.is_empty() {
+                continue;
+            }
+
+            let sender_name = message["sender_full_name"].as_str().unwrap_or("unknown");
+            let sender_id = message["sender_id"]
+                .as_i64()
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            let msg_id = message["id"]
+                .as_i64()
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            let topic = message["subject"].as_str().unwrap_or("").to_string();
+            let is_group = msg_type == "stream";
+
+            let platform_id = if is_group {
+                stream_name.to_string()
+            } else {
+                sender_email.to_string()
+            };
+
+            let msg_content = if content.starts_with('/') {
+                let parts: Vec<&str> = content.splitn(2, ' ').collect();
+                let cmd = parts[0].trim_start_matches('/');
+                let args: Vec<String> = parts
+                    .get(1)
+                    .map(|a| a.split_whitespace().map(String::from).collect())
+                    .unwrap_or_default();
+                ChannelContent::Command {
+                    name: cmd.to_string(),
+                    args,
+                }
+            } else {
+                ChannelContent::Text(content.to_string())
+            };
+
+            let channel_msg = ChannelMessage {
+                channel: ChannelType::Custom("zulip".to_string()),
+                platform_message_id: msg_id,
+                sender: ChannelUser {
+                    platform_id,
+                    display_name: sender_name.to_string(),
+                    openfang_user: None,
+                },
+                content: msg_content,
+                target_agent: None,
+                timestamp: Utc::now(),
+                is_group,
+                thread_id: if !topic.is_empty() { Some(topic) } else { None },
+                metadata: {
+                    let mut m = HashMap::new();
+                    m.insert(
+                        "sender_id".to_string(),
+                        serde_json::Value::String(sender_id),
+                    );
+                    m.insert(
+                        "sender_email".to_string(),
+                        serde_json::Value::String(sender_email.to_string()),
+                    );
+                    m
+                },
+            };
+
+            if tx.send(channel_msg).await.is_err() {
+                return Ok(false);
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl ChannelAdapter for ZulipAdapter {
     fn name(&self) -> &str {
@@ -200,225 +412,42 @@ impl ChannelAdapter for ZulipAdapter {
         info!("Zulip event queue registered: {initial_queue_id}");
         *self.queue_id.write().await = Some(initial_queue_id.clone());
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let server_url = self.server_url.clone();
         let bot_email = self.bot_email.clone();
         let api_key = self.api_key.clone();
         let streams = self.streams.clone();
         let client = self.client.clone();
         let queue_id_lock = Arc::clone(&self.queue_id);
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
+
+        let current_queue_id = Arc::new(RwLock::new(initial_queue_id));
+        let last_event_id = Arc::new(RwLock::new(initial_last_id));
 
         tokio::spawn(async move {
-            let mut current_queue_id = initial_queue_id;
-            let mut last_event_id = initial_last_id;
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                let url = format!(
-                    "{}/api/v1/events?queue_id={}&last_event_id={}&dont_block=false",
-                    server_url, current_queue_id, last_event_id
-                );
-
-                let resp = tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        info!("Zulip adapter shutting down");
-                        break;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Zulip"),
+                shutdown_rx.clone(),
+                || {
+                    let server_url = server_url.clone();
+                    let bot_email = bot_email.clone();
+                    let api_key = api_key.clone();
+                    let streams = streams.clone();
+                    let client = client.clone();
+                    let queue_id_lock = queue_id_lock.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    let current_queue_id = current_queue_id.clone();
+                    let last_event_id = last_event_id.clone();
+                    async move {
+                        run_zulip_events(
+                            &server_url, &bot_email, &api_key, &streams,
+                            &client, &queue_id_lock, &tx, &mut shutdown_rx,
+                            &current_queue_id, &last_event_id,
+                        ).await
                     }
-                    result = client
-                        .get(&url)
-                        .basic_auth(&bot_email, Some(api_key.as_str()))
-                        .timeout(Duration::from_secs(POLL_TIMEOUT_SECS + 10))
-                        .send() => {
-                        match result {
-                            Ok(r) => r,
-                            Err(e) => {
-                                warn!("Zulip poll error: {e}");
-                                tokio::time::sleep(backoff).await;
-                                backoff = (backoff * 2).min(Duration::from_secs(60));
-                                continue;
-                            }
-                        }
-                    }
-                };
-
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    warn!("Zulip poll returned {status}");
-
-                    // If the queue is expired (BAD_EVENT_QUEUE_ID), re-register
-                    if status == reqwest::StatusCode::BAD_REQUEST {
-                        let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                        if body["code"].as_str() == Some("BAD_EVENT_QUEUE_ID") {
-                            info!("Zulip: event queue expired, re-registering");
-                            let register_url = format!("{}/api/v1/register", server_url);
-
-                            let mut params = vec![("event_types", r#"["message"]"#.to_string())];
-                            if !streams.is_empty() {
-                                let narrow: Vec<serde_json::Value> = streams
-                                    .iter()
-                                    .map(|s| serde_json::json!(["stream", s]))
-                                    .collect();
-                                if let Ok(narrow_str) = serde_json::to_string(&narrow) {
-                                    params.push(("narrow", narrow_str));
-                                }
-                            }
-
-                            match client
-                                .post(&register_url)
-                                .basic_auth(&bot_email, Some(api_key.as_str()))
-                                .form(&params)
-                                .send()
-                                .await
-                            {
-                                Ok(reg_resp) => {
-                                    let reg_body: serde_json::Value =
-                                        reg_resp.json().await.unwrap_or_default();
-                                    if let (Some(qid), Some(lid)) = (
-                                        reg_body["queue_id"].as_str(),
-                                        reg_body["last_event_id"].as_i64(),
-                                    ) {
-                                        current_queue_id = qid.to_string();
-                                        last_event_id = lid;
-                                        *queue_id_lock.write().await =
-                                            Some(current_queue_id.clone());
-                                        info!("Zulip: re-registered queue {current_queue_id}");
-                                        backoff = Duration::from_secs(1);
-                                        continue;
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("Zulip: re-register failed: {e}");
-                                }
-                            }
-                        }
-                    }
-
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(60));
-                    continue;
-                }
-
-                backoff = Duration::from_secs(1);
-
-                let body: serde_json::Value = match resp.json().await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        warn!("Zulip: failed to parse events: {e}");
-                        continue;
-                    }
-                };
-
-                let events = match body["events"].as_array() {
-                    Some(arr) => arr,
-                    None => continue,
-                };
-
-                for event in events {
-                    // Update last_event_id
-                    if let Some(eid) = event["id"].as_i64() {
-                        if eid > last_event_id {
-                            last_event_id = eid;
-                        }
-                    }
-
-                    let event_type = event["type"].as_str().unwrap_or("");
-                    if event_type != "message" {
-                        continue;
-                    }
-
-                    let message = &event["message"];
-                    let msg_type = message["type"].as_str().unwrap_or("");
-
-                    // Filter by stream if configured
-                    let stream_name = message["display_recipient"].as_str().unwrap_or("");
-                    if msg_type == "stream"
-                        && !streams.is_empty()
-                        && !streams.iter().any(|s| s == stream_name)
-                    {
-                        continue;
-                    }
-
-                    // Skip messages from the bot itself
-                    let sender_email = message["sender_email"].as_str().unwrap_or("");
-                    if sender_email == bot_email {
-                        continue;
-                    }
-
-                    let content = message["content"].as_str().unwrap_or("");
-                    if content.is_empty() {
-                        continue;
-                    }
-
-                    let sender_name = message["sender_full_name"].as_str().unwrap_or("unknown");
-                    let sender_id = message["sender_id"]
-                        .as_i64()
-                        .map(|id| id.to_string())
-                        .unwrap_or_default();
-                    let msg_id = message["id"]
-                        .as_i64()
-                        .map(|id| id.to_string())
-                        .unwrap_or_default();
-                    let topic = message["subject"].as_str().unwrap_or("").to_string();
-                    let is_group = msg_type == "stream";
-
-                    // Determine platform_id: stream name for stream messages,
-                    // sender email for DMs
-                    let platform_id = if is_group {
-                        stream_name.to_string()
-                    } else {
-                        sender_email.to_string()
-                    };
-
-                    let msg_content = if content.starts_with('/') {
-                        let parts: Vec<&str> = content.splitn(2, ' ').collect();
-                        let cmd = parts[0].trim_start_matches('/');
-                        let args: Vec<String> = parts
-                            .get(1)
-                            .map(|a| a.split_whitespace().map(String::from).collect())
-                            .unwrap_or_default();
-                        ChannelContent::Command {
-                            name: cmd.to_string(),
-                            args,
-                        }
-                    } else {
-                        ChannelContent::Text(content.to_string())
-                    };
-
-                    let channel_msg = ChannelMessage {
-                        channel: ChannelType::Custom("zulip".to_string()),
-                        platform_message_id: msg_id,
-                        sender: ChannelUser {
-                            platform_id,
-                            display_name: sender_name.to_string(),
-                            openfang_user: None,
-                        },
-                        content: msg_content,
-                        target_agent: None,
-                        timestamp: Utc::now(),
-                        is_group,
-                        thread_id: if !topic.is_empty() { Some(topic) } else { None },
-                        metadata: {
-                            let mut m = HashMap::new();
-                            m.insert(
-                                "sender_id".to_string(),
-                                serde_json::Value::String(sender_id),
-                            );
-                            m.insert(
-                                "sender_email".to_string(),
-                                serde_json::Value::String(sender_email.to_string()),
-                            );
-                            m
-                        },
-                    };
-
-                    if tx.send(channel_msg).await.is_err() {
-                        return;
-                    }
-                }
-            }
-
-            info!("Zulip event loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

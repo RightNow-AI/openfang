@@ -4,6 +4,7 @@
 //! REST API v4 for sending messages. No external Mattermost crate — just
 //! `tokio-tungstenite` + `reqwest`.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -13,15 +14,12 @@ use futures::{SinkExt, Stream, StreamExt};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
 /// Maximum Mattermost message length (characters). The server limit is 16383.
 const MAX_MESSAGE_LEN: usize = 16383;
-const MAX_BACKOFF: Duration = Duration::from_secs(60);
-const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Mattermost WebSocket + REST API v4 adapter.
 ///
@@ -138,6 +136,110 @@ impl MattermostAdapter {
     }
 }
 
+/// Run a single Mattermost WebSocket session until disconnect.
+///
+/// Returns `Ok(true)` to reconnect, `Ok(false)` to stop permanently.
+async fn run_mattermost_ws(
+    ws_url: &str,
+    token: &Zeroizing<String>,
+    bot_user_id: &Arc<RwLock<Option<String>>>,
+    allowed_channels: &[String],
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    info!("Connecting to Mattermost WebSocket at {ws_url}...");
+
+    let ws_stream = tokio_tungstenite::connect_async(ws_url)
+        .await
+        .map_err(|e| format!("Mattermost WebSocket connection failed: {e}"))?
+        .0;
+
+    info!("Mattermost WebSocket connected");
+
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+
+    // Authenticate over WebSocket with the token
+    let auth_msg = serde_json::json!({
+        "seq": 1,
+        "action": "authentication_challenge",
+        "data": { "token": token.as_str() }
+    });
+
+    ws_tx
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&auth_msg).unwrap(),
+        ))
+        .await
+        .map_err(|e| format!("Mattermost WebSocket auth send failed: {e}"))?;
+
+    let should_reconnect = 'inner: loop {
+        let msg = tokio::select! {
+            msg = ws_rx.next() => msg,
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Mattermost adapter shutting down");
+                    let _ = ws_tx.close().await;
+                    return Ok(false);
+                }
+                continue;
+            }
+        };
+
+        let msg = match msg {
+            Some(Ok(m)) => m,
+            Some(Err(e)) => {
+                warn!("Mattermost WebSocket error: {e}");
+                break 'inner true;
+            }
+            None => {
+                info!("Mattermost WebSocket closed");
+                break 'inner true;
+            }
+        };
+
+        let text = match msg {
+            tokio_tungstenite::tungstenite::Message::Text(t) => t,
+            tokio_tungstenite::tungstenite::Message::Close(_) => {
+                info!("Mattermost WebSocket closed by server");
+                break 'inner true;
+            }
+            _ => continue,
+        };
+
+        let payload: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Mattermost: failed to parse message: {e}");
+                continue;
+            }
+        };
+
+        if payload.get("status").is_some() {
+            let status = payload["status"].as_str().unwrap_or("");
+            if status == "OK" {
+                debug!("Mattermost WebSocket authentication successful");
+            } else {
+                warn!("Mattermost WebSocket auth response: {status}");
+            }
+            continue;
+        }
+
+        let bot_id_guard = bot_user_id.read().await;
+        if let Some(channel_msg) = parse_mattermost_event(&payload, &bot_id_guard, allowed_channels) {
+            debug!(
+                "Mattermost message from {}: {:?}",
+                channel_msg.sender.display_name, channel_msg.content
+            );
+            drop(bot_id_guard);
+            if tx.send(channel_msg).await.is_err() {
+                return Ok(false);
+            }
+        }
+    };
+
+    Ok(should_reconnect)
+}
+
 /// Parse a Mattermost WebSocket `posted` event into a `ChannelMessage`.
 ///
 /// The `data` field of a `posted` event contains a JSON string under `post`
@@ -244,142 +346,32 @@ impl ChannelAdapter for MattermostAdapter {
         let user_id = self.validate_token().await?;
         *self.bot_user_id.write().await = Some(user_id);
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let ws_url = self.ws_url();
         let token = self.token.clone();
         let bot_user_id = self.bot_user_id.clone();
         let allowed_channels = self.allowed_channels.clone();
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let mut backoff = INITIAL_BACKOFF;
-
-            loop {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                info!("Connecting to Mattermost WebSocket at {ws_url}...");
-
-                let ws_result = tokio_tungstenite::connect_async(&ws_url).await;
-                let ws_stream = match ws_result {
-                    Ok((stream, _)) => stream,
-                    Err(e) => {
-                        warn!(
-                            "Mattermost WebSocket connection failed: {e}, retrying in {backoff:?}"
-                        );
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(MAX_BACKOFF);
-                        continue;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Mattermost"),
+                shutdown_rx.clone(),
+                || {
+                    let ws_url = ws_url.clone();
+                    let token = token.clone();
+                    let bot_user_id = bot_user_id.clone();
+                    let allowed_channels = allowed_channels.clone();
+                    let tx = tx.clone();
+                    let shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_mattermost_ws(
+                            &ws_url, &token, &bot_user_id, &allowed_channels,
+                            &tx, &mut shutdown_rx.clone(),
+                        ).await
                     }
-                };
-
-                backoff = INITIAL_BACKOFF;
-                info!("Mattermost WebSocket connected");
-
-                let (mut ws_tx, mut ws_rx) = ws_stream.split();
-
-                // Authenticate over WebSocket with the token
-                let auth_msg = serde_json::json!({
-                    "seq": 1,
-                    "action": "authentication_challenge",
-                    "data": {
-                        "token": token.as_str()
-                    }
-                });
-
-                if let Err(e) = ws_tx
-                    .send(tokio_tungstenite::tungstenite::Message::Text(
-                        serde_json::to_string(&auth_msg).unwrap(),
-                    ))
-                    .await
-                {
-                    warn!("Mattermost WebSocket auth send failed: {e}");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(MAX_BACKOFF);
-                    continue;
-                }
-
-                // Inner message loop — returns true if we should reconnect
-                let should_reconnect = 'inner: loop {
-                    let msg = tokio::select! {
-                        msg = ws_rx.next() => msg,
-                        _ = shutdown_rx.changed() => {
-                            if *shutdown_rx.borrow() {
-                                info!("Mattermost adapter shutting down");
-                                let _ = ws_tx.close().await;
-                                return;
-                            }
-                            continue;
-                        }
-                    };
-
-                    let msg = match msg {
-                        Some(Ok(m)) => m,
-                        Some(Err(e)) => {
-                            warn!("Mattermost WebSocket error: {e}");
-                            break 'inner true;
-                        }
-                        None => {
-                            info!("Mattermost WebSocket closed");
-                            break 'inner true;
-                        }
-                    };
-
-                    let text = match msg {
-                        tokio_tungstenite::tungstenite::Message::Text(t) => t,
-                        tokio_tungstenite::tungstenite::Message::Close(_) => {
-                            info!("Mattermost WebSocket closed by server");
-                            break 'inner true;
-                        }
-                        _ => continue,
-                    };
-
-                    let payload: serde_json::Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!("Mattermost: failed to parse message: {e}");
-                            continue;
-                        }
-                    };
-
-                    // Check for auth response
-                    if payload.get("status").is_some() {
-                        let status = payload["status"].as_str().unwrap_or("");
-                        if status == "OK" {
-                            debug!("Mattermost WebSocket authentication successful");
-                        } else {
-                            warn!("Mattermost WebSocket auth response: {status}");
-                        }
-                        continue;
-                    }
-
-                    // Parse events
-                    let bot_id_guard = bot_user_id.read().await;
-                    if let Some(channel_msg) =
-                        parse_mattermost_event(&payload, &bot_id_guard, &allowed_channels)
-                    {
-                        debug!(
-                            "Mattermost message from {}: {:?}",
-                            channel_msg.sender.display_name, channel_msg.content
-                        );
-                        drop(bot_id_guard);
-                        if tx.send(channel_msg).await.is_err() {
-                            return;
-                        }
-                    }
-                };
-
-                if !should_reconnect || *shutdown_rx.borrow() {
-                    break;
-                }
-
-                warn!("Mattermost: reconnecting in {backoff:?}");
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-            }
-
-            info!("Mattermost WebSocket loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

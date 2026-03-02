@@ -5,6 +5,7 @@
 //! `x-bot-token` header on REST calls and `Authenticate` frame on WebSocket.
 //! Revolt is an open-source, Discord-like chat platform.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -27,9 +28,6 @@ const DEFAULT_WS_URL: &str = "wss://ws.revolt.chat";
 
 /// Maximum Revolt message text length (characters).
 const MAX_MESSAGE_LEN: usize = 2000;
-
-/// Maximum backoff duration for WebSocket reconnection.
-const MAX_BACKOFF_SECS: u64 = 60;
 
 /// WebSocket heartbeat interval (seconds). Revolt expects pings every 30s.
 const HEARTBEAT_INTERVAL_SECS: u64 = 20;
@@ -291,6 +289,95 @@ fn parse_revolt_message(
     })
 }
 
+/// Run the Revolt WebSocket (Bonfire) connection loop.
+///
+/// Connects to the Revolt WebSocket gateway, authenticates with the bot token,
+/// and forwards inbound messages to the provided channel sender.
+async fn run_revolt_ws(
+    ws_url: &str,
+    bot_token: &Zeroizing<String>,
+    bot_user_id: &Arc<RwLock<Option<String>>>,
+    allowed_channels: &[String],
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    use tokio_tungstenite::connect_async;
+
+    let (ws_stream, _) = connect_async(ws_url)
+        .await
+        .map_err(|e| format!("Revolt WS connect error: {e}"))?;
+    let (mut write, mut read) = ws_stream.split();
+
+    // Authenticate with bot token
+    let auth_frame = serde_json::json!({
+        "type": "Authenticate",
+        "token": bot_token.as_str(),
+    });
+    write
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            auth_frame.to_string().into(),
+        ))
+        .await
+        .map_err(|e| format!("Revolt WS auth send error: {e}"))?;
+
+    info!("Revolt WebSocket connected and authenticated");
+
+    let mut heartbeat =
+        tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Revolt WS shutdown signal received");
+                    break;
+                }
+            }
+            _ = heartbeat.tick() => {
+                let ping = serde_json::json!({"type": "Ping", "data": 0});
+                if write
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        ping.to_string().into(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    warn!("Revolt WS heartbeat send failed");
+                    break;
+                }
+            }
+            msg = read.next() => {
+                match msg {
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
+                            let uid_lock = bot_user_id.read().await;
+                            let uid = uid_lock.as_deref().unwrap_or("");
+                            if let Some(cm) = parse_revolt_message(&data, uid, allowed_channels) {
+                                if tx.send(cm).await.is_err() {
+                                    debug!("Revolt WS receiver dropped");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => {
+                        info!("Revolt WS closed");
+                        break;
+                    }
+                    Some(Err(e)) => {
+                        warn!("Revolt WS error: {e}");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // true = connection was established (reset backoff on reconnect)
+    Ok(true)
+}
+
 #[async_trait]
 impl ChannelAdapter for RevoltAdapter {
     fn name(&self) -> &str {
@@ -309,158 +396,32 @@ impl ChannelAdapter for RevoltAdapter {
         let bot_info = self.validate().await?;
         info!("Revolt adapter authenticated as {bot_info}");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let ws_url = self.ws_url.clone();
         let bot_token = self.bot_token.clone();
         let bot_user_id = Arc::clone(&self.bot_user_id);
         let allowed_channels = self.allowed_channels.clone();
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                let own_id = {
-                    let guard = bot_user_id.read().await;
-                    guard.clone().unwrap_or_default()
-                };
-
-                // Connect to WebSocket
-                let ws_connect_url = format!("{}/?format=json", ws_url);
-
-                let ws_stream = match tokio_tungstenite::connect_async(&ws_connect_url).await {
-                    Ok((stream, _)) => {
-                        info!("Revolt WebSocket connected");
-                        backoff = Duration::from_secs(1);
-                        stream
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Revolt"),
+                shutdown_rx.clone(),
+                || {
+                    let ws_url = ws_url.clone();
+                    let bot_token = bot_token.clone();
+                    let bot_user_id = bot_user_id.clone();
+                    let allowed_channels = allowed_channels.clone();
+                    let tx = tx.clone();
+                    let shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_revolt_ws(
+                            &ws_url, &bot_token, &bot_user_id, &allowed_channels,
+                            &tx, &mut shutdown_rx.clone(),
+                        ).await
                     }
-                    Err(e) => {
-                        warn!("Revolt WebSocket connection failed: {e}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(MAX_BACKOFF_SECS));
-                        continue;
-                    }
-                };
-
-                let (mut ws_sink, mut ws_stream_rx) = ws_stream.split();
-
-                // Send Authenticate frame
-                let auth_msg = serde_json::json!({
-                    "type": "Authenticate",
-                    "token": bot_token.as_str(),
-                });
-
-                if let Err(e) = ws_sink
-                    .send(tokio_tungstenite::tungstenite::Message::Text(
-                        auth_msg.to_string(),
-                    ))
-                    .await
-                {
-                    warn!("Revolt: failed to send auth frame: {e}");
-                    continue;
-                }
-
-                let mut heartbeat_interval =
-                    tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
-
-                loop {
-                    tokio::select! {
-                        _ = shutdown_rx.changed() => {
-                            info!("Revolt adapter shutting down");
-                            let _ = ws_sink.close().await;
-                            return;
-                        }
-                        _ = heartbeat_interval.tick() => {
-                            // Send Ping to keep connection alive
-                            let ping = serde_json::json!({
-                                "type": "Ping",
-                                "data": 0,
-                            });
-                            if let Err(e) = ws_sink
-                                .send(tokio_tungstenite::tungstenite::Message::Text(
-                                    ping.to_string(),
-                                ))
-                                .await
-                            {
-                                warn!("Revolt: heartbeat send failed: {e}");
-                                break;
-                            }
-                        }
-                        msg = ws_stream_rx.next() => {
-                            match msg {
-                                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
-                                    let data: serde_json::Value = match serde_json::from_str(&text) {
-                                        Ok(v) => v,
-                                        Err(_) => continue,
-                                    };
-
-                                    let event_type = data["type"].as_str().unwrap_or("");
-
-                                    match event_type {
-                                        "Authenticated" => {
-                                            info!("Revolt: successfully authenticated");
-                                        }
-                                        "Ready" => {
-                                            info!("Revolt: ready, receiving events");
-                                        }
-                                        "Pong" => {
-                                            debug!("Revolt: pong received");
-                                        }
-                                        "Message" => {
-                                            if let Some(channel_msg) = parse_revolt_message(
-                                                &data,
-                                                &own_id,
-                                                &allowed_channels,
-                                            ) {
-                                                if tx.send(channel_msg).await.is_err() {
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                        "Error" => {
-                                            let error = data["error"].as_str().unwrap_or("unknown");
-                                            warn!("Revolt WebSocket error: {error}");
-                                            if error == "InvalidSession" || error == "NotAuthenticated" {
-                                                break; // Reconnect
-                                            }
-                                        }
-                                        _ => {
-                                            // Ignore other event types (typing, presence, etc.)
-                                        }
-                                    }
-                                }
-                                Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {
-                                    info!("Revolt WebSocket closed by server");
-                                    break;
-                                }
-                                Some(Err(e)) => {
-                                    warn!("Revolt WebSocket error: {e}");
-                                    break;
-                                }
-                                None => {
-                                    info!("Revolt WebSocket stream ended");
-                                    break;
-                                }
-                                _ => {} // Binary, Ping, Pong frames
-                            }
-                        }
-                    }
-                }
-
-                // Backoff before reconnection
-                warn!(
-                    "Revolt WebSocket disconnected, reconnecting in {}s",
-                    backoff.as_secs()
-                );
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(MAX_BACKOFF_SECS));
-            }
-
-            info!("Revolt WebSocket loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

@@ -3,6 +3,7 @@
 //! Uses Discord Gateway WebSocket (v10) for receiving messages and the REST API
 //! for sending responses. No external Discord crate — just `tokio-tungstenite` + `reqwest`.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -11,14 +12,11 @@ use futures::{SinkExt, Stream, StreamExt};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroizing;
 
 const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
-const MAX_BACKOFF: Duration = Duration::from_secs(60);
-const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const DISCORD_MSG_LIMIT: usize = 2000;
 
 /// Discord Gateway opcodes.
@@ -112,6 +110,48 @@ impl DiscordAdapter {
         Ok(())
     }
 
+    /// Send a file to a Discord channel via multipart upload.
+    async fn api_send_file(
+        &self,
+        channel_id: &str,
+        file_url: &str,
+        filename: &str,
+        caption: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!("{DISCORD_API_BASE}/channels/{channel_id}/messages");
+
+        let file_bytes = crate::media_utils::download_url(&self.client, file_url)
+            .await
+            .ok_or("Failed to download file for sending")?;
+
+        let part = reqwest::multipart::Part::bytes(file_bytes.to_vec())
+            .file_name(filename.to_string())
+            .mime_str("application/octet-stream")?;
+
+        let mut form = reqwest::multipart::Form::new().part("files[0]", part);
+
+        if let Some(cap) = caption {
+            form = form.text(
+                "payload_json",
+                serde_json::json!({"content": cap}).to_string(),
+            );
+        }
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bot {}", self.token.as_str()))
+            .multipart(form)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Discord sendFile failed: {body_text}");
+        }
+        Ok(())
+    }
+
     /// Send typing indicator to a Discord channel.
     async fn api_send_typing(&self, channel_id: &str) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!("{DISCORD_API_BASE}/channels/{channel_id}/typing");
@@ -142,247 +182,44 @@ impl ChannelAdapter for DiscordAdapter {
         let gateway_url = self.get_gateway_url().await?;
         info!("Discord gateway URL obtained");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
 
         let token = self.token.clone();
+        let client = self.client.clone();
         let intents = self.intents;
         let allowed_guilds = self.allowed_guilds.clone();
         let bot_user_id = self.bot_user_id.clone();
         let session_id_store = self.session_id.clone();
         let resume_url_store = self.resume_gateway_url.clone();
-        let mut shutdown = self.shutdown_rx.clone();
+        let shutdown = self.shutdown_rx.clone();
+        // Sequence persists across reconnections for RESUME
+        let sequence: Arc<RwLock<Option<u64>>> = Arc::new(RwLock::new(None));
+        let connect_url = Arc::new(RwLock::new(gateway_url));
 
         tokio::spawn(async move {
-            let mut backoff = INITIAL_BACKOFF;
-            let mut connect_url = gateway_url;
-            // Sequence persists across reconnections for RESUME
-            let sequence: Arc<RwLock<Option<u64>>> = Arc::new(RwLock::new(None));
-
-            loop {
-                if *shutdown.borrow() {
-                    break;
-                }
-
-                info!("Connecting to Discord gateway...");
-
-                let ws_result = tokio_tungstenite::connect_async(&connect_url).await;
-                let ws_stream = match ws_result {
-                    Ok((stream, _)) => stream,
-                    Err(e) => {
-                        warn!("Discord gateway connection failed: {e}, retrying in {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(MAX_BACKOFF);
-                        continue;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Discord"),
+                shutdown.clone(),
+                || {
+                    let token = token.clone();
+                    let client = client.clone();
+                    let allowed_guilds = allowed_guilds.clone();
+                    let bot_user_id = bot_user_id.clone();
+                    let session_id_store = session_id_store.clone();
+                    let resume_url_store = resume_url_store.clone();
+                    let tx = tx.clone();
+                    let shutdown = shutdown.clone();
+                    let sequence = sequence.clone();
+                    let connect_url = connect_url.clone();
+                    async move {
+                        run_discord_gateway(
+                            &token, &client, intents, &allowed_guilds, &bot_user_id,
+                            &session_id_store, &resume_url_store, &tx,
+                            &mut shutdown.clone(), &sequence, &connect_url,
+                        ).await
                     }
-                };
-
-                backoff = INITIAL_BACKOFF;
-                info!("Discord gateway connected");
-
-                let (mut ws_tx, mut ws_rx) = ws_stream.split();
-                let mut _heartbeat_interval: Option<u64> = None;
-
-                // Inner message loop — returns true if we should reconnect
-                let should_reconnect = 'inner: loop {
-                    let msg = tokio::select! {
-                        msg = ws_rx.next() => msg,
-                        _ = shutdown.changed() => {
-                            if *shutdown.borrow() {
-                                info!("Discord shutdown requested");
-                                let _ = ws_tx.close().await;
-                                return;
-                            }
-                            continue;
-                        }
-                    };
-
-                    let msg = match msg {
-                        Some(Ok(m)) => m,
-                        Some(Err(e)) => {
-                            warn!("Discord WebSocket error: {e}");
-                            break 'inner true;
-                        }
-                        None => {
-                            info!("Discord WebSocket closed");
-                            break 'inner true;
-                        }
-                    };
-
-                    let text = match msg {
-                        tokio_tungstenite::tungstenite::Message::Text(t) => t,
-                        tokio_tungstenite::tungstenite::Message::Close(_) => {
-                            info!("Discord gateway closed by server");
-                            break 'inner true;
-                        }
-                        _ => continue,
-                    };
-
-                    let payload: serde_json::Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!("Discord: failed to parse gateway message: {e}");
-                            continue;
-                        }
-                    };
-
-                    let op = payload["op"].as_u64().unwrap_or(999);
-
-                    // Update sequence number
-                    if let Some(s) = payload["s"].as_u64() {
-                        *sequence.write().await = Some(s);
-                    }
-
-                    match op {
-                        opcode::HELLO => {
-                            let interval =
-                                payload["d"]["heartbeat_interval"].as_u64().unwrap_or(45000);
-                            _heartbeat_interval = Some(interval);
-                            debug!("Discord HELLO: heartbeat_interval={interval}ms");
-
-                            // Try RESUME if we have a session, otherwise IDENTIFY
-                            let has_session = session_id_store.read().await.is_some();
-                            let has_seq = sequence.read().await.is_some();
-
-                            let gateway_msg = if has_session && has_seq {
-                                let sid = session_id_store.read().await.clone().unwrap();
-                                let seq = *sequence.read().await;
-                                info!("Discord: sending RESUME (session={sid})");
-                                serde_json::json!({
-                                    "op": opcode::RESUME,
-                                    "d": {
-                                        "token": token.as_str(),
-                                        "session_id": sid,
-                                        "seq": seq
-                                    }
-                                })
-                            } else {
-                                info!("Discord: sending IDENTIFY");
-                                serde_json::json!({
-                                    "op": opcode::IDENTIFY,
-                                    "d": {
-                                        "token": token.as_str(),
-                                        "intents": intents,
-                                        "properties": {
-                                            "os": "linux",
-                                            "browser": "openfang",
-                                            "device": "openfang"
-                                        }
-                                    }
-                                })
-                            };
-
-                            if let Err(e) = ws_tx
-                                .send(tokio_tungstenite::tungstenite::Message::Text(
-                                    serde_json::to_string(&gateway_msg).unwrap(),
-                                ))
-                                .await
-                            {
-                                error!("Discord: failed to send IDENTIFY/RESUME: {e}");
-                                break 'inner true;
-                            }
-                        }
-
-                        opcode::DISPATCH => {
-                            let event_name = payload["t"].as_str().unwrap_or("");
-                            let d = &payload["d"];
-
-                            match event_name {
-                                "READY" => {
-                                    let user_id =
-                                        d["user"]["id"].as_str().unwrap_or("").to_string();
-                                    let username =
-                                        d["user"]["username"].as_str().unwrap_or("unknown");
-                                    let sid = d["session_id"].as_str().unwrap_or("").to_string();
-                                    let resume_url =
-                                        d["resume_gateway_url"].as_str().unwrap_or("").to_string();
-
-                                    *bot_user_id.write().await = Some(user_id.clone());
-                                    *session_id_store.write().await = Some(sid);
-                                    if !resume_url.is_empty() {
-                                        *resume_url_store.write().await = Some(resume_url);
-                                    }
-
-                                    info!("Discord bot ready: {username} ({user_id})");
-                                }
-
-                                "MESSAGE_CREATE" | "MESSAGE_UPDATE" => {
-                                    if let Some(msg) =
-                                        parse_discord_message(d, &bot_user_id, &allowed_guilds)
-                                            .await
-                                    {
-                                        debug!(
-                                            "Discord {event_name} from {}: {:?}",
-                                            msg.sender.display_name, msg.content
-                                        );
-                                        if tx.send(msg).await.is_err() {
-                                            return;
-                                        }
-                                    }
-                                }
-
-                                "RESUMED" => {
-                                    info!("Discord session resumed successfully");
-                                }
-
-                                _ => {
-                                    debug!("Discord event: {event_name}");
-                                }
-                            }
-                        }
-
-                        opcode::HEARTBEAT => {
-                            // Server requests immediate heartbeat
-                            let seq = *sequence.read().await;
-                            let hb = serde_json::json!({ "op": opcode::HEARTBEAT, "d": seq });
-                            let _ = ws_tx
-                                .send(tokio_tungstenite::tungstenite::Message::Text(
-                                    serde_json::to_string(&hb).unwrap(),
-                                ))
-                                .await;
-                        }
-
-                        opcode::HEARTBEAT_ACK => {
-                            debug!("Discord heartbeat ACK received");
-                        }
-
-                        opcode::RECONNECT => {
-                            info!("Discord: server requested reconnect");
-                            break 'inner true;
-                        }
-
-                        opcode::INVALID_SESSION => {
-                            let resumable = payload["d"].as_bool().unwrap_or(false);
-                            if resumable {
-                                info!("Discord: invalid session (resumable)");
-                            } else {
-                                info!("Discord: invalid session (not resumable), clearing session");
-                                *session_id_store.write().await = None;
-                                *sequence.write().await = None;
-                            }
-                            break 'inner true;
-                        }
-
-                        _ => {
-                            debug!("Discord: unknown opcode {op}");
-                        }
-                    }
-                };
-
-                if !should_reconnect || *shutdown.borrow() {
-                    break;
-                }
-
-                // Try resume URL if available
-                if let Some(ref url) = *resume_url_store.read().await {
-                    connect_url = format!("{url}/?v=10&encoding=json");
-                }
-
-                warn!("Discord: reconnecting in {backoff:?}");
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-            }
-
-            info!("Discord gateway loop stopped");
+                },
+            ).await;
         });
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -399,6 +236,14 @@ impl ChannelAdapter for DiscordAdapter {
         match content {
             ChannelContent::Text(text) => {
                 self.api_send_message(channel_id, &text).await?;
+            }
+            ChannelContent::File { url, filename } => {
+                self.api_send_file(channel_id, &url, &filename, None)
+                    .await?;
+            }
+            ChannelContent::Image { url, caption } => {
+                self.api_send_file(channel_id, &url, "image.jpg", caption.as_deref())
+                    .await?;
             }
             _ => {
                 self.api_send_message(channel_id, "(Unsupported content type)")
@@ -418,11 +263,253 @@ impl ChannelAdapter for DiscordAdapter {
     }
 }
 
+/// Run a single Discord Gateway WebSocket session until disconnect.
+///
+/// Returns `Ok(true)` to reconnect, `Ok(false)` to stop permanently.
+async fn run_discord_gateway(
+    token: &Zeroizing<String>,
+    client: &reqwest::Client,
+    intents: u64,
+    allowed_guilds: &[u64],
+    bot_user_id: &Arc<RwLock<Option<String>>>,
+    session_id_store: &Arc<RwLock<Option<String>>>,
+    resume_url_store: &Arc<RwLock<Option<String>>>,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown: &mut watch::Receiver<bool>,
+    sequence: &Arc<RwLock<Option<u64>>>,
+    connect_url: &Arc<RwLock<String>>,
+) -> Result<bool, String> {
+    let url = connect_url.read().await.clone();
+    info!("Connecting to Discord gateway...");
+
+    let ws_stream = tokio_tungstenite::connect_async(&url)
+        .await
+        .map_err(|e| format!("Discord gateway connection failed: {e}"))?
+        .0;
+
+    info!("Discord gateway connected");
+
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+
+    let should_reconnect = 'inner: loop {
+        let msg = tokio::select! {
+            msg = ws_rx.next() => msg,
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    info!("Discord shutdown requested");
+                    let _ = ws_tx.close().await;
+                    return Ok(false);
+                }
+                continue;
+            }
+        };
+
+        let msg = match msg {
+            Some(Ok(m)) => m,
+            Some(Err(e)) => {
+                warn!("Discord WebSocket error: {e}");
+                break 'inner true;
+            }
+            None => {
+                info!("Discord WebSocket closed");
+                break 'inner true;
+            }
+        };
+
+        let text = match msg {
+            tokio_tungstenite::tungstenite::Message::Text(t) => t,
+            tokio_tungstenite::tungstenite::Message::Close(_) => {
+                info!("Discord gateway closed by server");
+                break 'inner true;
+            }
+            _ => continue,
+        };
+
+        let payload: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Discord: failed to parse gateway message: {e}");
+                continue;
+            }
+        };
+
+        let op = payload["op"].as_u64().unwrap_or(999);
+
+        if let Some(s) = payload["s"].as_u64() {
+            *sequence.write().await = Some(s);
+        }
+
+        match op {
+            opcode::HELLO => {
+                let interval = payload["d"]["heartbeat_interval"].as_u64().unwrap_or(45000);
+                debug!("Discord HELLO: heartbeat_interval={interval}ms");
+
+                let has_session = session_id_store.read().await.is_some();
+                let has_seq = sequence.read().await.is_some();
+
+                let gateway_msg = if has_session && has_seq {
+                    let sid = session_id_store.read().await.clone().unwrap();
+                    let seq = *sequence.read().await;
+                    info!("Discord: sending RESUME (session={sid})");
+                    serde_json::json!({
+                        "op": opcode::RESUME,
+                        "d": {
+                            "token": token.as_str(),
+                            "session_id": sid,
+                            "seq": seq
+                        }
+                    })
+                } else {
+                    info!("Discord: sending IDENTIFY");
+                    serde_json::json!({
+                        "op": opcode::IDENTIFY,
+                        "d": {
+                            "token": token.as_str(),
+                            "intents": intents,
+                            "properties": {
+                                "os": "linux",
+                                "browser": "openfang",
+                                "device": "openfang"
+                            }
+                        }
+                    })
+                };
+
+                if let Err(e) = ws_tx
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        serde_json::to_string(&gateway_msg).unwrap(),
+                    ))
+                    .await
+                {
+                    error!("Discord: failed to send IDENTIFY/RESUME: {e}");
+                    break 'inner true;
+                }
+            }
+
+            opcode::DISPATCH => {
+                let event_name = payload["t"].as_str().unwrap_or("");
+                let d = &payload["d"];
+
+                match event_name {
+                    "READY" => {
+                        let user_id = d["user"]["id"].as_str().unwrap_or("").to_string();
+                        let username = d["user"]["username"].as_str().unwrap_or("unknown");
+                        let sid = d["session_id"].as_str().unwrap_or("").to_string();
+                        let resume_url = d["resume_gateway_url"].as_str().unwrap_or("").to_string();
+
+                        *bot_user_id.write().await = Some(user_id.clone());
+                        *session_id_store.write().await = Some(sid);
+                        if !resume_url.is_empty() {
+                            *resume_url_store.write().await = Some(resume_url);
+                        }
+
+                        info!("Discord bot ready: {username} ({user_id})");
+                    }
+
+                    "MESSAGE_CREATE" | "MESSAGE_UPDATE" => {
+                        if let Some(msg) =
+                            parse_discord_message(d, bot_user_id, allowed_guilds, client).await
+                        {
+                            debug!(
+                                "Discord {event_name} from {}: {:?}",
+                                msg.sender.display_name, msg.content
+                            );
+
+                            // Send ack reaction (non-blocking)
+                            {
+                                let ack_url = format!(
+                                    "{DISCORD_API_BASE}/channels/{}/messages/{}/reactions/%F0%9F%91%80/@me",
+                                    msg.sender.platform_id, msg.platform_message_id
+                                );
+                                let ack_auth = format!("Bot {}", token.as_str());
+                                let ack_client = client.clone();
+                                tokio::spawn(async move {
+                                    match ack_client
+                                        .put(&ack_url)
+                                        .header("Authorization", &ack_auth)
+                                        .header("Content-Length", "0")
+                                        .send()
+                                        .await
+                                    {
+                                        Ok(resp) if !resp.status().is_success() => {
+                                            debug!("Discord ack reaction failed: {}", resp.status());
+                                        }
+                                        Err(e) => debug!("Discord ack reaction error: {e}"),
+                                        _ => {}
+                                    }
+                                });
+                            }
+
+                            if tx.send(msg).await.is_err() {
+                                return Ok(false);
+                            }
+                        }
+                    }
+
+                    "RESUMED" => {
+                        info!("Discord session resumed successfully");
+                    }
+
+                    _ => {
+                        debug!("Discord event: {event_name}");
+                    }
+                }
+            }
+
+            opcode::HEARTBEAT => {
+                let seq = *sequence.read().await;
+                let hb = serde_json::json!({ "op": opcode::HEARTBEAT, "d": seq });
+                let _ = ws_tx
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        serde_json::to_string(&hb).unwrap(),
+                    ))
+                    .await;
+            }
+
+            opcode::HEARTBEAT_ACK => {
+                debug!("Discord heartbeat ACK received");
+            }
+
+            opcode::RECONNECT => {
+                info!("Discord: server requested reconnect");
+                break 'inner true;
+            }
+
+            opcode::INVALID_SESSION => {
+                let resumable = payload["d"].as_bool().unwrap_or(false);
+                if resumable {
+                    info!("Discord: invalid session (resumable)");
+                } else {
+                    info!("Discord: invalid session (not resumable), clearing session");
+                    *session_id_store.write().await = None;
+                    *sequence.write().await = None;
+                }
+                break 'inner true;
+            }
+
+            _ => {
+                debug!("Discord: unknown opcode {op}");
+            }
+        }
+    };
+
+    // Update connect URL for resume if available
+    if let Some(ref url) = *resume_url_store.read().await {
+        *connect_url.write().await = format!("{url}/?v=10&encoding=json");
+    }
+
+    Ok(should_reconnect)
+}
+
 /// Parse a Discord MESSAGE_CREATE or MESSAGE_UPDATE payload into a `ChannelMessage`.
+///
+/// Handles text messages, slash commands, and attachments (images, files).
+/// Attachments are downloaded and processed: images via Gemini Vision, text files extracted.
 async fn parse_discord_message(
     d: &serde_json::Value,
     bot_user_id: &Arc<RwLock<Option<String>>>,
     allowed_guilds: &[u64],
+    client: &reqwest::Client,
 ) -> Option<ChannelMessage> {
     let author = d.get("author")?;
     let author_id = author["id"].as_str()?;
@@ -450,7 +537,11 @@ async fn parse_discord_message(
     }
 
     let content_text = d["content"].as_str().unwrap_or("");
-    if content_text.is_empty() {
+    let attachments = d["attachments"].as_array();
+    let has_attachments = attachments.map_or(false, |a| !a.is_empty());
+
+    // Skip if no content AND no attachments
+    if content_text.is_empty() && !has_attachments {
         return None;
     }
 
@@ -470,12 +561,51 @@ async fn parse_discord_message(
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .unwrap_or_else(chrono::Utc::now);
 
-    // Parse commands (messages starting with /)
-    let content = if content_text.starts_with('/') {
-        let parts: Vec<&str> = content_text.splitn(2, ' ').collect();
-        let cmd_name = &parts[0][1..];
-        let args = if parts.len() > 1 {
-            parts[1].split_whitespace().map(String::from).collect()
+    // Process attachments into text descriptions
+    let mut parts: Vec<String> = Vec::new();
+
+    if has_attachments {
+        for att in attachments.unwrap() {
+            let att_url = att["url"].as_str().unwrap_or("");
+            let att_filename = att["filename"].as_str().unwrap_or("file");
+            let att_content_type = att["content_type"].as_str().unwrap_or("application/octet-stream");
+            let att_size = att["size"].as_u64().unwrap_or(0);
+
+            if att_url.is_empty() {
+                continue;
+            }
+
+            info!(
+                "Discord: attachment '{}' ({} bytes) from {}",
+                att_filename, att_size, display_name
+            );
+
+            let description = crate::media_utils::process_attachment_to_text(
+                client,
+                att_url,
+                att_filename,
+                att_content_type,
+                att_size,
+                content_text,
+            )
+            .await;
+            parts.push(description);
+        }
+    }
+
+    // Build final content
+    let content = if !parts.is_empty() {
+        // Has attachments — combine text + attachment descriptions
+        if !content_text.is_empty() && !has_attachments_only_images(attachments) {
+            parts.insert(0, content_text.to_string());
+        }
+        ChannelContent::Text(parts.join("\n"))
+    } else if content_text.starts_with('/') {
+        // Parse commands (messages starting with /)
+        let cmd_parts: Vec<&str> = content_text.splitn(2, ' ').collect();
+        let cmd_name = &cmd_parts[0][1..];
+        let args = if cmd_parts.len() > 1 {
+            cmd_parts[1].split_whitespace().map(String::from).collect()
         } else {
             vec![]
         };
@@ -504,6 +634,17 @@ async fn parse_discord_message(
     })
 }
 
+/// Check if all attachments are images (to avoid duplicating text content as caption).
+fn has_attachments_only_images(attachments: Option<&Vec<serde_json::Value>>) -> bool {
+    attachments.map_or(true, |atts| {
+        atts.iter().all(|a| {
+            let ct = a["content_type"].as_str().unwrap_or("");
+            let fname = a["filename"].as_str().unwrap_or("");
+            crate::media_utils::is_image(fname, ct)
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,7 +665,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Discord);
         assert_eq!(msg.sender.display_name, "alice");
         assert_eq!(msg.sender.platform_id, "ch1");
@@ -546,7 +687,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await;
         assert!(msg.is_none());
     }
 
@@ -566,7 +707,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await;
         assert!(msg.is_none());
     }
 
@@ -587,11 +728,11 @@ mod tests {
         });
 
         // Not in allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &[111, 222]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[111, 222], &reqwest::Client::new()).await;
         assert!(msg.is_none());
 
         // In allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &[999]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[999], &reqwest::Client::new()).await;
         assert!(msg.is_some());
     }
 
@@ -610,7 +751,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await.unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -635,7 +776,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await;
         assert!(msg.is_none());
     }
 
@@ -654,7 +795,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await.unwrap();
         assert_eq!(msg.sender.display_name, "alice#1234");
     }
 
@@ -676,7 +817,7 @@ mod tests {
         });
 
         // MESSAGE_UPDATE uses the same parse function as MESSAGE_CREATE
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Discord);
         assert!(
             matches!(msg.content, ChannelContent::Text(ref t) if t == "Edited message content")

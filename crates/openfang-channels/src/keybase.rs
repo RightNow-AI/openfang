@@ -5,6 +5,7 @@
 //! sends messages via the `send` method. Authentication is performed using a
 //! Keybase username and paper key.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -207,207 +208,32 @@ impl ChannelAdapter for KeybaseAdapter {
     {
         info!("Keybase adapter starting for user {}", self.username);
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let username = self.username.clone();
         let allowed_teams = self.allowed_teams.clone();
         let client = self.client.clone();
         let last_msg_ids = Arc::clone(&self.last_msg_ids);
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        info!("Keybase adapter shutting down");
-                        break;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Keybase"),
+                shutdown_rx.clone(),
+                || {
+                    let username = username.clone();
+                    let allowed_teams = allowed_teams.clone();
+                    let client = client.clone();
+                    let last_msg_ids = last_msg_ids.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_keybase_poll(
+                            &username, &allowed_teams, &client,
+                            &last_msg_ids, &tx, &mut shutdown_rx,
+                        ).await
                     }
-                    _ = tokio::time::sleep(poll_interval) => {}
-                }
-
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                // List conversations
-                let list_payload = serde_json::json!({
-                    "method": "list",
-                    "params": {
-                        "options": {}
-                    }
-                });
-
-                let conversations = match client
-                    .post(KEYBASE_API_URL)
-                    .json(&list_payload)
-                    .send()
-                    .await
-                {
-                    Ok(resp) => {
-                        let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                        body["result"]["conversations"]
-                            .as_array()
-                            .cloned()
-                            .unwrap_or_default()
-                    }
-                    Err(e) => {
-                        warn!("Keybase: failed to list conversations: {e}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(60));
-                        continue;
-                    }
-                };
-
-                backoff = Duration::from_secs(1);
-
-                for conv in &conversations {
-                    let channel_info = &conv["channel"];
-                    let members_type = channel_info["members_type"].as_str().unwrap_or("");
-                    let team_name = channel_info["name"].as_str().unwrap_or("");
-                    let topic_name = channel_info["topic_name"].as_str().unwrap_or("general");
-
-                    // Filter by team if configured
-                    if !allowed_teams.is_empty()
-                        && members_type == "team"
-                        && !allowed_teams.iter().any(|t| t == team_name)
-                    {
-                        continue;
-                    }
-
-                    let conv_key = format!("{}:{}", team_name, topic_name);
-
-                    // Read messages from this conversation
-                    let read_payload = serde_json::json!({
-                        "method": "read",
-                        "params": {
-                            "options": {
-                                "channel": channel_info,
-                                "pagination": {
-                                    "num": 20,
-                                }
-                            }
-                        }
-                    });
-
-                    let messages = match client
-                        .post(KEYBASE_API_URL)
-                        .json(&read_payload)
-                        .send()
-                        .await
-                    {
-                        Ok(resp) => {
-                            let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                            body["result"]["messages"]
-                                .as_array()
-                                .cloned()
-                                .unwrap_or_default()
-                        }
-                        Err(e) => {
-                            warn!("Keybase: read error for {conv_key}: {e}");
-                            continue;
-                        }
-                    };
-
-                    let last_id = {
-                        let ids = last_msg_ids.read().await;
-                        ids.get(&conv_key).copied().unwrap_or(0)
-                    };
-
-                    let mut newest_id = last_id;
-
-                    for msg_wrapper in &messages {
-                        let msg = &msg_wrapper["msg"];
-                        let msg_id = msg["id"].as_i64().unwrap_or(0);
-
-                        // Skip already-seen messages
-                        if msg_id <= last_id {
-                            continue;
-                        }
-
-                        let sender_username = msg["sender"]["username"].as_str().unwrap_or("");
-                        // Skip own messages
-                        if sender_username == username {
-                            continue;
-                        }
-
-                        let content_type = msg["content"]["type"].as_str().unwrap_or("");
-                        if content_type != "text" {
-                            continue;
-                        }
-
-                        let text = msg["content"]["text"]["body"].as_str().unwrap_or("");
-                        if text.is_empty() {
-                            continue;
-                        }
-
-                        if msg_id > newest_id {
-                            newest_id = msg_id;
-                        }
-
-                        let sender_device = msg["sender"]["device_name"].as_str().unwrap_or("");
-                        let is_group = members_type == "team";
-
-                        let msg_content = if text.starts_with('/') {
-                            let parts: Vec<&str> = text.splitn(2, ' ').collect();
-                            let cmd = parts[0].trim_start_matches('/');
-                            let args: Vec<String> = parts
-                                .get(1)
-                                .map(|a| a.split_whitespace().map(String::from).collect())
-                                .unwrap_or_default();
-                            ChannelContent::Command {
-                                name: cmd.to_string(),
-                                args,
-                            }
-                        } else {
-                            ChannelContent::Text(text.to_string())
-                        };
-
-                        let channel_msg = ChannelMessage {
-                            channel: ChannelType::Custom("keybase".to_string()),
-                            platform_message_id: msg_id.to_string(),
-                            sender: ChannelUser {
-                                platform_id: conv_key.clone(),
-                                display_name: sender_username.to_string(),
-                                openfang_user: None,
-                            },
-                            content: msg_content,
-                            target_agent: None,
-                            timestamp: Utc::now(),
-                            is_group,
-                            thread_id: None,
-                            metadata: {
-                                let mut m = HashMap::new();
-                                m.insert(
-                                    "team_name".to_string(),
-                                    serde_json::Value::String(team_name.to_string()),
-                                );
-                                m.insert(
-                                    "topic_name".to_string(),
-                                    serde_json::Value::String(topic_name.to_string()),
-                                );
-                                m.insert(
-                                    "sender_device".to_string(),
-                                    serde_json::Value::String(sender_device.to_string()),
-                                );
-                                m
-                            },
-                        };
-
-                        if tx.send(channel_msg).await.is_err() {
-                            return;
-                        }
-                    }
-
-                    // Update last known ID
-                    if newest_id > last_id {
-                        last_msg_ids.write().await.insert(conv_key, newest_id);
-                    }
-                }
-            }
-
-            info!("Keybase polling loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
@@ -449,6 +275,204 @@ impl ChannelAdapter for KeybaseAdapter {
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
+    }
+}
+
+/// Run the Keybase conversation polling loop.
+async fn run_keybase_poll(
+    username: &str,
+    allowed_teams: &[String],
+    client: &reqwest::Client,
+    last_msg_ids: &Arc<RwLock<HashMap<String, i64>>>,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Keybase adapter shutting down");
+                    return Ok(false);
+                }
+            }
+            _ = tokio::time::sleep(poll_interval) => {}
+        }
+
+        if *shutdown_rx.borrow() {
+            return Ok(false);
+        }
+
+        // List conversations
+        let list_payload = serde_json::json!({
+            "method": "list",
+            "params": {
+                "options": {}
+            }
+        });
+
+        let conversations = match client
+            .post(KEYBASE_API_URL)
+            .json(&list_payload)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                body["result"]["conversations"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            }
+            Err(e) => {
+                return Err(format!("Keybase: failed to list conversations: {e}"));
+            }
+        };
+
+        for conv in &conversations {
+            let channel_info = &conv["channel"];
+            let members_type = channel_info["members_type"].as_str().unwrap_or("");
+            let team_name = channel_info["name"].as_str().unwrap_or("");
+            let topic_name = channel_info["topic_name"].as_str().unwrap_or("general");
+
+            // Filter by team if configured
+            if !allowed_teams.is_empty()
+                && members_type == "team"
+                && !allowed_teams.iter().any(|t| t == team_name)
+            {
+                continue;
+            }
+
+            let conv_key = format!("{}:{}", team_name, topic_name);
+
+            // Read messages from this conversation
+            let read_payload = serde_json::json!({
+                "method": "read",
+                "params": {
+                    "options": {
+                        "channel": channel_info,
+                        "pagination": {
+                            "num": 20,
+                        }
+                    }
+                }
+            });
+
+            let messages = match client
+                .post(KEYBASE_API_URL)
+                .json(&read_payload)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                    body["result"]["messages"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                }
+                Err(e) => {
+                    warn!("Keybase: read error for {conv_key}: {e}");
+                    continue;
+                }
+            };
+
+            let last_id = {
+                let ids = last_msg_ids.read().await;
+                ids.get(&conv_key).copied().unwrap_or(0)
+            };
+
+            let mut newest_id = last_id;
+
+            for msg_wrapper in &messages {
+                let msg = &msg_wrapper["msg"];
+                let msg_id = msg["id"].as_i64().unwrap_or(0);
+
+                // Skip already-seen messages
+                if msg_id <= last_id {
+                    continue;
+                }
+
+                let sender_username = msg["sender"]["username"].as_str().unwrap_or("");
+                // Skip own messages
+                if sender_username == username {
+                    continue;
+                }
+
+                let content_type = msg["content"]["type"].as_str().unwrap_or("");
+                if content_type != "text" {
+                    continue;
+                }
+
+                let text = msg["content"]["text"]["body"].as_str().unwrap_or("");
+                if text.is_empty() {
+                    continue;
+                }
+
+                if msg_id > newest_id {
+                    newest_id = msg_id;
+                }
+
+                let sender_device = msg["sender"]["device_name"].as_str().unwrap_or("");
+                let is_group = members_type == "team";
+
+                let msg_content = if text.starts_with('/') {
+                    let parts: Vec<&str> = text.splitn(2, ' ').collect();
+                    let cmd = parts[0].trim_start_matches('/');
+                    let args: Vec<String> = parts
+                        .get(1)
+                        .map(|a| a.split_whitespace().map(String::from).collect())
+                        .unwrap_or_default();
+                    ChannelContent::Command {
+                        name: cmd.to_string(),
+                        args,
+                    }
+                } else {
+                    ChannelContent::Text(text.to_string())
+                };
+
+                let channel_msg = ChannelMessage {
+                    channel: ChannelType::Custom("keybase".to_string()),
+                    platform_message_id: msg_id.to_string(),
+                    sender: ChannelUser {
+                        platform_id: conv_key.clone(),
+                        display_name: sender_username.to_string(),
+                        openfang_user: None,
+                    },
+                    content: msg_content,
+                    target_agent: None,
+                    timestamp: Utc::now(),
+                    is_group,
+                    thread_id: None,
+                    metadata: {
+                        let mut m = HashMap::new();
+                        m.insert(
+                            "team_name".to_string(),
+                            serde_json::Value::String(team_name.to_string()),
+                        );
+                        m.insert(
+                            "topic_name".to_string(),
+                            serde_json::Value::String(topic_name.to_string()),
+                        );
+                        m.insert(
+                            "sender_device".to_string(),
+                            serde_json::Value::String(sender_device.to_string()),
+                        );
+                        m
+                    },
+                };
+
+                if tx.send(channel_msg).await.is_err() {
+                    return Ok(false);
+                }
+            }
+
+            // Update last known ID
+            if newest_id > last_id {
+                last_msg_ids.write().await.insert(conv_key, newest_id);
+            }
+        }
     }
 }
 

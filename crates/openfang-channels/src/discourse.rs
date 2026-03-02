@@ -4,6 +4,7 @@
 //! `posts.json` to receive new posts and creates replies via the same API.
 //! Authentication uses the `Api-Key` and `Api-Username` headers.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -15,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch, RwLock};
-use tracing::{info, warn};
+use tracing::info;
 use zeroize::Zeroizing;
 
 const POLL_INTERVAL_SECS: u64 = 10;
@@ -163,6 +164,137 @@ impl DiscourseAdapter {
     }
 }
 
+/// Run the Discourse post polling loop.
+async fn run_discourse_poll(
+    base_url: &str,
+    api_key: &Zeroizing<String>,
+    api_username: &str,
+    categories: &[String],
+    client: &reqwest::Client,
+    last_post_id: &Arc<RwLock<u64>>,
+    own_username: &str,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Discourse adapter shutting down");
+                    return Ok(false);
+                }
+            }
+            _ = tokio::time::sleep(poll_interval) => {}
+        }
+
+        if *shutdown_rx.borrow() {
+            return Ok(false);
+        }
+
+        let current_last = *last_post_id.read().await;
+
+        let posts = DiscourseAdapter::fetch_latest_posts(client, base_url, api_key, api_username, 0)
+            .await
+            .map_err(|e| format!("Discourse poll error: {e}"))?;
+
+        let mut max_id = current_last;
+
+        for post in posts.iter().rev() {
+            let post_id = post["id"].as_u64().unwrap_or(0);
+            if post_id <= current_last {
+                continue;
+            }
+
+            let username = post["username"].as_str().unwrap_or("unknown");
+            if username == own_username || username == api_username {
+                continue;
+            }
+
+            let raw = post["raw"].as_str().unwrap_or("");
+            if raw.is_empty() {
+                continue;
+            }
+
+            let category_slug = post["category_slug"].as_str().unwrap_or("");
+            if !categories.is_empty() && !categories.iter().any(|c| c == category_slug) {
+                continue;
+            }
+
+            let topic_id = post["topic_id"].as_u64().unwrap_or(0);
+            let topic_slug = post["topic_slug"].as_str().unwrap_or("").to_string();
+            let post_number = post["post_number"].as_u64().unwrap_or(0);
+            let display_name = post["display_username"]
+                .as_str()
+                .unwrap_or(username)
+                .to_string();
+
+            if post_id > max_id {
+                max_id = post_id;
+            }
+
+            let content = if raw.starts_with('/') {
+                let parts: Vec<&str> = raw.splitn(2, ' ').collect();
+                let cmd = parts[0].trim_start_matches('/');
+                let args: Vec<String> = parts
+                    .get(1)
+                    .map(|a| a.split_whitespace().map(String::from).collect())
+                    .unwrap_or_default();
+                ChannelContent::Command {
+                    name: cmd.to_string(),
+                    args,
+                }
+            } else {
+                ChannelContent::Text(raw.to_string())
+            };
+
+            let msg = ChannelMessage {
+                channel: ChannelType::Custom("discourse".to_string()),
+                platform_message_id: format!("discourse-post-{}", post_id),
+                sender: ChannelUser {
+                    platform_id: username.to_string(),
+                    display_name,
+                    openfang_user: None,
+                },
+                content,
+                target_agent: None,
+                timestamp: Utc::now(),
+                is_group: true,
+                thread_id: Some(format!("topic-{}", topic_id)),
+                metadata: {
+                    let mut m = HashMap::new();
+                    m.insert(
+                        "topic_id".to_string(),
+                        serde_json::Value::Number(topic_id.into()),
+                    );
+                    m.insert(
+                        "topic_slug".to_string(),
+                        serde_json::Value::String(topic_slug),
+                    );
+                    m.insert(
+                        "post_number".to_string(),
+                        serde_json::Value::Number(post_number.into()),
+                    );
+                    m.insert(
+                        "category".to_string(),
+                        serde_json::Value::String(category_slug.to_string()),
+                    );
+                    m
+                },
+            };
+
+            if tx.send(msg).await.is_err() {
+                return Ok(false);
+            }
+        }
+
+        if max_id > current_last {
+            *last_post_id.write().await = max_id;
+        }
+    }
+}
+
 #[async_trait]
 impl ChannelAdapter for DiscourseAdapter {
     fn name(&self) -> &str {
@@ -180,14 +312,14 @@ impl ChannelAdapter for DiscourseAdapter {
         let own_username = self.validate().await?;
         info!("Discourse adapter authenticated as {own_username}");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let base_url = self.base_url.clone();
         let api_key = self.api_key.clone();
         let api_username = self.api_username.clone();
         let categories = self.categories.clone();
         let client = self.client.clone();
         let last_post_id = Arc::clone(&self.last_post_id);
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         // Initialize last_post_id to skip historical posts
         {
@@ -201,145 +333,28 @@ impl ChannelAdapter for DiscourseAdapter {
             }
         }
 
-        let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
-
         tokio::spawn(async move {
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() {
-                            info!("Discourse adapter shutting down");
-                            break;
-                        }
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Discourse"),
+                shutdown_rx.clone(),
+                || {
+                    let base_url = base_url.clone();
+                    let api_key = api_key.clone();
+                    let api_username = api_username.clone();
+                    let categories = categories.clone();
+                    let client = client.clone();
+                    let last_post_id = last_post_id.clone();
+                    let own_username = own_username.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_discourse_poll(
+                            &base_url, &api_key, &api_username, &categories,
+                            &client, &last_post_id, &own_username, &tx, &mut shutdown_rx,
+                        ).await
                     }
-                    _ = tokio::time::sleep(poll_interval) => {}
-                }
-
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                let current_last = *last_post_id.read().await;
-
-                let poll_result =
-                    Self::fetch_latest_posts(&client, &base_url, &api_key, &api_username, 0)
-                        .await
-                        .map_err(|e| e.to_string());
-
-                let posts = match poll_result {
-                    Ok(p) => {
-                        backoff = Duration::from_secs(1);
-                        p
-                    }
-                    Err(msg) => {
-                        warn!("Discourse: poll error: {msg}, backing off {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(120));
-                        continue;
-                    }
-                };
-
-                let mut max_id = current_last;
-
-                // Process posts in chronological order (API returns newest first)
-                for post in posts.iter().rev() {
-                    let post_id = post["id"].as_u64().unwrap_or(0);
-                    if post_id <= current_last {
-                        continue;
-                    }
-
-                    let username = post["username"].as_str().unwrap_or("unknown");
-                    // Skip own posts
-                    if username == own_username || username == api_username {
-                        continue;
-                    }
-
-                    let raw = post["raw"].as_str().unwrap_or("");
-                    if raw.is_empty() {
-                        continue;
-                    }
-
-                    // Category filter
-                    let category_slug = post["category_slug"].as_str().unwrap_or("");
-                    if !categories.is_empty() && !categories.iter().any(|c| c == category_slug) {
-                        continue;
-                    }
-
-                    let topic_id = post["topic_id"].as_u64().unwrap_or(0);
-                    let topic_slug = post["topic_slug"].as_str().unwrap_or("").to_string();
-                    let post_number = post["post_number"].as_u64().unwrap_or(0);
-                    let display_name = post["display_username"]
-                        .as_str()
-                        .unwrap_or(username)
-                        .to_string();
-
-                    if post_id > max_id {
-                        max_id = post_id;
-                    }
-
-                    let content = if raw.starts_with('/') {
-                        let parts: Vec<&str> = raw.splitn(2, ' ').collect();
-                        let cmd = parts[0].trim_start_matches('/');
-                        let args: Vec<String> = parts
-                            .get(1)
-                            .map(|a| a.split_whitespace().map(String::from).collect())
-                            .unwrap_or_default();
-                        ChannelContent::Command {
-                            name: cmd.to_string(),
-                            args,
-                        }
-                    } else {
-                        ChannelContent::Text(raw.to_string())
-                    };
-
-                    let msg = ChannelMessage {
-                        channel: ChannelType::Custom("discourse".to_string()),
-                        platform_message_id: format!("discourse-post-{}", post_id),
-                        sender: ChannelUser {
-                            platform_id: username.to_string(),
-                            display_name,
-                            openfang_user: None,
-                        },
-                        content,
-                        target_agent: None,
-                        timestamp: Utc::now(),
-                        is_group: true,
-                        thread_id: Some(format!("topic-{}", topic_id)),
-                        metadata: {
-                            let mut m = HashMap::new();
-                            m.insert(
-                                "topic_id".to_string(),
-                                serde_json::Value::Number(topic_id.into()),
-                            );
-                            m.insert(
-                                "topic_slug".to_string(),
-                                serde_json::Value::String(topic_slug),
-                            );
-                            m.insert(
-                                "post_number".to_string(),
-                                serde_json::Value::Number(post_number.into()),
-                            );
-                            m.insert(
-                                "category".to_string(),
-                                serde_json::Value::String(category_slug.to_string()),
-                            );
-                            m
-                        },
-                    };
-
-                    if tx.send(msg).await.is_err() {
-                        return;
-                    }
-                }
-
-                if max_id > current_last {
-                    *last_post_id.write().await = max_id;
-                }
-            }
-
-            info!("Discourse polling loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

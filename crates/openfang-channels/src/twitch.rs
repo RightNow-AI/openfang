@@ -4,6 +4,7 @@
 //! implements the IRC protocol for sending and receiving chat messages. Handles
 //! PING/PONG keepalive, channel joins, and PRIVMSG parsing.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -102,6 +103,119 @@ fn parse_privmsg(line: &str) -> Option<(String, String, String)> {
     Some((nick, channel, message))
 }
 
+/// Run a single Twitch IRC connection cycle.
+async fn run_twitch_irc(
+    pass: &str,
+    nick_cmd: &str,
+    join_cmds: &[String],
+    bot_nick: &str,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    let stream = TcpStream::connect((TWITCH_IRC_HOST, TWITCH_IRC_PORT))
+        .await
+        .map_err(|e| format!("Twitch connection failed: {e}"))?;
+
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+
+    // Authenticate
+    write_half.write_all(pass.as_bytes()).await
+        .map_err(|e| format!("Twitch: failed to send PASS: {e}"))?;
+    write_half.write_all(nick_cmd.as_bytes()).await
+        .map_err(|e| format!("Twitch: failed to send NICK: {e}"))?;
+
+    // Join channels
+    for join in join_cmds {
+        if write_half.write_all(join.as_bytes()).await.is_err() {
+            warn!("Twitch: failed to send JOIN");
+            break;
+        }
+    }
+
+    info!("Twitch IRC connected and joined channels");
+
+    loop {
+        let mut line = String::new();
+        let read_result = tokio::select! {
+            _ = shutdown_rx.changed() => {
+                info!("Twitch adapter shutting down");
+                let _ = write_half.write_all(b"QUIT :Shutting down\r\n").await;
+                return Ok(false);
+            }
+            result = reader.read_line(&mut line) => result,
+        };
+
+        match read_result {
+            Ok(0) => {
+                info!("Twitch IRC connection closed");
+                return Ok(true);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!("Twitch IRC read error: {e}");
+                return Ok(true);
+            }
+        }
+
+        let line = line.trim_end_matches('\n').trim_end_matches('\r');
+
+        // Handle PING
+        if line.starts_with("PING") {
+            let pong = line.replacen("PING", "PONG", 1);
+            let _ = write_half.write_all(format!("{pong}\r\n").as_bytes()).await;
+            continue;
+        }
+
+        // Parse PRIVMSG
+        if let Some((sender_nick, channel, message)) = parse_privmsg(line) {
+            if sender_nick.to_lowercase() == bot_nick {
+                continue;
+            }
+
+            if message.is_empty() {
+                continue;
+            }
+
+            let msg_content = if message.starts_with('/') || message.starts_with('!') {
+                let trimmed = message.trim_start_matches('/').trim_start_matches('!');
+                let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
+                let cmd = parts[0];
+                let args: Vec<String> = parts
+                    .get(1)
+                    .map(|a| a.split_whitespace().map(String::from).collect())
+                    .unwrap_or_default();
+                ChannelContent::Command {
+                    name: cmd.to_string(),
+                    args,
+                }
+            } else {
+                ChannelContent::Text(message.clone())
+            };
+
+            let channel_msg = ChannelMessage {
+                channel: ChannelType::Custom("twitch".to_string()),
+                platform_message_id: uuid::Uuid::new_v4().to_string(),
+                sender: ChannelUser {
+                    platform_id: channel.clone(),
+                    display_name: sender_nick,
+                    openfang_user: None,
+                },
+                content: msg_content,
+                target_agent: None,
+                timestamp: Utc::now(),
+                is_group: true,
+                thread_id: None,
+                metadata: HashMap::new(),
+            };
+
+            if tx.send(channel_msg).await.is_err() {
+                return Ok(false);
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl ChannelAdapter for TwitchAdapter {
     fn name(&self) -> &str {
@@ -118,7 +232,7 @@ impl ChannelAdapter for TwitchAdapter {
     {
         info!("Twitch adapter connecting to {TWITCH_IRC_HOST}:{TWITCH_IRC_PORT}");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let pass = self.pass_string();
         let nick_cmd = format!("NICK {}\r\n", self.nick);
         let join_cmds: Vec<String> = self
@@ -130,147 +244,27 @@ impl ChannelAdapter for TwitchAdapter {
             })
             .collect();
         let bot_nick = self.nick.to_lowercase();
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                // Connect to Twitch IRC
-                let stream = match TcpStream::connect((TWITCH_IRC_HOST, TWITCH_IRC_PORT)).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        warn!("Twitch: connection failed: {e}, retrying in {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(60));
-                        continue;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Twitch"),
+                shutdown_rx.clone(),
+                || {
+                    let pass = pass.clone();
+                    let nick_cmd = nick_cmd.clone();
+                    let join_cmds = join_cmds.clone();
+                    let bot_nick = bot_nick.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_twitch_irc(
+                            &pass, &nick_cmd, &join_cmds, &bot_nick,
+                            &tx, &mut shutdown_rx,
+                        ).await
                     }
-                };
-
-                let (read_half, mut write_half) = stream.into_split();
-                let mut reader = BufReader::new(read_half);
-
-                // Authenticate
-                if write_half.write_all(pass.as_bytes()).await.is_err() {
-                    warn!("Twitch: failed to send PASS");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(60));
-                    continue;
-                }
-                if write_half.write_all(nick_cmd.as_bytes()).await.is_err() {
-                    warn!("Twitch: failed to send NICK");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(60));
-                    continue;
-                }
-
-                // Join channels
-                for join in &join_cmds {
-                    if write_half.write_all(join.as_bytes()).await.is_err() {
-                        warn!("Twitch: failed to send JOIN");
-                        break;
-                    }
-                }
-
-                info!("Twitch IRC connected and joined channels");
-                backoff = Duration::from_secs(1);
-
-                // Read loop
-                let should_reconnect = loop {
-                    let mut line = String::new();
-                    let read_result = tokio::select! {
-                        _ = shutdown_rx.changed() => {
-                            info!("Twitch adapter shutting down");
-                            let _ = write_half.write_all(b"QUIT :Shutting down\r\n").await;
-                            return;
-                        }
-                        result = reader.read_line(&mut line) => result,
-                    };
-
-                    match read_result {
-                        Ok(0) => {
-                            info!("Twitch IRC connection closed");
-                            break true;
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            warn!("Twitch IRC read error: {e}");
-                            break true;
-                        }
-                    }
-
-                    let line = line.trim_end_matches('\n').trim_end_matches('\r');
-
-                    // Handle PING
-                    if line.starts_with("PING") {
-                        let pong = line.replacen("PING", "PONG", 1);
-                        let _ = write_half.write_all(format!("{pong}\r\n").as_bytes()).await;
-                        continue;
-                    }
-
-                    // Parse PRIVMSG
-                    if let Some((sender_nick, channel, message)) = parse_privmsg(line) {
-                        // Skip own messages
-                        if sender_nick.to_lowercase() == bot_nick {
-                            continue;
-                        }
-
-                        if message.is_empty() {
-                            continue;
-                        }
-
-                        let msg_content = if message.starts_with('/') || message.starts_with('!') {
-                            let trimmed = message.trim_start_matches('/').trim_start_matches('!');
-                            let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
-                            let cmd = parts[0];
-                            let args: Vec<String> = parts
-                                .get(1)
-                                .map(|a| a.split_whitespace().map(String::from).collect())
-                                .unwrap_or_default();
-                            ChannelContent::Command {
-                                name: cmd.to_string(),
-                                args,
-                            }
-                        } else {
-                            ChannelContent::Text(message.clone())
-                        };
-
-                        let channel_msg = ChannelMessage {
-                            channel: ChannelType::Custom("twitch".to_string()),
-                            platform_message_id: uuid::Uuid::new_v4().to_string(),
-                            sender: ChannelUser {
-                                platform_id: channel.clone(),
-                                display_name: sender_nick,
-                                openfang_user: None,
-                            },
-                            content: msg_content,
-                            target_agent: None,
-                            timestamp: Utc::now(),
-                            is_group: true, // Twitch channels are always group
-                            thread_id: None,
-                            metadata: HashMap::new(),
-                        };
-
-                        if tx.send(channel_msg).await.is_err() {
-                            return;
-                        }
-                    }
-                };
-
-                if !should_reconnect || *shutdown_rx.borrow() {
-                    break;
-                }
-
-                warn!("Twitch: reconnecting in {backoff:?}");
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(60));
-            }
-
-            info!("Twitch IRC loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

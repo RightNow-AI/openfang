@@ -5,6 +5,7 @@
 //! with identifier + app password. Posts are created via
 //! `com.atproto.repo.createRecord` with the `app.bsky.feed.post` lexicon.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -335,6 +336,152 @@ fn parse_bluesky_notification(
     })
 }
 
+/// Run the Bluesky notification polling loop.
+async fn run_bluesky_poll(
+    service_url: &str,
+    session: &Arc<RwLock<Option<BlueskySession>>>,
+    own_did: &str,
+    client: &reqwest::Client,
+    identifier: &str,
+    app_password: &Zeroizing<String>,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+    last_seen_at: &Arc<RwLock<Option<String>>>,
+) -> Result<bool, String> {
+    let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                info!("Bluesky adapter shutting down");
+                return Ok(false);
+            }
+            _ = tokio::time::sleep(poll_interval) => {}
+        }
+
+        if *shutdown_rx.borrow() {
+            return Ok(false);
+        }
+
+        // Get current access token
+        let token = {
+            let guard = session.read().await;
+            match &*guard {
+                Some(s) => s.access_jwt.clone(),
+                None => {
+                    // Re-create session
+                    drop(guard);
+                    let url =
+                        format!("{}/xrpc/com.atproto.server.createSession", service_url);
+                    let body = serde_json::json!({
+                        "identifier": identifier,
+                        "password": app_password.as_str(),
+                    });
+                    match client.post(&url).json(&body).send().await {
+                        Ok(resp) => {
+                            let resp_body: serde_json::Value =
+                                resp.json().await.unwrap_or_default();
+                            let tok =
+                                resp_body["accessJwt"].as_str().unwrap_or("").to_string();
+                            if tok.is_empty() {
+                                return Err("Bluesky: failed to create session".to_string());
+                            }
+                            let new_session = BlueskySession {
+                                access_jwt: tok.clone(),
+                                refresh_jwt: resp_body["refreshJwt"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_string(),
+                                did: resp_body["did"].as_str().unwrap_or("").to_string(),
+                                created_at: Instant::now(),
+                            };
+                            *session.write().await = Some(new_session);
+                            tok
+                        }
+                        Err(e) => {
+                            return Err(format!("Bluesky session create error: {e}"));
+                        }
+                    }
+                }
+            }
+        };
+
+        // Poll notifications
+        let mut url = format!(
+            "{}/xrpc/app.bsky.notification.listNotifications?limit=25",
+            service_url
+        );
+        {
+            let seen = last_seen_at.read().await;
+            if let Some(ref seen) = *seen {
+                url.push_str(&format!("&seenAt={}", seen));
+            }
+        }
+
+        let resp = match client.get(&url).bearer_auth(&token).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(format!("Bluesky notification fetch error: {e}"));
+            }
+        };
+
+        if !resp.status().is_success() {
+            warn!("Bluesky: notification fetch returned {}", resp.status());
+            if resp.status().as_u16() == 401 {
+                // Session expired, clear it so next iteration re-creates
+                *session.write().await = None;
+            }
+            continue;
+        }
+
+        let body: serde_json::Value = match resp.json().await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("Bluesky: failed to parse notifications: {e}");
+                continue;
+            }
+        };
+
+        let notifications = match body["notifications"].as_array() {
+            Some(arr) => arr,
+            None => continue,
+        };
+
+        for notif in notifications {
+            // Track latest indexed_at
+            if let Some(indexed) = notif["indexedAt"].as_str() {
+                let mut seen = last_seen_at.write().await;
+                if seen.as_ref().map(|s| indexed > s.as_str()).unwrap_or(true) {
+                    *seen = Some(indexed.to_string());
+                }
+            }
+
+            if let Some(msg) = parse_bluesky_notification(notif, own_did) {
+                if tx.send(msg).await.is_err() {
+                    return Ok(false);
+                }
+            }
+        }
+
+        // Update seen marker
+        {
+            let seen = last_seen_at.read().await;
+            if seen.is_some() {
+                let mark_url = format!("{}/xrpc/app.bsky.notification.updateSeen", service_url);
+                let mark_body = serde_json::json!({
+                    "seenAt": Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+                });
+                let _ = client
+                    .post(&mark_url)
+                    .bearer_auth(&token)
+                    .json(&mark_body)
+                    .send()
+                    .await;
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl ChannelAdapter for BlueskyAdapter {
     fn name(&self) -> &str {
@@ -353,159 +500,40 @@ impl ChannelAdapter for BlueskyAdapter {
         let did = self.validate().await?;
         info!("Bluesky adapter authenticated as {did}");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let service_url = self.service_url.clone();
         let session = Arc::clone(&self.session);
         let own_did = did;
         let client = self.client.clone();
         let identifier = self.identifier.clone();
         let app_password = self.app_password.clone();
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
-            let mut backoff = Duration::from_secs(1);
-            let mut last_seen_at: Option<String> = None;
+            let last_seen_at: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
 
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        info!("Bluesky adapter shutting down");
-                        break;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Bluesky"),
+                shutdown_rx.clone(),
+                || {
+                    let service_url = service_url.clone();
+                    let session = session.clone();
+                    let own_did = own_did.clone();
+                    let client = client.clone();
+                    let identifier = identifier.clone();
+                    let app_password = app_password.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    let last_seen_at = last_seen_at.clone();
+                    async move {
+                        run_bluesky_poll(
+                            &service_url, &session, &own_did, &client,
+                            &identifier, &app_password, &tx, &mut shutdown_rx,
+                            &last_seen_at,
+                        ).await
                     }
-                    _ = tokio::time::sleep(poll_interval) => {}
-                }
-
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                // Get current access token
-                let token = {
-                    let guard = session.read().await;
-                    match &*guard {
-                        Some(s) => s.access_jwt.clone(),
-                        None => {
-                            // Re-create session
-                            drop(guard);
-                            let url =
-                                format!("{}/xrpc/com.atproto.server.createSession", service_url);
-                            let body = serde_json::json!({
-                                "identifier": identifier,
-                                "password": app_password.as_str(),
-                            });
-                            match client.post(&url).json(&body).send().await {
-                                Ok(resp) => {
-                                    let resp_body: serde_json::Value =
-                                        resp.json().await.unwrap_or_default();
-                                    let tok =
-                                        resp_body["accessJwt"].as_str().unwrap_or("").to_string();
-                                    if tok.is_empty() {
-                                        warn!("Bluesky: failed to create session");
-                                        backoff = (backoff * 2).min(Duration::from_secs(60));
-                                        tokio::time::sleep(backoff).await;
-                                        continue;
-                                    }
-                                    let new_session = BlueskySession {
-                                        access_jwt: tok.clone(),
-                                        refresh_jwt: resp_body["refreshJwt"]
-                                            .as_str()
-                                            .unwrap_or("")
-                                            .to_string(),
-                                        did: resp_body["did"].as_str().unwrap_or("").to_string(),
-                                        created_at: Instant::now(),
-                                    };
-                                    *session.write().await = Some(new_session);
-                                    tok
-                                }
-                                Err(e) => {
-                                    warn!("Bluesky: session create error: {e}");
-                                    backoff = (backoff * 2).min(Duration::from_secs(60));
-                                    tokio::time::sleep(backoff).await;
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                };
-
-                // Poll notifications
-                let mut url = format!(
-                    "{}/xrpc/app.bsky.notification.listNotifications?limit=25",
-                    service_url
-                );
-                if let Some(ref seen) = last_seen_at {
-                    url.push_str(&format!("&seenAt={}", seen));
-                }
-
-                let resp = match client.get(&url).bearer_auth(&token).send().await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        warn!("Bluesky: notification fetch error: {e}");
-                        backoff = (backoff * 2).min(Duration::from_secs(60));
-                        continue;
-                    }
-                };
-
-                if !resp.status().is_success() {
-                    warn!("Bluesky: notification fetch returned {}", resp.status());
-                    if resp.status().as_u16() == 401 {
-                        // Session expired, clear it so next iteration re-creates
-                        *session.write().await = None;
-                    }
-                    continue;
-                }
-
-                let body: serde_json::Value = match resp.json().await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        warn!("Bluesky: failed to parse notifications: {e}");
-                        continue;
-                    }
-                };
-
-                let notifications = match body["notifications"].as_array() {
-                    Some(arr) => arr,
-                    None => continue,
-                };
-
-                for notif in notifications {
-                    // Track latest indexed_at
-                    if let Some(indexed) = notif["indexedAt"].as_str() {
-                        if last_seen_at
-                            .as_ref()
-                            .map(|s| indexed > s.as_str())
-                            .unwrap_or(true)
-                        {
-                            last_seen_at = Some(indexed.to_string());
-                        }
-                    }
-
-                    if let Some(msg) = parse_bluesky_notification(notif, &own_did) {
-                        if tx.send(msg).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-
-                // Update seen marker
-                if last_seen_at.is_some() {
-                    let mark_url = format!("{}/xrpc/app.bsky.notification.updateSeen", service_url);
-                    let mark_body = serde_json::json!({
-                        "seenAt": Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
-                    });
-                    let _ = client
-                        .post(&mark_url)
-                        .bearer_auth(&token)
-                        .json(&mark_body)
-                        .send()
-                        .await;
-                }
-
-                backoff = Duration::from_secs(1);
-            }
-
-            info!("Bluesky polling loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

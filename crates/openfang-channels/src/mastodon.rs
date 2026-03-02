@@ -5,6 +5,7 @@
 //! is performed via `Authorization: Bearer {access_token}` on all API calls.
 //! Mentions/notifications are received via the SSE user stream endpoint.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -24,9 +25,6 @@ const MAX_MESSAGE_LEN: usize = 500;
 
 /// SSE reconnect delay on error.
 const SSE_RECONNECT_DELAY_SECS: u64 = 5;
-
-/// Maximum backoff for SSE reconnection.
-const MAX_BACKOFF_SECS: u64 = 60;
 
 /// Mastodon Streaming API adapter.
 ///
@@ -312,6 +310,154 @@ fn strip_html_tags(html: &str) -> String {
     decoded.trim().to_string()
 }
 
+/// Run the Mastodon listener loop (SSE streaming with polling fallback).
+async fn run_mastodon_listener(
+    instance_url: &str,
+    access_token: &Zeroizing<String>,
+    own_account_id: &str,
+    client: &reqwest::Client,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+    last_notification_id: &Arc<RwLock<Option<String>>>,
+    use_streaming: &Arc<RwLock<bool>>,
+) -> Result<bool, String> {
+    let poll_interval = Duration::from_secs(SSE_RECONNECT_DELAY_SECS);
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                info!("Mastodon adapter shutting down");
+                return Ok(false);
+            }
+            _ = tokio::time::sleep(poll_interval) => {}
+        }
+
+        if *shutdown_rx.borrow() {
+            return Ok(false);
+        }
+
+        if *use_streaming.read().await {
+            // Attempt SSE connection to streaming API
+            let stream_url = format!("{}/api/v1/streaming/user", instance_url);
+
+            match client
+                .get(&stream_url)
+                .bearer_auth(access_token.as_str())
+                .header("Accept", "text/event-stream")
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    info!("Mastodon: connected to SSE stream");
+
+                    use futures::StreamExt;
+                    let mut bytes_stream = r.bytes_stream();
+                    let mut event_type = String::new();
+
+                    while let Some(chunk_result) = bytes_stream.next().await {
+                        if *shutdown_rx.borrow_and_update() {
+                            return Ok(false);
+                        }
+
+                        let chunk = match chunk_result {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!("Mastodon SSE stream error: {e}");
+                                break;
+                            }
+                        };
+
+                        let text = String::from_utf8_lossy(&chunk);
+                        for line in text.lines() {
+                            if let Some(ev) = line.strip_prefix("event: ") {
+                                event_type = ev.trim().to_string();
+                            } else if let Some(data) = line.strip_prefix("data: ") {
+                                if event_type == "notification" {
+                                    if let Ok(notif) =
+                                        serde_json::from_str::<serde_json::Value>(data)
+                                    {
+                                        if let Some(msg) = parse_mastodon_notification(
+                                            &notif,
+                                            own_account_id,
+                                        ) {
+                                            let _ = tx.send(msg).await;
+                                        }
+                                    }
+                                }
+                                event_type.clear();
+                            }
+                        }
+                    }
+
+                    // Stream ended, reconnect
+                    return Ok(true);
+                }
+                Ok(r) => {
+                    warn!(
+                        "Mastodon SSE: non-success status {}, falling back to polling",
+                        r.status()
+                    );
+                    *use_streaming.write().await = false;
+                }
+                Err(e) => {
+                    warn!("Mastodon SSE connection failed: {e}, falling back to polling");
+                    *use_streaming.write().await = false;
+                }
+            }
+
+            // SSE failed, reconnect with backoff
+            return Err("Mastodon SSE connection failed".to_string());
+        }
+
+        // Polling fallback: fetch notifications via REST
+        let mut url = format!(
+            "{}/api/v1/notifications?types[]=mention&limit=30",
+            instance_url
+        );
+        {
+            let sid = last_notification_id.read().await;
+            if let Some(ref sid) = *sid {
+                url.push_str(&format!("&since_id={}", sid));
+            }
+        }
+
+        let poll_resp = match client
+            .get(&url)
+            .bearer_auth(access_token.as_str())
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(format!("Mastodon notification poll error: {e}"));
+            }
+        };
+
+        if !poll_resp.status().is_success() {
+            warn!(
+                "Mastodon: notification poll returned {}",
+                poll_resp.status()
+            );
+            continue;
+        }
+
+        let notifications: Vec<serde_json::Value> =
+            poll_resp.json().await.unwrap_or_default();
+
+        for notif in &notifications {
+            if let Some(nid) = notif["id"].as_str() {
+                *last_notification_id.write().await = Some(nid.to_string());
+            }
+            if let Some(msg) = parse_mastodon_notification(notif, own_account_id) {
+                if tx.send(msg).await.is_err() {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl ChannelAdapter for MastodonAdapter {
     fn name(&self) -> &str {
@@ -330,156 +476,38 @@ impl ChannelAdapter for MastodonAdapter {
         let (account_id, username) = self.validate().await?;
         info!("Mastodon adapter authenticated as @{username} (id: {account_id})");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let instance_url = self.instance_url.clone();
         let access_token = self.access_token.clone();
         let own_account_id = account_id;
         let client = self.client.clone();
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let poll_interval = Duration::from_secs(SSE_RECONNECT_DELAY_SECS);
-            let mut backoff = Duration::from_secs(1);
-            let mut last_notification_id: Option<String> = None;
-            let mut use_streaming = true;
+            let last_notification_id: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+            let use_streaming = Arc::new(RwLock::new(true));
 
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        info!("Mastodon adapter shutting down");
-                        break;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Mastodon"),
+                shutdown_rx.clone(),
+                || {
+                    let instance_url = instance_url.clone();
+                    let access_token = access_token.clone();
+                    let own_account_id = own_account_id.clone();
+                    let client = client.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    let last_notification_id = last_notification_id.clone();
+                    let use_streaming = use_streaming.clone();
+                    async move {
+                        run_mastodon_listener(
+                            &instance_url, &access_token, &own_account_id,
+                            &client, &tx, &mut shutdown_rx,
+                            &last_notification_id, &use_streaming,
+                        ).await
                     }
-                    _ = tokio::time::sleep(poll_interval) => {}
-                }
-
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                if use_streaming {
-                    // Attempt SSE connection to streaming API
-                    let stream_url = format!("{}/api/v1/streaming/user", instance_url);
-
-                    match client
-                        .get(&stream_url)
-                        .bearer_auth(access_token.as_str())
-                        .header("Accept", "text/event-stream")
-                        .timeout(Duration::from_secs(5))
-                        .send()
-                        .await
-                    {
-                        Ok(r) if r.status().is_success() => {
-                            info!("Mastodon: connected to SSE stream");
-                            backoff = Duration::from_secs(1);
-
-                            use futures::StreamExt;
-                            let mut bytes_stream = r.bytes_stream();
-                            let mut event_type = String::new();
-
-                            while let Some(chunk_result) = bytes_stream.next().await {
-                                if *shutdown_rx.borrow_and_update() {
-                                    return;
-                                }
-
-                                let chunk = match chunk_result {
-                                    Ok(c) => c,
-                                    Err(e) => {
-                                        warn!("Mastodon SSE stream error: {e}");
-                                        break;
-                                    }
-                                };
-
-                                let text = String::from_utf8_lossy(&chunk);
-                                for line in text.lines() {
-                                    if let Some(ev) = line.strip_prefix("event: ") {
-                                        event_type = ev.trim().to_string();
-                                    } else if let Some(data) = line.strip_prefix("data: ") {
-                                        if event_type == "notification" {
-                                            if let Ok(notif) =
-                                                serde_json::from_str::<serde_json::Value>(data)
-                                            {
-                                                if let Some(msg) = parse_mastodon_notification(
-                                                    &notif,
-                                                    &own_account_id,
-                                                ) {
-                                                    let _ = tx.send(msg).await;
-                                                }
-                                            }
-                                        }
-                                        event_type.clear();
-                                    }
-                                }
-                            }
-
-                            // Stream ended, will reconnect
-                        }
-                        Ok(r) => {
-                            warn!(
-                                "Mastodon SSE: non-success status {}, falling back to polling",
-                                r.status()
-                            );
-                            use_streaming = false;
-                        }
-                        Err(e) => {
-                            warn!("Mastodon SSE connection failed: {e}, falling back to polling");
-                            use_streaming = false;
-                        }
-                    }
-
-                    // Backoff before reconnect attempt
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(MAX_BACKOFF_SECS));
-                    continue;
-                }
-
-                // Polling fallback: fetch notifications via REST
-                let mut url = format!(
-                    "{}/api/v1/notifications?types[]=mention&limit=30",
-                    instance_url
-                );
-                if let Some(ref sid) = last_notification_id {
-                    url.push_str(&format!("&since_id={}", sid));
-                }
-
-                let poll_resp = match client
-                    .get(&url)
-                    .bearer_auth(access_token.as_str())
-                    .send()
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        warn!("Mastodon: notification poll error: {e}");
-                        continue;
-                    }
-                };
-
-                if !poll_resp.status().is_success() {
-                    warn!(
-                        "Mastodon: notification poll returned {}",
-                        poll_resp.status()
-                    );
-                    continue;
-                }
-
-                let notifications: Vec<serde_json::Value> =
-                    poll_resp.json().await.unwrap_or_default();
-
-                for notif in &notifications {
-                    if let Some(nid) = notif["id"].as_str() {
-                        last_notification_id = Some(nid.to_string());
-                    }
-                    if let Some(msg) = parse_mastodon_notification(notif, &own_account_id) {
-                        if tx.send(msg).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-
-                backoff = Duration::from_secs(1);
-            }
-
-            info!("Mastodon polling loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

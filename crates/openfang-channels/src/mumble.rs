@@ -4,6 +4,7 @@
 //! simplified protobuf-style framing protocol. Voice channels are ignored;
 //! only `TextMessage` packets (type 11) are processed.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -288,7 +289,7 @@ impl ChannelAdapter for MumbleAdapter {
         info!("Mumble adapter connecting to {addr}");
 
         let tcp = TcpStream::connect(&addr).await?;
-        let (mut reader, writer) = tcp.into_split();
+        let (reader, writer) = tcp.into_split();
 
         // Store writer for send()
         {
@@ -315,155 +316,30 @@ impl ChannelAdapter for MumbleAdapter {
 
         info!("Mumble adapter authenticated as {}", self.username);
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let channel_name = self.channel_name.clone();
-        let own_username = self.username.clone();
         let stream_handle = Arc::clone(&self.stream);
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let mut header_buf = [0u8; 6];
-            let mut backoff = Duration::from_secs(1);
-            let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
-            ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() {
-                            info!("Mumble adapter shutting down");
-                            break;
-                        }
+            let reader = Arc::new(Mutex::new(reader));
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Mumble"),
+                shutdown_rx.clone(),
+                || {
+                    let channel_name = channel_name.clone();
+                    let stream_handle = stream_handle.clone();
+                    let reader = reader.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_mumble_read(
+                            &channel_name, &stream_handle, &reader,
+                            &tx, &mut shutdown_rx,
+                        ).await
                     }
-                    _ = ping_interval.tick() => {
-                        // Send keepalive ping
-                        let mut lock = stream_handle.lock().await;
-                        if let Some(ref mut w) = *lock {
-                            let pkt = Self::encode_packet(MSG_TYPE_PING, &Self::build_ping_packet());
-                            if let Err(e) = w.write_all(&pkt).await {
-                                warn!("Mumble: ping write error: {e}");
-                            }
-                        }
-                    }
-                    result = reader.read_exact(&mut header_buf) => {
-                        match result {
-                            Ok(_) => {
-                                backoff = Duration::from_secs(1);
-                                let msg_type = u16::from_be_bytes([header_buf[0], header_buf[1]]);
-                                let msg_len = u32::from_be_bytes([
-                                    header_buf[2], header_buf[3],
-                                    header_buf[4], header_buf[5],
-                                ]) as usize;
-
-                                // Sanity check — reject packets larger than 1 MB
-                                if msg_len > 1_048_576 {
-                                    warn!("Mumble: oversized packet ({msg_len} bytes), skipping");
-                                    continue;
-                                }
-
-                                let mut payload = vec![0u8; msg_len];
-                                if let Err(e) = reader.read_exact(&mut payload).await {
-                                    warn!("Mumble: payload read error: {e}");
-                                    break;
-                                }
-
-                                if msg_type == MSG_TYPE_TEXT_MESSAGE {
-                                    let (actor, _ch_ids, _tree_ids, _session_ids, message) =
-                                        Self::parse_text_message(&payload);
-
-                                    if message.is_empty() {
-                                        continue;
-                                    }
-
-                                    // Strip basic HTML tags that Mumble wraps text in
-                                    let clean_msg = message
-                                        .replace("<br>", "\n")
-                                        .replace("<br/>", "\n")
-                                        .replace("<br />", "\n");
-                                    // Rough tag strip
-                                    let clean_msg = {
-                                        let mut out = String::with_capacity(clean_msg.len());
-                                        let mut in_tag = false;
-                                        for ch in clean_msg.chars() {
-                                            if ch == '<' { in_tag = true; continue; }
-                                            if ch == '>' { in_tag = false; continue; }
-                                            if !in_tag { out.push(ch); }
-                                        }
-                                        out
-                                    };
-
-                                    if clean_msg.is_empty() {
-                                        continue;
-                                    }
-
-                                    let content = if clean_msg.starts_with('/') {
-                                        let parts: Vec<&str> = clean_msg.splitn(2, ' ').collect();
-                                        let cmd = parts[0].trim_start_matches('/');
-                                        let args: Vec<String> = parts
-                                            .get(1)
-                                            .map(|a| a.split_whitespace().map(String::from).collect())
-                                            .unwrap_or_default();
-                                        ChannelContent::Command {
-                                            name: cmd.to_string(),
-                                            args,
-                                        }
-                                    } else {
-                                        ChannelContent::Text(clean_msg)
-                                    };
-
-                                    let channel_msg = ChannelMessage {
-                                        channel: ChannelType::Custom("mumble".to_string()),
-                                        platform_message_id: format!(
-                                            "mumble-{}-{}",
-                                            actor,
-                                            Utc::now().timestamp_millis()
-                                        ),
-                                        sender: ChannelUser {
-                                            platform_id: format!("session-{actor}"),
-                                            display_name: format!("user-{actor}"),
-                                            openfang_user: None,
-                                        },
-                                        content,
-                                        target_agent: None,
-                                        timestamp: Utc::now(),
-                                        is_group: true,
-                                        thread_id: None,
-                                        metadata: {
-                                            let mut m = HashMap::new();
-                                            m.insert(
-                                                "channel".to_string(),
-                                                serde_json::Value::String(channel_name.clone()),
-                                            );
-                                            m.insert(
-                                                "actor".to_string(),
-                                                serde_json::Value::Number(actor.into()),
-                                            );
-                                            m
-                                        },
-                                    };
-
-                                    if tx.send(channel_msg).await.is_err() {
-                                        return;
-                                    }
-                                }
-                                // Other packet types (ServerSync, ChannelState, etc.) silently ignored
-                            }
-                            Err(e) => {
-                                warn!("Mumble: read error: {e}, backing off {backoff:?}");
-                                tokio::time::sleep(backoff).await;
-                                backoff = (backoff * 2).min(Duration::from_secs(60));
-                            }
-                        }
-                    }
-                }
-
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-            }
-
-            info!("Mumble polling loop stopped");
-            let _ = own_username;
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
@@ -509,6 +385,153 @@ impl ChannelAdapter for MumbleAdapter {
         let mut lock = self.stream.lock().await;
         *lock = None;
         Ok(())
+    }
+}
+
+/// Run the Mumble TCP read loop.
+async fn run_mumble_read(
+    channel_name: &str,
+    stream_handle: &Arc<Mutex<Option<tokio::net::tcp::OwnedWriteHalf>>>,
+    reader: &Arc<Mutex<tokio::net::tcp::OwnedReadHalf>>,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    let mut header_buf = [0u8; 6];
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let mut reader_guard = reader.lock().await;
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Mumble adapter shutting down");
+                    return Ok(false);
+                }
+            }
+            _ = ping_interval.tick() => {
+                // Send keepalive ping
+                let mut lock = stream_handle.lock().await;
+                if let Some(ref mut w) = *lock {
+                    let pkt = MumbleAdapter::encode_packet(MSG_TYPE_PING, &MumbleAdapter::build_ping_packet());
+                    if let Err(e) = w.write_all(&pkt).await {
+                        warn!("Mumble: ping write error: {e}");
+                    }
+                }
+            }
+            result = reader_guard.read_exact(&mut header_buf) => {
+                match result {
+                    Ok(_) => {
+                        let msg_type = u16::from_be_bytes([header_buf[0], header_buf[1]]);
+                        let msg_len = u32::from_be_bytes([
+                            header_buf[2], header_buf[3],
+                            header_buf[4], header_buf[5],
+                        ]) as usize;
+
+                        // Sanity check — reject packets larger than 1 MB
+                        if msg_len > 1_048_576 {
+                            warn!("Mumble: oversized packet ({msg_len} bytes), skipping");
+                            continue;
+                        }
+
+                        let mut payload = vec![0u8; msg_len];
+                        if let Err(e) = reader_guard.read_exact(&mut payload).await {
+                            warn!("Mumble: payload read error: {e}");
+                            return Ok(true);
+                        }
+
+                        if msg_type == MSG_TYPE_TEXT_MESSAGE {
+                            let (actor, _ch_ids, _tree_ids, _session_ids, message) =
+                                MumbleAdapter::parse_text_message(&payload);
+
+                            if message.is_empty() {
+                                continue;
+                            }
+
+                            // Strip basic HTML tags that Mumble wraps text in
+                            let clean_msg = message
+                                .replace("<br>", "\n")
+                                .replace("<br/>", "\n")
+                                .replace("<br />", "\n");
+                            // Rough tag strip
+                            let clean_msg = {
+                                let mut out = String::with_capacity(clean_msg.len());
+                                let mut in_tag = false;
+                                for ch in clean_msg.chars() {
+                                    if ch == '<' { in_tag = true; continue; }
+                                    if ch == '>' { in_tag = false; continue; }
+                                    if !in_tag { out.push(ch); }
+                                }
+                                out
+                            };
+
+                            if clean_msg.is_empty() {
+                                continue;
+                            }
+
+                            let content = if clean_msg.starts_with('/') {
+                                let parts: Vec<&str> = clean_msg.splitn(2, ' ').collect();
+                                let cmd = parts[0].trim_start_matches('/');
+                                let args: Vec<String> = parts
+                                    .get(1)
+                                    .map(|a| a.split_whitespace().map(String::from).collect())
+                                    .unwrap_or_default();
+                                ChannelContent::Command {
+                                    name: cmd.to_string(),
+                                    args,
+                                }
+                            } else {
+                                ChannelContent::Text(clean_msg)
+                            };
+
+                            let channel_msg = ChannelMessage {
+                                channel: ChannelType::Custom("mumble".to_string()),
+                                platform_message_id: format!(
+                                    "mumble-{}-{}",
+                                    actor,
+                                    Utc::now().timestamp_millis()
+                                ),
+                                sender: ChannelUser {
+                                    platform_id: format!("session-{actor}"),
+                                    display_name: format!("user-{actor}"),
+                                    openfang_user: None,
+                                },
+                                content,
+                                target_agent: None,
+                                timestamp: Utc::now(),
+                                is_group: true,
+                                thread_id: None,
+                                metadata: {
+                                    let mut m = HashMap::new();
+                                    m.insert(
+                                        "channel".to_string(),
+                                        serde_json::Value::String(channel_name.to_string()),
+                                    );
+                                    m.insert(
+                                        "actor".to_string(),
+                                        serde_json::Value::Number(actor.into()),
+                                    );
+                                    m
+                                },
+                            };
+
+                            if tx.send(channel_msg).await.is_err() {
+                                return Ok(false);
+                            }
+                        }
+                        // Other packet types (ServerSync, ChannelState, etc.) silently ignored
+                    }
+                    Err(e) => {
+                        return Err(format!("Mumble: read error: {e}"));
+                    }
+                }
+            }
+        }
+
+        if *shutdown_rx.borrow() {
+            return Ok(false);
+        }
     }
 }
 

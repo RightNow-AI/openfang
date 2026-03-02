@@ -4,6 +4,7 @@
 //! replies via the REST API. Uses Bearer token authentication and
 //! newline-delimited JSON streaming.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -13,7 +14,6 @@ use futures::Stream;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
@@ -146,6 +146,132 @@ impl GitterAdapter {
     }
 }
 
+/// Run a single Gitter streaming connection cycle.
+async fn run_gitter_stream(
+    room_id: &str,
+    token: &Zeroizing<String>,
+    own_username: &str,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    use futures::StreamExt;
+    use std::time::Duration;
+
+    let stream_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(0))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/{}/chatMessages", GITTER_STREAM_URL, room_id);
+
+    let response = stream_client
+        .get(&url)
+        .bearer_auth(token.as_str())
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("Gitter stream connection error: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Gitter stream returned HTTP {}", response.status()));
+    }
+
+    info!("Gitter: streaming connection established for room {room_id}");
+
+    let mut stream = response.bytes_stream();
+    let mut line_buffer = String::new();
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Gitter adapter shutting down");
+                    return Ok(false);
+                }
+            }
+            chunk = stream.next() => {
+                match chunk {
+                    Some(Ok(bytes)) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        line_buffer.push_str(&text);
+
+                        while let Some(newline_pos) = line_buffer.find('\n') {
+                            let line = line_buffer[..newline_pos].trim().to_string();
+                            line_buffer = line_buffer[newline_pos + 1..].to_string();
+
+                            if line.is_empty() || line.chars().all(|c| c.is_whitespace()) {
+                                continue;
+                            }
+
+                            if let Some((id, text, username, display_name)) =
+                                GitterAdapter::parse_stream_message(&line)
+                            {
+                                if username == own_username {
+                                    continue;
+                                }
+
+                                let content = if text.starts_with('/') {
+                                    let parts: Vec<&str> = text.splitn(2, ' ').collect();
+                                    let cmd = parts[0].trim_start_matches('/');
+                                    let args: Vec<String> = parts
+                                        .get(1)
+                                        .map(|a| {
+                                            a.split_whitespace()
+                                                .map(String::from)
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+                                    ChannelContent::Command {
+                                        name: cmd.to_string(),
+                                        args,
+                                    }
+                                } else {
+                                    ChannelContent::Text(text)
+                                };
+
+                                let msg = ChannelMessage {
+                                    channel: ChannelType::Custom("gitter".to_string()),
+                                    platform_message_id: id,
+                                    sender: ChannelUser {
+                                        platform_id: username.clone(),
+                                        display_name,
+                                        openfang_user: None,
+                                    },
+                                    content,
+                                    target_agent: None,
+                                    timestamp: Utc::now(),
+                                    is_group: true,
+                                    thread_id: None,
+                                    metadata: {
+                                        let mut m = HashMap::new();
+                                        m.insert(
+                                            "room_id".to_string(),
+                                            serde_json::Value::String(room_id.to_string()),
+                                        );
+                                        m
+                                    },
+                                };
+
+                                if tx.send(msg).await.is_err() {
+                                    return Ok(false);
+                                }
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        warn!("Gitter: stream read error: {e}");
+                        return Ok(true);
+                    }
+                    None => {
+                        info!("Gitter: stream ended");
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl ChannelAdapter for GitterAdapter {
     fn name(&self) -> &str {
@@ -164,164 +290,29 @@ impl ChannelAdapter for GitterAdapter {
         let room_name = self.get_room_name().await.unwrap_or_default();
         info!("Gitter adapter authenticated as {own_username} in room {room_name}");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let room_id = self.room_id.clone();
         let token = self.token.clone();
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let stream_client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(0)) // No timeout for streaming
-                .build()
-                .unwrap_or_default();
-
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                let url = format!("{}/{}/chatMessages", GITTER_STREAM_URL, room_id);
-
-                let response = match stream_client
-                    .get(&url)
-                    .bearer_auth(token.as_str())
-                    .header("Accept", "application/json")
-                    .send()
-                    .await
-                {
-                    Ok(r) => {
-                        if !r.status().is_success() {
-                            warn!("Gitter: stream returned HTTP {}", r.status());
-                            tokio::time::sleep(backoff).await;
-                            backoff = (backoff * 2).min(Duration::from_secs(120));
-                            continue;
-                        }
-                        backoff = Duration::from_secs(1);
-                        r
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Gitter"),
+                shutdown_rx.clone(),
+                || {
+                    let room_id = room_id.clone();
+                    let token = token.clone();
+                    let own_username = own_username.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_gitter_stream(
+                            &room_id, &token, &own_username,
+                            &tx, &mut shutdown_rx,
+                        ).await
                     }
-                    Err(e) => {
-                        warn!("Gitter: stream connection error: {e}, backing off {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(120));
-                        continue;
-                    }
-                };
-
-                info!("Gitter: streaming connection established for room {room_id}");
-
-                // Read the streaming response as bytes, splitting on newlines
-                let mut stream = response.bytes_stream();
-                use futures::StreamExt;
-
-                let mut line_buffer = String::new();
-
-                loop {
-                    tokio::select! {
-                        _ = shutdown_rx.changed() => {
-                            if *shutdown_rx.borrow() {
-                                info!("Gitter adapter shutting down");
-                                return;
-                            }
-                        }
-                        chunk = stream.next() => {
-                            match chunk {
-                                Some(Ok(bytes)) => {
-                                    let text = String::from_utf8_lossy(&bytes);
-                                    line_buffer.push_str(&text);
-
-                                    // Process complete lines
-                                    while let Some(newline_pos) = line_buffer.find('\n') {
-                                        let line = line_buffer[..newline_pos].trim().to_string();
-                                        line_buffer = line_buffer[newline_pos + 1..].to_string();
-
-                                        // Skip heartbeat (empty lines / whitespace-only)
-                                        if line.is_empty() || line.chars().all(|c| c.is_whitespace()) {
-                                            continue;
-                                        }
-
-                                        if let Some((id, text, username, display_name)) =
-                                            Self::parse_stream_message(&line)
-                                        {
-                                            // Skip own messages
-                                            if username == own_username {
-                                                continue;
-                                            }
-
-                                            let content = if text.starts_with('/') {
-                                                let parts: Vec<&str> = text.splitn(2, ' ').collect();
-                                                let cmd = parts[0].trim_start_matches('/');
-                                                let args: Vec<String> = parts
-                                                    .get(1)
-                                                    .map(|a| {
-                                                        a.split_whitespace()
-                                                            .map(String::from)
-                                                            .collect()
-                                                    })
-                                                    .unwrap_or_default();
-                                                ChannelContent::Command {
-                                                    name: cmd.to_string(),
-                                                    args,
-                                                }
-                                            } else {
-                                                ChannelContent::Text(text)
-                                            };
-
-                                            let msg = ChannelMessage {
-                                                channel: ChannelType::Custom(
-                                                    "gitter".to_string(),
-                                                ),
-                                                platform_message_id: id,
-                                                sender: ChannelUser {
-                                                    platform_id: username.clone(),
-                                                    display_name,
-                                                    openfang_user: None,
-                                                },
-                                                content,
-                                                target_agent: None,
-                                                timestamp: Utc::now(),
-                                                is_group: true,
-                                                thread_id: None,
-                                                metadata: {
-                                                    let mut m = HashMap::new();
-                                                    m.insert(
-                                                        "room_id".to_string(),
-                                                        serde_json::Value::String(
-                                                            room_id.clone(),
-                                                        ),
-                                                    );
-                                                    m
-                                                },
-                                            };
-
-                                            if tx.send(msg).await.is_err() {
-                                                return;
-                                            }
-                                        }
-                                    }
-                                }
-                                Some(Err(e)) => {
-                                    warn!("Gitter: stream read error: {e}");
-                                    break; // Reconnect
-                                }
-                                None => {
-                                    info!("Gitter: stream ended, reconnecting...");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Exponential backoff before reconnect
-                if !*shutdown_rx.borrow() {
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(60));
-                }
-            }
-
-            info!("Gitter streaming loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

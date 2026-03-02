@@ -4,9 +4,11 @@
 //! into unified `ChannelMessage` events for the kernel.
 
 pub mod bridge;
+pub mod supervisor;
 pub mod discord;
 pub mod email;
 pub mod formatter;
+pub mod media_utils;
 pub mod google_chat;
 pub mod irc;
 pub mod matrix;

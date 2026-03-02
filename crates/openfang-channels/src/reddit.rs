@@ -6,6 +6,7 @@
 //! periodically via `GET /r/{subreddit}/comments/new.json`. Replies are sent via
 //! `POST /api/comment`.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -334,7 +335,7 @@ impl ChannelAdapter for RedditAdapter {
             self.subreddits.join(", ")
         );
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let subreddits = self.subreddits.clone();
         let client = self.client.clone();
         let cached_token = Arc::clone(&self.cached_token);
@@ -344,148 +345,33 @@ impl ChannelAdapter for RedditAdapter {
         let client_secret = self.client_secret.clone();
         let password = self.password.clone();
         let reddit_username = self.username.clone();
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        info!("Reddit adapter shutting down");
-                        break;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Reddit"),
+                shutdown_rx.clone(),
+                || {
+                    let subreddits = subreddits.clone();
+                    let client = client.clone();
+                    let cached_token = cached_token.clone();
+                    let seen_comments = seen_comments.clone();
+                    let own_username = own_username.clone();
+                    let client_id = client_id.clone();
+                    let client_secret = client_secret.clone();
+                    let password = password.clone();
+                    let reddit_username = reddit_username.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_reddit_poll(
+                            &subreddits, &client, &cached_token, &seen_comments,
+                            &own_username, &client_id, &client_secret, &password,
+                            &reddit_username, &tx, &mut shutdown_rx,
+                        ).await
                     }
-                    _ = tokio::time::sleep(poll_interval) => {}
-                }
-
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                // Get current token
-                let token = {
-                    let guard = cached_token.read().await;
-                    match &*guard {
-                        Some((token, expiry)) if Instant::now() < *expiry => token.clone(),
-                        _ => {
-                            // Token expired, need to refresh
-                            drop(guard);
-                            let params = [
-                                ("grant_type", "password"),
-                                ("username", reddit_username.as_str()),
-                                ("password", password.as_str()),
-                            ];
-                            match client
-                                .post(REDDIT_TOKEN_URL)
-                                .basic_auth(&client_id, Some(client_secret.as_str()))
-                                .form(&params)
-                                .send()
-                                .await
-                            {
-                                Ok(resp) => {
-                                    let body: serde_json::Value =
-                                        resp.json().await.unwrap_or_default();
-                                    let tok =
-                                        body["access_token"].as_str().unwrap_or("").to_string();
-                                    if tok.is_empty() {
-                                        warn!("Reddit: failed to refresh token");
-                                        backoff = (backoff * 2).min(Duration::from_secs(60));
-                                        tokio::time::sleep(backoff).await;
-                                        continue;
-                                    }
-                                    let expires_in = body["expires_in"].as_u64().unwrap_or(3600);
-                                    let expiry = Instant::now()
-                                        + Duration::from_secs(
-                                            expires_in.saturating_sub(TOKEN_REFRESH_BUFFER_SECS),
-                                        );
-                                    *cached_token.write().await = Some((tok.clone(), expiry));
-                                    tok
-                                }
-                                Err(e) => {
-                                    warn!("Reddit: token refresh error: {e}");
-                                    backoff = (backoff * 2).min(Duration::from_secs(60));
-                                    tokio::time::sleep(backoff).await;
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                };
-
-                // Poll each subreddit for new comments
-                for subreddit in &subreddits {
-                    let sub = subreddit.trim_start_matches("r/");
-                    let url = format!("{}/r/{}/comments?limit=25&sort=new", REDDIT_API_BASE, sub);
-
-                    let resp = match client.get(&url).bearer_auth(&token).send().await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            warn!("Reddit: comment fetch error for r/{sub}: {e}");
-                            continue;
-                        }
-                    };
-
-                    if !resp.status().is_success() {
-                        warn!(
-                            "Reddit: comment fetch returned {} for r/{sub}",
-                            resp.status()
-                        );
-                        continue;
-                    }
-
-                    let body: serde_json::Value = match resp.json().await {
-                        Ok(b) => b,
-                        Err(e) => {
-                            warn!("Reddit: failed to parse comments for r/{sub}: {e}");
-                            continue;
-                        }
-                    };
-
-                    let children = match body["data"]["children"].as_array() {
-                        Some(arr) => arr,
-                        None => continue,
-                    };
-
-                    for child in children {
-                        let comment_id = child["data"]["id"].as_str().unwrap_or("").to_string();
-
-                        // Skip already-seen comments
-                        {
-                            let seen = seen_comments.read().await;
-                            if seen.contains_key(&comment_id) {
-                                continue;
-                            }
-                        }
-
-                        if let Some(msg) = parse_reddit_comment(child, &own_username) {
-                            // Mark as seen
-                            seen_comments.write().await.insert(comment_id, true);
-
-                            if tx.send(msg).await.is_err() {
-                                return;
-                            }
-                        }
-                    }
-                }
-
-                // Successful poll resets backoff
-                backoff = Duration::from_secs(1);
-
-                // Periodically trim seen_comments to prevent unbounded growth
-                {
-                    let mut seen = seen_comments.write().await;
-                    if seen.len() > 10_000 {
-                        // Keep recent half (crude eviction)
-                        let to_remove: Vec<String> = seen.keys().take(5_000).cloned().collect();
-                        for key in to_remove {
-                            seen.remove(&key);
-                        }
-                    }
-                }
-            }
-
-            info!("Reddit polling loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
@@ -521,6 +407,151 @@ impl ChannelAdapter for RedditAdapter {
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
+    }
+}
+
+/// Run the Reddit comment polling loop.
+#[allow(clippy::too_many_arguments)]
+async fn run_reddit_poll(
+    subreddits: &[String],
+    client: &reqwest::Client,
+    cached_token: &Arc<RwLock<Option<(String, Instant)>>>,
+    seen_comments: &Arc<RwLock<HashMap<String, bool>>>,
+    own_username: &str,
+    client_id: &str,
+    client_secret: &Zeroizing<String>,
+    password: &Zeroizing<String>,
+    reddit_username: &str,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Reddit adapter shutting down");
+                    return Ok(false);
+                }
+            }
+            _ = tokio::time::sleep(poll_interval) => {}
+        }
+
+        if *shutdown_rx.borrow() {
+            return Ok(false);
+        }
+
+        // Get current token
+        let token = {
+            let guard = cached_token.read().await;
+            match &*guard {
+                Some((token, expiry)) if Instant::now() < *expiry => token.clone(),
+                _ => {
+                    // Token expired, need to refresh
+                    drop(guard);
+                    let params = [
+                        ("grant_type", "password"),
+                        ("username", reddit_username),
+                        ("password", password.as_str()),
+                    ];
+                    match client
+                        .post(REDDIT_TOKEN_URL)
+                        .basic_auth(client_id, Some(client_secret.as_str()))
+                        .form(&params)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            let body: serde_json::Value =
+                                resp.json().await.unwrap_or_default();
+                            let tok =
+                                body["access_token"].as_str().unwrap_or("").to_string();
+                            if tok.is_empty() {
+                                return Err("Reddit: failed to refresh token".to_string());
+                            }
+                            let expires_in = body["expires_in"].as_u64().unwrap_or(3600);
+                            let expiry = Instant::now()
+                                + Duration::from_secs(
+                                    expires_in.saturating_sub(TOKEN_REFRESH_BUFFER_SECS),
+                                );
+                            *cached_token.write().await = Some((tok.clone(), expiry));
+                            tok
+                        }
+                        Err(e) => {
+                            return Err(format!("Reddit: token refresh error: {e}"));
+                        }
+                    }
+                }
+            }
+        };
+
+        // Poll each subreddit for new comments
+        for subreddit in subreddits {
+            let sub = subreddit.trim_start_matches("r/");
+            let url = format!("{}/r/{}/comments?limit=25&sort=new", REDDIT_API_BASE, sub);
+
+            let resp = match client.get(&url).bearer_auth(&token).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("Reddit: comment fetch error for r/{sub}: {e}");
+                    continue;
+                }
+            };
+
+            if !resp.status().is_success() {
+                warn!(
+                    "Reddit: comment fetch returned {} for r/{sub}",
+                    resp.status()
+                );
+                continue;
+            }
+
+            let body: serde_json::Value = match resp.json().await {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("Reddit: failed to parse comments for r/{sub}: {e}");
+                    continue;
+                }
+            };
+
+            let children = match body["data"]["children"].as_array() {
+                Some(arr) => arr,
+                None => continue,
+            };
+
+            for child in children {
+                let comment_id = child["data"]["id"].as_str().unwrap_or("").to_string();
+
+                // Skip already-seen comments
+                {
+                    let seen = seen_comments.read().await;
+                    if seen.contains_key(&comment_id) {
+                        continue;
+                    }
+                }
+
+                if let Some(msg) = parse_reddit_comment(child, own_username) {
+                    // Mark as seen
+                    seen_comments.write().await.insert(comment_id, true);
+
+                    if tx.send(msg).await.is_err() {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+
+        // Periodically trim seen_comments to prevent unbounded growth
+        {
+            let mut seen = seen_comments.write().await;
+            if seen.len() > 10_000 {
+                let to_remove: Vec<String> = seen.keys().take(5_000).cloned().collect();
+                for key in to_remove {
+                    seen.remove(&key);
+                }
+            }
+        }
     }
 }
 

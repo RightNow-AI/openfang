@@ -4,6 +4,7 @@
 //! comments endpoint for new messages and posts replies via the comments/add
 //! endpoint. Authentication is performed via OAuth2 Bearer token.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -272,231 +273,70 @@ impl ChannelAdapter for TwistAdapter {
         let (user_id, user_name) = self.validate().await?;
         info!("Twist adapter authenticated as {user_name} (id: {user_id})");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let token = self.token.clone();
         let workspace_id = self.workspace_id.clone();
         let own_user_id = user_id;
         let allowed_channels = self.allowed_channels.clone();
         let client = self.client.clone();
         let last_comment_ids = Arc::clone(&self.last_comment_ids);
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
+
+        // Discover channels if not configured
+        let channels_to_poll = if allowed_channels.is_empty() {
+            let url = format!(
+                "{}/channels/get?workspace_id={}",
+                TWIST_API_BASE, workspace_id
+            );
+            match client.get(&url).bearer_auth(token.as_str()).send().await {
+                Ok(resp) => {
+                    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                    body.as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|c| c["id"].as_i64().map(|id| id.to_string()))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                }
+                Err(e) => {
+                    return Err(format!("Twist: failed to list channels: {e}").into());
+                }
+            }
+        } else {
+            allowed_channels
+        };
+
+        if channels_to_poll.is_empty() {
+            return Err("Twist: no channels to poll".into());
+        }
+
+        info!(
+            "Twist: polling {} channel(s) in workspace {workspace_id}",
+            channels_to_poll.len()
+        );
 
         tokio::spawn(async move {
-            // Discover channels if not configured
-            let channels_to_poll = if allowed_channels.is_empty() {
-                let url = format!(
-                    "{}/channels/get?workspace_id={}",
-                    TWIST_API_BASE, workspace_id
-                );
-                match client.get(&url).bearer_auth(token.as_str()).send().await {
-                    Ok(resp) => {
-                        let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                        body.as_array()
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|c| c["id"].as_i64().map(|id| id.to_string()))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default()
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Twist"),
+                shutdown_rx.clone(),
+                || {
+                    let token = token.clone();
+                    let workspace_id = workspace_id.clone();
+                    let own_user_id = own_user_id.clone();
+                    let channels_to_poll = channels_to_poll.clone();
+                    let client = client.clone();
+                    let last_comment_ids = last_comment_ids.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_twist_poll(
+                            &token, &workspace_id, &own_user_id, &channels_to_poll,
+                            &client, &last_comment_ids, &tx, &mut shutdown_rx,
+                        ).await
                     }
-                    Err(e) => {
-                        warn!("Twist: failed to list channels: {e}");
-                        return;
-                    }
-                }
-            } else {
-                allowed_channels
-            };
-
-            if channels_to_poll.is_empty() {
-                warn!("Twist: no channels to poll");
-                return;
-            }
-
-            info!(
-                "Twist: polling {} channel(s) in workspace {workspace_id}",
-                channels_to_poll.len()
-            );
-
-            let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        info!("Twist adapter shutting down");
-                        break;
-                    }
-                    _ = tokio::time::sleep(poll_interval) => {}
-                }
-
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                for channel_id in &channels_to_poll {
-                    // Get threads in channel
-                    let threads_url =
-                        format!("{}/threads/get?channel_id={}", TWIST_API_BASE, channel_id);
-
-                    let threads = match client
-                        .get(&threads_url)
-                        .bearer_auth(token.as_str())
-                        .send()
-                        .await
-                    {
-                        Ok(resp) => {
-                            let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                            body.as_array().cloned().unwrap_or_default()
-                        }
-                        Err(e) => {
-                            warn!("Twist: thread fetch error for channel {channel_id}: {e}");
-                            tokio::time::sleep(backoff).await;
-                            backoff = (backoff * 2).min(Duration::from_secs(60));
-                            continue;
-                        }
-                    };
-
-                    backoff = Duration::from_secs(1);
-
-                    for thread in &threads {
-                        let thread_id = thread["id"]
-                            .as_i64()
-                            .map(|id| id.to_string())
-                            .unwrap_or_default();
-                        if thread_id.is_empty() {
-                            continue;
-                        }
-
-                        let thread_title =
-                            thread["title"].as_str().unwrap_or("Untitled").to_string();
-
-                        let comments_url = format!(
-                            "{}/comments/get?thread_id={}&limit=20",
-                            TWIST_API_BASE, thread_id
-                        );
-
-                        let comments = match client
-                            .get(&comments_url)
-                            .bearer_auth(token.as_str())
-                            .send()
-                            .await
-                        {
-                            Ok(resp) => {
-                                let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                                body.as_array().cloned().unwrap_or_default()
-                            }
-                            Err(e) => {
-                                warn!("Twist: comment fetch error for thread {thread_id}: {e}");
-                                continue;
-                            }
-                        };
-
-                        let comment_key = format!("{}:{}", channel_id, thread_id);
-                        let last_id = {
-                            let ids = last_comment_ids.read().await;
-                            ids.get(&comment_key).copied().unwrap_or(0)
-                        };
-
-                        let mut newest_id = last_id;
-
-                        for comment in &comments {
-                            let comment_id = comment["id"].as_i64().unwrap_or(0);
-
-                            // Skip already-seen comments
-                            if comment_id <= last_id {
-                                continue;
-                            }
-
-                            let creator = comment["creator"]
-                                .as_i64()
-                                .map(|id| id.to_string())
-                                .unwrap_or_default();
-
-                            // Skip own comments
-                            if creator == own_user_id {
-                                continue;
-                            }
-
-                            let content = comment["content"].as_str().unwrap_or("");
-                            if content.is_empty() {
-                                continue;
-                            }
-
-                            if comment_id > newest_id {
-                                newest_id = comment_id;
-                            }
-
-                            let creator_name =
-                                comment["creator_name"].as_str().unwrap_or("unknown");
-
-                            let msg_content = if content.starts_with('/') {
-                                let parts: Vec<&str> = content.splitn(2, ' ').collect();
-                                let cmd = parts[0].trim_start_matches('/');
-                                let args: Vec<String> = parts
-                                    .get(1)
-                                    .map(|a| a.split_whitespace().map(String::from).collect())
-                                    .unwrap_or_default();
-                                ChannelContent::Command {
-                                    name: cmd.to_string(),
-                                    args,
-                                }
-                            } else {
-                                ChannelContent::Text(content.to_string())
-                            };
-
-                            let channel_msg = ChannelMessage {
-                                channel: ChannelType::Custom("twist".to_string()),
-                                platform_message_id: comment_id.to_string(),
-                                sender: ChannelUser {
-                                    platform_id: thread_id.clone(),
-                                    display_name: creator_name.to_string(),
-                                    openfang_user: None,
-                                },
-                                content: msg_content,
-                                target_agent: None,
-                                timestamp: Utc::now(),
-                                is_group: true,
-                                thread_id: Some(thread_title.clone()),
-                                metadata: {
-                                    let mut m = HashMap::new();
-                                    m.insert(
-                                        "channel_id".to_string(),
-                                        serde_json::Value::String(channel_id.clone()),
-                                    );
-                                    m.insert(
-                                        "thread_id".to_string(),
-                                        serde_json::Value::String(thread_id.clone()),
-                                    );
-                                    m.insert(
-                                        "creator_id".to_string(),
-                                        serde_json::Value::String(creator),
-                                    );
-                                    m.insert(
-                                        "workspace_id".to_string(),
-                                        serde_json::Value::String(workspace_id.clone()),
-                                    );
-                                    m
-                                },
-                            };
-
-                            if tx.send(channel_msg).await.is_err() {
-                                return;
-                            }
-                        }
-
-                        // Update last seen comment ID
-                        if newest_id > last_id {
-                            last_comment_ids
-                                .write()
-                                .await
-                                .insert(comment_key, newest_id);
-                        }
-                    }
-                }
-            }
-
-            info!("Twist polling loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
@@ -540,6 +380,192 @@ impl ChannelAdapter for TwistAdapter {
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
+    }
+}
+
+/// Run the Twist comment polling loop.
+async fn run_twist_poll(
+    token: &Zeroizing<String>,
+    workspace_id: &str,
+    own_user_id: &str,
+    channels_to_poll: &[String],
+    client: &reqwest::Client,
+    last_comment_ids: &Arc<RwLock<HashMap<String, i64>>>,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Twist adapter shutting down");
+                    return Ok(false);
+                }
+            }
+            _ = tokio::time::sleep(poll_interval) => {}
+        }
+
+        if *shutdown_rx.borrow() {
+            return Ok(false);
+        }
+
+        for channel_id in channels_to_poll {
+            // Get threads in channel
+            let threads_url =
+                format!("{}/threads/get?channel_id={}", TWIST_API_BASE, channel_id);
+
+            let threads = match client
+                .get(&threads_url)
+                .bearer_auth(token.as_str())
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                    body.as_array().cloned().unwrap_or_default()
+                }
+                Err(e) => {
+                    return Err(format!("Twist: thread fetch error for channel {channel_id}: {e}"));
+                }
+            };
+
+            for thread in &threads {
+                let thread_id = thread["id"]
+                    .as_i64()
+                    .map(|id| id.to_string())
+                    .unwrap_or_default();
+                if thread_id.is_empty() {
+                    continue;
+                }
+
+                let thread_title =
+                    thread["title"].as_str().unwrap_or("Untitled").to_string();
+
+                let comments_url = format!(
+                    "{}/comments/get?thread_id={}&limit=20",
+                    TWIST_API_BASE, thread_id
+                );
+
+                let comments = match client
+                    .get(&comments_url)
+                    .bearer_auth(token.as_str())
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                        body.as_array().cloned().unwrap_or_default()
+                    }
+                    Err(e) => {
+                        warn!("Twist: comment fetch error for thread {thread_id}: {e}");
+                        continue;
+                    }
+                };
+
+                let comment_key = format!("{}:{}", channel_id, thread_id);
+                let last_id = {
+                    let ids = last_comment_ids.read().await;
+                    ids.get(&comment_key).copied().unwrap_or(0)
+                };
+
+                let mut newest_id = last_id;
+
+                for comment in &comments {
+                    let comment_id = comment["id"].as_i64().unwrap_or(0);
+
+                    // Skip already-seen comments
+                    if comment_id <= last_id {
+                        continue;
+                    }
+
+                    let creator = comment["creator"]
+                        .as_i64()
+                        .map(|id| id.to_string())
+                        .unwrap_or_default();
+
+                    // Skip own comments
+                    if creator == own_user_id {
+                        continue;
+                    }
+
+                    let content = comment["content"].as_str().unwrap_or("");
+                    if content.is_empty() {
+                        continue;
+                    }
+
+                    if comment_id > newest_id {
+                        newest_id = comment_id;
+                    }
+
+                    let creator_name =
+                        comment["creator_name"].as_str().unwrap_or("unknown");
+
+                    let msg_content = if content.starts_with('/') {
+                        let parts: Vec<&str> = content.splitn(2, ' ').collect();
+                        let cmd = parts[0].trim_start_matches('/');
+                        let args: Vec<String> = parts
+                            .get(1)
+                            .map(|a| a.split_whitespace().map(String::from).collect())
+                            .unwrap_or_default();
+                        ChannelContent::Command {
+                            name: cmd.to_string(),
+                            args,
+                        }
+                    } else {
+                        ChannelContent::Text(content.to_string())
+                    };
+
+                    let channel_msg = ChannelMessage {
+                        channel: ChannelType::Custom("twist".to_string()),
+                        platform_message_id: comment_id.to_string(),
+                        sender: ChannelUser {
+                            platform_id: thread_id.clone(),
+                            display_name: creator_name.to_string(),
+                            openfang_user: None,
+                        },
+                        content: msg_content,
+                        target_agent: None,
+                        timestamp: Utc::now(),
+                        is_group: true,
+                        thread_id: Some(thread_title.clone()),
+                        metadata: {
+                            let mut m = HashMap::new();
+                            m.insert(
+                                "channel_id".to_string(),
+                                serde_json::Value::String(channel_id.clone()),
+                            );
+                            m.insert(
+                                "thread_id".to_string(),
+                                serde_json::Value::String(thread_id.clone()),
+                            );
+                            m.insert(
+                                "creator_id".to_string(),
+                                serde_json::Value::String(creator),
+                            );
+                            m.insert(
+                                "workspace_id".to_string(),
+                                serde_json::Value::String(workspace_id.to_string()),
+                            );
+                            m
+                        },
+                    };
+
+                    if tx.send(channel_msg).await.is_err() {
+                        return Ok(false);
+                    }
+                }
+
+                // Update last seen comment ID
+                if newest_id > last_id {
+                    last_comment_ids
+                        .write()
+                        .await
+                        .insert(comment_key, newest_id);
+                }
+            }
+        }
     }
 }
 

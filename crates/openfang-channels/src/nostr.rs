@@ -5,6 +5,7 @@
 //! and publishing them to connected relays. Supports multiple relay connections
 //! with automatic reconnection.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -14,7 +15,6 @@ use futures::Stream;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
@@ -165,228 +165,53 @@ impl ChannelAdapter for NostrAdapter {
     ) -> Result<Pin<Box<dyn Stream<Item = ChannelMessage> + Send>>, Box<dyn std::error::Error>>
     {
         let pubkey = self.derive_pubkey();
-        info!("Nostr adapter starting (pubkey: {}...)", &pubkey[..16]);
+        info!("Nostr adapter starting (pubkey: {}...)", &pubkey[..pubkey.floor_char_boundary(16)]);
 
         if self.relays.is_empty() {
             return Err("Nostr: no relay URLs configured".into());
         }
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let relays = self.relays.clone();
         let own_pubkey = pubkey.clone();
         let seen_events = Arc::clone(&self.seen_events);
         let private_key = self.private_key.clone();
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
-        // Spawn a task per relay for parallel connections
+        // Spawn a supervised task per relay for parallel connections
         for relay_url in relays {
             let tx = tx.clone();
             let own_pubkey = own_pubkey.clone();
             let seen_events = Arc::clone(&seen_events);
             let _private_key = private_key.clone();
-            let mut relay_shutdown_rx = shutdown_rx.clone();
+            let relay_shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
-                let mut backoff = Duration::from_secs(1);
-
-                loop {
-                    if *relay_shutdown_rx.borrow() {
-                        break;
-                    }
-
-                    let ws_stream = match tokio_tungstenite::connect_async(relay_url.as_str()).await
-                    {
-                        Ok((stream, _resp)) => stream,
-                        Err(e) => {
-                            warn!("Nostr: relay {relay_url} connection failed: {e}, retrying in {backoff:?}");
-                            tokio::time::sleep(backoff).await;
-                            backoff = (backoff * 2).min(Duration::from_secs(60));
-                            continue;
+                let relay_name = format!("Nostr-{}", &relay_url[..relay_url.floor_char_boundary(30)]);
+                supervisor::run_supervised_loop_reset_on_connect(
+                    SupervisorConfig::new(&relay_name),
+                    relay_shutdown_rx.clone(),
+                    || {
+                        let relay_url = relay_url.clone();
+                        let own_pubkey = own_pubkey.clone();
+                        let seen_events = seen_events.clone();
+                        let tx = tx.clone();
+                        let mut shutdown_rx = relay_shutdown_rx.clone();
+                        async move {
+                            run_nostr_relay(
+                                &relay_url, &own_pubkey, &seen_events,
+                                &tx, &mut shutdown_rx,
+                            ).await
                         }
-                    };
-
-                    info!("Nostr: connected to relay {relay_url}");
-                    backoff = Duration::from_secs(1);
-
-                    use futures::{SinkExt, StreamExt};
-                    let (mut write, mut read) = ws_stream.split();
-
-                    // Send REQ subscription
-                    // Build the subscription filter for DMs addressed to us
-                    let sub_msg = {
-                        let filter = serde_json::json!([
-                            "REQ",
-                            "openfang-sub",
-                            {
-                                "kinds": [4],
-                                "#p": [&own_pubkey],
-                                "limit": 0
-                            }
-                        ]);
-                        serde_json::to_string(&filter).unwrap_or_default()
-                    };
-
-                    if write
-                        .send(tokio_tungstenite::tungstenite::Message::Text(sub_msg))
-                        .await
-                        .is_err()
-                    {
-                        warn!("Nostr: failed to send REQ to {relay_url}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(60));
-                        continue;
-                    }
-
-                    // Read events
-                    let should_reconnect = loop {
-                        let msg = tokio::select! {
-                            _ = relay_shutdown_rx.changed() => {
-                                info!("Nostr: relay {relay_url} shutting down");
-                                // Send CLOSE
-                                let close_msg = serde_json::json!(["CLOSE", "openfang-sub"]);
-                                let _ = write.send(
-                                    tokio_tungstenite::tungstenite::Message::Text(
-                                        serde_json::to_string(&close_msg).unwrap_or_default()
-                                    )
-                                ).await;
-                                return;
-                            }
-                            msg = read.next() => msg,
-                        };
-
-                        let msg = match msg {
-                            Some(Ok(m)) => m,
-                            Some(Err(e)) => {
-                                warn!("Nostr: relay {relay_url} read error: {e}");
-                                break true;
-                            }
-                            None => {
-                                info!("Nostr: relay {relay_url} stream ended");
-                                break true;
-                            }
-                        };
-
-                        let text = match msg {
-                            tokio_tungstenite::tungstenite::Message::Text(t) => t,
-                            tokio_tungstenite::tungstenite::Message::Close(_) => {
-                                break true;
-                            }
-                            _ => continue,
-                        };
-
-                        // Parse NIP-01 message: ["EVENT", "sub_id", {event}]
-                        let parsed: serde_json::Value = match serde_json::from_str(&text) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
-
-                        let msg_type = parsed[0].as_str().unwrap_or("");
-                        if msg_type != "EVENT" {
-                            // Could be NOTICE, EOSE, OK, etc.
-                            continue;
-                        }
-
-                        let event = &parsed[2];
-                        let event_id = event["id"].as_str().unwrap_or("").to_string();
-
-                        // Dedup across relays
-                        {
-                            let mut seen = seen_events.write().await;
-                            if seen.contains(&event_id) {
-                                continue;
-                            }
-                            seen.insert(event_id.clone());
-                            // Cap the seen set size
-                            if seen.len() > 10000 {
-                                seen.clear();
-                            }
-                        }
-
-                        let sender_pubkey = event["pubkey"].as_str().unwrap_or("").to_string();
-                        // Skip events from ourselves
-                        if sender_pubkey == own_pubkey {
-                            continue;
-                        }
-
-                        let content = event["content"].as_str().unwrap_or("");
-                        if content.is_empty() {
-                            continue;
-                        }
-
-                        // In a real implementation, kind-4 content would be
-                        // NIP-04 encrypted and would need decryption here
-                        let msg_content = if content.starts_with('/') {
-                            let parts: Vec<&str> = content.splitn(2, ' ').collect();
-                            let cmd = parts[0].trim_start_matches('/');
-                            let args: Vec<String> = parts
-                                .get(1)
-                                .map(|a| a.split_whitespace().map(String::from).collect())
-                                .unwrap_or_default();
-                            ChannelContent::Command {
-                                name: cmd.to_string(),
-                                args,
-                            }
-                        } else {
-                            ChannelContent::Text(content.to_string())
-                        };
-
-                        let kind = event["kind"].as_i64().unwrap_or(0);
-
-                        let channel_msg = ChannelMessage {
-                            channel: ChannelType::Custom("nostr".to_string()),
-                            platform_message_id: event_id,
-                            sender: ChannelUser {
-                                platform_id: sender_pubkey.clone(),
-                                display_name: format!(
-                                    "{}...",
-                                    &sender_pubkey[..8.min(sender_pubkey.len())]
-                                ),
-                                openfang_user: None,
-                            },
-                            content: msg_content,
-                            target_agent: None,
-                            timestamp: Utc::now(),
-                            is_group: kind != 4, // DMs are 1:1, other kinds are public
-                            thread_id: None,
-                            metadata: {
-                                let mut m = HashMap::new();
-                                m.insert(
-                                    "pubkey".to_string(),
-                                    serde_json::Value::String(sender_pubkey),
-                                );
-                                m.insert(
-                                    "kind".to_string(),
-                                    serde_json::Value::Number(serde_json::Number::from(kind)),
-                                );
-                                m.insert(
-                                    "relay".to_string(),
-                                    serde_json::Value::String(relay_url.clone()),
-                                );
-                                m
-                            },
-                        };
-
-                        if tx.send(channel_msg).await.is_err() {
-                            return;
-                        }
-                    };
-
-                    if !should_reconnect || *relay_shutdown_rx.borrow() {
-                        break;
-                    }
-
-                    warn!("Nostr: reconnecting to {relay_url} in {backoff:?}");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(60));
-                }
-
-                info!("Nostr: relay {relay_url} loop stopped");
+                    },
+                ).await;
             });
         }
 
         // Wait for shutdown in the main task
         tokio::spawn(async move {
-            let _ = shutdown_rx.changed().await;
+            let mut sr = shutdown_rx;
+            let _ = sr.changed().await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
@@ -417,6 +242,166 @@ impl ChannelAdapter for NostrAdapter {
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
+    }
+}
+
+/// Run a single Nostr relay WebSocket connection cycle.
+async fn run_nostr_relay(
+    relay_url: &str,
+    own_pubkey: &str,
+    seen_events: &Arc<RwLock<std::collections::HashSet<String>>>,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    use futures::{SinkExt, StreamExt};
+
+    let (ws_stream, _) = tokio_tungstenite::connect_async(relay_url)
+        .await
+        .map_err(|e| format!("Nostr: WS connection to {relay_url} failed: {e}"))?;
+
+    info!("Nostr: connected to relay {relay_url}");
+    let (mut ws_write, mut ws_read) = ws_stream.split();
+
+    // Subscribe to kind-4 DMs addressed to our pubkey
+    let sub_msg = serde_json::json!([
+        "REQ",
+        "openfang-sub",
+        {
+            "kinds": [4],
+            "#p": [own_pubkey],
+            "limit": 0
+        }
+    ]);
+    let sub_str = serde_json::to_string(&sub_msg).unwrap_or_default();
+    ws_write
+        .send(tokio_tungstenite::tungstenite::Message::Text(sub_str))
+        .await
+        .map_err(|e| format!("Nostr: failed to send REQ to {relay_url}: {e}"))?;
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Nostr: relay {relay_url} shutting down");
+                    return Ok(false);
+                }
+            }
+            msg = ws_read.next() => {
+                match msg {
+                    Some(Ok(ws_msg)) => {
+                        let text = match ws_msg {
+                            tokio_tungstenite::tungstenite::Message::Text(t) => t,
+                            tokio_tungstenite::tungstenite::Message::Ping(_) => continue,
+                            tokio_tungstenite::tungstenite::Message::Pong(_) => continue,
+                            tokio_tungstenite::tungstenite::Message::Close(_) => {
+                                info!("Nostr: relay {relay_url} closed connection");
+                                return Ok(true);
+                            }
+                            _ => continue,
+                        };
+
+                        // Parse NIP-01 message: ["EVENT", sub_id, event_obj]
+                        let parsed: serde_json::Value = match serde_json::from_str(&text) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+
+                        let msg_type = parsed.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                        if msg_type != "EVENT" {
+                            continue;
+                        }
+
+                        let event = match parsed.get(2) {
+                            Some(e) => e,
+                            None => continue,
+                        };
+
+                        let event_id = event["id"].as_str().unwrap_or("").to_string();
+                        if event_id.is_empty() {
+                            continue;
+                        }
+
+                        // Dedup across relays
+                        {
+                            let mut seen = seen_events.write().await;
+                            if seen.contains(&event_id) {
+                                continue;
+                            }
+                            seen.insert(event_id.clone());
+                        }
+
+                        let content_str = event["content"].as_str().unwrap_or("");
+                        if content_str.is_empty() {
+                            continue;
+                        }
+
+                        let sender_pubkey = event["pubkey"].as_str().unwrap_or("").to_string();
+                        // Skip own events
+                        if sender_pubkey == own_pubkey {
+                            continue;
+                        }
+
+                        let content = if content_str.starts_with('/') {
+                            let parts: Vec<&str> = content_str.splitn(2, ' ').collect();
+                            let cmd = parts[0].trim_start_matches('/');
+                            let args: Vec<String> = parts
+                                .get(1)
+                                .map(|a| {
+                                    a.split_whitespace()
+                                        .map(String::from)
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            ChannelContent::Command {
+                                name: cmd.to_string(),
+                                args,
+                            }
+                        } else {
+                            ChannelContent::Text(content_str.to_string())
+                        };
+
+                        let channel_msg = ChannelMessage {
+                            channel: ChannelType::Custom("nostr".to_string()),
+                            platform_message_id: event_id,
+                            sender: ChannelUser {
+                                platform_id: sender_pubkey.clone(),
+                                display_name: format!("{}...", &sender_pubkey[..sender_pubkey.floor_char_boundary(16)]),
+                                openfang_user: None,
+                            },
+                            content,
+                            target_agent: None,
+                            timestamp: Utc::now(),
+                            is_group: false,
+                            thread_id: None,
+                            metadata: {
+                                let mut m = HashMap::new();
+                                m.insert(
+                                    "relay".to_string(),
+                                    serde_json::Value::String(relay_url.to_string()),
+                                );
+                                m.insert(
+                                    "sender_pubkey".to_string(),
+                                    serde_json::Value::String(sender_pubkey),
+                                );
+                                m
+                            },
+                        };
+
+                        if tx.send(channel_msg).await.is_err() {
+                            return Ok(false);
+                        }
+                    }
+                    Some(Err(e)) => {
+                        warn!("Nostr: relay {relay_url} read error: {e}");
+                        return Ok(true);
+                    }
+                    None => {
+                        info!("Nostr: relay {relay_url} stream ended");
+                        return Ok(true);
+                    }
+                }
+            }
+        }
     }
 }
 

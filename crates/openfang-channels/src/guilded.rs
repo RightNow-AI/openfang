@@ -5,6 +5,7 @@
 //! Bearer token. The WebSocket gateway at `wss://www.guilded.gg/websocket/v1`
 //! delivers `ChatMessageCreated` events for incoming messages.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -14,7 +15,6 @@ use futures::Stream;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
@@ -119,6 +119,147 @@ impl GuildedAdapter {
     }
 }
 
+/// Run a single Guilded WebSocket connection cycle.
+async fn run_guilded_ws(
+    bot_token: &Zeroizing<String>,
+    server_ids: &[String],
+    own_bot_id: &str,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    use futures::StreamExt;
+
+    let mut request =
+        tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(GUILDED_WS_URL)
+            .map_err(|e| format!("Guilded: failed to build WS request: {e}"))?;
+
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {}", bot_token.as_str()).parse().unwrap(),
+    );
+
+    let (ws_stream, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .map_err(|e| format!("Guilded WS connection failed: {e}"))?;
+
+    info!("Guilded WebSocket connected");
+    let (_write, mut read) = ws_stream.split();
+
+    loop {
+        let msg = tokio::select! {
+            _ = shutdown_rx.changed() => {
+                info!("Guilded adapter shutting down");
+                return Ok(false);
+            }
+            msg = read.next() => msg,
+        };
+
+        let msg = match msg {
+            Some(Ok(m)) => m,
+            Some(Err(e)) => {
+                warn!("Guilded WS read error: {e}");
+                return Ok(true);
+            }
+            None => {
+                info!("Guilded WS stream ended");
+                return Ok(true);
+            }
+        };
+
+        let text = match msg {
+            tokio_tungstenite::tungstenite::Message::Text(t) => t,
+            tokio_tungstenite::tungstenite::Message::Ping(_) => continue,
+            tokio_tungstenite::tungstenite::Message::Close(_) => {
+                info!("Guilded WS received close frame");
+                return Ok(true);
+            }
+            _ => continue,
+        };
+
+        let event: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let event_type = event["t"].as_str().unwrap_or("");
+        let op = event["op"].as_i64().unwrap_or(0);
+        if op == 1 {
+            info!("Guilded: received welcome event");
+            continue;
+        }
+
+        if event_type != "ChatMessageCreated" {
+            continue;
+        }
+
+        let message = &event["d"]["message"];
+        let msg_server_id = event["d"]["serverId"].as_str().unwrap_or("");
+
+        if !server_ids.is_empty() && !server_ids.iter().any(|s| s == msg_server_id) {
+            continue;
+        }
+
+        let created_by = message["createdBy"].as_str().unwrap_or("");
+        if created_by == own_bot_id {
+            continue;
+        }
+
+        let content = message["content"].as_str().unwrap_or("");
+        if content.is_empty() {
+            continue;
+        }
+
+        let msg_id = message["id"].as_str().unwrap_or("").to_string();
+        let channel_id = message["channelId"].as_str().unwrap_or("").to_string();
+
+        let msg_content = if content.starts_with('/') {
+            let parts: Vec<&str> = content.splitn(2, ' ').collect();
+            let cmd = parts[0].trim_start_matches('/');
+            let args: Vec<String> = parts
+                .get(1)
+                .map(|a| a.split_whitespace().map(String::from).collect())
+                .unwrap_or_default();
+            ChannelContent::Command {
+                name: cmd.to_string(),
+                args,
+            }
+        } else {
+            ChannelContent::Text(content.to_string())
+        };
+
+        let channel_msg = ChannelMessage {
+            channel: ChannelType::Custom("guilded".to_string()),
+            platform_message_id: msg_id,
+            sender: ChannelUser {
+                platform_id: channel_id,
+                display_name: created_by.to_string(),
+                openfang_user: None,
+            },
+            content: msg_content,
+            target_agent: None,
+            timestamp: Utc::now(),
+            is_group: true,
+            thread_id: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "server_id".to_string(),
+                    serde_json::Value::String(msg_server_id.to_string()),
+                );
+                m.insert(
+                    "created_by".to_string(),
+                    serde_json::Value::String(created_by.to_string()),
+                );
+                m
+            },
+        };
+
+        if tx.send(channel_msg).await.is_err() {
+            return Ok(false);
+        }
+    }
+}
+
 #[async_trait]
 impl ChannelAdapter for GuildedAdapter {
     fn name(&self) -> &str {
@@ -133,187 +274,33 @@ impl ChannelAdapter for GuildedAdapter {
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = ChannelMessage> + Send>>, Box<dyn std::error::Error>>
     {
-        // Validate credentials
         let bot_id = self.validate().await?;
         info!("Guilded adapter authenticated as bot {bot_id}");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let bot_token = self.bot_token.clone();
         let server_ids = self.server_ids.clone();
         let own_bot_id = bot_id;
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                // Build WebSocket request with auth header
-                let mut request =
-                    match tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(GUILDED_WS_URL) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            warn!("Guilded: failed to build WS request: {e}");
-                            return;
-                        }
-                    };
-
-                request.headers_mut().insert(
-                    "Authorization",
-                    format!("Bearer {}", bot_token.as_str()).parse().unwrap(),
-                );
-
-                // Connect to WebSocket
-                let ws_stream = match tokio_tungstenite::connect_async(request).await {
-                    Ok((stream, _resp)) => stream,
-                    Err(e) => {
-                        warn!("Guilded: WebSocket connection failed: {e}, retrying in {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(60));
-                        continue;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Guilded"),
+                shutdown_rx.clone(),
+                || {
+                    let bot_token = bot_token.clone();
+                    let server_ids = server_ids.clone();
+                    let own_bot_id = own_bot_id.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_guilded_ws(
+                            &bot_token, &server_ids, &own_bot_id,
+                            &tx, &mut shutdown_rx,
+                        ).await
                     }
-                };
-
-                info!("Guilded WebSocket connected");
-                backoff = Duration::from_secs(1);
-
-                use futures::StreamExt;
-                let (mut _write, mut read) = ws_stream.split();
-
-                // Read events from WebSocket
-                let should_reconnect = loop {
-                    let msg = tokio::select! {
-                        _ = shutdown_rx.changed() => {
-                            info!("Guilded adapter shutting down");
-                            return;
-                        }
-                        msg = read.next() => msg,
-                    };
-
-                    let msg = match msg {
-                        Some(Ok(m)) => m,
-                        Some(Err(e)) => {
-                            warn!("Guilded WS read error: {e}");
-                            break true;
-                        }
-                        None => {
-                            info!("Guilded WS stream ended");
-                            break true;
-                        }
-                    };
-
-                    // Only process text messages
-                    let text = match msg {
-                        tokio_tungstenite::tungstenite::Message::Text(t) => t,
-                        tokio_tungstenite::tungstenite::Message::Ping(_) => continue,
-                        tokio_tungstenite::tungstenite::Message::Close(_) => {
-                            info!("Guilded WS received close frame");
-                            break true;
-                        }
-                        _ => continue,
-                    };
-
-                    let event: serde_json::Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-
-                    let event_type = event["t"].as_str().unwrap_or("");
-
-                    // Handle welcome event (op 1) — contains heartbeat interval
-                    let op = event["op"].as_i64().unwrap_or(0);
-                    if op == 1 {
-                        info!("Guilded: received welcome event");
-                        continue;
-                    }
-
-                    // Only process ChatMessageCreated events
-                    if event_type != "ChatMessageCreated" {
-                        continue;
-                    }
-
-                    let message = &event["d"]["message"];
-                    let msg_server_id = event["d"]["serverId"].as_str().unwrap_or("");
-
-                    // Filter by server ID if configured
-                    if !server_ids.is_empty() && !server_ids.iter().any(|s| s == msg_server_id) {
-                        continue;
-                    }
-
-                    let created_by = message["createdBy"].as_str().unwrap_or("");
-                    // Skip messages from the bot itself
-                    if created_by == own_bot_id {
-                        continue;
-                    }
-
-                    let content = message["content"].as_str().unwrap_or("");
-                    if content.is_empty() {
-                        continue;
-                    }
-
-                    let msg_id = message["id"].as_str().unwrap_or("").to_string();
-                    let channel_id = message["channelId"].as_str().unwrap_or("").to_string();
-
-                    let msg_content = if content.starts_with('/') {
-                        let parts: Vec<&str> = content.splitn(2, ' ').collect();
-                        let cmd = parts[0].trim_start_matches('/');
-                        let args: Vec<String> = parts
-                            .get(1)
-                            .map(|a| a.split_whitespace().map(String::from).collect())
-                            .unwrap_or_default();
-                        ChannelContent::Command {
-                            name: cmd.to_string(),
-                            args,
-                        }
-                    } else {
-                        ChannelContent::Text(content.to_string())
-                    };
-
-                    let channel_msg = ChannelMessage {
-                        channel: ChannelType::Custom("guilded".to_string()),
-                        platform_message_id: msg_id,
-                        sender: ChannelUser {
-                            platform_id: channel_id,
-                            display_name: created_by.to_string(),
-                            openfang_user: None,
-                        },
-                        content: msg_content,
-                        target_agent: None,
-                        timestamp: Utc::now(),
-                        is_group: true,
-                        thread_id: None,
-                        metadata: {
-                            let mut m = HashMap::new();
-                            m.insert(
-                                "server_id".to_string(),
-                                serde_json::Value::String(msg_server_id.to_string()),
-                            );
-                            m.insert(
-                                "created_by".to_string(),
-                                serde_json::Value::String(created_by.to_string()),
-                            );
-                            m
-                        },
-                    };
-
-                    if tx.send(channel_msg).await.is_err() {
-                        return;
-                    }
-                };
-
-                if !should_reconnect || *shutdown_rx.borrow() {
-                    break;
-                }
-
-                warn!("Guilded: reconnecting in {backoff:?}");
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(60));
-            }
-
-            info!("Guilded WebSocket loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

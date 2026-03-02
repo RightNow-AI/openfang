@@ -5,6 +5,7 @@
 //! Authentication is performed via a Bot Bearer token. Supports room filtering
 //! and automatic WebSocket reconnection.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -14,7 +15,6 @@ use futures::Stream;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
@@ -246,202 +246,32 @@ impl ChannelAdapter for WebexAdapter {
         let (bot_id, bot_name) = self.validate().await?;
         info!("Webex adapter authenticated as {bot_name} ({bot_id})");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let bot_token = self.bot_token.clone();
         let allowed_rooms = self.allowed_rooms.clone();
         let client = self.client.clone();
         let own_bot_id = bot_id;
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                // Attempt WebSocket connection to Mercury
-                let mut request =
-                    match tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(WEBEX_WS_URL) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            warn!("Webex: failed to build WS request: {e}");
-                            return;
-                        }
-                    };
-
-                request.headers_mut().insert(
-                    "Authorization",
-                    format!("Bearer {}", bot_token.as_str()).parse().unwrap(),
-                );
-
-                let ws_stream = match tokio_tungstenite::connect_async(request).await {
-                    Ok((stream, _resp)) => stream,
-                    Err(e) => {
-                        warn!("Webex: WebSocket connection failed: {e}, retrying in {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(60));
-                        continue;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Webex"),
+                shutdown_rx.clone(),
+                || {
+                    let bot_token = bot_token.clone();
+                    let allowed_rooms = allowed_rooms.clone();
+                    let client = client.clone();
+                    let own_bot_id = own_bot_id.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_webex_ws(
+                            &bot_token, &allowed_rooms, &client,
+                            &own_bot_id, &tx, &mut shutdown_rx,
+                        ).await
                     }
-                };
-
-                info!("Webex Mercury WebSocket connected");
-                backoff = Duration::from_secs(1);
-
-                use futures::StreamExt;
-                let (_write, mut read) = ws_stream.split();
-
-                let should_reconnect = loop {
-                    let msg = tokio::select! {
-                        _ = shutdown_rx.changed() => {
-                            info!("Webex adapter shutting down");
-                            return;
-                        }
-                        msg = read.next() => msg,
-                    };
-
-                    let msg = match msg {
-                        Some(Ok(m)) => m,
-                        Some(Err(e)) => {
-                            warn!("Webex WS read error: {e}");
-                            break true;
-                        }
-                        None => {
-                            info!("Webex WS stream ended");
-                            break true;
-                        }
-                    };
-
-                    let text = match msg {
-                        tokio_tungstenite::tungstenite::Message::Text(t) => t,
-                        tokio_tungstenite::tungstenite::Message::Close(_) => {
-                            break true;
-                        }
-                        _ => continue,
-                    };
-
-                    let event: serde_json::Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-
-                    // Mercury events have a data.activity structure
-                    let activity = &event["data"]["activity"];
-                    let verb = activity["verb"].as_str().unwrap_or("");
-
-                    // Only process "post" activities (new messages)
-                    if verb != "post" {
-                        continue;
-                    }
-
-                    let actor_id = activity["actor"]["id"].as_str().unwrap_or("");
-                    // Skip messages from the bot itself
-                    if actor_id == own_bot_id {
-                        continue;
-                    }
-
-                    let message_id = activity["object"]["id"].as_str().unwrap_or("");
-                    if message_id.is_empty() {
-                        continue;
-                    }
-
-                    let room_id = activity["target"]["id"].as_str().unwrap_or("").to_string();
-
-                    // Filter by room if configured
-                    if !allowed_rooms.is_empty() && !allowed_rooms.iter().any(|r| r == &room_id) {
-                        continue;
-                    }
-
-                    // Fetch full message content via REST API
-                    let msg_url = format!("{}/messages/{}", WEBEX_API_BASE, message_id);
-                    let full_msg = match client
-                        .get(&msg_url)
-                        .bearer_auth(bot_token.as_str())
-                        .send()
-                        .await
-                    {
-                        Ok(resp) => {
-                            if !resp.status().is_success() {
-                                warn!("Webex: failed to fetch message {message_id}");
-                                continue;
-                            }
-                            resp.json::<serde_json::Value>().await.unwrap_or_default()
-                        }
-                        Err(e) => {
-                            warn!("Webex: message fetch error: {e}");
-                            continue;
-                        }
-                    };
-
-                    let msg_text = full_msg["text"].as_str().unwrap_or("");
-                    if msg_text.is_empty() {
-                        continue;
-                    }
-
-                    let sender_email = full_msg["personEmail"].as_str().unwrap_or("unknown");
-                    let sender_id = full_msg["personId"].as_str().unwrap_or("").to_string();
-                    let full_room_id = full_msg["roomId"].as_str().unwrap_or(&room_id).to_string();
-                    let room_type = full_msg["roomType"].as_str().unwrap_or("group");
-                    let is_group = room_type == "group";
-
-                    let msg_content = if msg_text.starts_with('/') {
-                        let parts: Vec<&str> = msg_text.splitn(2, ' ').collect();
-                        let cmd = parts[0].trim_start_matches('/');
-                        let args: Vec<String> = parts
-                            .get(1)
-                            .map(|a| a.split_whitespace().map(String::from).collect())
-                            .unwrap_or_default();
-                        ChannelContent::Command {
-                            name: cmd.to_string(),
-                            args,
-                        }
-                    } else {
-                        ChannelContent::Text(msg_text.to_string())
-                    };
-
-                    let channel_msg = ChannelMessage {
-                        channel: ChannelType::Custom("webex".to_string()),
-                        platform_message_id: message_id.to_string(),
-                        sender: ChannelUser {
-                            platform_id: full_room_id,
-                            display_name: sender_email.to_string(),
-                            openfang_user: None,
-                        },
-                        content: msg_content,
-                        target_agent: None,
-                        timestamp: Utc::now(),
-                        is_group,
-                        thread_id: None,
-                        metadata: {
-                            let mut m = HashMap::new();
-                            m.insert(
-                                "sender_id".to_string(),
-                                serde_json::Value::String(sender_id),
-                            );
-                            m.insert(
-                                "sender_email".to_string(),
-                                serde_json::Value::String(sender_email.to_string()),
-                            );
-                            m
-                        },
-                    };
-
-                    if tx.send(channel_msg).await.is_err() {
-                        return;
-                    }
-                };
-
-                if !should_reconnect || *shutdown_rx.borrow() {
-                    break;
-                }
-
-                warn!("Webex: reconnecting in {backoff:?}");
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(60));
-            }
-
-            info!("Webex WebSocket loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
@@ -472,6 +302,183 @@ impl ChannelAdapter for WebexAdapter {
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
+    }
+}
+
+/// Run a single Webex Mercury WebSocket connection cycle.
+async fn run_webex_ws(
+    bot_token: &Zeroizing<String>,
+    allowed_rooms: &[String],
+    client: &reqwest::Client,
+    own_bot_id: &str,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    use futures::StreamExt;
+
+    let mut request =
+        match tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+            WEBEX_WS_URL,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(format!("Webex: failed to build WS request: {e}"));
+            }
+        };
+
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {}", bot_token.as_str()).parse().unwrap(),
+    );
+
+    let (ws_stream, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .map_err(|e| format!("Webex: WebSocket connection failed: {e}"))?;
+
+    info!("Webex Mercury WebSocket connected");
+    let (_write, mut read) = ws_stream.split();
+
+    loop {
+        let msg = tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Webex adapter shutting down");
+                    return Ok(false);
+                }
+                continue;
+            }
+            msg = read.next() => msg,
+        };
+
+        let msg = match msg {
+            Some(Ok(m)) => m,
+            Some(Err(e)) => {
+                warn!("Webex WS read error: {e}");
+                return Ok(true);
+            }
+            None => {
+                info!("Webex WS stream ended");
+                return Ok(true);
+            }
+        };
+
+        let text = match msg {
+            tokio_tungstenite::tungstenite::Message::Text(t) => t,
+            tokio_tungstenite::tungstenite::Message::Close(_) => {
+                return Ok(true);
+            }
+            _ => continue,
+        };
+
+        let event: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Mercury events have a data.activity structure
+        let activity = &event["data"]["activity"];
+        let verb = activity["verb"].as_str().unwrap_or("");
+
+        // Only process "post" activities (new messages)
+        if verb != "post" {
+            continue;
+        }
+
+        let actor_id = activity["actor"]["id"].as_str().unwrap_or("");
+        // Skip messages from the bot itself
+        if actor_id == own_bot_id {
+            continue;
+        }
+
+        let message_id = activity["object"]["id"].as_str().unwrap_or("");
+        if message_id.is_empty() {
+            continue;
+        }
+
+        let room_id = activity["target"]["id"].as_str().unwrap_or("").to_string();
+
+        // Filter by room if configured
+        if !allowed_rooms.is_empty() && !allowed_rooms.iter().any(|r| r == &room_id) {
+            continue;
+        }
+
+        // Fetch full message content via REST API
+        let msg_url = format!("{}/messages/{}", WEBEX_API_BASE, message_id);
+        let full_msg = match client
+            .get(&msg_url)
+            .bearer_auth(bot_token.as_str())
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    warn!("Webex: failed to fetch message {message_id}");
+                    continue;
+                }
+                resp.json::<serde_json::Value>().await.unwrap_or_default()
+            }
+            Err(e) => {
+                warn!("Webex: message fetch error: {e}");
+                continue;
+            }
+        };
+
+        let msg_text = full_msg["text"].as_str().unwrap_or("");
+        if msg_text.is_empty() {
+            continue;
+        }
+
+        let sender_email = full_msg["personEmail"].as_str().unwrap_or("unknown");
+        let sender_id = full_msg["personId"].as_str().unwrap_or("").to_string();
+        let full_room_id = full_msg["roomId"].as_str().unwrap_or(&room_id).to_string();
+        let room_type = full_msg["roomType"].as_str().unwrap_or("group");
+        let is_group = room_type == "group";
+
+        let msg_content = if msg_text.starts_with('/') {
+            let parts: Vec<&str> = msg_text.splitn(2, ' ').collect();
+            let cmd = parts[0].trim_start_matches('/');
+            let args: Vec<String> = parts
+                .get(1)
+                .map(|a| a.split_whitespace().map(String::from).collect())
+                .unwrap_or_default();
+            ChannelContent::Command {
+                name: cmd.to_string(),
+                args,
+            }
+        } else {
+            ChannelContent::Text(msg_text.to_string())
+        };
+
+        let channel_msg = ChannelMessage {
+            channel: ChannelType::Custom("webex".to_string()),
+            platform_message_id: message_id.to_string(),
+            sender: ChannelUser {
+                platform_id: full_room_id,
+                display_name: sender_email.to_string(),
+                openfang_user: None,
+            },
+            content: msg_content,
+            target_agent: None,
+            timestamp: Utc::now(),
+            is_group,
+            thread_id: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "sender_id".to_string(),
+                    serde_json::Value::String(sender_id),
+                );
+                m.insert(
+                    "sender_email".to_string(),
+                    serde_json::Value::String(sender_email.to_string()),
+                );
+                m
+            },
+        };
+
+        if tx.send(channel_msg).await.is_err() {
+            return Ok(false);
+        }
     }
 }
 

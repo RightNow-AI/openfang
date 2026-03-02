@@ -5,6 +5,7 @@
 //! PRIVMSG, PING/PONG. A `use_tls: bool` field is reserved for future TLS support
 //! (would require a `tokio-native-tls` dependency).
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -14,7 +15,6 @@ use futures::Stream;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch, RwLock};
@@ -28,9 +28,6 @@ const MAX_MESSAGE_LEN: usize = 510;
 /// Maximum length for a single PRIVMSG payload, accounting for the
 /// `:nick!user@host PRIVMSG #channel :` prefix overhead (~80 chars conservative).
 const MAX_PRIVMSG_PAYLOAD: usize = 400;
-
-const MAX_BACKOFF: Duration = Duration::from_secs(60);
-const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 
 /// IRC channel adapter using raw TCP and the IRC text protocol.
 ///
@@ -217,6 +214,151 @@ fn parse_privmsg(line: &IrcLine, bot_nick: &str) -> Option<ChannelMessage> {
     })
 }
 
+/// Run a single IRC connection session until disconnect.
+///
+/// Returns `Ok(true)` to reconnect, `Ok(false)` to stop permanently.
+async fn run_irc_connection(
+    addr: &str,
+    nick: &str,
+    password: Option<&Zeroizing<String>>,
+    channels: &[String],
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+    write_cmd_rx: &Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>,
+) -> Result<bool, String> {
+    info!("Connecting to IRC server at {addr}...");
+
+    let stream = TcpStream::connect(addr)
+        .await
+        .map_err(|e| format!("IRC connection failed: {e}"))?;
+
+    info!("IRC connected to {addr}");
+
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+
+    // Send PASS (if configured), NICK, and USER
+    let mut registration = String::new();
+    if let Some(pass) = password {
+        registration.push_str(&format!("PASS {}\r\n", pass.as_str()));
+    }
+    registration.push_str(&format!("NICK {nick}\r\n"));
+    registration.push_str(&format!("USER {nick} 0 * :OpenFang Bot\r\n"));
+
+    writer
+        .write_all(registration.as_bytes())
+        .await
+        .map_err(|e| format!("IRC registration send failed: {e}"))?;
+
+    let mut joined = false;
+    let mut write_rx = write_cmd_rx.lock().await;
+
+    let should_reconnect = 'inner: loop {
+        tokio::select! {
+            line_result = lines.next_line() => {
+                let line = match line_result {
+                    Ok(Some(l)) => l,
+                    Ok(None) => {
+                        info!("IRC connection closed");
+                        break 'inner true;
+                    }
+                    Err(e) => {
+                        warn!("IRC read error: {e}");
+                        break 'inner true;
+                    }
+                };
+
+                debug!("IRC < {line}");
+
+                let parsed = match parse_irc_line(&line) {
+                    Some(p) => p,
+                    None => continue,
+                };
+
+                match parsed.command.as_str() {
+                    "PING" => {
+                        let pong_param = parsed.trailing
+                            .as_deref()
+                            .or(parsed.params.first().map(|s| s.as_str()))
+                            .unwrap_or("");
+                        let pong = format!("PONG :{pong_param}\r\n");
+                        if let Err(e) = writer.write_all(pong.as_bytes()).await {
+                            warn!("IRC PONG send failed: {e}");
+                            break 'inner true;
+                        }
+                    }
+
+                    "001" => {
+                        if !joined {
+                            info!("IRC registered as {nick}");
+                            for ch in channels {
+                                let join_cmd = format!("JOIN {ch}\r\n");
+                                if let Err(e) = writer.write_all(join_cmd.as_bytes()).await {
+                                    warn!("IRC JOIN send failed: {e}");
+                                    break 'inner true;
+                                }
+                                info!("IRC joining {ch}");
+                            }
+                            joined = true;
+                        }
+                    }
+
+                    "PRIVMSG" => {
+                        if let Some(msg) = parse_privmsg(&parsed, nick) {
+                            debug!(
+                                "IRC message from {}: {:?}",
+                                msg.sender.display_name, msg.content
+                            );
+                            if tx.send(msg).await.is_err() {
+                                return Ok(false);
+                            }
+                        }
+                    }
+
+                    "433" => {
+                        warn!("IRC: nickname '{nick}' is already in use");
+                        let alt_nick = format!("{nick}_");
+                        let cmd = format!("NICK {alt_nick}\r\n");
+                        let _ = writer.write_all(cmd.as_bytes()).await;
+                    }
+
+                    "JOIN" => {
+                        if let Some(ref prefix) = parsed.prefix {
+                            let joiner = nick_from_prefix(prefix);
+                            let channel = parsed.trailing
+                                .as_deref()
+                                .or(parsed.params.first().map(|s| s.as_str()))
+                                .unwrap_or("?");
+                            if joiner.eq_ignore_ascii_case(nick) {
+                                info!("IRC joined {channel}");
+                            }
+                        }
+                    }
+
+                    _ => {}
+                }
+            }
+
+            Some(raw_cmd) = write_rx.recv() => {
+                if let Err(e) = writer.write_all(raw_cmd.as_bytes()).await {
+                    warn!("IRC write failed: {e}");
+                    break 'inner true;
+                }
+            }
+
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("IRC adapter shutting down");
+                    let _ = writer.write_all(b"QUIT :OpenFang shutting down\r\n").await;
+                    return Ok(false);
+                }
+            }
+        }
+    };
+
+    Ok(should_reconnect)
+}
+
 #[async_trait]
 impl ChannelAdapter for IrcAdapter {
     fn name(&self) -> &str {
@@ -231,8 +373,8 @@ impl ChannelAdapter for IrcAdapter {
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = ChannelMessage> + Send>>, Box<dyn std::error::Error>>
     {
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
-        let (write_cmd_tx, mut write_cmd_rx) = mpsc::channel::<String>(64);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
+        let (write_cmd_tx, write_cmd_rx) = mpsc::channel::<String>(64);
 
         // Store the write channel so `send()` can use it
         *self.write_tx.write().await = Some(write_cmd_tx.clone());
@@ -241,175 +383,29 @@ impl ChannelAdapter for IrcAdapter {
         let nick = self.nick.clone();
         let password = self.password.clone();
         let channels = self.channels.clone();
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
+        let write_cmd_rx = Arc::new(tokio::sync::Mutex::new(write_cmd_rx));
 
         tokio::spawn(async move {
-            let mut backoff = INITIAL_BACKOFF;
-
-            loop {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                info!("Connecting to IRC server at {addr}...");
-
-                let stream = match TcpStream::connect(&addr).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        warn!("IRC connection failed: {e}, retrying in {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(MAX_BACKOFF);
-                        continue;
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("IRC"),
+                shutdown_rx.clone(),
+                || {
+                    let addr = addr.clone();
+                    let nick = nick.clone();
+                    let password = password.clone();
+                    let channels = channels.clone();
+                    let tx = tx.clone();
+                    let shutdown_rx = shutdown_rx.clone();
+                    let write_cmd_rx = write_cmd_rx.clone();
+                    async move {
+                        run_irc_connection(
+                            &addr, &nick, password.as_ref(), &channels,
+                            &tx, &mut shutdown_rx.clone(), &write_cmd_rx,
+                        ).await
                     }
-                };
-
-                backoff = INITIAL_BACKOFF;
-                info!("IRC connected to {addr}");
-
-                let (reader, mut writer) = stream.into_split();
-                let mut lines = BufReader::new(reader).lines();
-
-                // Send PASS (if configured), NICK, and USER
-                let mut registration = String::new();
-                if let Some(ref pass) = password {
-                    registration.push_str(&format!("PASS {}\r\n", pass.as_str()));
-                }
-                registration.push_str(&format!("NICK {nick}\r\n"));
-                registration.push_str(&format!("USER {nick} 0 * :OpenFang Bot\r\n"));
-
-                if let Err(e) = writer.write_all(registration.as_bytes()).await {
-                    warn!("IRC registration send failed: {e}");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(MAX_BACKOFF);
-                    continue;
-                }
-
-                let nick_clone = nick.clone();
-                let channels_clone = channels.clone();
-                let mut joined = false;
-
-                // Inner message loop — returns true if we should reconnect
-                let should_reconnect = 'inner: loop {
-                    tokio::select! {
-                        line_result = lines.next_line() => {
-                            let line = match line_result {
-                                Ok(Some(l)) => l,
-                                Ok(None) => {
-                                    info!("IRC connection closed");
-                                    break 'inner true;
-                                }
-                                Err(e) => {
-                                    warn!("IRC read error: {e}");
-                                    break 'inner true;
-                                }
-                            };
-
-                            debug!("IRC < {line}");
-
-                            let parsed = match parse_irc_line(&line) {
-                                Some(p) => p,
-                                None => continue,
-                            };
-
-                            match parsed.command.as_str() {
-                                // PING/PONG keepalive
-                                "PING" => {
-                                    let pong_param = parsed.trailing
-                                        .as_deref()
-                                        .or(parsed.params.first().map(|s| s.as_str()))
-                                        .unwrap_or("");
-                                    let pong = format!("PONG :{pong_param}\r\n");
-                                    if let Err(e) = writer.write_all(pong.as_bytes()).await {
-                                        warn!("IRC PONG send failed: {e}");
-                                        break 'inner true;
-                                    }
-                                }
-
-                                // RPL_WELCOME (001) — registration complete, join channels
-                                "001" => {
-                                    if !joined {
-                                        info!("IRC registered as {nick_clone}");
-                                        for ch in &channels_clone {
-                                            let join_cmd = format!("JOIN {ch}\r\n");
-                                            if let Err(e) = writer.write_all(join_cmd.as_bytes()).await {
-                                                warn!("IRC JOIN send failed: {e}");
-                                                break 'inner true;
-                                            }
-                                            info!("IRC joining {ch}");
-                                        }
-                                        joined = true;
-                                    }
-                                }
-
-                                // PRIVMSG — incoming message
-                                "PRIVMSG" => {
-                                    if let Some(msg) = parse_privmsg(&parsed, &nick_clone) {
-                                        debug!(
-                                            "IRC message from {}: {:?}",
-                                            msg.sender.display_name, msg.content
-                                        );
-                                        if tx.send(msg).await.is_err() {
-                                            return;
-                                        }
-                                    }
-                                }
-
-                                // ERR_NICKNAMEINUSE (433) — nickname taken
-                                "433" => {
-                                    warn!("IRC: nickname '{nick_clone}' is already in use");
-                                    let alt_nick = format!("{nick_clone}_");
-                                    let cmd = format!("NICK {alt_nick}\r\n");
-                                    let _ = writer.write_all(cmd.as_bytes()).await;
-                                }
-
-                                // JOIN confirmation
-                                "JOIN" => {
-                                    if let Some(ref prefix) = parsed.prefix {
-                                        let joiner = nick_from_prefix(prefix);
-                                        let channel = parsed.trailing
-                                            .as_deref()
-                                            .or(parsed.params.first().map(|s| s.as_str()))
-                                            .unwrap_or("?");
-                                        if joiner.eq_ignore_ascii_case(&nick_clone) {
-                                            info!("IRC joined {channel}");
-                                        }
-                                    }
-                                }
-
-                                _ => {
-                                    // Ignore other commands
-                                }
-                            }
-                        }
-
-                        // Outbound message requests from `send()`
-                        Some(raw_cmd) = write_cmd_rx.recv() => {
-                            if let Err(e) = writer.write_all(raw_cmd.as_bytes()).await {
-                                warn!("IRC write failed: {e}");
-                                break 'inner true;
-                            }
-                        }
-
-                        _ = shutdown_rx.changed() => {
-                            if *shutdown_rx.borrow() {
-                                info!("IRC adapter shutting down");
-                                let _ = writer.write_all(b"QUIT :OpenFang shutting down\r\n").await;
-                                return;
-                            }
-                        }
-                    }
-                };
-
-                if !should_reconnect || *shutdown_rx.borrow() {
-                    break;
-                }
-
-                warn!("IRC: reconnecting in {backoff:?}");
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-            }
-
-            info!("IRC connection loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))

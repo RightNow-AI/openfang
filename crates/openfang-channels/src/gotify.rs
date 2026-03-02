@@ -4,6 +4,7 @@
 //! and sends messages via the REST API. Uses separate app and client tokens
 //! for publishing and subscribing respectively.
 
+use crate::supervisor::{self, SupervisorConfig};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
@@ -13,7 +14,6 @@ use futures::Stream;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
@@ -142,6 +142,120 @@ impl GotifyAdapter {
     }
 }
 
+/// Run a single Gotify WebSocket connection cycle.
+async fn run_gotify_ws(
+    ws_url: &str,
+    tx: &mpsc::Sender<ChannelMessage>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    use futures::StreamExt;
+
+    let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url)
+        .await
+        .map_err(|e| format!("Gotify WS connection failed: {e}"))?;
+
+    info!("Gotify: WebSocket connected");
+    let (_ws_write, mut ws_read) = ws_stream.split();
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Gotify adapter shutting down");
+                    return Ok(false);
+                }
+            }
+            msg = ws_read.next() => {
+                match msg {
+                    Some(Ok(ws_msg)) => {
+                        let text = match ws_msg {
+                            tokio_tungstenite::tungstenite::Message::Text(t) => t,
+                            tokio_tungstenite::tungstenite::Message::Ping(_) => continue,
+                            tokio_tungstenite::tungstenite::Message::Pong(_) => continue,
+                            tokio_tungstenite::tungstenite::Message::Close(_) => {
+                                info!("Gotify: WebSocket closed by server");
+                                return Ok(true);
+                            }
+                            _ => continue,
+                        };
+
+                        if let Some((id, message, title, priority, app_id)) =
+                            GotifyAdapter::parse_ws_message(&text)
+                        {
+                            let content = if message.starts_with('/') {
+                                let parts: Vec<&str> =
+                                    message.splitn(2, ' ').collect();
+                                let cmd = parts[0].trim_start_matches('/');
+                                let args: Vec<String> = parts
+                                    .get(1)
+                                    .map(|a| {
+                                        a.split_whitespace()
+                                            .map(String::from)
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                ChannelContent::Command {
+                                    name: cmd.to_string(),
+                                    args,
+                                }
+                            } else {
+                                ChannelContent::Text(message)
+                            };
+
+                            let msg = ChannelMessage {
+                                channel: ChannelType::Custom("gotify".to_string()),
+                                platform_message_id: format!("gotify-{id}"),
+                                sender: ChannelUser {
+                                    platform_id: format!("app-{app_id}"),
+                                    display_name: if title.is_empty() {
+                                        format!("app-{app_id}")
+                                    } else {
+                                        title.clone()
+                                    },
+                                    openfang_user: None,
+                                },
+                                content,
+                                target_agent: None,
+                                timestamp: Utc::now(),
+                                is_group: false,
+                                thread_id: None,
+                                metadata: {
+                                    let mut m = HashMap::new();
+                                    m.insert(
+                                        "title".to_string(),
+                                        serde_json::Value::String(title),
+                                    );
+                                    m.insert(
+                                        "priority".to_string(),
+                                        serde_json::Value::Number(priority.into()),
+                                    );
+                                    m.insert(
+                                        "app_id".to_string(),
+                                        serde_json::Value::Number(app_id.into()),
+                                    );
+                                    m
+                                },
+                            };
+
+                            if tx.send(msg).await.is_err() {
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        warn!("Gotify: WebSocket read error: {e}");
+                        return Ok(true);
+                    }
+                    None => {
+                        info!("Gotify: WebSocket stream ended");
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl ChannelAdapter for GotifyAdapter {
     fn name(&self) -> &str {
@@ -159,147 +273,23 @@ impl ChannelAdapter for GotifyAdapter {
         let user_name = self.validate().await?;
         info!("Gotify adapter authenticated as {user_name}");
 
-        let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(supervisor::DEFAULT_CHANNEL_BUFFER);
         let ws_url = self.build_ws_url();
-        let mut shutdown_rx = self.shutdown_rx.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
-            let mut backoff = Duration::from_secs(1);
-
-            loop {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                info!("Gotify: connecting WebSocket...");
-
-                let ws_connect = match tokio_tungstenite::connect_async(&ws_url).await {
-                    Ok((ws_stream, _)) => {
-                        backoff = Duration::from_secs(1);
-                        ws_stream
+            supervisor::run_supervised_loop_reset_on_connect(
+                SupervisorConfig::new("Gotify"),
+                shutdown_rx.clone(),
+                || {
+                    let ws_url = ws_url.clone();
+                    let tx = tx.clone();
+                    let mut shutdown_rx = shutdown_rx.clone();
+                    async move {
+                        run_gotify_ws(&ws_url, &tx, &mut shutdown_rx).await
                     }
-                    Err(e) => {
-                        warn!("Gotify: WebSocket connection failed: {e}, backing off {backoff:?}");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(120));
-                        continue;
-                    }
-                };
-
-                info!("Gotify: WebSocket connected");
-
-                use futures::StreamExt;
-                let (mut _ws_write, mut ws_read) = ws_connect.split();
-
-                loop {
-                    tokio::select! {
-                        _ = shutdown_rx.changed() => {
-                            if *shutdown_rx.borrow() {
-                                info!("Gotify adapter shutting down");
-                                return;
-                            }
-                        }
-                        msg = ws_read.next() => {
-                            match msg {
-                                Some(Ok(ws_msg)) => {
-                                    let text = match ws_msg {
-                                        tokio_tungstenite::tungstenite::Message::Text(t) => t,
-                                        tokio_tungstenite::tungstenite::Message::Ping(_) => continue,
-                                        tokio_tungstenite::tungstenite::Message::Pong(_) => continue,
-                                        tokio_tungstenite::tungstenite::Message::Close(_) => {
-                                            info!("Gotify: WebSocket closed by server");
-                                            break;
-                                        }
-                                        _ => continue,
-                                    };
-
-                                    if let Some((id, message, title, priority, app_id)) =
-                                        Self::parse_ws_message(&text)
-                                    {
-                                        let content = if message.starts_with('/') {
-                                            let parts: Vec<&str> =
-                                                message.splitn(2, ' ').collect();
-                                            let cmd = parts[0].trim_start_matches('/');
-                                            let args: Vec<String> = parts
-                                                .get(1)
-                                                .map(|a| {
-                                                    a.split_whitespace()
-                                                        .map(String::from)
-                                                        .collect()
-                                                })
-                                                .unwrap_or_default();
-                                            ChannelContent::Command {
-                                                name: cmd.to_string(),
-                                                args,
-                                            }
-                                        } else {
-                                            ChannelContent::Text(message)
-                                        };
-
-                                        let msg = ChannelMessage {
-                                            channel: ChannelType::Custom(
-                                                "gotify".to_string(),
-                                            ),
-                                            platform_message_id: format!("gotify-{id}"),
-                                            sender: ChannelUser {
-                                                platform_id: format!("app-{app_id}"),
-                                                display_name: if title.is_empty() {
-                                                    format!("app-{app_id}")
-                                                } else {
-                                                    title.clone()
-                                                },
-                                                openfang_user: None,
-                                            },
-                                            content,
-                                            target_agent: None,
-                                            timestamp: Utc::now(),
-                                            is_group: false,
-                                            thread_id: None,
-                                            metadata: {
-                                                let mut m = HashMap::new();
-                                                m.insert(
-                                                    "title".to_string(),
-                                                    serde_json::Value::String(title),
-                                                );
-                                                m.insert(
-                                                    "priority".to_string(),
-                                                    serde_json::Value::Number(priority.into()),
-                                                );
-                                                m.insert(
-                                                    "app_id".to_string(),
-                                                    serde_json::Value::Number(app_id.into()),
-                                                );
-                                                m
-                                            },
-                                        };
-
-                                        if tx.send(msg).await.is_err() {
-                                            return;
-                                        }
-                                    }
-                                }
-                                Some(Err(e)) => {
-                                    warn!("Gotify: WebSocket read error: {e}");
-                                    break;
-                                }
-                                None => {
-                                    info!("Gotify: WebSocket stream ended");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Exponential backoff before reconnect
-                if !*shutdown_rx.borrow() {
-                    warn!("Gotify: reconnecting in {backoff:?}...");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(60));
-                }
-            }
-
-            info!("Gotify WebSocket loop stopped");
+                },
+            ).await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
