@@ -125,11 +125,22 @@ impl StructuredStore {
             "ALTER TABLE agents ADD COLUMN session_id TEXT DEFAULT ''",
             [],
         );
+        // Add source_toml_path column if it doesn't exist yet (migration compat)
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN source_toml_path TEXT DEFAULT NULL",
+            [],
+        );
+
+        let source_toml_path_str = entry
+            .source_toml_path
+            .as_deref()
+            .and_then(|p| p.to_str())
+            .map(|s| s.to_string());
 
         conn.execute(
-            "INSERT INTO agents (id, name, manifest, state, created_at, updated_at, session_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(id) DO UPDATE SET name = ?2, manifest = ?3, state = ?4, updated_at = ?6, session_id = ?7",
+            "INSERT INTO agents (id, name, manifest, state, created_at, updated_at, session_id, source_toml_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET name = ?2, manifest = ?3, state = ?4, updated_at = ?6, session_id = ?7, source_toml_path = ?8",
             rusqlite::params![
                 entry.id.0.to_string(),
                 entry.name,
@@ -138,6 +149,7 @@ impl StructuredStore {
                 entry.created_at.to_rfc3339(),
                 now,
                 entry.session_id.0.to_string(),
+                source_toml_path_str,
             ],
         )
         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
@@ -152,7 +164,10 @@ impl StructuredStore {
             .map_err(|e| OpenFangError::Internal(e.to_string()))?;
 
         let mut stmt = conn
-            .prepare("SELECT id, name, manifest, state, created_at, updated_at, session_id FROM agents WHERE id = ?1")
+            .prepare("SELECT id, name, manifest, state, created_at, updated_at, session_id, source_toml_path FROM agents WHERE id = ?1")
+            .or_else(|_| {
+                conn.prepare("SELECT id, name, manifest, state, created_at, updated_at, session_id FROM agents WHERE id = ?1")
+            })
             .or_else(|_| {
                 // Fallback without session_id column for old DBs
                 conn.prepare("SELECT id, name, manifest, state, created_at, updated_at FROM agents WHERE id = ?1")
@@ -170,11 +185,16 @@ impl StructuredStore {
             } else {
                 None
             };
-            Ok((name, manifest_blob, state_str, created_str, session_id_str))
+            let source_toml_path_str: Option<String> = if col_count >= 8 {
+                row.get(7).ok().flatten()
+            } else {
+                None
+            };
+            Ok((name, manifest_blob, state_str, created_str, session_id_str, source_toml_path_str))
         });
 
         match result {
-            Ok((name, manifest_blob, state_str, created_str, session_id_str)) => {
+            Ok((name, manifest_blob, state_str, created_str, session_id_str, source_toml_path_str)) => {
                 let manifest = rmp_serde::from_slice(&manifest_blob)
                     .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
                 let state = serde_json::from_str(&state_str)
@@ -186,6 +206,8 @@ impl StructuredStore {
                     .and_then(|s| uuid::Uuid::parse_str(&s).ok())
                     .map(openfang_types::agent::SessionId)
                     .unwrap_or_else(openfang_types::agent::SessionId::new);
+                let source_toml_path = source_toml_path_str
+                    .map(std::path::PathBuf::from);
                 Ok(Some(AgentEntry {
                     id: agent_id,
                     name,
@@ -201,6 +223,7 @@ impl StructuredStore {
                     identity: Default::default(),
                     onboarding_completed: false,
                     onboarding_completed_at: None,
+                    source_toml_path,
                 }))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -234,11 +257,14 @@ impl StructuredStore {
             .lock()
             .map_err(|e| OpenFangError::Internal(e.to_string()))?;
 
-        // Try with session_id column first, fall back without
+        // Try with source_toml_path column first, then fall back for older DBs
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, manifest, state, created_at, updated_at, session_id FROM agents",
+                "SELECT id, name, manifest, state, created_at, updated_at, session_id, source_toml_path FROM agents",
             )
+            .or_else(|_| {
+                conn.prepare("SELECT id, name, manifest, state, created_at, updated_at, session_id FROM agents")
+            })
             .or_else(|_| {
                 conn.prepare("SELECT id, name, manifest, state, created_at, updated_at FROM agents")
             })
@@ -257,6 +283,11 @@ impl StructuredStore {
                 } else {
                     None
                 };
+                let source_toml_path_str: Option<String> = if col_count >= 8 {
+                    row.get(7).ok().flatten()
+                } else {
+                    None
+                };
                 Ok((
                     id_str,
                     name,
@@ -264,6 +295,7 @@ impl StructuredStore {
                     state_str,
                     created_str,
                     session_id_str,
+                    source_toml_path_str,
                 ))
             })
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
@@ -273,7 +305,7 @@ impl StructuredStore {
         let mut repair_queue: Vec<(String, Vec<u8>, String)> = Vec::new();
 
         for row in rows {
-            let (id_str, name, manifest_blob, state_str, created_str, session_id_str) = match row {
+            let (id_str, name, manifest_blob, state_str, created_str, session_id_str, source_toml_path_str) = match row {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!("Skipping agent row with read error: {e}");
@@ -336,6 +368,8 @@ impl StructuredStore {
                 .and_then(|s| uuid::Uuid::parse_str(&s).ok())
                 .map(openfang_types::agent::SessionId)
                 .unwrap_or_else(openfang_types::agent::SessionId::new);
+            let source_toml_path = source_toml_path_str
+                .map(std::path::PathBuf::from);
 
             agents.push(AgentEntry {
                 id: agent_id,
@@ -352,6 +386,7 @@ impl StructuredStore {
                 identity: Default::default(),
                 onboarding_completed: false,
                 onboarding_completed_at: None,
+                source_toml_path,
             });
         }
 

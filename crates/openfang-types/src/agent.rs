@@ -641,6 +641,17 @@ pub struct AgentEntry {
     /// When onboarding was completed.
     #[serde(default)]
     pub onboarding_completed_at: Option<DateTime<Utc>>,
+    /// Path to the on-disk TOML this agent was originally spawned from, if any.
+    ///
+    /// When set, the daemon re-reads this file on every restart and uses it as
+    /// the authoritative manifest source, so that edits to the TOML take effect
+    /// without deleting and respawning the agent.  If the file cannot be read or
+    /// parsed, the daemon falls back to the DB blob and emits a warning.
+    ///
+    /// `None` for agents spawned exclusively via the API with no file on disk
+    /// (behaviour unchanged from previous versions).
+    #[serde(default)]
+    pub source_toml_path: Option<std::path::PathBuf>,
 }
 
 #[cfg(test)]
@@ -1005,6 +1016,7 @@ mod tests {
             identity: AgentIdentity::default(),
             onboarding_completed: false,
             onboarding_completed_at: None,
+            source_toml_path: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let back: AgentEntry = serde_json::from_str(&json).unwrap();
@@ -1067,6 +1079,7 @@ mod tests {
             },
             onboarding_completed: false,
             onboarding_completed_at: None,
+            source_toml_path: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let back: AgentEntry = serde_json::from_str(&json).unwrap();

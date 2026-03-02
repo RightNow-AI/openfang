@@ -917,6 +917,46 @@ impl OpenFangKernel {
                     let mut restored_entry = entry;
                     restored_entry.state = AgentState::Running;
 
+                    // If this agent was spawned from a disk TOML, re-read the file so that
+                    // manifest edits take effect on restart without a delete-and-respawn cycle.
+                    // Parse errors fall back to the DB blob (with a warning) so a bad edit
+                    // never breaks a running agent.
+                    if let Some(ref path) = restored_entry.source_toml_path.clone() {
+                        if path.exists() {
+                            match std::fs::read_to_string(path) {
+                                Ok(toml_str) => {
+                                    match toml::from_str::<openfang_types::agent::AgentManifest>(&toml_str) {
+                                        Ok(fresh_manifest) => {
+                                            info!(
+                                                agent = %name,
+                                                path = %path.display(),
+                                                "Reloaded manifest from disk (source TOML changed)"
+                                            );
+                                            restored_entry.manifest = fresh_manifest;
+                                            // Write the refreshed manifest back to the DB blob so
+                                            // future restarts don't re-read an unchanged file.
+                                            let _ = kernel.memory.save_agent(&restored_entry);
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                agent = %name,
+                                                path = %path.display(),
+                                                "Disk TOML parse error — keeping DB manifest: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        agent = %name,
+                                        path = %path.display(),
+                                        "Could not read source TOML — keeping DB manifest: {e}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     // Inherit kernel exec_policy for agents that lack one
                     if restored_entry.manifest.exec_policy.is_none() {
                         restored_entry.manifest.exec_policy =
@@ -1085,6 +1125,7 @@ impl OpenFangKernel {
             identity: Default::default(),
             onboarding_completed: false,
             onboarding_completed_at: None,
+            source_toml_path: None,
         };
         self.registry
             .register(entry.clone())
@@ -2807,7 +2848,42 @@ impl OpenFangKernel {
         }
 
         // Spawn the agent
-        let agent_id = self.spawn_agent(manifest)?;
+        let agent_id = self.spawn_agent(manifest.clone())?;
+
+        // Write the agent manifest to `~/.openfang/hands/{name}/agent.toml` so the
+        // user has an editable file on disk.  Only write on first activation — if the
+        // file already exists we preserve any edits the user may have made.
+        // Record the path in the AgentEntry so the restore loop can re-read it.
+        let hands_toml_path = self
+            .config
+            .home_dir
+            .join("hands")
+            .join(&manifest.name)
+            .join("agent.toml");
+        if let Some(parent) = hands_toml_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if !hands_toml_path.exists() {
+            match toml::to_string_pretty(&manifest) {
+                Ok(toml_str) => {
+                    if let Err(e) = std::fs::write(&hands_toml_path, &toml_str) {
+                        tracing::warn!(
+                            hand = %hand_id,
+                            path = %hands_toml_path.display(),
+                            "Could not write hands agent.toml: {e}"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(hand = %hand_id, "Could not serialize manifest to TOML: {e}");
+                }
+            }
+        }
+        // Persist the source path so the restore loop knows where to look.
+        if let Ok(Some(mut entry)) = self.memory.load_agent(agent_id) {
+            entry.source_toml_path = Some(hands_toml_path);
+            let _ = self.memory.save_agent(&entry);
+        }
 
         // Link agent to instance
         self.hand_registry
