@@ -43,3 +43,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+.worktrees/
+.worktrees/
