@@ -104,7 +104,7 @@ pub async fn create_sandbox(
     let container_name = sanitize_container_name(&format!(
         "{}-{}",
         config.container_prefix,
-        &agent_id[..agent_id.len().min(8)]
+        &agent_id[..agent_id.floor_char_boundary(8)]
     ))?;
 
     let mut cmd = tokio::process::Command::new("docker");
@@ -208,18 +208,20 @@ pub async fn exec_in_sandbox(
     // Truncate large outputs
     let max_output = 50_000;
     let stdout = if stdout.len() > max_output {
+        let cut = stdout.floor_char_boundary(max_output);
         format!(
             "{}... [truncated, {} total bytes]",
-            &stdout[..max_output],
+            &stdout[..cut],
             stdout.len()
         )
     } else {
         stdout
     };
     let stderr = if stderr.len() > max_output {
+        let cut = stderr.floor_char_boundary(max_output);
         format!(
             "{}... [truncated, {} total bytes]",
-            &stderr[..max_output],
+            &stderr[..cut],
             stderr.len()
         )
     } else {

@@ -277,7 +277,7 @@ impl CronScheduler {
     pub fn record_failure(&self, id: CronJobId, error_msg: &str) {
         if let Some(mut meta) = self.jobs.get_mut(&id) {
             meta.job.last_run = Some(Utc::now());
-            meta.last_status = Some(format!("error: {}", &error_msg[..error_msg.len().min(256)]));
+            meta.last_status = Some(format!("error: {}", &error_msg[..error_msg.floor_char_boundary(256)]));
             meta.consecutive_errors += 1;
             if meta.consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
                 warn!(

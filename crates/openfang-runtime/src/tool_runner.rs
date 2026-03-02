@@ -41,7 +41,7 @@ fn check_taint_shell_exec(command: &str) -> Option<String> {
             labels.insert(TaintLabel::ExternalNetwork);
             let tainted = TaintedValue::new(command, labels, "llm_tool_call");
             if let Err(violation) = tainted.check_sink(&TaintSink::shell_exec()) {
-                warn!(command = &command[..command.len().min(80)], %violation, "Shell taint check failed");
+                warn!(command = &command[..command.floor_char_boundary(80)], %violation, "Shell taint check failed");
                 return Some(violation.to_string());
             }
         }
@@ -68,7 +68,7 @@ fn check_taint_net_fetch(url: &str) -> Option<String> {
             labels.insert(TaintLabel::Secret);
             let tainted = TaintedValue::new(url, labels, "llm_tool_call");
             if let Err(violation) = tainted.check_sink(&TaintSink::net_fetch()) {
-                warn!(url = &url[..url.len().min(80)], %violation, "Net fetch taint check failed");
+                warn!(url = &url[..url.floor_char_boundary(80)], %violation, "Net fetch taint check failed");
                 return Some(violation.to_string());
             }
         }
@@ -2955,7 +2955,7 @@ async fn tool_canvas_present(
     let _ = tokio::fs::create_dir_all(&output_dir).await;
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let filename = format!("canvas_{timestamp}_{}.html", &canvas_id[..8]);
+    let filename = format!("canvas_{timestamp}_{}.html", &canvas_id[..canvas_id.floor_char_boundary(8)]);
     let filepath = output_dir.join(&filename);
 
     // Write the full HTML document

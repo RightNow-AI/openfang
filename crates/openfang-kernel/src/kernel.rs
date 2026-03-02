@@ -446,7 +446,7 @@ fn read_identity_file(workspace: &Path, filename: &str) -> Option<String> {
         return None;
     }
     if content.len() > MAX_IDENTITY_FILE_BYTES {
-        Some(content[..MAX_IDENTITY_FILE_BYTES].to_string())
+        Some(content[..content.floor_char_boundary(MAX_IDENTITY_FILE_BYTES)].to_string())
     } else {
         Some(content)
     }
@@ -704,9 +704,23 @@ impl OpenFangKernel {
         > = {
             use openfang_runtime::embedding::create_embedding_driver;
             if let Some(ref provider) = config.memory.embedding_provider {
-                // Explicit config takes priority
+                // Explicit config takes priority.
+                // Pick the right default model per provider instead of hardcoding.
                 let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
-                match create_embedding_driver(provider, "text-embedding-3-small", api_key_env) {
+                let model = {
+                    let configured = &config.memory.embedding_model;
+                    if provider == "ollama"
+                        && (configured == "all-MiniLM-L6-v2"
+                            || configured == "text-embedding-3-small")
+                    {
+                        "nomic-embed-text"
+                    } else if provider == "openai" && configured == "all-MiniLM-L6-v2" {
+                        "text-embedding-3-small"
+                    } else {
+                        configured.as_str()
+                    }
+                };
+                match create_embedding_driver(provider, model, api_key_env) {
                     Ok(d) => {
                         info!(provider = %provider, "Embedding driver configured from memory config");
                         Some(Arc::from(d))
@@ -2212,7 +2226,7 @@ impl OpenFangKernel {
                 .take(5)
                 .enumerate()
                 .map(|(i, t)| {
-                    let truncated = if t.len() > 200 { &t[..200] } else { t };
+                    let truncated = if t.len() > 200 { &t[..t.floor_char_boundary(200)] } else { t };
                     format!("{}. {}", i + 1, truncated)
                 })
                 .collect::<Vec<_>>()
@@ -2990,7 +3004,7 @@ impl OpenFangKernel {
                     catalog
                         .list_providers()
                         .iter()
-                        .filter(|p| !p.key_required)
+                        .filter(|p| !p.key_required && p.id != "lmstudio")
                         .map(|p| (p.id.clone(), p.base_url.clone()))
                         .collect()
                 };

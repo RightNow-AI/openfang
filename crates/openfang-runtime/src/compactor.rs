@@ -426,8 +426,8 @@ async fn summarize_messages(
     let effective_max = (config.max_chunk_chars as f64 / config.safety_margin) as usize;
     if conversation_text.len() > effective_max {
         // Keep the tail (most recent) which is usually more important
-        conversation_text =
-            conversation_text[conversation_text.len() - effective_max..].to_string();
+        let start = conversation_text.ceil_char_boundary(conversation_text.len() - effective_max);
+        conversation_text = conversation_text[start..].to_string();
     }
 
     let summarize_prompt = format!(
@@ -1219,7 +1219,7 @@ mod tests {
         assert!(
             text.contains("truncated from"),
             "Oversized message should be truncated, got: {}",
-            &text[..text.len().min(200)]
+            &text[..text.floor_char_boundary(200)]
         );
     }
 

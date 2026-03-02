@@ -317,7 +317,7 @@ fn draw_agent_select(f: &mut Frame, area: Rect, state: &mut MemoryState) {
             .iter()
             .map(|a| {
                 let id_short = if a.id.len() > 12 {
-                    format!("{}\u{2026}", &a.id[..12])
+                    format!("{}\u{2026}", &a.id[..a.id.floor_char_boundary(12)])
                 } else {
                     a.id.clone()
                 };
@@ -405,7 +405,7 @@ fn draw_kv_browser(f: &mut Frame, area: Rect, state: &mut MemoryState) {
             .iter()
             .map(|kv| {
                 let val_display = if kv.value.len() > 40 {
-                    format!("{}\u{2026}", &kv.value[..39])
+                    format!("{}\u{2026}", &kv.value[..kv.value.floor_char_boundary(39)])
                 } else {
                     kv.value.clone()
                 };

@@ -585,24 +585,37 @@ fn strip_injection_markers(content: &str) -> String {
     ];
 
     let mut result = content.to_string();
-    let lower = result.to_lowercase();
 
     for marker in INJECTION_MARKERS {
-        let marker_lower = marker.to_lowercase();
-        // Case-insensitive replacement
-        if lower.contains(&marker_lower) {
-            // Find and replace case-insensitively
-            let mut new_result = String::with_capacity(result.len());
-            let mut search_pos = 0;
-            let result_lower = result.to_lowercase();
+        // All injection markers are pure ASCII, so we use ASCII case-insensitive
+        // search directly on `result` to avoid byte-offset misalignment between
+        // the original string and its `to_lowercase()` form (which can differ
+        // in length for non-ASCII characters like Turkish dotted-I).
+        let marker_bytes = marker.as_bytes();
+        let marker_len = marker_bytes.len();
+        let mut search_pos = 0;
+        let mut new_result = String::with_capacity(result.len());
 
-            while let Some(found) = result_lower[search_pos..].find(&marker_lower) {
-                let abs_pos = search_pos + found;
-                new_result.push_str(&result[search_pos..abs_pos]);
-                new_result.push_str("[injection marker removed]");
-                search_pos = abs_pos + marker.len();
+        while search_pos + marker_len <= result.len() {
+            if result.as_bytes()[search_pos..search_pos + marker_len]
+                .eq_ignore_ascii_case(marker_bytes)
+            {
+                // Ensure we're at a char boundary (markers are ASCII so start is fine,
+                // but verify end is also a boundary).
+                if result.is_char_boundary(search_pos)
+                    && result.is_char_boundary(search_pos + marker_len)
+                {
+                    new_result.push_str(&result[..search_pos]);
+                    new_result.push_str("[injection marker removed]");
+                    result = result[search_pos + marker_len..].to_string();
+                    search_pos = 0;
+                    continue;
+                }
             }
-            new_result.push_str(&result[search_pos..]);
+            search_pos += 1;
+        }
+        if !new_result.is_empty() {
+            new_result.push_str(&result);
             result = new_result;
         }
     }

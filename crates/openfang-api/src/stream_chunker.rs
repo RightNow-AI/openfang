@@ -73,8 +73,9 @@ impl StreamChunker {
             return Some(chunk);
         }
 
-        // Find best break point
-        let search_range = self.min_chunk_chars..self.buffer.len().min(self.max_chunk_chars);
+        // Find best break point (snap to char boundaries for UTF-8 safety)
+        let search_range = self.buffer.floor_char_boundary(self.min_chunk_chars)
+            ..self.buffer.floor_char_boundary(self.buffer.len().min(self.max_chunk_chars));
 
         // Priority 1: Paragraph break (double newline)
         if let Some(pos) = find_last_in_range(&self.buffer, "\n\n", &search_range) {
@@ -102,9 +103,9 @@ impl StreamChunker {
             }
         }
 
-        // Priority 4: Forced break at max_chunk_chars
+        // Priority 4: Forced break at max_chunk_chars (snap to char boundary)
         if self.buffer.len() >= self.max_chunk_chars {
-            let break_at = self.max_chunk_chars;
+            let break_at = self.buffer.floor_char_boundary(self.max_chunk_chars);
             let chunk = self.buffer[..break_at].to_string();
             self.buffer = self.buffer[break_at..].to_string();
             return Some(chunk);

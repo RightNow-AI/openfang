@@ -1913,7 +1913,7 @@ fn draw_routing_pick(f: &mut Frame, area: Rect, state: &mut State, tier: usize) 
                 .next_back()
                 .unwrap_or(&state.routing_models[t]);
             let display = if short.len() > 14 {
-                &short[..14]
+                &short[..short.floor_char_boundary(14)]
             } else {
                 short
             };

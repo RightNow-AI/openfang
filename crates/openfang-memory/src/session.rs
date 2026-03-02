@@ -572,7 +572,7 @@ impl SessionStore {
                             ContentBlock::Thinking { thinking } => {
                                 text_parts.push(format!(
                                     "[thinking: {}]",
-                                    &thinking[..thinking.len().min(200)]
+                                    &thinking[..thinking.floor_char_boundary(200)]
                                 ));
                             }
                             ContentBlock::Unknown => {}

@@ -102,7 +102,7 @@ pub fn recover_from_overflow(
             for block in blocks.iter_mut() {
                 if let ContentBlock::ToolResult { content, .. } = block {
                     if content.len() > tool_truncation_limit {
-                        let keep = tool_truncation_limit.saturating_sub(80);
+                        let keep = content.floor_char_boundary(tool_truncation_limit.saturating_sub(80));
                         *content = format!(
                             "{}\n\n[OVERFLOW RECOVERY: truncated from {} to {} chars]",
                             &content[..keep],

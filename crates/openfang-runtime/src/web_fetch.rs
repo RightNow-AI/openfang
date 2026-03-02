@@ -92,9 +92,10 @@ impl WebFetchEngine {
 
         // Step 5: Truncate
         let truncated = if processed.len() > self.config.max_chars {
+            let cut = processed.floor_char_boundary(self.config.max_chars);
             format!(
                 "{}... [truncated, {} total chars]",
-                &processed[..self.config.max_chars],
+                &processed[..cut],
                 processed.len()
             )
         } else {

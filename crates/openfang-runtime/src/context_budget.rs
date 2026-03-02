@@ -64,12 +64,14 @@ pub fn truncate_tool_result_dynamic(content: &str, budget: &ContextBudget) -> St
         return content.to_string();
     }
 
+    // Snap indices to valid UTF-8 char boundaries to avoid panics on multi-byte text
+    let cap = content.floor_char_boundary(cap);
+    let search_start = content.floor_char_boundary(cap.saturating_sub(200));
     // Find last newline before the cap to break cleanly
-    let search_start = cap.saturating_sub(200);
     let break_point = content[search_start..cap]
         .rfind('\n')
         .map(|pos| search_start + pos)
-        .unwrap_or(cap.saturating_sub(100));
+        .unwrap_or(content.floor_char_boundary(cap.saturating_sub(100)));
 
     format!(
         "{}\n\n[TRUNCATED: result was {} chars, showing first {} (budget: {}% of {}K context window)]",
@@ -177,11 +179,13 @@ fn truncate_to(content: &str, max_chars: usize) -> String {
     if content.len() <= max_chars {
         return content.to_string();
     }
-    let keep = max_chars.saturating_sub(80);
+    // Snap indices to valid UTF-8 char boundaries to avoid panics on multi-byte text
+    let keep = content.floor_char_boundary(max_chars.saturating_sub(80));
+    let search_start = content.floor_char_boundary(keep.saturating_sub(100));
     // Try to break at newline
-    let break_point = content[keep.saturating_sub(100)..keep]
+    let break_point = content[search_start..keep]
         .rfind('\n')
-        .map(|pos| keep.saturating_sub(100) + pos)
+        .map(|pos| search_start + pos)
         .unwrap_or(keep);
     format!(
         "{}\n\n[COMPACTED: {} → {} chars by context guard]",
