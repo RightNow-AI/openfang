@@ -13,8 +13,12 @@ use openfang_kernel::workflow::{
 use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::tool_runner::builtin_tool_definitions;
+use openfang_skills::clawhub::{
+    ClawHubBrowseResponse, ClawHubCache, ClawHubSearchResponse, ClawHubSkillDetail,
+};
 use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
 use std::collections::HashMap;
+
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
@@ -33,6 +37,12 @@ pub struct AppState {
     pub channels_config: tokio::sync::RwLock<openfang_types::config::ChannelsConfig>,
     /// Notify handle to trigger graceful HTTP server shutdown from the API.
     pub shutdown_notify: Arc<tokio::sync::Notify>,
+    /// In-memory cache for ClawHub search responses (TTL: 60 seconds).
+    pub clawhub_search_cache: Arc<ClawHubCache<ClawHubSearchResponse>>,
+    /// In-memory cache for ClawHub browse responses (TTL: 60 seconds).
+    pub clawhub_browse_cache: Arc<ClawHubCache<ClawHubBrowseResponse>>,
+    /// In-memory cache for ClawHub skill details (TTL: 60 seconds).
+    pub clawhub_detail_cache: Arc<ClawHubCache<ClawHubSkillDetail>>,
 }
 
 /// POST /api/agents — Spawn a new agent.
@@ -2765,6 +2775,8 @@ pub async fn marketplace_search(
 /// Query parameters:
 /// - `q` — search query (required)
 /// - `limit` — max results (default: 20, max: 50)
+///
+/// Uses in-memory caching with 60s TTL to reduce API calls.
 pub async fn clawhub_search(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
@@ -2782,12 +2794,44 @@ pub async fn clawhub_search(
         .and_then(|v| v.parse().ok())
         .unwrap_or(20);
 
+    // Check cache first
+    let cache_key = format!("search:{}:{}", query, limit);
+    if let Some(cached) = state.clawhub_search_cache.get(&cache_key) {
+        tracing::debug!("ClawHub search cache hit for query: {}", query);
+        let items: Vec<serde_json::Value> = cached
+            .results
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "slug": e.slug,
+                    "name": e.display_name,
+                    "description": e.summary,
+                    "version": e.version,
+                    "score": e.score,
+                    "updated_at": e.updated_at,
+                })
+            })
+            .collect();
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "items": items,
+                "next_cursor": null,
+                "cached": true,
+            })),
+        );
+    }
+
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
     match client.search(&query, limit).await {
-        Ok(results) => {
-            let items: Vec<serde_json::Value> = results
+        Ok(response) => {
+            // Cache the response
+            state.clawhub_search_cache.insert(cache_key, response.data.clone());
+
+            let items: Vec<serde_json::Value> = response
+                .data
                 .results
                 .iter()
                 .map(|e| {
@@ -2810,11 +2854,24 @@ pub async fn clawhub_search(
             )
         }
         Err(e) => {
-            tracing::warn!("ClawHub search failed: {e}");
+            let error_msg = format!("{e}");
+            tracing::warn!("ClawHub search failed: {error_msg}");
+
+            // Check if it's a rate limit error (429)
+            if error_msg.contains("429") || error_msg.contains("rate limit") {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(serde_json::json!({
+                        "error": error_msg,
+                        "retry_after": 60,
+                    })),
+                );
+            }
+
             (
-                StatusCode::OK,
+                StatusCode::BAD_GATEWAY,
                 Json(
-                    serde_json::json!({"items": [], "next_cursor": null, "error": format!("{e}")}),
+                    serde_json::json!({"items": [], "next_cursor": null, "error": error_msg}),
                 ),
             )
         }
@@ -2827,6 +2884,8 @@ pub async fn clawhub_search(
 /// - `sort` — sort order: "trending", "downloads", "stars", "updated", "rating" (default: "trending")
 /// - `limit` — max results (default: 20, max: 50)
 /// - `cursor` — pagination cursor from previous response
+///
+/// Uses in-memory caching with 60s TTL to reduce API calls.
 pub async fn clawhub_browse(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
@@ -2846,12 +2905,40 @@ pub async fn clawhub_browse(
 
     let cursor = params.get("cursor").map(|s| s.as_str());
 
+    // Check cache first
+    let cache_key = format!(
+        "browse:{}:{}:{}",
+        sort.as_str(),
+        limit,
+        cursor.unwrap_or("")
+    );
+    if let Some(cached) = state.clawhub_browse_cache.get(&cache_key) {
+        tracing::debug!("ClawHub browse cache hit");
+        let items: Vec<serde_json::Value> = cached
+            .items
+            .iter()
+            .map(clawhub_browse_entry_to_json)
+            .collect();
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "items": items,
+                "next_cursor": cached.next_cursor,
+                "cached": true,
+            })),
+        );
+    }
+
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
     match client.browse(sort, limit, cursor).await {
-        Ok(results) => {
-            let items: Vec<serde_json::Value> = results
+        Ok(response) => {
+            // Cache the response
+            state.clawhub_browse_cache.insert(cache_key, response.data.clone());
+
+            let items: Vec<serde_json::Value> = response
+                .data
                 .items
                 .iter()
                 .map(clawhub_browse_entry_to_json)
@@ -2860,16 +2947,29 @@ pub async fn clawhub_browse(
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "items": items,
-                    "next_cursor": results.next_cursor,
+                    "next_cursor": response.data.next_cursor,
                 })),
             )
         }
         Err(e) => {
-            tracing::warn!("ClawHub browse failed: {e}");
+            let error_msg = format!("{e}");
+            tracing::warn!("ClawHub browse failed: {error_msg}");
+
+            // Check if it's a rate limit error (429)
+            if error_msg.contains("429") || error_msg.contains("rate limit") {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(serde_json::json!({
+                        "error": error_msg,
+                        "retry_after": 60,
+                    })),
+                );
+            }
+
             (
-                StatusCode::OK,
+                StatusCode::BAD_GATEWAY,
                 Json(
-                    serde_json::json!({"items": [], "next_cursor": null, "error": format!("{e}")}),
+                    serde_json::json!({"items": [], "next_cursor": null, "error": error_msg}),
                 ),
             )
         }
@@ -2877,10 +2977,63 @@ pub async fn clawhub_browse(
 }
 
 /// GET /api/clawhub/skill/{slug} — Get detailed info about a ClawHub skill.
+///
+/// Uses in-memory caching with 60s TTL to reduce API calls.
 pub async fn clawhub_skill_detail(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
+    // Check cache first
+    let cache_key = format!("skill:{}", slug);
+    if let Some(cached) = state.clawhub_detail_cache.get(&cache_key) {
+        tracing::debug!("ClawHub skill detail cache hit for: {}", slug);
+        let skills_dir = state.kernel.config.home_dir.join("skills");
+        let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
+        let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+        let is_installed = client.is_installed(&slug, &skills_dir);
+
+        let version = cached
+            .latest_version
+            .as_ref()
+            .map(|v| v.version.as_str())
+            .unwrap_or("");
+        let author = cached
+            .owner
+            .as_ref()
+            .map(|o| o.handle.as_str())
+            .unwrap_or("");
+        let author_name = cached
+            .owner
+            .as_ref()
+            .map(|o| o.display_name.as_str())
+            .unwrap_or("");
+        let author_image = cached
+            .owner
+            .as_ref()
+            .map(|o| o.image.as_str())
+            .unwrap_or("");
+
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "slug": cached.skill.slug,
+                "name": cached.skill.display_name,
+                "description": cached.skill.summary,
+                "version": version,
+                "downloads": cached.skill.stats.downloads,
+                "stars": cached.skill.stats.stars,
+                "author": author,
+                "author_name": author_name,
+                "author_image": author_image,
+                "tags": cached.skill.tags,
+                "updated_at": cached.skill.updated_at,
+                "created_at": cached.skill.created_at,
+                "installed": is_installed,
+                "cached": true,
+            })),
+        );
+    }
+
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
@@ -2888,7 +3041,11 @@ pub async fn clawhub_skill_detail(
     let is_installed = client.is_installed(&slug, &skills_dir);
 
     match client.get_skill(&slug).await {
-        Ok(detail) => {
+        Ok(response) => {
+            // Cache the response
+            state.clawhub_detail_cache.insert(cache_key, response.data.clone());
+
+            let detail = response.data;
             let version = detail
                 .latest_version
                 .as_ref()
@@ -2929,10 +3086,26 @@ pub async fn clawhub_skill_detail(
                 })),
             )
         }
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        ),
+        Err(e) => {
+            let error_msg = format!("{e}");
+            tracing::warn!("ClawHub skill detail failed for {}: {}", slug, error_msg);
+
+            // Check if it's a rate limit error (429)
+            if error_msg.contains("429") || error_msg.contains("rate limit") {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(serde_json::json!({
+                        "error": error_msg,
+                        "retry_after": 60,
+                    })),
+                );
+            }
+
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": error_msg})),
+            )
+        }
     }
 }
 
