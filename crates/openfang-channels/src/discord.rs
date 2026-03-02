@@ -112,6 +112,48 @@ impl DiscordAdapter {
         Ok(())
     }
 
+    /// Send a file to a Discord channel via multipart upload.
+    async fn api_send_file(
+        &self,
+        channel_id: &str,
+        file_url: &str,
+        filename: &str,
+        caption: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!("{DISCORD_API_BASE}/channels/{channel_id}/messages");
+
+        let file_bytes = crate::media_utils::download_url(&self.client, file_url)
+            .await
+            .ok_or("Failed to download file for sending")?;
+
+        let part = reqwest::multipart::Part::bytes(file_bytes.to_vec())
+            .file_name(filename.to_string())
+            .mime_str("application/octet-stream")?;
+
+        let mut form = reqwest::multipart::Form::new().part("files[0]", part);
+
+        if let Some(cap) = caption {
+            form = form.text(
+                "payload_json",
+                serde_json::json!({"content": cap}).to_string(),
+            );
+        }
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bot {}", self.token.as_str()))
+            .multipart(form)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Discord sendFile failed: {body_text}");
+        }
+        Ok(())
+    }
+
     /// Send typing indicator to a Discord channel.
     async fn api_send_typing(&self, channel_id: &str) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!("{DISCORD_API_BASE}/channels/{channel_id}/typing");
@@ -145,6 +187,7 @@ impl ChannelAdapter for DiscordAdapter {
         let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
 
         let token = self.token.clone();
+        let client = self.client.clone();
         let intents = self.intents;
         let allowed_guilds = self.allowed_guilds.clone();
         let bot_user_id = self.bot_user_id.clone();
@@ -307,7 +350,7 @@ impl ChannelAdapter for DiscordAdapter {
 
                                 "MESSAGE_CREATE" | "MESSAGE_UPDATE" => {
                                     if let Some(msg) =
-                                        parse_discord_message(d, &bot_user_id, &allowed_guilds)
+                                        parse_discord_message(d, &bot_user_id, &allowed_guilds, &client)
                                             .await
                                     {
                                         debug!(
@@ -400,6 +443,14 @@ impl ChannelAdapter for DiscordAdapter {
             ChannelContent::Text(text) => {
                 self.api_send_message(channel_id, &text).await?;
             }
+            ChannelContent::File { url, filename } => {
+                self.api_send_file(channel_id, &url, &filename, None)
+                    .await?;
+            }
+            ChannelContent::Image { url, caption } => {
+                self.api_send_file(channel_id, &url, "image.jpg", caption.as_deref())
+                    .await?;
+            }
             _ => {
                 self.api_send_message(channel_id, "(Unsupported content type)")
                     .await?;
@@ -419,10 +470,14 @@ impl ChannelAdapter for DiscordAdapter {
 }
 
 /// Parse a Discord MESSAGE_CREATE or MESSAGE_UPDATE payload into a `ChannelMessage`.
+///
+/// Handles text messages, slash commands, and attachments (images, files).
+/// Attachments are downloaded and processed: images via Gemini Vision, text files extracted.
 async fn parse_discord_message(
     d: &serde_json::Value,
     bot_user_id: &Arc<RwLock<Option<String>>>,
     allowed_guilds: &[u64],
+    client: &reqwest::Client,
 ) -> Option<ChannelMessage> {
     let author = d.get("author")?;
     let author_id = author["id"].as_str()?;
@@ -450,7 +505,11 @@ async fn parse_discord_message(
     }
 
     let content_text = d["content"].as_str().unwrap_or("");
-    if content_text.is_empty() {
+    let attachments = d["attachments"].as_array();
+    let has_attachments = attachments.map_or(false, |a| !a.is_empty());
+
+    // Skip if no content AND no attachments
+    if content_text.is_empty() && !has_attachments {
         return None;
     }
 
@@ -470,12 +529,51 @@ async fn parse_discord_message(
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .unwrap_or_else(chrono::Utc::now);
 
-    // Parse commands (messages starting with /)
-    let content = if content_text.starts_with('/') {
-        let parts: Vec<&str> = content_text.splitn(2, ' ').collect();
-        let cmd_name = &parts[0][1..];
-        let args = if parts.len() > 1 {
-            parts[1].split_whitespace().map(String::from).collect()
+    // Process attachments into text descriptions
+    let mut parts: Vec<String> = Vec::new();
+
+    if has_attachments {
+        for att in attachments.unwrap() {
+            let att_url = att["url"].as_str().unwrap_or("");
+            let att_filename = att["filename"].as_str().unwrap_or("file");
+            let att_content_type = att["content_type"].as_str().unwrap_or("application/octet-stream");
+            let att_size = att["size"].as_u64().unwrap_or(0);
+
+            if att_url.is_empty() {
+                continue;
+            }
+
+            info!(
+                "Discord: attachment '{}' ({} bytes) from {}",
+                att_filename, att_size, display_name
+            );
+
+            let description = crate::media_utils::process_attachment_to_text(
+                client,
+                att_url,
+                att_filename,
+                att_content_type,
+                att_size,
+                content_text,
+            )
+            .await;
+            parts.push(description);
+        }
+    }
+
+    // Build final content
+    let content = if !parts.is_empty() {
+        // Has attachments — combine text + attachment descriptions
+        if !content_text.is_empty() && !has_attachments_only_images(attachments) {
+            parts.insert(0, content_text.to_string());
+        }
+        ChannelContent::Text(parts.join("\n"))
+    } else if content_text.starts_with('/') {
+        // Parse commands (messages starting with /)
+        let cmd_parts: Vec<&str> = content_text.splitn(2, ' ').collect();
+        let cmd_name = &cmd_parts[0][1..];
+        let args = if cmd_parts.len() > 1 {
+            cmd_parts[1].split_whitespace().map(String::from).collect()
         } else {
             vec![]
         };
@@ -504,6 +602,17 @@ async fn parse_discord_message(
     })
 }
 
+/// Check if all attachments are images (to avoid duplicating text content as caption).
+fn has_attachments_only_images(attachments: Option<&Vec<serde_json::Value>>) -> bool {
+    attachments.map_or(true, |atts| {
+        atts.iter().all(|a| {
+            let ct = a["content_type"].as_str().unwrap_or("");
+            let fname = a["filename"].as_str().unwrap_or("");
+            crate::media_utils::is_image(fname, ct)
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,7 +633,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Discord);
         assert_eq!(msg.sender.display_name, "alice");
         assert_eq!(msg.sender.platform_id, "ch1");
@@ -546,7 +655,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await;
         assert!(msg.is_none());
     }
 
@@ -566,7 +675,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await;
         assert!(msg.is_none());
     }
 
@@ -587,11 +696,11 @@ mod tests {
         });
 
         // Not in allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &[111, 222]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[111, 222], &reqwest::Client::new()).await;
         assert!(msg.is_none());
 
         // In allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &[999]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[999], &reqwest::Client::new()).await;
         assert!(msg.is_some());
     }
 
@@ -610,7 +719,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await.unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -635,7 +744,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await;
         assert!(msg.is_none());
     }
 
@@ -654,7 +763,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await.unwrap();
         assert_eq!(msg.sender.display_name, "alice#1234");
     }
 
@@ -676,7 +785,7 @@ mod tests {
         });
 
         // MESSAGE_UPDATE uses the same parse function as MESSAGE_CREATE
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &reqwest::Client::new()).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Discord);
         assert!(
             matches!(msg.content, ChannelContent::Text(ref t) if t == "Edited message content")

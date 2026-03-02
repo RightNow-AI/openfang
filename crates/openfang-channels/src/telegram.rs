@@ -97,6 +97,44 @@ impl TelegramAdapter {
         Ok(())
     }
 
+    /// Send a file via `sendDocument` on the Telegram API.
+    async fn api_send_document(
+        &self,
+        chat_id: i64,
+        file_url: &str,
+        filename: &str,
+        caption: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendDocument",
+            self.token.as_str()
+        );
+
+        // Download the file first, then upload via multipart
+        let file_bytes = crate::media_utils::download_url(&self.client, file_url)
+            .await
+            .ok_or("Failed to download file for sending")?;
+
+        let part = reqwest::multipart::Part::bytes(file_bytes.to_vec())
+            .file_name(filename.to_string())
+            .mime_str("application/octet-stream")?;
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("document", part);
+
+        if let Some(cap) = caption {
+            form = form.text("caption", cap.to_string());
+        }
+
+        let resp = self.client.post(&url).multipart(form).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram sendDocument failed: {body_text}");
+        }
+        Ok(())
+    }
+
     /// Call `sendChatAction` to show "typing..." indicator.
     async fn api_send_typing(&self, chat_id: i64) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
@@ -243,10 +281,21 @@ impl ChannelAdapter for TelegramAdapter {
                         offset = Some(update_id + 1);
                     }
 
-                    // Parse the message
+                    // Parse text messages first, then try multimedia handlers
                     let msg = match parse_telegram_update(update, &allowed_users) {
                         Some(m) => m,
-                        None => continue, // filtered out or unparseable
+                        None => {
+                            // Not a text message — try voice, photo, document handlers
+                            if let Some(m) = try_handle_voice(update, &allowed_users, &client, &token).await {
+                                m
+                            } else if let Some(m) = try_handle_photo(update, &allowed_users, &client, &token).await {
+                                m
+                            } else if let Some(m) = try_handle_document(update, &allowed_users, &client, &token).await {
+                                m
+                            } else {
+                                continue;
+                            }
+                        }
                     };
 
                     debug!(
@@ -284,6 +333,14 @@ impl ChannelAdapter for TelegramAdapter {
         match content {
             ChannelContent::Text(text) => {
                 self.api_send_message(chat_id, &text).await?;
+            }
+            ChannelContent::File { url, filename } => {
+                self.api_send_document(chat_id, &url, &filename, None)
+                    .await?;
+            }
+            ChannelContent::Image { url, caption } => {
+                self.api_send_document(chat_id, &url, "image.jpg", caption.as_deref())
+                    .await?;
             }
             _ => {
                 self.api_send_message(chat_id, "(Unsupported content type)")
@@ -380,6 +437,378 @@ fn parse_telegram_update(
             openfang_user: None,
         },
         content,
+        target_agent: None,
+        timestamp,
+        is_group,
+        thread_id: None,
+        metadata: HashMap::new(),
+    })
+}
+
+/// Handle voice messages from Telegram by downloading and transcribing with Groq Whisper.
+///
+/// Returns a `ChannelMessage` with the transcription as text, or `None` if not a voice message
+/// or transcription fails.
+async fn try_handle_voice(
+    update: &serde_json::Value,
+    allowed_users: &[i64],
+    client: &reqwest::Client,
+    token: &str,
+) -> Option<ChannelMessage> {
+    let message = update.get("message")?;
+    let voice = message.get("voice")?;
+    let from = message.get("from")?;
+    let user_id = from["id"].as_i64()?;
+
+    if !allowed_users.is_empty() && !allowed_users.contains(&user_id) {
+        return None;
+    }
+
+    let chat_id = message["chat"]["id"].as_i64()?;
+    let first_name = from["first_name"].as_str().unwrap_or("Unknown");
+    let last_name = from["last_name"].as_str().unwrap_or("");
+    let display_name = if last_name.is_empty() {
+        first_name.to_string()
+    } else {
+        format!("{first_name} {last_name}")
+    };
+    let chat_type = message["chat"]["type"].as_str().unwrap_or("private");
+    let is_group = chat_type == "group" || chat_type == "supergroup";
+    let message_id = message["message_id"].as_i64().unwrap_or(0);
+    let timestamp = message["date"]
+        .as_i64()
+        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+        .unwrap_or_else(chrono::Utc::now);
+
+    let file_id = voice["file_id"].as_str()?;
+    let _duration = voice["duration"].as_u64().unwrap_or(0);
+    info!("Telegram: voice message from {display_name}, downloading...");
+
+    // Step 1: Get file path via Telegram getFile API
+    let get_file_url = format!("https://api.telegram.org/bot{token}/getFile?file_id={file_id}");
+    let file_resp: serde_json::Value = client.get(&get_file_url).send().await.ok()?.json().await.ok()?;
+    let file_path = file_resp["result"]["file_path"].as_str()?;
+
+    // Step 2: Download the audio file
+    let download_url = format!("https://api.telegram.org/file/bot{token}/{file_path}");
+    let audio_bytes = client.get(&download_url).send().await.ok()?.bytes().await.ok()?;
+
+    // Step 3: Transcribe with Groq Whisper (or OpenAI Whisper as fallback)
+    let transcription = transcribe_audio(client, &audio_bytes, file_path).await;
+    let text = match transcription {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            warn!("Telegram: voice transcription failed for {display_name}");
+            "[Voice message received, but transcription failed]".to_string()
+        }
+    };
+
+    info!("Telegram: voice transcribed for {display_name}: {}", openfang_types::truncate_str(&text, 100));
+
+    Some(ChannelMessage {
+        channel: ChannelType::Telegram,
+        platform_message_id: message_id.to_string(),
+        sender: ChannelUser {
+            platform_id: chat_id.to_string(),
+            display_name,
+            openfang_user: None,
+        },
+        content: ChannelContent::Text(text),
+        target_agent: None,
+        timestamp,
+        is_group,
+        thread_id: None,
+        metadata: HashMap::new(),
+    })
+}
+
+/// Transcribe audio bytes using Groq Whisper or OpenAI Whisper.
+async fn transcribe_audio(
+    client: &reqwest::Client,
+    audio_bytes: &[u8],
+    filename: &str,
+) -> Option<String> {
+    // Determine MIME type and normalize filename for API compatibility.
+    // Telegram uses .oga (Ogg Opus) which Groq doesn't recognize — rename to .ogg.
+    let (mime, upload_filename) = if filename.ends_with(".oga") || filename.ends_with(".ogg") {
+        ("audio/ogg", filename.replace(".oga", ".ogg"))
+    } else if filename.ends_with(".mp3") {
+        ("audio/mpeg", filename.to_string())
+    } else if filename.ends_with(".wav") {
+        ("audio/wav", filename.to_string())
+    } else if filename.ends_with(".m4a") {
+        ("audio/mp4", filename.to_string())
+    } else {
+        ("audio/ogg", format!("{filename}.ogg"))
+    };
+
+    // Try Groq Whisper first (fast, free tier)
+    if let Ok(groq_key) = std::env::var("GROQ_API_KEY") {
+        let form = reqwest::multipart::Form::new()
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(audio_bytes.to_vec())
+                    .file_name(upload_filename.clone())
+                    .mime_str(mime)
+                    .ok()?,
+            )
+            .text("model", "whisper-large-v3-turbo")
+            .text("response_format", "json");
+
+        match client
+            .post("https://api.groq.com/openai/v1/audio/transcriptions")
+            .bearer_auth(&groq_key)
+            .multipart(form)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                match resp.json::<serde_json::Value>().await {
+                    Ok(result) => {
+                        if let Some(text) = result["text"].as_str() {
+                            return Some(text.to_string());
+                        }
+                        warn!("Groq Whisper: no 'text' in response (status={status}): {result}");
+                    }
+                    Err(e) => {
+                        warn!("Groq Whisper: failed to parse response (status={status}): {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Groq Whisper: request failed: {e}");
+            }
+        }
+    } else {
+        warn!("GROQ_API_KEY not set, skipping Groq Whisper");
+    }
+
+    // Fallback: OpenAI Whisper
+    if let Ok(openai_key) = std::env::var("OPENAI_API_KEY") {
+        let form = reqwest::multipart::Form::new()
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(audio_bytes.to_vec())
+                    .file_name(upload_filename.clone())
+                    .mime_str(mime)
+                    .ok()?,
+            )
+            .text("model", "whisper-1")
+            .text("response_format", "json");
+
+        match client
+            .post("https://api.openai.com/v1/audio/transcriptions")
+            .bearer_auth(&openai_key)
+            .multipart(form)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                match resp.json::<serde_json::Value>().await {
+                    Ok(result) => {
+                        if let Some(text) = result["text"].as_str() {
+                            return Some(text.to_string());
+                        }
+                        warn!("OpenAI Whisper: no 'text' in response (status={status}): {result}");
+                    }
+                    Err(e) => {
+                        warn!("OpenAI Whisper: failed to parse response (status={status}): {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("OpenAI Whisper: request failed: {e}");
+            }
+        }
+    }
+
+    warn!("Voice transcription: all providers failed for file '{filename}' ({} bytes, mime={mime})", audio_bytes.len());
+    None
+}
+
+/// Handle photo messages from Telegram by downloading and recognizing with Gemini Vision.
+///
+/// Picks the largest available photo size. Captions are used as the recognition prompt.
+/// Returns a `ChannelMessage` with the recognition result as text.
+async fn try_handle_photo(
+    update: &serde_json::Value,
+    allowed_users: &[i64],
+    client: &reqwest::Client,
+    token: &str,
+) -> Option<ChannelMessage> {
+    let message = update.get("message")?;
+    let photos = message.get("photo")?.as_array()?;
+    if photos.is_empty() {
+        return None;
+    }
+    let from = message.get("from")?;
+    let user_id = from["id"].as_i64()?;
+
+    if !allowed_users.is_empty() && !allowed_users.contains(&user_id) {
+        return None;
+    }
+
+    let chat_id = message["chat"]["id"].as_i64()?;
+    let first_name = from["first_name"].as_str().unwrap_or("Unknown");
+    let last_name = from["last_name"].as_str().unwrap_or("");
+    let display_name = if last_name.is_empty() {
+        first_name.to_string()
+    } else {
+        format!("{first_name} {last_name}")
+    };
+    let chat_type = message["chat"]["type"].as_str().unwrap_or("private");
+    let is_group = chat_type == "group" || chat_type == "supergroup";
+    let message_id = message["message_id"].as_i64().unwrap_or(0);
+    let timestamp = message["date"]
+        .as_i64()
+        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+        .unwrap_or_else(chrono::Utc::now);
+
+    // Pick the largest photo (last in the array — Telegram sorts by size ascending)
+    let photo = photos.last()?;
+    let file_id = photo["file_id"].as_str()?;
+    let caption = message["caption"].as_str().unwrap_or("");
+
+    info!("Telegram: photo from {display_name}, downloading...");
+
+    // Download via Telegram getFile API
+    let get_file_url = format!("https://api.telegram.org/bot{token}/getFile?file_id={file_id}");
+    let file_resp: serde_json::Value =
+        client.get(&get_file_url).send().await.ok()?.json().await.ok()?;
+    let file_path = file_resp["result"]["file_path"].as_str()?;
+    let download_url = format!("https://api.telegram.org/file/bot{token}/{file_path}");
+    let image_bytes = client.get(&download_url).send().await.ok()?.bytes().await.ok()?;
+
+    // Recognize with Gemini Vision
+    let recognition = crate::media_utils::recognize_image_gemini(client, &image_bytes, caption).await;
+
+    let text = if caption.is_empty() {
+        format!("[User sent a photo]\nImage content: {recognition}")
+    } else {
+        format!("[User sent a photo with caption: {caption}]\nImage content: {recognition}")
+    };
+
+    info!(
+        "Telegram: photo recognized for {display_name}: {}",
+        openfang_types::truncate_str(&text, 100)
+    );
+
+    Some(ChannelMessage {
+        channel: ChannelType::Telegram,
+        platform_message_id: message_id.to_string(),
+        sender: ChannelUser {
+            platform_id: chat_id.to_string(),
+            display_name,
+            openfang_user: None,
+        },
+        content: ChannelContent::Text(text),
+        target_agent: None,
+        timestamp,
+        is_group,
+        thread_id: None,
+        metadata: HashMap::new(),
+    })
+}
+
+/// Handle document/file messages from Telegram.
+///
+/// Downloads the file and:
+/// - If image: recognizes with Gemini Vision
+/// - If text file (<50KB): extracts content
+/// - Otherwise: reports filename, size, and MIME type
+async fn try_handle_document(
+    update: &serde_json::Value,
+    allowed_users: &[i64],
+    client: &reqwest::Client,
+    token: &str,
+) -> Option<ChannelMessage> {
+    let message = update.get("message")?;
+    let document = message.get("document")?;
+    let from = message.get("from")?;
+    let user_id = from["id"].as_i64()?;
+
+    if !allowed_users.is_empty() && !allowed_users.contains(&user_id) {
+        return None;
+    }
+
+    let chat_id = message["chat"]["id"].as_i64()?;
+    let first_name = from["first_name"].as_str().unwrap_or("Unknown");
+    let last_name = from["last_name"].as_str().unwrap_or("");
+    let display_name = if last_name.is_empty() {
+        first_name.to_string()
+    } else {
+        format!("{first_name} {last_name}")
+    };
+    let chat_type = message["chat"]["type"].as_str().unwrap_or("private");
+    let is_group = chat_type == "group" || chat_type == "supergroup";
+    let message_id = message["message_id"].as_i64().unwrap_or(0);
+    let timestamp = message["date"]
+        .as_i64()
+        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+        .unwrap_or_else(chrono::Utc::now);
+
+    let file_name = document["file_name"].as_str().unwrap_or("unknown_file");
+    let file_size = document["file_size"].as_u64().unwrap_or(0);
+    let mime_type = document["mime_type"]
+        .as_str()
+        .unwrap_or("application/octet-stream");
+    let file_id = document["file_id"].as_str()?;
+    let caption = message["caption"].as_str().unwrap_or("");
+
+    info!("Telegram: document '{file_name}' ({file_size} bytes) from {display_name}");
+
+    // Download via Telegram getFile API (bots can download files up to 20MB)
+    let get_file_url = format!("https://api.telegram.org/bot{token}/getFile?file_id={file_id}");
+    let file_resp: serde_json::Value =
+        client.get(&get_file_url).send().await.ok()?.json().await.ok()?;
+    let file_path = file_resp["result"]["file_path"].as_str()?;
+    let download_url = format!("https://api.telegram.org/file/bot{token}/{file_path}");
+    let file_bytes = client.get(&download_url).send().await.ok()?.bytes().await.ok()?;
+
+    let mut text =
+        format!("[User sent file: {file_name} (size: {file_size} bytes, type: {mime_type})]");
+
+    // If it's an image sent as document (uncompressed), use Gemini Vision
+    if mime_type.starts_with("image/") {
+        let recognition = crate::media_utils::recognize_image_gemini(client, &file_bytes, caption).await;
+        text.push_str(&format!("\nImage content: {recognition}"));
+    }
+    // If it's a text-like file and small enough, extract content
+    else if crate::media_utils::is_text_file(file_name, mime_type) && file_bytes.len() < 50_000 {
+        match std::str::from_utf8(&file_bytes) {
+            Ok(content) => {
+                let truncated = openfang_types::truncate_str(content, 3000);
+                text.push_str(&format!("\nFile content:\n```\n{truncated}\n```"));
+                if content.len() > 3000 {
+                    text.push_str(&format!("\n... ({} chars total, truncated)", content.len()));
+                }
+            }
+            Err(_) => {
+                text.push_str("\n[Binary file, cannot display text content]");
+            }
+        }
+    }
+
+    if !caption.is_empty() {
+        text.push_str(&format!("\nUser caption: {caption}"));
+    }
+
+    info!(
+        "Telegram: document processed for {display_name}: {}",
+        openfang_types::truncate_str(&text, 100)
+    );
+
+    Some(ChannelMessage {
+        channel: ChannelType::Telegram,
+        platform_message_id: message_id.to_string(),
+        sender: ChannelUser {
+            platform_id: chat_id.to_string(),
+            display_name,
+            openfang_user: None,
+        },
+        content: ChannelContent::Text(text),
         target_agent: None,
         timestamp,
         is_group,
