@@ -8,7 +8,25 @@ const { randomUUID } = require('node:crypto');
 // Config from environment
 // ---------------------------------------------------------------------------
 const PORT = parseInt(process.env.WHATSAPP_GATEWAY_PORT || '3009', 10);
-const OPENFANG_URL = (process.env.OPENFANG_URL || 'http://127.0.0.1:4200').replace(/\/+$/, '');
+const OPENFANG_URL = (() => {
+  const DEFAULT_URL = 'http://127.0.0.1:4200';
+  const SAFE_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
+  const raw = (process.env.OPENFANG_URL || DEFAULT_URL).replace(/\/+$/, '');
+  try {
+    const parsed = new URL(raw);
+    if (!SAFE_HOSTS.has(parsed.hostname)) {
+      console.warn(
+        `[gateway] OPENFANG_URL hostname "${parsed.hostname}" is not a safe loopback address. ` +
+        `Falling back to ${DEFAULT_URL}`
+      );
+      return DEFAULT_URL;
+    }
+    return raw;
+  } catch {
+    console.warn(`[gateway] OPENFANG_URL "${raw}" is not a valid URL. Falling back to ${DEFAULT_URL}`);
+    return DEFAULT_URL;
+  }
+})();
 const DEFAULT_AGENT = process.env.OPENFANG_DEFAULT_AGENT || 'assistant';
 const ALLOWED_NUMBERS = (process.env.WHATSAPP_ALLOWED_USERS || '')
   .split(',')

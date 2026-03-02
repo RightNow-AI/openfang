@@ -109,10 +109,10 @@ pub async fn spawn_agent(
             })),
         ),
         Err(e) => {
-            tracing::warn!("Spawn failed: {e}");
+            tracing::error!("spawn_agent failed: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Agent spawn failed: {e}")})),
+                Json(serde_json::json!({"error": "Agent spawn failed"})),
             )
         }
     }
@@ -298,10 +298,10 @@ pub async fn send_message(
             )
         }
         Err(e) => {
-            tracing::warn!("send_message failed for agent {id}: {e}");
+            tracing::error!("send_message failed for agent {id}: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Message delivery failed: {e}")})),
+                Json(serde_json::json!({"error": "Message delivery failed"})),
             )
         }
     }
@@ -1978,9 +1978,10 @@ pub async fn configure_channel(
         if let Some(env_var) = field_def.env_var {
             // Secret field — write to secrets.env and set in process
             if let Err(e) = write_secret_env(&secrets_path, env_var, value) {
+                tracing::error!("configure_channel: failed to write secret for {env_var}: {e}");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": format!("Failed to write secret: {e}")})),
+                    Json(serde_json::json!({"error": "Failed to write channel secret"})),
                 );
             }
             // SAFETY: env var mutation is inherently unsafe in multi-threaded Rust 2024.
@@ -1997,9 +1998,10 @@ pub async fn configure_channel(
 
     // Write config.toml section
     if let Err(e) = upsert_channel_config(&config_path, &name, &config_fields) {
+        tracing::error!("configure_channel: failed to write config for {name}: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to write config: {e}")})),
+            Json(serde_json::json!({"error": "Failed to write channel configuration"})),
         );
     }
 
@@ -2071,9 +2073,10 @@ pub async fn remove_channel(
 
     // Remove config section
     if let Err(e) = remove_channel_config(&config_path, &name) {
+        tracing::error!("disconnect_channel: failed to remove config for {name}: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to remove config: {e}")})),
+            Json(serde_json::json!({"error": "Failed to remove channel configuration"})),
         );
     }
 
@@ -2215,11 +2218,14 @@ pub async fn whatsapp_qr_start() -> impl IntoResponse {
                 "connected": connected,
             }))
         }
-        Err(e) => Json(serde_json::json!({
-            "available": false,
-            "message": format!("Could not reach WhatsApp Web gateway: {e}"),
-            "help": "Make sure the gateway is running at the configured URL"
-        })),
+        Err(e) => {
+            tracing::warn!("whatsapp_qr_start: could not reach gateway: {e}");
+            Json(serde_json::json!({
+                "available": false,
+                "message": "Could not reach WhatsApp Web gateway",
+                "help": "Make sure the gateway is running at the configured URL"
+            }))
+        }
     }
 }
 
@@ -2838,10 +2844,10 @@ pub async fn install_skill(
             )
         }
         Err(e) => {
-            tracing::warn!("Skill install failed: {e}");
+            tracing::error!("install_skill failed: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Install failed: {e}")})),
+                Json(serde_json::json!({"error": "Skill installation failed"})),
             )
         }
     }
@@ -2865,10 +2871,13 @@ pub async fn uninstall_skill(
                 Json(serde_json::json!({"status": "uninstalled", "name": req.name})),
             )
         }
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        ),
+        Err(e) => {
+            tracing::warn!("uninstall_skill failed for {}: {e}", req.name);
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Skill not found or could not be removed"})),
+            )
+        }
     }
 }
 
@@ -2900,8 +2909,8 @@ pub async fn marketplace_search(
             Json(serde_json::json!({"results": items, "total": items.len()}))
         }
         Err(e) => {
-            tracing::warn!("Marketplace search failed: {e}");
-            Json(serde_json::json!({"results": [], "total": 0, "error": format!("{e}")}))
+            tracing::warn!("marketplace_search failed: {e}");
+            Json(serde_json::json!({"results": [], "total": 0, "error": "Marketplace search failed"}))
         }
     }
 }
@@ -2969,7 +2978,6 @@ pub async fn clawhub_search(
         Err(e) => {
             let msg = format!("{e}");
             tracing::warn!("ClawHub search failed: {msg}");
-            // Propagate 429 status instead of masking as 200
             let status = if msg.contains("429") || msg.contains("rate limit") {
                 StatusCode::TOO_MANY_REQUESTS
             } else {
@@ -2978,7 +2986,7 @@ pub async fn clawhub_search(
             (
                 status,
                 Json(
-                    serde_json::json!({"items": [], "next_cursor": null, "error": msg}),
+                    serde_json::json!({"items": [], "next_cursor": null, "error": "ClawHub search failed"}),
                 ),
             )
         }
@@ -3046,7 +3054,7 @@ pub async fn clawhub_browse(
             (
                 status,
                 Json(
-                    serde_json::json!({"items": [], "next_cursor": null, "error": msg}),
+                    serde_json::json!({"items": [], "next_cursor": null, "error": "ClawHub browse failed"}),
                 ),
             )
         }
@@ -3106,10 +3114,13 @@ pub async fn clawhub_skill_detail(
                 })),
             )
         }
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        ),
+        Err(e) => {
+            tracing::warn!("clawhub_skill_detail failed for {slug}: {e}");
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Skill not found"})),
+            )
+        }
     }
 }
 
@@ -3209,17 +3220,12 @@ pub async fn clawhub_install(
             )
         }
         Err(e) => {
-            let msg = format!("{e}");
-            let status = if msg.contains("SecurityBlocked") {
-                StatusCode::FORBIDDEN
-            } else if msg.contains("429") || msg.contains("rate limit") {
-                StatusCode::TOO_MANY_REQUESTS
-            } else if msg.contains("Network error") || msg.contains("returned 4") || msg.contains("returned 5") {
-                StatusCode::BAD_GATEWAY
+            let (status, msg) = if e.to_string().contains("SecurityBlocked") {
+                (StatusCode::FORBIDDEN, "Skill blocked by security policy")
             } else {
-                StatusCode::INTERNAL_SERVER_ERROR
+                (StatusCode::INTERNAL_SERVER_ERROR, "Skill installation failed")
             };
-            tracing::warn!("ClawHub install failed: {msg}");
+            tracing::error!("clawhub_install failed for {}: {e}", req.slug);
             (status, Json(serde_json::json!({"error": msg})))
         }
     }

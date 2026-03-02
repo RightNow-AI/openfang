@@ -17,6 +17,20 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+/// Explicit set of allowed HTTP methods for CORS.
+/// SECURITY: Never use `tower_http::cors::Any` for methods — restrict to the
+/// methods the API actually handles.
+fn cors_allowed_methods() -> [axum::http::Method; 6] {
+    [
+        axum::http::Method::GET,
+        axum::http::Method::POST,
+        axum::http::Method::PUT,
+        axum::http::Method::DELETE,
+        axum::http::Method::PATCH,
+        axum::http::Method::OPTIONS,
+    ]
+}
+
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct DaemonInfo {
@@ -75,7 +89,7 @@ pub async fn build_router(
         }
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods(tower_http::cors::Any)
+            .allow_methods(cors_allowed_methods())
             .allow_headers(tower_http::cors::Any)
     } else {
         // Auth enabled → restrict CORS to localhost + configured origins.
@@ -99,7 +113,7 @@ pub async fn build_router(
         }
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods(tower_http::cors::Any)
+            .allow_methods(cors_allowed_methods())
             .allow_headers(tower_http::cors::Any)
     };
 
@@ -773,6 +787,25 @@ pub async fn run_daemon(
     info!("WebSocket endpoint: ws://{addr}/api/agents/{{id}}/ws",);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // SECURITY(L5): Set TCP keep-alive timeout to defend against slowloris-style
+    // DoS attacks where a client opens a connection and sends data very slowly
+    // to exhaust server resources. A 75-second keep-alive timeout is a common
+    // default (matching nginx's default keepalive_timeout).
+    //
+    // TODO: Add `tower-http` "timeout" feature to Cargo.toml and apply
+    // `TimeoutLayer` / `RequestBodyTimeoutLayer` for HTTP-level request
+    // timeouts. The current `axum::serve` API does not expose TCP keep-alive
+    // or HTTP/2 keep-alive timeout configuration directly. To set TCP-level
+    // keepalive, add the `socket2` crate and configure the socket before
+    // converting to a `tokio::net::TcpListener`:
+    //
+    //   let socket = socket2::Socket::new(...)?;
+    //   socket.set_tcp_keepalive(&socket2::TcpKeepalive::new()
+    //       .with_time(Duration::from_secs(75)))?;
+    //   socket.bind(&addr.into())?;
+    //   socket.listen(1024)?;
+    //   let listener = TcpListener::from_std(socket.into())?;
 
     // Run server with graceful shutdown.
     // SECURITY: `into_make_service_with_connect_info` injects the peer
