@@ -14,9 +14,13 @@
 use crate::openclaw_compat;
 use crate::verify::{SkillVerifier, SkillWarning, WarningSeverity};
 use crate::SkillError;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::info;
 
 // ---------------------------------------------------------------------------
@@ -184,7 +188,8 @@ pub enum ClawHubSort {
 }
 
 impl ClawHubSort {
-    fn as_str(self) -> &'static str {
+    /// Returns the string representation of the sort order.
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Trending => "trending",
             Self::Updated => "updated",
@@ -221,6 +226,72 @@ pub struct ClawHubInstallResult {
     pub is_prompt_only: bool,
 }
 
+/// Response from ClawHub API with status code information.
+#[derive(Debug, Clone)]
+pub struct ClawHubApiResponse<T> {
+    pub data: T,
+    pub status: u16,
+}
+
+/// In-memory cache entry for ClawHub API responses.
+#[derive(Debug, Clone)]
+struct CacheEntry<T> {
+    data: T,
+    cached_at: Instant,
+}
+
+/// Thread-safe in-memory cache with TTL.
+pub struct ClawHubCache<T: Clone + Send + Sync> {
+    entries: DashMap<String, CacheEntry<T>>,
+    ttl: Duration,
+}
+
+impl<T: Clone + Send + Sync> ClawHubCache<T> {
+    /// Create a new cache with the specified TTL.
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            entries: DashMap::new(),
+            ttl,
+        }
+    }
+
+    /// Get a value from the cache if it exists and hasn't expired.
+    pub fn get(&self, key: &str) -> Option<T> {
+        let entry = self.entries.get(key)?;
+        if entry.cached_at.elapsed() < self.ttl {
+            Some(entry.data.clone())
+        } else {
+            drop(entry);
+            self.entries.remove(key);
+            None
+        }
+    }
+
+    /// Insert a value into the cache.
+    pub fn insert(&self, key: String, data: T) {
+        self.entries.insert(
+            key,
+            CacheEntry {
+                data,
+                cached_at: Instant::now(),
+            },
+        );
+    }
+
+    /// Clear all expired entries from the cache.
+    pub fn cleanup(&self) {
+        let keys_to_remove: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.value().cached_at.elapsed() >= self.ttl)
+            .map(|entry| entry.key().clone())
+            .collect();
+        for key in keys_to_remove {
+            self.entries.remove(&key);
+        }
+    }
+}
+
 /// Client for the ClawHub marketplace (clawhub.ai).
 pub struct ClawHubClient {
     /// Base URL for the ClawHub API.
@@ -229,9 +300,60 @@ pub struct ClawHubClient {
     client: reqwest::Client,
     /// Local cache directory for downloaded skills.
     _cache_dir: PathBuf,
+    /// Rate limiter for outgoing requests (10 req/min).
+    rate_limiter: Arc<tokio::sync::Mutex<ClawHubRateLimiter>>,
+}
+
+/// Simple rate limiter for ClawHub API calls.
+pub struct ClawHubRateLimiter {
+    /// Last request timestamps (circular buffer).
+    timestamps: Vec<Instant>,
+    /// Maximum requests per minute.
+    max_requests: usize,
+    /// Current index in circular buffer.
+    index: usize,
+}
+
+impl ClawHubRateLimiter {
+    /// Create a new rate limiter with the specified max requests per minute.
+    pub fn new(max_requests: usize) -> Self {
+        Self {
+            timestamps: Vec::with_capacity(max_requests),
+            max_requests,
+            index: 0,
+        }
+    }
+
+    /// Check if a request can be made, returning how long to wait if not.
+    pub fn check(&mut self) -> Result<(), Duration> {
+        let now = Instant::now();
+        let one_minute = Duration::from_secs(60);
+
+        // Remove timestamps older than 1 minute
+        self.timestamps.retain(|&t| now.duration_since(t) < one_minute);
+
+        if self.timestamps.len() < self.max_requests {
+            self.timestamps.push(now);
+            Ok(())
+        } else {
+            // Find the oldest timestamp to calculate wait time
+            let oldest = self.timestamps.iter().min().copied().unwrap_or(now);
+            let wait_time = one_minute.saturating_sub(now.duration_since(oldest));
+            Err(wait_time)
+        }
+    }
+
+    /// Reset the rate limiter.
+    pub fn reset(&mut self) {
+        self.timestamps.clear();
+        self.index = 0;
+    }
 }
 
 impl ClawHubClient {
+    /// Default rate limit: 10 requests per minute.
+    pub const DEFAULT_RATE_LIMIT: usize = 10;
+
     /// Create a new ClawHub client with default settings.
     ///
     /// Uses the official ClawHub API at `https://clawhub.ai/api/v1`.
@@ -248,18 +370,54 @@ impl ClawHubClient {
                 .build()
                 .unwrap_or_default(),
             _cache_dir: cache_dir,
+            rate_limiter: Arc::new(tokio::sync::Mutex::new(ClawHubRateLimiter::new(
+                Self::DEFAULT_RATE_LIMIT,
+            ))),
+        }
+    }
+
+    /// Create a ClawHub client with custom rate limit.
+    pub fn with_rate_limit(base_url: &str, cache_dir: PathBuf, max_requests: usize) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
+            _cache_dir: cache_dir,
+            rate_limiter: Arc::new(tokio::sync::Mutex::new(ClawHubRateLimiter::new(
+                max_requests,
+            ))),
+        }
+    }
+
+    /// Check rate limit and return error if exceeded.
+    async fn check_rate_limit(&self) -> Result<(), SkillError> {
+        let mut limiter = self.rate_limiter.lock().await;
+        match limiter.check() {
+            Ok(()) => Ok(()),
+            Err(wait_duration) => {
+                let wait_secs = wait_duration.as_secs().max(1);
+                Err(SkillError::Network(format!(
+                    "Rate limit exceeded. Retry after {} seconds",
+                    wait_secs
+                )))
+            }
         }
     }
 
     /// Search for skills on ClawHub using vector/semantic search.
     ///
     /// Uses `GET /api/v1/search?q=...&limit=...`.
-    /// Returns `ClawHubSearchResponse` whose root key is `results` (not `items`).
+    /// Returns `ClawHubApiResponse<ClawHubSearchResponse>` with status code.
     pub async fn search(
         &self,
         query: &str,
         limit: u32,
-    ) -> Result<ClawHubSearchResponse, SkillError> {
+    ) -> Result<ClawHubApiResponse<ClawHubSearchResponse>, SkillError> {
+        // Check client-side rate limit first
+        self.check_rate_limit().await?;
+
         let url = format!(
             "{}/search?q={}&limit={}",
             self.base_url,
@@ -275,6 +433,14 @@ impl ClawHubClient {
             .await
             .map_err(|e| SkillError::Network(format!("ClawHub search failed: {e}")))?;
 
+        let status = response.status().as_u16();
+
+        if response.status().as_u16() == 429 {
+            return Err(SkillError::Network(
+                "ClawHub API rate limit exceeded (429)".to_string(),
+            ));
+        }
+
         if !response.status().is_success() {
             return Err(SkillError::Network(format!(
                 "ClawHub API returned {}",
@@ -287,18 +453,22 @@ impl ClawHubClient {
             .await
             .map_err(|e| SkillError::Network(format!("Failed to parse ClawHub response: {e}")))?;
 
-        Ok(results)
+        Ok(ClawHubApiResponse { data: results, status })
     }
 
     /// Browse skills by sort order (trending, downloads, stars, etc.).
     ///
     /// Uses `GET /api/v1/skills?limit=...&sort=...`.
+    /// Returns `ClawHubApiResponse<ClawHubBrowseResponse>` with status code.
     pub async fn browse(
         &self,
         sort: ClawHubSort,
         limit: u32,
         cursor: Option<&str>,
-    ) -> Result<ClawHubBrowseResponse, SkillError> {
+    ) -> Result<ClawHubApiResponse<ClawHubBrowseResponse>, SkillError> {
+        // Check client-side rate limit first
+        self.check_rate_limit().await?;
+
         let mut url = format!(
             "{}/skills?limit={}&sort={}",
             self.base_url,
@@ -318,6 +488,14 @@ impl ClawHubClient {
             .await
             .map_err(|e| SkillError::Network(format!("ClawHub browse failed: {e}")))?;
 
+        let status = response.status().as_u16();
+
+        if response.status().as_u16() == 429 {
+            return Err(SkillError::Network(
+                "ClawHub API rate limit exceeded (429)".to_string(),
+            ));
+        }
+
         if !response.status().is_success() {
             return Err(SkillError::Network(format!(
                 "ClawHub browse returned {}",
@@ -330,14 +508,21 @@ impl ClawHubClient {
             .await
             .map_err(|e| SkillError::Network(format!("Failed to parse ClawHub browse: {e}")))?;
 
-        Ok(results)
+        Ok(ClawHubApiResponse { data: results, status })
     }
 
     /// Get detailed info about a specific skill.
     ///
     /// Uses `GET /api/v1/skills/{slug}`.
     /// Response is `{ skill: {...}, latestVersion: {...}, owner: {...}, moderation: null }`.
-    pub async fn get_skill(&self, slug: &str) -> Result<ClawHubSkillDetail, SkillError> {
+    /// Returns `ClawHubApiResponse<ClawHubSkillDetail>` with status code.
+    pub async fn get_skill(
+        &self,
+        slug: &str,
+    ) -> Result<ClawHubApiResponse<ClawHubSkillDetail>, SkillError> {
+        // Check client-side rate limit first
+        self.check_rate_limit().await?;
+
         let url = format!("{}/skills/{}", self.base_url, urlencoded(slug));
 
         let response = self
@@ -347,6 +532,14 @@ impl ClawHubClient {
             .send()
             .await
             .map_err(|e| SkillError::Network(format!("ClawHub detail failed: {e}")))?;
+
+        let status = response.status().as_u16();
+
+        if response.status().as_u16() == 429 {
+            return Err(SkillError::Network(
+                "ClawHub API rate limit exceeded (429)".to_string(),
+            ));
+        }
 
         if !response.status().is_success() {
             return Err(SkillError::Network(format!(
@@ -360,7 +553,7 @@ impl ClawHubClient {
             .await
             .map_err(|e| SkillError::Network(format!("Failed to parse ClawHub detail: {e}")))?;
 
-        Ok(detail)
+        Ok(ClawHubApiResponse { data: detail, status })
     }
 
     /// Helper: extract the version string from a browse entry.
@@ -798,5 +991,145 @@ mod tests {
             }),
         };
         assert_eq!(ClawHubClient::entry_version(&entry), "2.0.0");
+    }
+
+    // -------------------------------------------------------------------------
+    // Rate limiter tests (issue #191)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_clawhub_rate_limiter_allows_requests_up_to_limit() {
+        let mut limiter = ClawHubRateLimiter::new(10);
+
+        // First 10 requests should succeed
+        for i in 0..10 {
+            assert!(
+                limiter.check().is_ok(),
+                "Request {} should be allowed",
+                i + 1
+            );
+        }
+
+        // 11th request should be rate limited
+        assert!(limiter.check().is_err(), "11th request should be rate limited");
+    }
+
+    #[test]
+    fn test_clawhub_rate_limiter_reports_wait_time() {
+        let mut limiter = ClawHubRateLimiter::new(1);
+
+        // First request succeeds
+        assert!(limiter.check().is_ok());
+
+        // Second request should report wait time
+        let result = limiter.check();
+        assert!(result.is_err());
+        
+        // Wait time should be close to 60 seconds (but less since some time passed)
+        let wait_time = result.unwrap_err();
+        assert!(wait_time.as_secs() <= 60, "Wait time should be <= 60 seconds");
+    }
+
+    #[test]
+    fn test_clawhub_rate_limiter_reset() {
+        let mut limiter = ClawHubRateLimiter::new(2);
+
+        // Use up the rate limit
+        assert!(limiter.check().is_ok());
+        assert!(limiter.check().is_ok());
+        assert!(limiter.check().is_err());
+
+        // Reset and try again
+        limiter.reset();
+        assert!(limiter.check().is_ok(), "Request after reset should succeed");
+    }
+
+    // -------------------------------------------------------------------------
+    // Cache tests (issue #191)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_clawhub_cache_stores_and_retrieves() {
+        let cache = ClawHubCache::<String>::new(Duration::from_secs(60));
+
+        // Insert a value
+        cache.insert("key1".to_string(), "value1".to_string());
+
+        // Should be retrievable immediately
+        let value = cache.get("key1");
+        assert_eq!(value, Some("value1".to_string()));
+    }
+
+    #[test]
+    fn test_clawhub_cache_returns_none_for_missing_key() {
+        let cache = ClawHubCache::<String>::new(Duration::from_secs(60));
+
+        // Key doesn't exist
+        let value = cache.get("nonexistent");
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn test_clawhub_cache_respects_ttl() {
+        // Create cache with very short TTL (10ms)
+        let cache = ClawHubCache::<String>::new(Duration::from_millis(10));
+
+        // Insert a value
+        cache.insert("key1".to_string(), "value1".to_string());
+
+        // Should be immediately available
+        assert_eq!(cache.get("key1"), Some("value1".to_string()));
+
+        // Wait for TTL to expire
+        std::thread::sleep(Duration::from_millis(20));
+
+        // Should now return None (expired)
+        let value = cache.get("key1");
+        assert_eq!(value, None, "Value should expire after TTL");
+    }
+
+    #[test]
+    fn test_clawhub_cache_cleanup_removes_expired() {
+        let cache = ClawHubCache::<String>::new(Duration::from_millis(10));
+
+        // Insert a value
+        cache.insert("key1".to_string(), "value1".to_string());
+
+        // Wait for expiration
+        std::thread::sleep(Duration::from_millis(20));
+
+        // Cleanup should remove expired entries
+        cache.cleanup();
+
+        // Entry should be gone
+        assert_eq!(cache.get("key1"), None);
+    }
+
+    #[test]
+    fn test_clawhub_cache_handles_browse_response() {
+        let cache = ClawHubCache::<ClawHubBrowseResponse>::new(Duration::from_secs(60));
+
+        let response = ClawHubBrowseResponse {
+            items: vec![ClawHubBrowseEntry {
+                slug: "test-skill".to_string(),
+                display_name: "Test Skill".to_string(),
+                summary: "A test skill".to_string(),
+                tags: std::collections::HashMap::new(),
+                stats: ClawHubStats::default(),
+                created_at: 0,
+                updated_at: 0,
+                latest_version: None,
+            }],
+            next_cursor: Some("cursor123".to_string()),
+        };
+
+        cache.insert("browse:test".to_string(), response.clone());
+
+        let retrieved = cache.get("browse:test");
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.items.len(), 1);
+        assert_eq!(retrieved.items[0].slug, "test-skill");
+        assert_eq!(retrieved.next_cursor, Some("cursor123".to_string()));
     }
 }

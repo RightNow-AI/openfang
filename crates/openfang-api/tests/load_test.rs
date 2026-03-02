@@ -8,6 +8,7 @@
 use axum::Router;
 use openfang_api::middleware;
 use openfang_api::routes::{self, AppState};
+use openfang_skills::clawhub::{ClawHubBrowseResponse, ClawHubCache, ClawHubSearchResponse, ClawHubSkillDetail};
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
 use std::sync::Arc;
@@ -57,6 +58,9 @@ async fn start_test_server() -> TestServer {
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+        clawhub_search_cache: Arc::new(ClawHubCache::<ClawHubSearchResponse>::new(std::time::Duration::from_secs(60))),
+        clawhub_browse_cache: Arc::new(ClawHubCache::<ClawHubBrowseResponse>::new(std::time::Duration::from_secs(60))),
+        clawhub_detail_cache: Arc::new(ClawHubCache::<ClawHubSkillDetail>::new(std::time::Duration::from_secs(60))),
     });
 
     let app = Router::new()

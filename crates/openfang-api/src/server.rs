@@ -8,10 +8,11 @@ use crate::webchat;
 use crate::ws;
 use axum::Router;
 use openfang_kernel::OpenFangKernel;
+use openfang_skills::clawhub::ClawHubCache;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -49,6 +50,9 @@ pub async fn build_router(
         bridge_manager: tokio::sync::Mutex::new(bridge),
         channels_config: tokio::sync::RwLock::new(channels_config),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+        clawhub_search_cache: Arc::new(ClawHubCache::new(Duration::from_secs(60))),
+        clawhub_browse_cache: Arc::new(ClawHubCache::new(Duration::from_secs(60))),
+        clawhub_detail_cache: Arc::new(ClawHubCache::new(Duration::from_secs(60))),
     });
 
     // CORS: allow localhost origins by default. If API key is set, the API
