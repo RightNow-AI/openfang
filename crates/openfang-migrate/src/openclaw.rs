@@ -530,15 +530,42 @@ fn build_channel_table(
     toml::Value::Table(table)
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedModelRef {
+    provider: String,
+    model: String,
+    base_url: Option<String>,
+}
+
 /// Split an OpenClaw model reference like `"provider/model"` into `(provider, model)`.
 /// If there's no slash, returns `("anthropic", input)` as a fallback.
 fn split_model_ref(model_ref: &str) -> (String, String) {
+    let resolved = split_model_ref_with_context(model_ref, None);
+    (resolved.provider, resolved.model)
+}
+
+/// Split a model ref and resolve provider/base URL using optional OpenClaw
+/// `models.providers` metadata for higher-fidelity migration.
+fn split_model_ref_with_context(
+    model_ref: &str,
+    provider_catalog: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> ResolvedModelRef {
     if let Some(pos) = model_ref.find('/') {
-        let provider = &model_ref[..pos];
+        let raw_provider = &model_ref[..pos];
         let model = &model_ref[pos + 1..];
-        (map_provider(provider), model.to_string())
+        let (provider, base_url) =
+            resolve_provider_with_models_context(raw_provider, provider_catalog);
+        ResolvedModelRef {
+            provider,
+            model: model.to_string(),
+            base_url,
+        }
     } else {
-        ("anthropic".to_string(), model_ref.to_string())
+        ResolvedModelRef {
+            provider: "anthropic".to_string(),
+            model: model_ref.to_string(),
+            base_url: None,
+        }
     }
 }
 
@@ -704,6 +731,133 @@ fn default_api_key_env(provider: &str) -> String {
     }
 }
 
+fn is_known_openfang_provider_id(provider: &str) -> bool {
+    matches!(
+        provider,
+        "anthropic"
+            | "claude"
+            | "openai"
+            | "gpt"
+            | "groq"
+            | "grok"
+            | "openrouter"
+            | "deepseek"
+            | "together"
+            | "mistral"
+            | "fireworks"
+            | "google"
+            | "gemini"
+            | "ollama"
+            | "vllm"
+            | "lmstudio"
+            | "perplexity"
+            | "cohere"
+            | "ai21"
+            | "cerebras"
+            | "sambanova"
+            | "huggingface"
+            | "xai"
+            | "replicate"
+            | "github-copilot"
+            | "copilot"
+            | "moonshot"
+            | "kimi"
+            | "qwen"
+            | "dashscope"
+            | "minimax"
+            | "zhipu"
+            | "glm"
+            | "zhipu_coding"
+            | "codegeex"
+            | "qianfan"
+            | "baidu"
+    )
+}
+
+fn json_get_string_case_insensitive(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<String> {
+    obj.iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .and_then(|(_, v)| v.as_str().map(|s| s.to_string()))
+}
+
+fn lookup_json5_provider_entry<'a>(
+    catalog: Option<&'a serde_json::Map<String, serde_json::Value>>,
+    provider: &str,
+) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+    let catalog = catalog?;
+    if let Some(exact) = catalog
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(provider))
+        .and_then(|(_, v)| v.as_object())
+    {
+        return Some(exact);
+    }
+
+    // Alias/canonical fallback: allow model refs that use aliases (e.g. `gpt`)
+    // while provider catalog keys use canonical IDs (e.g. `openai`), and vice versa.
+    let canonical = map_provider(&provider.to_lowercase());
+    catalog
+        .iter()
+        .find(|(k, _)| map_provider(&k.to_lowercase()) == canonical)
+        .and_then(|(_, v)| v.as_object())
+}
+
+fn resolve_provider_with_models_context(
+    openclaw_provider: &str,
+    provider_catalog: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> (String, Option<String>) {
+    let raw = openclaw_provider.to_lowercase();
+    let mapped = map_provider(&raw);
+    let Some(entry) = lookup_json5_provider_entry(provider_catalog, openclaw_provider) else {
+        return (mapped, None);
+    };
+
+    let base_url = json_get_string_case_insensitive(entry, "baseUrl")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let api_hint = json_get_string_case_insensitive(entry, "api")
+        .unwrap_or_default()
+        .to_lowercase();
+
+    let raw_is_known = is_known_openfang_provider_id(&raw);
+    let mapped_is_known = is_known_openfang_provider_id(&mapped);
+
+    let provider = if api_hint.contains("anthropic") {
+        "anthropic".to_string()
+    } else if api_hint.contains("gemini") || api_hint.contains("google") {
+        "google".to_string()
+    } else if api_hint.contains("openai") {
+        if raw_is_known {
+            mapped.clone()
+        } else if base_url.is_some() {
+            // Preserve custom IDs only when runtime can route them via base_url.
+            raw.clone()
+        } else if mapped_is_known {
+            mapped.clone()
+        } else {
+            // Unknown custom ID without base_url would fail at runtime; default to
+            // OpenAI-compatible driver.
+            "openai".to_string()
+        }
+    } else if raw_is_known {
+        mapped.clone()
+    } else if base_url.is_some() {
+        // Unknown API type + explicit custom provider metadata:
+        // keep custom provider id and rely on base_url for runtime routing.
+        raw.clone()
+    } else if mapped_is_known {
+        mapped.clone()
+    } else {
+        // No API hint and no base URL; choose a known OpenAI-compatible driver.
+        "openai".to_string()
+    };
+
+    (provider, base_url)
+}
+
 /// Derive capability grants from the tool list.
 fn derive_capabilities(tools: &[String]) -> AgentCapabilities {
     let mut caps = AgentCapabilities::default();
@@ -829,15 +983,21 @@ fn scan_from_json5(base: &Path, config_path: &Path, result: &mut ScanResult) {
         Err(_) => return,
     };
 
+    let provider_catalog = root.models.as_ref().and_then(|m| m.providers.as_ref());
+
     // Agents from JSON config
     if let Some(ref agents) = root.agents {
         for entry in &agents.list {
             let id = entry.id.clone();
             let name = entry.name.clone().unwrap_or_else(|| id.clone());
 
-            let (provider, model) = extract_primary_model(entry, agents.defaults.as_ref())
-                .map(|m| split_model_ref(&m))
-                .unwrap_or_else(|| ("anthropic".to_string(), String::new()));
+            let resolved = extract_primary_model(entry, agents.defaults.as_ref())
+                .map(|m| split_model_ref_with_context(&m, provider_catalog))
+                .unwrap_or(ResolvedModelRef {
+                    provider: "anthropic".to_string(),
+                    model: String::new(),
+                    base_url: None,
+                });
 
             let tool_count = entry
                 .tools
@@ -865,8 +1025,8 @@ fn scan_from_json5(base: &Path, config_path: &Path, result: &mut ScanResult) {
             result.agents.push(ScannedAgent {
                 name,
                 description: String::new(),
-                provider,
-                model,
+                provider: resolved.provider,
+                model: resolved.model,
                 tool_count,
                 has_memory,
                 has_sessions,
@@ -1171,8 +1331,10 @@ fn migrate_config_from_json(
     dry_run: bool,
     report: &mut MigrationReport,
 ) -> Result<(), MigrateError> {
+    let provider_catalog = root.models.as_ref().and_then(|m| m.providers.as_ref());
+
     // Extract default model from agents.defaults.model
-    let (provider, model) = root
+    let resolved = root
         .agents
         .as_ref()
         .and_then(|a| a.defaults.as_ref())
@@ -1181,25 +1343,24 @@ fn migrate_config_from_json(
             OpenClawAgentModel::Simple(s) => Some(s.clone()),
             OpenClawAgentModel::Detailed(d) => d.primary.clone(),
         })
-        .map(|m| split_model_ref(&m))
-        .unwrap_or_else(|| {
-            (
-                "anthropic".to_string(),
-                "claude-sonnet-4-20250514".to_string(),
-            )
+        .map(|m| split_model_ref_with_context(&m, provider_catalog))
+        .unwrap_or_else(|| ResolvedModelRef {
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+            base_url: None,
         });
 
-    let api_key_env = default_api_key_env(&provider);
+    let api_key_env = default_api_key_env(&resolved.provider);
 
     // Extract channels (writes secrets.env)
     let channels = migrate_channels_from_json(root, target, dry_run, report);
 
     let of_config = OpenFangConfig {
         default_model: OpenFangModelConfig {
-            provider,
-            model,
+            provider: resolved.provider,
+            model: resolved.model,
             api_key_env,
-            base_url: None,
+            base_url: resolved.base_url,
         },
         memory: OpenFangMemorySection { decay_rate: 0.05 },
         network: OpenFangNetworkSection {
@@ -1739,6 +1900,7 @@ fn migrate_agents_from_json(
     };
 
     let defaults = agents.defaults.as_ref();
+    let provider_catalog = root.models.as_ref().and_then(|m| m.providers.as_ref());
 
     for entry in &agents.list {
         let id = &entry.id;
@@ -1746,7 +1908,7 @@ fn migrate_agents_from_json(
             continue;
         }
 
-        match convert_agent_from_json(entry, defaults) {
+        match convert_agent_from_json(entry, defaults, provider_catalog) {
             Ok((toml_str, unmapped_tools)) => {
                 let dest_dir = target.join("agents").join(id);
                 let dest_file = dest_dir.join("agent.toml");
@@ -1787,6 +1949,7 @@ fn migrate_agents_from_json(
 fn convert_agent_from_json(
     entry: &OpenClawAgentEntry,
     defaults: Option<&OpenClawAgentDefaults>,
+    provider_catalog: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Result<(String, Vec<String>), MigrateError> {
     let id = &entry.id;
     let display_name = entry.name.clone().unwrap_or_else(|| id.clone());
@@ -1794,7 +1957,11 @@ fn convert_agent_from_json(
     // Resolve model
     let primary_ref = extract_primary_model(entry, defaults)
         .unwrap_or_else(|| "anthropic/claude-sonnet-4-20250514".to_string());
-    let (provider, model) = split_model_ref(&primary_ref);
+    let ResolvedModelRef {
+        provider,
+        model,
+        base_url: primary_base_url,
+    } = split_model_ref_with_context(&primary_ref, provider_catalog);
 
     // Resolve fallback models
     let fallbacks = extract_fallback_models(entry, defaults);
@@ -1884,16 +2051,24 @@ fn convert_agent_from_json(
     if let Some(ref api_key) = api_key_env {
         toml_str.push_str(&format!("api_key_env = \"{api_key}\"\n"));
     }
+    if let Some(base_url) = primary_base_url {
+        toml_str.push_str(&format!("base_url = \"{base_url}\"\n"));
+    }
 
     // Fallback models
     for fb in &fallbacks {
-        let (fb_provider, fb_model) = split_model_ref(fb);
+        let fallback = split_model_ref_with_context(fb, provider_catalog);
+        let fb_provider = fallback.provider;
+        let fb_model = fallback.model;
         let fb_api_key = default_api_key_env(&fb_provider);
         toml_str.push_str("\n[[fallback_models]]\n");
         toml_str.push_str(&format!("provider = \"{fb_provider}\"\n"));
         toml_str.push_str(&format!("model = \"{fb_model}\"\n"));
         if !fb_api_key.is_empty() {
             toml_str.push_str(&format!("api_key_env = \"{fb_api_key}\"\n"));
+        }
+        if let Some(base_url) = fallback.base_url {
+            toml_str.push_str(&format!("base_url = \"{base_url}\"\n"));
         }
     }
 
@@ -3070,6 +3245,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tempfile::TempDir;
 
     // ===== Helper: create legacy YAML workspace =====
@@ -3805,6 +3981,102 @@ mod tests {
         let (p, m) = split_model_ref("");
         assert_eq!(p, "anthropic");
         assert_eq!(m, "");
+    }
+
+    #[test]
+    fn test_model_ref_split_with_catalog_preserves_custom_openai_provider() {
+        let providers = json!({
+            "qwencode": {
+                "baseUrl": "https://coding.dashscope.aliyuncs.com/v1",
+                "api": "openai-completions"
+            }
+        });
+
+        let catalog = providers.as_object().unwrap();
+        let resolved = split_model_ref_with_context("qwencode/glm-5", Some(catalog));
+
+        assert_eq!(resolved.provider, "qwencode");
+        assert_eq!(resolved.model, "glm-5");
+        assert_eq!(
+            resolved.base_url.as_deref(),
+            Some("https://coding.dashscope.aliyuncs.com/v1")
+        );
+    }
+
+    #[test]
+    fn test_model_ref_split_with_catalog_uses_api_hint_for_driver() {
+        let providers = json!({
+            "kimicode": {
+                "baseUrl": "https://api.kimi.com/coding",
+                "api": "anthropic-messages"
+            }
+        });
+
+        let catalog = providers.as_object().unwrap();
+        let resolved = split_model_ref_with_context("kimicode/kimi-k2.5", Some(catalog));
+
+        assert_eq!(resolved.provider, "anthropic");
+        assert_eq!(resolved.model, "kimi-k2.5");
+        assert_eq!(
+            resolved.base_url.as_deref(),
+            Some("https://api.kimi.com/coding")
+        );
+    }
+
+    #[test]
+    fn test_model_ref_split_with_catalog_unknown_openai_without_base_url_falls_back_to_openai() {
+        let providers = json!({
+            "mycompany": {
+                "api": "openai-completions"
+            }
+        });
+
+        let catalog = providers.as_object().unwrap();
+        let resolved = split_model_ref_with_context("mycompany/custom-model", Some(catalog));
+
+        assert_eq!(resolved.provider, "openai");
+        assert_eq!(resolved.model, "custom-model");
+        assert_eq!(resolved.base_url, None);
+    }
+
+    #[test]
+    fn test_model_ref_split_with_catalog_alias_gpt_maps_to_openai() {
+        let providers = json!({
+            "gpt": {
+                "baseUrl": "https://api.openai.com/v1",
+                "api": "openai-completions"
+            }
+        });
+
+        let catalog = providers.as_object().unwrap();
+        let resolved = split_model_ref_with_context("gpt/gpt-4.1-mini", Some(catalog));
+
+        assert_eq!(resolved.provider, "openai");
+        assert_eq!(resolved.model, "gpt-4.1-mini");
+        assert_eq!(
+            resolved.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
+    }
+
+    #[test]
+    fn test_model_ref_split_with_catalog_alias_key_mismatch_uses_catalog_metadata() {
+        let providers = json!({
+            "openai": {
+                "baseUrl": "https://proxy.example/v1",
+                "api": "openai-completions"
+            }
+        });
+
+        let catalog = providers.as_object().unwrap();
+        let resolved = split_model_ref_with_context("gpt/gpt-4.1-mini", Some(catalog));
+
+        assert_eq!(resolved.provider, "openai");
+        assert_eq!(resolved.model, "gpt-4.1-mini");
+        assert_eq!(
+            resolved.base_url.as_deref(),
+            Some("https://proxy.example/v1")
+        );
     }
 
     #[test]
