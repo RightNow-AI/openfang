@@ -539,6 +539,7 @@ struct ResolvedModelRef {
 
 /// Split an OpenClaw model reference like `"provider/model"` into `(provider, model)`.
 /// If there's no slash, returns `("anthropic", input)` as a fallback.
+#[cfg(test)]
 fn split_model_ref(model_ref: &str) -> (String, String) {
     let resolved = split_model_ref_with_context(model_ref, None);
     (resolved.provider, resolved.model)
