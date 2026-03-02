@@ -998,7 +998,7 @@ impl OpenFangKernel {
             self.config.effective_workspaces_dir().join(format!(
                 "{}-{}",
                 &name,
-                &agent_id.0.to_string()[..8]
+                &agent_id.0.to_string().get(..8).unwrap_or("unknown")
             ))
         });
         ensure_workspace(&workspace_dir)?;
@@ -1326,7 +1326,7 @@ impl OpenFangKernel {
             let workspace_dir = self.config.effective_workspaces_dir().join(format!(
                 "{}-{}",
                 &manifest.name,
-                &agent_id.0.to_string()[..8]
+                &agent_id.0.to_string().get(..8).unwrap_or("unknown")
             ));
             if let Err(e) = ensure_workspace(&workspace_dir) {
                 warn!(agent_id = %agent_id, "Failed to backfill workspace (streaming): {e}");
@@ -1783,7 +1783,7 @@ impl OpenFangKernel {
             let workspace_dir = self.config.effective_workspaces_dir().join(format!(
                 "{}-{}",
                 &manifest.name,
-                &agent_id.0.to_string()[..8]
+                &agent_id.0.to_string().get(..8).unwrap_or("unknown")
             ));
             if let Err(e) = ensure_workspace(&workspace_dir) {
                 warn!(agent_id = %agent_id, "Failed to backfill workspace: {e}");
