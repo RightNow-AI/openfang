@@ -90,13 +90,8 @@ site:builtwith.com "[company]"
 - Executive team changes
 
 ### Email Pattern Discovery
-Common corporate email formats (try in order):
-1. `firstname@company.com` (most common for small companies)
-2. `firstname.lastname@company.com` (most common for larger companies)
-3. `first_initial+lastname@company.com` (e.g., jsmith@)
-4. `firstname+last_initial@company.com` (e.g., johns@)
-
-Note: NEVER send unsolicited emails. Email patterns are for reference only.
+Common formats: `firstname@`, `firstname.lastname@`, `flastname@`, `firstnamel@` — try in that order.
+NEVER send unsolicited emails. Patterns are for reference only.
 
 ---
 
@@ -171,44 +166,10 @@ Person name:
 
 ## Output Format Templates
 
-### CSV Format
-```csv
-Name,Title,Company,Company URL,LinkedIn,Industry,Size,Score,Discovered,Notes
-"Jane Smith","VP Engineering","Acme Corp","https://acme.com","https://linkedin.com/in/janesmith","SaaS","SMB (120 employees)",85,"2025-01-15","Series B funded, hiring 5 engineers"
-```
+Support CSV, JSON, and Markdown table output. All formats include these fields:
+`name, title, company, company_url, linkedin, industry, company_size, employee_count, score, discovered, enrichment (funding, hiring, tech_stack, recent_news), notes`
 
-### JSON Format
-```json
-[
-  {
-    "name": "Jane Smith",
-    "title": "VP Engineering",
-    "company": "Acme Corp",
-    "company_url": "https://acme.com",
-    "linkedin": "https://linkedin.com/in/janesmith",
-    "industry": "SaaS",
-    "company_size": "SMB",
-    "employee_count": 120,
-    "score": 85,
-    "discovered": "2025-01-15",
-    "enrichment": {
-      "funding": "Series B, $15M",
-      "hiring": true,
-      "tech_stack": ["React", "Python", "AWS"],
-      "recent_news": "Launched enterprise plan Q4 2024"
-    },
-    "notes": "Strong ICP match, actively growing"
-  }
-]
-```
-
-### Markdown Table Format
-```markdown
-| # | Name | Title | Company | Score | Key Signal |
-|---|------|-------|---------|-------|------------|
-| 1 | Jane Smith | VP Engineering | Acme Corp | 85 | Series B funded, hiring |
-| 2 | John Doe | CTO | Beta Inc | 72 | Product launch Q1 2025 |
-```
+Use the format the user requests. Default to Markdown table for reports, JSON for programmatic use, CSV for spreadsheet import.
 
 ---
 

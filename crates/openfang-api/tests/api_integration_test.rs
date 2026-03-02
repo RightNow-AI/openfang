@@ -7,16 +7,12 @@
 //!
 //! Run: cargo test -p openfang-api --test api_integration_test -- --nocapture
 
-use axum::Router;
-use openfang_api::middleware;
-use openfang_api::routes::{self, AppState};
-use openfang_api::ws;
+use openfang_api::routes::AppState;
+use openfang_api::server::build_router;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
-use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
 
 // ---------------------------------------------------------------------------
 // Test infrastructure
@@ -51,86 +47,43 @@ async fn start_test_server_with_provider(
     model: &str,
     api_key_env: &str,
 ) -> TestServer {
-    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
-
-    let config = KernelConfig {
-        home_dir: tmp.path().to_path_buf(),
-        data_dir: tmp.path().join("data"),
+    start_test_server_with_config(KernelConfig {
         default_model: DefaultModelConfig {
             provider: provider.to_string(),
             model: model.to_string(),
             api_key_env: api_key_env.to_string(),
             base_url: None,
         },
-        ..KernelConfig::default()
-    };
+        ..Default::default()
+    })
+    .await
+}
+
+/// Shared test-server builder: boots a kernel with the given config, builds the
+/// **full production router** via [`build_router`], and serves it on a random port.
+async fn start_test_server_with_config(mut config: KernelConfig) -> TestServer {
+    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
+    config.home_dir = tmp.path().to_path_buf();
+    config.data_dir = tmp.path().join("data");
 
     let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
-
-    let state = Arc::new(AppState {
-        kernel,
-        started_at: Instant::now(),
-        peer_registry: None,
-        bridge_manager: tokio::sync::Mutex::new(None),
-        channels_config: tokio::sync::RwLock::new(Default::default()),
-        shutdown_notify: Arc::new(tokio::sync::Notify::new()),
-    });
-
-    let app = Router::new()
-        .route("/api/health", axum::routing::get(routes::health))
-        .route("/api/status", axum::routing::get(routes::status))
-        .route(
-            "/api/agents",
-            axum::routing::get(routes::list_agents).post(routes::spawn_agent),
-        )
-        .route(
-            "/api/agents/{id}/message",
-            axum::routing::post(routes::send_message),
-        )
-        .route(
-            "/api/agents/{id}/session",
-            axum::routing::get(routes::get_agent_session),
-        )
-        .route("/api/agents/{id}/ws", axum::routing::get(ws::agent_ws))
-        .route(
-            "/api/agents/{id}",
-            axum::routing::delete(routes::kill_agent),
-        )
-        .route(
-            "/api/triggers",
-            axum::routing::get(routes::list_triggers).post(routes::create_trigger),
-        )
-        .route(
-            "/api/triggers/{id}",
-            axum::routing::delete(routes::delete_trigger),
-        )
-        .route(
-            "/api/workflows",
-            axum::routing::get(routes::list_workflows).post(routes::create_workflow),
-        )
-        .route(
-            "/api/workflows/{id}/run",
-            axum::routing::post(routes::run_workflow),
-        )
-        .route(
-            "/api/workflows/{id}/runs",
-            axum::routing::get(routes::list_workflow_runs),
-        )
-        .route("/api/shutdown", axum::routing::post(routes::shutdown))
-        .layer(axum::middleware::from_fn(middleware::request_logging))
-        .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
-        .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("Failed to bind test server");
     let addr = listener.local_addr().unwrap();
 
+    let (app, state) = build_router(kernel, addr).await;
+
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     TestServer {
@@ -676,11 +629,7 @@ memory_write = ["self.*"]
 
 /// Start a test server with Bearer-token authentication enabled.
 async fn start_test_server_with_auth(api_key: &str) -> TestServer {
-    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
-
-    let config = KernelConfig {
-        home_dir: tmp.path().to_path_buf(),
-        data_dir: tmp.path().join("data"),
+    start_test_server_with_config(KernelConfig {
         api_key: api_key.to_string(),
         default_model: DefaultModelConfig {
             provider: "ollama".to_string(),
@@ -689,87 +638,8 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
             base_url: None,
         },
         ..KernelConfig::default()
-    };
-
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
-    let kernel = Arc::new(kernel);
-    kernel.set_self_handle();
-
-    let state = Arc::new(AppState {
-        kernel,
-        started_at: Instant::now(),
-        peer_registry: None,
-        bridge_manager: tokio::sync::Mutex::new(None),
-        channels_config: tokio::sync::RwLock::new(Default::default()),
-        shutdown_notify: Arc::new(tokio::sync::Notify::new()),
-    });
-
-    let api_key_state = state.kernel.config.api_key.clone();
-
-    let app = Router::new()
-        .route("/api/health", axum::routing::get(routes::health))
-        .route("/api/status", axum::routing::get(routes::status))
-        .route(
-            "/api/agents",
-            axum::routing::get(routes::list_agents).post(routes::spawn_agent),
-        )
-        .route(
-            "/api/agents/{id}/message",
-            axum::routing::post(routes::send_message),
-        )
-        .route(
-            "/api/agents/{id}/session",
-            axum::routing::get(routes::get_agent_session),
-        )
-        .route("/api/agents/{id}/ws", axum::routing::get(ws::agent_ws))
-        .route(
-            "/api/agents/{id}",
-            axum::routing::delete(routes::kill_agent),
-        )
-        .route(
-            "/api/triggers",
-            axum::routing::get(routes::list_triggers).post(routes::create_trigger),
-        )
-        .route(
-            "/api/triggers/{id}",
-            axum::routing::delete(routes::delete_trigger),
-        )
-        .route(
-            "/api/workflows",
-            axum::routing::get(routes::list_workflows).post(routes::create_workflow),
-        )
-        .route(
-            "/api/workflows/{id}/run",
-            axum::routing::post(routes::run_workflow),
-        )
-        .route(
-            "/api/workflows/{id}/runs",
-            axum::routing::get(routes::list_workflow_runs),
-        )
-        .route("/api/shutdown", axum::routing::post(routes::shutdown))
-        .layer(axum::middleware::from_fn_with_state(
-            api_key_state,
-            middleware::auth,
-        ))
-        .layer(axum::middleware::from_fn(middleware::request_logging))
-        .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
-        .with_state(state.clone());
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("Failed to bind test server");
-    let addr = listener.local_addr().unwrap();
-
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    TestServer {
-        base_url: format!("http://{}", addr),
-        state,
-        _tmp: tmp,
-    }
+    })
+    .await
 }
 
 #[tokio::test]

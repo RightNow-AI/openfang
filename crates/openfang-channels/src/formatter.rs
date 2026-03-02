@@ -17,179 +17,210 @@ pub fn format_for_channel(text: &str, format: OutputFormat) -> String {
     }
 }
 
-/// Convert Markdown to Telegram HTML subset.
+/// Convert Markdown to Telegram HTML subset (single-pass).
 ///
 /// Supported tags: `<b>`, `<i>`, `<code>`, `<pre>`, `<a href="">`.
 fn markdown_to_telegram_html(text: &str) -> String {
-    let mut result = text.to_string();
-
-    // Bold: **text** → <b>text</b>
-    while let Some(start) = result.find("**") {
-        if let Some(end) = result[start + 2..].find("**") {
-            let end = start + 2 + end;
-            let inner = result[start + 2..end].to_string();
-            result = format!("{}<b>{}</b>{}", &result[..start], inner, &result[end + 2..]);
-        } else {
-            break;
-        }
-    }
-
-    // Italic: *text* → <i>text</i> (but not inside bold tags)
-    // Simple heuristic: match single * not preceded/followed by *
-    let mut out = String::with_capacity(result.len());
-    let chars: Vec<char> = result.chars().collect();
+    let b = text.as_bytes();
+    let len = b.len();
+    // Generous pre-allocation: tags expand the output
+    let mut out = String::with_capacity(len + len / 4);
     let mut i = 0;
-    let mut in_italic = false;
-    while i < chars.len() {
-        if chars[i] == '*'
-            && (i == 0 || chars[i - 1] != '*')
-            && (i + 1 >= chars.len() || chars[i + 1] != '*')
-        {
-            if in_italic {
-                out.push_str("</i>");
-            } else {
-                out.push_str("<i>");
+
+    while i < len {
+        // Bold: **text**
+        if i + 1 < len && b[i] == b'*' && b[i + 1] == b'*' {
+            if let Some(end) = find_closing(b, i + 2, b"**") {
+                out.push_str("<b>");
+                out.push_str(&text[i + 2..end]);
+                out.push_str("</b>");
+                i = end + 2;
+                continue;
             }
-            in_italic = !in_italic;
-        } else {
-            out.push(chars[i]);
+        }
+        // Italic: single * (not preceded/followed by *)
+        if b[i] == b'*' && (i + 1 >= len || b[i + 1] != b'*') && (i == 0 || b[i - 1] != b'*') {
+            if let Some(end) = find_closing_single_star(b, i + 1) {
+                out.push_str("<i>");
+                out.push_str(&text[i + 1..end]);
+                out.push_str("</i>");
+                i = end + 1;
+                continue;
+            }
+        }
+        // Inline code: `text`
+        if b[i] == b'`' {
+            if let Some(end) = memchr_byte(b'`', &b[i + 1..]) {
+                let end = i + 1 + end;
+                out.push_str("<code>");
+                out.push_str(&text[i + 1..end]);
+                out.push_str("</code>");
+                i = end + 1;
+                continue;
+            }
+        }
+        // Link: [text](url)
+        if b[i] == b'[' {
+            if let Some((link_end, url_end)) = parse_md_link(b, i) {
+                out.push_str("<a href=\"");
+                out.push_str(&text[link_end + 2..url_end]);
+                out.push_str("\">");
+                out.push_str(&text[i + 1..link_end]);
+                out.push_str("</a>");
+                i = url_end + 1;
+                continue;
+            }
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// Convert Markdown to Slack mrkdwn format (single-pass).
+fn markdown_to_slack_mrkdwn(text: &str) -> String {
+    let b = text.as_bytes();
+    let len = b.len();
+    let mut out = String::with_capacity(len);
+    let mut i = 0;
+
+    while i < len {
+        // Bold: **text** → *text*
+        if i + 1 < len && b[i] == b'*' && b[i + 1] == b'*' {
+            if let Some(end) = find_closing(b, i + 2, b"**") {
+                out.push('*');
+                out.push_str(&text[i + 2..end]);
+                out.push('*');
+                i = end + 2;
+                continue;
+            }
+        }
+        // Link: [text](url) → <url|text>
+        if b[i] == b'[' {
+            if let Some((link_end, url_end)) = parse_md_link(b, i) {
+                out.push('<');
+                out.push_str(&text[link_end + 2..url_end]);
+                out.push('|');
+                out.push_str(&text[i + 1..link_end]);
+                out.push('>');
+                i = url_end + 1;
+                continue;
+            }
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// Strip all Markdown formatting, producing plain text (single-pass).
+fn markdown_to_plain(text: &str) -> String {
+    let b = text.as_bytes();
+    let len = b.len();
+    let mut out = String::with_capacity(len);
+    let mut i = 0;
+
+    while i < len {
+        // Bold: **text** → text
+        if i + 1 < len && b[i] == b'*' && b[i + 1] == b'*' {
+            if let Some(end) = find_closing(b, i + 2, b"**") {
+                out.push_str(&text[i + 2..end]);
+                i = end + 2;
+                continue;
+            }
+        }
+        // Italic: *text* → text
+        if b[i] == b'*' && (i + 1 >= len || b[i + 1] != b'*') && (i == 0 || b[i - 1] != b'*') {
+            if let Some(end) = find_closing_single_star(b, i + 1) {
+                out.push_str(&text[i + 1..end]);
+                i = end + 1;
+                continue;
+            }
+        }
+        // Inline code: `text` → text
+        if b[i] == b'`' {
+            if let Some(end) = memchr_byte(b'`', &b[i + 1..]) {
+                let end = i + 1 + end;
+                out.push_str(&text[i + 1..end]);
+                i = end + 1;
+                continue;
+            }
+        }
+        // Link: [text](url) → text (url)
+        if b[i] == b'[' {
+            if let Some((link_end, url_end)) = parse_md_link(b, i) {
+                out.push_str(&text[i + 1..link_end]);
+                out.push_str(" (");
+                out.push_str(&text[link_end + 2..url_end]);
+                out.push(')');
+                i = url_end + 1;
+                continue;
+            }
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers for single-pass markdown scanning
+// ---------------------------------------------------------------------------
+
+/// Find closing delimiter (e.g. `**`) starting from `start` in `b`.
+fn find_closing(b: &[u8], start: usize, delim: &[u8]) -> Option<usize> {
+    let dlen = delim.len();
+    if dlen == 0 || start + dlen > b.len() {
+        return None;
+    }
+    let mut i = start;
+    while i + dlen <= b.len() {
+        if &b[i..i + dlen] == delim {
+            return Some(i);
         }
         i += 1;
     }
-    result = out;
-
-    // Inline code: `text` → <code>text</code>
-    while let Some(start) = result.find('`') {
-        if let Some(end) = result[start + 1..].find('`') {
-            let end = start + 1 + end;
-            let inner = result[start + 1..end].to_string();
-            result = format!(
-                "{}<code>{}</code>{}",
-                &result[..start],
-                inner,
-                &result[end + 1..]
-            );
-        } else {
-            break;
-        }
-    }
-
-    // Links: [text](url) → <a href="url">text</a>
-    while let Some(bracket_start) = result.find('[') {
-        if let Some(bracket_end) = result[bracket_start..].find("](") {
-            let bracket_end = bracket_start + bracket_end;
-            if let Some(paren_end) = result[bracket_end + 2..].find(')') {
-                let paren_end = bracket_end + 2 + paren_end;
-                let link_text = &result[bracket_start + 1..bracket_end];
-                let url = &result[bracket_end + 2..paren_end];
-                result = format!(
-                    "{}<a href=\"{}\">{}</a>{}",
-                    &result[..bracket_start],
-                    url,
-                    link_text,
-                    &result[paren_end + 1..]
-                );
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-
-    result
+    None
 }
 
-/// Convert Markdown to Slack mrkdwn format.
-fn markdown_to_slack_mrkdwn(text: &str) -> String {
-    let mut result = text.to_string();
-
-    // Bold: **text** → *text*
-    while let Some(start) = result.find("**") {
-        if let Some(end) = result[start + 2..].find("**") {
-            let end = start + 2 + end;
-            let inner = result[start + 2..end].to_string();
-            result = format!("{}*{}*{}", &result[..start], inner, &result[end + 2..]);
-        } else {
-            break;
+/// Find closing single `*` that is not part of `**`.
+fn find_closing_single_star(b: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i < b.len() {
+        if b[i] == b'*' && (i + 1 >= b.len() || b[i + 1] != b'*') {
+            return Some(i);
         }
+        i += 1;
     }
-
-    // Links: [text](url) → <url|text>
-    while let Some(bracket_start) = result.find('[') {
-        if let Some(bracket_end) = result[bracket_start..].find("](") {
-            let bracket_end = bracket_start + bracket_end;
-            if let Some(paren_end) = result[bracket_end + 2..].find(')') {
-                let paren_end = bracket_end + 2 + paren_end;
-                let link_text = &result[bracket_start + 1..bracket_end];
-                let url = &result[bracket_end + 2..paren_end];
-                result = format!(
-                    "{}<{}|{}>{}",
-                    &result[..bracket_start],
-                    url,
-                    link_text,
-                    &result[paren_end + 1..]
-                );
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-
-    result
+    None
 }
 
-/// Strip all Markdown formatting, producing plain text.
-fn markdown_to_plain(text: &str) -> String {
-    let mut result = text.to_string();
+/// Simple byte search (like memchr but without the dep).
+fn memchr_byte(needle: u8, haystack: &[u8]) -> Option<usize> {
+    haystack.iter().position(|&b| b == needle)
+}
 
-    // Remove bold markers
-    result = result.replace("**", "");
-
-    // Remove italic markers (single *)
-    // Simple approach: remove isolated *
-    let mut out = String::with_capacity(result.len());
-    let chars: Vec<char> = result.chars().collect();
-    for (i, &ch) in chars.iter().enumerate() {
-        if ch == '*'
-            && (i == 0 || chars[i - 1] != '*')
-            && (i + 1 >= chars.len() || chars[i + 1] != '*')
-        {
-            continue;
-        }
-        out.push(ch);
-    }
-    result = out;
-
-    // Remove inline code markers
-    result = result.replace('`', "");
-
-    // Convert links: [text](url) → text (url)
-    while let Some(bracket_start) = result.find('[') {
-        if let Some(bracket_end) = result[bracket_start..].find("](") {
-            let bracket_end = bracket_start + bracket_end;
-            if let Some(paren_end) = result[bracket_end + 2..].find(')') {
-                let paren_end = bracket_end + 2 + paren_end;
-                let link_text = &result[bracket_start + 1..bracket_end];
-                let url = &result[bracket_end + 2..paren_end];
-                result = format!(
-                    "{}{} ({}){}",
-                    &result[..bracket_start],
-                    link_text,
-                    url,
-                    &result[paren_end + 1..]
-                );
-            } else {
-                break;
+/// Parse `[text](url)` starting at position `start` (which points to `[`).
+/// Returns `(bracket_end, paren_end)` — the positions of `]` and `)`.
+fn parse_md_link(b: &[u8], start: usize) -> Option<(usize, usize)> {
+    // Find `](` after `[`
+    let mut i = start + 1;
+    while i + 1 < b.len() {
+        if b[i] == b']' && b[i + 1] == b'(' {
+            let bracket_end = i;
+            // Find closing `)`
+            let mut j = i + 2;
+            while j < b.len() {
+                if b[j] == b')' {
+                    return Some((bracket_end, j));
+                }
+                j += 1;
             }
-        } else {
-            break;
+            return None;
         }
+        i += 1;
     }
-
-    result
+    None
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="public/assets/openfang-logo.png" width="160" alt="OpenFang Logo" />
+  <img src="public/assets/logo-sigma-edition.png" width="200" alt="OpenFang Logo" />
 </p>
 
 <h1 align="center">OpenFang</h1>

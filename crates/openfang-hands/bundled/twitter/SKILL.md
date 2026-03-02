@@ -123,15 +123,7 @@ Example for a tech founder:
 | Data/Stat | 1/week | Authority | "[Surprising statistic]. Here's why it matters:" |
 
 ### Optimal Posting Times (UTC-based, adjust to audience timezone)
-| Day | Best Times | Why |
-|-----|-----------|-----|
-| Monday | 8-10 AM | Start of work week, checking feeds |
-| Tuesday | 10 AM, 1 PM | Peak engagement day |
-| Wednesday | 9 AM, 12 PM | Mid-week focus |
-| Thursday | 10 AM, 2 PM | Second-highest engagement day |
-| Friday | 9-11 AM | Morning only, engagement drops PM |
-| Saturday | 10 AM | Casual browsing |
-| Sunday | 4-6 PM | Pre-work-week planning |
+Peak days: Tue/Thu. Best window: 8-11 AM weekdays. Engagement drops Fri PM and weekends. Post 1-2x daily max.
 
 ---
 
@@ -220,31 +212,9 @@ Do NOT auto-like:
 
 ---
 
-## Content Calendar Template
+## Content Calendar
 
-```
-WEEK OF [DATE]
-
-Monday:
-  - 8 AM: [Tip/How-to] about [Pillar 1]
-  - 12 PM: [Curated share] related to [Pillar 2]
-
-Tuesday:
-  - 10 AM: [Thread] deep dive on [Pillar 1]
-  - 2 PM: [Hot take] about [trending topic]
-
-Wednesday:
-  - 9 AM: [Question] to audience about [Pillar 3]
-  - 1 PM: [Data/Stat] about [Pillar 2]
-
-Thursday:
-  - 10 AM: [Story] about [personal experience in Pillar 3]
-  - 3 PM: [Tip/How-to] about [Pillar 1]
-
-Friday:
-  - 9 AM: [Hot take] about [week's trending topic]
-  - 11 AM: [Curated share] — best thing I read this week
-```
+Plan 8-12 tweets/week: mix of tips (2-3), threads (1-2), hot takes (2-3), questions (1-2), curated shares (1-2), stories (1), data/stats (1). Distribute across content pillars proportionally. Schedule highest-effort content (threads, stories) for Tue/Thu peak engagement.
 
 ---
 
@@ -255,49 +225,19 @@ Friday:
 |--------|-----------------|----------------|
 | Impressions | How many people saw the tweet | Varies by follower count |
 | Engagement rate | (likes+RTs+replies)/impressions | >2% is good, >5% is great |
-| Reply rate | replies/impressions | >0.5% is good |
-| Retweet rate | RTs/impressions | >1% is good |
 | Profile visits | People checking your profile after tweet | Track trend |
 | Follower growth | Net new followers per period | Track trend |
 
-### Engagement Rate Formula
-```
-engagement_rate = (likes + retweets + replies + quotes) / impressions * 100
-
-Example:
-  50 likes + 10 RTs + 5 replies + 2 quotes = 67 engagements
-  67 / 2000 impressions = 3.35% engagement rate
-```
-
-### Content Performance Analysis
-Track which content types and topics perform best:
-```
-| Content Type | Avg Impressions | Avg Engagement Rate | Best Performing |
-|-------------|-----------------|--------------------|--------------------|
-| Hot take | 2500 | 4.2% | "Unpopular opinion: ..." |
-| Thread | 5000 | 3.1% | "I analyzed 500 ..." |
-| Tip | 1800 | 5.5% | "How to ... in 3 steps" |
-```
-
-Use this data to optimize future content mix.
+### Engagement Rate
+`engagement_rate = (likes + retweets + replies + quotes) / impressions * 100`
+Benchmarks: >2% good, >5% great. Track by content type to optimize mix.
 
 ---
 
 ## Brand Voice Guide
 
-### Voice Dimensions
-| Dimension | Range | Description |
-|-----------|-------|-------------|
-| Formal ↔ Casual | 1-5 | 1=corporate, 5=texting a friend |
-| Serious ↔ Humorous | 1-5 | 1=all business, 5=comedy account |
-| Reserved ↔ Bold | 1-5 | 1=diplomatic, 5=no-filter |
-| General ↔ Technical | 1-5 | 1=anyone can understand, 5=deep expert |
-
-### Consistency Rules
-- Use the same voice across ALL tweets (hot takes and how-tos)
-- Develop 3-5 "signature phrases" you reuse naturally
-- If the brand voice says "casual," don't suddenly write a formal thread
-- Read tweets aloud — does it sound like the same person?
+Define voice on 4 axes (1-5 scale): Formal↔Casual, Serious↔Humorous, Reserved↔Bold, General↔Technical.
+Maintain consistency across all tweet types. Develop 3-5 signature phrases. Read tweets aloud to verify consistent persona.
 
 ---
 
@@ -313,45 +253,9 @@ NEVER post:
 - Misleading claims presented as fact
 - Content that violates Twitter Terms of Service
 
-### Approval Mode Queue Format
-```json
-[
-  {
-    "id": "q_001",
-    "content": "Tweet text here",
-    "type": "hot_take",
-    "pillar": "AI",
-    "scheduled_for": "2025-01-15T10:00:00Z",
-    "created": "2025-01-14T20:00:00Z",
-    "status": "pending",
-    "notes": "Based on trending discussion about LLM pricing"
-  }
-]
-```
-
-Preview file for human review:
-```markdown
-# Tweet Queue Preview
-Generated: YYYY-MM-DD
-
-## Pending Tweets (N total)
-
-### 1. [Hot Take] — Scheduled: Mon 10 AM
-> Tweet text here
-
-**Notes**: Based on trending discussion about LLM pricing
-**Pillar**: AI | **Status**: Pending approval
-
----
-
-### 2. [Thread] — Scheduled: Tue 10 AM
-> Tweet 1/5: Hook text here
-> Tweet 2/5: Point one
-> ...
-
-**Notes**: Deep dive on new benchmark results
-**Pillar**: AI | **Status**: Pending approval
-```
+### Approval Mode Queue
+Queue entries: `{id, content, type, pillar, scheduled_for, status: "pending", notes}`
+Generate a markdown preview for human review: numbered tweets with type tag, schedule time, content as blockquote, pillar + status metadata.
 
 ### Risk Assessment
 Before posting, evaluate each tweet:

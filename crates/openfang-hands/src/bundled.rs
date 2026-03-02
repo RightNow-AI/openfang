@@ -40,6 +40,26 @@ pub fn bundled_hands() -> Vec<(&'static str, &'static str, &'static str)> {
             include_str!("../bundled/browser/HAND.toml"),
             include_str!("../bundled/browser/SKILL.md"),
         ),
+        (
+            "sre",
+            include_str!("../bundled/sre/HAND.toml"),
+            include_str!("../bundled/sre/SKILL.md"),
+        ),
+        (
+            "recon",
+            include_str!("../bundled/recon/HAND.toml"),
+            include_str!("../bundled/recon/SKILL.md"),
+        ),
+        (
+            "tester",
+            include_str!("../bundled/tester/HAND.toml"),
+            include_str!("../bundled/tester/SKILL.md"),
+        ),
+        (
+            "sigma",
+            include_str!("../bundled/sigma/HAND.toml"),
+            include_str!("../bundled/sigma/SKILL.md"),
+        ),
     ]
 }
 
@@ -71,7 +91,7 @@ mod tests {
     #[test]
     fn bundled_hands_count() {
         let hands = bundled_hands();
-        assert_eq!(hands.len(), 7);
+        assert_eq!(hands.len(), 11);
     }
 
     #[test]

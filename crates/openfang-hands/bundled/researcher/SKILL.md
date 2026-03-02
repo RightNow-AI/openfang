@@ -44,44 +44,10 @@ Sub-questions:
 
 ## CRAAP Source Evaluation Framework
 
-### Currency
-- When was it published or last updated?
-- Is the information still current for the topic?
-- Are the links functional?
-- For technology topics: anything >2 years old may be outdated
+Evaluate each source on 5 dimensions: **Currency** (recent enough?), **Relevance** (addresses the question?), **Authority** (credible author/institution?), **Accuracy** (evidence-backed, verifiable?), **Purpose** (informational vs commercial/persuasive?).
 
-### Relevance
-- Does it directly address your question?
-- Who is the intended audience?
-- Is the level of detail appropriate?
-- Would you cite this in your report?
-
-### Authority
-- Who is the author? What are their credentials?
-- What institution published this?
-- Is there contact information?
-- Does the URL domain indicate authority? (.gov, .edu, reputable org)
-
-### Accuracy
-- Is the information supported by evidence?
-- Has it been reviewed or refereed?
-- Can you verify the claims from other sources?
-- Are there factual errors, typos, or broken logic?
-
-### Purpose
-- Why does this information exist?
-- Is it informational, commercial, persuasive, or entertainment?
-- Is the bias clear or hidden?
-- Does the author/organization benefit from you believing this?
-
-### Scoring
-```
-A (Authoritative):  Passes all 5 CRAAP criteria
-B (Reliable):       Passes 4/5, minor concern on one
-C (Useful):         Passes 3/5, use with caveats
-D (Weak):           Passes 2/5 or fewer
-F (Unreliable):     Fails most criteria, do not cite
-```
+Scoring: A = passes all 5, B = 4/5, C = 3/5 (use with caveats), D = 2/5 or fewer, F = unreliable (do not cite).
+For tech topics: anything >2 years old may be outdated. Prefer .gov/.edu/reputable org domains.
 
 ---
 
@@ -185,122 +151,25 @@ After synthesis, explicitly note:
 
 ## Citation Formats
 
-### Inline URL
-```
-According to a 2024 study (https://example.com/study), the effect was significant.
-```
-
-### Footnotes
-```
-According to a 2024 study[1], the effect was significant.
-
----
-[1] https://example.com/study — "Title of Study" by Author, Published Date
-```
-
-### Academic (APA)
-```
-In-text: (Smith, 2024)
-Reference: Smith, J. (2024). Title of the article. *Journal Name*, 42(3), 123-145. https://doi.org/10.xxxx
-```
-
-For web sources (APA):
-```
-Author, A. A. (Year, Month Day). Title of page. Site Name. https://url
-```
-
-### Numbered References
-```
-According to recent research [1], the finding was confirmed by independent analysis [2].
-
-## References
-1. Author (Year). Title. URL
-2. Author (Year). Title. URL
-```
+Use the format matching the user's `citation_style` setting:
+- **Inline URL**: `(https://url)` after the claim
+- **Footnotes**: `[1]` inline, `[1] URL — "Title" by Author, Date` at bottom
+- **APA**: `(Author, Year)` inline, full ref: `Author, A. (Year). Title. *Journal*, Vol(Issue), Pages. URL`
+- **Numbered**: `[1]` inline, numbered list at end
 
 ---
 
 ## Output Templates
 
-### Brief Report
-```markdown
-# [Question]
-**Date**: YYYY-MM-DD | **Sources**: N | **Confidence**: high/medium/low
+**Brief Report** sections: Question + metadata (date, source count, confidence) → Answer (2-3 paragraphs) → Key Evidence (bulleted findings with sources) → Caveats → Sources list.
 
-## Answer
-[2-3 paragraph direct answer]
-
-## Key Evidence
-- [Finding 1] — [source]
-- [Finding 2] — [source]
-- [Finding 3] — [source]
-
-## Caveats
-- [Limitation or uncertainty]
-
-## Sources
-1. [Source](url)
-2. [Source](url)
-```
-
-### Detailed Report
-```markdown
-# Research Report: [Question]
-**Date**: YYYY-MM-DD | **Depth**: thorough | **Sources Consulted**: N
-
-## Executive Summary
-[1 paragraph synthesis]
-
-## Background
-[Context needed to understand the findings]
-
-## Methodology
-[How the research was conducted, what was searched, how sources were evaluated]
-
-## Findings
-
-### [Sub-question 1]
-[Detailed findings with inline citations]
-
-### [Sub-question 2]
-[Detailed findings with inline citations]
-
-## Analysis
-[Synthesis across findings, patterns identified, implications]
-
-## Contradictions & Open Questions
-[Areas of disagreement, gaps in knowledge]
-
-## Confidence Assessment
-[Overall confidence level with reasoning]
-
-## Sources
-[Full bibliography in chosen citation format]
-```
+**Detailed Report** sections: Executive Summary → Background → Methodology → Findings (one subsection per sub-question) → Analysis (synthesis, patterns) → Contradictions & Open Questions → Confidence Assessment → Full bibliography.
 
 ---
 
-## Cognitive Bias in Research
+## Cognitive Bias Checklist
 
-Be aware of these biases during research:
-
-1. **Confirmation bias**: Favoring information that confirms your initial hypothesis
-   - Mitigation: Explicitly search for disconfirming evidence
-
-2. **Authority bias**: Over-trusting sources from prestigious institutions
-   - Mitigation: Evaluate evidence quality, not just source prestige
-
-3. **Anchoring**: Fixating on the first piece of information found
-   - Mitigation: Gather multiple sources before forming conclusions
-
-4. **Selection bias**: Only finding sources that are easy to access
-   - Mitigation: Vary search strategies, check non-English sources
-
-5. **Recency bias**: Over-weighting recent publications
-   - Mitigation: Include foundational/historical sources when relevant
-
-6. **Framing effect**: Being influenced by how information is presented
-   - Mitigation: Look at raw data, not just interpretations
+Before finalizing research, check for: **confirmation bias** (search for disconfirming evidence), **authority bias** (evaluate evidence, not prestige), **anchoring** (gather multiple sources before concluding), **selection bias** (vary search strategies), **recency bias** (include foundational sources), **framing effect** (look at raw data, not just interpretations).
 
 ---
 

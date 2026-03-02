@@ -64,19 +64,7 @@ WEAK signal (limited predictive value):
 ## Confidence Calibration
 
 ### Probability Scale
-```
-95% — Almost certain (would bet 19:1)
-90% — Very likely (would bet 9:1)
-80% — Likely (would bet 4:1)
-70% — Probable (would bet 7:3)
-60% — Slightly more likely than not
-50% — Toss-up (genuine uncertainty)
-40% — Slightly less likely than not
-30% — Unlikely (but plausible)
-20% — Very unlikely (but possible)
-10% — Extremely unlikely
-5%  — Almost impossible (but not zero)
-```
+Use concrete probabilities: 95% (almost certain), 80% (likely), 60% (slightly more likely), 50% (toss-up), 30% (unlikely but plausible), 10% (extremely unlikely), 5% (almost impossible). Never use 0% or 100%.
 
 ### Calibration Rules
 1. NEVER use 0% or 100% — nothing is absolutely certain
@@ -106,45 +94,12 @@ Bad forecaster: > 0.35
 
 ## Domain-Specific Source Guide
 
-### Technology Predictions
-| Source Type | Examples | Use For |
-|-------------|---------|---------|
-| Product roadmaps | GitHub issues, release notes, blog posts | Feature predictions |
-| Adoption data | Stack Overflow surveys, NPM downloads, DB-Engines | Technology trends |
-| Funding data | Crunchbase, PitchBook, TechCrunch | Startup success/failure |
-| Patent filings | Google Patents, USPTO | Innovation direction |
-| Job postings | LinkedIn, Indeed, Levels.fyi | Technology demand |
-| Benchmark data | TechEmpower, MLPerf, Geekbench | Performance trends |
-
-### Finance Predictions
-| Source Type | Examples | Use For |
-|-------------|---------|---------|
-| Economic data | FRED, BLS, Census | Macro trends |
-| Earnings | SEC filings, earnings calls | Company performance |
-| Analyst reports | Bloomberg, Reuters, S&P | Market consensus |
-| Central bank | Fed minutes, ECB statements | Interest rates, policy |
-| Commodity data | EIA, OPEC reports | Energy/commodity prices |
-| Sentiment | VIX, put/call ratio, AAII survey | Market mood |
-
-### Geopolitics Predictions
-| Source Type | Examples | Use For |
-|-------------|---------|---------|
-| Official sources | Government statements, UN reports | Policy direction |
-| Think tanks | RAND, Brookings, Chatham House | Analysis |
-| Election data | Polls, voter registration, 538 | Election outcomes |
-| Trade data | WTO, customs data, trade balances | Trade policy |
-| Military data | SIPRI, defense budgets, deployments | Conflict risk |
-| Diplomatic signals | Ambassador recalls, sanctions, treaties | Relations |
-
-### Climate Predictions
-| Source Type | Examples | Use For |
-|-------------|---------|---------|
-| Scientific data | IPCC, NASA, NOAA | Climate trends |
-| Energy data | IEA, EIA, IRENA | Energy transition |
-| Policy data | COP agreements, national plans | Regulation |
-| Corporate data | CDP disclosures, sustainability reports | Corporate action |
-| Technology data | BloombergNEF, patent filings | Clean tech trends |
-| Investment data | Green bond issuance, ESG flows | Capital allocation |
+| Domain | Key Sources | Best Signals |
+|--------|------------|-------------|
+| Technology | GitHub issues, NPM/PyPI downloads, Stack Overflow surveys, Crunchbase, job postings | Adoption curves, funding rounds, hiring surges |
+| Finance | FRED, SEC filings, earnings calls, Bloomberg, VIX, Fed minutes | Economic indicators, earnings revisions, central bank signals |
+| Geopolitics | Government statements, RAND/Brookings, polls, WTO/SIPRI data | Policy shifts, election data, trade/military movements |
+| Climate | IPCC, IEA, COP agreements, CDP disclosures, BloombergNEF | Scientific consensus, energy transition metrics, policy commitments |
 
 ---
 
@@ -237,31 +192,7 @@ Weaknesses: [domains/types where you perform poorly]
 
 ## Cognitive Bias Checklist
 
-Before finalizing any prediction, check for these biases:
-
-1. **Anchoring**: Am I fixated on the first number I encountered?
-   - Fix: Deliberately consider the base rate before looking at specific evidence
-
-2. **Availability bias**: Am I overweighting recent or memorable events?
-   - Fix: Check the actual frequency, not just what comes to mind
-
-3. **Confirmation bias**: Am I only looking for evidence that supports my prediction?
-   - Fix: Actively search for contradicting evidence (steel-man the opposite)
-
-4. **Narrative bias**: Am I choosing a prediction because it makes a good story?
-   - Fix: Boring predictions are often more accurate
-
-5. **Overconfidence**: Am I too sure?
-   - Fix: If you've never been wrong at this confidence level, you're probably overconfident
-
-6. **Scope insensitivity**: Am I treating very different scales the same?
-   - Fix: Be specific about magnitudes and timeframes
-
-7. **Recency bias**: Am I extrapolating recent trends too far?
-   - Fix: Check longer time horizons and mean reversion patterns
-
-8. **Status quo bias**: Am I defaulting to "nothing will change"?
-   - Fix: Consider structural changes that could break the status quo
+Before finalizing, check: **anchoring** (start from base rate, not first number seen), **availability** (check actual frequency, not memorability), **confirmation** (steel-man the opposite), **narrative** (boring predictions are often more accurate), **overconfidence** (if never wrong at this confidence, you're overconfident), **scope insensitivity** (be specific about magnitudes), **recency** (check longer horizons, mean reversion), **status quo** (consider structural breaks).
 
 ### Contrarian Mode
 When enabled, for each consensus prediction:

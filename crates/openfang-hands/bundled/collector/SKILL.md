@@ -193,21 +193,7 @@ MINOR (note in report):
 
 ## Sentiment Analysis Heuristics
 
-When `track_sentiment` is enabled, classify each source's tone:
-
-### Classification Rules
-- **Positive indicators**: "growth", "innovation", "breakthrough", "success", "award", "expansion", "praise", "recommend"
-- **Negative indicators**: "lawsuit", "layoffs", "decline", "controversy", "failure", "breach", "criticism", "warning"
-- **Neutral indicators**: factual reporting without strong adjectives, data-only articles, announcements
-
-### Sentiment Scoring
-```
-Strong positive: +2 (e.g., "Company wins major award")
-Mild positive:   +1 (e.g., "Steady growth continues")
-Neutral:          0 (e.g., "Company releases Q3 report")
-Mild negative:   -1 (e.g., "Faces increased competition")
-Strong negative: -2 (e.g., "Major data breach disclosed")
-```
+When `track_sentiment` is enabled, score each source: +2 (strong positive: awards, breakthroughs) → +1 (mild: steady growth) → 0 (neutral: factual reporting) → -1 (mild negative: increased competition) → -2 (strong negative: breach, lawsuit, layoffs).
 
 Track rolling average over last 5 collection cycles to detect trends.
 
@@ -215,45 +201,8 @@ Track rolling average over last 5 collection cycles to detect trends.
 
 ## Report Templates
 
-### Intelligence Brief (Markdown)
-```markdown
-# Intelligence Report: [Target]
-**Date**: YYYY-MM-DD HH:MM UTC
-**Collection Cycle**: #N
-**Sources Processed**: X
-**New Data Points**: Y
-
-## Priority Changes
-1. [CRITICAL] [Description + source]
-2. [IMPORTANT] [Description + source]
-
-## Executive Summary
-[2-3 paragraph synthesis of new intelligence]
-
-## Detailed Findings
-
-### [Category 1]
-- Finding with [source](url)
-- Data point with confidence: high/medium/low
-
-### [Category 2]
-- ...
-
-## Entity Updates
-| Entity | Change | Previous | Current | Source |
-|--------|--------|----------|---------|--------|
-
-## Sentiment Trend
-| Period | Score | Direction | Notable |
-|--------|-------|-----------|---------|
-
-## Collection Metadata
-- Queries executed: N
-- Sources fetched: N
-- New entities: N
-- Updated entities: N
-- Next scheduled collection: [datetime]
-```
+### Intelligence Brief
+Sections: metadata (date, cycle #, sources, new data points) → Priority Changes (CRITICAL/IMPORTANT items with sources) → Executive Summary (2-3 paragraphs) → Detailed Findings by category (findings with source links + confidence) → Entity Updates table (entity, change, previous, current, source) → Sentiment Trend table → Collection Metadata (queries, sources fetched, new/updated entities, next scheduled).
 
 ---
 

@@ -200,11 +200,65 @@ pub trait ChannelBridgeHandle: Send + Sync {
 
 /// Per-channel rate limiter tracking message timestamps per user.
 ///
-/// Key: `"{channel_type}:{platform_id}"`, Value: timestamps of recent messages.
+/// Uses a fixed-size ring buffer per user so that `check()` is O(1)
+/// instead of scanning all timestamps with `retain()`.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelRateLimiter {
     /// Recent message timestamps per user key.
-    buckets: Arc<DashMap<String, Vec<Instant>>>,
+    /// Key is `(channel_type, platform_id)` to avoid `format!` allocation.
+    buckets: Arc<DashMap<(String, String), RingBucket>>,
+}
+
+/// Fixed-capacity ring buffer of timestamps for rate limiting.
+///
+/// Stores up to `cap` timestamps. When full, the oldest is overwritten.
+/// To check the rate: if the ring is full AND the oldest entry is within
+/// the window, the user is rate-limited. This is O(1) per check.
+#[derive(Debug, Clone)]
+struct RingBucket {
+    stamps: Vec<Instant>,
+    head: usize,
+    len: usize,
+    cap: usize,
+}
+
+impl RingBucket {
+    fn new(cap: usize) -> Self {
+        Self {
+            stamps: Vec::new(),
+            head: 0,
+            len: 0,
+            cap,
+        }
+    }
+
+    /// Record a new timestamp. Returns `true` if allowed, `false` if rate-limited.
+    fn record(&mut self, now: Instant, window: std::time::Duration) -> bool {
+        if self.len < self.cap {
+            // Ring not yet full — always allowed
+            if self.stamps.len() < self.cap {
+                self.stamps.push(now);
+            } else {
+                self.stamps[self.head] = now;
+            }
+            self.head = (self.head + 1) % self.cap;
+            self.len += 1;
+            true
+        } else {
+            // Ring is full — check if oldest entry has expired
+            let oldest_idx = self.head; // head points to the oldest when full
+            let oldest = self.stamps[oldest_idx];
+            if now.duration_since(oldest) >= window {
+                // Oldest expired — overwrite it (sliding window advances)
+                self.stamps[oldest_idx] = now;
+                self.head = (self.head + 1) % self.cap;
+                true
+            } else {
+                // All `cap` messages are within the window — rate limited
+                false
+            }
+        }
+    }
 }
 
 impl ChannelRateLimiter {
@@ -221,22 +275,22 @@ impl ChannelRateLimiter {
             return Ok(());
         }
 
-        let key = format!("{channel_type}:{platform_id}");
         let now = Instant::now();
         let window = std::time::Duration::from_secs(60);
+        let key = (channel_type.to_string(), platform_id.to_string());
 
-        let mut entry = self.buckets.entry(key).or_default();
-        // Evict timestamps older than 1 minute
-        entry.retain(|&ts| now.duration_since(ts) < window);
+        let mut entry = self
+            .buckets
+            .entry(key)
+            .or_insert_with(|| RingBucket::new(max_per_minute as usize));
 
-        if entry.len() >= max_per_minute as usize {
-            return Err(format!(
+        if entry.record(now, window) {
+            Ok(())
+        } else {
+            Err(format!(
                 "Rate limit exceeded ({max_per_minute} messages/minute). Please wait."
-            ));
+            ))
         }
-
-        entry.push(now);
-        Ok(())
     }
 }
 
@@ -501,9 +555,8 @@ async fn dispatch_message(
         // Other slash commands pass through to the agent
     }
 
-    // Check broadcast routing first
-    if router.has_broadcast(&message.sender.platform_id) {
-        let targets = router.resolve_broadcast(&message.sender.platform_id);
+    // Check broadcast routing (single lock acquisition via try_resolve_broadcast)
+    if let Some((strategy, targets)) = router.try_resolve_broadcast(&message.sender.platform_id) {
         if !targets.is_empty() {
             // RBAC check applies to broadcast too
             if let Err(denied) = handle
@@ -522,7 +575,6 @@ async fn dispatch_message(
             }
             let _ = adapter.send_typing(&message.sender).await;
 
-            let strategy = router.broadcast_strategy();
             let mut responses = Vec::new();
 
             match strategy {

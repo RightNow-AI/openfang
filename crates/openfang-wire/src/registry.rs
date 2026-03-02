@@ -6,9 +6,9 @@
 
 use crate::message::RemoteAgentInfo;
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 /// A tracked remote agent, enriched with the owning peer's identity.
 #[derive(Debug, Clone)]
@@ -48,82 +48,75 @@ pub struct PeerEntry {
 }
 
 /// Thread-safe registry of all known peers.
+///
+/// Backed by [`DashMap`] for sharded concurrent access — readers on
+/// different shards never block each other or writers.
 #[derive(Debug, Clone)]
 pub struct PeerRegistry {
-    peers: Arc<RwLock<HashMap<String, PeerEntry>>>,
+    peers: Arc<DashMap<String, PeerEntry>>,
 }
 
 impl PeerRegistry {
     /// Create a new empty registry.
     pub fn new() -> Self {
         Self {
-            peers: Arc::new(RwLock::new(HashMap::new())),
+            peers: Arc::new(DashMap::new()),
         }
     }
 
     /// Register or update a peer after a successful handshake.
     pub fn add_peer(&self, entry: PeerEntry) {
-        let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
-        peers.insert(entry.node_id.clone(), entry);
+        self.peers.insert(entry.node_id.clone(), entry);
     }
 
     /// Remove a peer entirely.
     pub fn remove_peer(&self, node_id: &str) -> Option<PeerEntry> {
-        let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
-        peers.remove(node_id)
+        self.peers.remove(node_id).map(|(_, v)| v)
     }
 
     /// Mark a peer as disconnected (but keep its entry for possible reconnect).
     pub fn mark_disconnected(&self, node_id: &str) {
-        let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = peers.get_mut(node_id) {
+        if let Some(mut entry) = self.peers.get_mut(node_id) {
             entry.state = PeerState::Disconnected;
         }
     }
 
     /// Mark a peer as connected again.
     pub fn mark_connected(&self, node_id: &str) {
-        let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = peers.get_mut(node_id) {
+        if let Some(mut entry) = self.peers.get_mut(node_id) {
             entry.state = PeerState::Connected;
         }
     }
 
     /// Get a snapshot of a specific peer.
     pub fn get_peer(&self, node_id: &str) -> Option<PeerEntry> {
-        let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
-        peers.get(node_id).cloned()
+        self.peers.get(node_id).map(|r| r.value().clone())
     }
 
     /// Get all connected peers.
     pub fn connected_peers(&self) -> Vec<PeerEntry> {
-        let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
-        peers
-            .values()
-            .filter(|p| p.state == PeerState::Connected)
-            .cloned()
+        self.peers
+            .iter()
+            .filter(|r| r.state == PeerState::Connected)
+            .map(|r| r.value().clone())
             .collect()
     }
 
     /// Get all peers (connected + disconnected).
     pub fn all_peers(&self) -> Vec<PeerEntry> {
-        let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
-        peers.values().cloned().collect()
+        self.peers.iter().map(|r| r.value().clone()).collect()
     }
 
     /// Update the agent list for a peer (e.g., after an AgentSpawned notification).
     pub fn update_agents(&self, node_id: &str, agents: Vec<RemoteAgentInfo>) {
-        let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = peers.get_mut(node_id) {
+        if let Some(mut entry) = self.peers.get_mut(node_id) {
             entry.agents = agents;
         }
     }
 
     /// Add a single agent to a peer's advertised list.
     pub fn add_agent(&self, node_id: &str, agent: RemoteAgentInfo) {
-        let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = peers.get_mut(node_id) {
-            // Replace if agent with same ID already exists, otherwise push
+        if let Some(mut entry) = self.peers.get_mut(node_id) {
             if let Some(existing) = entry.agents.iter_mut().find(|a| a.id == agent.id) {
                 *existing = agent;
             } else {
@@ -134,29 +127,32 @@ impl PeerRegistry {
 
     /// Remove an agent from a peer's advertised list.
     pub fn remove_agent(&self, node_id: &str, agent_id: &str) {
-        let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = peers.get_mut(node_id) {
+        if let Some(mut entry) = self.peers.get_mut(node_id) {
             entry.agents.retain(|a| a.id != agent_id);
         }
     }
 
     /// Find all remote agents matching a query (searches name, tags, description).
+    ///
+    /// Uses allocation-free ASCII case-insensitive matching — the query is
+    /// lowercased once; field comparisons are done byte-by-byte without
+    /// allocating temporary Strings.
     pub fn find_agents(&self, query: &str) -> Vec<RemoteAgent> {
-        let query_lower = query.to_lowercase();
-        let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
+        let query_lower = query.to_ascii_lowercase();
         let mut results = Vec::new();
 
-        for peer in peers.values() {
+        for entry in self.peers.iter() {
+            let peer = entry.value();
             if peer.state != PeerState::Connected {
                 continue;
             }
             for agent in &peer.agents {
-                let matches = agent.name.to_lowercase().contains(&query_lower)
-                    || agent.description.to_lowercase().contains(&query_lower)
+                let matches = ascii_contains_ignore_case(&agent.name, &query_lower)
+                    || ascii_contains_ignore_case(&agent.description, &query_lower)
                     || agent
                         .tags
                         .iter()
-                        .any(|t| t.to_lowercase().contains(&query_lower));
+                        .any(|t| ascii_contains_ignore_case(t, &query_lower));
                 if matches {
                     results.push(RemoteAgent {
                         peer_node_id: peer.node_id.clone(),
@@ -171,10 +167,10 @@ impl PeerRegistry {
 
     /// Get all remote agents across all connected peers.
     pub fn all_remote_agents(&self) -> Vec<RemoteAgent> {
-        let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
         let mut results = Vec::new();
 
-        for peer in peers.values() {
+        for entry in self.peers.iter() {
+            let peer = entry.value();
             if peer.state != PeerState::Connected {
                 continue;
             }
@@ -191,18 +187,36 @@ impl PeerRegistry {
 
     /// Number of connected peers.
     pub fn connected_count(&self) -> usize {
-        let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
-        peers
-            .values()
-            .filter(|p| p.state == PeerState::Connected)
+        self.peers
+            .iter()
+            .filter(|r| r.state == PeerState::Connected)
             .count()
     }
 
     /// Total number of peers (including disconnected).
     pub fn total_count(&self) -> usize {
-        let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
-        peers.len()
+        self.peers.len()
     }
+}
+
+/// Allocation-free ASCII case-insensitive substring search.
+///
+/// `needle_lower` **must** already be lowercase. Haystack bytes are
+/// folded to lowercase on the fly without allocating.
+#[inline]
+fn ascii_contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    let needle_bytes = needle_lower.as_bytes();
+    let needle_len = needle_bytes.len();
+    if needle_len > haystack.len() {
+        return false;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle_len)
+        .any(|w| w.iter().zip(needle_bytes).all(|(h, n)| h.to_ascii_lowercase() == *n))
 }
 
 impl Default for PeerRegistry {

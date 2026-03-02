@@ -3,16 +3,12 @@
 //! Tests the real daemon startup, PID file management, health serving,
 //! and graceful shutdown sequence.
 
-use axum::Router;
-use openfang_api::middleware;
-use openfang_api::routes::{self, AppState};
-use openfang_api::server::{read_daemon_info, DaemonInfo};
+use openfang_api::server::{build_router, read_daemon_info, DaemonInfo};
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
-use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -106,31 +102,20 @@ async fn test_full_daemon_lifecycle() {
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
-    let state = Arc::new(AppState {
-        kernel: kernel.clone(),
-        started_at: Instant::now(),
-        peer_registry: None,
-        bridge_manager: tokio::sync::Mutex::new(None),
-        channels_config: tokio::sync::RwLock::new(Default::default()),
-        shutdown_notify: Arc::new(tokio::sync::Notify::new()),
-    });
-
-    let app = Router::new()
-        .route("/api/health", axum::routing::get(routes::health))
-        .route("/api/status", axum::routing::get(routes::status))
-        .route("/api/shutdown", axum::routing::post(routes::shutdown))
-        .layer(axum::middleware::from_fn(middleware::request_logging))
-        .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
-        .with_state(state.clone());
-
     // Bind to random port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
+    let (app, _state) = build_router(kernel.clone(), addr).await;
+
     // Spawn server
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     // Write daemon info file (like run_daemon does)
@@ -228,25 +213,20 @@ async fn test_server_immediate_responsiveness() {
 
     let kernel = OpenFangKernel::boot_with_config(config).unwrap();
     let kernel = Arc::new(kernel);
-
-    let state = Arc::new(AppState {
-        kernel: kernel.clone(),
-        started_at: Instant::now(),
-        peer_registry: None,
-        bridge_manager: tokio::sync::Mutex::new(None),
-        channels_config: tokio::sync::RwLock::new(Default::default()),
-        shutdown_notify: Arc::new(tokio::sync::Notify::new()),
-    });
-
-    let app = Router::new()
-        .route("/api/health", axum::routing::get(routes::health))
-        .with_state(state);
+    kernel.set_self_handle();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
+    let (app, _state) = build_router(kernel.clone(), addr).await;
+
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     // Hit health endpoint immediately — should respond fast

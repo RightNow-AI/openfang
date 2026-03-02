@@ -20,6 +20,14 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 subtle = { workspace = true }
 rand = { workspace = true }
+dashmap = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+tokio = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+turmoil = "0.6"
+
+[[bench]]
+name = "wire_bench"
+harness = false

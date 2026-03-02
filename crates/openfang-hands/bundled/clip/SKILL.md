@@ -98,81 +98,27 @@ whisper-ctranslate2 audio.wav --model small --output_format json --word_timestam
 Note: On macOS Apple Silicon, consider `mlx-whisper` as a faster native alternative.
 
 ### JSON Output Structure
-```json
-{
-  "text": "full transcript text...",
-  "segments": [
-    {
-      "id": 0,
-      "start": 0.0,
-      "end": 4.52,
-      "text": " Hello everyone, welcome back.",
-      "words": [
-        {"word": " Hello", "start": 0.0, "end": 0.32, "probability": 0.95},
-        {"word": " everyone,", "start": 0.32, "end": 0.78, "probability": 0.91},
-        {"word": " welcome", "start": 0.78, "end": 1.14, "probability": 0.98},
-        {"word": " back.", "start": 1.14, "end": 1.52, "probability": 0.97}
-      ]
-    }
-  ]
-}
-```
-- `segments[].words[]` gives word-level timing when `--word_timestamps true`
-- `probability` indicates confidence (< 0.5 = likely wrong)
+Output contains `text` (full transcript) and `segments[]` with `start`, `end`, `text` fields.
+With `--word_timestamps true`: each segment has `words[]` with `word`, `start`, `end`, `probability` (< 0.5 = likely wrong).
 
 ---
 
 ## YouTube json3 Subtitle Parsing
 
-### Format Structure
-```json
-{
-  "events": [
-    {
-      "tStartMs": 1230,
-      "dDurationMs": 5000,
-      "segs": [
-        {"utf8": "hello ", "tOffsetMs": 0},
-        {"utf8": "world ", "tOffsetMs": 200},
-        {"utf8": "how ", "tOffsetMs": 450},
-        {"utf8": "are you", "tOffsetMs": 700}
-      ]
-    }
-  ]
-}
-```
+### Format & Extraction
+Structure: `events[].tStartMs` + `events[].segs[].{utf8, tOffsetMs}`
 
-### Extracting Word Timing
-For each event and each segment within it:
-- `word_start_ms = event.tStartMs + seg.tOffsetMs`
-- `word_start_secs = word_start_ms / 1000.0`
-- `word_text = seg.utf8.trim()`
-
-Events without `segs` are line breaks or formatting — skip them.
-Events with `segs` containing only `"\n"` are newlines — skip them.
+Word timing: `word_start_ms = event.tStartMs + seg.tOffsetMs` → divide by 1000 for seconds.
+Skip events without `segs` or with `segs` containing only `"\n"` (formatting/newlines).
 
 ---
 
 ## SRT Generation from Transcript
 
-### SRT Format
-```
-1
-00:00:00,000 --> 00:00:02,500
-First line of caption text
-
-2
-00:00:02,500 --> 00:00:05,100
-Second line of caption text
-```
-
-### Rules for Building Good SRT
-- Group words into subtitle lines of ~8-12 words (2-3 seconds per line)
-- Break at natural pause points (periods, commas, clause boundaries)
-- Keep lines under 42 characters for readability on mobile
-- Adjust timestamps relative to clip start (subtract clip start time from all timestamps)
-- Timestamp format: `HH:MM:SS,mmm` (comma separator, not dot)
-- Each entry: index line, timestamp line, text line(s), blank line
+### SRT Rules
+- Format: `HH:MM:SS,mmm` (comma, not dot) — entry = index + timestamp + text + blank line
+- ~8-12 words per line, 2-3 seconds, break at natural pauses, ≤42 chars for mobile
+- Adjust timestamps relative to clip start
 - Use `file_write` tool to create the SRT file — works identically on all platforms
 
 ### Styled Captions with ASS Format
@@ -264,83 +210,27 @@ ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p
 
 ## API-Based STT Reference
 
-### Groq Whisper API
-Fastest cloud STT — uses whisper-large-v3 on Groq hardware. Free tier available.
-```
-curl -s -X POST "https://api.groq.com/openai/v1/audio/transcriptions" \
-  -H "Authorization: Bearer $GROQ_API_KEY" \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@audio.wav" \
-  -F "model=whisper-large-v3" \
-  -F "response_format=verbose_json" \
-  -F "timestamp_granularities[]=word" \
-  -o transcript_raw.json
-```
-Response: `{"text": "...", "words": [{"word": "hello", "start": 0.0, "end": 0.32}]}`
-- Max file size: 25MB. For longer audio, split with ffmpeg first.
-- `timestamp_granularities[]=word` is required for word-level timing.
+All APIs accept audio files (max 25MB — split with ffmpeg if larger). Add `timestamp_granularities[]=word` for word timing.
 
-### OpenAI Whisper API
-```
-curl -s -X POST "https://api.openai.com/v1/audio/transcriptions" \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@audio.wav" \
-  -F "model=whisper-1" \
-  -F "response_format=verbose_json" \
-  -F "timestamp_granularities[]=word" \
-  -o transcript_raw.json
-```
-Response format same as Groq. Max 25MB.
+| Provider | Endpoint | Auth Header | Model Param | Env Var |
+|----------|----------|-------------|-------------|----------|
+| Groq (fastest) | `POST https://api.groq.com/openai/v1/audio/transcriptions` | `Bearer $GROQ_API_KEY` | `whisper-large-v3` | `GROQ_API_KEY` |
+| OpenAI | `POST https://api.openai.com/v1/audio/transcriptions` | `Bearer $OPENAI_API_KEY` | `whisper-1` | `OPENAI_API_KEY` |
+| Deepgram | `POST https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&utterances=true&punctuate=true` | `Token $DEEPGRAM_API_KEY` | (in URL) | `DEEPGRAM_API_KEY` |
 
-### Deepgram Nova-2
-```
-curl -s -X POST "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&utterances=true&punctuate=true" \
-  -H "Authorization: Token $DEEPGRAM_API_KEY" \
-  -H "Content-Type: audio/wav" \
-  --data-binary @audio.wav \
-  -o transcript_raw.json
-```
-Response: `{"results": {"channels": [{"alternatives": [{"words": [{"word": "hello", "start": 0.0, "end": 0.32, "confidence": 0.99}]}]}]}}`
-- Supports streaming, but for clips use batch mode.
-- `smart_format=true` adds punctuation and casing.
+Groq/OpenAI: multipart form with `-F "file=@audio.wav" -F "response_format=verbose_json"`
+Deepgram: binary body with `-H "Content-Type: audio/wav" --data-binary @audio.wav`
+Deepgram response nests words under `results.channels[0].alternatives[0].words[]`.
 
 ---
 
 ## TTS Reference
 
-### Edge TTS (free, no API key needed)
-```
-# List available voices
-edge-tts --list-voices
-
-# Generate speech
-edge-tts --text "Your caption text here" --voice en-US-AriaNeural --write-media tts_output.mp3
-
-# Other good voices: en-US-GuyNeural, en-GB-SoniaNeural, en-AU-NatashaNeural
-```
-Install: `pip install edge-tts`
-
-### OpenAI TTS
-```
-curl -s -X POST "https://api.openai.com/v1/audio/speech" \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"tts-1","input":"Your text here","voice":"alloy"}' \
-  --output tts_output.mp3
-```
-Voices: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`
-Models: `tts-1` (fast), `tts-1-hd` (quality)
-
-### ElevenLabs
-```
-curl -s -X POST "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM" \
-  -H "xi-api-key: $ELEVENLABS_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"text":"Your text here","model_id":"eleven_monolingual_v1"}' \
-  --output tts_output.mp3
-```
-Voice ID `21m00Tcm4TlvDq8ikWAM` = Rachel (default). List voices: `GET /v1/voices`
+| Provider | Command / Endpoint | Auth | Notes |
+|----------|-------------------|------|-------|
+| Edge TTS (free) | `edge-tts --text "TEXT" --voice en-US-AriaNeural --write-media tts.mp3` | None | Install: `pip install edge-tts`. Voices: AriaNeural, GuyNeural, SoniaNeural |
+| OpenAI | `POST https://api.openai.com/v1/audio/speech` | `Bearer $OPENAI_API_KEY` | Body: `{"model":"tts-1","input":"TEXT","voice":"alloy"}`. Voices: alloy/echo/fable/onyx/nova/shimmer |
+| ElevenLabs | `POST https://api.elevenlabs.io/v1/text-to-speech/VOICE_ID` | `xi-api-key: $ELEVENLABS_API_KEY` | Body: `{"text":"TEXT","model_id":"eleven_monolingual_v1"}`. Default voice ID: `21m00Tcm4TlvDq8ikWAM` (Rachel) |
 
 ### Audio Merging (TTS + Original)
 ```
@@ -367,108 +257,38 @@ ffmpeg -i clip.mp4 -i tts.mp3 -map 0:v -map 1:a -c:v copy -c:a aac -shortest -y 
 
 ## Telegram Bot API Reference
 
-### sendVideo — Upload and send a video to a chat/channel
-```
-curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN>/sendVideo" \
-  -F "chat_id=<CHAT_ID>" \
-  -F "video=@clip_N_final.mp4" \
-  -F "caption=Clip title here" \
-  -F "parse_mode=HTML" \
-  -F "supports_streaming=true"
-```
+**Send video**: `POST https://api.telegram.org/bot<BOT_TOKEN>/sendVideo`
+Form fields: `chat_id` (required), `video=@file.mp4` (max **50MB**), `caption`, `parse_mode=HTML`, `supports_streaming=true`
 
-### Parameters
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `chat_id` | Yes | Channel (`-100XXXXXXXXXX` or `@channelname`), group, or user numeric ID |
-| `video` | Yes | `@filepath` for upload (max 50MB) or a Telegram `file_id` for re-send |
-| `caption` | No | Text caption, up to 1024 characters |
-| `parse_mode` | No | `HTML` or `MarkdownV2` for styled captions |
-| `supports_streaming` | No | `true` enables progressive playback |
+Size limit fix: `ffmpeg -i input.mp4 -fs 49M -c:v libx264 -crf 28 -preset fast -c:a aac -movflags +faststart -y output.mp4`
 
-### Success Response
-```json
-{"ok": true, "result": {"message_id": 1234, "video": {"file_id": "BAACAgI...", "file_size": 5242880}}}
-```
-
-### Error Response
-```json
-{"ok": false, "error_code": 400, "description": "Bad Request: chat not found"}
-```
-
-### Common Errors
-| Error Code | Description | Fix |
-|------------|-------------|-----|
-| 400 | Chat not found | Verify chat_id; bot must be added to the channel/group |
-| 401 | Unauthorized | Bot token is invalid or revoked — regenerate via @BotFather |
-| 413 | Request entity too large | File exceeds 50MB — re-encode: `ffmpeg -i input.mp4 -fs 49M -c:v libx264 -crf 28 -preset fast -c:a aac -y output.mp4` |
-| 429 | Too many requests | Rate limited — wait the `retry_after` seconds from the response |
-
-### File Size Limit
-Telegram allows up to **50MB** for video uploads via Bot API. If a clip exceeds this:
-```
-ffmpeg -i clip_N_final.mp4 -fs 49M -c:v libx264 -crf 28 -preset fast -c:a aac -movflags +faststart -y clip_N_tg.mp4
-```
+| Error | Fix |
+|-------|-----|
+| 400 chat not found | Bot must be added to channel/group |
+| 401 unauthorized | Regenerate token via @BotFather |
+| 413 too large | Re-encode under 50MB |
+| 429 rate limited | Wait `retry_after` seconds |
 
 ---
 
 ## WhatsApp Business Cloud API Reference
 
-### Two-Step Flow: Upload Media → Send Message
+Two-step flow (upload then send). Auth: `Bearer <ACCESS_TOKEN>`. Max video: **16MB**.
 
-WhatsApp Cloud API requires uploading the video first to get a `media_id`, then sending a message referencing that ID.
+**Step 1 — Upload**: `POST https://graph.facebook.com/v21.0/<PHONE_NUMBER_ID>/media`
+Form: `file=@video.mp4`, `type=video/mp4`, `messaging_product=whatsapp` → returns `{"id": "MEDIA_ID"}`
 
-### Step 1 — Upload Media
-```
-curl -s -X POST "https://graph.facebook.com/v21.0/<PHONE_NUMBER_ID>/media" \
-  -H "Authorization: Bearer <ACCESS_TOKEN>" \
-  -F "file=@clip_N_final.mp4" \
-  -F "type=video/mp4" \
-  -F "messaging_product=whatsapp"
-```
+**Step 2 — Send**: `POST https://graph.facebook.com/v21.0/<PHONE_NUMBER_ID>/messages`
+JSON body: `{"messaging_product":"whatsapp","to":"PHONE","type":"video","video":{"id":"MEDIA_ID","caption":"text"}}`
 
-Success response:
-```json
-{"id": "1234567890"}
-```
+Size limit fix: `ffmpeg -i input.mp4 -fs 15M -c:v libx264 -crf 30 -preset fast -c:a aac -movflags +faststart -y output.mp4`
 
-### Step 2 — Send Video Message
-```
-curl -s -X POST "https://graph.facebook.com/v21.0/<PHONE_NUMBER_ID>/messages" \
-  -H "Authorization: Bearer <ACCESS_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messaging_product": "whatsapp",
-    "to": "<RECIPIENT_PHONE>",
-    "type": "video",
-    "video": {
-      "id": "<MEDIA_ID>",
-      "caption": "Clip title here"
-    }
-  }'
-```
+24-hour window: recipient must have messaged you within 24h, otherwise use a pre-approved template.
 
-Success response:
-```json
-{"messaging_product": "whatsapp", "contacts": [{"wa_id": "14155551234"}], "messages": [{"id": "wamid.HBgL..."}]}
-```
-
-### File Size Limit
-WhatsApp allows up to **16MB** for video uploads. If a clip exceeds this:
-```
-ffmpeg -i clip_N_final.mp4 -fs 15M -c:v libx264 -crf 30 -preset fast -c:a aac -movflags +faststart -y clip_N_wa.mp4
-```
-
-### 24-Hour Messaging Window
-WhatsApp requires the recipient to have messaged you within the last 24 hours (for non-template messages). If you get a "template required" error, either:
-- Ask the recipient to send any message to the business number first
-- Use a pre-approved message template instead of a free-form video message
-
-### Common Errors
-| Error Code | Description | Fix |
-|------------|-------------|-----|
-| 100 | Invalid parameter | Check phone_number_id and recipient format (no + prefix, no spaces) |
-| 190 | Invalid/expired access token | Regenerate token in Meta Business Settings; temporary tokens expire in 24h |
-| 131030 | Recipient not in allowed list | In test mode, add recipient to allowed numbers in Meta Developer Portal |
-| 131047 | Re-engagement message / template required | Recipient hasn't messaged within 24h — use a template or ask them to message first |
-| 131053 | Media upload failed | File too large or unsupported format — re-encode as MP4 under 16MB |
+| Error | Fix |
+|-------|-----|
+| 100 invalid param | Check phone_number_id, recipient format (no +, no spaces) |
+| 190 expired token | Regenerate in Meta Business Settings (temp tokens expire 24h) |
+| 131030 not in allowed list | Add recipient in Meta Developer Portal (test mode) |
+| 131047 template required | Recipient hasn't messaged within 24h |
+| 131053 upload failed | Re-encode as MP4 under 16MB |

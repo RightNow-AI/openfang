@@ -14,8 +14,9 @@ use crate::registry::{PeerEntry, PeerRegistry, PeerState};
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -25,14 +26,14 @@ use tracing::{debug, error, info, warn};
 type HmacSha256 = Hmac<Sha256>;
 
 /// Generate HMAC-SHA256 signature for message authentication.
-fn hmac_sign(secret: &str, data: &[u8]) -> String {
+pub fn hmac_sign(secret: &str, data: &[u8]) -> String {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key size");
     mac.update(data);
     hex::encode(mac.finalize().into_bytes())
 }
 
 /// Verify HMAC-SHA256 signature using constant-time comparison.
-fn hmac_verify(secret: &str, data: &[u8], signature: &str) -> bool {
+pub fn hmac_verify(secret: &str, data: &[u8], signature: &str) -> bool {
     let expected = hmac_sign(secret, data);
     subtle::ConstantTimeEq::ct_eq(expected.as_bytes(), signature.as_bytes()).into()
 }
@@ -107,6 +108,12 @@ pub trait PeerHandle: Send + Sync + 'static {
     fn uptime_secs(&self) -> u64;
 }
 
+/// A reusable outbound TCP connection to a peer (post-handshake).
+struct OutboundConn {
+    reader: tokio::net::tcp::OwnedReadHalf,
+    writer: tokio::net::tcp::OwnedWriteHalf,
+}
+
 /// The local network node — listens for connections and connects to peers.
 pub struct PeerNode {
     config: PeerConfig,
@@ -116,6 +123,10 @@ pub struct PeerNode {
     /// Start time for uptime calculation (used by handle_request for Pong).
     #[allow(dead_code)]
     start_time: Instant,
+    /// Pool of authenticated outbound connections, keyed by peer node_id.
+    /// Uses take-out / put-back pattern: the Mutex is held only for the
+    /// HashMap remove/insert (nanoseconds), never during network I/O.
+    outbound: Mutex<HashMap<String, OutboundConn>>,
 }
 
 impl PeerNode {
@@ -145,6 +156,7 @@ impl PeerNode {
             registry: registry.clone(),
             local_addr,
             start_time: Instant::now(),
+            outbound: Mutex::new(HashMap::new()),
         });
 
         let node_clone = Arc::clone(&node);
@@ -280,8 +292,10 @@ impl PeerNode {
 
     /// Send a message to a specific peer and await the response.
     ///
-    /// SECURITY: Opens a new connection to the peer, performs a full HMAC
-    /// handshake, sends the agent message, and reads the response.
+    /// SECURITY: Reuses an authenticated connection from the pool when
+    /// available, otherwise opens a new TCP connection and performs a
+    /// full HMAC handshake. Connections are returned to the pool after
+    /// a successful exchange for future reuse.
     pub async fn send_to_peer(
         &self,
         node_id: &str,
@@ -295,6 +309,74 @@ impl PeerNode {
             .get_peer(node_id)
             .ok_or_else(|| WireError::HandshakeFailed(format!("Unknown peer: {node_id}")))?;
 
+        // Try to reuse a pooled outbound connection
+        let taken = self.outbound.lock().unwrap_or_else(|e| e.into_inner()).remove(node_id);
+
+        if let Some(mut conn) = taken {
+            match Self::send_request(&mut conn, agent, message, sender).await {
+                Ok(text) => {
+                    // Connection still good — return it to the pool
+                    self.outbound
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(node_id.to_string(), conn);
+                    return Ok(text);
+                }
+                Err(e) => {
+                    debug!("OFP: pooled connection to {} stale: {}", node_id, e);
+                    // Fall through to create a new connection
+                }
+            }
+        }
+
+        // No pooled connection (or it was stale) — open a new one
+        let mut conn = self.open_authenticated_connection(&peer, &handle).await?;
+        let result = Self::send_request(&mut conn, agent, message, sender).await?;
+
+        // Pool for future reuse
+        self.outbound
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(node_id.to_string(), conn);
+
+        Ok(result)
+    }
+
+    /// Send a request on an already-authenticated connection and read the response.
+    async fn send_request(
+        conn: &mut OutboundConn,
+        agent: &str,
+        message: &str,
+        sender: Option<&str>,
+    ) -> Result<String, WireError> {
+        let msg = WireMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind: WireMessageKind::Request(WireRequest::AgentMessage {
+                agent: agent.to_string(),
+                message: message.to_string(),
+                sender: sender.map(|s| s.to_string()),
+            }),
+        };
+        write_message(&mut conn.writer, &msg).await?;
+
+        let response = read_message(&mut conn.reader).await?;
+        match response.kind {
+            WireMessageKind::Response(WireResponse::AgentResponse { text }) => Ok(text),
+            WireMessageKind::Response(WireResponse::Error { code, message }) => Err(
+                WireError::HandshakeFailed(format!("Remote error {code}: {message}")),
+            ),
+            _ => Err(WireError::HandshakeFailed(
+                "Unexpected response type".to_string(),
+            )),
+        }
+    }
+
+    /// Open a new TCP connection to a peer and perform a full HMAC handshake.
+    async fn open_authenticated_connection(
+        &self,
+        peer: &PeerEntry,
+        handle: &Arc<dyn PeerHandle>,
+    ) -> Result<OutboundConn, WireError> {
         let stream = TcpStream::connect(peer.address).await?;
         let (mut reader, mut writer) = stream.into_split();
 
@@ -355,27 +437,7 @@ impl PeerNode {
             }
         }
 
-        // Now send the actual agent message over the authenticated connection
-        let msg = WireMessage {
-            id: uuid::Uuid::new_v4().to_string(),
-            kind: WireMessageKind::Request(WireRequest::AgentMessage {
-                agent: agent.to_string(),
-                message: message.to_string(),
-                sender: sender.map(|s| s.to_string()),
-            }),
-        };
-        write_message(&mut writer, &msg).await?;
-
-        let response = read_message(&mut reader).await?;
-        match response.kind {
-            WireMessageKind::Response(WireResponse::AgentResponse { text }) => Ok(text),
-            WireMessageKind::Response(WireResponse::Error { code, message }) => Err(
-                WireError::HandshakeFailed(format!("Remote error {code}: {message}")),
-            ),
-            _ => Err(WireError::HandshakeFailed(
-                "Unexpected response type".to_string(),
-            )),
-        }
+        Ok(OutboundConn { reader, writer })
     }
 
     /// Internal accept loop — runs in a spawned task.
@@ -687,9 +749,9 @@ fn handle_notification(peer_node_id: &str, notif: &WireNotification, registry: &
     }
 }
 
-/// Write a framed message (4-byte length + JSON) to a TCP stream.
-pub async fn write_message(
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+/// Write a framed message (4-byte length + JSON) to any async writer.
+pub async fn write_message<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
     msg: &WireMessage,
 ) -> Result<(), WireError> {
     let bytes = encode_message(msg)?;
@@ -698,9 +760,9 @@ pub async fn write_message(
     Ok(())
 }
 
-/// Read a framed message (4-byte length + JSON) from a TCP stream.
-pub async fn read_message(
-    reader: &mut tokio::net::tcp::OwnedReadHalf,
+/// Read a framed message (4-byte length + JSON) from any async reader.
+pub async fn read_message<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
 ) -> Result<WireMessage, WireError> {
     let mut header = [0u8; 4];
     match reader.read_exact(&mut header).await {

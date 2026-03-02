@@ -192,6 +192,27 @@ impl AgentRouter {
         }
     }
 
+    /// Combined check + resolve for broadcast routing (single lock acquisition).
+    ///
+    /// Returns `None` if no broadcast route exists for this peer, or
+    /// `Some((strategy, targets))` with the resolved agents.
+    #[allow(clippy::type_complexity)]
+    pub fn try_resolve_broadcast(
+        &self,
+        peer_id: &str,
+    ) -> Option<(BroadcastStrategy, Vec<(String, Option<AgentId>)>)> {
+        let bc = self.broadcast.lock().unwrap_or_else(|e| e.into_inner());
+        let agent_names = bc.routes.get(peer_id)?;
+        let targets: Vec<_> = agent_names
+            .iter()
+            .map(|name| {
+                let id = self.agent_name_cache.get(name).map(|r| *r);
+                (name.clone(), id)
+            })
+            .collect();
+        Some((bc.strategy, targets))
+    }
+
     /// Get broadcast strategy.
     pub fn broadcast_strategy(&self) -> BroadcastStrategy {
         self.broadcast
