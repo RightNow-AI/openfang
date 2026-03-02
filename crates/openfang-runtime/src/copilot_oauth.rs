@@ -46,12 +46,7 @@ pub enum DeviceFlowStatus {
 ///
 /// POST https://github.com/login/device/code
 /// Returns a device code and user code for the user to enter at the verification URI.
-pub async fn start_device_flow() -> Result<DeviceCodeResponse, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
-
+pub async fn start_device_flow(client: &reqwest::Client) -> Result<DeviceCodeResponse, String> {
     let resp = client
         .post(GITHUB_DEVICE_CODE_URL)
         .header("Accept", "application/json")
@@ -75,15 +70,7 @@ pub async fn start_device_flow() -> Result<DeviceCodeResponse, String> {
 ///
 /// POST https://github.com/login/oauth/access_token
 /// Returns the current status of the authorization flow.
-pub async fn poll_device_flow(device_code: &str) -> DeviceFlowStatus {
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return DeviceFlowStatus::Error(format!("HTTP client error: {e}")),
-    };
-
+pub async fn poll_device_flow(device_code: &str, client: &reqwest::Client) -> DeviceFlowStatus {
     let resp = match client
         .post(GITHUB_TOKEN_URL)
         .header("Accept", "application/json")

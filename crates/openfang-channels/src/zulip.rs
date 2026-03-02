@@ -53,6 +53,7 @@ impl ZulipAdapter {
         bot_email: String,
         api_key: String,
         streams: Vec<String>,
+        client: reqwest::Client,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let server_url = server_url.trim_end_matches('/').to_string();
@@ -61,7 +62,7 @@ impl ZulipAdapter {
             bot_email,
             api_key: Zeroizing::new(api_key),
             streams,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             queue_id: Arc::new(RwLock::new(None)),
@@ -483,6 +484,7 @@ mod tests {
             "bot@myorg.zulipchat.com".to_string(),
             "test-api-key".to_string(),
             vec!["general".to_string()],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "zulip");
         assert_eq!(
@@ -498,6 +500,7 @@ mod tests {
             "bot@example.com".to_string(),
             "key".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.server_url, "https://myorg.zulipchat.com");
     }
@@ -509,6 +512,7 @@ mod tests {
             "bot@example.com".to_string(),
             "key".to_string(),
             vec!["general".to_string(), "dev".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed_stream("general"));
         assert!(adapter.is_allowed_stream("dev"));
@@ -519,6 +523,7 @@ mod tests {
             "bot@example.com".to_string(),
             "key".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert!(open.is_allowed_stream("any-stream"));
     }
@@ -530,6 +535,7 @@ mod tests {
             "mybot@zulip.example.com".to_string(),
             "secret-key".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.bot_email, "mybot@zulip.example.com");
     }
@@ -541,6 +547,7 @@ mod tests {
             "bot@example.com".to_string(),
             "my-secret-api-key".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         // Verify the key is accessible (it will be zeroized on drop)
         assert_eq!(adapter.api_key.as_str(), "my-secret-api-key");

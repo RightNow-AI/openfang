@@ -44,12 +44,12 @@ impl GitterAdapter {
     /// # Arguments
     /// * `token` - Gitter personal access token.
     /// * `room_id` - Gitter room ID to listen on and send to.
-    pub fn new(token: String, room_id: String) -> Self {
+    pub fn new(token: String, room_id: String, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             token: Zeroizing::new(token),
             room_id,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_gitter_adapter_creation() {
-        let adapter = GitterAdapter::new("test-token".to_string(), "abc123room".to_string());
+        let adapter = GitterAdapter::new("test-token".to_string(), "abc123room".to_string(), reqwest::Client::new());
         assert_eq!(adapter.name(), "gitter");
         assert_eq!(
             adapter.channel_type(),
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_gitter_room_id() {
-        let adapter = GitterAdapter::new("tok".to_string(), "my-room-id".to_string());
+        let adapter = GitterAdapter::new("tok".to_string(), "my-room-id".to_string(), reqwest::Client::new());
         assert_eq!(adapter.room_id, "my-room-id");
     }
 

@@ -47,12 +47,12 @@ impl FlockAdapter {
     /// # Arguments
     /// * `bot_token` - Flock Bot token for API authentication.
     /// * `webhook_port` - Local port to bind the webhook listener on.
-    pub fn new(bot_token: String, webhook_port: u16) -> Self {
+    pub fn new(bot_token: String, webhook_port: u16, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             bot_token: Zeroizing::new(bot_token),
             webhook_port,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_flock_adapter_creation() {
-        let adapter = FlockAdapter::new("test-bot-token".to_string(), 8181);
+        let adapter = FlockAdapter::new("test-bot-token".to_string(), 8181, reqwest::Client::new());
         assert_eq!(adapter.name(), "flock");
         assert_eq!(
             adapter.channel_type(),
@@ -353,13 +353,13 @@ mod tests {
 
     #[test]
     fn test_flock_token_zeroized() {
-        let adapter = FlockAdapter::new("secret-flock-token".to_string(), 8181);
+        let adapter = FlockAdapter::new("secret-flock-token".to_string(), 8181, reqwest::Client::new());
         assert_eq!(adapter.bot_token.as_str(), "secret-flock-token");
     }
 
     #[test]
     fn test_flock_webhook_port() {
-        let adapter = FlockAdapter::new("token".to_string(), 7777);
+        let adapter = FlockAdapter::new("token".to_string(), 7777, reqwest::Client::new());
         assert_eq!(adapter.webhook_port, 7777);
     }
 

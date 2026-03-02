@@ -268,8 +268,9 @@ impl Default for A2aTaskStore {
 /// Called during kernel boot to populate the list of known external agents.
 pub async fn discover_external_agents(
     agents: &[openfang_types::config::ExternalAgent],
+    client: reqwest::Client,
 ) -> Vec<(String, AgentCard)> {
-    let client = A2aClient::new();
+    let client = A2aClient::new(client);
     let mut discovered = Vec::new();
 
     for agent in agents {
@@ -348,13 +349,8 @@ pub struct A2aClient {
 
 impl A2aClient {
     /// Create a new A2A client.
-    pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
-        }
+    pub fn new(client: reqwest::Client) -> Self {
+        Self { client }
     }
 
     /// Discover an external agent by fetching its Agent Card.
@@ -461,7 +457,7 @@ impl A2aClient {
 
 impl Default for A2aClient {
     fn default() -> Self {
-        Self::new()
+        Self::new(reqwest::Client::new())
     }
 }
 

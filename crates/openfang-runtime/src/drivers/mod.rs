@@ -200,7 +200,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
 /// - `xai` — xAI (Grok)
 /// - `replicate` — Replicate
 /// - Any custom provider with `base_url` set uses OpenAI-compatible format
-pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmError> {
+pub fn create_driver(config: &DriverConfig, client: reqwest::Client) -> Result<Arc<dyn LlmDriver>, LlmError> {
     let provider = config.provider.as_str();
 
     // Anthropic uses a different API format — special case
@@ -216,7 +216,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .base_url
             .clone()
             .unwrap_or_else(|| ANTHROPIC_BASE_URL.to_string());
-        return Ok(Arc::new(anthropic::AnthropicDriver::new(api_key, base_url)));
+        return Ok(Arc::new(anthropic::AnthropicDriver::new(api_key, base_url, client)));
     }
 
     // Gemini uses a different API format — special case
@@ -235,7 +235,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .base_url
             .clone()
             .unwrap_or_else(|| GEMINI_BASE_URL.to_string());
-        return Ok(Arc::new(gemini::GeminiDriver::new(api_key, base_url)));
+        return Ok(Arc::new(gemini::GeminiDriver::new(api_key, base_url, client)));
     }
 
     // Codex — reuses OpenAI driver with credential sync from Codex CLI
@@ -254,7 +254,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .base_url
             .clone()
             .unwrap_or_else(|| OPENAI_BASE_URL.to_string());
-        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
+        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url, client)));
     }
 
     // Claude Code CLI — subprocess-based, no API key needed
@@ -283,6 +283,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         return Ok(Arc::new(copilot::CopilotDriver::new(
             github_token,
             base_url,
+            client,
         )));
     }
 
@@ -306,7 +307,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .clone()
             .unwrap_or_else(|| defaults.base_url.to_string());
 
-        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
+        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url, client)));
     }
 
     // Unknown provider — if base_url is set, treat as custom OpenAI-compatible
@@ -315,6 +316,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         return Ok(Arc::new(openai::OpenAIDriver::new(
             api_key,
             base_url.clone(),
+            client,
         )));
     }
 
@@ -402,7 +404,7 @@ mod tests {
             api_key: Some("test".to_string()),
             base_url: Some("http://localhost:9999/v1".to_string()),
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, reqwest::Client::new());
         assert!(driver.is_ok());
     }
 
@@ -413,7 +415,7 @@ mod tests {
             api_key: None,
             base_url: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, reqwest::Client::new());
         assert!(driver.is_err());
     }
 

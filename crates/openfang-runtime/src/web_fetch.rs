@@ -20,11 +20,7 @@ pub struct WebFetchEngine {
 
 impl WebFetchEngine {
     /// Create a new fetch engine from config with a shared cache.
-    pub fn new(config: WebFetchConfig, cache: Arc<WebCache>) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .unwrap_or_default();
+    pub fn new(config: WebFetchConfig, cache: Arc<WebCache>, client: reqwest::Client) -> Self {
         Self {
             config,
             client,

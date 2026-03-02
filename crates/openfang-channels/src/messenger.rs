@@ -53,13 +53,13 @@ impl MessengerAdapter {
     /// * `page_token` - Facebook page access token for the Send API.
     /// * `verify_token` - Token used to verify the webhook during Facebook's setup.
     /// * `webhook_port` - Local port for the inbound webhook HTTP server.
-    pub fn new(page_token: String, verify_token: String, webhook_port: u16) -> Self {
+    pub fn new(page_token: String, verify_token: String, webhook_port: u16, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             page_token: Zeroizing::new(page_token),
             verify_token: Zeroizing::new(verify_token),
             webhook_port,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -435,6 +435,7 @@ mod tests {
             "page-token-123".to_string(),
             "verify-token-456".to_string(),
             8080,
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "messenger");
         assert_eq!(
@@ -446,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_messenger_both_tokens() {
-        let adapter = MessengerAdapter::new("page-tok".to_string(), "verify-tok".to_string(), 9000);
+        let adapter = MessengerAdapter::new("page-tok".to_string(), "verify-tok".to_string(), 9000, reqwest::Client::new());
         assert_eq!(adapter.page_token.as_str(), "page-tok");
         assert_eq!(adapter.verify_token.as_str(), "verify-tok");
     }

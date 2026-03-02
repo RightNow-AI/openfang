@@ -71,19 +71,19 @@ impl BlueskyAdapter {
     /// # Arguments
     /// * `identifier` - AT Protocol handle (e.g., "alice.bsky.social") or DID.
     /// * `app_password` - App password (not the main account password).
-    pub fn new(identifier: String, app_password: String) -> Self {
-        Self::with_service_url(identifier, app_password, DEFAULT_SERVICE_URL.to_string())
+    pub fn new(identifier: String, app_password: String, client: reqwest::Client) -> Self {
+        Self::with_service_url(identifier, app_password, DEFAULT_SERVICE_URL.to_string(), client)
     }
 
     /// Create a new Bluesky adapter with a custom PDS service URL.
-    pub fn with_service_url(identifier: String, app_password: String, service_url: String) -> Self {
+    pub fn with_service_url(identifier: String, app_password: String, service_url: String, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let service_url = service_url.trim_end_matches('/').to_string();
         Self {
             identifier,
             app_password: Zeroizing::new(app_password),
             service_url,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             session: Arc::new(RwLock::new(None)),
@@ -548,6 +548,7 @@ mod tests {
         let adapter = BlueskyAdapter::new(
             "alice.bsky.social".to_string(),
             "app-password-123".to_string(),
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "bluesky");
         assert_eq!(
@@ -558,7 +559,7 @@ mod tests {
 
     #[test]
     fn test_bluesky_default_service_url() {
-        let adapter = BlueskyAdapter::new("alice.bsky.social".to_string(), "pwd".to_string());
+        let adapter = BlueskyAdapter::new("alice.bsky.social".to_string(), "pwd".to_string(), reqwest::Client::new());
         assert_eq!(adapter.service_url, "https://bsky.social");
     }
 
@@ -568,13 +569,14 @@ mod tests {
             "alice.example.com".to_string(),
             "pwd".to_string(),
             "https://pds.example.com/".to_string(),
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.service_url, "https://pds.example.com");
     }
 
     #[test]
     fn test_bluesky_identifier_stored() {
-        let adapter = BlueskyAdapter::new("did:plc:abc123".to_string(), "pwd".to_string());
+        let adapter = BlueskyAdapter::new("did:plc:abc123".to_string(), "pwd".to_string(), reqwest::Client::new());
         assert_eq!(adapter.identifier, "did:plc:abc123");
     }
 

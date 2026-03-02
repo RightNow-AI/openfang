@@ -120,14 +120,14 @@ impl std::fmt::Display for JsonRpcError {
 
 impl McpConnection {
     /// Connect to an MCP server, perform handshake, and discover tools.
-    pub async fn connect(config: McpServerConfig) -> Result<Self, String> {
+    pub async fn connect(config: McpServerConfig, client: reqwest::Client) -> Result<Self, String> {
         let transport = match &config.transport {
             McpTransport::Stdio { command, args } => {
                 Self::connect_stdio(command, args, &config.env).await?
             }
             McpTransport::Sse { url } => {
                 // SSRF check: reject private/localhost URLs unless explicitly configured
-                Self::connect_sse(url).await?
+                Self::connect_sse(url, client).await?
             }
         };
 
@@ -486,17 +486,12 @@ impl McpConnection {
         })
     }
 
-    async fn connect_sse(url: &str) -> Result<McpTransportHandle, String> {
+    async fn connect_sse(url: &str, client: reqwest::Client) -> Result<McpTransportHandle, String> {
         // Basic SSRF check: reject obviously private URLs
         let lower = url.to_lowercase();
         if lower.contains("169.254.169.254") || lower.contains("metadata.google") {
             return Err("SSRF: MCP SSE URL targets metadata endpoint".to_string());
         }
-
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
         Ok(McpTransportHandle::Sse {
             client,

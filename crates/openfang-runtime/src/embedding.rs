@@ -88,7 +88,7 @@ struct EmbedData {
 
 impl OpenAIEmbeddingDriver {
     /// Create a new OpenAI-compatible embedding driver.
-    pub fn new(config: EmbeddingConfig) -> Result<Self, EmbeddingError> {
+    pub fn new(config: EmbeddingConfig, client: reqwest::Client) -> Result<Self, EmbeddingError> {
         // Infer dimensions from model name (common models)
         let dims = infer_dimensions(&config.model);
 
@@ -96,7 +96,7 @@ impl OpenAIEmbeddingDriver {
             api_key: Zeroizing::new(config.api_key),
             base_url: config.base_url,
             model: config.model,
-            client: reqwest::Client::new(),
+            client,
             dims,
         })
     }
@@ -179,6 +179,7 @@ pub fn create_embedding_driver(
     provider: &str,
     model: &str,
     api_key_env: &str,
+    client: reqwest::Client,
 ) -> Result<Box<dyn EmbeddingDriver + Send + Sync>, EmbeddingError> {
     let api_key = if api_key_env.is_empty() {
         String::new()
@@ -220,7 +221,7 @@ pub fn create_embedding_driver(
         base_url,
     };
 
-    let driver = OpenAIEmbeddingDriver::new(config)?;
+    let driver = OpenAIEmbeddingDriver::new(config, client)?;
     Ok(Box::new(driver))
 }
 
@@ -351,7 +352,7 @@ mod tests {
     #[test]
     fn test_create_embedding_driver_ollama() {
         // Should succeed even without API key (ollama is local)
-        let driver = create_embedding_driver("ollama", "all-MiniLM-L6-v2", "");
+        let driver = create_embedding_driver("ollama", "all-MiniLM-L6-v2", "", reqwest::Client::new());
         assert!(driver.is_ok());
         assert_eq!(driver.unwrap().dimensions(), 384);
     }

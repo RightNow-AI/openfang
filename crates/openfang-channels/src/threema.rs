@@ -49,13 +49,13 @@ impl ThreemaAdapter {
     /// * `threema_id` - Threema Gateway ID (e.g., "*MYGATEW").
     /// * `secret` - API secret for the Gateway ID.
     /// * `webhook_port` - Local port to bind the inbound webhook listener on.
-    pub fn new(threema_id: String, secret: String, webhook_port: u16) -> Self {
+    pub fn new(threema_id: String, secret: String, webhook_port: u16, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             threema_id,
             secret: Zeroizing::new(secret),
             webhook_port,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_threema_adapter_creation() {
-        let adapter = ThreemaAdapter::new("*MYGATEW".to_string(), "test-secret".to_string(), 8443);
+        let adapter = ThreemaAdapter::new("*MYGATEW".to_string(), "test-secret".to_string(), 8443, reqwest::Client::new());
         assert_eq!(adapter.name(), "threema");
         assert_eq!(
             adapter.channel_type(),
@@ -355,13 +355,13 @@ mod tests {
     #[test]
     fn test_threema_secret_zeroized() {
         let adapter =
-            ThreemaAdapter::new("*MYID123".to_string(), "super-secret-key".to_string(), 8443);
+            ThreemaAdapter::new("*MYID123".to_string(), "super-secret-key".to_string(), 8443, reqwest::Client::new());
         assert_eq!(adapter.secret.as_str(), "super-secret-key");
     }
 
     #[test]
     fn test_threema_webhook_port() {
-        let adapter = ThreemaAdapter::new("*TEST".to_string(), "secret".to_string(), 9090);
+        let adapter = ThreemaAdapter::new("*TEST".to_string(), "secret".to_string(), 9090, reqwest::Client::new());
         assert_eq!(adapter.webhook_port, 9090);
     }
 

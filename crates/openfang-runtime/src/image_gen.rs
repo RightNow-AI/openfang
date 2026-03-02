@@ -7,7 +7,7 @@ use tracing::warn;
 /// Generate images via OpenAI's image generation API.
 ///
 /// Requires OPENAI_API_KEY to be set.
-pub async fn generate_image(request: &ImageGenRequest) -> Result<ImageGenResult, String> {
+pub async fn generate_image(request: &ImageGenRequest, client: &reqwest::Client) -> Result<ImageGenResult, String> {
     // Validate request
     request.validate()?;
 
@@ -30,7 +30,6 @@ pub async fn generate_image(request: &ImageGenRequest) -> Result<ImageGenResult,
         body["quality"] = serde_json::json!(request.quality);
     }
 
-    let client = reqwest::Client::new();
     let response = client
         .post("https://api.openai.com/v1/images/generations")
         .header("Authorization", format!("Bearer {}", api_key))

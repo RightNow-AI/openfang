@@ -70,13 +70,13 @@ impl WebhookAdapter {
     /// * `secret` - Shared secret for HMAC-SHA256 signature verification.
     /// * `listen_port` - Port to listen for incoming webhook POST requests.
     /// * `callback_url` - Optional URL to POST outbound messages to.
-    pub fn new(secret: String, listen_port: u16, callback_url: Option<String>) -> Self {
+    pub fn new(secret: String, listen_port: u16, callback_url: Option<String>, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             secret: Zeroizing::new(secret),
             listen_port,
             callback_url,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -377,6 +377,7 @@ mod tests {
             "my-secret".to_string(),
             9000,
             Some("https://example.com/callback".to_string()),
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "webhook");
         assert_eq!(
@@ -388,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_webhook_no_callback() {
-        let adapter = WebhookAdapter::new("secret".to_string(), 9000, None);
+        let adapter = WebhookAdapter::new("secret".to_string(), 9000, None, reqwest::Client::new());
         assert!(!adapter.has_callback());
     }
 

@@ -47,12 +47,12 @@ impl PumbleAdapter {
     /// # Arguments
     /// * `bot_token` - Pumble Bot access token.
     /// * `webhook_port` - Local port to bind the webhook listener on.
-    pub fn new(bot_token: String, webhook_port: u16) -> Self {
+    pub fn new(bot_token: String, webhook_port: u16, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             bot_token: Zeroizing::new(bot_token),
             webhook_port,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_pumble_adapter_creation() {
-        let adapter = PumbleAdapter::new("test-bot-token".to_string(), 8080);
+        let adapter = PumbleAdapter::new("test-bot-token".to_string(), 8080, reqwest::Client::new());
         assert_eq!(adapter.name(), "pumble");
         assert_eq!(
             adapter.channel_type(),
@@ -377,13 +377,13 @@ mod tests {
 
     #[test]
     fn test_pumble_token_zeroized() {
-        let adapter = PumbleAdapter::new("secret-pumble-token".to_string(), 8080);
+        let adapter = PumbleAdapter::new("secret-pumble-token".to_string(), 8080, reqwest::Client::new());
         assert_eq!(adapter.bot_token.as_str(), "secret-pumble-token");
     }
 
     #[test]
     fn test_pumble_webhook_port() {
-        let adapter = PumbleAdapter::new("token".to_string(), 9999);
+        let adapter = PumbleAdapter::new("token".to_string(), 9999, reqwest::Client::new());
         assert_eq!(adapter.webhook_port, 9999);
     }
 

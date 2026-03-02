@@ -29,11 +29,7 @@ pub struct WebToolsContext {
 
 impl WebSearchEngine {
     /// Create a new search engine from config with a shared cache.
-    pub fn new(config: WebConfig, cache: Arc<WebCache>) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .unwrap_or_default();
+    pub fn new(config: WebConfig, cache: Arc<WebCache>, client: reqwest::Client) -> Self {
         Self {
             config,
             client,

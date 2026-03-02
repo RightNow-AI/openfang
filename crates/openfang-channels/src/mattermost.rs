@@ -49,13 +49,13 @@ impl MattermostAdapter {
     /// * `server_url` — Base Mattermost server URL (no trailing slash).
     /// * `token` — Personal access token or bot token.
     /// * `allowed_channels` — Channel IDs to listen on (empty = all).
-    pub fn new(server_url: String, token: String, allowed_channels: Vec<String>) -> Self {
+    pub fn new(server_url: String, token: String, allowed_channels: Vec<String>, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             server_url: server_url.trim_end_matches('/').to_string(),
             token: Zeroizing::new(token),
             allowed_channels,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             bot_user_id: Arc::new(RwLock::new(None)),
@@ -479,6 +479,7 @@ mod tests {
             "https://mattermost.example.com".to_string(),
             "test-token".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "mattermost");
         assert_eq!(adapter.channel_type(), ChannelType::Mattermost);
@@ -490,6 +491,7 @@ mod tests {
             "https://mm.example.com".to_string(),
             "token".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.ws_url(), "wss://mm.example.com/api/v4/websocket");
     }
@@ -500,6 +502,7 @@ mod tests {
             "http://localhost:8065".to_string(),
             "token".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.ws_url(), "ws://localhost:8065/api/v4/websocket");
     }
@@ -510,6 +513,7 @@ mod tests {
             "https://mm.example.com/".to_string(),
             "token".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         // Constructor trims trailing slash
         assert_eq!(adapter.ws_url(), "wss://mm.example.com/api/v4/websocket");
@@ -521,6 +525,7 @@ mod tests {
             "https://mm.example.com".to_string(),
             "token".to_string(),
             vec!["ch1".to_string(), "ch2".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed_channel("ch1"));
         assert!(adapter.is_allowed_channel("ch2"));
@@ -530,6 +535,7 @@ mod tests {
             "https://mm.example.com".to_string(),
             "token".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert!(open.is_allowed_channel("any-channel"));
     }

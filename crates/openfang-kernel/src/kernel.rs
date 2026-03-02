@@ -38,6 +38,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
 use tracing::{debug, info, warn};
 
+/// Shared HTTP clients — avoids creating 60+ independent connection pools.
+///
+/// `reqwest::Client` is `Arc`-wrapped internally, so `.clone()` is cheap.
+pub struct SharedHttpClients {
+    /// General-purpose client (30s timeout) — API calls, LLM drivers, channel adapters.
+    pub default: reqwest::Client,
+    /// Long-lived streaming client (no timeout) — SSE, WebSocket polling.
+    pub streaming: reqwest::Client,
+}
+
 /// The main OpenFang kernel — coordinates all subsystems.
 pub struct OpenFangKernel {
     /// Kernel configuration.
@@ -137,6 +147,8 @@ pub struct OpenFangKernel {
     pub default_model_override: std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
     /// Encrypted credential vault (AES-256-GCM, OS keyring key management).
     pub vault: Arc<std::sync::RwLock<Option<openfang_extensions::vault::CredentialVault>>>,
+    /// Shared HTTP clients (avoids 60+ independent connection pools).
+    pub http_clients: SharedHttpClients,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
 }
@@ -532,6 +544,19 @@ impl OpenFangKernel {
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
         );
 
+        // Build shared HTTP clients once — reused by all drivers, adapters, and tools.
+        let shared_http_clients = SharedHttpClients {
+            default: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .pool_max_idle_per_host(20)
+                .build()
+                .expect("Failed to build default HTTP client"),
+            streaming: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(0))
+                .build()
+                .expect("Failed to build streaming HTTP client"),
+        };
+
         // Create LLM driver
         let driver_config = DriverConfig {
             provider: config.default_model.provider.clone(),
@@ -542,7 +567,7 @@ impl OpenFangKernel {
                 .clone()
                 .or_else(|| config.provider_urls.get(&config.default_model.provider).cloned()),
         };
-        let primary_driver = drivers::create_driver(&driver_config)
+        let primary_driver = drivers::create_driver(&driver_config, shared_http_clients.default.clone())
             .map_err(|e| KernelError::BootFailed(format!("LLM driver init failed: {e}")))?;
 
         // If fallback providers are configured, wrap the primary driver in a FallbackDriver
@@ -561,7 +586,7 @@ impl OpenFangKernel {
                         .clone()
                         .or_else(|| config.provider_urls.get(&fb.provider).cloned()),
                 };
-                match drivers::create_driver(&fb_config) {
+                match drivers::create_driver(&fb_config, shared_http_clients.default.clone()) {
                     Ok(d) => {
                         info!(
                             provider = %fb.provider,
@@ -714,10 +739,12 @@ impl OpenFangKernel {
             search: openfang_runtime::web_search::WebSearchEngine::new(
                 config.web.clone(),
                 web_cache.clone(),
+                shared_http_clients.default.clone(),
             ),
             fetch: openfang_runtime::web_fetch::WebFetchEngine::new(
                 config.web.fetch.clone(),
                 web_cache,
+                shared_http_clients.default.clone(),
             ),
         };
 
@@ -729,7 +756,7 @@ impl OpenFangKernel {
             if let Some(ref provider) = config.memory.embedding_provider {
                 // Explicit config takes priority
                 let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
-                match create_embedding_driver(provider, "text-embedding-3-small", api_key_env) {
+                match create_embedding_driver(provider, "text-embedding-3-small", api_key_env, shared_http_clients.default.clone()) {
                     Ok(d) => {
                         info!(provider = %provider, "Embedding driver configured from memory config");
                         Some(Arc::from(d))
@@ -740,7 +767,7 @@ impl OpenFangKernel {
                     }
                 }
             } else if std::env::var("OPENAI_API_KEY").is_ok() {
-                match create_embedding_driver("openai", "text-embedding-3-small", "OPENAI_API_KEY")
+                match create_embedding_driver("openai", "text-embedding-3-small", "OPENAI_API_KEY", shared_http_clients.default.clone())
                 {
                     Ok(d) => {
                         info!("Embedding driver auto-detected: OpenAI");
@@ -753,7 +780,7 @@ impl OpenFangKernel {
                 }
             } else {
                 // Try Ollama (local, no key needed)
-                match create_embedding_driver("ollama", "nomic-embed-text", "") {
+                match create_embedding_driver("ollama", "nomic-embed-text", "", shared_http_clients.default.clone()) {
                     Ok(d) => {
                         info!("Embedding driver auto-detected: Ollama (local)");
                         Some(Arc::from(d))
@@ -770,9 +797,9 @@ impl OpenFangKernel {
 
         // Initialize media understanding engine
         let media_engine =
-            openfang_runtime::media_understanding::MediaEngine::new(config.media.clone());
-        let tts_engine = openfang_runtime::tts::TtsEngine::new(config.tts.clone());
-        let mut pairing = crate::pairing::PairingManager::new(config.pairing.clone());
+            openfang_runtime::media_understanding::MediaEngine::new(config.media.clone(), shared_http_clients.default.clone());
+        let tts_engine = openfang_runtime::tts::TtsEngine::new(config.tts.clone(), shared_http_clients.default.clone());
+        let mut pairing = crate::pairing::PairingManager::new(config.pairing.clone(), shared_http_clients.default.clone());
 
         // Load paired devices from database and set up persistence callback
         if config.pairing.enabled {
@@ -902,6 +929,7 @@ impl OpenFangKernel {
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
             vault: Arc::new(std::sync::RwLock::new(None)),
+            http_clients: shared_http_clients,
             self_handle: OnceLock::new(),
         };
 
@@ -3374,7 +3402,7 @@ impl OpenFangKernel {
 
                 for (provider_id, base_url) in &local_providers {
                     let result =
-                        openfang_runtime::provider_health::probe_provider(provider_id, base_url)
+                        openfang_runtime::provider_health::probe_provider(provider_id, base_url, &kernel.http_clients.default)
                             .await;
                     if result.reachable {
                         info!(
@@ -3597,7 +3625,7 @@ impl OpenFangKernel {
                 let kernel = Arc::clone(self);
                 let agents = a2a_config.external_agents.clone();
                 tokio::spawn(async move {
-                    let discovered = openfang_runtime::a2a::discover_external_agents(&agents).await;
+                    let discovered = openfang_runtime::a2a::discover_external_agents(&agents, kernel.http_clients.default.clone()).await;
                     if let Ok(mut store) = kernel.a2a_external_agents.lock() {
                         *store = discovered;
                     }
@@ -3919,7 +3947,7 @@ impl OpenFangKernel {
                 base_url,
             };
 
-            drivers::create_driver(&driver_config).map_err(|e| {
+            drivers::create_driver(&driver_config, self.http_clients.default.clone()).map_err(|e| {
                 KernelError::BootFailed(format!("Agent LLM driver init failed: {e}"))
             })?
         };
@@ -3941,7 +3969,7 @@ impl OpenFangKernel {
                         .clone()
                         .or_else(|| self.config.provider_urls.get(&fb.provider).cloned()),
                 };
-                match drivers::create_driver(&config) {
+                match drivers::create_driver(&config, self.http_clients.default.clone()) {
                     Ok(d) => chain.push((d, fb.model.clone())),
                     Err(e) => {
                         warn!("Fallback driver '{}' failed to init: {e}", fb.provider);
@@ -3985,7 +4013,7 @@ impl OpenFangKernel {
                 env: server_config.env.clone(),
             };
 
-            match McpConnection::connect(mcp_config).await {
+            match McpConnection::connect(mcp_config, self.http_clients.default.clone()).await {
                 Ok(conn) => {
                     let tool_count = conn.tools().len();
                     // Cache tool definitions
@@ -4095,7 +4123,7 @@ impl OpenFangKernel {
 
             self.extension_health.register(&server_config.name);
 
-            match McpConnection::connect(mcp_config).await {
+            match McpConnection::connect(mcp_config, self.http_clients.default.clone()).await {
                 Ok(conn) => {
                     let tool_count = conn.tools().len();
                     if let Ok(mut tools) = self.mcp_tools.lock() {
@@ -4211,7 +4239,7 @@ impl OpenFangKernel {
             env: server_config.env.clone(),
         };
 
-        match McpConnection::connect(mcp_config).await {
+        match McpConnection::connect(mcp_config, self.http_clients.default.clone()).await {
             Ok(conn) => {
                 let tool_count = conn.tools().len();
                 if let Ok(mut tools) = self.mcp_tools.lock() {

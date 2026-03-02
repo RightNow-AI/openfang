@@ -90,16 +90,12 @@ pub async fn auth(
         || path == "/api/health/detail"
         || path == "/api/status"
         || path == "/api/version"
-        || path == "/api/profiles"
         || path.starts_with("/api/uploads/")
         // Dashboard read endpoints — allow unauthenticated so the SPA can
         // render before the user enters their API key.
         || path == "/api/models"
         || path == "/api/models/aliases"
         || path == "/api/providers"
-        || path == "/api/budget"
-        || path == "/api/budget/agents"
-        || path.starts_with("/api/budget/agents/")
         || path == "/api/network/status"
         || path == "/api/a2a/agents"
         || path == "/api/approvals"
@@ -109,7 +105,6 @@ pub async fn auth(
         || path == "/api/hands/active"
         || path.starts_with("/api/hands/")
         || path == "/api/skills"
-        || path == "/api/sessions"
         || path == "/api/integrations"
         || path == "/api/integrations/available"
         || path == "/api/integrations/health"

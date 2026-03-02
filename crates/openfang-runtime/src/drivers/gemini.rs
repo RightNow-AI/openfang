@@ -28,11 +28,11 @@ pub struct GeminiDriver {
 
 impl GeminiDriver {
     /// Create a new Gemini driver.
-    pub fn new(api_key: String, base_url: String) -> Self {
+    pub fn new(api_key: String, base_url: String, client: reqwest::Client) -> Self {
         Self {
             api_key: Zeroizing::new(api_key),
             base_url,
-            client: reqwest::Client::new(),
+            client,
         }
     }
 }
@@ -660,6 +660,7 @@ mod tests {
         let driver = GeminiDriver::new(
             "test-key".to_string(),
             "https://generativelanguage.googleapis.com".to_string(),
+            reqwest::Client::new(),
         );
         assert_eq!(driver.api_key.as_str(), "test-key");
         assert_eq!(driver.base_url, "https://generativelanguage.googleapis.com");

@@ -46,7 +46,7 @@ impl NtfyAdapter {
     /// * `server_url` - ntfy server URL (empty = default `"https://ntfy.sh"`).
     /// * `topic` - Topic name to subscribe/publish to.
     /// * `token` - Bearer token for authentication (empty = no auth).
-    pub fn new(server_url: String, topic: String, token: String) -> Self {
+    pub fn new(server_url: String, topic: String, token: String, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let server_url = if server_url.is_empty() {
             DEFAULT_SERVER_URL.to_string()
@@ -57,7 +57,7 @@ impl NtfyAdapter {
             server_url,
             topic,
             token: Zeroizing::new(token),
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_ntfy_adapter_creation() {
-        let adapter = NtfyAdapter::new("".to_string(), "my-topic".to_string(), "".to_string());
+        let adapter = NtfyAdapter::new("".to_string(), "my-topic".to_string(), "".to_string(), reqwest::Client::new());
         assert_eq!(adapter.name(), "ntfy");
         assert_eq!(
             adapter.channel_type(),
@@ -364,6 +364,7 @@ mod tests {
             "https://ntfy.internal.corp/".to_string(),
             "alerts".to_string(),
             "token-123".to_string(),
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.server_url, "https://ntfy.internal.corp");
         assert_eq!(adapter.topic, "alerts");
@@ -375,6 +376,7 @@ mod tests {
             "".to_string(),
             "test".to_string(),
             "my-bearer-token".to_string(),
+            reqwest::Client::new(),
         );
         let builder = adapter.client.get("https://ntfy.sh/test");
         let builder = adapter.auth_request(builder);
@@ -384,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_ntfy_auth_request_without_token() {
-        let adapter = NtfyAdapter::new("".to_string(), "test".to_string(), "".to_string());
+        let adapter = NtfyAdapter::new("".to_string(), "test".to_string(), "".to_string(), reqwest::Client::new());
         let builder = adapter.client.get("https://ntfy.sh/test");
         let builder = adapter.auth_request(builder);
         let request = builder.build().unwrap();

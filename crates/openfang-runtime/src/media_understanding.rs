@@ -13,14 +13,16 @@ use tracing::info;
 pub struct MediaEngine {
     config: MediaConfig,
     semaphore: Arc<Semaphore>,
+    client: reqwest::Client,
 }
 
 impl MediaEngine {
-    pub fn new(config: MediaConfig) -> Self {
+    pub fn new(config: MediaConfig, client: reqwest::Client) -> Self {
         let max = config.max_concurrency.clamp(1, 8);
         Self {
             config,
             semaphore: Arc::new(Semaphore::new(max)),
+            client,
         }
     }
 
@@ -134,8 +136,7 @@ impl MediaEngine {
             .text("model", model.to_string())
             .text("response_format", "text");
 
-        let client = reqwest::Client::new();
-        let resp = client
+        let resp = self.client
             .post(api_url)
             .bearer_auth(&api_key)
             .multipart(form)
@@ -211,11 +212,13 @@ impl MediaEngine {
         for attachment in attachments {
             let sem = self.semaphore.clone();
             let config = self.config.clone();
+            let client = self.client.clone();
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.map_err(|e| e.to_string())?;
                 let engine = MediaEngine {
                     config,
                     semaphore: Arc::new(Semaphore::new(1)), // inner engine, no extra semaphore
+                    client,
                 };
                 match attachment.media_type {
                     MediaType::Image => engine.describe_image(&attachment).await,
@@ -289,7 +292,7 @@ mod tests {
     #[test]
     fn test_engine_creation() {
         let config = MediaConfig::default();
-        let engine = MediaEngine::new(config);
+        let engine = MediaEngine::new(config, reqwest::Client::new());
         assert_eq!(engine.config.max_concurrency, 2);
     }
 
@@ -299,14 +302,14 @@ mod tests {
             max_concurrency: 100,
             ..Default::default()
         };
-        let engine = MediaEngine::new(config);
+        let engine = MediaEngine::new(config, reqwest::Client::new());
         // Semaphore was clamped to 8
         assert!(engine.semaphore.available_permits() <= 8);
     }
 
     #[tokio::test]
     async fn test_describe_image_wrong_type() {
-        let engine = MediaEngine::new(MediaConfig::default());
+        let engine = MediaEngine::new(MediaConfig::default(), reqwest::Client::new());
         let attachment = MediaAttachment {
             media_type: MediaType::Audio,
             mime_type: "audio/mpeg".into(),
@@ -322,7 +325,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_describe_image_invalid_mime() {
-        let engine = MediaEngine::new(MediaConfig::default());
+        let engine = MediaEngine::new(MediaConfig::default(), reqwest::Client::new());
         let attachment = MediaAttachment {
             media_type: MediaType::Image,
             mime_type: "application/pdf".into(),
@@ -337,7 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_describe_image_too_large() {
-        let engine = MediaEngine::new(MediaConfig::default());
+        let engine = MediaEngine::new(MediaConfig::default(), reqwest::Client::new());
         let attachment = MediaAttachment {
             media_type: MediaType::Image,
             mime_type: "image/png".into(),
@@ -352,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_transcribe_audio_wrong_type() {
-        let engine = MediaEngine::new(MediaConfig::default());
+        let engine = MediaEngine::new(MediaConfig::default(), reqwest::Client::new());
         let attachment = MediaAttachment {
             media_type: MediaType::Image,
             mime_type: "image/png".into(),
@@ -371,7 +374,7 @@ mod tests {
             video_description: false,
             ..Default::default()
         };
-        let engine = MediaEngine::new(config);
+        let engine = MediaEngine::new(config, reqwest::Client::new());
         let attachment = MediaAttachment {
             media_type: MediaType::Video,
             mime_type: "video/mp4".into(),
@@ -411,7 +414,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_transcribe_audio_rejects_image_type() {
-        let engine = MediaEngine::new(MediaConfig::default());
+        let engine = MediaEngine::new(MediaConfig::default(), reqwest::Client::new());
         let attachment = MediaAttachment {
             media_type: MediaType::Image,
             mime_type: "image/png".into(),
@@ -428,7 +431,7 @@ mod tests {
     #[tokio::test]
     async fn test_transcribe_audio_no_provider() {
         // With no API keys set, should fail with provider error
-        let engine = MediaEngine::new(MediaConfig::default());
+        let engine = MediaEngine::new(MediaConfig::default(), reqwest::Client::new());
         let attachment = MediaAttachment {
             media_type: MediaType::Audio,
             mime_type: "audio/webm".into(),
@@ -449,7 +452,7 @@ mod tests {
             audio_provider: Some("groq".to_string()),
             ..Default::default()
         };
-        let engine = MediaEngine::new(config);
+        let engine = MediaEngine::new(config, reqwest::Client::new());
         let attachment = MediaAttachment {
             media_type: MediaType::Audio,
             mime_type: "audio/mpeg".into(),
@@ -471,7 +474,7 @@ mod tests {
             audio_provider: Some("groq".to_string()),
             ..Default::default()
         };
-        let engine = MediaEngine::new(config);
+        let engine = MediaEngine::new(config, reqwest::Client::new());
         let attachment = MediaAttachment {
             media_type: MediaType::Audio,
             mime_type: "audio/webm".into(),

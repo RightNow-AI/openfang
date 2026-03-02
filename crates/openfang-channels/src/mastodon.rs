@@ -53,13 +53,13 @@ impl MastodonAdapter {
     /// # Arguments
     /// * `instance_url` - Base URL of the Mastodon instance (no trailing slash).
     /// * `access_token` - OAuth2 access token with `read` and `write` scopes.
-    pub fn new(instance_url: String, access_token: String) -> Self {
+    pub fn new(instance_url: String, access_token: String, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let instance_url = instance_url.trim_end_matches('/').to_string();
         Self {
             instance_url,
             access_token: Zeroizing::new(access_token),
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             own_account_id: Arc::new(RwLock::new(None)),
@@ -542,6 +542,7 @@ mod tests {
         let adapter = MastodonAdapter::new(
             "https://mastodon.social".to_string(),
             "access-token-123".to_string(),
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "mastodon");
         assert_eq!(
@@ -553,14 +554,14 @@ mod tests {
     #[test]
     fn test_mastodon_url_normalization() {
         let adapter =
-            MastodonAdapter::new("https://mastodon.social/".to_string(), "tok".to_string());
+            MastodonAdapter::new("https://mastodon.social/".to_string(), "tok".to_string(), reqwest::Client::new());
         assert_eq!(adapter.instance_url, "https://mastodon.social");
     }
 
     #[test]
     fn test_mastodon_custom_instance() {
         let adapter =
-            MastodonAdapter::new("https://infosec.exchange".to_string(), "tok".to_string());
+            MastodonAdapter::new("https://infosec.exchange".to_string(), "tok".to_string(), reqwest::Client::new());
         assert_eq!(adapter.instance_url, "https://infosec.exchange");
     }
 

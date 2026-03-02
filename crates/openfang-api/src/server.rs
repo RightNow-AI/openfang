@@ -65,6 +65,7 @@ pub async fn build_router(
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         budget_overrides: std::sync::RwLock::new(None),
+        agent_rate_limiter: rate_limiter::create_agent_rate_limiter(),
     });
 
     // CORS: allow localhost origins by default. If API key is set, the API

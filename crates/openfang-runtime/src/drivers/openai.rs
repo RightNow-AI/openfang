@@ -20,11 +20,11 @@ pub struct OpenAIDriver {
 
 impl OpenAIDriver {
     /// Create a new OpenAI-compatible driver.
-    pub fn new(api_key: String, base_url: String) -> Self {
+    pub fn new(api_key: String, base_url: String, client: reqwest::Client) -> Self {
         Self {
             api_key: Zeroizing::new(api_key),
             base_url,
-            client: reqwest::Client::new(),
+            client,
         }
     }
 }
@@ -982,7 +982,7 @@ mod tests {
 
     #[test]
     fn test_openai_driver_creation() {
-        let driver = OpenAIDriver::new("test-key".to_string(), "http://localhost".to_string());
+        let driver = OpenAIDriver::new("test-key".to_string(), "http://localhost".to_string(), reqwest::Client::new());
         assert_eq!(driver.api_key.as_str(), "test-key");
     }
 

@@ -49,13 +49,13 @@ impl GoogleChatAdapter {
     /// * `service_account_key` - JSON content of the Google service account key file.
     /// * `space_ids` - Google Chat space IDs to interact with.
     /// * `webhook_port` - Local port to bind the inbound webhook listener on.
-    pub fn new(service_account_key: String, space_ids: Vec<String>, webhook_port: u16) -> Self {
+    pub fn new(service_account_key: String, space_ids: Vec<String>, webhook_port: u16, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             service_account_key: Zeroizing::new(service_account_key),
             space_ids,
             webhook_port,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             cached_token: Arc::new(RwLock::new(None)),
@@ -364,6 +364,7 @@ mod tests {
             r#"{"access_token":"test-token","project_id":"test"}"#.to_string(),
             vec!["spaces/AAAA".to_string()],
             8090,
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "google_chat");
         assert_eq!(
@@ -378,11 +379,12 @@ mod tests {
             r#"{"access_token":"tok"}"#.to_string(),
             vec!["spaces/AAAA".to_string()],
             8090,
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed_space("spaces/AAAA"));
         assert!(!adapter.is_allowed_space("spaces/BBBB"));
 
-        let open = GoogleChatAdapter::new(r#"{"access_token":"tok"}"#.to_string(), vec![], 8090);
+        let open = GoogleChatAdapter::new(r#"{"access_token":"tok"}"#.to_string(), vec![], 8090, reqwest::Client::new());
         assert!(open.is_allowed_space("spaces/anything"));
     }
 
@@ -392,6 +394,7 @@ mod tests {
             r#"{"access_token":"cached-tok","project_id":"p"}"#.to_string(),
             vec![],
             8091,
+            reqwest::Client::new(),
         );
 
         // First call should parse and cache
@@ -405,7 +408,7 @@ mod tests {
 
     #[test]
     fn test_google_chat_invalid_key() {
-        let adapter = GoogleChatAdapter::new("not-json".to_string(), vec![], 8092);
+        let adapter = GoogleChatAdapter::new("not-json".to_string(), vec![], 8092, reqwest::Client::new());
         // Can't call async get_access_token in sync test, but verify construction works
         assert_eq!(adapter.webhook_port, 8092);
     }

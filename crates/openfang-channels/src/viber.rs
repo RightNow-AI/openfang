@@ -63,7 +63,7 @@ impl ViberAdapter {
     /// * `auth_token` - Viber bot authentication token.
     /// * `webhook_url` - Public URL where Viber will send webhook events.
     /// * `webhook_port` - Local port for the inbound webhook HTTP server.
-    pub fn new(auth_token: String, webhook_url: String, webhook_port: u16) -> Self {
+    pub fn new(auth_token: String, webhook_url: String, webhook_port: u16, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let webhook_url = webhook_url.trim_end_matches('/').to_string();
         Self {
@@ -72,7 +72,7 @@ impl ViberAdapter {
             webhook_port,
             sender_name: DEFAULT_SENDER_NAME.to_string(),
             sender_avatar: None,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -85,8 +85,9 @@ impl ViberAdapter {
         webhook_port: u16,
         sender_name: String,
         sender_avatar: Option<String>,
+        client: reqwest::Client,
     ) -> Self {
-        let mut adapter = Self::new(auth_token, webhook_url, webhook_port);
+        let mut adapter = Self::new(auth_token, webhook_url, webhook_port, client);
         adapter.sender_name = sender_name;
         adapter.sender_avatar = sender_avatar;
         adapter
@@ -436,6 +437,7 @@ mod tests {
             "auth-token-123".to_string(),
             "https://example.com/viber/webhook".to_string(),
             8443,
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "viber");
         assert_eq!(
@@ -451,6 +453,7 @@ mod tests {
             "tok".to_string(),
             "https://example.com/viber/webhook/".to_string(),
             8443,
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.webhook_url, "https://example.com/viber/webhook");
     }
@@ -463,6 +466,7 @@ mod tests {
             8443,
             "MyBot".to_string(),
             Some("https://example.com/avatar.png".to_string()),
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.sender_name, "MyBot");
         assert_eq!(
@@ -477,6 +481,7 @@ mod tests {
             "my-viber-token".to_string(),
             "https://example.com".to_string(),
             8443,
+            reqwest::Client::new(),
         );
         let builder = adapter.client.post("https://example.com");
         let builder = adapter.auth_header(builder);

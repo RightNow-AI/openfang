@@ -67,7 +67,7 @@ impl FeishuAdapter {
     /// * `app_id` - Feishu application ID.
     /// * `app_secret` - Feishu application secret.
     /// * `webhook_port` - Local port for the inbound webhook HTTP server.
-    pub fn new(app_id: String, app_secret: String, webhook_port: u16) -> Self {
+    pub fn new(app_id: String, app_secret: String, webhook_port: u16, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             app_id,
@@ -75,7 +75,7 @@ impl FeishuAdapter {
             webhook_port,
             verification_token: None,
             encrypt_key: None,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             cached_token: Arc::new(RwLock::new(None)),
@@ -89,8 +89,9 @@ impl FeishuAdapter {
         webhook_port: u16,
         verification_token: Option<String>,
         encrypt_key: Option<String>,
+        client: reqwest::Client,
     ) -> Self {
-        let mut adapter = Self::new(app_id, app_secret, webhook_port);
+        let mut adapter = Self::new(app_id, app_secret, webhook_port, client);
         adapter.verification_token = verification_token;
         adapter.encrypt_key = encrypt_key;
         adapter
@@ -567,7 +568,7 @@ mod tests {
     #[test]
     fn test_feishu_adapter_creation() {
         let adapter =
-            FeishuAdapter::new("cli_abc123".to_string(), "app-secret-456".to_string(), 9000);
+            FeishuAdapter::new("cli_abc123".to_string(), "app-secret-456".to_string(), 9000, reqwest::Client::new());
         assert_eq!(adapter.name(), "feishu");
         assert_eq!(
             adapter.channel_type(),
@@ -584,6 +585,7 @@ mod tests {
             9000,
             Some("verify-token".to_string()),
             Some("encrypt-key".to_string()),
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.verification_token, Some("verify-token".to_string()));
         assert_eq!(adapter.encrypt_key, Some("encrypt-key".to_string()));
@@ -591,7 +593,7 @@ mod tests {
 
     #[test]
     fn test_feishu_app_id_stored() {
-        let adapter = FeishuAdapter::new("cli_test".to_string(), "secret".to_string(), 8080);
+        let adapter = FeishuAdapter::new("cli_test".to_string(), "secret".to_string(), 8080, reqwest::Client::new());
         assert_eq!(adapter.app_id, "cli_test");
     }
 

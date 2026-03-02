@@ -2271,7 +2271,7 @@ async fn tool_a2a_discover(input: &serde_json::Value) -> Result<String, String> 
         return Err("SSRF blocked: URL resolves to a private or metadata address".to_string());
     }
 
-    let client = crate::a2a::A2aClient::new();
+    let client = crate::a2a::A2aClient::default();
     let card = client.discover(url).await?;
 
     serde_json::to_string_pretty(&card).map_err(|e| format!("Serialization error: {e}"))
@@ -2302,7 +2302,7 @@ async fn tool_a2a_send(
     };
 
     let session_id = input["session_id"].as_str();
-    let client = crate::a2a::A2aClient::new();
+    let client = crate::a2a::A2aClient::default();
     let task = client.send_task(&url, message, session_id).await?;
 
     serde_json::to_string_pretty(&task).map_err(|e| format!("Serialization error: {e}"))
@@ -2645,7 +2645,8 @@ async fn tool_image_generate(
         count,
     };
 
-    let result = crate::image_gen::generate_image(&request).await?;
+    let client = reqwest::Client::new();
+    let result = crate::image_gen::generate_image(&request, &client).await?;
 
     // Save images to workspace if available
     let saved_paths = if let Some(workspace) = workspace_root {

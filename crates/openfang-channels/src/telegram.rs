@@ -39,11 +39,11 @@ impl TelegramAdapter {
     ///
     /// `token` is the raw bot token (read from env by the caller).
     /// `allowed_users` is the list of Telegram user IDs allowed to interact (empty = allow all).
-    pub fn new(token: String, allowed_users: Vec<i64>, poll_interval: Duration) -> Self {
+    pub fn new(token: String, allowed_users: Vec<i64>, poll_interval: Duration, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             token: Zeroizing::new(token),
-            client: reqwest::Client::new(),
+            client,
             allowed_users,
             poll_interval,
             shutdown_tx: Arc::new(shutdown_tx),

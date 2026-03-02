@@ -35,9 +35,6 @@ const MAX_MESSAGE_LEN: usize = 10000;
 /// OAuth2 token refresh buffer — refresh 5 minutes before actual expiry.
 const TOKEN_REFRESH_BUFFER_SECS: u64 = 300;
 
-/// Custom User-Agent required by Reddit API guidelines.
-const USER_AGENT: &str = "openfang:v1.0.0 (by /u/openfang-bot)";
-
 /// Reddit OAuth2 API adapter.
 ///
 /// Inbound messages are received by polling subreddit comment streams.
@@ -80,15 +77,9 @@ impl RedditAdapter {
         username: String,
         password: String,
         subreddits: Vec<String>,
+        client: reqwest::Client,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-
-        // Build HTTP client with required User-Agent
-        let client = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
 
         Self {
             client_id,
@@ -536,6 +527,7 @@ mod tests {
             "bot-user".to_string(),
             "bot-pass".to_string(),
             vec!["rust".to_string(), "programming".to_string()],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "reddit");
         assert_eq!(
@@ -556,6 +548,7 @@ mod tests {
                 "programming".to_string(),
                 "r/openfang".to_string(),
             ],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.subreddits.len(), 3);
         assert!(adapter.is_monitored_subreddit("rust"));
@@ -572,6 +565,7 @@ mod tests {
             "usr".to_string(),
             "pass-value".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.client_secret.as_str(), "secret-value");
         assert_eq!(adapter.password.as_str(), "pass-value");

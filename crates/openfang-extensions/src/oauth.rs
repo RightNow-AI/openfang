@@ -127,7 +127,7 @@ fn generate_state() -> String {
 /// 3. Wait for callback with authorization code.
 /// 4. Exchange code for tokens.
 /// 5. Return tokens.
-pub async fn run_pkce_flow(oauth: &OAuthTemplate, client_id: &str) -> ExtensionResult<OAuthTokens> {
+pub async fn run_pkce_flow(oauth: &OAuthTemplate, client_id: &str, client: &reqwest::Client) -> ExtensionResult<OAuthTokens> {
     let pkce = generate_pkce();
     let state = generate_state();
 
@@ -222,7 +222,6 @@ pub async fn run_pkce_flow(oauth: &OAuthTemplate, client_id: &str) -> ExtensionR
     debug!("Received authorization code, exchanging for tokens...");
 
     // Exchange code for tokens
-    let client = reqwest::Client::new();
     let mut params = HashMap::new();
     params.insert("grant_type", "authorization_code");
     params.insert("code", &code);

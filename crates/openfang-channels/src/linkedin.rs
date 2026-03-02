@@ -47,7 +47,7 @@ impl LinkedInAdapter {
     /// # Arguments
     /// * `access_token` - OAuth2 Bearer token with messaging permissions.
     /// * `organization_id` - LinkedIn organization URN or numeric ID.
-    pub fn new(access_token: String, organization_id: String) -> Self {
+    pub fn new(access_token: String, organization_id: String, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         // Normalize organization_id to URN format
         let organization_id = if organization_id.starts_with("urn:") {
@@ -58,7 +58,7 @@ impl LinkedInAdapter {
         Self {
             access_token: Zeroizing::new(access_token),
             organization_id,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             last_seen_ts: Arc::new(RwLock::new(0)),
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn test_linkedin_adapter_creation() {
-        let adapter = LinkedInAdapter::new("test-token".to_string(), "12345".to_string());
+        let adapter = LinkedInAdapter::new("test-token".to_string(), "12345".to_string(), reqwest::Client::new());
         assert_eq!(adapter.name(), "linkedin");
         assert_eq!(
             adapter.channel_type(),
@@ -403,23 +403,23 @@ mod tests {
 
     #[test]
     fn test_linkedin_organization_id_normalization() {
-        let adapter = LinkedInAdapter::new("tok".to_string(), "12345".to_string());
+        let adapter = LinkedInAdapter::new("tok".to_string(), "12345".to_string(), reqwest::Client::new());
         assert_eq!(adapter.organization_id, "urn:li:organization:12345");
 
         let adapter2 =
-            LinkedInAdapter::new("tok".to_string(), "urn:li:organization:67890".to_string());
+            LinkedInAdapter::new("tok".to_string(), "urn:li:organization:67890".to_string(), reqwest::Client::new());
         assert_eq!(adapter2.organization_id, "urn:li:organization:67890");
     }
 
     #[test]
     fn test_linkedin_org_numeric_id() {
-        let adapter = LinkedInAdapter::new("tok".to_string(), "12345".to_string());
+        let adapter = LinkedInAdapter::new("tok".to_string(), "12345".to_string(), reqwest::Client::new());
         assert_eq!(adapter.org_numeric_id(), "12345");
     }
 
     #[test]
     fn test_linkedin_auth_headers() {
-        let adapter = LinkedInAdapter::new("my-oauth-token".to_string(), "12345".to_string());
+        let adapter = LinkedInAdapter::new("my-oauth-token".to_string(), "12345".to_string(), reqwest::Client::new());
         let builder = adapter.client.get("https://api.linkedin.com/v2/me");
         let builder = adapter.auth_request(builder);
         let request = builder.build().unwrap();

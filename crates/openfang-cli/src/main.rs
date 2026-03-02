@@ -3246,6 +3246,7 @@ fn cmd_skill_install(source: &str) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = openfang_skills::marketplace::MarketplaceClient::new(
             openfang_skills::marketplace::MarketplaceConfig::default(),
+            reqwest::Client::new(),
         );
         match rt.block_on(client.install(source, &skills_dir)) {
             Ok(version) => println!("Installed {source} {version}"),
@@ -3307,6 +3308,7 @@ fn cmd_skill_search(query: &str) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let client = openfang_skills::marketplace::MarketplaceClient::new(
         openfang_skills::marketplace::MarketplaceConfig::default(),
+        reqwest::Client::new(),
     );
     match rt.block_on(client.search(query)) {
         Ok(results) if results.is_empty() => println!("No skills found for \"{query}\"."),

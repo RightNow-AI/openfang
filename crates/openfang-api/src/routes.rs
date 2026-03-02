@@ -38,6 +38,8 @@ pub struct AppState {
     pub clawhub_cache: DashMap<String, (Instant, serde_json::Value)>,
     /// Budget overrides — safe mutable budget config (replaces unsafe ptr mutation).
     pub budget_overrides: std::sync::RwLock<Option<openfang_types::config::BudgetConfig>>,
+    /// Per-agent GCRA rate limiter — prevents one agent from starving others.
+    pub agent_rate_limiter: Arc<crate::rate_limiter::AgentRateLimiter>,
 }
 
 /// Mutex to serialize `set_var` / `remove_var` calls (inherently unsafe in multi-threaded Rust 2024).
@@ -258,6 +260,22 @@ pub async fn send_message(
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(serde_json::json!({"error": "Message too large (max 64KB)"})),
         );
+    }
+
+    // Per-agent rate limiting — prevents one agent from starving others (200 tokens/min).
+    {
+        let cost = std::num::NonZeroU32::new(30).unwrap();
+        if state
+            .agent_rate_limiter
+            .check_key_n(&agent_id.to_string(), cost)
+            .is_err()
+        {
+            tracing::warn!(agent_id = %agent_id, "Per-agent rate limit exceeded");
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({"error": "Agent rate limit exceeded"})),
+            );
+        }
     }
 
     // Resolve file attachments into image content blocks
@@ -2856,7 +2874,7 @@ pub async fn install_skill(
 ) -> impl IntoResponse {
     let skills_dir = state.kernel.config.home_dir.join("skills");
     let config = openfang_skills::marketplace::MarketplaceConfig::default();
-    let client = openfang_skills::marketplace::MarketplaceClient::new(config);
+    let client = openfang_skills::marketplace::MarketplaceClient::new(config, state.kernel.http_clients.default.clone());
 
     match client.install(&req.name, &skills_dir).await {
         Ok(version) => {
@@ -2911,6 +2929,7 @@ pub async fn uninstall_skill(
 
 /// GET /api/marketplace/search — Search the FangHub marketplace.
 pub async fn marketplace_search(
+    State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let query = params.get("q").cloned().unwrap_or_default();
@@ -2919,7 +2938,7 @@ pub async fn marketplace_search(
     }
 
     let config = openfang_skills::marketplace::MarketplaceConfig::default();
-    let client = openfang_skills::marketplace::MarketplaceClient::new(config);
+    let client = openfang_skills::marketplace::MarketplaceClient::new(config, state.kernel.http_clients.default.clone());
 
     match client.search(&query).await {
         Ok(results) => {
@@ -2978,7 +2997,7 @@ pub async fn clawhub_search(
     }
 
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir, state.kernel.http_clients.default.clone());
 
     match client.search(&query, limit).await {
         Ok(results) => {
@@ -3055,7 +3074,7 @@ pub async fn clawhub_browse(
     }
 
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir, state.kernel.http_clients.default.clone());
 
     match client.browse(sort, limit, cursor).await {
         Ok(results) => {
@@ -3095,7 +3114,7 @@ pub async fn clawhub_skill_detail(
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir, state.kernel.http_clients.default.clone());
 
     let skills_dir = state.kernel.config.home_dir.join("skills");
     let is_installed = client.is_installed(&slug, &skills_dir);
@@ -3202,7 +3221,7 @@ pub async fn clawhub_install(
 ) -> impl IntoResponse {
     let skills_dir = state.kernel.config.home_dir.join("skills");
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir, state.kernel.http_clients.default.clone());
 
     // Check if already installed
     if client.is_installed(&req.slug, &skills_dir) {
@@ -5249,7 +5268,7 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
         // For local providers, add reachability info via health probe
         if !p.key_required {
             entry["is_local"] = serde_json::json!(true);
-            let probe = openfang_runtime::provider_health::probe_provider(&p.id, &p.base_url).await;
+            let probe = openfang_runtime::provider_health::probe_provider(&p.id, &p.base_url, &state.kernel.http_clients.default).await;
             entry["reachable"] = serde_json::json!(probe.reachable);
             entry["latency_ms"] = serde_json::json!(probe.latency_ms);
             if !probe.discovered_models.is_empty() {
@@ -5629,7 +5648,7 @@ pub async fn a2a_discover_external(
         }
     };
 
-    let client = openfang_runtime::a2a::A2aClient::new();
+    let client = openfang_runtime::a2a::A2aClient::new(state.kernel.http_clients.default.clone());
     match client.discover(&url).await {
         Ok(card) => {
             let card_json = serde_json::to_value(&card).unwrap_or_default();
@@ -5664,7 +5683,7 @@ pub async fn a2a_discover_external(
 
 /// POST /api/a2a/send — Send a task to an external A2A agent.
 pub async fn a2a_send_external(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let url = match body["url"].as_str() {
@@ -5687,7 +5706,7 @@ pub async fn a2a_send_external(
     };
     let session_id = body["session_id"].as_str();
 
-    let client = openfang_runtime::a2a::A2aClient::new();
+    let client = openfang_runtime::a2a::A2aClient::new(state.kernel.http_clients.default.clone());
     match client.send_task(&url, &message, session_id).await {
         Ok(task) => (
             StatusCode::OK,
@@ -5702,7 +5721,7 @@ pub async fn a2a_send_external(
 
 /// GET /api/a2a/tasks/{id}/status — Get task status from an external A2A agent.
 pub async fn a2a_external_task_status(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(task_id): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
@@ -5716,7 +5735,7 @@ pub async fn a2a_external_task_status(
         }
     };
 
-    let client = openfang_runtime::a2a::A2aClient::new();
+    let client = openfang_runtime::a2a::A2aClient::new(state.kernel.http_clients.default.clone());
     match client.get_task(&url, &task_id).await {
         Ok(task) => (
             StatusCode::OK,
@@ -6513,7 +6532,7 @@ pub async fn test_provider(
         },
     };
 
-    match openfang_runtime::drivers::create_driver(&driver_config) {
+    match openfang_runtime::drivers::create_driver(&driver_config, state.kernel.http_clients.default.clone()) {
         Ok(driver) => {
             // Send a minimal completion request to test connectivity
             let test_req = openfang_runtime::llm_driver::CompletionRequest {
@@ -6619,7 +6638,7 @@ pub async fn set_provider_url(
 
     // Probe reachability at the new URL
     let probe =
-        openfang_runtime::provider_health::probe_provider(&name, &base_url).await;
+        openfang_runtime::provider_health::probe_provider(&name, &base_url, &state.kernel.http_clients.default).await;
 
     // Merge discovered models into catalog
     if !probe.discovered_models.is_empty() {
@@ -9532,11 +9551,13 @@ static COPILOT_FLOWS: LazyLock<DashMap<String, CopilotFlowState>> = LazyLock::ne
 ///
 /// Initiates a GitHub device flow for Copilot authentication.
 /// Returns a user code and verification URI that the user visits in their browser.
-pub async fn copilot_oauth_start() -> impl IntoResponse {
+pub async fn copilot_oauth_start(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
     // Clean up expired flows first
-    COPILOT_FLOWS.retain(|_, state| state.expires_at > Instant::now());
+    COPILOT_FLOWS.retain(|_, s| s.expires_at > Instant::now());
 
-    match openfang_runtime::copilot_oauth::start_device_flow().await {
+    match openfang_runtime::copilot_oauth::start_device_flow(&state.kernel.http_clients.default).await {
         Ok(resp) => {
             let poll_id = uuid::Uuid::new_v4().to_string();
 
@@ -9599,7 +9620,7 @@ pub async fn copilot_oauth_poll(
     let device_code = flow.device_code.clone();
     drop(flow);
 
-    match openfang_runtime::copilot_oauth::poll_device_flow(&device_code).await {
+    match openfang_runtime::copilot_oauth::poll_device_flow(&device_code, &state.kernel.http_clients.default).await {
         openfang_runtime::copilot_oauth::DeviceFlowStatus::Pending => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "pending"})),

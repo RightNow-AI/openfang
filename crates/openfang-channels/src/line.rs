@@ -59,13 +59,13 @@ impl LineAdapter {
     /// * `channel_secret` - Channel secret for HMAC-SHA256 signature verification.
     /// * `access_token` - Long-lived channel access token for sending messages.
     /// * `webhook_port` - Local port for the inbound webhook HTTP server.
-    pub fn new(channel_secret: String, access_token: String, webhook_port: u16) -> Self {
+    pub fn new(channel_secret: String, access_token: String, webhook_port: u16, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             channel_secret: Zeroizing::new(channel_secret),
             access_token: Zeroizing::new(access_token),
             webhook_port,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -503,6 +503,7 @@ mod tests {
             "channel-secret-123".to_string(),
             "access-token-456".to_string(),
             8080,
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "line");
         assert_eq!(
@@ -514,7 +515,7 @@ mod tests {
 
     #[test]
     fn test_line_adapter_both_tokens() {
-        let adapter = LineAdapter::new("secret".to_string(), "token".to_string(), 9000);
+        let adapter = LineAdapter::new("secret".to_string(), "token".to_string(), 9000, reqwest::Client::new());
         // Verify both secrets are stored as Zeroizing
         assert_eq!(adapter.channel_secret.as_str(), "secret");
         assert_eq!(adapter.access_token.as_str(), "token");

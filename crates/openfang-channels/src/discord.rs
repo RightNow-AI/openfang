@@ -51,11 +51,11 @@ pub struct DiscordAdapter {
 }
 
 impl DiscordAdapter {
-    pub fn new(token: String, allowed_guilds: Vec<String>, intents: u64) -> Self {
+    pub fn new(token: String, allowed_guilds: Vec<String>, intents: u64, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             token: Zeroizing::new(token),
-            client: reqwest::Client::new(),
+            client,
             allowed_guilds,
             intents,
             shutdown_tx: Arc::new(shutdown_tx),
@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn test_discord_adapter_creation() {
-        let adapter = DiscordAdapter::new("test-token".to_string(), vec!["123".to_string(), "456".to_string()], 37376);
+        let adapter = DiscordAdapter::new("test-token".to_string(), vec!["123".to_string(), "456".to_string()], 37376, reqwest::Client::new());
         assert_eq!(adapter.name(), "discord");
         assert_eq!(adapter.channel_type(), ChannelType::Discord);
     }

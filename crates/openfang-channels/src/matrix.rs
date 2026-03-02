@@ -44,13 +44,14 @@ impl MatrixAdapter {
         user_id: String,
         access_token: String,
         allowed_rooms: Vec<String>,
+        client: reqwest::Client,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             homeserver_url,
             user_id,
             access_token: Zeroizing::new(access_token),
-            client: reqwest::Client::new(),
+            client,
             allowed_rooms,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
@@ -330,6 +331,7 @@ mod tests {
             "@bot:matrix.org".to_string(),
             "access_token".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "matrix");
     }
@@ -341,6 +343,7 @@ mod tests {
             "@bot:matrix.org".to_string(),
             "token".to_string(),
             vec!["!room1:matrix.org".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed_room("!room1:matrix.org"));
         assert!(!adapter.is_allowed_room("!room2:matrix.org"));
@@ -350,6 +353,7 @@ mod tests {
             "@bot:matrix.org".to_string(),
             "token".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert!(open.is_allowed_room("!any:matrix.org"));
     }
