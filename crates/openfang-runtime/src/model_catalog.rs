@@ -362,6 +362,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "openai".into(),
@@ -371,6 +372,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "gemini".into(),
@@ -380,6 +382,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "deepseek".into(),
@@ -389,6 +392,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "groq".into(),
@@ -398,6 +402,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "openrouter".into(),
@@ -407,6 +412,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "mistral".into(),
@@ -416,6 +422,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "together".into(),
@@ -425,6 +432,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "fireworks".into(),
@@ -434,24 +442,27 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "ollama".into(),
             display_name: "Ollama".into(),
             api_key_env: "OLLAMA_API_KEY".into(),
             base_url: OLLAMA_BASE_URL.into(),
-            key_required: false,
-            auth_status: AuthStatus::NotRequired,
+            key_required: true,
+            auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: true,
         },
         ProviderInfo {
             id: "vllm".into(),
             display_name: "vLLM".into(),
             api_key_env: "VLLM_API_KEY".into(),
             base_url: VLLM_BASE_URL.into(),
-            key_required: false,
-            auth_status: AuthStatus::NotRequired,
+            key_required: true,
+            auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: true,
         },
         ProviderInfo {
             id: "lmstudio".into(),
@@ -461,6 +472,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: false,
             auth_status: AuthStatus::NotRequired,
             model_count: 0,
+            is_local: true,
         },
         // ── New providers (8) ──────────────────────────────────────
         ProviderInfo {
@@ -471,6 +483,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "cohere".into(),
@@ -480,6 +493,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "ai21".into(),
@@ -489,6 +503,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "cerebras".into(),
@@ -498,6 +513,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "sambanova".into(),
@@ -507,6 +523,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "huggingface".into(),
@@ -516,6 +533,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "xai".into(),
@@ -525,6 +543,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "replicate".into(),
@@ -534,6 +553,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         // ── GitHub Copilot ───────────────────────────────────────────
         ProviderInfo {
@@ -544,6 +564,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         // ── Chinese providers (5) ────────────────────────────────────
         ProviderInfo {
@@ -554,6 +575,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "minimax".into(),
@@ -563,6 +585,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "zhipu".into(),
@@ -572,6 +595,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "zhipu_coding".into(),
@@ -581,6 +605,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "moonshot".into(),
@@ -590,6 +615,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "qianfan".into(),
@@ -599,6 +625,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "modelscope".into(),
@@ -608,6 +635,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         // ── AWS Bedrock ──────────────────────────────────────────────
         ProviderInfo {
@@ -618,6 +646,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         // ── OpenAI Codex ────────────────────────────────────────────
         ProviderInfo {
@@ -628,6 +657,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         // ── Claude Code CLI ─────────────────────────────────────────
         ProviderInfo {
@@ -638,6 +668,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: false,
             auth_status: AuthStatus::NotRequired,
             model_count: 0,
+            is_local: false,
         },
     ]
 }

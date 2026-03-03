@@ -161,6 +161,8 @@ pub struct ProviderInfo {
     pub base_url: String,
     /// Whether an API key is required (false for local providers).
     pub key_required: bool,
+    /// Whether the provider is local (e.g. Ollama, vLLM).
+    pub is_local: bool,
     /// Runtime-detected authentication status.
     pub auth_status: AuthStatus,
     /// Number of models from this provider in the catalog.
@@ -177,6 +179,7 @@ impl Default for ProviderInfo {
             key_required: true,
             auth_status: AuthStatus::default(),
             model_count: 0,
+            is_local: false,
         }
     }
 }
@@ -279,6 +282,7 @@ mod tests {
             key_required: true,
             auth_status: AuthStatus::Configured,
             model_count: 3,
+            is_local: false,
         };
         let json = serde_json::to_string(&info).unwrap();
         let parsed: ProviderInfo = serde_json::from_str(&json).unwrap();

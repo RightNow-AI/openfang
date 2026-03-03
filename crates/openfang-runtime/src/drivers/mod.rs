@@ -76,12 +76,12 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "ollama" => Some(ProviderDefaults {
             base_url: OLLAMA_BASE_URL,
             api_key_env: "OLLAMA_API_KEY",
-            key_required: false,
+            key_required: true,
         }),
         "vllm" => Some(ProviderDefaults {
             base_url: VLLM_BASE_URL,
             api_key_env: "VLLM_API_KEY",
-            key_required: false,
+            key_required: true,
         }),
         "lmstudio" => Some(ProviderDefaults {
             base_url: LMSTUDIO_BASE_URL,

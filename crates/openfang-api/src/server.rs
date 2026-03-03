@@ -54,53 +54,25 @@ pub async fn build_router(
 
     // CORS: allow localhost origins by default. If API key is set, the API
     // is protected anyway. For development, permissive CORS is convenient.
-    let cors = if state.kernel.config.api_key.is_empty() {
-        // No auth → restrict CORS to localhost origins (include both 127.0.0.1 and localhost)
-        let port = listen_addr.port();
-        let mut origins: Vec<axum::http::HeaderValue> = vec![
-            format!("http://{listen_addr}").parse().unwrap(),
-            format!("http://localhost:{port}").parse().unwrap(),
-        ];
-        // Also allow common dev ports
-        for p in [3000u16, 8080] {
-            if p != port {
-                if let Ok(v) = format!("http://127.0.0.1:{p}").parse() {
-                    origins.push(v);
-                }
-                if let Ok(v) = format!("http://localhost:{p}").parse() {
-                    origins.push(v);
-                }
-            }
-        }
-        CorsLayer::new()
-            .allow_origin(origins)
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
-    } else {
-        // Auth enabled → restrict CORS to localhost + configured origins.
-        // SECURITY: CorsLayer::permissive() is dangerous — any website could
-        // make cross-origin requests. Restrict to known origins instead.
-        let mut origins: Vec<axum::http::HeaderValue> = vec![
-            format!("http://{listen_addr}").parse().unwrap(),
-            "http://localhost:4200".parse().unwrap(),
-            "http://127.0.0.1:4200".parse().unwrap(),
-            "http://localhost:8080".parse().unwrap(),
-            "http://127.0.0.1:8080".parse().unwrap(),
-        ];
-        // Add the actual listen address variants
-        if listen_addr.port() != 4200 && listen_addr.port() != 8080 {
-            if let Ok(v) = format!("http://localhost:{}", listen_addr.port()).parse() {
-                origins.push(v);
-            }
-            if let Ok(v) = format!("http://127.0.0.1:{}", listen_addr.port()).parse() {
-                origins.push(v);
-            }
-        }
-        CorsLayer::new()
-            .allow_origin(origins)
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
-    };
+    let cors = CorsLayer::new()
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            move |origin, _| {
+                let origin_str = origin.to_str().unwrap_or("");
+                // Allow localhost, 127.0.0.1, and the listen address
+                let listen_addr_str = format!("http://{listen_addr}");
+                let localhost_re = format!(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$");
+                let listen_addr_re = format!(r"^{}$", regex::escape(&listen_addr_str));
+
+                regex::Regex::new(&localhost_re)
+                    .unwrap()
+                    .is_match(origin_str)
+                    || regex::Regex::new(&listen_addr_re)
+                        .unwrap()
+                        .is_match(origin_str)
+            },
+        ))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any);
 
     let api_key = state.kernel.config.api_key.clone();
     let gcra_limiter = rate_limiter::create_rate_limiter();
@@ -350,8 +322,7 @@ pub async fn build_router(
         )
         .route(
             "/api/hands/{hand_id}/settings",
-            axum::routing::get(routes::get_hand_settings)
-                .put(routes::update_hand_settings),
+            axum::routing::get(routes::get_hand_settings).put(routes::update_hand_settings),
         )
         .route(
             "/api/hands/instances/{id}/pause",
@@ -408,14 +379,8 @@ pub async fn build_router(
             "/api/comms/events/stream",
             axum::routing::get(routes::comms_events_stream),
         )
-        .route(
-            "/api/comms/send",
-            axum::routing::post(routes::comms_send),
-        )
-        .route(
-            "/api/comms/task",
-            axum::routing::post(routes::comms_task),
-        )
+        .route("/api/comms/send", axum::routing::post(routes::comms_send))
+        .route("/api/comms/task", axum::routing::post(routes::comms_task))
         // Tools endpoint
         .route("/api/tools", axum::routing::get(routes::list_tools))
         // Config endpoints
@@ -460,8 +425,7 @@ pub async fn build_router(
         )
         .route(
             "/api/budget/agents/{id}",
-            axum::routing::get(routes::agent_budget_status)
-                .put(routes::update_agent_budget),
+            axum::routing::get(routes::agent_budget_status).put(routes::update_agent_budget),
         )
         // Session endpoints
         .route("/api/sessions", axum::routing::get(routes::list_sessions))
