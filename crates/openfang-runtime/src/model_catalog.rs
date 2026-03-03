@@ -52,14 +52,20 @@ impl ModelCatalog {
             }
 
             // Primary: check the provider's declared env var
-            let has_key = std::env::var(&provider.api_key_env).is_ok();
+            let has_key = if provider.api_key_env.is_empty() {
+                false
+            } else {
+                std::env::var(&provider.api_key_env).is_ok()
+            };
 
             // Secondary: provider-specific fallback auth
             let has_fallback = match provider.id.as_str() {
                 "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
+                "anthropic" => std::env::var("ANTHROPIC_OAUTH_TOKEN").is_ok(),
+                "qwen" => std::env::var("QWEN_OAUTH_TOKEN").is_ok(),
+                "minimax" => std::env::var("MINIMAX_OAUTH_TOKEN").is_ok(),
                 "codex" => {
-                    std::env::var("OPENAI_API_KEY").is_ok()
-                        || read_codex_credential().is_some()
+                    std::env::var("OPENAI_API_KEY").is_ok() || read_codex_credential().is_some()
                 }
                 "claude-code" => crate::drivers::claude_code::claude_code_available(),
                 _ => false,
@@ -2891,6 +2897,31 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
 mod tests {
     use super::*;
 
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let original = std::env::var(key).ok();
+            match value {
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
     #[test]
     fn test_catalog_has_models() {
         let catalog = ModelCatalog::new();
@@ -2935,10 +2966,7 @@ mod tests {
     #[test]
     fn test_resolve_alias() {
         let catalog = ModelCatalog::new();
-        assert_eq!(
-            catalog.resolve_alias("sonnet"),
-            Some("claude-sonnet-4-6")
-        );
+        assert_eq!(catalog.resolve_alias("sonnet"), Some("claude-sonnet-4-6"));
         assert_eq!(
             catalog.resolve_alias("haiku"),
             Some("claude-haiku-4-5-20251001")
@@ -2993,6 +3021,42 @@ mod tests {
         assert_eq!(ollama.auth_status, AuthStatus::NotRequired);
         let vllm = catalog.get_provider("vllm").unwrap();
         assert_eq!(vllm.auth_status, AuthStatus::NotRequired);
+    }
+
+    #[test]
+    fn test_detect_auth_anthropic_oauth_token() {
+        let _anthropic_key_guard = EnvVarGuard::set("ANTHROPIC_API_KEY", None);
+        let _anthropic_oauth_guard = EnvVarGuard::set("ANTHROPIC_OAUTH_TOKEN", Some("token"));
+
+        let mut catalog = ModelCatalog::new();
+        catalog.detect_auth();
+
+        let anthropic = catalog.get_provider("anthropic").unwrap();
+        assert_eq!(anthropic.auth_status, AuthStatus::Configured);
+    }
+
+    #[test]
+    fn test_detect_auth_qwen_oauth_token() {
+        let _dashscope_guard = EnvVarGuard::set("DASHSCOPE_API_KEY", None);
+        let _qwen_oauth_guard = EnvVarGuard::set("QWEN_OAUTH_TOKEN", Some("token"));
+
+        let mut catalog = ModelCatalog::new();
+        catalog.detect_auth();
+
+        let qwen = catalog.get_provider("qwen").unwrap();
+        assert_eq!(qwen.auth_status, AuthStatus::Configured);
+    }
+
+    #[test]
+    fn test_detect_auth_minimax_oauth_token() {
+        let _minimax_key_guard = EnvVarGuard::set("MINIMAX_API_KEY", None);
+        let _minimax_oauth_guard = EnvVarGuard::set("MINIMAX_OAUTH_TOKEN", Some("token"));
+
+        let mut catalog = ModelCatalog::new();
+        catalog.detect_auth();
+
+        let minimax = catalog.get_provider("minimax").unwrap();
+        assert_eq!(minimax.auth_status, AuthStatus::Configured);
     }
 
     #[test]

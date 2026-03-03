@@ -48,7 +48,7 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 |---|---|
 | **Display Name** | Anthropic |
 | **Driver** | Native Anthropic (Messages API) |
-| **Env Var** | `ANTHROPIC_API_KEY` |
+| **Env Var** | `ANTHROPIC_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) |
 | **Base URL** | `https://api.anthropic.com` |
 | **Key Required** | Yes |
 | **Free Tier** | No |
@@ -63,7 +63,7 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 **Setup:**
 1. Sign up at [console.anthropic.com](https://console.anthropic.com)
 2. Create an API key under Settings > API Keys
-3. `export ANTHROPIC_API_KEY="sk-ant-..."`
+3. `export ANTHROPIC_OAUTH_TOKEN="..."` or `export ANTHROPIC_API_KEY="sk-ant-..."`
 
 ---
 
@@ -1013,7 +1013,7 @@ Quick reference for all provider environment variables:
 
 | Provider | Env Var | Required |
 |----------|---------|----------|
-| Anthropic | `ANTHROPIC_API_KEY` | Yes |
+| Anthropic | `ANTHROPIC_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | Yes |
 | OpenAI | `OPENAI_API_KEY` | Yes |
 | Google Gemini | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Yes |
 | DeepSeek | `DEEPSEEK_API_KEY` | Yes |
@@ -1033,6 +1033,11 @@ Quick reference for all provider environment variables:
 | Hugging Face | `HF_API_KEY` | Yes |
 | xAI | `XAI_API_KEY` | Yes |
 | Replicate | `REPLICATE_API_TOKEN` | Yes |
+
+OAuth token alternatives currently supported:
+- Anthropic: `ANTHROPIC_OAUTH_TOKEN`
+- Qwen: `QWEN_OAUTH_TOKEN` (fallback to `DASHSCOPE_API_KEY`)
+- MiniMax: `MINIMAX_OAUTH_TOKEN` (fallback to `MINIMAX_API_KEY`)
 
 ---
 

@@ -16,9 +16,9 @@ use openfang_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL,
     FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, LMSTUDIO_BASE_URL,
     MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
-    OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL, XAI_BASE_URL,
-    ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL,
+    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL, XAI_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -28,6 +28,34 @@ struct ProviderDefaults {
     api_key_env: &'static str,
     /// If true, the API key is required (error if missing).
     key_required: bool,
+}
+
+fn provider_auth_env_candidates<'a>(provider: &str, primary_env: &'a str) -> Vec<&'a str> {
+    match provider {
+        "anthropic" => vec!["ANTHROPIC_OAUTH_TOKEN", primary_env],
+        "qwen" => vec!["QWEN_OAUTH_TOKEN", primary_env],
+        "minimax" => vec!["MINIMAX_OAUTH_TOKEN", primary_env],
+        _ => vec![primary_env],
+    }
+}
+
+fn resolve_provider_api_key_from_env(provider: &str, primary_env: &str) -> Option<String> {
+    for env_var in provider_auth_env_candidates(provider, primary_env) {
+        if env_var.is_empty() {
+            continue;
+        }
+
+        let Ok(value) = std::env::var(env_var) else {
+            continue;
+        };
+
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    None
 }
 
 /// Get defaults for known providers.
@@ -208,9 +236,12 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         let api_key = config
             .api_key
             .clone()
-            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+            .or_else(|| resolve_provider_api_key_from_env(provider, "ANTHROPIC_API_KEY"))
             .ok_or_else(|| {
-                LlmError::MissingApiKey("Set ANTHROPIC_API_KEY environment variable".to_string())
+                LlmError::MissingApiKey(
+                    "Set ANTHROPIC_OAUTH_TOKEN or ANTHROPIC_API_KEY environment variable"
+                        .to_string(),
+                )
             })?;
         let base_url = config
             .base_url
@@ -246,9 +277,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .or_else(|| std::env::var("OPENAI_API_KEY").ok())
             .or_else(crate::model_catalog::read_codex_credential)
             .ok_or_else(|| {
-                LlmError::MissingApiKey(
-                    "Set OPENAI_API_KEY or install Codex CLI".to_string(),
-                )
+                LlmError::MissingApiKey("Set OPENAI_API_KEY or install Codex CLI".to_string())
             })?;
         let base_url = config
             .base_url
@@ -291,7 +320,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         let api_key = config
             .api_key
             .clone()
-            .or_else(|| std::env::var(defaults.api_key_env).ok())
+            .or_else(|| resolve_provider_api_key_from_env(provider, defaults.api_key_env))
             .unwrap_or_default();
 
         if defaults.key_required && api_key.is_empty() {
@@ -368,6 +397,31 @@ pub fn known_providers() -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let original = std::env::var(key).ok();
+            match value {
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
 
     #[test]
     fn test_provider_defaults_groq() {
@@ -496,5 +550,32 @@ mod tests {
         assert_eq!(d.base_url, "https://api-inference.huggingface.co/v1");
         assert_eq!(d.api_key_env, "HF_API_KEY");
         assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_resolve_provider_api_key_prefers_anthropic_oauth() {
+        let _oauth_guard = EnvVarGuard::set("ANTHROPIC_OAUTH_TOKEN", Some("oauth-token"));
+        let _api_key_guard = EnvVarGuard::set("ANTHROPIC_API_KEY", Some("api-key"));
+
+        let resolved = resolve_provider_api_key_from_env("anthropic", "ANTHROPIC_API_KEY");
+        assert_eq!(resolved.as_deref(), Some("oauth-token"));
+    }
+
+    #[test]
+    fn test_resolve_provider_api_key_qwen_oauth_fallback() {
+        let _oauth_guard = EnvVarGuard::set("QWEN_OAUTH_TOKEN", Some("qwen-oauth"));
+        let _api_key_guard = EnvVarGuard::set("DASHSCOPE_API_KEY", None);
+
+        let resolved = resolve_provider_api_key_from_env("qwen", "DASHSCOPE_API_KEY");
+        assert_eq!(resolved.as_deref(), Some("qwen-oauth"));
+    }
+
+    #[test]
+    fn test_resolve_provider_api_key_minimax_oauth_fallback() {
+        let _oauth_guard = EnvVarGuard::set("MINIMAX_OAUTH_TOKEN", Some("minimax-oauth"));
+        let _api_key_guard = EnvVarGuard::set("MINIMAX_API_KEY", None);
+
+        let resolved = resolve_provider_api_key_from_env("minimax", "MINIMAX_API_KEY");
+        assert_eq!(resolved.as_deref(), Some("minimax-oauth"));
     }
 }
