@@ -133,7 +133,7 @@ enum Commands {
     /// Manage channel integrations (setup, test, enable, disable) [*].
     #[command(subcommand)]
     Channel(ChannelCommands),
-    /// Manage hands (list, activate, deactivate, info) [*].
+    /// Manage autonomous Hands (list, activate, status, deactivate, pause, resume) [*].
     #[command(subcommand)]
     Hand(HandCommands),
     /// Show or edit configuration (show, edit, get, set, keys) [*].
@@ -271,9 +271,6 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Manage autonomous Hands (list, activate, status, deactivate, pause, resume) [*].
-    #[command(subcommand)]
-    Hand(HandCommands),
     /// System info and version [*].
     #[command(subcommand)]
     System(SystemCommands),
