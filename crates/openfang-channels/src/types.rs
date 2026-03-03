@@ -261,6 +261,71 @@ pub trait ChannelAdapter: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.send(user, content).await
     }
+
+    /// Whether this adapter supports streaming output.
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+
+    /// Begin a streaming session, returning a `StreamSink` for progressive output.
+    ///
+    /// `is_group` indicates if the target is a group chat (affects mode selection).
+    /// Default implementation returns an error.
+    async fn begin_stream(
+        &self,
+        _user: &ChannelUser,
+        _is_group: bool,
+    ) -> Result<Box<dyn StreamSink>, Box<dyn std::error::Error>> {
+        Err("Streaming not supported by this adapter".into())
+    }
+}
+
+/// Stream events relevant to the channel layer.
+///
+/// This is a channel-local enum mirroring the subset of `openfang_runtime::StreamEvent`
+/// that channels care about, avoiding a dependency on `openfang-runtime`.
+#[derive(Debug, Clone)]
+pub enum ChannelStreamEvent {
+    /// Incremental text from the LLM.
+    TextDelta { text: String },
+    /// A tool execution has started.
+    ToolStart { name: String },
+    /// A tool execution completed.
+    ToolResult {
+        name: String,
+        preview: String,
+        is_error: bool,
+    },
+    /// The response is complete.
+    Complete,
+    /// An error occurred during streaming.
+    Error { message: String },
+}
+
+/// Trait for a streaming output sink that progressively delivers content to a channel.
+///
+/// Implementations buffer text and flush to the platform at appropriate intervals.
+#[async_trait]
+pub trait StreamSink: Send + Sync {
+    /// Push a text delta into the buffer.
+    async fn push_text(&mut self, text: &str) -> Result<(), Box<dyn std::error::Error>>;
+
+    /// Push a tool start notification.
+    async fn push_tool_start(&mut self, tool_name: &str) -> Result<(), Box<dyn std::error::Error>>;
+
+    /// Push a tool result notification.
+    async fn push_tool_result(
+        &mut self,
+        tool_name: &str,
+        preview: &str,
+        is_error: bool,
+    ) -> Result<(), Box<dyn std::error::Error>>;
+
+    /// Finalize the stream — send the complete formatted message.
+    async fn finalize(&mut self) -> Result<(), Box<dyn std::error::Error>>;
+
+    /// Abort the stream — best-effort send of whatever we have.
+    async fn abort(&mut self) -> Result<(), Box<dyn std::error::Error>>;
 }
 
 /// Split a message into chunks of at most `max_len` characters,

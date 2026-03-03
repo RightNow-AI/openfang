@@ -5,7 +5,9 @@
 
 use crate::formatter;
 use crate::router::AgentRouter;
-use crate::types::{ChannelAdapter, ChannelContent, ChannelMessage, ChannelUser};
+use crate::types::{
+    ChannelAdapter, ChannelContent, ChannelMessage, ChannelStreamEvent, ChannelUser,
+};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
@@ -126,6 +128,18 @@ pub trait ChannelBridgeHandle: Send + Sync {
     /// Returns Some(reply_text) if auto-reply fires, None otherwise.
     async fn check_auto_reply(&self, _agent_id: AgentId, _message: &str) -> Option<String> {
         None
+    }
+
+    /// Send a message to an agent with streaming responses.
+    ///
+    /// Returns a receiver for `ChannelStreamEvent`s. Default implementation
+    /// returns an error (streaming not supported).
+    async fn send_message_streaming(
+        &self,
+        _agent_id: AgentId,
+        _message: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<ChannelStreamEvent>, String> {
+        Err("Streaming not supported".to_string())
     }
 
     // ── Automation: workflows, triggers, schedules, approvals ──
@@ -622,7 +636,28 @@ async fn dispatch_message(
     // Send typing indicator (best-effort)
     let _ = adapter.send_typing(&message.sender).await;
 
-    // Send to agent and relay response
+    // Try streaming path if adapter supports it
+    if adapter.supports_streaming() {
+        match dispatch_streaming(
+            &text,
+            agent_id,
+            handle,
+            adapter,
+            &message.sender,
+            message.is_group,
+            ct_str,
+        )
+        .await
+        {
+            Ok(()) => return,
+            Err(e) => {
+                debug!("Streaming dispatch failed, falling back to non-streaming: {e}");
+                // Fall through to non-streaming path
+            }
+        }
+    }
+
+    // Send to agent and relay response (non-streaming path)
     match handle.send_message(agent_id, &text).await {
         Ok(response) => {
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
@@ -652,6 +687,73 @@ async fn dispatch_message(
                 .await;
         }
     }
+}
+
+/// Dispatch a message using streaming output.
+///
+/// Creates a `StreamSink` from the adapter, then forwards `ChannelStreamEvent`s
+/// from the kernel bridge handle into the sink for progressive display.
+async fn dispatch_streaming(
+    text: &str,
+    agent_id: AgentId,
+    handle: &Arc<dyn ChannelBridgeHandle>,
+    adapter: &dyn ChannelAdapter,
+    user: &ChannelUser,
+    is_group: bool,
+    ct_str: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Get the stream receiver from the bridge handle
+    let mut rx = handle
+        .send_message_streaming(agent_id, text)
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    // Create a streaming sink from the adapter
+    let mut sink = adapter.begin_stream(user, is_group).await?;
+
+    // Process stream events
+    while let Some(event) = rx.recv().await {
+        match event {
+            ChannelStreamEvent::TextDelta { text } => {
+                let push_err = match sink.push_text(&text).await {
+                    Ok(()) => None,
+                    Err(e) => Some(e.to_string()),
+                };
+                if let Some(err) = push_err {
+                    warn!("Stream sink push_text failed: {err}");
+                    sink.abort().await.ok();
+                    return Err(err.into());
+                }
+            }
+            ChannelStreamEvent::ToolStart { name } => {
+                sink.push_tool_start(&name).await.ok();
+            }
+            ChannelStreamEvent::ToolResult {
+                name,
+                preview,
+                is_error,
+            } => {
+                sink.push_tool_result(&name, &preview, is_error).await.ok();
+            }
+            ChannelStreamEvent::Complete => {
+                break;
+            }
+            ChannelStreamEvent::Error { message } => {
+                warn!("Stream error from kernel: {message}");
+                sink.abort().await.ok();
+                return Err(message.into());
+            }
+        }
+    }
+
+    // Finalize the stream
+    sink.finalize().await?;
+
+    handle
+        .record_delivery(agent_id, ct_str, &user.platform_id, true, None)
+        .await;
+
+    Ok(())
 }
 
 /// Handle a bot command (returns the response text).

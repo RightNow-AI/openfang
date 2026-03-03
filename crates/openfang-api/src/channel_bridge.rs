@@ -17,7 +17,7 @@ use openfang_channels::slack::SlackAdapter;
 use openfang_channels::teams::TeamsAdapter;
 use openfang_channels::telegram::TelegramAdapter;
 use openfang_channels::twitch::TwitchAdapter;
-use openfang_channels::types::ChannelAdapter;
+use openfang_channels::types::{ChannelAdapter, ChannelStreamEvent};
 use openfang_channels::whatsapp::WhatsAppAdapter;
 use openfang_channels::xmpp::XmppAdapter;
 use openfang_channels::zulip::ZulipAdapter;
@@ -71,6 +71,54 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .await
             .map_err(|e| format!("{e}"))?;
         Ok(result.response)
+    }
+
+    async fn send_message_streaming(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<ChannelStreamEvent>, String> {
+        let (mut kernel_rx, _handle) = self
+            .kernel
+            .send_message_streaming(agent_id, message, None)
+            .map_err(|e| format!("{e}"))?;
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<ChannelStreamEvent>(64);
+
+        // Spawn a task to convert StreamEvent → ChannelStreamEvent
+        tokio::spawn(async move {
+            use openfang_runtime::llm_driver::StreamEvent;
+
+            while let Some(event) = kernel_rx.recv().await {
+                let channel_event = match event {
+                    StreamEvent::TextDelta { text } => ChannelStreamEvent::TextDelta { text },
+                    StreamEvent::ToolUseStart { name, .. } => {
+                        ChannelStreamEvent::ToolStart { name }
+                    }
+                    StreamEvent::ToolExecutionResult {
+                        name,
+                        result_preview,
+                        is_error,
+                    } => ChannelStreamEvent::ToolResult {
+                        name,
+                        preview: result_preview,
+                        is_error,
+                    },
+                    StreamEvent::ContentComplete { .. } => ChannelStreamEvent::Complete,
+                    // Skip events the channel layer doesn't care about
+                    StreamEvent::ToolInputDelta { .. }
+                    | StreamEvent::ToolUseEnd { .. }
+                    | StreamEvent::ThinkingDelta { .. }
+                    | StreamEvent::PhaseChange { .. } => continue,
+                };
+
+                if tx.send(channel_event).await.is_err() {
+                    break; // receiver dropped
+                }
+            }
+        });
+
+        Ok(rx)
     }
 
     async fn find_agent_by_name(&self, name: &str) -> Result<Option<AgentId>, String> {
@@ -1026,10 +1074,12 @@ pub async fn start_channel_bridge_with_config(
     if let Some(ref tg_config) = config.telegram {
         if let Some(token) = read_token(&tg_config.bot_token_env, "Telegram") {
             let poll_interval = Duration::from_secs(tg_config.poll_interval_secs);
-            let adapter = Arc::new(TelegramAdapter::new(
+            let adapter = Arc::new(TelegramAdapter::with_streaming(
                 token,
                 tg_config.allowed_users.clone(),
                 poll_interval,
+                tg_config.stream_mode,
+                tg_config.stream_config.clone(),
             ));
             adapters.push((adapter, tg_config.default_agent.clone()));
         }

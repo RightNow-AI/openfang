@@ -1523,6 +1523,46 @@ pub struct ChannelsConfig {
     pub linkedin: Option<LinkedInConfig>,
 }
 
+/// Telegram streaming mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TelegramStreamMode {
+    /// Disable streaming — send complete response at once.
+    Off,
+    /// Edit mode: sendMessage + editMessageText (works everywhere).
+    Edit,
+    /// Draft mode: sendMessageDraft (Bot API 9.5, DM only).
+    Draft,
+    /// Auto-select best mode (Draft for DM, Edit for groups).
+    #[default]
+    Auto,
+}
+
+/// Configuration for Telegram streaming behavior.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TelegramStreamConfig {
+    /// Minimum interval between edits in milliseconds.
+    pub flush_interval_ms: u64,
+    /// Minimum new characters before flushing an edit.
+    pub min_chars_per_flush: usize,
+    /// Max characters per message before splitting (Telegram limit is 4096).
+    pub max_message_chars: usize,
+    /// Cursor indicator appended during streaming.
+    pub cursor_indicator: String,
+}
+
+impl Default for TelegramStreamConfig {
+    fn default() -> Self {
+        Self {
+            flush_interval_ms: 500,
+            min_chars_per_flush: 40,
+            max_message_chars: 3900,
+            cursor_indicator: "\u{258C}".to_string(), // ▌
+        }
+    }
+}
+
 /// Telegram channel adapter configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1538,6 +1578,12 @@ pub struct TelegramConfig {
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
+    /// Streaming mode for progressive message display.
+    #[serde(default)]
+    pub stream_mode: TelegramStreamMode,
+    /// Streaming configuration (timing, thresholds).
+    #[serde(default)]
+    pub stream_config: TelegramStreamConfig,
 }
 
 impl Default for TelegramConfig {
@@ -1548,6 +1594,8 @@ impl Default for TelegramConfig {
             default_agent: None,
             poll_interval_secs: 1,
             overrides: ChannelOverrides::default(),
+            stream_mode: TelegramStreamMode::default(),
+            stream_config: TelegramStreamConfig::default(),
         }
     }
 }

@@ -3,9 +3,12 @@
 //! Uses long-polling via `getUpdates` with exponential backoff on failures.
 //! No external Telegram crate — just `reqwest` for full control over error handling.
 
+use crate::formatter;
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
+    StreamSink,
 };
+use openfang_types::config::{TelegramStreamConfig, TelegramStreamMode};
 use async_trait::async_trait;
 use futures::Stream;
 use std::collections::HashMap;
@@ -32,6 +35,10 @@ pub struct TelegramAdapter {
     poll_interval: Duration,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
+    /// Streaming mode configuration.
+    stream_mode: TelegramStreamMode,
+    /// Streaming behavior configuration.
+    stream_config: TelegramStreamConfig,
 }
 
 impl TelegramAdapter {
@@ -48,6 +55,29 @@ impl TelegramAdapter {
             poll_interval,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
+            stream_mode: TelegramStreamMode::default(),
+            stream_config: TelegramStreamConfig::default(),
+        }
+    }
+
+    /// Create a new Telegram adapter with streaming configuration.
+    pub fn with_streaming(
+        token: String,
+        allowed_users: Vec<i64>,
+        poll_interval: Duration,
+        stream_mode: TelegramStreamMode,
+        stream_config: TelegramStreamConfig,
+    ) -> Self {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        Self {
+            token: Zeroizing::new(token),
+            client: reqwest::Client::new(),
+            allowed_users,
+            poll_interval,
+            shutdown_tx: Arc::new(shutdown_tx),
+            shutdown_rx,
+            stream_mode,
+            stream_config,
         }
     }
 
@@ -74,6 +104,16 @@ impl TelegramAdapter {
         chat_id: i64,
         text: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.api_send_message_with_id(chat_id, text).await?;
+        Ok(())
+    }
+
+    /// Call `sendMessage` on the Telegram API, returning the message_id of the last chunk.
+    async fn api_send_message_with_id(
+        &self,
+        chat_id: i64,
+        text: &str,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
         let url = format!(
             "https://api.telegram.org/bot{}/sendMessage",
             self.token.as_str()
@@ -86,6 +126,7 @@ impl TelegramAdapter {
 
         // Telegram has a 4096 character limit per message — split if needed
         let chunks = split_message(&sanitized, 4096);
+        let mut last_message_id: i64 = 0;
         for chunk in chunks {
             let body = serde_json::json!({
                 "chat_id": chat_id,
@@ -98,9 +139,12 @@ impl TelegramAdapter {
             if !status.is_success() {
                 let body_text = resp.text().await.unwrap_or_default();
                 warn!("Telegram sendMessage failed ({status}): {body_text}");
+            } else {
+                let resp_body: serde_json::Value = resp.json().await.unwrap_or_default();
+                last_message_id = resp_body["result"]["message_id"].as_i64().unwrap_or(0);
             }
         }
-        Ok(())
+        Ok(last_message_id)
     }
 
     /// Call `sendPhoto` on the Telegram API.
@@ -440,6 +484,455 @@ impl ChannelAdapter for TelegramAdapter {
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
+    }
+
+    fn supports_streaming(&self) -> bool {
+        self.stream_mode != TelegramStreamMode::Off
+    }
+
+    async fn begin_stream(
+        &self,
+        user: &ChannelUser,
+        is_group: bool,
+    ) -> Result<Box<dyn StreamSink>, Box<dyn std::error::Error>> {
+        let chat_id: i64 = user
+            .platform_id
+            .parse()
+            .map_err(|_| format!("Invalid Telegram chat_id: {}", user.platform_id))?;
+
+        // Resolve effective mode: Auto → Edit (Draft requires Bot API 9.5 which isn't widely available yet)
+        let effective_mode = match self.stream_mode {
+            TelegramStreamMode::Off => {
+                return Err("Streaming is disabled".into());
+            }
+            TelegramStreamMode::Edit => StreamMode::Edit,
+            TelegramStreamMode::Draft => {
+                if is_group {
+                    // Draft doesn't work in groups — fall back to Edit
+                    StreamMode::Edit
+                } else {
+                    StreamMode::Draft
+                }
+            }
+            TelegramStreamMode::Auto => {
+                // Auto: always use Edit for now (Draft support is experimental)
+                StreamMode::Edit
+            }
+        };
+
+        Ok(Box::new(TelegramStreamSink::new(
+            self.token.as_str().to_string(),
+            self.client.clone(),
+            chat_id,
+            effective_mode,
+            self.stream_config.clone(),
+        )))
+    }
+}
+
+/// Internal mode enum for the active streaming strategy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum StreamMode {
+    Edit,
+    Draft,
+}
+
+/// Streaming output sink for Telegram — buffers text and flushes via edits.
+struct TelegramStreamSink {
+    token: String,
+    client: reqwest::Client,
+    chat_id: i64,
+    mode: StreamMode,
+    config: TelegramStreamConfig,
+
+    /// Accumulated full text buffer.
+    buffer: String,
+    /// Message ID of the message being edited (Edit mode).
+    message_id: Option<i64>,
+    /// Whether the first message has been sent.
+    first_sent: bool,
+    /// Last flush instant for rate limiting.
+    last_flush: tokio::time::Instant,
+    /// Characters in buffer at last flush.
+    chars_at_last_flush: usize,
+    /// Number of consecutive 429 errors for adaptive backoff.
+    consecutive_rate_limits: u32,
+    /// Current extra delay from rate limiting.
+    rate_limit_delay: Duration,
+    /// Messages already sent (for multi-message splitting).
+    sent_messages: Vec<i64>,
+    /// Whether finalize has been called.
+    finalized: bool,
+}
+
+impl TelegramStreamSink {
+    fn new(
+        token: String,
+        client: reqwest::Client,
+        chat_id: i64,
+        mode: StreamMode,
+        config: TelegramStreamConfig,
+    ) -> Self {
+        Self {
+            token,
+            client,
+            chat_id,
+            mode,
+            config,
+            buffer: String::new(),
+            message_id: None,
+            first_sent: false,
+            last_flush: tokio::time::Instant::now(),
+            chars_at_last_flush: 0,
+            consecutive_rate_limits: 0,
+            rate_limit_delay: Duration::ZERO,
+            sent_messages: Vec::new(),
+            finalized: false,
+        }
+    }
+
+    /// Whether enough time and chars have accumulated for a flush.
+    fn should_flush(&self) -> bool {
+        let elapsed = self.last_flush.elapsed();
+        let interval = Duration::from_millis(self.config.flush_interval_ms) + self.rate_limit_delay;
+        let chars_added = self.buffer.len().saturating_sub(self.chars_at_last_flush);
+
+        elapsed >= interval && chars_added >= self.config.min_chars_per_flush
+    }
+
+    /// Flush the current buffer to Telegram.
+    async fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+
+        // Check if we need to split the message
+        if self.buffer.len() > self.config.max_message_chars && self.message_id.is_some() {
+            return self.split_and_continue().await;
+        }
+
+        // Prepare display text: escape HTML entities + cursor indicator
+        let display_text =
+            formatter::escape_html_entities(&self.buffer) + &self.config.cursor_indicator;
+
+        match self.mode {
+            StreamMode::Edit => {
+                if !self.first_sent {
+                    // First flush: send a new message
+                    match self.send_message_raw(&display_text, None).await {
+                        Ok(msg_id) => {
+                            self.message_id = Some(msg_id);
+                            self.first_sent = true;
+                        }
+                        Err(e) => {
+                            warn!("Telegram stream: sendMessage failed: {e}");
+                            return Err(e);
+                        }
+                    }
+                } else if let Some(msg_id) = self.message_id {
+                    // Subsequent flushes: edit the existing message
+                    let edit_err = match self.edit_message_raw(msg_id, &display_text, None).await {
+                        Ok(()) => None,
+                        Err(e) => Some(e.to_string()),
+                    };
+                    if let Some(err_str) = edit_err {
+                        if err_str.contains("429") {
+                            self.handle_rate_limit(&err_str).await;
+                        } else {
+                            warn!("Telegram stream: editMessageText failed: {err_str}");
+                        }
+                    }
+                }
+            }
+            StreamMode::Draft => {
+                // Draft mode: use sendMessageDraft (experimental)
+                // Falls back to Edit if it fails
+                let draft_failed = match self.send_draft(&display_text).await {
+                    Ok(()) => false,
+                    Err(e) => {
+                        warn!("Telegram stream: Draft failed, falling back to Edit: {e}");
+                        true
+                    }
+                };
+                if draft_failed {
+                    self.mode = StreamMode::Edit;
+                    // Inline the Edit path instead of recursive flush()
+                    match self.send_message_raw(&display_text, None).await {
+                        Ok(msg_id) => {
+                            self.message_id = Some(msg_id);
+                            self.first_sent = true;
+                        }
+                        Err(e) => {
+                            warn!("Telegram stream: fallback sendMessage failed: {e}");
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.last_flush = tokio::time::Instant::now();
+        self.chars_at_last_flush = self.buffer.len();
+        self.consecutive_rate_limits = 0;
+
+        Ok(())
+    }
+
+    /// Split a long message: finalize the current message and start a new one.
+    async fn split_and_continue(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let split_at =
+            formatter::find_split_point(&self.buffer, self.config.max_message_chars);
+        let completed_text = self.buffer[..split_at].to_string();
+        let remaining = self.buffer[split_at..].trim_start().to_string();
+
+        // Finalize the current message with the completed chunk
+        if let Some(msg_id) = self.message_id {
+            let formatted = formatter::escape_html_entities(&completed_text);
+            self.edit_message_raw(msg_id, &formatted, None).await.ok();
+            self.sent_messages.push(msg_id);
+        }
+
+        // Start a new message with the remaining text + cursor
+        self.buffer = remaining;
+        let display =
+            formatter::escape_html_entities(&self.buffer) + &self.config.cursor_indicator;
+        match self.send_message_raw(&display, None).await {
+            Ok(msg_id) => {
+                self.message_id = Some(msg_id);
+                self.chars_at_last_flush = self.buffer.len();
+            }
+            Err(e) => {
+                warn!("Telegram stream: failed to start continuation message: {e}");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle a 429 rate limit response with adaptive backoff.
+    async fn handle_rate_limit(&mut self, err_text: &str) {
+        self.consecutive_rate_limits += 1;
+
+        // Parse retry_after from error if available
+        let base_delay = if let Some(pos) = err_text.find("retry_after") {
+            err_text[pos..]
+                .split(|c: char| c.is_ascii_digit())
+                .nth(0)
+                .and_then(|_| {
+                    err_text[pos..]
+                        .chars()
+                        .filter(|c| c.is_ascii_digit())
+                        .collect::<String>()
+                        .parse::<u64>()
+                        .ok()
+                })
+                .map(Duration::from_secs)
+                .unwrap_or(Duration::from_secs(1))
+        } else {
+            Duration::from_secs(1)
+        };
+
+        // Adaptive: double interval after 3 consecutive rate limits
+        if self.consecutive_rate_limits >= 3 {
+            self.rate_limit_delay = (self.rate_limit_delay + base_delay) * 2;
+        } else {
+            self.rate_limit_delay = base_delay;
+        }
+
+        let delay = self.rate_limit_delay.min(Duration::from_secs(10));
+        debug!(
+            "Telegram stream: rate limited, sleeping {delay:?} (consecutive: {})",
+            self.consecutive_rate_limits
+        );
+        tokio::time::sleep(delay).await;
+    }
+
+    /// Raw sendMessage call that returns the message_id.
+    async fn send_message_raw(
+        &self,
+        text: &str,
+        parse_mode: Option<&str>,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendMessage",
+            self.token
+        );
+
+        let mut body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": text,
+        });
+        if let Some(pm) = parse_mode {
+            body["parse_mode"] = serde_json::Value::String(pm.to_string());
+        }
+
+        let resp = self.client.post(&url).json(&body).send().await?;
+        let status = resp.status();
+        let resp_body: serde_json::Value = resp.json().await.unwrap_or_default();
+
+        if !status.is_success() {
+            let desc = resp_body["description"].as_str().unwrap_or("unknown error");
+            return Err(format!("sendMessage failed ({status}): {desc}").into());
+        }
+
+        let msg_id = resp_body["result"]["message_id"]
+            .as_i64()
+            .unwrap_or(0);
+        Ok(msg_id)
+    }
+
+    /// Raw editMessageText call.
+    async fn edit_message_raw(
+        &self,
+        message_id: i64,
+        text: &str,
+        parse_mode: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/editMessageText",
+            self.token
+        );
+
+        let mut body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "message_id": message_id,
+            "text": text,
+        });
+        if let Some(pm) = parse_mode {
+            body["parse_mode"] = serde_json::Value::String(pm.to_string());
+        }
+
+        let resp = self.client.post(&url).json(&body).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            if status.as_u16() == 400 && body_text.contains("message is not modified") {
+                return Ok(());
+            }
+            return Err(format!("{status}: {body_text}").into());
+        }
+        Ok(())
+    }
+
+    /// Send a draft message (Bot API 9.5 experimental).
+    async fn send_draft(&self, text: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendMessageDraft",
+            self.token
+        );
+
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": text,
+        });
+
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(format!("sendMessageDraft failed: {body_text}").into());
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl StreamSink for TelegramStreamSink {
+    async fn push_text(&mut self, text: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.buffer.push_str(text);
+
+        if self.should_flush() {
+            self.flush().await?;
+        }
+
+        Ok(())
+    }
+
+    async fn push_tool_start(&mut self, tool_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Append a tool indicator to the buffer
+        if !self.buffer.is_empty() && !self.buffer.ends_with('\n') {
+            self.buffer.push('\n');
+        }
+        self.buffer
+            .push_str(&format!("\n[Running: {tool_name}...]\n"));
+
+        // Force flush to show tool activity
+        self.flush().await?;
+        Ok(())
+    }
+
+    async fn push_tool_result(
+        &mut self,
+        _tool_name: &str,
+        _preview: &str,
+        _is_error: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Tool results are typically not shown inline during streaming —
+        // the LLM response after tool use will contain the relevant info.
+        Ok(())
+    }
+
+    async fn finalize(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.finalized {
+            return Ok(());
+        }
+        self.finalized = true;
+
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+
+        match self.mode {
+            StreamMode::Edit => {
+                if let Some(msg_id) = self.message_id {
+                    // Final edit with full Markdown→HTML formatting (no cursor)
+                    let formatted =
+                        formatter::format_for_channel(&self.buffer, openfang_types::config::OutputFormat::TelegramHtml);
+                    let sanitized = sanitize_telegram_html(&formatted);
+
+                    // If the final text is too long, we need to split
+                    if sanitized.len() > 4096 {
+                        let chunks = split_message(&sanitized, 4096);
+                        // Edit existing message with first chunk
+                        if let Some(first) = chunks.first() {
+                            self.edit_message_raw(msg_id, first, Some("HTML"))
+                                .await
+                                .ok();
+                        }
+                        // Send remaining chunks as new messages
+                        for chunk in &chunks[1..] {
+                            self.send_message_raw(chunk, Some("HTML")).await.ok();
+                        }
+                    } else {
+                        self.edit_message_raw(msg_id, &sanitized, Some("HTML"))
+                            .await
+                            .ok();
+                    }
+                } else {
+                    // Never sent a first message — send the complete text
+                    let formatted =
+                        formatter::format_for_channel(&self.buffer, openfang_types::config::OutputFormat::TelegramHtml);
+                    let sanitized = sanitize_telegram_html(&formatted);
+                    self.send_message_raw(&sanitized, Some("HTML")).await.ok();
+                }
+            }
+            StreamMode::Draft => {
+                // Draft messages disappear — send a final real message
+                let formatted =
+                    formatter::format_for_channel(&self.buffer, openfang_types::config::OutputFormat::TelegramHtml);
+                let sanitized = sanitize_telegram_html(&formatted);
+                self.send_message_raw(&sanitized, Some("HTML")).await.ok();
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn abort(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.finalized {
+            return Ok(());
+        }
+        // Best-effort: finalize whatever we have
+        self.finalize().await
     }
 }
 

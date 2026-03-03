@@ -197,6 +197,48 @@ fn markdown_to_plain(text: &str) -> String {
     result
 }
 
+/// Lightweight HTML entity escaping for streaming intermediate states.
+///
+/// Only escapes `&`, `<`, `>` — no Markdown conversion. Used during streaming
+/// so partial text doesn't break Telegram's HTML parser.
+pub fn escape_html_entities(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Find the best split point near `max_chars` for message splitting.
+///
+/// Prefers splitting at paragraph breaks (`\n\n`), then line breaks (`\n`),
+/// then sentence endings (`. `), then word boundaries (` `).
+/// Returns the byte offset to split at, or `max_chars` if no good point found.
+pub fn find_split_point(text: &str, max_chars: usize) -> usize {
+    if text.len() <= max_chars {
+        return text.len();
+    }
+
+    let search_range = &text[..max_chars];
+
+    // Prefer paragraph break
+    if let Some(pos) = search_range.rfind("\n\n") {
+        return pos;
+    }
+    // Then line break
+    if let Some(pos) = search_range.rfind('\n') {
+        return pos;
+    }
+    // Then sentence end
+    if let Some(pos) = search_range.rfind(". ") {
+        return pos + 1; // include the period
+    }
+    // Then word boundary
+    if let Some(pos) = search_range.rfind(' ') {
+        return pos;
+    }
+
+    max_chars
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
