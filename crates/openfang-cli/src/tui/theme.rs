@@ -34,6 +34,7 @@ pub const PURPLE: Color = Color::Rgb(168, 85, 247); // #A855F7 — decorators
 
 pub const CYAN: Color = BLUE;
 pub const DIM: Color = TEXT_SECONDARY;
+pub const TEXT: Color = TEXT_PRIMARY;
 
 // ── Reusable styles ─────────────────────────────────────────────────────────
 

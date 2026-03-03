@@ -34,7 +34,7 @@ pub const GITHUB_COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 
 // ── Chinese providers ─────────────────────────────────────────────
 pub const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-pub const MINIMAX_BASE_URL: &str = "https://api.minimax.chat/v1";
+pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 pub const ZHIPU_CODING_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 pub const MOONSHOT_BASE_URL: &str = "https://api.moonshot.cn/v1";
@@ -58,6 +58,8 @@ pub enum ModelTier {
     Fast,
     /// Local models (Ollama, vLLM, LM Studio).
     Local,
+    /// User-defined custom models added at runtime.
+    Custom,
 }
 
 impl fmt::Display for ModelTier {
@@ -68,6 +70,7 @@ impl fmt::Display for ModelTier {
             ModelTier::Balanced => write!(f, "balanced"),
             ModelTier::Fast => write!(f, "fast"),
             ModelTier::Local => write!(f, "local"),
+            ModelTier::Custom => write!(f, "custom"),
         }
     }
 }
@@ -188,6 +191,7 @@ mod tests {
         assert_eq!(ModelTier::Balanced.to_string(), "balanced");
         assert_eq!(ModelTier::Fast.to_string(), "fast");
         assert_eq!(ModelTier::Local.to_string(), "local");
+        assert_eq!(ModelTier::Custom.to_string(), "custom");
     }
 
     #[test]

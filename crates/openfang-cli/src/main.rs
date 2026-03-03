@@ -73,6 +73,7 @@ const AFTER_HELP: &str = "\
   openfang doctor               Run diagnostic health checks
   openfang channel setup        Interactive channel setup wizard
   openfang cron list            List scheduled jobs
+  openfang uninstall            Completely remove OpenFang from your system
 
 \x1b[1;36mQuick Start:\x1b[0m
   1. openfang init              Set up config + API key
@@ -132,6 +133,9 @@ enum Commands {
     /// Manage channel integrations (setup, test, enable, disable) [*].
     #[command(subcommand)]
     Channel(ChannelCommands),
+    /// Manage hands (list, activate, deactivate, info) [*].
+    #[command(subcommand)]
+    Hand(HandCommands),
     /// Show or edit configuration (show, edit, get, set, keys) [*].
     #[command(subcommand)]
     Config(ConfigCommands),
@@ -276,6 +280,15 @@ enum Commands {
         #[arg(long)]
         confirm: bool,
     },
+    /// Completely uninstall OpenFang from your system.
+    Uninstall {
+        /// Skip confirmation prompt (also --yes).
+        #[arg(long, alias = "yes")]
+        confirm: bool,
+        /// Keep config files (config.toml, .env, secrets.env).
+        #[arg(long)]
+        keep_config: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -372,6 +385,49 @@ enum ChannelCommands {
 }
 
 #[derive(Subcommand)]
+enum HandCommands {
+    /// List all available hands.
+    List,
+    /// Show currently active hand instances.
+    Active,
+    /// Activate a hand by ID.
+    Activate {
+        /// Hand ID (e.g. "clip", "lead", "researcher").
+        id: String,
+    },
+    /// Deactivate an active hand instance.
+    Deactivate {
+        /// Hand ID.
+        id: String,
+    },
+    /// Show detailed info about a hand.
+    Info {
+        /// Hand ID.
+        id: String,
+    },
+    /// Check dependency status for a hand.
+    CheckDeps {
+        /// Hand ID.
+        id: String,
+    },
+    /// Install missing dependencies for a hand.
+    InstallDeps {
+        /// Hand ID.
+        id: String,
+    },
+    /// Pause a running hand instance.
+    Pause {
+        /// Instance ID (from `hand active`).
+        id: String,
+    },
+    /// Resume a paused hand instance.
+    Resume {
+        /// Instance ID (from `hand active`).
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum ConfigCommands {
     /// Show the current configuration.
     Show,
@@ -438,6 +494,15 @@ enum AgentCommands {
     Kill {
         /// Agent ID (UUID).
         agent_id: String,
+    },
+    /// Set an agent property (e.g., model).
+    Set {
+        /// Agent ID (UUID).
+        agent_id: String,
+        /// Field to set (model).
+        field: String,
+        /// New value.
+        value: String,
     },
 }
 
@@ -567,6 +632,9 @@ enum CronCommands {
         spec: String,
         /// Prompt to send when the job fires.
         prompt: String,
+        /// Optional job name (auto-generated if omitted).
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Delete a scheduled job.
     Delete {
@@ -803,6 +871,11 @@ fn main() {
             AgentCommands::List { json } => cmd_agent_list(cli.config, json),
             AgentCommands::Chat { agent_id } => cmd_agent_chat(cli.config, &agent_id),
             AgentCommands::Kill { agent_id } => cmd_agent_kill(cli.config, &agent_id),
+            AgentCommands::Set {
+                agent_id,
+                field,
+                value,
+            } => cmd_agent_set(&agent_id, &field, &value),
         },
         Some(Commands::Workflow(sub)) => match sub {
             WorkflowCommands::List => cmd_workflow_list(),
@@ -833,6 +906,17 @@ fn main() {
             ChannelCommands::Test { channel } => cmd_channel_test(&channel),
             ChannelCommands::Enable { channel } => cmd_channel_toggle(&channel, true),
             ChannelCommands::Disable { channel } => cmd_channel_toggle(&channel, false),
+        },
+        Some(Commands::Hand(sub)) => match sub {
+            HandCommands::List => cmd_hand_list(),
+            HandCommands::Active => cmd_hand_active(),
+            HandCommands::Activate { id } => cmd_hand_activate(&id),
+            HandCommands::Deactivate { id } => cmd_hand_deactivate(&id),
+            HandCommands::Info { id } => cmd_hand_info(&id),
+            HandCommands::CheckDeps { id } => cmd_hand_check_deps(&id),
+            HandCommands::InstallDeps { id } => cmd_hand_install_deps(&id),
+            HandCommands::Pause { id } => cmd_hand_pause(&id),
+            HandCommands::Resume { id } => cmd_hand_resume(&id),
         },
         Some(Commands::Config(sub)) => match sub {
             ConfigCommands::Show => cmd_config_show(),
@@ -883,7 +967,8 @@ fn main() {
                 agent,
                 spec,
                 prompt,
-            } => cmd_cron_create(&agent, &spec, &prompt),
+                name,
+            } => cmd_cron_create(&agent, &spec, &prompt, name.as_deref()),
             CronCommands::Delete { id } => cmd_cron_delete(&id),
             CronCommands::Enable { id } => cmd_cron_toggle(&id, true),
             CronCommands::Disable { id } => cmd_cron_toggle(&id, false),
@@ -922,6 +1007,7 @@ fn main() {
             SystemCommands::Version { json } => cmd_system_version(json),
         },
         Some(Commands::Reset { confirm }) => cmd_reset(confirm),
+        Some(Commands::Uninstall { confirm, keep_config }) => cmd_uninstall(confirm, keep_config),
     }
 }
 
@@ -1248,6 +1334,7 @@ fn write_config_if_missing(
             r#"# OpenFang Agent OS configuration
 # See https://github.com/RightNow-AI/openfang for documentation
 
+# For Docker, change to "0.0.0.0:4200" or set OPENFANG_LISTEN env var.
 api_listen = "127.0.0.1:4200"
 
 [default_model]
@@ -1332,11 +1419,28 @@ fn cmd_start(config: Option<PathBuf>) {
     });
 }
 
+/// Read the api_key from ~/.openfang/config.toml (if any).
+fn read_api_key() -> Option<String> {
+    let config_path = dirs::home_dir()?.join(".openfang").join("config.toml");
+    let text = std::fs::read_to_string(config_path).ok()?;
+    let table: toml::Value = text.parse().ok()?;
+    let key = table.get("api_key")?.as_str()?;
+    if key.is_empty() {
+        None
+    } else {
+        Some(key.to_string())
+    }
+}
+
 fn cmd_stop() {
     match find_daemon() {
         Some(base) => {
             let client = daemon_client();
-            match client.post(format!("{base}/api/shutdown")).send() {
+            let mut req = client.post(format!("{base}/api/shutdown"));
+            if let Some(key) = read_api_key() {
+                req = req.bearer_auth(key);
+            }
+            match req.send() {
                 Ok(r) if r.status().is_success() => {
                     // Wait for daemon to actually stop (up to 5 seconds)
                     for _ in 0..10 {
@@ -1579,6 +1683,38 @@ fn cmd_agent_kill(config: Option<PathBuf>, agent_id_str: &str) {
                 eprintln!("Failed to kill agent: {e}");
                 std::process::exit(1);
             }
+        }
+    }
+}
+
+fn cmd_agent_set(agent_id_str: &str, field: &str, value: &str) {
+    match field {
+        "model" => {
+            if let Some(base) = find_daemon() {
+                let client = daemon_client();
+                let body = daemon_json(
+                    client
+                        .put(format!("{base}/api/agents/{agent_id_str}/model"))
+                        .json(&serde_json::json!({"model": value}))
+                        .send(),
+                );
+                if body.get("status").is_some() {
+                    println!("Agent {agent_id_str} model set to {value}.");
+                } else {
+                    eprintln!(
+                        "Failed to set model: {}",
+                        body["error"].as_str().unwrap_or("Unknown error")
+                    );
+                    std::process::exit(1);
+                }
+            } else {
+                eprintln!("No running daemon found. Start one with: openfang start");
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            eprintln!("Unknown field: {field}. Supported fields: model");
+            std::process::exit(1);
         }
     }
 }
@@ -1913,6 +2049,7 @@ fn cmd_doctor(json: bool, repair: bool) {
                 let default_config = r#"# OpenFang Agent OS configuration
 # See https://github.com/RightNow-AI/openfang for documentation
 
+# For Docker, change to "0.0.0.0:4200" or set OPENFANG_LISTEN env var.
 api_listen = "127.0.0.1:4200"
 
 [default_model]
@@ -3699,6 +3836,249 @@ fn cmd_channel_toggle(channel: &str, enable: bool) {
 }
 
 // ---------------------------------------------------------------------------
+// Hand commands
+// ---------------------------------------------------------------------------
+
+fn cmd_hand_list() {
+    let base = require_daemon("hand list");
+    let client = daemon_client();
+    let body = daemon_json(client.get(format!("{base}/api/hands")).send());
+    // API returns {"hands": [...]} or a bare array
+    let arr_val;
+    if let Some(arr) = body.get("hands").and_then(|v| v.as_array()) {
+        arr_val = arr.clone();
+    } else if let Some(arr) = body.as_array() {
+        arr_val = arr.clone();
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&body).unwrap_or_default()
+        );
+        return;
+    }
+    if let Some(arr) = Some(&arr_val) {
+        if arr.is_empty() {
+            println!("No hands available.");
+            return;
+        }
+        println!(
+            "{:<14} {:<20} {:<10} DESCRIPTION",
+            "ID", "NAME", "CATEGORY"
+        );
+        println!("{}", "-".repeat(72));
+        for h in arr {
+            println!(
+                "{:<14} {:<20} {:<10} {}",
+                h["id"].as_str().unwrap_or("?"),
+                h["name"].as_str().unwrap_or("?"),
+                h["category"].as_str().unwrap_or("?"),
+                h["description"].as_str().unwrap_or("").chars().take(40).collect::<String>(),
+            );
+        }
+        println!("\nUse `openfang hand activate <id>` to activate a hand.");
+    }
+}
+
+fn cmd_hand_active() {
+    let base = require_daemon("hand active");
+    let client = daemon_client();
+    let body = daemon_json(client.get(format!("{base}/api/hands/active")).send());
+    // API returns {"instances": [...]} or bare array
+    let arr = body
+        .get("instances")
+        .and_then(|v| v.as_array())
+        .or_else(|| body.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if arr.is_empty() {
+        println!("No active hands.");
+        return;
+    }
+    println!(
+        "{:<38} {:<14} {:<10} AGENT",
+        "INSTANCE", "HAND", "STATUS"
+    );
+    println!("{}", "-".repeat(72));
+    for i in &arr {
+        println!(
+            "{:<38} {:<14} {:<10} {}",
+            i["instance_id"].as_str().unwrap_or("?"),
+            i["hand_id"].as_str().unwrap_or("?"),
+            i["status"].as_str().unwrap_or("?"),
+            i["agent_name"].as_str().unwrap_or("?"),
+        );
+    }
+}
+
+fn cmd_hand_activate(id: &str) {
+    let base = require_daemon("hand activate");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/{id}/activate"))
+            .header("content-type", "application/json")
+            .body("{}")
+            .send(),
+    );
+    if body.get("instance_id").is_some() {
+        println!(
+            "Hand '{}' activated (instance: {}, agent: {})",
+            id,
+            body["instance_id"].as_str().unwrap_or("?"),
+            body["agent_name"].as_str().unwrap_or("?"),
+        );
+    } else {
+        eprintln!(
+            "Failed to activate hand '{}': {}",
+            id,
+            body["error"].as_str().unwrap_or("Unknown error")
+        );
+        std::process::exit(1);
+    }
+}
+
+fn cmd_hand_deactivate(id: &str) {
+    let base = require_daemon("hand deactivate");
+    let client = daemon_client();
+    // First find the instance ID for this hand
+    let active = daemon_json(client.get(format!("{base}/api/hands/active")).send());
+    let arr = active
+        .get("instances")
+        .and_then(|v| v.as_array())
+        .or_else(|| active.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let instance_id = arr.iter().find_map(|i| {
+        if i["hand_id"].as_str() == Some(id) {
+            i["instance_id"].as_str().map(|s| s.to_string())
+        } else {
+            None
+        }
+    });
+
+    match instance_id {
+        Some(iid) => {
+            let body = daemon_json(
+                client
+                    .delete(format!("{base}/api/hands/instances/{iid}"))
+                    .send(),
+            );
+            if body.get("status").is_some() {
+                println!("Hand '{id}' deactivated.");
+            } else {
+                eprintln!(
+                    "Failed: {}",
+                    body["error"].as_str().unwrap_or("Unknown error")
+                );
+                std::process::exit(1);
+            }
+        }
+        None => {
+            eprintln!("No active instance found for hand '{id}'.");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_hand_info(id: &str) {
+    let base = require_daemon("hand info");
+    let client = daemon_client();
+    let body = daemon_json(client.get(format!("{base}/api/hands/{id}")).send());
+    if body.get("error").is_some() {
+        eprintln!(
+            "Hand not found: {}",
+            body["error"].as_str().unwrap_or(id)
+        );
+        std::process::exit(1);
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&body).unwrap_or_default()
+    );
+}
+
+fn cmd_hand_check_deps(id: &str) {
+    let base = require_daemon("hand check-deps");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/{id}/check-deps"))
+            .send(),
+    );
+    if body.get("error").is_some() {
+        ui::error(&format!(
+            "Failed: {}",
+            body["error"].as_str().unwrap_or("?")
+        ));
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&body).unwrap_or_default()
+        );
+    }
+}
+
+fn cmd_hand_install_deps(id: &str) {
+    let base = require_daemon("hand install-deps");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/{id}/install-deps"))
+            .send(),
+    );
+    if body.get("error").is_some() {
+        ui::error(&format!(
+            "Failed: {}",
+            body["error"].as_str().unwrap_or("?")
+        ));
+    } else {
+        ui::success(&format!("Dependencies installed for hand '{id}'."));
+        if let Some(results) = body.get("results") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(results).unwrap_or_default()
+            );
+        }
+    }
+}
+
+fn cmd_hand_pause(id: &str) {
+    let base = require_daemon("hand pause");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/instances/{id}/pause"))
+            .send(),
+    );
+    if body.get("error").is_some() {
+        ui::error(&format!(
+            "Failed: {}",
+            body["error"].as_str().unwrap_or("?")
+        ));
+    } else {
+        ui::success(&format!("Hand instance '{id}' paused."));
+    }
+}
+
+fn cmd_hand_resume(id: &str) {
+    let base = require_daemon("hand resume");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/instances/{id}/resume"))
+            .send(),
+    );
+    if body.get("error").is_some() {
+        ui::error(&format!(
+            "Failed: {}",
+            body["error"].as_str().unwrap_or("?")
+        ));
+    } else {
+        ui::success(&format!("Hand instance '{id}' resumed."));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Provider / API key helpers
 // ---------------------------------------------------------------------------
 
@@ -3966,6 +4346,31 @@ fn cmd_config_set(key: &str, value: &str) {
     }
 
     let last_key = parts[parts.len() - 1];
+
+    // Validate: single-part keys must be known scalar fields, not sections.
+    // Writing a section name as a scalar silently breaks config deserialization.
+    if parts.len() == 1 {
+        let known_scalars = [
+            "home_dir",
+            "data_dir",
+            "log_level",
+            "api_listen",
+            "network_enabled",
+            "api_key",
+            "language",
+            "max_cron_jobs",
+            "usage_footer",
+            "workspaces_dir",
+        ];
+        if !known_scalars.contains(&last_key) {
+            ui::error_with_fix(
+                &format!("'{last_key}' is a section, not a scalar"),
+                &format!("Use dotted notation: {last_key}.field_name"),
+            );
+            std::process::exit(1);
+        }
+    }
+
     let tbl = current.as_table_mut().unwrap_or_else(|| {
         ui::error(&format!("Parent of '{key}' is not a table"));
         std::process::exit(1);
@@ -4870,16 +5275,40 @@ fn cmd_cron_list(json: bool) {
     }
 }
 
-fn cmd_cron_create(agent: &str, spec: &str, prompt: &str) {
+fn cmd_cron_create(agent: &str, spec: &str, prompt: &str, explicit_name: Option<&str>) {
     let base = require_daemon("cron create");
     let client = daemon_client();
+
+    // Use explicit name if provided, otherwise derive from agent + prompt
+    let name = if let Some(n) = explicit_name {
+        n.to_string()
+    } else {
+        let short_prompt: String = prompt
+            .split_whitespace()
+            .take(4)
+            .collect::<Vec<_>>()
+            .join("-")
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+            .take(64)
+            .collect();
+        format!("{}-{}", agent, if short_prompt.is_empty() { "job" } else { &short_prompt })
+    };
+
     let body = daemon_json(
         client
             .post(format!("{base}/api/cron/jobs"))
             .json(&serde_json::json!({
                 "agent_id": agent,
-                "cron_expr": spec,
-                "prompt": prompt,
+                "name": name,
+                "schedule": {
+                    "kind": "cron",
+                    "expr": spec
+                },
+                "action": {
+                    "kind": "agent_turn",
+                    "message": prompt
+                }
             }))
             .send(),
     );
@@ -5534,6 +5963,358 @@ fn cmd_reset(confirm: bool) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Uninstall
+// ---------------------------------------------------------------------------
+
+fn cmd_uninstall(confirm: bool, keep_config: bool) {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => {
+            ui::error("Could not determine home directory");
+            std::process::exit(1);
+        }
+    };
+    let openfang_dir = home.join(".openfang");
+    let exe_path = std::env::current_exe().ok();
+
+    // Step 1: Show what will be removed
+    println!();
+    println!(
+        "  {}",
+        "This will completely uninstall OpenFang from your system."
+            .bold()
+            .red()
+    );
+    println!();
+    if openfang_dir.exists() {
+        if keep_config {
+            println!(
+                "  • Remove data in {} (keeping config files)",
+                openfang_dir.display()
+            );
+        } else {
+            println!("  • Remove {}", openfang_dir.display());
+        }
+    }
+    if let Some(ref exe) = exe_path {
+        println!("  • Remove binary: {}", exe.display());
+    }
+    // Check cargo bin path
+    let cargo_bin = home.join(".cargo").join("bin").join(if cfg!(windows) {
+        "openfang.exe"
+    } else {
+        "openfang"
+    });
+    if cargo_bin.exists() && exe_path.as_ref().is_none_or(|e| *e != cargo_bin) {
+        println!("  • Remove cargo binary: {}", cargo_bin.display());
+    }
+    println!("  • Remove auto-start entries (if any)");
+    println!("  • Clean PATH from shell configs (if any)");
+    println!();
+
+    // Step 2: Confirm
+    if !confirm {
+        let answer = prompt_input("  Type 'uninstall' to confirm: ");
+        if answer.trim() != "uninstall" {
+            println!("  Cancelled.");
+            return;
+        }
+        println!();
+    }
+
+    // Step 3: Stop running daemon
+    if find_daemon().is_some() {
+        println!("  Stopping running daemon...");
+        cmd_stop();
+        // Give it a moment
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // Force kill if still alive
+        if find_daemon().is_some() {
+            if let Some(info) = read_daemon_info(&openfang_dir) {
+                force_kill_pid(info.pid);
+                let _ = std::fs::remove_file(openfang_dir.join("daemon.json"));
+            }
+        }
+    }
+
+    // Step 4: Remove auto-start entries
+    remove_autostart_entries(&home);
+
+    // Step 5: Clean PATH from shell configs
+    if let Some(ref exe) = exe_path {
+        if let Some(bin_dir) = exe.parent() {
+            clean_path_entries(&home, &bin_dir.to_string_lossy());
+        }
+    }
+
+    // Step 6: Remove ~/.openfang/ data
+    if openfang_dir.exists() {
+        if keep_config {
+            remove_dir_except_config(&openfang_dir);
+            ui::success("Removed data (kept config files)");
+        } else {
+            match std::fs::remove_dir_all(&openfang_dir) {
+                Ok(()) => ui::success(&format!("Removed {}", openfang_dir.display())),
+                Err(e) => ui::error(&format!(
+                    "Failed to remove {}: {e}",
+                    openfang_dir.display()
+                )),
+            }
+        }
+    }
+
+    // Step 7: Remove cargo bin copy if it exists and is separate from current exe
+    if cargo_bin.exists() && exe_path.as_ref().is_none_or(|e| *e != cargo_bin) {
+        match std::fs::remove_file(&cargo_bin) {
+            Ok(()) => ui::success(&format!("Removed {}", cargo_bin.display())),
+            Err(e) => ui::error(&format!(
+                "Failed to remove {}: {e}",
+                cargo_bin.display()
+            )),
+        }
+    }
+
+    // Step 8: Remove the binary itself (must be last)
+    if let Some(exe) = exe_path {
+        remove_self_binary(&exe);
+    }
+
+    println!();
+    ui::success("OpenFang has been uninstalled. Goodbye!");
+}
+
+/// Remove auto-start / launch-agent / systemd entries.
+#[allow(unused_variables)]
+fn remove_autostart_entries(home: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        // Windows: remove from HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+        let output = std::process::Command::new("reg")
+            .args([
+                "delete",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "OpenFang",
+                "/f",
+            ])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                ui::success("Removed Windows auto-start registry entry");
+            }
+            _ => {} // Entry didn't exist — that's fine
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let plist = home.join("Library/LaunchAgents/ai.openfang.desktop.plist");
+        if plist.exists() {
+            // Unload first
+            let _ = std::process::Command::new("launchctl")
+                .args(["unload", &plist.to_string_lossy()])
+                .output();
+            match std::fs::remove_file(&plist) {
+                Ok(()) => ui::success("Removed macOS launch agent"),
+                Err(e) => ui::error(&format!("Failed to remove launch agent: {e}")),
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let desktop_file = home.join(".config/autostart/OpenFang.desktop");
+        if desktop_file.exists() {
+            match std::fs::remove_file(&desktop_file) {
+                Ok(()) => ui::success("Removed Linux autostart entry"),
+                Err(e) => ui::error(&format!("Failed to remove autostart entry: {e}")),
+            }
+        }
+
+        // Also check for systemd user service
+        let service_file = home.join(".config/systemd/user/openfang.service");
+        if service_file.exists() {
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "disable", "--now", "openfang.service"])
+                .output();
+            match std::fs::remove_file(&service_file) {
+                Ok(()) => {
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--user", "daemon-reload"])
+                        .output();
+                    ui::success("Removed systemd user service");
+                }
+                Err(e) => ui::error(&format!("Failed to remove systemd service: {e}")),
+            }
+        }
+    }
+}
+
+/// Remove lines from shell config files that add openfang to PATH.
+#[allow(unused_variables)]
+fn clean_path_entries(home: &std::path::Path, openfang_dir: &str) {
+    #[cfg(not(windows))]
+    {
+        let shell_files = [
+            home.join(".bashrc"),
+            home.join(".bash_profile"),
+            home.join(".profile"),
+            home.join(".zshrc"),
+            home.join(".config/fish/config.fish"),
+        ];
+
+        for path in &shell_files {
+            if !path.exists() {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            let filtered: Vec<&str> = content
+                .lines()
+                .filter(|line| !is_openfang_path_line(line, openfang_dir))
+                .collect();
+            if filtered.len() < content.lines().count() {
+                let new_content = filtered.join("\n");
+                // Preserve trailing newline if original had one
+                let new_content = if content.ends_with('\n') {
+                    format!("{new_content}\n")
+                } else {
+                    new_content
+                };
+                if std::fs::write(path, &new_content).is_ok() {
+                    ui::success(&format!("Cleaned PATH from {}", path.display()));
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // Read User PATH via PowerShell, filter out openfang entries, write back
+        let output = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "[Environment]::GetEnvironmentVariable('PATH', 'User')",
+            ])
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                let current = String::from_utf8_lossy(&out.stdout);
+                let current = current.trim();
+                if !current.is_empty() {
+                    let dir_lower = openfang_dir.to_lowercase();
+                    let filtered: Vec<&str> = current
+                        .split(';')
+                        .filter(|entry| {
+                            let e = entry.trim().to_lowercase();
+                            !e.is_empty() && !e.contains("openfang") && !e.contains(&dir_lower)
+                        })
+                        .collect();
+                    if filtered.len() < current.split(';').count() {
+                        let new_path = filtered.join(";");
+                        let ps_cmd = format!(
+                            "[Environment]::SetEnvironmentVariable('PATH', '{}', 'User')",
+                            new_path.replace('\'', "''")
+                        );
+                        let result = std::process::Command::new("powershell")
+                            .args(["-NoProfile", "-Command", &ps_cmd])
+                            .output();
+                        if result.is_ok_and(|o| o.status.success()) {
+                            ui::success("Cleaned PATH from Windows user environment");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Returns true if a shell config line is an openfang PATH export.
+/// Must match BOTH an openfang reference AND a PATH-setting pattern.
+#[cfg(any(not(windows), test))]
+fn is_openfang_path_line(line: &str, openfang_dir: &str) -> bool {
+    let lower = line.to_lowercase();
+    let has_openfang = lower.contains("openfang") || lower.contains(&openfang_dir.to_lowercase());
+    if !has_openfang {
+        return false;
+    }
+    // Match common PATH-setting patterns
+    lower.contains("export path=")
+        || lower.contains("export path =")
+        || lower.starts_with("path=")
+        || lower.contains("set -gx path")
+        || lower.contains("fish_add_path")
+}
+
+/// Remove everything in ~/.openfang/ except config files.
+fn remove_dir_except_config(openfang_dir: &std::path::Path) {
+    let keep = ["config.toml", ".env", "secrets.env"];
+    let Ok(entries) = std::fs::read_dir(openfang_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if keep.contains(&name_str.as_ref()) {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Remove the currently-running binary.
+fn remove_self_binary(exe_path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        // On Unix, running binaries can be unlinked — the OS keeps the inode
+        // alive until the process exits.
+        match std::fs::remove_file(exe_path) {
+            Ok(()) => ui::success(&format!("Removed {}", exe_path.display())),
+            Err(e) => ui::error(&format!(
+                "Failed to remove binary {}: {e}",
+                exe_path.display()
+            )),
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // Windows locks running executables. Rename first, then spawn a
+        // detached process that waits briefly and deletes the renamed file.
+        let old_path = exe_path.with_extension("exe.old");
+        if std::fs::rename(exe_path, &old_path).is_err() {
+            ui::error(&format!(
+                "Could not rename binary for deferred deletion: {}",
+                exe_path.display()
+            ));
+            return;
+        }
+
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+        let del_cmd = format!(
+            "ping -n 3 127.0.0.1 >nul & del /f /q \"{}\"",
+            old_path.display()
+        );
+        let _ = std::process::Command::new("cmd.exe")
+            .args(["/C", &del_cmd])
+            .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+            .spawn();
+
+        ui::success(&format!("Removed {} (deferred cleanup)", exe_path.display()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -5657,5 +6438,45 @@ args = ["-y", "@modelcontextprotocol/server-github"]
             HookEvent::AgentLoopEnd,
         ];
         assert_eq!(events.len(), 4);
+    }
+
+    // --- Uninstall command unit tests ---
+
+    #[test]
+    fn test_uninstall_path_line_filter() {
+        use super::is_openfang_path_line;
+        let dir = "/home/user/.openfang/bin";
+
+        // Should match: openfang PATH exports
+        assert!(is_openfang_path_line(
+            r#"export PATH="$HOME/.openfang/bin:$PATH""#,
+            dir
+        ));
+        assert!(is_openfang_path_line(
+            r#"export PATH="/home/user/.openfang/bin:$PATH""#,
+            dir
+        ));
+        assert!(is_openfang_path_line(
+            "set -gx PATH $HOME/.openfang/bin $PATH",
+            dir
+        ));
+        assert!(is_openfang_path_line(
+            "fish_add_path $HOME/.openfang/bin",
+            dir
+        ));
+
+        // Should NOT match: unrelated PATH exports
+        assert!(!is_openfang_path_line(
+            r#"export PATH="$HOME/.cargo/bin:$PATH""#,
+            dir
+        ));
+        assert!(!is_openfang_path_line(
+            r#"export PATH="/usr/local/bin:$PATH""#,
+            dir
+        ));
+
+        // Should NOT match: openfang lines that aren't PATH-related
+        assert!(!is_openfang_path_line("# openfang config", dir));
+        assert!(!is_openfang_path_line("alias of=openfang", dir));
     }
 }

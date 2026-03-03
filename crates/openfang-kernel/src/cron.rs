@@ -234,9 +234,9 @@ impl CronScheduler {
             if meta.job.enabled && meta.job.next_run.map(|t| t <= now).unwrap_or(false) {
                 due.push(meta.job.clone());
                 // Pre-advance next_run so the job won't fire again on the next
-                // tick while it's still executing. record_success/record_failure
-                // will recompute it again after execution completes.
-                meta.job.next_run = Some(compute_next_run(&meta.job.schedule));
+                // tick while it's still executing. Use `now` as the base so the
+                // next fire time is computed strictly after the current moment.
+                meta.job.next_run = Some(compute_next_run_after(&meta.job.schedule, now));
             }
         }
         due
@@ -255,12 +255,9 @@ impl CronScheduler {
                 meta.job.last_run = Some(Utc::now());
                 meta.last_status = Some("ok".to_string());
                 meta.consecutive_errors = 0;
-                if meta.one_shot {
-                    true
-                } else {
-                    meta.job.next_run = Some(compute_next_run(&meta.job.schedule));
-                    false
-                }
+                // one_shot jobs get removed; recurring jobs keep the next_run
+                // already pre-advanced by due_jobs() — no recompute needed.
+                meta.one_shot
             } else {
                 return;
             }
@@ -277,7 +274,10 @@ impl CronScheduler {
     pub fn record_failure(&self, id: CronJobId, error_msg: &str) {
         if let Some(mut meta) = self.jobs.get_mut(&id) {
             meta.job.last_run = Some(Utc::now());
-            meta.last_status = Some(format!("error: {}", &error_msg[..error_msg.len().min(256)]));
+            meta.last_status = Some(format!(
+                "error: {}",
+                openfang_types::truncate_str(error_msg, 256)
+            ));
             meta.consecutive_errors += 1;
             if meta.consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
                 warn!(
@@ -287,7 +287,8 @@ impl CronScheduler {
                 );
                 meta.job.enabled = false;
             } else {
-                meta.job.next_run = Some(compute_next_run(&meta.job.schedule));
+                meta.job.next_run =
+                    Some(compute_next_run_after(&meta.job.schedule, Utc::now()));
             }
         }
     }
@@ -297,7 +298,7 @@ impl CronScheduler {
 // compute_next_run
 // ---------------------------------------------------------------------------
 
-/// Compute the next fire time for a schedule.
+/// Compute the next fire time for a schedule, based on `now`.
 ///
 /// - `At { at }` — returns `at` directly.
 /// - `Every { every_secs }` — returns `now + every_secs`.
@@ -306,9 +307,23 @@ impl CronScheduler {
 ///   6-field (`sec min hour dom month dow`) formats by converting to the
 ///   7-field format required by the `cron` crate.
 pub fn compute_next_run(schedule: &CronSchedule) -> chrono::DateTime<Utc> {
+    compute_next_run_after(schedule, Utc::now())
+}
+
+/// Compute the next fire time for a schedule, strictly after `after`.
+///
+/// Uses `after + 1 second` as the base time so the `cron` crate's
+/// inclusive `.after()` always returns a strictly future time. Without
+/// this offset, calling `compute_next_run` right after a job fires can
+/// return the same minute (or even the same second), causing the
+/// scheduler to re-fire immediately.
+pub fn compute_next_run_after(
+    schedule: &CronSchedule,
+    after: chrono::DateTime<Utc>,
+) -> chrono::DateTime<Utc> {
     match schedule {
         CronSchedule::At { at } => *at,
-        CronSchedule::Every { every_secs } => Utc::now() + Duration::seconds(*every_secs as i64),
+        CronSchedule::Every { every_secs } => after + Duration::seconds(*every_secs as i64),
         CronSchedule::Cron { expr, tz: _ } => {
             // Convert standard 5/6-field cron to 7-field for the `cron` crate.
             // Standard 5-field: min hour dom month dow
@@ -322,14 +337,17 @@ pub fn compute_next_run(schedule: &CronSchedule) -> chrono::DateTime<Utc> {
                 _ => expr.clone(),
             };
 
+            // Add 1 second so `.after()` (inclusive) skips the current second.
+            let base = after + Duration::seconds(1);
+
             match seven_field.parse::<cron::Schedule>() {
                 Ok(sched) => sched
-                    .upcoming(Utc)
+                    .after(&base)
                     .next()
-                    .unwrap_or_else(|| Utc::now() + Duration::hours(1)),
+                    .unwrap_or_else(|| after + Duration::hours(1)),
                 Err(e) => {
                     warn!("Failed to parse cron expression '{}': {}", expr, e);
-                    Utc::now() + Duration::hours(1)
+                    after + Duration::hours(1)
                 }
             }
         }
@@ -728,6 +746,27 @@ mod tests {
     }
 
     // -- error message truncation in record_failure -------------------------
+
+    #[test]
+    fn test_compute_next_run_after_skips_current_second() {
+        // A "every 4 hours" cron: next_run should be >= 4 hours from now,
+        // not in the same minute (the bug from #55).
+        let schedule = CronSchedule::Cron {
+            expr: "0 */4 * * *".into(),
+            tz: None,
+        };
+        let now = Utc::now();
+        let next = compute_next_run_after(&schedule, now);
+        // Must be strictly after `now` and at least ~1 hour away
+        // (the closest 4-hourly boundary is at least minutes away).
+        assert!(next > now, "next_run should be strictly after now");
+        let diff = next - now;
+        assert!(
+            diff.num_minutes() >= 1,
+            "Expected next_run at least 1 min away, got {} seconds",
+            diff.num_seconds()
+        );
+    }
 
     #[test]
     fn test_record_failure_truncates_long_error() {

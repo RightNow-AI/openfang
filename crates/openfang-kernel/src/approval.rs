@@ -181,6 +181,7 @@ mod tests {
             require_approval: vec!["file_write".to_string(), "file_delete".to_string()],
             timeout_secs: 30,
             auto_approve_autonomous: false,
+            auto_approve: false,
         };
         let mgr = ApprovalManager::new(policy);
         assert!(mgr.requires_approval("file_write"));
@@ -258,6 +259,7 @@ mod tests {
             require_approval: vec!["file_write".to_string()],
             timeout_secs: 120,
             auto_approve_autonomous: true,
+            auto_approve: false,
         };
         mgr.update_policy(new_policy);
 

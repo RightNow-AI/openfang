@@ -51,6 +51,10 @@ pub struct PromptContext {
     pub identity_md: Option<String>,
     /// HEARTBEAT.md content (autonomous agent checklist).
     pub heartbeat_md: Option<String>,
+    /// Peer agents visible to this agent: (name, state, model).
+    pub peer_agents: Vec<(String, String, String)>,
+    /// Current date/time string for temporal awareness.
+    pub current_date: Option<String>,
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -63,6 +67,11 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
 
     // Section 1 — Agent Identity (always present)
     sections.push(build_identity_section(ctx));
+
+    // Section 1.5 — Current Date/Time (always present when set)
+    if let Some(ref date) = ctx.current_date {
+        sections.push(format!("## Current Date\nToday is {date}."));
+    }
 
     // Section 2 — Tool Call Behavior (skip for subagents)
     if !ctx.is_subagent {
@@ -139,6 +148,11 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
         }
     }
 
+    // Section 9.5 — Peer Agent Awareness (skip for subagents)
+    if !ctx.is_subagent && !ctx.peer_agents.is_empty() {
+        sections.push(build_peer_agents_section(&ctx.agent_name, &ctx.peer_agents));
+    }
+
     // Section 10 — Safety & Oversight (skip for subagents)
     if !ctx.is_subagent {
         sections.push(SAFETY_SECTION.to_string());
@@ -147,17 +161,8 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
     // Section 11 — Operational Guidelines (always present)
     sections.push(OPERATIONAL_GUIDELINES.to_string());
 
-    // Section 12 — Canonical Context (skip for subagents)
-    if !ctx.is_subagent {
-        if let Some(ref canonical) = ctx.canonical_context {
-            if !canonical.is_empty() {
-                sections.push(format!(
-                    "## Previous Conversation Context\n{}",
-                    cap_str(canonical, 500)
-                ));
-            }
-        }
-    }
+    // Section 12 — Canonical Context moved to build_canonical_context_message()
+    // to keep the system prompt stable across turns for provider prompt caching.
 
     // Section 13 — Bootstrap Protocol (only on first-run, skip for subagents)
     if !ctx.is_subagent {
@@ -210,7 +215,13 @@ const TOOL_CALL_BEHAVIOR: &str = "\
 - Prefer action over narration. If you can answer by using a tool, do it.
 - When executing multiple sequential tool calls, batch them — don't output reasoning between each call.
 - If a tool returns useful results, present the KEY information, not the raw output.
-- Start with the answer, not meta-commentary about how you'll help.";
+- When web_fetch or web_search returns content, you MUST include the relevant data in your response. \
+Quote specific facts, numbers, or passages from the fetched content. Never say you fetched something \
+without sharing what you found.
+- Start with the answer, not meta-commentary about how you'll help.
+- IMPORTANT: If your instructions or persona mention a shell command, script path, or code snippet, \
+execute it via the appropriate tool call (shell_exec, file_write, etc.). Never output commands as \
+code blocks — always call the tool instead.";
 
 /// Build the grouped tools section (Section 3).
 pub fn build_tools_section(granted_tools: &[String]) -> String {
@@ -243,6 +254,21 @@ pub fn build_tools_section(granted_tools: &[String]) -> String {
         out.push_str(&descs.join(", "));
     }
     out
+}
+
+/// Build canonical context as a standalone user message (instead of system prompt).
+///
+/// This keeps the system prompt stable across turns, enabling provider prompt caching
+/// (Anthropic cache_control, etc.). The canonical context changes every turn, so
+/// injecting it in the system prompt caused 82%+ cache misses.
+pub fn build_canonical_context_message(ctx: &PromptContext) -> Option<String> {
+    if ctx.is_subagent {
+        return None;
+    }
+    ctx.canonical_context
+        .as_ref()
+        .filter(|c| !c.is_empty())
+        .map(|c| format!("[Previous conversation context]\n{}", cap_str(c, 500)))
 }
 
 /// Build the memory section (Section 4).
@@ -309,9 +335,10 @@ fn build_persona_section(
 
     if let Some(soul) = soul_md {
         if !soul.trim().is_empty() {
+            let sanitized = strip_code_blocks(soul);
             parts.push(format!(
                 "## Persona\nEmbody this identity in your tone and communication style. Be natural, not stiff or generic.\n{}",
-                cap_str(soul, 1000)
+                cap_str(&sanitized, 1000)
             ));
         }
     }
@@ -384,6 +411,24 @@ fn build_channel_section(channel: &str) -> String {
          You are responding via {channel}. Keep messages under {limit} chars.\n\
          {hints}"
     )
+}
+
+fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]) -> String {
+    let mut out = String::from(
+        "## Peer Agents\n\
+         You are part of a multi-agent system. These agents are running alongside you:\n",
+    );
+    for (name, state, model) in peers {
+        if name == self_name {
+            continue; // Don't list yourself
+        }
+        out.push_str(&format!("- **{}** ({}) — model: {}\n", name, state, model));
+    }
+    out.push_str(
+        "\nYou can communicate with them using `agent_send` (by name) and see all agents with `agent_list`. \
+         Delegate tasks to specialized agents when appropriate.",
+    );
+    out
 }
 
 /// Static safety section.
@@ -521,6 +566,30 @@ pub fn tool_hint(name: &str) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// Cap a string to `max_chars`, appending "..." if truncated.
+/// Strip markdown triple-backtick code blocks from content.
+///
+/// Prevents LLMs from copying code blocks as text output instead of making
+/// tool calls when SOUL.md contains command examples.
+fn strip_code_blocks(content: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut in_block = false;
+    for line in content.lines() {
+        if line.trim_start().starts_with("```") {
+            in_block = !in_block;
+            continue;
+        }
+        if !in_block {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    // Collapse multiple blank lines left by stripped blocks
+    while result.contains("\n\n\n") {
+        result = result.replace("\n\n\n", "\n\n");
+    }
+    result.trim().to_string()
+}
+
 fn cap_str(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_string()
@@ -791,13 +860,18 @@ mod tests {
     }
 
     #[test]
-    fn test_canonical_context() {
+    fn test_canonical_context_not_in_system_prompt() {
         let mut ctx = basic_ctx();
         ctx.canonical_context =
             Some("User was discussing Rust async patterns last time.".to_string());
         let prompt = build_system_prompt(&ctx);
-        assert!(prompt.contains("## Previous Conversation Context"));
-        assert!(prompt.contains("Rust async patterns"));
+        // Canonical context should NOT be in system prompt (moved to user message)
+        assert!(!prompt.contains("## Previous Conversation Context"));
+        assert!(!prompt.contains("Rust async patterns"));
+        // But should be available via build_canonical_context_message
+        let msg = build_canonical_context_message(&ctx);
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("Rust async patterns"));
     }
 
     #[test]
@@ -806,7 +880,9 @@ mod tests {
         ctx.is_subagent = true;
         ctx.canonical_context = Some("Previous context here.".to_string());
         let prompt = build_system_prompt(&ctx);
-        assert!(!prompt.contains("## Previous Conversation Context"));
+        assert!(!prompt.contains("Previous Conversation Context"));
+        // Should also be None from build_canonical_context_message
+        assert!(build_canonical_context_message(&ctx).is_none());
     }
 
     #[test]

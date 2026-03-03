@@ -893,11 +893,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             msg.push_str(&format!("  {} — {}\n", card.name, url));
             let desc = &card.description;
             if !desc.is_empty() {
-                let short = if desc.len() > 60 {
-                    &desc[..60]
-                } else {
-                    desc.as_str()
-                };
+                let short = openfang_types::truncate_str(desc, 60);
                 msg.push_str(&format!("    {short}\n"));
             }
         }
@@ -935,30 +931,6 @@ fn parse_trigger_pattern(s: &str) -> Option<openfang_kernel::triggers::TriggerPa
         "memory" => Some(TriggerPattern::MemoryUpdate),
         "all" => Some(TriggerPattern::All),
         _ => None,
-    }
-}
-
-/// Resolve a default agent by name — find running or spawn from manifest.
-async fn resolve_default_agent(
-    handle: &KernelBridgeAdapter,
-    name: &str,
-    router: &mut AgentRouter,
-    adapter_name: &str,
-) {
-    match handle.find_agent_by_name(name).await {
-        Ok(Some(agent_id)) => {
-            router.set_default(agent_id);
-            info!("{adapter_name} default agent: {name} ({agent_id})");
-        }
-        _ => match handle.spawn_agent_by_name(name).await {
-            Ok(agent_id) => {
-                router.set_default(agent_id);
-                info!("{adapter_name}: spawned default agent {name} ({agent_id})");
-            }
-            Err(e) => {
-                warn!("{adapter_name}: could not find or spawn default agent '{name}': {e}");
-            }
-        },
     }
 }
 
@@ -1549,12 +1521,40 @@ pub async fn start_channel_bridge_with_config(
         return (None, Vec::new());
     }
 
-    // Resolve default agent from first adapter that has one configured
+    // Resolve per-channel default agents AND set the first one as system-wide fallback
     let mut router = AgentRouter::new();
-    for (_, default_agent) in &adapters {
+    let mut system_default_set = false;
+    for (adapter, default_agent) in &adapters {
         if let Some(ref name) = default_agent {
-            resolve_default_agent(&handle, name, &mut router, "Channel bridge").await;
-            break; // Only need one default
+            // Resolve agent name to ID
+            let agent_id = match handle.find_agent_by_name(name).await {
+                Ok(Some(id)) => Some(id),
+                _ => match handle.spawn_agent_by_name(name).await {
+                    Ok(id) => Some(id),
+                    Err(e) => {
+                        warn!(
+                            "{}: could not find or spawn default agent '{}': {e}",
+                            adapter.name(),
+                            name
+                        );
+                        None
+                    }
+                },
+            };
+            if let Some(agent_id) = agent_id {
+                // Register per-channel default
+                let channel_key = format!("{:?}", adapter.channel_type());
+                info!(
+                    "{} default agent: {name} ({agent_id}) [channel: {channel_key}]",
+                    adapter.name()
+                );
+                router.set_channel_default(channel_key, agent_id);
+                // First configured default also becomes system-wide fallback
+                if !system_default_set {
+                    router.set_default(agent_id);
+                    system_default_set = true;
+                }
+            }
         }
     }
 

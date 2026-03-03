@@ -66,6 +66,9 @@ pub enum ContentBlock {
     ToolResult {
         /// The tool_use ID this result corresponds to.
         tool_use_id: String,
+        /// The tool name (for Gemini FunctionResponse). Empty for legacy sessions.
+        #[serde(default)]
+        tool_name: String,
         /// The result content.
         content: String,
         /// Whether the tool execution errored.

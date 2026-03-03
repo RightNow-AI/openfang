@@ -365,10 +365,10 @@ impl LlmDriver for AnthropicDriver {
                     let mut event_type = String::new();
                     let mut data = String::new();
                     for line in event_text.lines() {
-                        if let Some(et) = line.strip_prefix("event: ") {
-                            event_type = et.to_string();
-                        } else if let Some(d) = line.strip_prefix("data: ") {
-                            data = d.to_string();
+                        if let Some(et) = line.strip_prefix("event:") {
+                            event_type = et.trim_start().to_string();
+                        } else if let Some(d) = line.strip_prefix("data:") {
+                            data = d.trim_start().to_string();
                         }
                     }
 
@@ -576,6 +576,7 @@ fn convert_message(msg: &Message) -> ApiMessage {
                         tool_use_id,
                         content,
                         is_error,
+                        ..
                     } => Some(ApiContentBlock::ToolResult {
                         tool_use_id: tool_use_id.clone(),
                         content: content.clone(),

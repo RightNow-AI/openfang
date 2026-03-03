@@ -213,10 +213,17 @@ fn convert_messages(
                                 },
                             });
                         }
-                        ContentBlock::ToolResult { content, .. } => {
+                        ContentBlock::ToolResult {
+                            content, tool_name, ..
+                        } => {
+                            let fn_name = if tool_name.is_empty() {
+                                "unknown_function".to_string()
+                            } else {
+                                tool_name.clone()
+                            };
                             parts.push(GeminiPart::FunctionResponse {
                                 function_response: GeminiFunctionResponseData {
-                                    name: String::new(),
+                                    name: fn_name,
                                     response: serde_json::json!({ "result": content }),
                                 },
                             });
@@ -518,10 +525,10 @@ impl LlmDriver for GeminiDriver {
                     let event_text = buffer[..pos].to_string();
                     buffer = buffer[pos + 2..].to_string();
 
-                    // Extract the data line
+                    // Extract the data line (handle both "data: " and "data:" formats)
                     let data = event_text
                         .lines()
-                        .find_map(|line| line.strip_prefix("data: "))
+                        .find_map(|line| line.strip_prefix("data:").map(|d| d.trim_start()))
                         .unwrap_or("");
 
                     if data.is_empty() {

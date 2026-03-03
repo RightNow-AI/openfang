@@ -38,7 +38,7 @@ pub struct DiscordAdapter {
     /// SECURITY: Bot token is zeroized on drop to prevent memory disclosure.
     token: Zeroizing<String>,
     client: reqwest::Client,
-    allowed_guilds: Vec<u64>,
+    allowed_guilds: Vec<String>,
     intents: u64,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
@@ -51,7 +51,7 @@ pub struct DiscordAdapter {
 }
 
 impl DiscordAdapter {
-    pub fn new(token: String, allowed_guilds: Vec<u64>, intents: u64) -> Self {
+    pub fn new(token: String, allowed_guilds: Vec<String>, intents: u64) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             token: Zeroizing::new(token),
@@ -422,7 +422,7 @@ impl ChannelAdapter for DiscordAdapter {
 async fn parse_discord_message(
     d: &serde_json::Value,
     bot_user_id: &Arc<RwLock<Option<String>>>,
-    allowed_guilds: &[u64],
+    allowed_guilds: &[String],
 ) -> Option<ChannelMessage> {
     let author = d.get("author")?;
     let author_id = author["id"].as_str()?;
@@ -442,8 +442,7 @@ async fn parse_discord_message(
     // Filter by allowed guilds
     if !allowed_guilds.is_empty() {
         if let Some(guild_id) = d["guild_id"].as_str() {
-            let gid: u64 = guild_id.parse().unwrap_or(0);
-            if !allowed_guilds.contains(&gid) {
+            if !allowed_guilds.iter().any(|g| g == guild_id) {
                 return None;
             }
         }
@@ -587,11 +586,11 @@ mod tests {
         });
 
         // Not in allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &[111, 222]).await;
+        let msg = parse_discord_message(&d, &bot_id, &["111".into(), "222".into()]).await;
         assert!(msg.is_none());
 
         // In allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &[999]).await;
+        let msg = parse_discord_message(&d, &bot_id, &["999".into()]).await;
         assert!(msg.is_some());
     }
 
@@ -685,7 +684,7 @@ mod tests {
 
     #[test]
     fn test_discord_adapter_creation() {
-        let adapter = DiscordAdapter::new("test-token".to_string(), vec![123, 456], 33280);
+        let adapter = DiscordAdapter::new("test-token".to_string(), vec!["123".to_string(), "456".to_string()], 37376);
         assert_eq!(adapter.name(), "discord");
         assert_eq!(adapter.channel_type(), ChannelType::Discord);
     }

@@ -408,7 +408,7 @@ impl State {
 
         for m in &models {
             match m.tier {
-                ModelTier::Fast | ModelTier::Local => {
+                ModelTier::Fast | ModelTier::Local | ModelTier::Custom => {
                     if fast.is_none() {
                         fast = Some(&m.id);
                     }
@@ -461,6 +461,7 @@ fn tier_label(tier: ModelTier) -> &'static str {
         ModelTier::Balanced => "balanced",
         ModelTier::Fast => "fast",
         ModelTier::Local => "local",
+        ModelTier::Custom => "custom",
     }
 }
 

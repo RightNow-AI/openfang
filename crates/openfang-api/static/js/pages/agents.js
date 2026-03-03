@@ -54,6 +54,15 @@ function agentsPage() {
     filesLoading: false,
     configForm: {},
     configSaving: false,
+    // -- Tool filters --
+    toolFilters: { tool_allowlist: [], tool_blocklist: [] },
+    toolFiltersLoading: false,
+    newAllowTool: '',
+    newBlockTool: '',
+    // -- Model switch --
+    editingModel: false,
+    newModelValue: '',
+    modelSaving: false,
 
     // -- Templates state --
     tplTemplates: [],
@@ -556,6 +565,88 @@ function agentsPage() {
         }
       } catch(e) {
         OpenFangToast.error('Failed to spawn from template: ' + e.message);
+      }
+    },
+
+    // ── Clear agent history ──
+    async clearHistory(agent) {
+      var self = this;
+      OpenFangToast.confirm('Clear History', 'Clear all conversation history for "' + agent.name + '"? This cannot be undone.', async function() {
+        try {
+          await OpenFangAPI.del('/api/agents/' + agent.id + '/history');
+          OpenFangToast.success('History cleared for "' + agent.name + '"');
+        } catch(e) {
+          OpenFangToast.error('Failed to clear history: ' + e.message);
+        }
+      });
+    },
+
+    // ── Model switch ──
+    async changeModel() {
+      if (!this.detailAgent || !this.newModelValue.trim()) return;
+      this.modelSaving = true;
+      try {
+        await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: this.newModelValue.trim() });
+        OpenFangToast.success('Model changed (memory reset)');
+        this.editingModel = false;
+        await Alpine.store('app').refreshAgents();
+        // Refresh detailAgent
+        var agents = Alpine.store('app').agents;
+        for (var i = 0; i < agents.length; i++) {
+          if (agents[i].id === this.detailAgent.id) { this.detailAgent = agents[i]; break; }
+        }
+      } catch(e) {
+        OpenFangToast.error('Failed to change model: ' + e.message);
+      }
+      this.modelSaving = false;
+    },
+
+    // ── Tool filters ──
+    async loadToolFilters() {
+      if (!this.detailAgent) return;
+      this.toolFiltersLoading = true;
+      try {
+        this.toolFilters = await OpenFangAPI.get('/api/agents/' + this.detailAgent.id + '/tools');
+      } catch(e) {
+        this.toolFilters = { tool_allowlist: [], tool_blocklist: [] };
+      }
+      this.toolFiltersLoading = false;
+    },
+
+    addAllowTool() {
+      var t = this.newAllowTool.trim();
+      if (t && this.toolFilters.tool_allowlist.indexOf(t) === -1) {
+        this.toolFilters.tool_allowlist.push(t);
+        this.newAllowTool = '';
+        this.saveToolFilters();
+      }
+    },
+
+    removeAllowTool(tool) {
+      this.toolFilters.tool_allowlist = this.toolFilters.tool_allowlist.filter(function(t) { return t !== tool; });
+      this.saveToolFilters();
+    },
+
+    addBlockTool() {
+      var t = this.newBlockTool.trim();
+      if (t && this.toolFilters.tool_blocklist.indexOf(t) === -1) {
+        this.toolFilters.tool_blocklist.push(t);
+        this.newBlockTool = '';
+        this.saveToolFilters();
+      }
+    },
+
+    removeBlockTool(tool) {
+      this.toolFilters.tool_blocklist = this.toolFilters.tool_blocklist.filter(function(t) { return t !== tool; });
+      this.saveToolFilters();
+    },
+
+    async saveToolFilters() {
+      if (!this.detailAgent) return;
+      try {
+        await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/tools', this.toolFilters);
+      } catch(e) {
+        OpenFangToast.error('Failed to update tool filters: ' + e.message);
       }
     },
 

@@ -103,11 +103,17 @@ pub fn recover_from_overflow(
                 if let ContentBlock::ToolResult { content, .. } = block {
                     if content.len() > tool_truncation_limit {
                         let keep = tool_truncation_limit.saturating_sub(80);
+                        // Find a valid char boundary at or before `keep`
+                        let safe_keep = if content.is_char_boundary(keep) {
+                            keep
+                        } else {
+                            content[..keep].char_indices().next_back().map(|(i, _)| i).unwrap_or(0)
+                        };
                         *content = format!(
                             "{}\n\n[OVERFLOW RECOVERY: truncated from {} to {} chars]",
-                            &content[..keep],
+                            &content[..safe_keep],
                             content.len(),
-                            keep
+                            safe_keep
                         );
                         truncated += 1;
                     }
@@ -202,6 +208,7 @@ mod tests {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
+                    tool_name: String::new(),
                     content: big_result.clone(),
                     is_error: false,
                 }]),
@@ -210,6 +217,7 @@ mod tests {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "t2".to_string(),
+                    tool_name: String::new(),
                     content: big_result,
                     is_error: false,
                 }]),

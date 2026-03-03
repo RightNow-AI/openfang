@@ -29,6 +29,7 @@ hex = { workspace = true }
 zeroize = { workspace = true }
 dashmap = { workspace = true }
 regex-lite = { workspace = true }
+tokio-tungstenite = "0.24"
 
 [dev-dependencies]
 tokio-test = { workspace = true }

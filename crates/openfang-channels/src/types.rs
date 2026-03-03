@@ -278,8 +278,9 @@ pub fn split_message(text: &str, max_len: usize) -> Vec<&str> {
             chunks.push(remaining);
             break;
         }
-        // Try to split at a newline near the boundary
-        let split_at = remaining[..max_len].rfind('\n').unwrap_or(max_len);
+        // Try to split at a newline near the boundary (UTF-8 safe)
+        let safe_end = openfang_types::truncate_str(remaining, max_len).len();
+        let split_at = remaining[..safe_end].rfind('\n').unwrap_or(safe_end);
         let (chunk, rest) = remaining.split_at(split_at);
         chunks.push(chunk);
         // Skip the newline (and optional \r) we split on

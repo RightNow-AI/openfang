@@ -76,6 +76,7 @@ async fn start_test_server_with_provider(
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+        clawhub_cache: dashmap::DashMap::new(),
     });
 
     let app = Router::new()
@@ -702,6 +703,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+        clawhub_cache: dashmap::DashMap::new(),
     });
 
     let api_key_state = state.kernel.config.api_key.clone();

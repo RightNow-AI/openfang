@@ -439,6 +439,6 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}\u{2026}", &s[..max - 1])
+        format!("{}\u{2026}", openfang_types::truncate_str(s, max.saturating_sub(1)))
     }
 }

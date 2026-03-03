@@ -373,10 +373,15 @@ async fn dispatch_message(
 
     // Fetch per-channel overrides (if configured)
     let overrides = handle.channel_overrides(ct_str).await;
+    let channel_default_format = match ct_str {
+        "telegram" => OutputFormat::TelegramHtml,
+        "slack" => OutputFormat::SlackMrkdwn,
+        _ => OutputFormat::Markdown,
+    };
     let output_format = overrides
         .as_ref()
         .and_then(|o| o.output_format)
-        .unwrap_or(OutputFormat::Markdown);
+        .unwrap_or(channel_default_format);
     let threading_enabled = overrides.as_ref().map(|o| o.threading).unwrap_or(false);
     let thread_id = if threading_enabled {
         message.thread_id.as_deref()

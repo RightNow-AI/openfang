@@ -230,6 +230,21 @@ impl HandRegistry {
             .collect())
     }
 
+    /// Update config for an active hand instance.
+    pub fn update_config(
+        &self,
+        instance_id: Uuid,
+        config: HashMap<String, serde_json::Value>,
+    ) -> HandResult<()> {
+        let mut entry = self
+            .instances
+            .get_mut(&instance_id)
+            .ok_or(HandError::InstanceNotFound(instance_id))?;
+        entry.config = config;
+        entry.updated_at = chrono::Utc::now();
+        Ok(())
+    }
+
     /// Mark an instance as errored.
     pub fn set_error(&self, instance_id: Uuid, message: String) -> HandResult<()> {
         let mut entry = self
