@@ -44,6 +44,214 @@ impl OpenAIDriver {
         self.extra_headers = headers;
         self
     }
+
+    fn build_responses_input(request: &CompletionRequest) -> String {
+        let mut lines = Vec::new();
+        for msg in &request.messages {
+            let role = match msg.role {
+                Role::System => "system",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+            };
+
+            match &msg.content {
+                MessageContent::Text(text) => {
+                    if !text.trim().is_empty() {
+                        lines.push(format!("{role}: {text}"));
+                    }
+                }
+                MessageContent::Blocks(blocks) => {
+                    let mut parts = Vec::new();
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text, .. } => {
+                                if !text.trim().is_empty() {
+                                    parts.push(text.clone());
+                                }
+                            }
+                            ContentBlock::ToolUse { name, input, .. } => {
+                                parts.push(format!(
+                                    "[tool_use:{name}] {}",
+                                    serde_json::to_string(input).unwrap_or_default()
+                                ));
+                            }
+                            ContentBlock::ToolResult { content, .. } => {
+                                parts.push(format!("[tool_result] {content}"));
+                            }
+                            ContentBlock::Image { .. } => {
+                                parts.push("[image omitted]".to_string());
+                            }
+                            ContentBlock::Thinking { .. } => {}
+                            _ => {}
+                        }
+                    }
+                    if !parts.is_empty() {
+                        lines.push(format!("{role}: {}", parts.join("\n")));
+                    }
+                }
+            }
+        }
+        lines.join("\n\n")
+    }
+
+    async fn complete_via_responses(
+        &self,
+        request: &CompletionRequest,
+        api_model: &str,
+    ) -> Result<CompletionResponse, LlmError> {
+        let instructions = request
+            .system
+            .clone()
+            .unwrap_or_else(|| "You are a helpful assistant.".to_string());
+        let input = Self::build_responses_input(request);
+        let reasoning =
+            configured_reasoning_effort(api_model).map(|effort| ResponsesReasoning { effort });
+
+        let tools: Vec<ResponsesTool> = request
+            .tools
+            .iter()
+            .map(|t| ResponsesTool {
+                tool_type: "function".to_string(),
+                name: t.name.clone(),
+                description: t.description.clone(),
+                parameters: openfang_types::tool::normalize_schema_for_provider(
+                    &t.input_schema,
+                    "openai",
+                ),
+            })
+            .collect();
+
+        let tool_choice = if tools.is_empty() {
+            None
+        } else {
+            Some(serde_json::json!("auto"))
+        };
+
+        let responses_request = ResponsesRequest {
+            model: api_model.to_string(),
+            instructions,
+            input,
+            reasoning,
+            max_output_tokens: Some(request.max_tokens),
+            temperature: Some(request.temperature),
+            tools,
+            tool_choice,
+            stream: false,
+        };
+
+        let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
+        debug!(url = %url, "Sending OpenAI Responses API request");
+
+        let mut req_builder = self
+            .client
+            .post(&url)
+            .header("content-type", "application/json")
+            .json(&responses_request);
+
+        if !self.api_key.as_str().is_empty() {
+            req_builder =
+                req_builder.header("authorization", format!("Bearer {}", self.api_key.as_str()));
+        }
+        for (k, v) in &self.extra_headers {
+            req_builder = req_builder.header(k, v);
+        }
+
+        let resp = req_builder
+            .send()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Api {
+                status,
+                message: body,
+            });
+        }
+
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
+        let responses: ResponsesResponse =
+            serde_json::from_str(&body).map_err(|e| LlmError::Parse(e.to_string()))?;
+
+        let mut content = Vec::new();
+        let mut tool_calls = Vec::new();
+
+        for (idx, item) in responses.output.into_iter().enumerate() {
+            match item.item_type.as_str() {
+                "message" => {
+                    let text = item
+                        .content
+                        .into_iter()
+                        .filter(|part| part.item_type == "output_text")
+                        .filter_map(|part| part.text)
+                        .collect::<Vec<_>>()
+                        .join("");
+                    if !text.is_empty() {
+                        content.push(ContentBlock::Text {
+                            text,
+                            provider_metadata: None,
+                        });
+                    }
+                }
+                "output_text" => {
+                    if let Some(text) = item.text {
+                        if !text.is_empty() {
+                            content.push(ContentBlock::Text {
+                                text,
+                                provider_metadata: None,
+                            });
+                        }
+                    }
+                }
+                "function_call" => {
+                    let id = item
+                        .call_id
+                        .or(item.id)
+                        .unwrap_or_else(|| format!("responses_tool_{idx}"));
+                    let name = item.name.unwrap_or_else(|| "tool".to_string());
+                    let input: serde_json::Value = item
+                        .arguments
+                        .as_deref()
+                        .and_then(|v| serde_json::from_str(v).ok())
+                        .unwrap_or_default();
+
+                    content.push(ContentBlock::ToolUse {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: input.clone(),
+                        provider_metadata: None,
+                    });
+                    tool_calls.push(ToolCall { id, name, input });
+                }
+                _ => {}
+            }
+        }
+
+        let stop_reason = if tool_calls.is_empty() {
+            StopReason::EndTurn
+        } else {
+            StopReason::ToolUse
+        };
+
+        let usage = responses
+            .usage
+            .map(|u| TokenUsage {
+                input_tokens: u.input_tokens.unwrap_or(0),
+                output_tokens: u.output_tokens.unwrap_or(0),
+            })
+            .unwrap_or_default();
+
+        Ok(CompletionResponse {
+            content,
+            stop_reason,
+            tool_calls,
+            usage,
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +312,46 @@ fn rejects_temperature(model: &str) -> bool {
 fn temperature_must_be_one(model: &str) -> bool {
     let m = model.to_lowercase();
     m.starts_with("kimi-k2") || m == "kimi-k2.5" || m == "kimi-k2.5-0711"
+}
+
+/// Some providers expose reasoning-only models behind the Responses API.
+/// We route known models to `/responses` while keeping chat/completions unchanged.
+fn should_use_responses_api(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.starts_with("gpt-5.3-codex")
+}
+
+fn resolve_model_and_format(model: &str) -> (String, bool) {
+    let trimmed = model.trim();
+    if let Some(actual_model) = trimmed.strip_prefix("openai-responses/") {
+        return (actual_model.to_string(), true);
+    }
+    (trimmed.to_string(), should_use_responses_api(trimmed))
+}
+
+fn reasoning_effort_from_model(model: &str) -> Option<String> {
+    let m = model.to_lowercase();
+    if m.contains("xhigh") {
+        return Some("xhigh".to_string());
+    }
+    if m.ends_with("-high") {
+        return Some("high".to_string());
+    }
+    if m.ends_with("-medium") {
+        return Some("medium".to_string());
+    }
+    if m.ends_with("-low") {
+        return Some("low".to_string());
+    }
+    None
+}
+
+fn configured_reasoning_effort(model: &str) -> Option<String> {
+    std::env::var("OPENAI_REASONING_EFFORT")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| reasoning_effort_from_model(model))
 }
 
 #[derive(Debug, Serialize)]
@@ -198,9 +446,89 @@ struct OaiUsage {
     completion_tokens: u64,
 }
 
+#[derive(Debug, Serialize)]
+struct ResponsesRequest {
+    model: String,
+    instructions: String,
+    input: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ResponsesReasoning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<ResponsesTool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ResponsesReasoning {
+    effort: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ResponsesTool {
+    #[serde(rename = "type")]
+    tool_type: String,
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesResponse {
+    #[serde(default)]
+    output: Vec<ResponsesOutputItem>,
+    #[serde(default)]
+    usage: Option<ResponsesUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesOutputItem {
+    #[serde(rename = "type")]
+    item_type: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    call_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    content: Vec<ResponsesContentItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesContentItem {
+    #[serde(rename = "type")]
+    item_type: String,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesUsage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+}
+
 #[async_trait]
 impl LlmDriver for OpenAIDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        let (api_model, use_responses) = resolve_model_and_format(&request.model);
+        if use_responses {
+            return self.complete_via_responses(&request, &api_model).await;
+        }
+
         let mut oai_messages: Vec<OaiMessage> = Vec::new();
 
         // Add system message if present
@@ -260,9 +588,11 @@ impl LlmDriver for OpenAIDriver {
                                 has_tool_results = true;
                                 oai_messages.push(OaiMessage {
                                     role: "tool".to_string(),
-                                    content: Some(OaiMessageContent::Text(
-                                        if content.is_empty() { "(empty)".to_string() } else { content.clone() }
-                                    )),
+                                    content: Some(OaiMessageContent::Text(if content.is_empty() {
+                                        "(empty)".to_string()
+                                    } else {
+                                        content.clone()
+                                    })),
                                     tool_calls: None,
                                     tool_call_id: Some(tool_use_id.clone()),
                                     reasoning_content: None,
@@ -298,7 +628,9 @@ impl LlmDriver for OpenAIDriver {
                     for block in blocks {
                         match block {
                             ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
-                            ContentBlock::ToolUse { id, name, input, .. } => {
+                            ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => {
                                 tool_calls.push(OaiToolCall {
                                     id: id.clone(),
                                     call_type: "function".to_string(),
@@ -334,7 +666,9 @@ impl LlmDriver for OpenAIDriver {
                             Some(tool_calls)
                         },
                         tool_call_id: None,
-                        reasoning_content: if has_tool_calls && self.kimi_needs_reasoning_content(&request.model) {
+                        reasoning_content: if has_tool_calls
+                            && self.kimi_needs_reasoning_content(&request.model)
+                        {
                             Some(String::new())
                         } else {
                             None
@@ -367,13 +701,13 @@ impl LlmDriver for OpenAIDriver {
             Some(serde_json::json!("auto"))
         };
 
-        let (mt, mct) = if uses_completion_tokens(&request.model) {
+        let (mt, mct) = if uses_completion_tokens(&api_model) {
             (None, Some(request.max_tokens))
         } else {
             (Some(request.max_tokens), None)
         };
         let mut oai_request = OaiRequest {
-            model: request.model.clone(),
+            model: api_model,
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
@@ -483,9 +817,16 @@ impl LlmDriver for OpenAIDriver {
 
                 // Auto-cap max_tokens when model rejects our value (e.g. Groq Maverick limit 8192)
                 if status == 400 && body.contains("max_tokens") && attempt < max_retries {
-                    let current = oai_request.max_tokens.or(oai_request.max_completion_tokens).unwrap_or(4096);
+                    let current = oai_request
+                        .max_tokens
+                        .or(oai_request.max_completion_tokens)
+                        .unwrap_or(4096);
                     let cap = extract_max_tokens_limit(&body).unwrap_or(current / 2);
-                    warn!(old = current, new = cap, "Auto-capping max_tokens to model limit");
+                    warn!(
+                        old = current,
+                        new = cap,
+                        "Auto-capping max_tokens to model limit"
+                    );
                     if oai_request.max_completion_tokens.is_some() {
                         oai_request.max_completion_tokens = Some(cap);
                     } else {
@@ -542,7 +883,10 @@ impl LlmDriver for OpenAIDriver {
             // (DeepSeek-R1, Qwen3, etc. via LM Studio/Ollama)
             if let Some(ref reasoning) = choice.message.reasoning_content {
                 if !reasoning.is_empty() {
-                    debug!(len = reasoning.len(), "Captured reasoning_content from response");
+                    debug!(
+                        len = reasoning.len(),
+                        "Captured reasoning_content from response"
+                    );
                     content.push(ContentBlock::Thinking {
                         thinking: reasoning.clone(),
                     });
@@ -563,7 +907,10 @@ impl LlmDriver for OpenAIDriver {
                         }
                     }
                     if !cleaned.is_empty() {
-                        content.push(ContentBlock::Text { text: cleaned, provider_metadata: None });
+                        content.push(ContentBlock::Text {
+                            text: cleaned,
+                            provider_metadata: None,
+                        });
                     }
                 }
             }
@@ -571,17 +918,30 @@ impl LlmDriver for OpenAIDriver {
             // If we have reasoning but no text content and no tool calls,
             // synthesize a brief text block so the agent loop doesn't treat
             // this as an empty response.
-            let has_text = content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
-            let has_thinking = content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. }));
+            let has_text = content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { .. }));
+            let has_thinking = content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Thinking { .. }));
             if has_thinking && !has_text && choice.message.tool_calls.is_none() {
                 // Extract the last sentence or line from the thinking as a response
-                let thinking_text = content.iter().find_map(|b| match b {
-                    ContentBlock::Thinking { thinking } => Some(thinking.as_str()),
-                    _ => None,
-                }).unwrap_or("");
+                let thinking_text = content
+                    .iter()
+                    .find_map(|b| match b {
+                        ContentBlock::Thinking { thinking } => Some(thinking.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("");
                 let summary = extract_thinking_summary(thinking_text);
-                debug!(summary_len = summary.len(), "Synthesizing text from thinking-only response");
-                content.push(ContentBlock::Text { text: summary, provider_metadata: None });
+                debug!(
+                    summary_len = summary.len(),
+                    "Synthesizing text from thinking-only response"
+                );
+                content.push(ContentBlock::Text {
+                    text: summary,
+                    provider_metadata: None,
+                });
             }
 
             if let Some(calls) = choice.message.tool_calls {
@@ -628,7 +988,9 @@ impl LlmDriver for OpenAIDriver {
             // non-zero output_tokens so the agent loop doesn't misclassify
             // this as a "silent failure" and loop unnecessarily.
             if !content.is_empty() && usage.input_tokens == 0 && usage.output_tokens == 0 {
-                debug!("Response has content but no usage stats — setting synthetic output_tokens=1");
+                debug!(
+                    "Response has content but no usage stats — setting synthetic output_tokens=1"
+                );
                 usage.output_tokens = 1;
             }
 
@@ -651,6 +1013,26 @@ impl LlmDriver for OpenAIDriver {
         request: CompletionRequest,
         tx: tokio::sync::mpsc::Sender<StreamEvent>,
     ) -> Result<CompletionResponse, LlmError> {
+        let (api_model, use_responses) = resolve_model_and_format(&request.model);
+        if use_responses {
+            let response = self.complete_via_responses(&request, &api_model).await?;
+            let text = response.text();
+            if !text.is_empty() {
+                let _ = tx
+                    .send(StreamEvent::TextDelta {
+                        text: text.to_string(),
+                    })
+                    .await;
+            }
+            let _ = tx
+                .send(StreamEvent::ContentComplete {
+                    stop_reason: response.stop_reason,
+                    usage: response.usage,
+                })
+                .await;
+            return Ok(response);
+        }
+
         // Build request (same as complete but with stream: true)
         let mut oai_messages: Vec<OaiMessage> = Vec::new();
 
@@ -705,9 +1087,11 @@ impl LlmDriver for OpenAIDriver {
                         {
                             oai_messages.push(OaiMessage {
                                 role: "tool".to_string(),
-                                content: Some(OaiMessageContent::Text(
-                                    if content.is_empty() { "(empty)".to_string() } else { content.clone() }
-                                )),
+                                content: Some(OaiMessageContent::Text(if content.is_empty() {
+                                    "(empty)".to_string()
+                                } else {
+                                    content.clone()
+                                })),
                                 tool_calls: None,
                                 tool_call_id: Some(tool_use_id.clone()),
                                 reasoning_content: None,
@@ -721,7 +1105,9 @@ impl LlmDriver for OpenAIDriver {
                     for block in blocks {
                         match block {
                             ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
-                            ContentBlock::ToolUse { id, name, input, .. } => {
+                            ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => {
                                 tool_calls_out.push(OaiToolCall {
                                     id: id.clone(),
                                     call_type: "function".to_string(),
@@ -753,7 +1139,9 @@ impl LlmDriver for OpenAIDriver {
                             Some(tool_calls_out)
                         },
                         tool_call_id: None,
-                        reasoning_content: if has_tool_calls && self.kimi_needs_reasoning_content(&request.model) {
+                        reasoning_content: if has_tool_calls
+                            && self.kimi_needs_reasoning_content(&request.model)
+                        {
                             Some(String::new())
                         } else {
                             None
@@ -786,13 +1174,13 @@ impl LlmDriver for OpenAIDriver {
             Some(serde_json::json!("auto"))
         };
 
-        let (mt, mct) = if uses_completion_tokens(&request.model) {
+        let (mt, mct) = if uses_completion_tokens(&api_model) {
             (None, Some(request.max_tokens))
         } else {
             (Some(request.max_tokens), None)
         };
         let mut oai_request = OaiRequest {
-            model: request.model.clone(),
+            model: api_model,
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
@@ -903,7 +1291,10 @@ impl LlmDriver for OpenAIDriver {
 
                 // Auto-cap max_tokens when model rejects our value
                 if status == 400 && body.contains("max_tokens") && attempt < max_retries {
-                    let current = oai_request.max_tokens.or(oai_request.max_completion_tokens).unwrap_or(4096);
+                    let current = oai_request
+                        .max_tokens
+                        .or(oai_request.max_completion_tokens)
+                        .unwrap_or(4096);
                     let cap = extract_max_tokens_limit(&body).unwrap_or(current / 2);
                     warn!(old = current, new = cap, "Auto-capping max_tokens (stream)");
                     if oai_request.max_completion_tokens.is_some() {
@@ -1024,9 +1415,8 @@ impl LlmDriver for OpenAIDriver {
                                 for action in think_filter.process(text) {
                                     match action {
                                         FilterAction::EmitText(t) => {
-                                            let _ = tx
-                                                .send(StreamEvent::TextDelta { text: t })
-                                                .await;
+                                            let _ =
+                                                tx.send(StreamEvent::TextDelta { text: t }).await;
                                         }
                                         FilterAction::EmitThinking(t) => {
                                             // Route think content the same way as
@@ -1110,9 +1500,7 @@ impl LlmDriver for OpenAIDriver {
                         let _ = tx.send(StreamEvent::TextDelta { text: t }).await;
                     }
                     FilterAction::EmitThinking(t) => {
-                        let _ = tx
-                            .send(StreamEvent::ThinkingDelta { text: t })
-                            .await;
+                        let _ = tx.send(StreamEvent::ThinkingDelta { text: t }).await;
                     }
                 }
             }
@@ -1169,23 +1557,39 @@ impl LlmDriver for OpenAIDriver {
                     }
                 }
                 if !cleaned.is_empty() {
-                    content.push(ContentBlock::Text { text: cleaned, provider_metadata: None });
+                    content.push(ContentBlock::Text {
+                        text: cleaned,
+                        provider_metadata: None,
+                    });
                 }
             }
 
             // If we have reasoning but no text content and no tool calls,
             // synthesize a brief text block so the agent loop doesn't treat
             // this as an empty response.
-            let has_text = content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
-            let has_thinking = content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. }));
+            let has_text = content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { .. }));
+            let has_thinking = content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Thinking { .. }));
             if has_thinking && !has_text && tool_accum.is_empty() {
-                let thinking_text = content.iter().find_map(|b| match b {
-                    ContentBlock::Thinking { thinking } => Some(thinking.as_str()),
-                    _ => None,
-                }).unwrap_or("");
+                let thinking_text = content
+                    .iter()
+                    .find_map(|b| match b {
+                        ContentBlock::Thinking { thinking } => Some(thinking.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("");
                 let summary = extract_thinking_summary(thinking_text);
-                debug!(summary_len = summary.len(), "Synthesizing text from thinking-only stream response");
-                content.push(ContentBlock::Text { text: summary, provider_metadata: None });
+                debug!(
+                    summary_len = summary.len(),
+                    "Synthesizing text from thinking-only stream response"
+                );
+                content.push(ContentBlock::Text {
+                    text: summary,
+                    provider_metadata: None,
+                });
             }
 
             for (id, name, arguments) in &tool_accum {
@@ -1308,7 +1712,8 @@ fn extract_think_tags(text: &str) -> (String, Option<String>) {
 fn extract_thinking_summary(thinking: &str) -> String {
     let trimmed = thinking.trim();
     if trimmed.is_empty() {
-        return "[The model produced reasoning but no final answer. Try rephrasing your question.]".to_string();
+        return "[The model produced reasoning but no final answer. Try rephrasing your question.]"
+            .to_string();
     }
 
     // Take the last non-empty paragraph (models usually conclude with their answer)
@@ -1327,7 +1732,8 @@ fn extract_thinking_summary(thinking: &str) -> String {
             last[last.len() - 2000..].to_string()
         }
     } else {
-        "[The model produced reasoning but no final answer. Try rephrasing your question.]".to_string()
+        "[The model produced reasoning but no final answer. Try rephrasing your question.]"
+            .to_string()
     }
 }
 
@@ -1585,7 +1991,8 @@ mod tests {
 
     #[test]
     fn test_extract_think_tags_multiple_blocks() {
-        let input = "<think>First thought</think>Middle text<think>Second thought</think>Final text";
+        let input =
+            "<think>First thought</think>Middle text<think>Second thought</think>Final text";
         let (cleaned, thinking) = extract_think_tags(input);
         assert_eq!(cleaned, "Middle textFinal text");
         let t = thinking.unwrap();
@@ -1626,7 +2033,8 @@ mod tests {
 
     #[test]
     fn test_oai_response_message_with_reasoning_content() {
-        let json = r#"{"content": null, "reasoning_content": "Let me think...", "tool_calls": null}"#;
+        let json =
+            r#"{"content": null, "reasoning_content": "Let me think...", "tool_calls": null}"#;
         let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
         assert!(msg.content.is_none());
         assert_eq!(msg.reasoning_content.as_deref(), Some("Let me think..."));
@@ -1646,5 +2054,32 @@ mod tests {
         let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
         assert!(msg.content.is_none());
         assert!(msg.reasoning_content.is_none());
+    }
+
+    #[test]
+    fn test_should_use_responses_api_for_gpt53_codex() {
+        assert!(should_use_responses_api("gpt-5.3-codex"));
+        assert!(should_use_responses_api("gpt-5.3-codex-high"));
+        assert!(!should_use_responses_api("gpt-5.2"));
+    }
+
+    #[test]
+    fn test_resolve_model_and_format_with_explicit_prefix() {
+        let (model, use_responses) = resolve_model_and_format("openai-responses/gpt-5.1");
+        assert_eq!(model, "gpt-5.1");
+        assert!(use_responses);
+    }
+
+    #[test]
+    fn test_reasoning_effort_from_model_suffix() {
+        assert_eq!(
+            reasoning_effort_from_model("gpt-5.3-codex-xhigh").as_deref(),
+            Some("xhigh")
+        );
+        assert_eq!(
+            reasoning_effort_from_model("gpt-5.3-codex-high").as_deref(),
+            Some("high")
+        );
+        assert_eq!(reasoning_effort_from_model("gpt-5.3-codex"), None);
     }
 }
