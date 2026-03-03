@@ -17,6 +17,30 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroizing;
 
+use std::sync::LazyLock;
+
+/// Groq STT model (override via `GROQ_STT_MODEL` env var).
+static GROQ_STT_MODEL: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("GROQ_STT_MODEL").unwrap_or_else(|_| "whisper-large-v3-turbo".to_string())
+});
+
+/// Groq STT API URL (override via `GROQ_STT_URL` env var).
+static GROQ_STT_URL: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("GROQ_STT_URL")
+        .unwrap_or_else(|_| "https://api.groq.com/openai/v1/audio/transcriptions".to_string())
+});
+
+/// OpenAI STT model (override via `OPENAI_STT_MODEL` env var).
+static OPENAI_STT_MODEL: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("OPENAI_STT_MODEL").unwrap_or_else(|_| "whisper-1".to_string())
+});
+
+/// OpenAI STT API URL (override via `OPENAI_STT_URL` env var).
+static OPENAI_STT_URL: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("OPENAI_STT_URL")
+        .unwrap_or_else(|_| "https://api.openai.com/v1/audio/transcriptions".to_string())
+});
+
 /// Telegram long-polling timeout (seconds) — sent as the `timeout` parameter to getUpdates.
 const LONG_POLL_TIMEOUT: u64 = 30;
 
@@ -576,11 +600,11 @@ async fn transcribe_audio(
                     .mime_str(mime)
                     .ok()?,
             )
-            .text("model", "whisper-large-v3-turbo")
+            .text("model", GROQ_STT_MODEL.as_str())
             .text("response_format", "json");
 
         match client
-            .post("https://api.groq.com/openai/v1/audio/transcriptions")
+            .post(GROQ_STT_URL.as_str())
             .bearer_auth(&groq_key)
             .multipart(form)
             .send()
@@ -618,11 +642,11 @@ async fn transcribe_audio(
                     .mime_str(mime)
                     .ok()?,
             )
-            .text("model", "whisper-1")
+            .text("model", OPENAI_STT_MODEL.as_str())
             .text("response_format", "json");
 
         match client
-            .post("https://api.openai.com/v1/audio/transcriptions")
+            .post(OPENAI_STT_URL.as_str())
             .bearer_auth(&openai_key)
             .multipart(form)
             .send()
