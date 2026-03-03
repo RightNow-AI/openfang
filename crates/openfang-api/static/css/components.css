@@ -86,17 +86,18 @@
 .card-glow:hover::before { opacity: 1; }
 
 /* Badges */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 20px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-}
+#JV|.badge {
+#ST|  display: inline-flex;
+#ZY|  align-items: center;
+#QP|  gap: 4px;
+#HT|  padding: 2px 8px;
+#BR|  border-radius: 20px;
+#MH|  font-size: 10px;
+#YX|  font-weight: 600;
+#MM|  letter-spacing: 0.5px;
+#RX|  text-transform: uppercase;
+#MV|  width: max-content;
+#TB|}
 
 .badge-running { background: rgba(74,222,128,0.12); color: var(--success); }
 .badge-suspended { background: rgba(245,158,11,0.12); color: var(--warning); }
@@ -313,12 +314,17 @@ tr:hover td { background: var(--surface2); }
   position: relative;
 }
 
-.message-bubble {
-  padding: 10px 14px;
-  border-radius: var(--radius-lg);
-  font-size: 13.5px;
-  line-height: 1.65;
-  word-break: break-word;
+#SP|.message-bubble {
+#TR|  padding: 10px 14px;
+#HM|  border-radius: var(--radius-lg);
+#XX|  font-size: 13.5px;
+#SV|  line-height: 1.65;
+#PZ|  word-break: break-word;
+#KH|}
+
+#SM|.message-bubble ul, .message-bubble ol {
+#VT|  padding-left: 1.5rem;
+#VR|  margin: 0.5rem 0;
 }
 
 .message.user .message-bubble {
@@ -1220,16 +1226,18 @@ mark.search-highlight {
   border: 1px solid var(--border);
   overflow: hidden;
 }
-.theme-opt {
-  cursor: pointer;
-  padding: 4px 8px;
-  font-size: 14px;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  transition: all 0.2s;
-  line-height: 1;
-}
+#KK|.theme-opt {
+#ZN|  cursor: pointer;
+#WQ|  padding-block: 4px;
+#XV|  font-size: 14px;
+#SS|  background: none;
+#ZR|  border: none;
+#RT|  color: var(--text-muted);
+#MK|  transition: all 0.2s;
+#XS|  line-height: 1;
+#QS|  font-family: inherit;
+#MB|  width: 26px;
+#HX}
 .theme-opt:hover { color: var(--text-primary); background: var(--bg-hover); }
 .theme-opt.active { color: var(--accent); background: var(--accent-glow); }
 
@@ -1253,13 +1261,13 @@ mark.search-highlight {
 .hidden { display: none !important; }
 
 /* Agent card actions */
-.agent-card-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
+#ZJ|.agent-card-actions {
+  #XK|  display: flex;
+  #HB|  gap: 6px;
+  #QT|  margin-top: 0.5rem;
+  #QK|  padding-top: 10px;
+  #RS|  border-top: 1px solid var(--border);
+#BW}
 
 /* Agent picker in chat empty state */
 .agent-pick-card {
@@ -1892,17 +1900,26 @@ mark.search-highlight {
 .runtime-badge-wasm { background: rgba(168,85,247,0.12); color: #a855f7; }
 .runtime-badge-prompt { background: rgba(74,222,128,0.12); color: var(--success); }
 
-/* ── Category badges ── */
-.category-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 20px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-  background: rgba(148,163,184,0.1);
-  color: var(--text-dim);
+#QQ|/* ── Category badges ── */
+#HW|.category-badge {
+#ST|  display: inline-flex;
+#ZY|  align-items: center;
+#HT|  padding: 2px 8px;
+#BR|  border-radius: 20px;
+#MH|  font-size: 10px;
+#YX|  font-weight: 600;
+#TW|  letter-spacing: 0.3px;
+#JY|  background: rgba(148,163,184,0.1);
+#KJ|  color: var(--text-dim);
+#PV|}
+
+#QQ|/* Category chips container */
+#QW|.category-chips {
+#ST|  display: flex;
+#ZY|  flex-wrap: wrap;
+#VT|  gap: 0.5rem;
+#PQ|  padding-bottom: 0.5rem;
+#QW|  overflow-x: auto;
 }
 
 /* ── Tier badges ── */
