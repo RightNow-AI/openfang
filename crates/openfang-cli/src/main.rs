@@ -390,6 +390,11 @@ enum HandCommands {
     List,
     /// Show currently active hand instances.
     Active,
+    /// Install a hand from a local directory containing HAND.toml.
+    Install {
+        /// Path to the hand directory (must contain HAND.toml).
+        path: String,
+    },
     /// Activate a hand by ID.
     Activate {
         /// Hand ID (e.g. "clip", "lead", "researcher").
@@ -781,11 +786,19 @@ fn init_tracing_stderr() {
         .init();
 }
 
+/// Get the OpenFang home directory, respecting OPENFANG_HOME env var.
+fn cli_openfang_home() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("OPENFANG_HOME") {
+        return std::path::PathBuf::from(home);
+    }
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".openfang")
+}
+
 /// Redirect tracing to a log file so it doesn't corrupt the ratatui TUI.
 fn init_tracing_file() {
-    let log_dir = dirs::home_dir()
-        .map(|h| h.join(".openfang"))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let log_dir = cli_openfang_home();
     let _ = std::fs::create_dir_all(&log_dir);
     let log_path = log_dir.join("tui.log");
 
@@ -910,6 +923,7 @@ fn main() {
         Some(Commands::Hand(sub)) => match sub {
             HandCommands::List => cmd_hand_list(),
             HandCommands::Active => cmd_hand_active(),
+            HandCommands::Install { path } => cmd_hand_install(&path),
             HandCommands::Activate { id } => cmd_hand_activate(&id),
             HandCommands::Deactivate { id } => cmd_hand_deactivate(&id),
             HandCommands::Info { id } => cmd_hand_info(&id),
@@ -1037,7 +1051,7 @@ pub(crate) fn restrict_dir_permissions(path: &std::path::Path) {
 pub(crate) fn restrict_dir_permissions(_path: &std::path::Path) {}
 
 pub(crate) fn find_daemon() -> Option<String> {
-    let home_dir = dirs::home_dir()?.join(".openfang");
+    let home_dir = cli_openfang_home();
     let info = read_daemon_info(&home_dir)?;
 
     // Normalize listen address: replace 0.0.0.0 with 127.0.0.1 to avoid
@@ -1119,7 +1133,7 @@ fn cmd_init(quick: bool) {
         }
     };
 
-    let openfang_dir = home.join(".openfang");
+    let openfang_dir = cli_openfang_home();
 
     // --- Ensure directories exist ---
     if !openfang_dir.exists() {
@@ -1421,7 +1435,7 @@ fn cmd_start(config: Option<PathBuf>) {
 
 /// Read the api_key from ~/.openfang/config.toml (if any).
 fn read_api_key() -> Option<String> {
-    let config_path = dirs::home_dir()?.join(".openfang").join("config.toml");
+    let config_path = cli_openfang_home().join("config.toml");
     let text = std::fs::read_to_string(config_path).ok()?;
     let table: toml::Value = text.parse().ok()?;
     let key = table.get("api_key")?.as_str()?;
@@ -1451,8 +1465,8 @@ fn cmd_stop() {
                         }
                     }
                     // Still alive — force kill via PID
-                    if let Some(home) = dirs::home_dir() {
-                        let of_dir = home.join(".openfang");
+                    {
+                        let of_dir = cli_openfang_home();
                         if let Some(info) = read_daemon_info(&of_dir) {
                             force_kill_pid(info.pid);
                             let _ = std::fs::remove_file(of_dir.join("daemon.json"));
@@ -1927,8 +1941,8 @@ fn cmd_doctor(json: bool, repair: bool) {
     }
 
     let home = dirs::home_dir();
-    if let Some(h) = &home {
-        let openfang_dir = h.join(".openfang");
+    if let Some(_h) = &home {
+        let openfang_dir = cli_openfang_home();
 
         // --- Check 1: OpenFang directory ---
         if openfang_dir.exists() {
@@ -2085,7 +2099,20 @@ decay_rate = 0.05
             all_ok = false;
         }
 
-        // --- Check 4: Port 4200 availability ---
+        // --- Check 4: Port availability ---
+        // Read api_listen from config (default: 127.0.0.1:4200)
+        let api_listen = {
+            let cfg_path = openfang_dir.join("config.toml");
+            if cfg_path.exists() {
+                std::fs::read_to_string(&cfg_path)
+                    .ok()
+                    .and_then(|s| toml::from_str::<openfang_types::config::KernelConfig>(&s).ok())
+                    .map(|c| c.api_listen)
+                    .unwrap_or_else(|| "127.0.0.1:4200".to_string())
+            } else {
+                "127.0.0.1:4200".to_string()
+            }
+        };
         if !json {
             println!();
         }
@@ -2101,19 +2128,24 @@ decay_rate = 0.05
             }
             checks.push(serde_json::json!({"check": "daemon", "status": "warn"}));
 
-            // Check if port 4200 is available
-            match std::net::TcpListener::bind("127.0.0.1:4200") {
+            // Check if the configured port is available
+            let bind_addr = if api_listen.starts_with("0.0.0.0") {
+                api_listen.replacen("0.0.0.0", "127.0.0.1", 1)
+            } else {
+                api_listen.clone()
+            };
+            match std::net::TcpListener::bind(&bind_addr) {
                 Ok(_) => {
                     if !json {
-                        ui::check_ok("Port 4200 is available");
+                        ui::check_ok(&format!("Port {api_listen} is available"));
                     }
-                    checks.push(serde_json::json!({"check": "port_4200", "status": "ok"}));
+                    checks.push(serde_json::json!({"check": "port", "status": "ok", "address": api_listen}));
                 }
                 Err(_) => {
                     if !json {
-                        ui::check_warn("Port 4200 is in use by another process");
+                        ui::check_warn(&format!("Port {api_listen} is in use by another process"));
                     }
-                    checks.push(serde_json::json!({"check": "port_4200", "status": "warn"}));
+                    checks.push(serde_json::json!({"check": "port", "status": "warn", "address": api_listen}));
                 }
             }
         }
@@ -2333,8 +2365,8 @@ decay_rate = 0.05
     }
 
     // --- Check 11: .env keys vs config api_key_env consistency ---
-    if let Some(ref h) = home {
-        let openfang_dir = h.join(".openfang");
+    {
+        let openfang_dir = cli_openfang_home();
         let config_path = openfang_dir.join("config.toml");
         if config_path.exists() {
             let config_str = std::fs::read_to_string(&config_path).unwrap_or_default();
@@ -2359,8 +2391,8 @@ decay_rate = 0.05
     }
 
     // --- Check 12: Config deserialization into KernelConfig ---
-    if let Some(ref h) = home {
-        let openfang_dir = h.join(".openfang");
+    {
+        let openfang_dir = cli_openfang_home();
         let config_path = openfang_dir.join("config.toml");
         if config_path.exists() {
             if !json {
@@ -2464,10 +2496,7 @@ decay_rate = 0.05
         if !json {
             println!("\n  Skills:");
         }
-        let skills_dir = home
-            .as_ref()
-            .map(|h| h.join(".openfang").join("skills"))
-            .unwrap_or_else(|| std::path::PathBuf::from("skills"));
+        let skills_dir = cli_openfang_home().join("skills");
         let mut skill_reg = openfang_skills::registry::SkillRegistry::new(skills_dir.clone());
         skill_reg.load_bundled();
         let bundled_count = skill_reg.count();
@@ -2528,11 +2557,11 @@ decay_rate = 0.05
     }
 
     // --- Check 14: Extension registry health ---
-    if let Some(ref h) = home {
+    {
         if !json {
             println!("\n  Extensions:");
         }
-        let openfang_dir = h.join(".openfang");
+        let openfang_dir = cli_openfang_home();
         let mut ext_registry =
             openfang_extensions::registry::IntegrationRegistry::new(&openfang_dir);
         ext_registry.load_bundled();
@@ -3143,12 +3172,7 @@ fn cmd_migrate(args: MigrateArgs) {
         }
     });
 
-    let target_dir = dirs::home_dir()
-        .unwrap_or_else(|| {
-            eprintln!("Error: Could not determine home directory");
-            std::process::exit(1);
-        })
-        .join(".openfang");
+    let target_dir = cli_openfang_home();
 
     println!("Migrating from {} ({})...", source, source_dir.display());
     if args.dry_run {
@@ -3838,6 +3862,52 @@ fn cmd_channel_toggle(channel: &str, enable: bool) {
 // ---------------------------------------------------------------------------
 // Hand commands
 // ---------------------------------------------------------------------------
+
+fn cmd_hand_install(path: &str) {
+    let base = require_daemon("hand install");
+    let dir = std::path::Path::new(path);
+    let toml_path = dir.join("HAND.toml");
+    let skill_path = dir.join("SKILL.md");
+
+    if !toml_path.exists() {
+        eprintln!(
+            "Error: No HAND.toml found in {}",
+            dir.canonicalize()
+                .unwrap_or_else(|_| dir.to_path_buf())
+                .display()
+        );
+        std::process::exit(1);
+    }
+
+    let toml_content = std::fs::read_to_string(&toml_path).unwrap_or_else(|e| {
+        eprintln!("Error reading {}: {e}", toml_path.display());
+        std::process::exit(1);
+    });
+    let skill_content = std::fs::read_to_string(&skill_path).unwrap_or_default();
+
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/install"))
+            .json(&serde_json::json!({
+                "toml_content": toml_content,
+                "skill_content": skill_content,
+            }))
+            .send(),
+    );
+
+    if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
+        eprintln!("Error: {err}");
+        std::process::exit(1);
+    }
+
+    println!(
+        "Installed hand: {} ({})",
+        body["name"].as_str().unwrap_or("?"),
+        body["id"].as_str().unwrap_or("?"),
+    );
+    println!("Use `openfang hand activate {}` to start it.", body["id"].as_str().unwrap_or("?"));
+}
 
 fn cmd_hand_list() {
     let base = require_daemon("hand list");
@@ -4565,6 +4635,9 @@ fn cmd_quick_chat(config: Option<PathBuf>, agent: Option<String>) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn openfang_home() -> PathBuf {
+    if let Ok(home) = std::env::var("OPENFANG_HOME") {
+        return PathBuf::from(home);
+    }
     dirs::home_dir()
         .unwrap_or_else(|| {
             eprintln!("Error: Could not determine home directory");
@@ -5407,9 +5480,7 @@ fn cmd_sessions(agent: Option<&str>, json: bool) {
 }
 
 fn cmd_logs(lines: usize, follow: bool) {
-    let log_path = dirs::home_dir()
-        .map(|h| h.join(".openfang").join("tui.log"))
-        .unwrap_or_else(|| PathBuf::from("tui.log"));
+    let log_path = cli_openfang_home().join("tui.log");
 
     if !log_path.exists() {
         ui::error_with_fix(
@@ -5939,13 +6010,7 @@ fn cmd_system_version(json: bool) {
 }
 
 fn cmd_reset(confirm: bool) {
-    let openfang_dir = match dirs::home_dir() {
-        Some(h) => h.join(".openfang"),
-        None => {
-            ui::error("Could not determine home directory");
-            std::process::exit(1);
-        }
-    };
+    let openfang_dir = cli_openfang_home();
 
     if !openfang_dir.exists() {
         println!(
@@ -5980,14 +6045,7 @@ fn cmd_reset(confirm: bool) {
 // ---------------------------------------------------------------------------
 
 fn cmd_uninstall(confirm: bool, keep_config: bool) {
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => {
-            ui::error("Could not determine home directory");
-            std::process::exit(1);
-        }
-    };
-    let openfang_dir = home.join(".openfang");
+    let openfang_dir = cli_openfang_home();
     let exe_path = std::env::current_exe().ok();
 
     // Step 1: Show what will be removed
@@ -6013,11 +6071,15 @@ fn cmd_uninstall(confirm: bool, keep_config: bool) {
         println!("  • Remove binary: {}", exe.display());
     }
     // Check cargo bin path
-    let cargo_bin = home.join(".cargo").join("bin").join(if cfg!(windows) {
-        "openfang.exe"
-    } else {
-        "openfang"
-    });
+    let cargo_bin = dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".cargo")
+        .join("bin")
+        .join(if cfg!(windows) {
+            "openfang.exe"
+        } else {
+            "openfang"
+        });
     if cargo_bin.exists() && exe_path.as_ref().is_none_or(|e| *e != cargo_bin) {
         println!("  • Remove cargo binary: {}", cargo_bin.display());
     }
@@ -6051,12 +6113,13 @@ fn cmd_uninstall(confirm: bool, keep_config: bool) {
     }
 
     // Step 4: Remove auto-start entries
-    remove_autostart_entries(&home);
+    let user_home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    remove_autostart_entries(&user_home);
 
     // Step 5: Clean PATH from shell configs
     if let Some(ref exe) = exe_path {
         if let Some(bin_dir) = exe.parent() {
-            clean_path_entries(&home, &bin_dir.to_string_lossy());
+            clean_path_entries(&user_home, &bin_dir.to_string_lossy());
         }
     }
 

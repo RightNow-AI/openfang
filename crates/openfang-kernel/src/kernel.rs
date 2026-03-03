@@ -687,7 +687,7 @@ impl OpenFangKernel {
         }
 
         // Initialize hand registry (curated autonomous packages)
-        let mut hand_registry = openfang_hands::registry::HandRegistry::new();
+        let hand_registry = openfang_hands::registry::HandRegistry::new();
         let hand_count = hand_registry.load_bundled();
         if hand_count > 0 {
             info!("Loaded {hand_count} bundled hand(s)");
@@ -1017,23 +1017,24 @@ impl OpenFangKernel {
                     );
 
                     // Apply default_model to restored agents (same logic as spawn)
-                    if restored_entry.manifest.model.api_key_env.is_none()
-                        && restored_entry.manifest.model.base_url.is_none()
                     {
-                        let dm = &kernel.config.default_model;
                         let is_default_provider = restored_entry.manifest.model.provider.is_empty()
                             || restored_entry.manifest.model.provider == "default";
                         let is_default_model = restored_entry.manifest.model.model.is_empty()
                             || restored_entry.manifest.model.model == "default";
                         if is_default_provider && is_default_model {
+                            let dm = &kernel.config.default_model;
                             if !dm.provider.is_empty() {
                                 restored_entry.manifest.model.provider = dm.provider.clone();
                             }
                             if !dm.model.is_empty() {
                                 restored_entry.manifest.model.model = dm.model.clone();
                             }
-                            if dm.base_url.is_some() {
-                                restored_entry.manifest.model.base_url = dm.base_url.clone();
+                            if !dm.api_key_env.is_empty() && restored_entry.manifest.model.api_key_env.is_none() {
+                                restored_entry.manifest.model.api_key_env = Some(dm.api_key_env.clone());
+                            }
+                            if dm.base_url.is_some() && restored_entry.manifest.model.base_url.is_none() {
+                                restored_entry.manifest.model.base_url.clone_from(&dm.base_url);
                             }
                         }
                     }
@@ -1103,29 +1104,34 @@ impl OpenFangKernel {
 
         // Overlay kernel default_model onto agent if agent didn't explicitly choose.
         // Treat empty or "default" as "use the kernel's configured default_model".
-        // This allows bundled agents to defer to the user's configured provider/model.
-        if manifest.model.api_key_env.is_none() && manifest.model.base_url.is_none() {
-            // Check hot-reloaded override first, fall back to boot-time config
-            let override_guard = self
-                .default_model_override
-                .read()
-                .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
-            let dm = override_guard
-                .as_ref()
-                .unwrap_or(&self.config.default_model);
+        // This allows bundled agents to defer to the user's configured provider/model,
+        // even if the agent manifest specifies an api_key_env (which is just a hint
+        // about which env var to check, not a hard lock on provider/model).
+        {
             let is_default_provider =
                 manifest.model.provider.is_empty() || manifest.model.provider == "default";
             let is_default_model =
                 manifest.model.model.is_empty() || manifest.model.model == "default";
             if is_default_provider && is_default_model {
+                // Check hot-reloaded override first, fall back to boot-time config
+                let override_guard = self
+                    .default_model_override
+                    .read()
+                    .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+                let dm = override_guard
+                    .as_ref()
+                    .unwrap_or(&self.config.default_model);
                 if !dm.provider.is_empty() {
                     manifest.model.provider = dm.provider.clone();
                 }
                 if !dm.model.is_empty() {
                     manifest.model.model = dm.model.clone();
                 }
-                if dm.base_url.is_some() {
-                    manifest.model.base_url = dm.base_url.clone();
+                if !dm.api_key_env.is_empty() && manifest.model.api_key_env.is_none() {
+                    manifest.model.api_key_env = Some(dm.api_key_env.clone());
+                }
+                if dm.base_url.is_some() && manifest.model.base_url.is_none() {
+                    manifest.model.base_url.clone_from(&dm.base_url);
                 }
             }
         }
@@ -2889,10 +2895,23 @@ impl OpenFangKernel {
                 manifest.model.system_prompt, resolved.prompt_block
             );
         }
-        if !resolved.env_vars.is_empty() {
+        // Collect env vars from settings + from requires (api_key/env_var requirements)
+        let mut allowed_env = resolved.env_vars;
+        for req in &def.requires {
+            match req.requirement_type {
+                openfang_hands::RequirementType::ApiKey
+                | openfang_hands::RequirementType::EnvVar => {
+                    if !req.check_value.is_empty() && !allowed_env.contains(&req.check_value) {
+                        allowed_env.push(req.check_value.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !allowed_env.is_empty() {
             manifest.metadata.insert(
                 "hand_allowed_env".to_string(),
-                serde_json::to_value(&resolved.env_vars).unwrap_or_default(),
+                serde_json::to_value(&allowed_env).unwrap_or_default(),
             );
         }
 
@@ -4641,7 +4660,7 @@ fn infer_provider_from_model(model: &str) -> Option<String> {
 
 /// A well-known agent ID used for shared memory operations across agents.
 /// This is a fixed UUID so all agents read/write to the same namespace.
-fn shared_memory_agent_id() -> AgentId {
+pub fn shared_memory_agent_id() -> AgentId {
     AgentId(uuid::Uuid::from_bytes([
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x01,
@@ -5031,6 +5050,24 @@ impl KernelHandle for OpenFangKernel {
         Ok(result)
     }
 
+    async fn hand_install(
+        &self,
+        toml_content: &str,
+        skill_content: &str,
+    ) -> Result<serde_json::Value, String> {
+        let def = self
+            .hand_registry
+            .install_from_content(toml_content, skill_content)
+            .map_err(|e| format!("{e}"))?;
+
+        Ok(serde_json::json!({
+            "id": def.id,
+            "name": def.name,
+            "description": def.description,
+            "category": format!("{:?}", def.category),
+        }))
+    }
+
     async fn hand_activate(
         &self,
         hand_id: &str,
@@ -5057,8 +5094,8 @@ impl KernelHandle for OpenFangKernel {
             .ok_or_else(|| format!("No active instance found for hand '{hand_id}'"))?;
 
         let def = self.hand_registry.get_definition(hand_id);
-        let def_name = def.map(|d| d.name.clone()).unwrap_or_default();
-        let def_icon = def.map(|d| d.icon.clone()).unwrap_or_default();
+        let def_name = def.as_ref().map(|d| d.name.clone()).unwrap_or_default();
+        let def_icon = def.as_ref().map(|d| d.icon.clone()).unwrap_or_default();
 
         Ok(serde_json::json!({
             "hand_id": hand_id,

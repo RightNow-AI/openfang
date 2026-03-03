@@ -332,6 +332,10 @@ pub async fn build_router(
         // Hands endpoints
         .route("/api/hands", axum::routing::get(routes::list_hands))
         .route(
+            "/api/hands/install",
+            axum::routing::post(routes::install_hand),
+        )
+        .route(
             "/api/hands/active",
             axum::routing::get(routes::list_active_hands),
         )

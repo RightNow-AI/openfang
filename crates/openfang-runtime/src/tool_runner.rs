@@ -627,7 +627,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "The storage key" },
-                    "value": { "description": "The JSON value to store (any type)" }
+                    "value": { "type": "string", "description": "The value to store (JSON-encode objects/arrays, or pass a plain string)" }
                 },
                 "required": ["key", "value"]
             }),
@@ -705,7 +705,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "event_type": { "type": "string", "description": "Type identifier for the event (e.g., 'code_review_requested')" },
-                    "payload": { "description": "JSON payload data for the event" }
+                    "payload": { "type": "object", "description": "JSON payload data for the event" }
                 },
                 "required": ["event_type"]
             }),
