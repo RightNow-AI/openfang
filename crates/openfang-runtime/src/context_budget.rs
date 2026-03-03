@@ -30,21 +30,21 @@ impl ContextBudget {
         }
     }
 
-    /// Per-result character cap: 30% of context window converted to chars.
+    /// Per-result character cap: 8% of context window converted to chars.
     pub fn per_result_cap(&self) -> usize {
-        let tokens_for_tool = (self.context_window_tokens as f64 * 0.30) as usize;
+        let tokens_for_tool = (self.context_window_tokens as f64 * 0.08) as usize;
         (tokens_for_tool as f64 * self.tool_chars_per_token) as usize
     }
 
-    /// Single result absolute max: 50% of context window.
+    /// Single result absolute max: 15% of context window.
     pub fn single_result_max(&self) -> usize {
-        let tokens = (self.context_window_tokens as f64 * 0.50) as usize;
+        let tokens = (self.context_window_tokens as f64 * 0.15) as usize;
         (tokens as f64 * self.tool_chars_per_token) as usize
     }
 
-    /// Total tool result headroom: 75% of context window in chars.
+    /// Total tool result headroom: 40% of context window in chars.
     pub fn total_tool_headroom_chars(&self) -> usize {
-        let tokens = (self.context_window_tokens as f64 * 0.75) as usize;
+        let tokens = (self.context_window_tokens as f64 * 0.40) as usize;
         (tokens as f64 * self.tool_chars_per_token) as usize
     }
 }
@@ -78,7 +78,7 @@ pub fn truncate_tool_result_dynamic(content: &str, budget: &ContextBudget) -> St
         &content[..break_point],
         content.len(),
         break_point,
-        30,
+        8,
         budget.context_window_tokens / 1000
     )
 }
@@ -203,15 +203,15 @@ mod tests {
     fn test_budget_defaults() {
         let budget = ContextBudget::default();
         assert_eq!(budget.context_window_tokens, 200_000);
-        // 30% of 200K * 2.0 chars/token = 120K chars
-        assert_eq!(budget.per_result_cap(), 120_000);
+        // 8% of 200K * 2.0 chars/token = 32K chars
+        assert_eq!(budget.per_result_cap(), 32_000);
     }
 
     #[test]
     fn test_small_model_budget() {
         let budget = ContextBudget::new(8_000);
-        // 30% of 8K * 2.0 = 4800 chars
-        assert_eq!(budget.per_result_cap(), 4_800);
+        // 8% of 8K * 2.0 = 1280 chars
+        assert_eq!(budget.per_result_cap(), 1_280);
     }
 
     #[test]

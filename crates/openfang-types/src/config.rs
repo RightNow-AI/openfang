@@ -257,7 +257,7 @@ pub struct WebFetchConfig {
 impl Default for WebFetchConfig {
     fn default() -> Self {
         Self {
-            max_chars: 50_000,
+            max_chars: 12_000,
             max_response_bytes: 10 * 1024 * 1024, // 10 MB
             timeout_secs: 30,
             readability: true,

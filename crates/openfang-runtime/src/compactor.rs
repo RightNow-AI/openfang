@@ -49,8 +49,8 @@ pub struct CompactionConfig {
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
-            threshold: 30,
-            keep_recent: 10,
+            threshold: 15,
+            keep_recent: 6,
             max_summary_tokens: 1024,
             base_chunk_ratio: 0.4,
             min_chunk_ratio: 0.15,
@@ -737,8 +737,8 @@ mod tests {
     #[test]
     fn test_compaction_config_defaults() {
         let config = CompactionConfig::default();
-        assert_eq!(config.threshold, 30);
-        assert_eq!(config.keep_recent, 10);
+        assert_eq!(config.threshold, 15);
+        assert_eq!(config.keep_recent, 6);
         assert_eq!(config.max_summary_tokens, 1024);
         assert!((config.token_threshold_ratio - 0.7).abs() < f64::EPSILON);
         assert_eq!(config.context_window_tokens, 200_000);
@@ -1019,8 +1019,8 @@ mod tests {
     #[test]
     fn test_compaction_config_new_defaults() {
         let config = CompactionConfig::default();
-        assert_eq!(config.threshold, 30);
-        assert_eq!(config.keep_recent, 10);
+        assert_eq!(config.threshold, 15);
+        assert_eq!(config.keep_recent, 6);
         assert_eq!(config.max_summary_tokens, 1024);
         assert!((config.base_chunk_ratio - 0.4).abs() < f64::EPSILON);
         assert!((config.min_chunk_ratio - 0.15).abs() < f64::EPSILON);
