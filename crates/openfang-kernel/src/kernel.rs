@@ -545,9 +545,11 @@ impl OpenFangKernel {
         );
 
         // Build shared HTTP clients once — reused by all drivers, adapters, and tools.
+        // LLM calls can take 60-120s (especially via local proxies or complex tool-use),
+        // so the default timeout must accommodate slower providers.
         let shared_http_clients = SharedHttpClients {
             default: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(120))
                 .pool_max_idle_per_host(20)
                 .build()
                 .expect("Failed to build default HTTP client"),
