@@ -141,7 +141,16 @@ function channelsPage() {
 
     openSetup(ch) {
       this.setupModal = ch;
-      this.formValues = {};
+      // Pre-populate form values from saved config (non-secret fields).
+      var vals = {};
+      if (ch.fields) {
+        ch.fields.forEach(function(f) {
+          if (f.value !== undefined && f.value !== null && f.type !== 'secret') {
+            vals[f.key] = String(f.value);
+          }
+        });
+      }
+      this.formValues = vals;
       this.showAdvanced = false;
       this.showBusinessApi = false;
       this.setupStep = ch.configured ? 3 : 1;

@@ -29,6 +29,13 @@ steps = [
 # ─── Configurable settings ───────────────────────────────────────────────────
 
 [[settings]]
+key = "twitter_bearer_token"
+label = "Twitter Bearer Token"
+description = "Bearer Token from the Twitter/X Developer Portal. Required for all Twitter API operations."
+setting_type = "text"
+default = ""
+
+[[settings]]
 key = "twitter_style"
 label = "Content Style"
 description = "Voice and tone for your tweets"

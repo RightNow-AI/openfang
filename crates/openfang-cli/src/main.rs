@@ -1419,11 +1419,28 @@ fn cmd_start(config: Option<PathBuf>) {
     });
 }
 
+/// Read the api_key from ~/.openfang/config.toml (if any).
+fn read_api_key() -> Option<String> {
+    let config_path = dirs::home_dir()?.join(".openfang").join("config.toml");
+    let text = std::fs::read_to_string(config_path).ok()?;
+    let table: toml::Value = text.parse().ok()?;
+    let key = table.get("api_key")?.as_str()?;
+    if key.is_empty() {
+        None
+    } else {
+        Some(key.to_string())
+    }
+}
+
 fn cmd_stop() {
     match find_daemon() {
         Some(base) => {
             let client = daemon_client();
-            match client.post(format!("{base}/api/shutdown")).send() {
+            let mut req = client.post(format!("{base}/api/shutdown"));
+            if let Some(key) = read_api_key() {
+                req = req.bearer_auth(key);
+            }
+            match req.send() {
                 Ok(r) if r.status().is_success() => {
                     // Wait for daemon to actually stop (up to 5 seconds)
                     for _ in 0..10 {

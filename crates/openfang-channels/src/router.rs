@@ -32,6 +32,8 @@ pub struct AgentRouter {
     direct_routes: DashMap<(String, String), AgentId>,
     /// System-wide default agent.
     default_agent: Option<AgentId>,
+    /// Per-channel-type default agent (e.g., Telegram -> agent_a, Discord -> agent_b).
+    channel_defaults: DashMap<String, AgentId>,
     /// Sorted bindings (most specific first). Uses Mutex for runtime updates via Arc.
     bindings: Mutex<Vec<(AgentBinding, String)>>,
     /// Broadcast configuration. Uses Mutex for runtime updates via Arc.
@@ -47,6 +49,7 @@ impl AgentRouter {
             user_defaults: DashMap::new(),
             direct_routes: DashMap::new(),
             default_agent: None,
+            channel_defaults: DashMap::new(),
             bindings: Mutex::new(Vec::new()),
             broadcast: Mutex::new(BroadcastConfig::default()),
             agent_name_cache: DashMap::new(),
@@ -56,6 +59,11 @@ impl AgentRouter {
     /// Set the system-wide default agent.
     pub fn set_default(&mut self, agent_id: AgentId) {
         self.default_agent = Some(agent_id);
+    }
+
+    /// Set a per-channel-type default agent (e.g., "Telegram" -> agent_id).
+    pub fn set_channel_default(&self, channel_key: String, agent_id: AgentId) {
+        self.channel_defaults.insert(channel_key, agent_id);
     }
 
     /// Set a user's default agent.
@@ -125,7 +133,7 @@ impl AgentRouter {
         // 1. Check direct routes
         if let Some(agent) = self
             .direct_routes
-            .get(&(channel_key, platform_user_id.to_string()))
+            .get(&(channel_key.clone(), platform_user_id.to_string()))
         {
             return Some(*agent);
         }
@@ -141,7 +149,12 @@ impl AgentRouter {
             return Some(*agent);
         }
 
-        // 3. System default
+        // 3. Per-channel-type default
+        if let Some(agent) = self.channel_defaults.get(&channel_key) {
+            return Some(*agent);
+        }
+
+        // 4. System default
         self.default_agent
     }
 
@@ -161,7 +174,7 @@ impl AgentRouter {
         let channel_key = format!("{channel_type:?}");
         if let Some(agent) = self
             .direct_routes
-            .get(&(channel_key, platform_user_id.to_string()))
+            .get(&(channel_key.clone(), platform_user_id.to_string()))
         {
             return Some(*agent);
         }
@@ -171,6 +184,9 @@ impl AgentRouter {
             }
         }
         if let Some(agent) = self.user_defaults.get(platform_user_id) {
+            return Some(*agent);
+        }
+        if let Some(agent) = self.channel_defaults.get(&channel_key) {
             return Some(*agent);
         }
         self.default_agent
@@ -499,6 +515,30 @@ mod tests {
         assert_eq!(targets[0].1, Some(id1));
         assert_eq!(targets[1].0, "agent-b");
         assert_eq!(targets[1].1, Some(id2));
+    }
+
+    #[test]
+    fn test_channel_default_routing() {
+        let mut router = AgentRouter::new();
+        let system_default = AgentId::new();
+        let telegram_default = AgentId::new();
+        let discord_default = AgentId::new();
+
+        router.set_default(system_default);
+        router.set_channel_default("Telegram".to_string(), telegram_default);
+        router.set_channel_default("Discord".to_string(), discord_default);
+
+        // Telegram should use Telegram-specific default
+        let resolved = router.resolve(&ChannelType::Telegram, "user1", None);
+        assert_eq!(resolved, Some(telegram_default));
+
+        // Discord should use Discord-specific default
+        let resolved = router.resolve(&ChannelType::Discord, "user1", None);
+        assert_eq!(resolved, Some(discord_default));
+
+        // WhatsApp has no channel default — falls to system default
+        let resolved = router.resolve(&ChannelType::WhatsApp, "user1", None);
+        assert_eq!(resolved, Some(system_default));
     }
 
     #[test]
