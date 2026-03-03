@@ -627,7 +627,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "The storage key" },
-                    "value": { "description": "The JSON value to store (any type)" }
+                    "value": { "type": "object", "description": "The JSON value to store (any type)" }
                 },
                 "required": ["key", "value"]
             }),
