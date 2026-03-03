@@ -220,6 +220,8 @@ impl StandaloneChat {
             }
             ChatAction::SendMessage(msg) => self.send_message(msg),
             ChatAction::SlashCommand(cmd) => self.handle_slash_command(&cmd),
+            ChatAction::OpenModelPicker => self.open_model_picker(),
+            ChatAction::SwitchModel(model_id) => self.switch_model(&model_id),
         }
     }
 
@@ -267,12 +269,13 @@ impl StandaloneChat {
                 self.chat.push_message(
                     Role::System,
                     [
-                        "/help    \u{2014} show this help",
-                        "/status  \u{2014} connection & agent info",
-                        "/model   \u{2014} show current model",
-                        "/clear   \u{2014} clear chat history",
-                        "/kill    \u{2014} kill the current agent & quit",
-                        "/exit    \u{2014} end chat session",
+                        "/help         \u{2014} show this help",
+                        "/model        \u{2014} open model picker (Ctrl+M)",
+                        "/model <name> \u{2014} switch to model directly",
+                        "/status       \u{2014} connection & agent info",
+                        "/clear        \u{2014} clear chat history",
+                        "/kill         \u{2014} kill the current agent & quit",
+                        "/exit         \u{2014} end chat session",
                     ]
                     .join("\n"),
                 );
@@ -294,8 +297,14 @@ impl StandaloneChat {
                 self.chat.push_message(Role::System, s.join("\n"));
             }
             "/model" => {
-                self.chat
-                    .push_message(Role::System, format!("Model: {}", self.chat.model_label));
+                let args = parts.get(1).map(|s| s.trim()).unwrap_or("");
+                if args.is_empty() {
+                    // No argument: open the model picker
+                    self.open_model_picker();
+                } else {
+                    // With argument: switch directly
+                    self.switch_model(args);
+                }
             }
             "/clear" => {
                 let name = self.chat.agent_name.clone();
@@ -360,6 +369,160 @@ impl StandaloneChat {
                     Role::System,
                     format!("Unknown command: {}. Type /help", parts[0]),
                 );
+            }
+        }
+    }
+
+    // ── Model picker helpers ──────────────────────────────────────────────────
+
+    fn open_model_picker(&mut self) {
+        use super::screens::chat::ModelEntry;
+
+        let models = match &self.backend {
+            Backend::Daemon { base_url } => {
+                let client = crate::daemon_client();
+                match client.get(format!("{base_url}/api/models")).send() {
+                    Ok(resp) => match resp.json::<serde_json::Value>() {
+                        Ok(body) => body["models"]
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter(|m| m["available"].as_bool().unwrap_or(false))
+                                    .map(|m| ModelEntry {
+                                        id: m["id"].as_str().unwrap_or("").to_string(),
+                                        display_name: m["display_name"]
+                                            .as_str()
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        provider: m["provider"]
+                                            .as_str()
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        tier: m["tier"].as_str().unwrap_or("Balanced").to_string(),
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        Err(_) => Vec::new(),
+                    },
+                    Err(_) => Vec::new(),
+                }
+            }
+            Backend::InProcess { kernel } => {
+                let catalog = kernel.model_catalog.read().unwrap();
+                catalog
+                    .available_models()
+                    .into_iter()
+                    .map(|e| ModelEntry {
+                        id: e.id.clone(),
+                        display_name: e.display_name.clone(),
+                        provider: e.provider.clone(),
+                        tier: format!("{:?}", e.tier),
+                    })
+                    .collect()
+            }
+            Backend::None => Vec::new(),
+        };
+
+        if models.is_empty() {
+            self.chat
+                .push_message(Role::System, "No models available.".to_string());
+            return;
+        }
+
+        self.chat.model_picker_models = models;
+        self.chat.model_picker_filter.clear();
+        self.chat.model_picker_idx = 0;
+        self.chat.show_model_picker = true;
+    }
+
+    fn switch_model(&mut self, model_id: &str) {
+        // Skip if already on this model
+        if self.chat.model_label.ends_with(model_id) {
+            return;
+        }
+
+        match &self.backend {
+            Backend::Daemon { base_url } => {
+                if let Some(ref agent_id) = self.agent_id_daemon {
+                    let client = crate::daemon_client();
+                    let url = format!("{base_url}/api/agents/{agent_id}/model");
+                    match client
+                        .put(&url)
+                        .json(&serde_json::json!({"model": model_id}))
+                        .send()
+                    {
+                        Ok(r) if r.status().is_success() => {
+                            // Re-fetch agent to get updated provider/model
+                            if let Ok(resp) = client
+                                .get(format!("{base_url}/api/agents/{agent_id}"))
+                                .send()
+                            {
+                                if let Ok(body) = resp.json::<serde_json::Value>() {
+                                    let provider =
+                                        body["model_provider"].as_str().unwrap_or("?");
+                                    let model = body["model_name"].as_str().unwrap_or("?");
+                                    self.chat.model_label = format!("{provider}/{model}");
+                                }
+                            }
+                            self.chat.push_message(
+                                Role::System,
+                                format!("Switched to {model_id}"),
+                            );
+                        }
+                        _ => {
+                            self.chat.push_message(
+                                Role::System,
+                                format!("Failed to switch to {model_id}"),
+                            );
+                        }
+                    }
+                }
+            }
+            Backend::InProcess { kernel } => {
+                if let Some(id) = self.agent_id_inprocess {
+                    let provider = kernel
+                        .model_catalog
+                        .read()
+                        .unwrap()
+                        .find_model(model_id)
+                        .map(|e| e.provider.clone());
+                    let result = if let Some(ref prov) = provider {
+                        kernel.registry.update_model_and_provider(
+                            id,
+                            model_id.to_string(),
+                            prov.clone(),
+                        )
+                    } else {
+                        kernel.registry.update_model(id, model_id.to_string())
+                    };
+                    match result {
+                        Ok(()) => {
+                            let prov_label = provider.unwrap_or_else(|| {
+                                kernel
+                                    .registry
+                                    .get(id)
+                                    .map(|e| e.manifest.model.provider.clone())
+                                    .unwrap_or_else(|| "?".to_string())
+                            });
+                            self.chat.model_label = format!("{prov_label}/{model_id}");
+                            self.chat.push_message(
+                                Role::System,
+                                format!("Switched to {model_id}"),
+                            );
+                        }
+                        Err(e) => {
+                            self.chat.push_message(
+                                Role::System,
+                                format!("Switch failed: {e}"),
+                            );
+                        }
+                    }
+                }
+            }
+            Backend::None => {
+                self.chat
+                    .push_message(Role::System, "No backend connected.".to_string());
             }
         }
     }

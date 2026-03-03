@@ -1050,7 +1050,7 @@ pub async fn send_message_stream(
 // ---------------------------------------------------------------------------
 
 /// Field type for the channel configuration form.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum FieldType {
     Secret,
     Text,
@@ -1763,12 +1763,16 @@ fn is_channel_configured(config: &openfang_types::config::ChannelsConfig, name: 
 }
 
 /// Build a JSON field descriptor, checking env var presence but never exposing secrets.
-fn build_field_json(f: &ChannelField) -> serde_json::Value {
+/// For non-secret fields, includes the actual config value from `config_values` if available.
+fn build_field_json(
+    f: &ChannelField,
+    config_values: Option<&serde_json::Value>,
+) -> serde_json::Value {
     let has_value = f
         .env_var
         .map(|ev| std::env::var(ev).map(|v| !v.is_empty()).unwrap_or(false))
         .unwrap_or(false);
-    serde_json::json!({
+    let mut field = serde_json::json!({
         "key": f.key,
         "label": f.label,
         "type": f.field_type.as_str(),
@@ -1777,12 +1781,96 @@ fn build_field_json(f: &ChannelField) -> serde_json::Value {
         "has_value": has_value,
         "placeholder": f.placeholder,
         "advanced": f.advanced,
-    })
+    });
+    // For non-secret fields, include the actual saved config value so the
+    // dashboard can pre-populate forms when editing existing configs.
+    if f.env_var.is_none() {
+        if let Some(obj) = config_values.and_then(|v| v.as_object()) {
+            if let Some(val) = obj.get(f.key) {
+                // Convert arrays to comma-separated string for list fields
+                let display_val = if f.field_type == FieldType::List {
+                    if let Some(arr) = val.as_array() {
+                        serde_json::Value::String(
+                            arr.iter()
+                                .filter_map(|v| {
+                                    v.as_str()
+                                        .map(|s| s.to_string())
+                                        .or_else(|| Some(v.to_string()))
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        )
+                    } else {
+                        val.clone()
+                    }
+                } else {
+                    val.clone()
+                };
+                field["value"] = display_val;
+                if !val.is_null()
+                    && val.as_str().map(|s| !s.is_empty()).unwrap_or(true)
+                {
+                    field["has_value"] = serde_json::Value::Bool(true);
+                }
+            }
+        }
+    }
+    field
 }
 
 /// Find a channel definition by name.
 fn find_channel_meta(name: &str) -> Option<&'static ChannelMeta> {
     CHANNEL_REGISTRY.iter().find(|c| c.name == name)
+}
+
+/// Serialize a channel's config to a JSON Value for pre-populating dashboard forms.
+fn channel_config_values(
+    config: &openfang_types::config::ChannelsConfig,
+    name: &str,
+) -> Option<serde_json::Value> {
+    match name {
+        "telegram" => config.telegram.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "discord" => config.discord.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "slack" => config.slack.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "whatsapp" => config.whatsapp.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "signal" => config.signal.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "matrix" => config.matrix.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "email" => config.email.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "teams" => config.teams.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "mattermost" => config.mattermost.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "irc" => config.irc.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "google_chat" => config.google_chat.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "twitch" => config.twitch.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "rocketchat" => config.rocketchat.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "zulip" => config.zulip.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "xmpp" => config.xmpp.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "line" => config.line.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "viber" => config.viber.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "messenger" => config.messenger.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "reddit" => config.reddit.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "mastodon" => config.mastodon.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "bluesky" => config.bluesky.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "feishu" => config.feishu.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "revolt" => config.revolt.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "nextcloud" => config.nextcloud.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "guilded" => config.guilded.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "keybase" => config.keybase.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "threema" => config.threema.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "nostr" => config.nostr.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "webex" => config.webex.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "pumble" => config.pumble.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "flock" => config.flock.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "twist" => config.twist.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "mumble" => config.mumble.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "dingtalk" => config.dingtalk.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "discourse" => config.discourse.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "gitter" => config.gitter.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "ntfy" => config.ntfy.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "gotify" => config.gotify.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "webhook" => config.webhook.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "linkedin" => config.linkedin.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        _ => None,
+    }
 }
 
 /// GET /api/channels — List all 40 channel adapters with status and field metadata.
@@ -1810,7 +1898,12 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> impl IntoRespo
                     .unwrap_or(true)
             });
 
-        let fields: Vec<serde_json::Value> = meta.fields.iter().map(build_field_json).collect();
+        let config_vals = channel_config_values(&live_channels, meta.name);
+        let fields: Vec<serde_json::Value> = meta
+            .fields
+            .iter()
+            .map(|f| build_field_json(f, config_vals.as_ref()))
+            .collect();
 
         channels.push(serde_json::json!({
             "name": meta.name,

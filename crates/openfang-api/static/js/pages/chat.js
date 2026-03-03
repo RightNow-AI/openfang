@@ -34,6 +34,13 @@ function chatPage() {
     modelPickerList: [],
     modelPickerFilter: '',
     modelPickerIdx: 0,
+    // Model switcher dropdown
+    showModelSwitcher: false,
+    modelSwitcherFilter: '',
+    modelSwitcherIdx: 0,
+    modelSwitching: false,
+    _modelCache: null,
+    _modelCacheTime: 0,
     slashCommands: [
       { cmd: '/help', desc: 'Show available commands' },
       { cmd: '/agents', desc: 'Switch to Agents page' },
@@ -85,6 +92,36 @@ function chatPage() {
       }
     },
 
+    get modelDisplayName() {
+      if (!this.currentAgent) return '';
+      var name = this.currentAgent.model_name || '';
+      var short = name.replace(/-\d{8}$/, '');
+      return short.length > 24 ? short.substring(0, 22) + '\u2026' : short;
+    },
+
+    get filteredSwitcherModels() {
+      var models = this._modelCache || [];
+      if (!this.modelSwitcherFilter) return models;
+      var f = this.modelSwitcherFilter.toLowerCase();
+      return models.filter(function(m) {
+        return m.id.toLowerCase().indexOf(f) !== -1 ||
+               (m.display_name || '').toLowerCase().indexOf(f) !== -1 ||
+               m.provider.toLowerCase().indexOf(f) !== -1;
+      });
+    },
+
+    get groupedSwitcherModels() {
+      var filtered = this.filteredSwitcherModels;
+      var groups = {}, order = [];
+      filtered.forEach(function(m) {
+        if (!groups[m.provider]) { groups[m.provider] = []; order.push(m.provider); }
+        groups[m.provider].push(m);
+      });
+      return order.map(function(p) {
+        return { provider: p.charAt(0).toUpperCase() + p.slice(1), models: groups[p] };
+      });
+    },
+
     init() {
       var self = this;
 
@@ -100,6 +137,11 @@ function chatPage() {
           e.preventDefault();
           var input = document.getElementById('msg-input');
           if (input) { input.focus(); self.inputText = '/'; }
+        }
+        // Ctrl+M for model switcher
+        if ((e.ctrlKey || e.metaKey) && e.key === 'm' && self.currentAgent) {
+          e.preventDefault();
+          self.toggleModelSwitcher();
         }
         // Ctrl+F for chat search
         if ((e.ctrlKey || e.metaKey) && e.key === 'f' && self.currentAgent) {
@@ -170,6 +212,54 @@ function chatPage() {
       this.showModelPicker = false;
       this.inputText = '/model ' + modelId;
       this.sendMessage();
+    },
+
+    toggleModelSwitcher() {
+      if (this.showModelSwitcher) { this.showModelSwitcher = false; return; }
+      var self = this;
+      var now = Date.now();
+      if (this._modelCache && (now - this._modelCacheTime) < 300000) {
+        this.modelSwitcherFilter = '';
+        this.modelSwitcherIdx = 0;
+        this.showModelSwitcher = true;
+        this.$nextTick(function() {
+          var el = document.getElementById('model-switcher-search');
+          if (el) el.focus();
+        });
+        return;
+      }
+      OpenFangAPI.get('/api/models').then(function(data) {
+        var models = (data.models || []).filter(function(m) { return m.available; });
+        self._modelCache = models;
+        self._modelCacheTime = Date.now();
+        self.modelPickerList = models;
+        self.modelSwitcherFilter = '';
+        self.modelSwitcherIdx = 0;
+        self.showModelSwitcher = true;
+        self.$nextTick(function() {
+          var el = document.getElementById('model-switcher-search');
+          if (el) el.focus();
+        });
+      }).catch(function(e) {
+        OpenFangToast.error('Failed to load models: ' + e.message);
+      });
+    },
+
+    switchModel(model) {
+      if (!this.currentAgent) return;
+      if (model.id === this.currentAgent.model_name) { this.showModelSwitcher = false; return; }
+      var self = this;
+      this.modelSwitching = true;
+      OpenFangAPI.put('/api/agents/' + this.currentAgent.id + '/model', { model: model.id }).then(function() {
+        self.currentAgent.model_name = model.id;
+        self.currentAgent.model_provider = model.provider;
+        OpenFangToast.success('Switched to ' + (model.display_name || model.id));
+        self.showModelSwitcher = false;
+        self.modelSwitching = false;
+      }).catch(function(e) {
+        OpenFangToast.error('Switch failed: ' + e.message);
+        self.modelSwitching = false;
+      });
     },
 
     // Fetch dynamic slash commands from server

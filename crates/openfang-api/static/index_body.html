@@ -746,9 +746,55 @@
                   </button>
                 </template>
               </div>
-              <!-- Footer: tokens + queue + tips -->
+              <!-- Footer: model switcher + tokens + queue + tips -->
               <div class="input-footer">
                 <div class="flex items-center gap-2">
+                  <!-- Model Switcher -->
+                  <div style="position:relative" x-show="currentAgent" @click.outside="showModelSwitcher = false" @keydown.escape.window="showModelSwitcher = false">
+                    <button class="model-switcher-btn" @click="toggleModelSwitcher()" :disabled="sending" title="Switch model (Ctrl+M)">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                      <span class="model-switcher-label" x-text="modelDisplayName || 'Model'"></span>
+                      <svg class="model-switcher-chevron" :class="{'open': showModelSwitcher}" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <!-- Dropdown -->
+                    <div class="model-switcher-dropdown" x-show="showModelSwitcher" x-transition:enter="transition ease-out duration-150" x-transition:enter-start="opacity-0 transform translate-y-1" x-transition:enter-end="opacity-100 transform translate-y-0" x-transition:leave="transition ease-in duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0">
+                      <div class="model-switcher-search">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;opacity:0.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <input id="model-switcher-search" type="text" x-model="modelSwitcherFilter" placeholder="Search models..." @keydown.escape.stop="showModelSwitcher = false" @keydown.arrow-down.prevent="modelSwitcherIdx = Math.min(modelSwitcherIdx + 1, filteredSwitcherModels.length - 1)" @keydown.arrow-up.prevent="modelSwitcherIdx = Math.max(modelSwitcherIdx - 1, 0)" @keydown.enter.prevent="filteredSwitcherModels[modelSwitcherIdx] && switchModel(filteredSwitcherModels[modelSwitcherIdx])">
+                      </div>
+                      <div x-show="modelSwitching" style="display:flex;align-items:center;justify-content:center;padding:12px;gap:8px">
+                        <div class="tool-card-spinner"></div>
+                        <span class="text-xs text-dim">Switching...</span>
+                      </div>
+                      <div class="model-switcher-list" x-show="!modelSwitching">
+                        <template x-if="groupedSwitcherModels.length === 0">
+                          <div style="padding:16px;text-align:center" class="text-xs text-dim">No models found</div>
+                        </template>
+                        <template x-for="group in groupedSwitcherModels" :key="group.provider">
+                          <div>
+                            <div class="model-switcher-group-header" x-text="group.provider"></div>
+                            <template x-for="(m, mi) in group.models" :key="m.id">
+                              <div class="model-switcher-item" :class="{'active': currentAgent && m.id === currentAgent.model_name}" @click="switchModel(m)" @mouseenter="modelSwitcherIdx = filteredSwitcherModels.indexOf(m)">
+                                <div style="flex:1;min-width:0">
+                                  <div style="display:flex;align-items:center;gap:6px">
+                                    <span class="model-switcher-item-name" x-text="m.display_name || m.id"></span>
+                                    <span class="model-switcher-tier" :class="'tier-' + (m.tier || 'balanced').toLowerCase()" x-text="m.tier || 'Balanced'"></span>
+                                  </div>
+                                  <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+                                    <span class="text-xs text-dim" x-text="m.id" style="font-family:var(--font-mono)"></span>
+                                    <span class="text-xs text-dim" x-show="m.context_window" x-text="m.context_window >= 1000000 ? (m.context_window/1000000).toFixed(1)+'M' : Math.round(m.context_window/1000)+'K'"></span>
+                                    <svg x-show="m.supports_vision" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="opacity:0.5" title="Vision"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    <svg x-show="m.supports_tools" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="opacity:0.5" title="Tools"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                                  </div>
+                                </div>
+                                <svg x-show="currentAgent && m.id === currentAgent.model_name" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
                   <span class="text-xs text-dim" x-text="tokenCount > 0 ? '~' + tokenCount + ' tokens' : (attachments.length ? attachments.length + ' file(s)' : '')"></span>
                   <span class="queue-badge" x-show="messageQueue.length > 0" x-text="messageQueue.length + ' queued'"></span>
                 </div>
