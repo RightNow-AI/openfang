@@ -146,7 +146,7 @@ pub fn validate_command_allowlist(command: &str, policy: &ExecPolicy) -> Result<
         }
         ExecSecurityMode::Full => {
             tracing::warn!(
-                command = &command[..command.len().min(100)],
+                command = openfang_types::truncate_str(command, 100),
                 "Shell exec in full mode — no restrictions"
             );
             Ok(())
