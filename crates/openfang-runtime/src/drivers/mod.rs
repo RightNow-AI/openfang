@@ -63,7 +63,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "FIREWORKS_API_KEY",
             key_required: true,
         }),
-        "openai" => Some(ProviderDefaults {
+        "openai" | "openai-responses" => Some(ProviderDefaults {
             base_url: OPENAI_BASE_URL,
             api_key_env: "OPENAI_API_KEY",
             key_required: true,
@@ -321,7 +321,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
     Err(LlmError::Api {
         status: 0,
         message: format!(
-            "Unknown provider '{}'. Supported: anthropic, gemini, openai, groq, openrouter, \
+            "Unknown provider '{}'. Supported: anthropic, gemini, openai, openai-responses, groq, openrouter, \
              deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, perplexity, \
              cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot, \
              codex, claude-code. Or set base_url for a custom OpenAI-compatible endpoint.",
@@ -336,6 +336,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "anthropic",
         "gemini",
         "openai",
+        "openai-responses",
         "groq",
         "openrouter",
         "deepseek",
@@ -439,6 +440,7 @@ mod tests {
         assert!(providers.contains(&"openrouter"));
         assert!(providers.contains(&"anthropic"));
         assert!(providers.contains(&"gemini"));
+        assert!(providers.contains(&"openai-responses"));
         // New providers
         assert!(providers.contains(&"perplexity"));
         assert!(providers.contains(&"cohere"));
@@ -457,7 +459,7 @@ mod tests {
         assert!(providers.contains(&"qianfan"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
-        assert_eq!(providers.len(), 29);
+        assert_eq!(providers.len(), 30);
     }
 
     #[test]

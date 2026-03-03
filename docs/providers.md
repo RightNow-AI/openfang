@@ -93,6 +93,11 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 2. Create an API key under API Keys
 3. `export OPENAI_API_KEY="sk-..."`
 
+**Responses Format (new):**
+- You can explicitly select the Responses format with `provider = "openai-responses"`.
+- For reasoning level, set `OPENAI_REASONING_EFFORT` (e.g. `low`, `medium`, `high`, `xhigh`).
+- Models like `gpt-5.3-codex*` automatically use Responses format even under `provider = "openai"`.
+
 ---
 
 ### 3. Google Gemini
@@ -1033,6 +1038,9 @@ Quick reference for all provider environment variables:
 | Hugging Face | `HF_API_KEY` | Yes |
 | xAI | `XAI_API_KEY` | Yes |
 | Replicate | `REPLICATE_API_TOKEN` | Yes |
+
+Additional optional variable:
+- `OPENAI_REASONING_EFFORT` — used by Responses format (`openai-responses`) to set reasoning effort (`low`/`medium`/`high`/`xhigh`).
 
 ---
 
