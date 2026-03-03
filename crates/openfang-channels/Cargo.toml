@@ -32,5 +32,10 @@ imap = { workspace = true }
 native-tls = { workspace = true }
 mailparse = { workspace = true }
 
+# On Linux, statically link OpenSSL so the binary doesn't require system libssl/libcrypto.
+# This is needed because `imap` depends on `native-tls` which uses OpenSSL on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
 [dev-dependencies]
 tokio-test = { workspace = true }

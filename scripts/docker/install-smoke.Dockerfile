@@ -37,12 +37,12 @@ RUN if [ "$OPENFANG_SMOKE_FULL" = "1" ]; then \
             detect_platform && \
             echo "PASS: platform detected as $PLATFORM" \
         ' && \
-        # 3. Verify target matches release naming (must contain -unknown-linux-gnu)
+        # 3. Verify target matches release naming (must contain -unknown-linux-musl)
         bash -c ' \
             eval "$(sed -n "/^detect_platform/,/^}/p" /tmp/install.sh)" && \
             detect_platform && \
-            echo "$PLATFORM" | grep -q "linux-gnu" && \
-            echo "PASS: target is gnu (matches release.yml)" \
+            echo "$PLATFORM" | grep -q "linux-musl" && \
+            echo "PASS: target is musl (matches release.yml)" \
         '; \
     fi
 

@@ -148,6 +148,12 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04
             archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+            archive: tar.gz
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-22.04
+            archive: tar.gz
           - target: x86_64-apple-darwin
             os: macos-latest
             archive: tar.gz
@@ -166,20 +172,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - name: Install build deps (Linux)
-        if: runner.os == 'Linux'
+      - name: Install build deps (Linux gnu)
+        if: runner.os == 'Linux' && !contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
-      - name: Install cross (Linux aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Install build deps (Linux musl x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools pkg-config
+      - name: Install cross (Linux cross-compile)
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-musl'
         run: cargo install cross --locked
       - uses: Swatinem/rust-cache@v2
         with:
           key: cli-${{ matrix.target }}
       - name: Build CLI (cross)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-musl'
         run: cross build --release --target ${{ matrix.target }} --bin openfang
       - name: Build CLI
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'aarch64-unknown-linux-musl'
         run: cargo build --release --target ${{ matrix.target }} --bin openfang
       - name: Package (Unix)
         if: matrix.archive == 'tar.gz'

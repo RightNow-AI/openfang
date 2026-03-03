@@ -20,7 +20,7 @@ detect_platform() {
         *) echo "  Unsupported architecture: $ARCH"; exit 1 ;;
     esac
     case "$OS" in
-        linux) PLATFORM="${ARCH}-unknown-linux-gnu" ;;
+        linux) PLATFORM="${ARCH}-unknown-linux-musl" ;;
         darwin) PLATFORM="${ARCH}-apple-darwin" ;;
         mingw*|msys*|cygwin*)
             echo ""
