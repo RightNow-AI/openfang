@@ -2139,11 +2139,11 @@
             <!-- Category quick-search chips (always visible when not searching) -->
             <div class="mb-4" x-show="!clawhubSearch">
               <div class="text-xs text-dim mb-2" style="letter-spacing:0.5px">CATEGORIES</div>
-              #WR|              <div class="category-chips">
-                #JB|                <template x-for="cat in categories" :key="cat.id">
-                  #QR|                  <span class="filter-pill" style="font-size:0.7rem;padding:2px 8px" @click="searchCategory(cat)" x-text="cat.name"></span>
-                #HZ|                </template>
-              #YH|              </div>
+              <div class="category-chips">
+                <template x-for="cat in categories" :key="cat.id">
+                  <span class="filter-pill" style="font-size:0.7rem;padding:2px 8px" @click="searchCategory(cat)" x-text="cat.name"></span>
+                </template>
+              </div>
             </div>
 
             <!-- Loading spinner -->

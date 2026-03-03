@@ -28,48 +28,48 @@
 
 .sidebar.collapsed .nav-item { justify-content: center; padding: 12px 0; }
 
-#TR|.sidebar-header {
-#ZY|  padding: 16px;
-#JJ|  border-bottom: 1px solid var(--border);
-#XK|  display: flex;
-#ZY|  align-items: center;
-#ZN|  justify-content: space-between;
-#HP|  min-height: 60px;
-#HZ|  gap: 0.5rem;
-#BZ}
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 60px;
+  gap: 0.5rem;
+}
 
-#PY|.sidebar-logo {
-  #XK|  display: flex;
-  #ZY|  align-items: center;
-  #VT|  gap: 0.5rem;
-#VH}
+.sidebar-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
 
-#SK|.sidebar-logo img {
-  #TN|  width: 24px;
-  #HN|  height: 24px;
-  #YY|  opacity: 0.8;
-  #JZ|  transition: opacity 0.2s, transform 0.2s;
-#SJ}
+.sidebar-logo img {
+  width: 24px;
+  height: 24px;
+  opacity: 0.8;
+  transition: opacity 0.2s, transform 0.2s;
+}
 
 .sidebar-logo img:hover {
   opacity: 1;
   transform: scale(1.05);
 }
 
-#KK|.sidebar-header h1 {
-  #XV|  font-size: 12px;
-  #WT|  font-weight: 700;
-  #TN|  color: var(--accent);
-  #XN|  letter-spacing: 3px;
-  #YZ|  font-family: var(--font-mono);
-#NJ}
+.sidebar-header h1 {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 3px;
+  font-family: var(--font-mono);
+}
 
-#KV|.sidebar-header .version {
-  #ZY|  font-size: 8px;
-  #RT|  color: var(--text-muted);
-  #TR|  margin-top: 1px;
-  #MM|  letter-spacing: 0.5px;
-#BK}
+.sidebar-header .version {
+  font-size: 8px;
+  color: var(--text-muted);
+  margin-top: 1px;
+  letter-spacing: 0.5px;
+}
 
 .sidebar-status {
   font-size: 11px;
