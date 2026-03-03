@@ -49,6 +49,13 @@
   transition: border-color var(--transition-fast), transform 0.2s var(--ease-spring), box-shadow var(--transition-fast);
   position: relative;
   box-shadow: var(--shadow-xs), var(--shadow-inset);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.card-body {
+  flex: 1;
 }
 
 .card:hover {
