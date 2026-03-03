@@ -5,6 +5,7 @@
 //! you (you check in on them).
 
 pub mod bundled;
+pub mod loader;
 pub mod registry;
 
 use chrono::{DateTime, Utc};

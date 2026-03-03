@@ -133,7 +133,7 @@ enum Commands {
     /// Manage channel integrations (setup, test, enable, disable) [*].
     #[command(subcommand)]
     Channel(ChannelCommands),
-    /// Manage hands (list, activate, deactivate, info) [*].
+    /// Manage autonomous Hands (list, activate, status, deactivate, pause, resume) [*].
     #[command(subcommand)]
     Hand(HandCommands),
     /// Show or edit configuration (show, edit, get, set, keys) [*].
@@ -386,6 +386,11 @@ enum ChannelCommands {
 
 #[derive(Subcommand)]
 enum HandCommands {
+    /// Install a hand from a local directory (HAND.toml + optional SKILL.md).
+    Install {
+        /// Path to directory containing HAND.toml.
+        path: PathBuf,
+    },
     /// List all available hands.
     List,
     /// Show currently active hand instances.
@@ -908,6 +913,7 @@ fn main() {
             ChannelCommands::Disable { channel } => cmd_channel_toggle(&channel, false),
         },
         Some(Commands::Hand(sub)) => match sub {
+            HandCommands::Install { path } => cmd_hand_install(cli.config, &path),
             HandCommands::List => cmd_hand_list(),
             HandCommands::Active => cmd_hand_active(),
             HandCommands::Activate { id } => cmd_hand_activate(&id),
@@ -1058,10 +1064,26 @@ pub(crate) fn find_daemon() -> Option<String> {
     }
 }
 
-/// Build an HTTP client for daemon calls.
+/// Read the `api_key` from `~/.openfang/config.toml` (if present).
+fn read_api_key() -> Option<String> {
+    let config_path = dirs::home_dir()?.join(".openfang").join("config.toml");
+    let content = std::fs::read_to_string(config_path).ok()?;
+    let table: toml::Value = toml::from_str(&content).ok()?;
+    let key = table.get("api_key")?.as_str()?;
+    if key.is_empty() { None } else { Some(key.to_string()) }
+}
+
+/// Build an HTTP client for daemon calls (with auth if configured).
 pub(crate) fn daemon_client() -> reqwest::blocking::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(api_key) = read_api_key() {
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}")) {
+            headers.insert(reqwest::header::AUTHORIZATION, val);
+        }
+    }
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
+        .default_headers(headers)
         .build()
         .expect("Failed to build HTTP client")
 }
@@ -3419,6 +3441,52 @@ if __name__ == "__main__":
         "  3. Install: openfang skill install {}",
         skill_dir.display()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Hand commands
+// ---------------------------------------------------------------------------
+
+fn cmd_hand_install(config: Option<PathBuf>, path: &std::path::Path) {
+    let def = match openfang_hands::loader::load_from_dir(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Failed to load hand from {}: {e}", path.display());
+            std::process::exit(1);
+        }
+    };
+
+    let hand_id = def.id.clone();
+    let hand_name = def.name.clone();
+
+    if let Some(base) = find_daemon() {
+        // Send definition to daemon API
+        let toml_content = std::fs::read_to_string(path.join("HAND.toml")).unwrap_or_default();
+        let skill_content = std::fs::read_to_string(path.join("SKILL.md")).unwrap_or_default();
+
+        let client = daemon_client();
+        let body = daemon_json(
+            client
+                .post(format!("{base}/api/hands/install"))
+                .json(&serde_json::json!({
+                    "toml": toml_content,
+                    "skill": skill_content,
+                }))
+                .send(),
+        );
+        if body["error"].is_string() {
+            eprintln!(
+                "Failed to install: {}",
+                body["error"].as_str().unwrap_or("unknown")
+            );
+            std::process::exit(1);
+        }
+        println!("Installed hand '{}' ({}).", hand_id, hand_name);
+    } else {
+        let kernel = boot_kernel(config);
+        kernel.hand_registry.register(def);
+        println!("Installed hand '{}' ({}).", hand_id, hand_name);
+    }
 }
 
 // ---------------------------------------------------------------------------

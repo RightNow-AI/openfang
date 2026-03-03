@@ -3206,6 +3206,35 @@ fn server_platform() -> &'static str {
     }
 }
 
+/// POST /api/hands/install — Register a hand definition at runtime.
+pub async fn install_hand(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let toml_content = body["toml"].as_str().unwrap_or("");
+    let skill_content = body["skill"].as_str().unwrap_or("");
+
+    let mut def: openfang_hands::HandDefinition = match toml::from_str(toml_content) {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid HAND.toml: {e}")})),
+            );
+        }
+    };
+    if !skill_content.is_empty() {
+        def.skill_content = Some(skill_content.to_string());
+    }
+    let hand_id = def.id.clone();
+    let hand_name = def.name.clone();
+    state.kernel.hand_registry.register(def);
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"status": "installed", "hand_id": hand_id, "name": hand_name})),
+    )
+}
+
 /// GET /api/hands — List all hand definitions (marketplace).
 pub async fn list_hands(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let defs = state.kernel.hand_registry.list_definitions();

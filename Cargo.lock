@@ -3941,6 +3941,7 @@ dependencies = [
  "dirs 6.0.0",
  "openfang-api",
  "openfang-extensions",
+ "openfang-hands",
  "openfang-kernel",
  "openfang-migrate",
  "openfang-runtime",

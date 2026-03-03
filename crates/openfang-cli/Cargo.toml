@@ -16,6 +16,7 @@ openfang-api = { path = "../openfang-api" }
 openfang-migrate = { path = "../openfang-migrate" }
 openfang-skills = { path = "../openfang-skills" }
 openfang-extensions = { path = "../openfang-extensions" }
+openfang-hands = { path = "../openfang-hands" }
 zeroize = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

@@ -38,7 +38,7 @@ pub struct SettingStatus {
 /// The Hand registry — stores definitions and tracks active instances.
 pub struct HandRegistry {
     /// All known hand definitions, keyed by hand_id.
-    definitions: HashMap<String, HandDefinition>,
+    definitions: DashMap<String, HandDefinition>,
     /// Active hand instances, keyed by instance UUID.
     instances: DashMap<Uuid, HandInstance>,
 }
@@ -47,13 +47,13 @@ impl HandRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self {
-            definitions: HashMap::new(),
+            definitions: DashMap::new(),
             instances: DashMap::new(),
         }
     }
 
     /// Load all bundled hand definitions. Returns count of definitions loaded.
-    pub fn load_bundled(&mut self) -> usize {
+    pub fn load_bundled(&self) -> usize {
         let bundled = bundled::bundled_hands();
         let mut count = 0;
         for (id, toml_content, skill_content) in bundled {
@@ -71,16 +71,22 @@ impl HandRegistry {
         count
     }
 
+    /// Register a hand definition at runtime (e.g. from a local directory).
+    pub fn register(&self, def: HandDefinition) {
+        info!(hand = %def.id, name = %def.name, "Registered hand");
+        self.definitions.insert(def.id.clone(), def);
+    }
+
     /// List all known hand definitions.
-    pub fn list_definitions(&self) -> Vec<&HandDefinition> {
-        let mut defs: Vec<&HandDefinition> = self.definitions.values().collect();
-        defs.sort_by_key(|d| &d.name);
+    pub fn list_definitions(&self) -> Vec<HandDefinition> {
+        let mut defs: Vec<HandDefinition> = self.definitions.iter().map(|e| e.value().clone()).collect();
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
     }
 
     /// Get a specific hand definition by ID.
-    pub fn get_definition(&self, hand_id: &str) -> Option<&HandDefinition> {
-        self.definitions.get(hand_id)
+    pub fn get_definition(&self, hand_id: &str) -> Option<HandDefinition> {
+        self.definitions.get(hand_id).map(|e| e.value().clone())
     }
 
     /// Activate a hand — creates an instance (agent spawning is done by kernel).
@@ -335,6 +341,78 @@ fn check_option_available(provider_env: Option<&str>, binary: Option<&str>) -> b
 mod tests {
     use super::*;
 
+    fn make_test_hand(id: &str) -> HandDefinition {
+        let toml_str = format!(
+            r#"
+id = "{id}"
+name = "Test {id}"
+description = "Test hand {id}"
+category = "content"
+tools = []
+
+[agent]
+name = "{id}-agent"
+description = "agent"
+system_prompt = "Test."
+"#
+        );
+        toml::from_str(&toml_str).unwrap()
+    }
+
+    #[test]
+    fn register_adds_definition() {
+        let reg = HandRegistry::new();
+        let def = make_test_hand("custom");
+        reg.register(def);
+
+        let found = reg.get_definition("custom");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "Test custom");
+    }
+
+    #[test]
+    fn register_overwrites_existing() {
+        let reg = HandRegistry::new();
+
+        reg.register(make_test_hand("dup"));
+        assert_eq!(reg.get_definition("dup").unwrap().name, "Test dup");
+
+        // Re-register with a hand that has a different name but same id
+        let toml_str = r#"
+id = "dup"
+name = "Updated Hand"
+description = "Updated"
+category = "data"
+tools = []
+
+[agent]
+name = "dup-agent"
+description = "updated agent"
+system_prompt = "Updated."
+"#;
+        let updated: HandDefinition = toml::from_str(toml_str).unwrap();
+        reg.register(updated);
+
+        let found = reg.get_definition("dup").unwrap();
+        assert_eq!(found.name, "Updated Hand");
+        // Should still be exactly one definition for "dup"
+        assert_eq!(reg.list_definitions().iter().filter(|d| d.id == "dup").count(), 1);
+    }
+
+    #[test]
+    fn register_appears_in_list_definitions() {
+        let reg = HandRegistry::new();
+        assert!(reg.list_definitions().is_empty());
+
+        reg.register(make_test_hand("alpha"));
+        reg.register(make_test_hand("beta"));
+        let defs = reg.list_definitions();
+        assert_eq!(defs.len(), 2);
+        // list_definitions is sorted by name
+        assert_eq!(defs[0].name, "Test alpha");
+        assert_eq!(defs[1].name, "Test beta");
+    }
+
     #[test]
     fn new_registry_is_empty() {
         let reg = HandRegistry::new();
@@ -344,7 +422,7 @@ mod tests {
 
     #[test]
     fn load_bundled_hands() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         let count = reg.load_bundled();
         assert_eq!(count, 7);
         assert!(!reg.list_definitions().is_empty());
@@ -368,7 +446,7 @@ mod tests {
 
     #[test]
     fn activate_and_deactivate() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         reg.load_bundled();
 
         let instance = reg.activate("clip", HashMap::new()).unwrap();
@@ -390,7 +468,7 @@ mod tests {
 
     #[test]
     fn pause_and_resume() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         reg.load_bundled();
 
         let instance = reg.activate("clip", HashMap::new()).unwrap();
@@ -409,7 +487,7 @@ mod tests {
 
     #[test]
     fn set_agent() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         reg.load_bundled();
 
         let instance = reg.activate("clip", HashMap::new()).unwrap();
@@ -427,7 +505,7 @@ mod tests {
 
     #[test]
     fn check_requirements() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         reg.load_bundled();
 
         let results = reg.check_requirements("clip").unwrap();
@@ -452,7 +530,7 @@ mod tests {
 
     #[test]
     fn set_error_status() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         reg.load_bundled();
 
         let instance = reg.activate("clip", HashMap::new()).unwrap();
