@@ -3866,7 +3866,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-api"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -3902,7 +3902,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-channels"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -3933,7 +3933,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-cli"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3960,7 +3960,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-desktop"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "axum",
  "open",
@@ -3986,7 +3986,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-extensions"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -4014,7 +4014,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-hands"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "dashmap",
@@ -4031,7 +4031,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-kernel"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4067,7 +4067,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-memory"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4086,7 +4086,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-migrate"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -4105,7 +4105,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-runtime"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4137,7 +4137,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-skills"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "hex",
@@ -4155,11 +4155,12 @@ dependencies = [
  "tracing",
  "uuid",
  "walkdir",
+ "zip 2.4.2",
 ]
 
 [[package]]
 name = "openfang-types"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4178,7 +4179,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-wire"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6553,7 +6554,7 @@ dependencies = [
  "tokio",
  "url",
  "windows-sys 0.60.2",
- "zip",
+ "zip 4.6.1",
 ]
 
 [[package]]
@@ -8790,7 +8791,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.3.0"
+version = "0.3.2"
 
 [[package]]
 name = "yoke"
@@ -8972,6 +8973,23 @@ dependencies = [
 
 [[package]]
 name = "zip"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "crossbeam-utils",
+ "displaydoc",
+ "flate2",
+ "indexmap 2.13.0",
+ "memchr",
+ "thiserror 2.0.18",
+ "zopfli",
+]
+
+[[package]]
+name = "zip"
 version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
@@ -8987,6 +9005,18 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zopfli"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f05cd8797d63865425ff89b5c4a48804f35ba0ce8d125800027ad6017d2b5249"
+dependencies = [
+ "bumpalo",
+ "crc32fast",
+ "log",
+ "simd-adler32",
+]
 
 [[package]]
 name = "zstd"

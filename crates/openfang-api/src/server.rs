@@ -322,6 +322,10 @@ pub async fn build_router(
             axum::routing::get(routes::clawhub_skill_detail),
         )
         .route(
+            "/api/clawhub/skill/{slug}/code",
+            axum::routing::get(routes::clawhub_skill_code),
+        )
+        .route(
             "/api/clawhub/install",
             axum::routing::post(routes::clawhub_install),
         )

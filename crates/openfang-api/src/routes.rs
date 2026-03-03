@@ -483,6 +483,10 @@ pub async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "default_provider": state.kernel.config.default_model.provider,
         "default_model": state.kernel.config.default_model.model,
         "uptime_seconds": uptime,
+        "api_listen": state.kernel.config.api_listen,
+        "home_dir": state.kernel.config.home_dir.display().to_string(),
+        "log_level": state.kernel.config.log_level,
+        "network_enabled": state.kernel.config.network_enabled,
         "agents": agents,
     }))
 }
@@ -2966,6 +2970,46 @@ pub async fn clawhub_skill_detail(
     }
 }
 
+/// GET /api/clawhub/skill/{slug}/code — Fetch the source code (SKILL.md) of a ClawHub skill.
+pub async fn clawhub_skill_code(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+) -> impl IntoResponse {
+    let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+
+    // Try to fetch SKILL.md first, then fallback to package.json
+    let mut code = String::new();
+    let mut filename = String::new();
+
+    if let Ok(content) = client.get_file(&slug, "SKILL.md").await {
+        code = content;
+        filename = "SKILL.md".to_string();
+    } else if let Ok(content) = client.get_file(&slug, "package.json").await {
+        code = content;
+        filename = "package.json".to_string();
+    } else if let Ok(content) = client.get_file(&slug, "skill.toml").await {
+        code = content;
+        filename = "skill.toml".to_string();
+    }
+
+    if code.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "No source code found for this skill"})),
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "slug": slug,
+            "filename": filename,
+            "code": code,
+        })),
+    )
+}
+
 /// POST /api/clawhub/install — Install a skill from ClawHub.
 ///
 /// Runs the full security pipeline: SHA256 verification, format detection,
@@ -5026,6 +5070,10 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
             entry["latency_ms"] = serde_json::json!(probe.latency_ms);
             if !probe.discovered_models.is_empty() {
                 entry["discovered_models"] = serde_json::json!(probe.discovered_models);
+                // Merge discovered models into the catalog so agents can use them
+                if let Ok(mut catalog) = state.kernel.model_catalog.write() {
+                    catalog.merge_discovered_models(&p.id, &probe.discovered_models);
+                }
             }
             if let Some(err) = &probe.error {
                 entry["error"] = serde_json::json!(err);
@@ -6387,16 +6435,25 @@ pub async fn set_provider_url(
     let probe =
         openfang_runtime::provider_health::probe_provider(&name, &base_url).await;
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "saved",
-            "provider": name,
-            "base_url": base_url,
-            "reachable": probe.reachable,
-            "latency_ms": probe.latency_ms,
-        })),
-    )
+    // Merge discovered models into catalog
+    if !probe.discovered_models.is_empty() {
+        if let Ok(mut catalog) = state.kernel.model_catalog.write() {
+            catalog.merge_discovered_models(&name, &probe.discovered_models);
+        }
+    }
+
+    let mut resp = serde_json::json!({
+        "status": "saved",
+        "provider": name,
+        "base_url": base_url,
+        "reachable": probe.reachable,
+        "latency_ms": probe.latency_ms,
+    });
+    if !probe.discovered_models.is_empty() {
+        resp["discovered_models"] = serde_json::json!(probe.discovered_models);
+    }
+
+    (StatusCode::OK, Json(resp))
 }
 
 /// Upsert a provider URL in the `[provider_urls]` section of config.toml.

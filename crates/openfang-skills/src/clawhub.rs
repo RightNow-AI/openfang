@@ -17,7 +17,7 @@ use crate::SkillError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use tracing::info;
+use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
 // API response types (matching actual ClawHub v1 API — verified Feb 2026)
@@ -459,27 +459,49 @@ impl ClawHubClient {
         let skill_dir = target_dir.join(slug);
         std::fs::create_dir_all(&skill_dir)?;
 
-        // Extract: ClawHub delivers as zip bundles. For now, detect content type
-        // and write accordingly. A full zip extraction would use the `zip` crate.
+        // Detect content type and extract accordingly
         let content_str = String::from_utf8_lossy(&bytes);
         let is_skillmd = content_str.trim_start().starts_with("---");
 
         if is_skillmd {
             std::fs::write(skill_dir.join("SKILL.md"), &*bytes)?;
-        } else {
-            // Try to detect if it's a zip by magic bytes (PK\x03\x04)
-            if bytes.len() >= 4 && bytes[0] == 0x50 && bytes[1] == 0x4b {
-                // It's a zip — write as raw zip for future extraction
-                std::fs::write(skill_dir.join("skill.zip"), &*bytes)?;
-                // Try to fetch the SKILL.md file directly as fallback
-                if let Ok(skillmd_content) = self.get_file(slug, "SKILL.md").await {
-                    std::fs::write(skill_dir.join("SKILL.md"), &skillmd_content)?;
-                } else {
-                    std::fs::write(skill_dir.join("package.json"), &*bytes)?;
+        } else if bytes.len() >= 4 && bytes[0] == 0x50 && bytes[1] == 0x4b {
+            // Zip archive — extract all files
+            let cursor = std::io::Cursor::new(&*bytes);
+            match zip::ZipArchive::new(cursor) {
+                Ok(mut archive) => {
+                    for i in 0..archive.len() {
+                        let mut file = match archive.by_index(i) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                warn!(index = i, error = %e, "Skipping zip entry");
+                                continue;
+                            }
+                        };
+                        let Some(enclosed_name) = file.enclosed_name() else {
+                            warn!("Skipping zip entry with unsafe path");
+                            continue;
+                        };
+                        let out_path = skill_dir.join(enclosed_name);
+                        if file.is_dir() {
+                            std::fs::create_dir_all(&out_path)?;
+                        } else {
+                            if let Some(parent) = out_path.parent() {
+                                std::fs::create_dir_all(parent)?;
+                            }
+                            let mut out_file = std::fs::File::create(&out_path)?;
+                            std::io::copy(&mut file, &mut out_file)?;
+                        }
+                    }
+                    info!(slug, entries = archive.len(), "Extracted skill zip");
                 }
-            } else {
-                std::fs::write(skill_dir.join("package.json"), &*bytes)?;
+                Err(e) => {
+                    warn!(slug, error = %e, "Failed to read zip, saving raw");
+                    std::fs::write(skill_dir.join("skill.zip"), &*bytes)?;
+                }
             }
+        } else {
+            std::fs::write(skill_dir.join("package.json"), &*bytes)?;
         }
 
         // Step 2-3: Detect format and convert

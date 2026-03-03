@@ -25,6 +25,10 @@ function skillsPage() {
     // Skill detail modal
     skillDetail: null,
     detailLoading: false,
+    showSkillCode: false,
+    skillCode: '',
+    skillCodeFilename: '',
+    skillCodeLoading: false,
 
     // MCP servers
     mcpServers: [],
@@ -205,6 +209,26 @@ function skillsPage() {
     closeDetail() {
       this.skillDetail = null;
       this.installResult = null;
+      this.showSkillCode = false;
+      this.skillCode = '';
+      this.skillCodeFilename = '';
+    },
+
+    async viewSkillCode(slug) {
+      if (this.showSkillCode) {
+        this.showSkillCode = false;
+        return;
+      }
+      this.skillCodeLoading = true;
+      try {
+        var data = await OpenFangAPI.get('/api/clawhub/skill/' + encodeURIComponent(slug) + '/code');
+        this.skillCode = data.code || '';
+        this.skillCodeFilename = data.filename || 'source';
+        this.showSkillCode = true;
+      } catch(e) {
+        OpenFangToast.error('Could not load skill source code');
+      }
+      this.skillCodeLoading = false;
     },
 
     // Install from ClawHub
