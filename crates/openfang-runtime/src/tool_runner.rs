@@ -287,6 +287,7 @@ pub async fn execute_tool(
 
         // Location tool
         "location_get" => tool_location_get().await,
+        "system_time" => tool_system_time(input).await,
 
         // Cron scheduling tools
         "cron_create" => tool_cron_create(input, kernel, caller_agent_id).await,
@@ -766,6 +767,17 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "system_time".to_string(),
+            description: "Get current system time with timezone and Unix timestamp. Supports timezone='local' or 'utc', and format='rfc3339' or 'iso'.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "timezone": { "type": "string", "description": "Timezone mode: 'local' (default) or 'utc'" },
+                    "format": { "type": "string", "description": "Output time format: 'rfc3339' (default) or 'iso'" }
+                }
             }),
         },
         // --- Browser automation tools ---
@@ -2433,6 +2445,68 @@ async fn tool_location_get() -> Result<String, String> {
     serde_json::to_string_pretty(&result).map_err(|e| format!("Serialize error: {e}"))
 }
 
+async fn tool_system_time(input: &serde_json::Value) -> Result<String, String> {
+    let timezone = input["timezone"].as_str().unwrap_or("local").to_lowercase();
+    let format = input["format"].as_str().unwrap_or("rfc3339").to_lowercase();
+
+    if format != "rfc3339" && format != "iso" {
+        return Err(format!(
+            "Unsupported format '{}'. Use 'rfc3339' or 'iso'.",
+            format
+        ));
+    }
+
+    fn format_dt<Tz: chrono::TimeZone>(dt: chrono::DateTime<Tz>, fmt: &str) -> String
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        match fmt {
+            "iso" => dt.format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string(),
+            _ => dt.to_rfc3339(),
+        }
+    }
+
+    let (local_time, utc_time, offset, timezone_label, unix_seconds) = match timezone.as_str() {
+        "local" => {
+            let local_now = chrono::Local::now();
+            let utc_now = local_now.with_timezone(&chrono::Utc);
+            (
+                format_dt(local_now, &format),
+                format_dt(utc_now, &format),
+                local_now.offset().to_string(),
+                "local".to_string(),
+                local_now.timestamp(),
+            )
+        }
+        "utc" => {
+            let utc_now = chrono::Utc::now();
+            (
+                format_dt(utc_now, &format),
+                format_dt(utc_now, &format),
+                "+00:00".to_string(),
+                "utc".to_string(),
+                utc_now.timestamp(),
+            )
+        }
+        other => {
+            return Err(format!(
+                "Unsupported timezone '{}'. Use 'local' or 'utc'.",
+                other
+            ));
+        }
+    };
+
+    let result = serde_json::json!({
+        "local_time": local_time,
+        "utc_time": utc_time,
+        "timezone": timezone_label,
+        "offset": offset,
+        "unix_seconds": unix_seconds,
+    });
+
+    serde_json::to_string_pretty(&result).map_err(|e| format!("Serialize error: {e}"))
+}
+
 // ---------------------------------------------------------------------------
 // Media understanding tools
 // ---------------------------------------------------------------------------
@@ -3223,6 +3297,85 @@ mod tests {
         .await;
         assert!(result.is_error);
         assert!(result.content.contains("Unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn test_system_time_default() {
+        let result = execute_tool(
+            "test-id",
+            "system_time",
+            &serde_json::json!({}),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // media_engine
+            None, // exec_policy
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("unix_seconds"));
+        assert!(result.content.contains("local_time"));
+    }
+
+    #[tokio::test]
+    async fn test_system_time_utc_iso() {
+        let result = execute_tool(
+            "test-id",
+            "system_time",
+            &serde_json::json!({"timezone":"utc","format":"iso"}),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // media_engine
+            None, // exec_policy
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("\"timezone\": \"utc\""));
+    }
+
+    #[tokio::test]
+    async fn test_system_time_invalid_timezone() {
+        let result = execute_tool(
+            "test-id",
+            "system_time",
+            &serde_json::json!({"timezone":"Asia/Shanghai"}),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // media_engine
+            None, // exec_policy
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("Unsupported timezone"));
     }
 
     #[tokio::test]

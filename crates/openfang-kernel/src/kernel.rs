@@ -22,6 +22,7 @@ use openfang_runtime::llm_driver::{CompletionRequest, DriverConfig, LlmDriver, S
 use openfang_runtime::python_runtime::{self, PythonConfig};
 use openfang_runtime::routing::ModelRouter;
 use openfang_runtime::sandbox::{SandboxConfig, WasmSandbox};
+use openfang_runtime::str_utils::safe_truncate_str;
 use openfang_runtime::tool_runner::builtin_tool_definitions;
 use openfang_types::agent::*;
 use openfang_types::capability::Capability;
@@ -414,11 +415,7 @@ fn append_daily_memory_log(workspace: &Path, response: &str) {
         }
     }
     // Truncate long responses for the log
-    let summary = if trimmed.len() > 500 {
-        &trimmed[..500]
-    } else {
-        trimmed
-    };
+    let summary = safe_truncate_str(trimmed, 500);
     let timestamp = chrono::Utc::now().format("%H:%M:%S").to_string();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -450,7 +447,7 @@ fn read_identity_file(workspace: &Path, filename: &str) -> Option<String> {
         return None;
     }
     if content.len() > MAX_IDENTITY_FILE_BYTES {
-        Some(content[..MAX_IDENTITY_FILE_BYTES].to_string())
+        Some(safe_truncate_str(&content, MAX_IDENTITY_FILE_BYTES).to_string())
     } else {
         Some(content)
     }
@@ -2196,7 +2193,7 @@ impl OpenFangKernel {
                 .take(5)
                 .enumerate()
                 .map(|(i, t)| {
-                    let truncated = if t.len() > 200 { &t[..200] } else { t };
+                    let truncated = safe_truncate_str(t, 200);
                     format!("{}. {}", i + 1, truncated)
                 })
                 .collect::<Vec<_>>()
