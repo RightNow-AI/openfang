@@ -39,6 +39,7 @@ pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 pub const ZHIPU_CODING_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 pub const MOONSHOT_BASE_URL: &str = "https://api.moonshot.cn/v1";
 pub const QIANFAN_BASE_URL: &str = "https://qianfan.baidubce.com/v2";
+pub const MODELSCOPE_BASE_URL: &str = "https://api-inference.modelscope.cn/v1";
 
 // ── AWS Bedrock ───────────────────────────────────────────────────
 pub const BEDROCK_BASE_URL: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";

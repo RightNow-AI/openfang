@@ -101,6 +101,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "modelscope",
+        display: "ModelScope",
+        env_var: "MODELSCOPE_API_KEY",
+        default_model: "Qwen/Qwen3.5-397B-A17B",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
         name: "ollama",
         display: "Ollama",
         env_var: "OLLAMA_API_KEY",
