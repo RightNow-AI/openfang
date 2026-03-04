@@ -32,7 +32,7 @@ pub struct McpServerConfig {
 }
 
 fn default_timeout() -> u64 {
-    30
+    60
 }
 
 /// Transport type for MCP server connections.
@@ -393,7 +393,31 @@ impl McpConnection {
             return Err("MCP command path contains '..': rejected".to_string());
         }
 
-        let mut cmd = tokio::process::Command::new(command);
+        // On Windows, npm/npx install as .cmd batch wrappers. Detect and adapt.
+        let resolved_command: String = if cfg!(windows) {
+            // If the user already specified .cmd/.bat, use as-is
+            if command.ends_with(".cmd") || command.ends_with(".bat") {
+                command.to_string()
+            } else {
+                // Check if the .cmd variant exists on PATH
+                let cmd_variant = format!("{command}.cmd");
+                let has_cmd = std::env::var("PATH")
+                    .unwrap_or_default()
+                    .split(';')
+                    .any(|dir| {
+                        std::path::Path::new(dir).join(&cmd_variant).exists()
+                    });
+                if has_cmd {
+                    cmd_variant
+                } else {
+                    command.to_string()
+                }
+            }
+        } else {
+            command.to_string()
+        };
+
+        let mut cmd = tokio::process::Command::new(&resolved_command);
         cmd.args(args);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
@@ -410,10 +434,41 @@ impl McpConnection {
         if let Ok(path) = std::env::var("PATH") {
             cmd.env("PATH", path);
         }
+        // On Windows, npm/node need APPDATA, USERPROFILE, LOCALAPPDATA, and SystemRoot
+        if cfg!(windows) {
+            for var in &[
+                "APPDATA",
+                "LOCALAPPDATA",
+                "USERPROFILE",
+                "SystemRoot",
+                "TEMP",
+                "TMP",
+                "HOME",
+                "HOMEDRIVE",
+                "HOMEPATH",
+            ] {
+                if let Ok(val) = std::env::var(var) {
+                    cmd.env(var, val);
+                }
+            }
+        }
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn MCP server '{command}': {e}"))?;
+            .map_err(|e| format!("Failed to spawn MCP server '{resolved_command}': {e}"))?;
+
+        // Log stderr in background for debugging MCP server issues
+        if let Some(stderr) = child.stderr.take() {
+            let cmd_name = resolved_command.clone();
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let reader = tokio::io::BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::debug!(mcp_server = %cmd_name, "stderr: {line}");
+                }
+            });
+        }
 
         let stdin = child
             .stdin

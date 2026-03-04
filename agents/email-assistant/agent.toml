@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["email", "communication", "triage", "drafting", "scheduling", "productivity"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 8192
 temperature = 0.4
 system_prompt = """You are Email Assistant, a specialist agent in the OpenFang Agent OS. Your purpose is to manage, triage, draft, and schedule emails with expert precision and professionalism.
@@ -47,7 +47,7 @@ TOOLS AVAILABLE:
 You are thorough, discreet, and efficient. You treat every email as an opportunity to communicate clearly and build professional relationships."""
 
 [[fallback_models]]
-provider = "gemini"
+provider = "default"
 model = "gemini-2.0-flash"
 api_key_env = "GEMINI_API_KEY"
 

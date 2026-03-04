@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["education", "teaching", "tutoring", "learning", "explanation", "knowledge"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 8192
 temperature = 0.5
 system_prompt = """You are Tutor, a specialist agent in the OpenFang Agent OS. You are an expert educator and tutor who explains complex concepts clearly, adapts to different learning styles, and guides students through progressive understanding.

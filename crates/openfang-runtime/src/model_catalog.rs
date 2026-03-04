@@ -9,8 +9,8 @@ use openfang_types::model_catalog::{
     GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
     LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL,
     OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL, XAI_BASE_URL,
-    ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    XAI_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -601,6 +601,16 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::Missing,
             model_count: 0,
         },
+        // ── Volcano Engine (Doubao) ──────────────────────────────────
+        ProviderInfo {
+            id: "volcengine".into(),
+            display_name: "Volcano Engine (Doubao)".into(),
+            api_key_env: "VOLCENGINE_API_KEY".into(),
+            base_url: VOLCENGINE_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
         // ── AWS Bedrock ──────────────────────────────────────────────
         ProviderInfo {
             id: "bedrock".into(),
@@ -647,9 +657,9 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("gpt4-mini", "gpt-4o-mini"),
         ("gpt5", "gpt-5.2"),
         ("gpt5-mini", "gpt-5-mini"),
-        ("flash", "gemini-3-flash"),
-        ("gemini-flash", "gemini-3-flash"),
-        ("gemini-pro", "gemini-3.1-pro"),
+        ("flash", "gemini-2.5-flash"),
+        ("gemini-pro", "gemini-3.1-pro-preview"),
+        ("gemini-flash", "gemini-3-flash-preview"),
         ("deepseek", "deepseek-chat"),
         ("llama", "llama-3.3-70b-versatile"),
         ("llama-70b", "llama-3.3-70b-versatile"),
@@ -663,10 +673,11 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("mistral-nemo", "open-mistral-nemo"),
         ("pixtral", "pixtral-large-latest"),
         // xAI aliases
-        ("grok", "grok-4"),
+        ("grok", "grok-4-0709"),
+        ("grok-4", "grok-4-0709"),
         ("grok-mini", "grok-2-mini"),
         ("grok3", "grok-3"),
-        ("grok-fast", "grok-4.1-fast"),
+        ("grok-fast", "grok-4-1-fast-reasoning"),
         // Perplexity alias
         ("sonar", "sonar-pro"),
         // AI21 aliases
@@ -1041,8 +1052,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         // Google Gemini (10)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
-            id: "gemini-3.1-pro".into(),
-            display_name: "Gemini 3.1 Pro".into(),
+            id: "gemini-3.1-pro-preview".into(),
+            display_name: "Gemini 3.1 Pro Preview".into(),
             provider: "gemini".into(),
             tier: ModelTier::Frontier,
             context_window: 1_048_576,
@@ -1055,28 +1066,28 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["gemini-pro".into()],
         },
         ModelCatalogEntry {
-            id: "gemini-3-flash".into(),
-            display_name: "Gemini 3 Flash".into(),
+            id: "gemini-3-flash-preview".into(),
+            display_name: "Gemini 3 Flash Preview".into(),
             provider: "gemini".into(),
             tier: ModelTier::Smart,
             context_window: 1_048_576,
             max_output_tokens: 65_536,
-            input_cost_per_m: 0.50,
-            output_cost_per_m: 3.0,
+            input_cost_per_m: 0.15,
+            output_cost_per_m: 0.60,
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
-            aliases: vec!["flash".into(), "gemini-flash".into()],
+            aliases: vec!["gemini-flash".into()],
         },
         ModelCatalogEntry {
-            id: "gemini-3-deep-think".into(),
-            display_name: "Gemini 3 Deep Think".into(),
+            id: "gemini-3.1-flash-lite-preview".into(),
+            display_name: "Gemini 3.1 Flash Lite Preview".into(),
             provider: "gemini".into(),
-            tier: ModelTier::Frontier,
+            tier: ModelTier::Fast,
             context_window: 1_048_576,
-            max_output_tokens: 65_536,
-            input_cost_per_m: 2.50,
-            output_cost_per_m: 15.0,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.04,
+            output_cost_per_m: 0.15,
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
@@ -2189,10 +2200,10 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
-        // xAI (6)
+        // xAI (9)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
-            id: "grok-4".into(),
+            id: "grok-4-0709".into(),
             display_name: "Grok 4".into(),
             provider: "xai".into(),
             tier: ModelTier::Frontier,
@@ -2203,11 +2214,39 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
-            aliases: vec!["grok".into()],
+            aliases: vec!["grok".into(), "grok-4".into()],
         },
         ModelCatalogEntry {
-            id: "grok-4.1-fast".into(),
-            display_name: "Grok 4.1 Fast".into(),
+            id: "grok-4-fast-reasoning".into(),
+            display_name: "Grok 4 Fast Reasoning".into(),
+            provider: "xai".into(),
+            tier: ModelTier::Smart,
+            context_window: 256_000,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 1.0,
+            output_cost_per_m: 5.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "grok-4-fast-non-reasoning".into(),
+            display_name: "Grok 4 Fast Non-Reasoning".into(),
+            provider: "xai".into(),
+            tier: ModelTier::Smart,
+            context_window: 256_000,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 1.0,
+            output_cost_per_m: 5.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "grok-4-1-fast-reasoning".into(),
+            display_name: "Grok 4.1 Fast Reasoning".into(),
             provider: "xai".into(),
             tier: ModelTier::Fast,
             context_window: 2_000_000,
@@ -2218,6 +2257,20 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_vision: false,
             supports_streaming: true,
             aliases: vec!["grok-fast".into()],
+        },
+        ModelCatalogEntry {
+            id: "grok-4-1-fast-non-reasoning".into(),
+            display_name: "Grok 4.1 Fast Non-Reasoning".into(),
+            provider: "xai".into(),
+            tier: ModelTier::Fast,
+            context_window: 2_000_000,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.20,
+            output_cost_per_m: 0.50,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
         },
         ModelCatalogEntry {
             id: "grok-3".into(),
@@ -2737,6 +2790,65 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
+        // Volcano Engine / Doubao (4)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "doubao-seed-1-6-251015".into(),
+            display_name: "Doubao Seed 1.6 Pro".into(),
+            provider: "volcengine".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.80,
+            output_cost_per_m: 2.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["doubao".into(), "doubao-pro".into()],
+        },
+        ModelCatalogEntry {
+            id: "doubao-seed-2-0-lite".into(),
+            display_name: "Doubao Seed 2.0 Lite".into(),
+            provider: "volcengine".into(),
+            tier: ModelTier::Balanced,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.30,
+            output_cost_per_m: 0.60,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["doubao-lite".into()],
+        },
+        ModelCatalogEntry {
+            id: "doubao-seed-2-0-mini".into(),
+            display_name: "Doubao Seed 2.0 Mini".into(),
+            provider: "volcengine".into(),
+            tier: ModelTier::Fast,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.10,
+            output_cost_per_m: 0.10,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["doubao-mini".into()],
+        },
+        ModelCatalogEntry {
+            id: "doubao-seed-code".into(),
+            display_name: "Doubao Seed Code".into(),
+            provider: "volcengine".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.50,
+            output_cost_per_m: 1.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["doubao-code".into()],
+        },
+        // ══════════════════════════════════════════════════════════════
         // AWS Bedrock (8)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
@@ -2943,7 +3055,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 30);
+        assert_eq!(catalog.list_providers().len(), 31);
     }
 
     #[test]
@@ -3063,7 +3175,7 @@ mod tests {
         assert!(aliases.len() >= 20);
         assert_eq!(aliases.get("sonnet").unwrap(), "claude-sonnet-4-6");
         // New aliases
-        assert_eq!(aliases.get("grok").unwrap(), "grok-4");
+        assert_eq!(aliases.get("grok").unwrap(), "grok-4-0709");
         assert_eq!(aliases.get("jamba").unwrap(), "jamba-1.5-large");
     }
 
@@ -3071,7 +3183,7 @@ mod tests {
     fn test_find_grok_by_alias() {
         let catalog = ModelCatalog::new();
         let entry = catalog.find_model("grok").unwrap();
-        assert_eq!(entry.id, "grok-4");
+        assert_eq!(entry.id, "grok-4-0709");
         assert_eq!(entry.provider, "xai");
     }
 
@@ -3092,9 +3204,12 @@ mod tests {
     fn test_xai_models() {
         let catalog = ModelCatalog::new();
         let xai = catalog.models_by_provider("xai");
-        assert_eq!(xai.len(), 6);
-        assert!(xai.iter().any(|m| m.id == "grok-4"));
-        assert!(xai.iter().any(|m| m.id == "grok-4.1-fast"));
+        assert_eq!(xai.len(), 9);
+        assert!(xai.iter().any(|m| m.id == "grok-4-0709"));
+        assert!(xai.iter().any(|m| m.id == "grok-4-fast-reasoning"));
+        assert!(xai.iter().any(|m| m.id == "grok-4-fast-non-reasoning"));
+        assert!(xai.iter().any(|m| m.id == "grok-4-1-fast-reasoning"));
+        assert!(xai.iter().any(|m| m.id == "grok-4-1-fast-non-reasoning"));
         assert!(xai.iter().any(|m| m.id == "grok-3"));
         assert!(xai.iter().any(|m| m.id == "grok-3-mini"));
         assert!(xai.iter().any(|m| m.id == "grok-2"));

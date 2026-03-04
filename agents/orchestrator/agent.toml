@@ -5,8 +5,8 @@ author = "openfang"
 module = "builtin:chat"
 
 [model]
-provider = "deepseek"
-model = "deepseek-chat"
+provider = "default"
+model = "default"
 api_key_env = "DEEPSEEK_API_KEY"
 max_tokens = 8192
 temperature = 0.3
@@ -45,8 +45,8 @@ Always explain your delegation strategy before executing it.
 Be thorough but efficient — don't delegate trivially simple tasks."""
 
 [[fallback_models]]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 api_key_env = "GROQ_API_KEY"
 
 [schedule]

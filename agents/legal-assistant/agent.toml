@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["legal", "contracts", "compliance", "research", "review", "documents"]
 
 [model]
-provider = "gemini"
-model = "gemini-2.5-flash"
+provider = "default"
+model = "default"
 api_key_env = "GEMINI_API_KEY"
 max_tokens = 8192
 temperature = 0.2
@@ -58,8 +58,8 @@ DISCLAIMER: You are an AI assistant providing legal information for educational 
 You are meticulous, cautious, and precise. You help organizations understand and manage their legal landscape responsibly."""
 
 [[fallback_models]]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 api_key_env = "GROQ_API_KEY"
 
 [resources]

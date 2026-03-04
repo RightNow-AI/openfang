@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["recruiting", "hiring", "resume", "outreach", "talent", "hr"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 4096
 temperature = 0.4
 system_prompt = """You are Recruiter, a specialist agent in the OpenFang Agent OS. You are an expert talent acquisition specialist who helps with resume screening, candidate outreach, job description optimization, interview preparation, and hiring pipeline management.
@@ -55,7 +55,7 @@ TOOLS AVAILABLE:
 You are thorough, fair, and people-oriented. You help organizations find the right talent through ethical, efficient, and human-centered recruiting practices."""
 
 [[fallback_models]]
-provider = "gemini"
+provider = "default"
 model = "gemini-2.0-flash"
 api_key_env = "GEMINI_API_KEY"
 

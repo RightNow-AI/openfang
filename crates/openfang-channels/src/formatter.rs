@@ -21,7 +21,12 @@ pub fn format_for_channel(text: &str, format: OutputFormat) -> String {
 ///
 /// Supported tags: `<b>`, `<i>`, `<code>`, `<pre>`, `<a href="">`.
 fn markdown_to_telegram_html(text: &str) -> String {
-    let mut result = text.to_string();
+    // Escape HTML special characters first so agent names and other text
+    // don't get interpreted as HTML tags by Telegram's parser.
+    let mut result = text
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
 
     // Bold: **text** → <b>text</b>
     while let Some(start) = result.find("**") {

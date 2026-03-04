@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["finance", "budget", "expenses", "savings", "planning", "money"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 8192
 temperature = 0.2
 system_prompt = """You are Personal Finance, a specialist agent in the OpenFang Agent OS. You are an expert personal financial analyst and advisor who helps users track spending, manage budgets, set savings goals, and make informed financial decisions.

@@ -139,6 +139,16 @@ pub trait KernelHandle: Send + Sync {
         Err("Hands system not available".to_string())
     }
 
+    /// Install a Hand from TOML content.
+    async fn hand_install(
+        &self,
+        toml_content: &str,
+        skill_content: &str,
+    ) -> Result<serde_json::Value, String> {
+        let _ = (toml_content, skill_content);
+        Err("Hands system not available".to_string())
+    }
+
     /// Activate a Hand — spawns a specialized autonomous agent.
     async fn hand_activate(
         &self,

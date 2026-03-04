@@ -379,8 +379,8 @@ async fn test_bridge_dispatch_no_agent_assigned() {
     let sent = adapter_ref.get_sent();
     assert_eq!(sent.len(), 1);
     assert!(
-        sent[0].1.contains("No agent assigned"),
-        "Expected 'No agent assigned' message, got: {}",
+        sent[0].1.contains("No agents available"),
+        "Expected 'No agents available' message, got: {}",
         sent[0].1
     );
 
