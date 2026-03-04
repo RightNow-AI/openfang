@@ -825,8 +825,11 @@ fn handle_migration_key(
                 if yes {
                     state.migration_phase = MigrationPhase::Running;
                     let source_dir = state.openclaw_path.clone().unwrap_or_default();
-                    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-                    let target_dir = home.join(".openfang");
+                    let target_dir = if let Ok(h) = std::env::var("OPENFANG_HOME") {
+                        PathBuf::from(h)
+                    } else {
+                        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".openfang")
+                    };
                     let tx = migrate_tx.clone();
                     std::thread::spawn(move || {
                         let options = openfang_migrate::MigrateOptions {
@@ -945,15 +948,17 @@ fn save_config(state: &mut State) {
         }
     };
 
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => {
-            state.save_error = "Could not determine home directory".to_string();
-            return;
+    let openfang_dir = if let Ok(h) = std::env::var("OPENFANG_HOME") {
+        PathBuf::from(h)
+    } else {
+        match dirs::home_dir() {
+            Some(h) => h.join(".openfang"),
+            None => {
+                state.save_error = "Could not determine home directory".to_string();
+                return;
+            }
         }
     };
-
-    let openfang_dir = home.join(".openfang");
     let _ = std::fs::create_dir_all(openfang_dir.join("agents"));
     let _ = std::fs::create_dir_all(openfang_dir.join("data"));
     crate::restrict_dir_permissions(&openfang_dir);

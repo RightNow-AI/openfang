@@ -68,6 +68,66 @@ const PROVIDERS: &[ProviderInfo] = &[
         needs_key: true,
     },
     ProviderInfo {
+        name: "gemini",
+        env_var: "GEMINI_API_KEY",
+        default_model: "gemini-2.5-flash",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "xai",
+        env_var: "XAI_API_KEY",
+        default_model: "grok-4-0709",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "qwen",
+        env_var: "DASHSCOPE_API_KEY",
+        default_model: "qwen-plus",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "perplexity",
+        env_var: "PERPLEXITY_API_KEY",
+        default_model: "sonar-pro",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "cohere",
+        env_var: "CO_API_KEY",
+        default_model: "command-a",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "cerebras",
+        env_var: "CEREBRAS_API_KEY",
+        default_model: "llama-3.3-70b",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "sambanova",
+        env_var: "SAMBANOVA_API_KEY",
+        default_model: "Meta-Llama-3.3-70B-Instruct",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "moonshot",
+        env_var: "MOONSHOT_API_KEY",
+        default_model: "moonshot-v1-128k",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "zhipu",
+        env_var: "ZHIPU_API_KEY",
+        default_model: "glm-4-plus",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "zhipu_coding",
+        env_var: "ZHIPU_API_KEY",
+        default_model: "codegeex-4",
+        needs_key: true,
+    },
+    ProviderInfo {
         name: "ollama",
         env_var: "OLLAMA_API_KEY",
         default_model: "llama3.2",
@@ -89,11 +149,15 @@ const PROVIDERS: &[ProviderInfo] = &[
 
 /// Check if first-run setup is needed.
 pub fn needs_setup() -> bool {
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => return true,
+    let of_home = if let Ok(h) = std::env::var("OPENFANG_HOME") {
+        std::path::PathBuf::from(h)
+    } else {
+        match dirs::home_dir() {
+            Some(h) => h.join(".openfang"),
+            None => return true,
+        }
     };
-    !home.join(".openfang").join("config.toml").exists()
+    !of_home.join("config.toml").exists()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -294,16 +358,18 @@ impl WizardState {
             }
         };
 
-        let home = match dirs::home_dir() {
-            Some(h) => h,
-            None => {
-                self.status_msg = "Could not determine home directory".to_string();
-                self.step = WizardStep::Done;
-                return;
+        let openfang_dir = if let Ok(h) = std::env::var("OPENFANG_HOME") {
+            std::path::PathBuf::from(h)
+        } else {
+            match dirs::home_dir() {
+                Some(h) => h.join(".openfang"),
+                None => {
+                    self.status_msg = "Could not determine home directory".to_string();
+                    self.step = WizardStep::Done;
+                    return;
+                }
             }
         };
-
-        let openfang_dir = home.join(".openfang");
         let _ = std::fs::create_dir_all(openfang_dir.join("agents"));
         let _ = std::fs::create_dir_all(openfang_dir.join("data"));
         crate::restrict_dir_permissions(&openfang_dir);

@@ -305,31 +305,43 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
     let mut content = Vec::new();
     let mut tool_calls = Vec::new();
 
-    if let Some(gemini_content) = candidate.content {
-        for part in gemini_content.parts {
-            match part {
-                GeminiPart::Text { text } => {
-                    if !text.is_empty() {
-                        content.push(ContentBlock::Text { text });
+    match candidate.content {
+        Some(gemini_content) => {
+            for part in gemini_content.parts {
+                match part {
+                    GeminiPart::Text { text } => {
+                        if !text.is_empty() {
+                            content.push(ContentBlock::Text { text });
+                        }
+                    }
+                    GeminiPart::FunctionCall { function_call } => {
+                        let id = format!("call_{}", uuid::Uuid::new_v4().simple());
+                        content.push(ContentBlock::ToolUse {
+                            id: id.clone(),
+                            name: function_call.name.clone(),
+                            input: function_call.args.clone(),
+                        });
+                        tool_calls.push(ToolCall {
+                            id,
+                            name: function_call.name,
+                            input: function_call.args,
+                        });
+                    }
+                    GeminiPart::InlineData { .. } | GeminiPart::FunctionResponse { .. } => {
+                        // Shouldn't normally appear in responses, ignore
                     }
                 }
-                GeminiPart::FunctionCall { function_call } => {
-                    let id = format!("call_{}", uuid::Uuid::new_v4().simple());
-                    content.push(ContentBlock::ToolUse {
-                        id: id.clone(),
-                        name: function_call.name.clone(),
-                        input: function_call.args.clone(),
-                    });
-                    tool_calls.push(ToolCall {
-                        id,
-                        name: function_call.name,
-                        input: function_call.args,
-                    });
-                }
-                GeminiPart::InlineData { .. } | GeminiPart::FunctionResponse { .. } => {
-                    // Shouldn't normally appear in responses, ignore
-                }
             }
+        }
+        None => {
+            let reason = candidate
+                .finish_reason
+                .as_deref()
+                .unwrap_or("unknown");
+            warn!(finish_reason = %reason, "Gemini returned candidate with no content");
+            return Err(LlmError::Parse(format!(
+                "Gemini returned empty response (finish_reason: {reason})"
+            )));
         }
     }
 

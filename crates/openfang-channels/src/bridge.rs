@@ -582,14 +582,33 @@ async fn dispatch_message(
     let agent_id = match agent_id {
         Some(id) => id,
         None => {
-            send_response(
-                adapter,
-                &message.sender,
-                "No agent assigned. Use /agents to list available agents, then /agent <name> to select one.".to_string(),
-                thread_id,
-                output_format,
-            ).await;
-            return;
+            // Fallback: try "assistant" agent, then first available agent
+            let fallback = handle.find_agent_by_name("assistant").await.ok().flatten();
+            let fallback = match fallback {
+                Some(id) => Some(id),
+                None => handle
+                    .list_agents()
+                    .await
+                    .ok()
+                    .and_then(|agents| agents.first().map(|(id, _)| *id)),
+            };
+            match fallback {
+                Some(id) => {
+                    // Auto-set this as the user's default so future messages route directly
+                    router.set_user_default(message.sender.platform_id.clone(), id);
+                    id
+                }
+                None => {
+                    send_response(
+                        adapter,
+                        &message.sender,
+                        "No agents available. Start the dashboard at http://127.0.0.1:4200 to create one.".to_string(),
+                        thread_id,
+                        output_format,
+                    ).await;
+                    return;
+                }
+            }
         }
     };
 
