@@ -39,6 +39,7 @@ pub struct DiscordAdapter {
     token: Zeroizing<String>,
     client: reqwest::Client,
     allowed_guilds: Vec<String>,
+    allowed_users: Vec<String>,
     intents: u64,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
@@ -51,12 +52,18 @@ pub struct DiscordAdapter {
 }
 
 impl DiscordAdapter {
-    pub fn new(token: String, allowed_guilds: Vec<String>, intents: u64) -> Self {
+    pub fn new(
+        token: String,
+        allowed_guilds: Vec<String>,
+        allowed_users: Vec<String>,
+        intents: u64,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             token: Zeroizing::new(token),
             client: reqwest::Client::new(),
             allowed_guilds,
+            allowed_users,
             intents,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
@@ -147,6 +154,7 @@ impl ChannelAdapter for DiscordAdapter {
         let token = self.token.clone();
         let intents = self.intents;
         let allowed_guilds = self.allowed_guilds.clone();
+        let allowed_users = self.allowed_users.clone();
         let bot_user_id = self.bot_user_id.clone();
         let session_id_store = self.session_id.clone();
         let resume_url_store = self.resume_gateway_url.clone();
@@ -307,7 +315,7 @@ impl ChannelAdapter for DiscordAdapter {
 
                                 "MESSAGE_CREATE" | "MESSAGE_UPDATE" => {
                                     if let Some(msg) =
-                                        parse_discord_message(d, &bot_user_id, &allowed_guilds)
+                                        parse_discord_message(d, &bot_user_id, &allowed_guilds, &allowed_users)
                                             .await
                                     {
                                         debug!(
@@ -423,6 +431,7 @@ async fn parse_discord_message(
     d: &serde_json::Value,
     bot_user_id: &Arc<RwLock<Option<String>>>,
     allowed_guilds: &[String],
+    allowed_users: &[String],
 ) -> Option<ChannelMessage> {
     let author = d.get("author")?;
     let author_id = author["id"].as_str()?;
@@ -436,6 +445,12 @@ async fn parse_discord_message(
 
     // Filter out other bots
     if author["bot"].as_bool() == Some(true) {
+        return None;
+    }
+
+    // Filter by allowed users
+    if !allowed_users.is_empty() && !allowed_users.iter().any(|u| u == author_id) {
+        debug!("Discord: ignoring message from unlisted user {author_id}");
         return None;
     }
 
@@ -486,6 +501,29 @@ async fn parse_discord_message(
         ChannelContent::Text(content_text.to_string())
     };
 
+    // Determine if this is a group message (guild_id present = server channel)
+    let is_group = d["guild_id"].as_str().is_some();
+
+    // Check if bot was @mentioned (for MentionOnly policy enforcement)
+    let was_mentioned = if let Some(ref bid) = *bot_user_id.read().await {
+        // Check Discord mentions array
+        let mentioned_in_array = d["mentions"]
+            .as_array()
+            .map(|arr| arr.iter().any(|m| m["id"].as_str() == Some(bid.as_str())))
+            .unwrap_or(false);
+        // Also check content for <@bot_id> or <@!bot_id> patterns
+        let mentioned_in_content =
+            content_text.contains(&format!("<@{bid}>")) || content_text.contains(&format!("<@!{bid}>"));
+        mentioned_in_array || mentioned_in_content
+    } else {
+        false
+    };
+
+    let mut metadata = HashMap::new();
+    if was_mentioned {
+        metadata.insert("was_mentioned".to_string(), serde_json::json!(true));
+    }
+
     Some(ChannelMessage {
         channel: ChannelType::Discord,
         platform_message_id: message_id.to_string(),
@@ -497,9 +535,9 @@ async fn parse_discord_message(
         content,
         target_agent: None,
         timestamp,
-        is_group: true,
+        is_group,
         thread_id: None,
-        metadata: HashMap::new(),
+        metadata,
     })
 }
 
@@ -523,7 +561,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Discord);
         assert_eq!(msg.sender.display_name, "alice");
         assert_eq!(msg.sender.platform_id, "ch1");
@@ -545,7 +583,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await;
         assert!(msg.is_none());
     }
 
@@ -565,7 +603,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await;
         assert!(msg.is_none());
     }
 
@@ -586,11 +624,11 @@ mod tests {
         });
 
         // Not in allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &["111".into(), "222".into()]).await;
+        let msg = parse_discord_message(&d, &bot_id, &["111".into(), "222".into()], &[]).await;
         assert!(msg.is_none());
 
         // In allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &["999".into()]).await;
+        let msg = parse_discord_message(&d, &bot_id, &["999".into()], &[]).await;
         assert!(msg.is_some());
     }
 
@@ -609,7 +647,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -634,7 +672,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await;
         assert!(msg.is_none());
     }
 
@@ -653,7 +691,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
         assert_eq!(msg.sender.display_name, "alice#1234");
     }
 
@@ -675,16 +713,105 @@ mod tests {
         });
 
         // MESSAGE_UPDATE uses the same parse function as MESSAGE_CREATE
-        let msg = parse_discord_message(&d, &bot_id, &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Discord);
         assert!(
             matches!(msg.content, ChannelContent::Text(ref t) if t == "Edited message content")
         );
     }
 
+    #[tokio::test]
+    async fn test_parse_discord_allowed_users_filter() {
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        let d = serde_json::json!({
+            "id": "msg1",
+            "channel_id": "ch1",
+            "content": "Hello",
+            "author": {
+                "id": "user999",
+                "username": "bob",
+                "discriminator": "0"
+            },
+            "timestamp": "2024-01-01T00:00:00+00:00"
+        });
+
+        // Not in allowed users
+        let msg = parse_discord_message(&d, &bot_id, &[], &["user111".into(), "user222".into()]).await;
+        assert!(msg.is_none());
+
+        // In allowed users
+        let msg = parse_discord_message(&d, &bot_id, &[], &["user999".into()]).await;
+        assert!(msg.is_some());
+
+        // Empty allowed_users = allow all
+        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await;
+        assert!(msg.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_parse_discord_mention_detection() {
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+
+        // Message with bot mentioned in mentions array
+        let d = serde_json::json!({
+            "id": "msg1",
+            "channel_id": "ch1",
+            "guild_id": "guild1",
+            "content": "Hey <@bot123> help me",
+            "mentions": [{"id": "bot123", "username": "openfang"}],
+            "author": {
+                "id": "user1",
+                "username": "alice",
+                "discriminator": "0"
+            },
+            "timestamp": "2024-01-01T00:00:00+00:00"
+        });
+
+        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
+        assert!(msg.is_group);
+        assert_eq!(msg.metadata.get("was_mentioned").and_then(|v| v.as_bool()), Some(true));
+
+        // Message without mention in group
+        let d2 = serde_json::json!({
+            "id": "msg2",
+            "channel_id": "ch1",
+            "guild_id": "guild1",
+            "content": "Just chatting",
+            "author": {
+                "id": "user1",
+                "username": "alice",
+                "discriminator": "0"
+            },
+            "timestamp": "2024-01-01T00:00:00+00:00"
+        });
+
+        let msg2 = parse_discord_message(&d2, &bot_id, &[], &[]).await.unwrap();
+        assert!(msg2.is_group);
+        assert!(!msg2.metadata.contains_key("was_mentioned"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_discord_dm_not_group() {
+        let bot_id = Arc::new(RwLock::new(None));
+        let d = serde_json::json!({
+            "id": "msg1",
+            "channel_id": "dm-ch1",
+            "content": "Hello",
+            "author": {
+                "id": "user1",
+                "username": "alice",
+                "discriminator": "0"
+            },
+            "timestamp": "2024-01-01T00:00:00+00:00"
+        });
+
+        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
+        assert!(!msg.is_group);
+    }
+
     #[test]
     fn test_discord_adapter_creation() {
-        let adapter = DiscordAdapter::new("test-token".to_string(), vec!["123".to_string(), "456".to_string()], 37376);
+        let adapter = DiscordAdapter::new("test-token".to_string(), vec!["123".to_string(), "456".to_string()], vec![], 37376);
         assert_eq!(adapter.name(), "discord");
         assert_eq!(adapter.channel_type(), ChannelType::Discord);
     }

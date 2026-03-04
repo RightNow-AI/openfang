@@ -1169,6 +1169,7 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         fields: &[
             ChannelField { key: "bot_token_env", label: "Bot Token", field_type: FieldType::Secret, env_var: Some("DISCORD_BOT_TOKEN"), required: true, placeholder: "MTIz...", advanced: false },
             ChannelField { key: "allowed_guilds", label: "Allowed Guild IDs", field_type: FieldType::List, env_var: None, required: false, placeholder: "123456789, 987654321", advanced: true },
+            ChannelField { key: "allowed_users", label: "Allowed User IDs", field_type: FieldType::List, env_var: None, required: false, placeholder: "123456789, 987654321", advanced: true },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
             ChannelField { key: "intents", label: "Intents Bitmask", field_type: FieldType::Number, env_var: None, required: false, placeholder: "37376", advanced: true },
         ],
@@ -5099,10 +5100,11 @@ pub async fn list_models(
             true
         })
         .map(|m| {
+            // Custom models from unknown providers are assumed available
             let available = catalog
                 .get_provider(&m.provider)
                 .map(|p| p.auth_status != openfang_types::model_catalog::AuthStatus::Missing)
-                .unwrap_or(false);
+                .unwrap_or(m.tier == openfang_types::model_catalog::ModelTier::Custom);
             serde_json::json!({
                 "id": m.id,
                 "display_name": m.display_name,
@@ -5176,7 +5178,7 @@ pub async fn get_model(
             let available = catalog
                 .get_provider(&m.provider)
                 .map(|p| p.auth_status != openfang_types::model_catalog::AuthStatus::Missing)
-                .unwrap_or(false);
+                .unwrap_or(m.tier == openfang_types::model_catalog::ModelTier::Custom);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -6846,6 +6848,19 @@ fn upsert_channel_config(
                 } else {
                     toml::Value::String(v.clone())
                 }
+            }
+            FieldType::List => {
+                let items: Vec<toml::Value> = v
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        s.parse::<i64>()
+                            .map(toml::Value::Integer)
+                            .unwrap_or_else(|_| toml::Value::String(s.to_string()))
+                    })
+                    .collect();
+                toml::Value::Array(items)
             }
             _ => toml::Value::String(v.clone()),
         };

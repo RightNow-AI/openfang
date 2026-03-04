@@ -693,7 +693,7 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("copilot-gpt4", "copilot/gpt-4"),
         // Chinese model aliases
         ("qwen", "qwen-plus"),
-        ("glm", "glm-4-plus"),
+        ("glm", "glm-5-20250605"),
         ("ernie", "ernie-4.5-8k"),
         ("kimi", "moonshot-v1-128k"),
         ("minimax", "MiniMax-M2.5"),
@@ -2594,7 +2594,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
-        // Zhipu AI / GLM (4)
+        // Zhipu AI / GLM (6)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
             id: "glm-4-plus".into(),
@@ -2649,6 +2649,34 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             output_cost_per_m: 0.10,
             supports_tools: true,
             supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "glm-5-20250605".into(),
+            display_name: "GLM-5".into(),
+            provider: "zhipu".into(),
+            tier: ModelTier::Frontier,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 2.00,
+            output_cost_per_m: 8.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["glm-5".into()],
+        },
+        ModelCatalogEntry {
+            id: "glm-4.7".into(),
+            display_name: "GLM-4.7".into(),
+            provider: "zhipu".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 1.50,
+            output_cost_per_m: 5.00,
+            supports_tools: true,
+            supports_vision: true,
             supports_streaming: true,
             aliases: vec![],
         },

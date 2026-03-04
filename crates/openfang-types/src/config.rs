@@ -1561,6 +1561,9 @@ pub struct DiscordConfig {
     /// Guild (server) IDs allowed to interact (empty = allow all).
     /// Accepts strings for consistency with other channel configs.
     pub allowed_guilds: Vec<String>,
+    /// User IDs allowed to interact (empty = allow all).
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
     /// Gateway intents bitmask (default: 37376 = GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT).
@@ -1575,6 +1578,7 @@ impl Default for DiscordConfig {
         Self {
             bot_token_env: "DISCORD_BOT_TOKEN".to_string(),
             allowed_guilds: vec![],
+            allowed_users: vec![],
             default_agent: None,
             intents: 37376,
             overrides: ChannelOverrides::default(),
