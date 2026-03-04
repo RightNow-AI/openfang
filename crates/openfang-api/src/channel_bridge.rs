@@ -30,6 +30,7 @@ use openfang_channels::messenger::MessengerAdapter;
 use openfang_channels::reddit::RedditAdapter;
 use openfang_channels::revolt::RevoltAdapter;
 use openfang_channels::viber::ViberAdapter;
+use openfang_types::config::FeishuMode;
 // Wave 4
 use openfang_channels::flock::FlockAdapter;
 use openfang_channels::guilded::GuildedAdapter;
@@ -1064,7 +1065,9 @@ pub async fn start_channel_bridge_with_config(
     // WhatsApp — supports Cloud API mode (access token) or Web/QR mode (gateway URL)
     if let Some(ref wa_config) = config.whatsapp {
         let cloud_token = read_token(&wa_config.access_token_env, "WhatsApp");
-        let gateway_url = std::env::var(&wa_config.gateway_url_env).ok().filter(|u| !u.is_empty());
+        let gateway_url = std::env::var(&wa_config.gateway_url_env)
+            .ok()
+            .filter(|u| !u.is_empty());
 
         if cloud_token.is_some() || gateway_url.is_some() {
             let token = cloud_token.unwrap_or_default();
@@ -1312,11 +1315,17 @@ pub async fn start_channel_bridge_with_config(
     // Feishu/Lark
     if let Some(ref fs_config) = config.feishu {
         if let Some(secret) = read_token(&fs_config.app_secret_env, "Feishu") {
-            let adapter = Arc::new(FeishuAdapter::new(
-                fs_config.app_id.clone(),
-                secret,
-                fs_config.webhook_port,
-            ));
+            let adapter = match fs_config.mode {
+                FeishuMode::Webhook => Arc::new(FeishuAdapter::new(
+                    fs_config.app_id.clone(),
+                    secret,
+                    fs_config.webhook_port,
+                )),
+                FeishuMode::Websocket => Arc::new(FeishuAdapter::new_websocket(
+                    fs_config.app_id.clone(),
+                    secret,
+                )),
+            };
             adapters.push((adapter, fs_config.default_agent.clone()));
         }
     }
@@ -1691,5 +1700,36 @@ mod tests {
         assert!(config.channels.gotify.is_none());
         assert!(config.channels.webhook.is_none());
         assert!(config.channels.linkedin.is_none());
+    }
+
+    #[test]
+    fn test_feishu_bridge_mode_defaults_to_webhook() {
+        let config: openfang_types::config::KernelConfig = toml::from_str(
+            r#"
+            [channels.feishu]
+            app_id = "cli_test"
+            app_secret_env = "FEISHU_APP_SECRET"
+            "#,
+        )
+        .unwrap();
+
+        let feishu = config.channels.feishu.expect("feishu config should exist");
+        assert_eq!(feishu.mode, openfang_types::config::FeishuMode::Webhook);
+    }
+
+    #[test]
+    fn test_feishu_bridge_mode_supports_websocket() {
+        let config: openfang_types::config::KernelConfig = toml::from_str(
+            r#"
+            [channels.feishu]
+            app_id = "cli_test"
+            app_secret_env = "FEISHU_APP_SECRET"
+            mode = "websocket"
+            "#,
+        )
+        .unwrap();
+
+        let feishu = config.channels.feishu.expect("feishu config should exist");
+        assert_eq!(feishu.mode, openfang_types::config::FeishuMode::Websocket);
     }
 }

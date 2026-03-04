@@ -14,6 +14,7 @@ use crate::types::{
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::{SinkExt, Stream, StreamExt};
+use prost::Message as ProstMessage;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -21,6 +22,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, error, info, warn};
+use url::Url;
 use zeroize::Zeroizing;
 
 /// Feishu tenant access token endpoint.
@@ -33,11 +35,56 @@ const FEISHU_SEND_URL: &str = "https://open.feishu.cn/open-apis/im/v1/messages";
 /// Feishu bot info endpoint.
 const FEISHU_BOT_INFO_URL: &str = "https://open.feishu.cn/open-apis/bot/v3/info";
 
+/// Feishu websocket endpoint discovery API.
+const FEISHU_WS_ENDPOINT_URL: &str = "https://open.feishu.cn/callback/ws/endpoint";
+
 /// Maximum Feishu message text length (characters).
 const MAX_MESSAGE_LEN: usize = 4096;
 
 /// Token refresh buffer — refresh 5 minutes before actual expiry.
 const TOKEN_REFRESH_BUFFER_SECS: u64 = 300;
+
+const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
+const DEFAULT_WS_PING_INTERVAL_SECS: u64 = 30;
+
+/// Feishu websocket frame header.
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct FeishuWsHeader {
+    #[prost(string, tag = "1")]
+    key: String,
+    #[prost(string, tag = "2")]
+    value: String,
+}
+
+/// Feishu websocket frame (pbbp2.proto compatible).
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct FeishuWsFrame {
+    #[prost(uint64, tag = "1")]
+    seq_id: u64,
+    #[prost(uint64, tag = "2")]
+    log_id: u64,
+    #[prost(int32, tag = "3")]
+    service: i32,
+    #[prost(int32, tag = "4")]
+    method: i32,
+    #[prost(message, repeated, tag = "5")]
+    headers: Vec<FeishuWsHeader>,
+    #[prost(string, optional, tag = "6")]
+    payload_encoding: Option<String>,
+    #[prost(string, optional, tag = "7")]
+    payload_type: Option<String>,
+    #[prost(bytes, optional, tag = "8")]
+    payload: Option<Vec<u8>>,
+    #[prost(string, optional, tag = "9")]
+    log_id_new: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct FeishuWsEndpoint {
+    url: String,
+    ping_interval_secs: u64,
+}
 
 /// Feishu connection mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,7 +310,10 @@ impl FeishuAdapter {
     }
 
     /// Start webhook server (Webhook mode).
-    async fn start_webhook(&self, tx: mpsc::Sender<ChannelMessage>) -> Result<(), Box<dyn std::error::Error>> {
+    async fn start_webhook(
+        &self,
+        tx: mpsc::Sender<ChannelMessage>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let port = self.webhook_port;
         let verification_token = self.verification_token.clone();
         let mut shutdown_rx = self.shutdown_rx.clone();
@@ -401,111 +451,192 @@ impl FeishuAdapter {
     }
 
     /// Start WebSocket connection loop (WebSocket mode).
-    async fn start_websocket_loop(&self, tx: mpsc::Sender<ChannelMessage>) -> Result<(), Box<dyn std::error::Error>> {
-        let self_arc = Arc::new(self.clone_adapter());
-        
+    async fn start_websocket_loop(
+        &self,
+        tx: mpsc::Sender<ChannelMessage>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = Arc::new(self.clone_adapter());
+
         tokio::spawn(async move {
             info!("Starting Feishu WebSocket mode");
-            let mut backoff = Duration::from_secs(1);
-            let max_backoff = Duration::from_secs(60);
-            
+            let mut shutdown_rx = adapter.shutdown_rx.clone();
+            let mut backoff = INITIAL_BACKOFF;
+
             loop {
-                match Self::run_websocket_inner(self_arc.clone(), tx.clone()).await {
-                    Ok(_) => {
-                        info!("Feishu WebSocket connection closed, reconnecting...");
-                    }
-                    Err(e) => {
-                        error!("Feishu WebSocket error: {e}, reconnecting in {backoff:?}");
+                if *shutdown_rx.borrow() {
+                    break;
+                }
+
+                if let Err(e) = Self::run_websocket_inner(adapter.clone(), tx.clone()).await {
+                    error!("Feishu WebSocket error: {e}");
+                } else {
+                    info!("Feishu WebSocket connection closed");
+                }
+
+                if *shutdown_rx.borrow() {
+                    break;
+                }
+
+                warn!("Feishu WebSocket reconnecting in {backoff:?}");
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            break;
+                        }
                     }
                 }
-                
-                tokio::time::sleep(backoff).await;
-                backoff = std::cmp::min(backoff * 2, max_backoff);
+
+                backoff = (backoff * 2).min(MAX_BACKOFF);
             }
+
+            info!("Feishu WebSocket loop stopped");
         });
 
         Ok(())
     }
 
-    /// Clone adapter for use in async tasks.
     fn clone_adapter(&self) -> FeishuAdapterClone {
         FeishuAdapterClone {
             app_id: self.app_id.clone(),
             app_secret: self.app_secret.clone(),
             client: self.client.clone(),
-            cached_token: self.cached_token.clone(),
             shutdown_rx: self.shutdown_rx.clone(),
         }
     }
 
-    /// Run WebSocket connection loop (inner implementation).
     async fn run_websocket_inner(
         adapter: Arc<FeishuAdapterClone>,
         tx: mpsc::Sender<ChannelMessage>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let ws_url = adapter.get_websocket_endpoint().await?;
-        info!("Connecting to Feishu WebSocket endpoint: {ws_url}");
+        let endpoint = adapter.get_websocket_endpoint().await?;
+        let ws_url = endpoint.url;
+        let service_id = parse_service_id(&ws_url);
 
-        let (ws_stream, _) = connect_async(ws_url).await?;
+        info!("Connecting to Feishu WebSocket endpoint: {ws_url}");
+        let (ws_stream, _) = connect_async(&ws_url).await?;
         info!("Feishu WebSocket connected successfully");
 
         let (mut write, mut read) = ws_stream.split();
         let mut shutdown_rx = adapter.shutdown_rx.clone();
+        let mut ping_interval =
+            tokio::time::interval(Duration::from_secs(endpoint.ping_interval_secs));
+        // consume first immediate tick
+        ping_interval.tick().await;
+
+        let mut frame_parts: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
 
         loop {
             tokio::select! {
                 msg = read.next() => {
                     match msg {
-                        Some(Ok(Message::Text(text))) => {
-                            debug!("Received Feishu WebSocket message: {text}");
-                            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
-                                if let Some(msg) = parse_feishu_event(&event) {
-                                    let _ = tx.send(msg).await;
-                                }
-                            }
-                        }
                         Some(Ok(Message::Binary(data))) => {
-                            debug!("Received Feishu WebSocket binary message: {} bytes", data.len());
-                            if let Ok(text) = String::from_utf8(data) {
-                                if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
-                                    if let Some(msg) = parse_feishu_event(&event) {
-                                        let _ = tx.send(msg).await;
+                            let frame = match FeishuWsFrame::decode(data.as_slice()) {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    warn!("Feishu WS decode frame failed: {e}");
+                                    continue;
+                                }
+                            };
+
+                            match frame.method {
+                                0 => {
+                                    if let Some(new_interval) = parse_pong_interval(&frame) {
+                                        if new_interval > 0 {
+                                            debug!("Feishu WS update ping interval to {}s", new_interval);
+                                            ping_interval = tokio::time::interval(Duration::from_secs(new_interval));
+                                            ping_interval.tick().await;
+                                        }
                                     }
                                 }
+                                1 => {
+                                    Self::handle_data_frame(frame, &mut write, &tx, &mut frame_parts).await?;
+                                }
+                                method => {
+                                    debug!("Feishu WS unhandled frame method: {method}");
+                                }
                             }
                         }
-                        Some(Ok(Message::Close(_))) => {
-                            info!("Feishu WebSocket connection closed by server");
+                        Some(Ok(Message::Text(text))) => {
+                            // Feishu WS should be binary protobuf frames; keep this for diagnostics.
+                            debug!("Feishu WS unexpected text message: {text}");
+                        }
+                        Some(Ok(Message::Close(frame))) => {
+                            info!("Feishu WebSocket closed by server: {frame:?}");
                             break;
                         }
-                        Some(Ok(Message::Ping(_))) => {
-                            debug!("Received Feishu WebSocket ping, sending pong");
-                            let _ = write.send(Message::Pong(Vec::new())).await;
+                        Some(Ok(Message::Ping(payload))) => {
+                            let _ = write.send(Message::Pong(payload)).await;
                         }
                         Some(Ok(Message::Pong(_))) => {
-                            debug!("Received Feishu WebSocket pong");
+                            debug!("Feishu WebSocket pong");
                         }
-                        Some(Ok(_)) => {
-                            debug!("Received unhandled Feishu WebSocket message type");
-                        }
-                        Some(Err(e)) => {
-                            error!("Feishu WebSocket error: {e}");
-                            break;
-                        }
-                        None => {
-                            info!("Feishu WebSocket stream ended");
-                            break;
-                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => return Err(format!("Feishu WebSocket stream error: {e}").into()),
+                        None => break,
                     }
                 }
+                _ = ping_interval.tick() => {
+                    let ping_frame = build_ping_frame(service_id);
+                    write.send(Message::Binary(ping_frame.encode_to_vec())).await?;
+                }
                 _ = shutdown_rx.changed() => {
-                    info!("Feishu WebSocket shutting down");
-                    let _ = write.close().await;
-                    break;
+                    if *shutdown_rx.borrow() {
+                        info!("Feishu WebSocket shutting down");
+                        let _ = write.close().await;
+                        break;
+                    }
                 }
             }
         }
 
+        Ok(())
+    }
+
+    async fn handle_data_frame<S>(
+        mut frame: FeishuWsFrame,
+        write: &mut S,
+        tx: &mpsc::Sender<ChannelMessage>,
+        frame_parts: &mut HashMap<String, Vec<Vec<u8>>>,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        S: SinkExt<Message> + Unpin,
+        <S as futures::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let frame_type = ws_header(&frame.headers, "type").unwrap_or_default();
+        if frame_type != "event" {
+            return Ok(());
+        }
+
+        let payload = match frame.payload.take() {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let payload = match combine_payload(&frame.headers, payload, frame_parts) {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let mut code = 200;
+        match serde_json::from_slice::<serde_json::Value>(&payload) {
+            Ok(event) => {
+                if let Some(msg) = parse_feishu_event(&event) {
+                    if tx.send(msg).await.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Feishu WS event payload parse failed: {e}");
+                code = 500;
+            }
+        }
+
+        let ack_frame = build_ack_frame(&frame, code);
+        write
+            .send(Message::Binary(ack_frame.encode_to_vec()))
+            .await?;
         Ok(())
     }
 }
@@ -515,91 +646,175 @@ struct FeishuAdapterClone {
     app_id: String,
     app_secret: Zeroizing<String>,
     client: reqwest::Client,
-    cached_token: Arc<RwLock<Option<(String, Instant)>>>,
     shutdown_rx: watch::Receiver<bool>,
 }
 
 impl FeishuAdapterClone {
-    /// Get a valid tenant access token, refreshing if expired or missing.
-    async fn get_token(&self) -> Result<String, Box<dyn std::error::Error>> {
-        {
-            let guard = self.cached_token.read().await;
-            if let Some((ref token, expiry)) = *guard {
-                if Instant::now() < expiry {
-                    return Ok(token.clone());
-                }
-            }
-        }
-
-        let body = serde_json::json!({
-            "app_id": self.app_id,
-            "app_secret": self.app_secret.as_str(),
-        });
-
+    /// Get WebSocket endpoint from Feishu API.
+    async fn get_websocket_endpoint(&self) -> Result<FeishuWsEndpoint, Box<dyn std::error::Error>> {
         let resp = self
             .client
-            .post(FEISHU_TOKEN_URL)
-            .json(&body)
+            .post(FEISHU_WS_ENDPOINT_URL)
+            .json(&serde_json::json!({
+                "AppID": self.app_id,
+                "AppSecret": self.app_secret.as_str(),
+            }))
             .send()
             .await?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let resp_body = resp.text().await.unwrap_or_default();
-            return Err(format!("Feishu token request failed {status}: {resp_body}").into());
+            return Err(
+                format!("Feishu WebSocket endpoint request failed {status}: {resp_body}").into(),
+            );
         }
 
         let resp_body: serde_json::Value = resp.json().await?;
-        let code = resp_body["code"].as_i64().unwrap_or(-1);
-        if code != 0 {
-            let msg = resp_body["msg"].as_str().unwrap_or("unknown error");
-            return Err(format!("Feishu token error: {msg}").into());
-        }
+        parse_ws_endpoint_response(&resp_body)
+    }
+}
 
-        let tenant_access_token = resp_body["tenant_access_token"]
-            .as_str()
-            .ok_or("Missing tenant_access_token")?
-            .to_string();
-        let expire = resp_body["expire"].as_u64().unwrap_or(7200);
-
-        let expiry =
-            Instant::now() + Duration::from_secs(expire.saturating_sub(TOKEN_REFRESH_BUFFER_SECS));
-        *self.cached_token.write().await = Some((tenant_access_token.clone(), expiry));
-
-        Ok(tenant_access_token)
+fn parse_ws_endpoint_response(
+    resp_body: &serde_json::Value,
+) -> Result<FeishuWsEndpoint, Box<dyn std::error::Error>> {
+    let code = resp_body["code"].as_i64().unwrap_or(-1);
+    if code != 0 {
+        let msg = resp_body["msg"].as_str().unwrap_or("unknown error");
+        return Err(format!("Feishu WebSocket endpoint error: {msg}").into());
     }
 
-    /// Get WebSocket endpoint from Feishu API.
-    async fn get_websocket_endpoint(&self) -> Result<String, Box<dyn std::error::Error>> {
-        let token = self.get_token().await?;
-        let url = "https://open.feishu.cn/open-apis/ws/v1/endpoint";
-        
-        let resp = self
-            .client
-            .get(url)
-            .bearer_auth(&token)
-            .send()
-            .await?;
+    let data = &resp_body["data"];
+    let ws_url = data
+        .get("url")
+        .or_else(|| data.get("URL"))
+        .and_then(|v| v.as_str())
+        .ok_or("Missing WebSocket URL in response")?
+        .to_string();
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let resp_body = resp.text().await.unwrap_or_default();
-            return Err(format!("Feishu WebSocket endpoint request failed {status}: {resp_body}").into());
-        }
+    let ping_interval = data
+        .get("client_config")
+        .or_else(|| data.get("ClientConfig"))
+        .and_then(|cfg| cfg.get("ping_interval").or_else(|| cfg.get("PingInterval")))
+        .and_then(|v| v.as_u64())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_WS_PING_INTERVAL_SECS);
 
-        let resp_body: serde_json::Value = resp.json().await?;
-        let code = resp_body["code"].as_i64().unwrap_or(-1);
-        if code != 0 {
-            let msg = resp_body["msg"].as_str().unwrap_or("unknown error");
-            return Err(format!("Feishu WebSocket endpoint error: {msg}").into());
-        }
+    Ok(FeishuWsEndpoint {
+        url: ws_url,
+        ping_interval_secs: ping_interval,
+    })
+}
 
-        let ws_url = resp_body["data"]["url"]
-            .as_str()
-            .ok_or("Missing WebSocket URL in response")?
-            .to_string();
+fn parse_service_id(ws_url: &str) -> i32 {
+    Url::parse(ws_url)
+        .ok()
+        .and_then(|u| {
+            u.query_pairs()
+                .find(|(k, _)| k == "service_id")
+                .and_then(|(_, v)| v.parse::<i32>().ok())
+        })
+        .unwrap_or(0)
+}
 
-        Ok(ws_url)
+fn ws_header(headers: &[FeishuWsHeader], key: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|h| h.key == key)
+        .map(|h| h.value.clone())
+}
+
+fn parse_pong_interval(frame: &FeishuWsFrame) -> Option<u64> {
+    let frame_type = ws_header(&frame.headers, "type")?;
+    if frame_type != "pong" {
+        return None;
+    }
+
+    let payload = frame.payload.as_ref()?;
+    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    value
+        .get("ping_interval")
+        .or_else(|| value.get("PingInterval"))
+        .and_then(|v| v.as_u64())
+}
+
+fn combine_payload(
+    headers: &[FeishuWsHeader],
+    payload: Vec<u8>,
+    frame_parts: &mut HashMap<String, Vec<Vec<u8>>>,
+) -> Option<Vec<u8>> {
+    let sum = ws_header(headers, "sum")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1);
+    if sum <= 1 {
+        return Some(payload);
+    }
+
+    let seq = ws_header(headers, "seq")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let msg_id = ws_header(headers, "message_id")?;
+
+    if seq >= sum {
+        return None;
+    }
+
+    let entry = frame_parts
+        .entry(msg_id.clone())
+        .or_insert_with(|| vec![Vec::new(); sum]);
+
+    if entry.len() != sum {
+        *entry = vec![Vec::new(); sum];
+    }
+
+    entry[seq] = payload;
+
+    if entry.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+
+    let mut combined = Vec::new();
+    for part in entry.iter() {
+        combined.extend_from_slice(part);
+    }
+    frame_parts.remove(&msg_id);
+    Some(combined)
+}
+
+fn build_ping_frame(service_id: i32) -> FeishuWsFrame {
+    FeishuWsFrame {
+        seq_id: 0,
+        log_id: 0,
+        service: service_id,
+        method: 0,
+        headers: vec![FeishuWsHeader {
+            key: "type".to_string(),
+            value: "ping".to_string(),
+        }],
+        payload_encoding: None,
+        payload_type: None,
+        payload: None,
+        log_id_new: None,
+    }
+}
+
+fn build_ack_frame(request: &FeishuWsFrame, code: u16) -> FeishuWsFrame {
+    let payload = serde_json::json!({
+        "code": code,
+        "headers": {},
+        "data": []
+    });
+
+    FeishuWsFrame {
+        seq_id: request.seq_id,
+        log_id: request.log_id,
+        service: request.service,
+        method: request.method,
+        headers: request.headers.clone(),
+        payload_encoding: None,
+        payload_type: None,
+        payload: Some(serde_json::to_vec(&payload).unwrap_or_default()),
+        log_id_new: request.log_id_new.clone(),
     }
 }
 
@@ -722,12 +937,8 @@ impl ChannelAdapter for FeishuAdapter {
         let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
 
         match self.connection_mode {
-            FeishuConnectionMode::Webhook => {
-                self.start_webhook(tx).await?;
-            }
-            FeishuConnectionMode::WebSocket => {
-                self.start_websocket_loop(tx).await?;
-            }
+            FeishuConnectionMode::Webhook => self.start_webhook(tx).await?,
+            FeishuConnectionMode::WebSocket => self.start_websocket_loop(tx).await?,
         }
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
@@ -765,6 +976,13 @@ impl ChannelAdapter for FeishuAdapter {
 mod tests {
     use super::*;
 
+    fn header(key: &str, value: &str) -> FeishuWsHeader {
+        FeishuWsHeader {
+            key: key.to_string(),
+            value: value.to_string(),
+        }
+    }
+
     #[test]
     fn test_feishu_adapter_creation() {
         let adapter =
@@ -780,10 +998,8 @@ mod tests {
 
     #[test]
     fn test_feishu_websocket_adapter_creation() {
-        let adapter = FeishuAdapter::new_websocket(
-            "cli_abc123".to_string(),
-            "app-secret-456".to_string(),
-        );
+        let adapter =
+            FeishuAdapter::new_websocket("cli_abc123".to_string(), "app-secret-456".to_string());
         assert_eq!(adapter.name(), "feishu");
         assert_eq!(
             adapter.channel_type(),
@@ -809,6 +1025,69 @@ mod tests {
     fn test_feishu_app_id_stored() {
         let adapter = FeishuAdapter::new("cli_test".to_string(), "secret".to_string(), 8080);
         assert_eq!(adapter.app_id, "cli_test");
+    }
+
+    #[test]
+    fn test_parse_ws_endpoint_response_lowercase() {
+        let body = serde_json::json!({
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "url": "wss://example/ws?service_id=123",
+                "client_config": {
+                    "ping_interval": 42
+                }
+            }
+        });
+
+        let endpoint = parse_ws_endpoint_response(&body).unwrap();
+        assert_eq!(endpoint.url, "wss://example/ws?service_id=123");
+        assert_eq!(endpoint.ping_interval_secs, 42);
+    }
+
+    #[test]
+    fn test_parse_ws_endpoint_response_uppercase() {
+        let body = serde_json::json!({
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "URL": "wss://example/ws?service_id=321",
+                "ClientConfig": {
+                    "PingInterval": 24
+                }
+            }
+        });
+
+        let endpoint = parse_ws_endpoint_response(&body).unwrap();
+        assert_eq!(endpoint.url, "wss://example/ws?service_id=321");
+        assert_eq!(endpoint.ping_interval_secs, 24);
+    }
+
+    #[test]
+    fn test_combine_payload_multi_package() {
+        let mut frame_parts = HashMap::new();
+
+        let headers_1 = vec![
+            header("message_id", "msg-1"),
+            header("sum", "2"),
+            header("seq", "0"),
+        ];
+        let headers_2 = vec![
+            header("message_id", "msg-1"),
+            header("sum", "2"),
+            header("seq", "1"),
+        ];
+
+        let r1 = combine_payload(&headers_1, b"Hello ".to_vec(), &mut frame_parts);
+        assert!(r1.is_none());
+        let r2 = combine_payload(&headers_2, b"World".to_vec(), &mut frame_parts).unwrap();
+        assert_eq!(r2, b"Hello World".to_vec());
+    }
+
+    #[test]
+    fn test_parse_service_id() {
+        assert_eq!(parse_service_id("wss://foo/bar?service_id=123"), 123);
+        assert_eq!(parse_service_id("wss://foo/bar"), 0);
     }
 
     #[test]
