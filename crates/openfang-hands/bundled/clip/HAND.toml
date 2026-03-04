@@ -118,6 +118,7 @@ key = "elevenlabs_api_key"
 label = "ElevenLabs API Key"
 description = "API key from elevenlabs.io for high-quality text-to-speech. Required when ElevenLabs TTS is selected."
 setting_type = "text"
+env_var = "ELEVENLABS_API_KEY"
 default = ""
 
 # ─── Publishing settings ────────────────────────────────────────────────────

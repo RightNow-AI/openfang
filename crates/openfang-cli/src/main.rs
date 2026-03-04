@@ -2545,12 +2545,20 @@ decay_rate = 0.05
         }
 
         // Check for prompt injection issues in skill definitions
+        // Only flag Critical-severity warnings (Warning-level hits are expected
+        // in bundled skills that mention shell commands in educational context).
         let skills = skill_reg.list();
         let mut injection_warnings = 0;
         for skill in &skills {
             if let Some(ref prompt) = skill.manifest.prompt_context {
                 let warnings = openfang_skills::verify::SkillVerifier::scan_prompt_content(prompt);
-                if !warnings.is_empty() {
+                let has_critical = warnings.iter().any(|w| {
+                    matches!(
+                        w.severity,
+                        openfang_skills::verify::WarningSeverity::Critical
+                    )
+                });
+                if has_critical {
                     injection_warnings += 1;
                     if !json {
                         ui::check_warn(&format!(

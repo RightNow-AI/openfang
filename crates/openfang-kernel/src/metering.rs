@@ -391,6 +391,20 @@ fn estimate_cost_rates(model: &str) -> (f64, f64) {
         return (0.80, 0.80);
     }
 
+    // ── Volcano Engine / Doubao ────────────────────────────────
+    if model.contains("doubao-seed-code") {
+        return (0.50, 1.00);
+    }
+    if model.contains("doubao") && model.contains("mini") {
+        return (0.10, 0.10);
+    }
+    if model.contains("doubao") && model.contains("lite") {
+        return (0.30, 0.60);
+    }
+    if model.contains("doubao") {
+        return (0.80, 2.00);
+    }
+
     // ── Baidu ERNIE ─────────────────────────────────────────────
     if model.contains("ernie") {
         return (2.00, 6.00);
