@@ -442,7 +442,7 @@ mod tests {
     fn load_bundled_hands() {
         let reg = HandRegistry::new();
         let count = reg.load_bundled();
-        assert_eq!(count, 7);
+        assert_eq!(count, 13);
         assert!(!reg.list_definitions().is_empty());
 
         // Clip hand should be loaded
@@ -460,6 +460,14 @@ mod tests {
 
         // Browser hand should be loaded
         assert!(reg.get_definition("browser").is_some());
+
+        // New hands should be loaded
+        assert!(reg.get_definition("reddit").is_some());
+        assert!(reg.get_definition("linkedin").is_some());
+        assert!(reg.get_definition("strategist").is_some());
+        assert!(reg.get_definition("apitester").is_some());
+        assert!(reg.get_definition("devops").is_some());
+        assert!(reg.get_definition("analytics").is_some());
     }
 
     #[test]

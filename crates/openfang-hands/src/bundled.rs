@@ -40,6 +40,36 @@ pub fn bundled_hands() -> Vec<(&'static str, &'static str, &'static str)> {
             include_str!("../bundled/browser/HAND.toml"),
             include_str!("../bundled/browser/SKILL.md"),
         ),
+        (
+            "reddit",
+            include_str!("../bundled/reddit/HAND.toml"),
+            include_str!("../bundled/reddit/SKILL.md"),
+        ),
+        (
+            "linkedin",
+            include_str!("../bundled/linkedin/HAND.toml"),
+            include_str!("../bundled/linkedin/SKILL.md"),
+        ),
+        (
+            "strategist",
+            include_str!("../bundled/strategist/HAND.toml"),
+            include_str!("../bundled/strategist/SKILL.md"),
+        ),
+        (
+            "apitester",
+            include_str!("../bundled/apitester/HAND.toml"),
+            include_str!("../bundled/apitester/SKILL.md"),
+        ),
+        (
+            "devops",
+            include_str!("../bundled/devops/HAND.toml"),
+            include_str!("../bundled/devops/SKILL.md"),
+        ),
+        (
+            "analytics",
+            include_str!("../bundled/analytics/HAND.toml"),
+            include_str!("../bundled/analytics/SKILL.md"),
+        ),
     ]
 }
 
@@ -71,7 +101,7 @@ mod tests {
     #[test]
     fn bundled_hands_count() {
         let hands = bundled_hands();
-        assert_eq!(hands.len(), 7);
+        assert_eq!(hands.len(), 13);
     }
 
     #[test]
@@ -202,6 +232,108 @@ mod tests {
     }
 
     #[test]
+    fn parse_reddit_hand() {
+        let (id, toml_content, skill_content) = bundled_hands()
+            .into_iter()
+            .find(|(id, _, _)| *id == "reddit")
+            .unwrap();
+        let def = parse_bundled(id, toml_content, skill_content).unwrap();
+        assert_eq!(def.id, "reddit");
+        assert_eq!(def.name, "Reddit Hand");
+        assert_eq!(def.category, crate::HandCategory::Communication);
+        assert!(def.skill_content.is_some());
+        assert!(!def.requires.is_empty()); // requires REDDIT API keys
+        assert!(!def.settings.is_empty());
+        assert!(!def.dashboard.metrics.is_empty());
+        assert!((def.agent.temperature - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parse_linkedin_hand() {
+        let (id, toml_content, skill_content) = bundled_hands()
+            .into_iter()
+            .find(|(id, _, _)| *id == "linkedin")
+            .unwrap();
+        let def = parse_bundled(id, toml_content, skill_content).unwrap();
+        assert_eq!(def.id, "linkedin");
+        assert_eq!(def.name, "LinkedIn Hand");
+        assert_eq!(def.category, crate::HandCategory::Communication);
+        assert!(def.skill_content.is_some());
+        assert!(!def.requires.is_empty()); // requires LINKEDIN_ACCESS_TOKEN
+        assert!(!def.settings.is_empty());
+        assert!(!def.dashboard.metrics.is_empty());
+        assert!((def.agent.temperature - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parse_strategist_hand() {
+        let (id, toml_content, skill_content) = bundled_hands()
+            .into_iter()
+            .find(|(id, _, _)| *id == "strategist")
+            .unwrap();
+        let def = parse_bundled(id, toml_content, skill_content).unwrap();
+        assert_eq!(def.id, "strategist");
+        assert_eq!(def.name, "Strategist Hand");
+        assert_eq!(def.category, crate::HandCategory::Content);
+        assert!(def.skill_content.is_some());
+        assert!(def.requires.is_empty());
+        assert!(!def.settings.is_empty());
+        assert!(!def.dashboard.metrics.is_empty());
+        assert!((def.agent.temperature - 0.3).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parse_apitester_hand() {
+        let (id, toml_content, skill_content) = bundled_hands()
+            .into_iter()
+            .find(|(id, _, _)| *id == "apitester")
+            .unwrap();
+        let def = parse_bundled(id, toml_content, skill_content).unwrap();
+        assert_eq!(def.id, "apitester");
+        assert_eq!(def.name, "API Tester Hand");
+        assert_eq!(def.category, crate::HandCategory::Development);
+        assert!(def.skill_content.is_some());
+        assert!(def.requires.is_empty());
+        assert!(!def.settings.is_empty());
+        assert!(!def.dashboard.metrics.is_empty());
+        assert!((def.agent.temperature - 0.3).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parse_devops_hand() {
+        let (id, toml_content, skill_content) = bundled_hands()
+            .into_iter()
+            .find(|(id, _, _)| *id == "devops")
+            .unwrap();
+        let def = parse_bundled(id, toml_content, skill_content).unwrap();
+        assert_eq!(def.id, "devops");
+        assert_eq!(def.name, "DevOps Hand");
+        assert_eq!(def.category, crate::HandCategory::Development);
+        assert!(def.skill_content.is_some());
+        assert!(def.requires.is_empty());
+        assert!(!def.settings.is_empty());
+        assert!(!def.dashboard.metrics.is_empty());
+        assert!((def.agent.temperature - 0.3).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parse_analytics_hand() {
+        let (id, toml_content, skill_content) = bundled_hands()
+            .into_iter()
+            .find(|(id, _, _)| *id == "analytics")
+            .unwrap();
+        let def = parse_bundled(id, toml_content, skill_content).unwrap();
+        assert_eq!(def.id, "analytics");
+        assert_eq!(def.name, "Analytics Hand");
+        assert_eq!(def.category, crate::HandCategory::Data);
+        assert!(def.skill_content.is_some());
+        assert!(def.requires.is_empty());
+        assert!(!def.settings.is_empty());
+        assert!(!def.dashboard.metrics.is_empty());
+        assert!((def.agent.temperature - 0.3).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn all_bundled_hands_parse() {
         for (id, toml_content, skill_content) in bundled_hands() {
             let def = parse_bundled(id, toml_content, skill_content)
@@ -216,7 +348,7 @@ mod tests {
 
     #[test]
     fn all_einstein_hands_have_schedules() {
-        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter"];
+        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter", "reddit", "linkedin", "strategist", "apitester", "devops"];
         for (id, toml_content, skill_content) in bundled_hands() {
             if einstein_ids.contains(&id) {
                 let def = parse_bundled(id, toml_content, skill_content).unwrap();
@@ -241,7 +373,7 @@ mod tests {
 
     #[test]
     fn all_einstein_hands_have_memory() {
-        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter"];
+        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter", "reddit", "linkedin", "strategist", "apitester", "devops", "analytics"];
         for (id, toml_content, skill_content) in bundled_hands() {
             if einstein_ids.contains(&id) {
                 let def = parse_bundled(id, toml_content, skill_content).unwrap();
@@ -261,7 +393,7 @@ mod tests {
 
     #[test]
     fn all_einstein_hands_have_knowledge_graph() {
-        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter"];
+        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter", "reddit", "linkedin", "strategist", "apitester", "devops", "analytics"];
         for (id, toml_content, skill_content) in bundled_hands() {
             if einstein_ids.contains(&id) {
                 let def = parse_bundled(id, toml_content, skill_content).unwrap();
