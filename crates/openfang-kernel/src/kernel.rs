@@ -758,9 +758,14 @@ impl OpenFangKernel {
             if let Some(ref provider) = config.memory.embedding_provider {
                 // Explicit config takes priority
                 let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
-                match create_embedding_driver(provider, "text-embedding-3-small", api_key_env) {
+                let model = if config.memory.embedding_model.is_empty() {
+                    "text-embedding-3-small"
+                } else {
+                    &config.memory.embedding_model
+                };
+                match create_embedding_driver(provider, model, api_key_env) {
                     Ok(d) => {
-                        info!(provider = %provider, "Embedding driver configured from memory config");
+                        info!(provider = %provider, model = %model, "Embedding driver configured from memory config");
                         Some(Arc::from(d))
                     }
                     Err(e) => {
@@ -769,10 +774,15 @@ impl OpenFangKernel {
                     }
                 }
             } else if std::env::var("OPENAI_API_KEY").is_ok() {
-                match create_embedding_driver("openai", "text-embedding-3-small", "OPENAI_API_KEY")
+                let model = if config.memory.embedding_model.is_empty() {
+                    "text-embedding-3-small"
+                } else {
+                    &config.memory.embedding_model
+                };
+                match create_embedding_driver("openai", model, "OPENAI_API_KEY")
                 {
                     Ok(d) => {
-                        info!("Embedding driver auto-detected: OpenAI");
+                        info!(model = %model, "Embedding driver auto-detected: OpenAI");
                         Some(Arc::from(d))
                     }
                     Err(e) => {
@@ -782,9 +792,14 @@ impl OpenFangKernel {
                 }
             } else {
                 // Try Ollama (local, no key needed)
-                match create_embedding_driver("ollama", "nomic-embed-text", "") {
+                let model = if config.memory.embedding_model.is_empty() {
+                    "nomic-embed-text"
+                } else {
+                    &config.memory.embedding_model
+                };
+                match create_embedding_driver("ollama", model, "") {
                     Ok(d) => {
-                        info!("Embedding driver auto-detected: Ollama (local)");
+                        info!(model = %model, "Embedding driver auto-detected: Ollama (local)");
                         Some(Arc::from(d))
                     }
                     Err(e) => {
@@ -1018,24 +1033,23 @@ impl OpenFangKernel {
                     );
 
                     // Apply default_model to restored agents (same logic as spawn)
+                    if restored_entry.manifest.model.api_key_env.is_none()
+                        && restored_entry.manifest.model.base_url.is_none()
                     {
+                        let dm = &kernel.config.default_model;
                         let is_default_provider = restored_entry.manifest.model.provider.is_empty()
                             || restored_entry.manifest.model.provider == "default";
                         let is_default_model = restored_entry.manifest.model.model.is_empty()
                             || restored_entry.manifest.model.model == "default";
                         if is_default_provider && is_default_model {
-                            let dm = &kernel.config.default_model;
                             if !dm.provider.is_empty() {
                                 restored_entry.manifest.model.provider = dm.provider.clone();
                             }
                             if !dm.model.is_empty() {
                                 restored_entry.manifest.model.model = dm.model.clone();
                             }
-                            if !dm.api_key_env.is_empty() && restored_entry.manifest.model.api_key_env.is_none() {
-                                restored_entry.manifest.model.api_key_env = Some(dm.api_key_env.clone());
-                            }
-                            if dm.base_url.is_some() && restored_entry.manifest.model.base_url.is_none() {
-                                restored_entry.manifest.model.base_url.clone_from(&dm.base_url);
+                            if dm.base_url.is_some() {
+                                restored_entry.manifest.model.base_url = dm.base_url.clone();
                             }
                         }
                     }
@@ -1132,34 +1146,29 @@ impl OpenFangKernel {
 
         // Overlay kernel default_model onto agent if agent didn't explicitly choose.
         // Treat empty or "default" as "use the kernel's configured default_model".
-        // This allows bundled agents to defer to the user's configured provider/model,
-        // even if the agent manifest specifies an api_key_env (which is just a hint
-        // about which env var to check, not a hard lock on provider/model).
-        {
+        // This allows bundled agents to defer to the user's configured provider/model.
+        if manifest.model.api_key_env.is_none() && manifest.model.base_url.is_none() {
+            // Check hot-reloaded override first, fall back to boot-time config
+            let override_guard = self
+                .default_model_override
+                .read()
+                .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+            let dm = override_guard
+                .as_ref()
+                .unwrap_or(&self.config.default_model);
             let is_default_provider =
                 manifest.model.provider.is_empty() || manifest.model.provider == "default";
             let is_default_model =
                 manifest.model.model.is_empty() || manifest.model.model == "default";
             if is_default_provider && is_default_model {
-                // Check hot-reloaded override first, fall back to boot-time config
-                let override_guard = self
-                    .default_model_override
-                    .read()
-                    .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
-                let dm = override_guard
-                    .as_ref()
-                    .unwrap_or(&self.config.default_model);
                 if !dm.provider.is_empty() {
                     manifest.model.provider = dm.provider.clone();
                 }
                 if !dm.model.is_empty() {
                     manifest.model.model = dm.model.clone();
                 }
-                if !dm.api_key_env.is_empty() && manifest.model.api_key_env.is_none() {
-                    manifest.model.api_key_env = Some(dm.api_key_env.clone());
-                }
-                if dm.base_url.is_some() && manifest.model.base_url.is_none() {
-                    manifest.model.base_url.clone_from(&dm.base_url);
+                if dm.base_url.is_some() {
+                    manifest.model.base_url = dm.base_url.clone();
                 }
             }
         }
@@ -2932,23 +2941,10 @@ impl OpenFangKernel {
                 manifest.model.system_prompt, resolved.prompt_block
             );
         }
-        // Collect env vars from settings + from requires (api_key/env_var requirements)
-        let mut allowed_env = resolved.env_vars;
-        for req in &def.requires {
-            match req.requirement_type {
-                openfang_hands::RequirementType::ApiKey
-                | openfang_hands::RequirementType::EnvVar => {
-                    if !req.check_value.is_empty() && !allowed_env.contains(&req.check_value) {
-                        allowed_env.push(req.check_value.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
-        if !allowed_env.is_empty() {
+        if !resolved.env_vars.is_empty() {
             manifest.metadata.insert(
                 "hand_allowed_env".to_string(),
-                serde_json::to_value(&allowed_env).unwrap_or_default(),
+                serde_json::to_value(&resolved.env_vars).unwrap_or_default(),
             );
         }
 
@@ -4710,7 +4706,7 @@ fn infer_provider_from_model(model: &str) -> Option<String> {
 
 /// A well-known agent ID used for shared memory operations across agents.
 /// This is a fixed UUID so all agents read/write to the same namespace.
-pub fn shared_memory_agent_id() -> AgentId {
+fn shared_memory_agent_id() -> AgentId {
     AgentId(uuid::Uuid::from_bytes([
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x01,
