@@ -115,20 +115,63 @@ pub async fn spawn_agent(
 
 /// GET /api/agents — List all agents.
 pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Snapshot catalog once for enrichment
+    let catalog = state.kernel.model_catalog.read().ok();
+    let dm = &state.kernel.config.default_model;
+
     let agents: Vec<serde_json::Value> = state
         .kernel
         .registry
         .list()
         .into_iter()
         .map(|e| {
+            // Resolve "default" provider/model to actual kernel defaults
+            let provider = if e.manifest.model.provider.is_empty()
+                || e.manifest.model.provider == "default"
+            {
+                dm.provider.as_str()
+            } else {
+                e.manifest.model.provider.as_str()
+            };
+            let model = if e.manifest.model.model.is_empty()
+                || e.manifest.model.model == "default"
+            {
+                dm.model.as_str()
+            } else {
+                e.manifest.model.model.as_str()
+            };
+
+            // Enrich from catalog
+            let (tier, auth_status) = catalog
+                .as_ref()
+                .map(|cat| {
+                    let tier = cat
+                        .find_model(model)
+                        .map(|m| format!("{:?}", m.tier).to_lowercase())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let auth = cat
+                        .get_provider(provider)
+                        .map(|p| format!("{:?}", p.auth_status).to_lowercase())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    (tier, auth)
+                })
+                .unwrap_or(("unknown".to_string(), "unknown".to_string()));
+
+            let ready = matches!(e.state, openfang_types::agent::AgentState::Running)
+                && auth_status != "missing";
+
             serde_json::json!({
                 "id": e.id.to_string(),
                 "name": e.name,
                 "state": format!("{:?}", e.state),
                 "mode": e.mode,
                 "created_at": e.created_at.to_rfc3339(),
-                "model_provider": e.manifest.model.provider,
-                "model_name": e.manifest.model.model,
+                "last_active": e.last_active.to_rfc3339(),
+                "model_provider": provider,
+                "model_name": model,
+                "model_tier": tier,
+                "auth_status": auth_status,
+                "ready": ready,
                 "profile": e.manifest.profile,
                 "identity": {
                     "emoji": e.identity.emoji,

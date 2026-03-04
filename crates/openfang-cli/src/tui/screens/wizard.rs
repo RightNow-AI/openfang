@@ -68,6 +68,48 @@ const PROVIDERS: &[ProviderInfo] = &[
         needs_key: true,
     },
     ProviderInfo {
+        name: "gemini",
+        env_var: "GEMINI_API_KEY",
+        default_model: "gemini-2.5-flash",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "xai",
+        env_var: "XAI_API_KEY",
+        default_model: "grok-4-0709",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "qwen",
+        env_var: "DASHSCOPE_API_KEY",
+        default_model: "qwen-plus",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "perplexity",
+        env_var: "PERPLEXITY_API_KEY",
+        default_model: "sonar-pro",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "cohere",
+        env_var: "CO_API_KEY",
+        default_model: "command-a",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "cerebras",
+        env_var: "CEREBRAS_API_KEY",
+        default_model: "llama-3.3-70b",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "sambanova",
+        env_var: "SAMBANOVA_API_KEY",
+        default_model: "Meta-Llama-3.3-70B-Instruct",
+        needs_key: true,
+    },
+    ProviderInfo {
         name: "ollama",
         env_var: "OLLAMA_API_KEY",
         default_model: "llama3.2",
