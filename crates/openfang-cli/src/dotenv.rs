@@ -6,9 +6,17 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// Get the OpenFang home directory, respecting OPENFANG_HOME env var.
+fn dotenv_openfang_home() -> Option<PathBuf> {
+    if let Ok(home) = std::env::var("OPENFANG_HOME") {
+        return Some(PathBuf::from(home));
+    }
+    dirs::home_dir().map(|h| h.join(".openfang"))
+}
+
 /// Return the path to `~/.openfang/.env`.
 pub fn env_file_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".openfang").join(".env"))
+    dotenv_openfang_home().map(|h| h.join(".env"))
 }
 
 /// Load `~/.openfang/.env` and `~/.openfang/secrets.env` into `std::env`.
@@ -25,7 +33,7 @@ pub fn load_dotenv() {
 
 /// Return the path to `~/.openfang/secrets.env`.
 pub fn secrets_env_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".openfang").join("secrets.env"))
+    dotenv_openfang_home().map(|h| h.join("secrets.env"))
 }
 
 fn load_env_file(path: Option<PathBuf>) {

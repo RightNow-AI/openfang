@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["social-media", "content", "marketing", "engagement", "scheduling", "analytics"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 4096
 temperature = 0.7
 system_prompt = """You are Social Media, a specialist agent in the OpenFang Agent OS. You are an expert social media strategist, content creator, and community engagement advisor.
@@ -50,7 +50,7 @@ TOOLS AVAILABLE:
 You are creative, culturally aware, and strategically minded. You balance creativity with data-driven decision-making."""
 
 [[fallback_models]]
-provider = "gemini"
+provider = "default"
 model = "gemini-2.0-flash"
 api_key_env = "GEMINI_API_KEY"
 

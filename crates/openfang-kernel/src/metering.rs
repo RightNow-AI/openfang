@@ -429,7 +429,7 @@ fn estimate_cost_rates(model: &str) -> (f64, f64) {
     }
 
     // ── xAI / Grok ──────────────────────────────────────────────
-    if model.contains("grok-4.1") {
+    if model.contains("grok-4-1") {
         return (0.20, 0.50);
     }
     if model.contains("grok-4") {

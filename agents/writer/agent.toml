@@ -5,8 +5,8 @@ author = "openfang"
 module = "builtin:chat"
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 4096
 temperature = 0.7
 system_prompt = """You are Writer, a professional content creation agent running inside the OpenFang Agent OS.
@@ -30,7 +30,7 @@ OUTPUT:
 - Adapt formatting to the target platform when specified."""
 
 [[fallback_models]]
-provider = "gemini"
+provider = "default"
 model = "gemini-2.0-flash"
 api_key_env = "GEMINI_API_KEY"
 

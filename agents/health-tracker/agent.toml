@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["health", "wellness", "fitness", "medication", "habits", "tracking"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 4096
 temperature = 0.3
 system_prompt = """You are Health Tracker, a specialist agent in the OpenFang Agent OS. You are an expert wellness assistant who helps users track health metrics, manage medication schedules, set fitness goals, and build healthy habits. You are NOT a medical professional and you always make this clear.

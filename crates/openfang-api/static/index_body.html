@@ -589,6 +589,14 @@
 
             <!-- Messages area -->
             <div class="messages" id="messages" @dragover.prevent="dragOver = true" @dragleave="dragOver = false" @drop.prevent="handleDrop($event); dragOver = false">
+              <!-- Empty state: no agent selected -->
+              <template x-if="!currentAgent">
+                <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:32px;opacity:0.8">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:16px;opacity:0.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                  <h3 style="margin:0 0 8px;font-size:16px;font-weight:600">Select an agent to start chatting</h3>
+                  <p class="text-dim" style="font-size:13px;max-width:320px">Choose an agent from the sidebar or go to the Agents tab to create a new one.</p>
+                </div>
+              </template>
               <!-- Message list -->
               <template x-if="currentAgent">
                 <div>
@@ -3051,9 +3059,15 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <span class="text-xs text-dim ml-2" x-text="customModelStatus"></span>
             </div>
             <div class="text-xs text-dim mb-2" x-text="filteredModels.length + ' of ' + models.length + ' models'"></div>
+            <div x-show="!filteredModels.length && !settingsLoading" style="text-align:center;padding:32px 16px">
+              <div style="font-size:32px;margin-bottom:8px;opacity:0.5">&#x1F916;</div>
+              <h3 style="margin:0 0 4px;font-size:14px" x-text="models.length ? 'No models match your search' : 'No models available'"></h3>
+              <p class="text-xs text-dim" x-text="models.length ? 'Try a different search term or clear filters.' : 'Configure an LLM provider to see available models.'"></p>
+              <button class="btn btn-ghost btn-sm mt-2" x-show="models.length && (modelSearch || modelProviderFilter)" @click="modelSearch=''; modelProviderFilter=''">Clear Filters</button>
+            </div>
             <div class="table-wrap" x-show="filteredModels.length">
               <table>
-                <thead><tr><th>Model</th><th>Provider</th><th>Tier</th><th>Context</th><th>Input Cost</th><th>Output Cost</th><th>Status</th></tr></thead>
+                <thead><tr><th>Model</th><th>Provider</th><th>Tier</th><th>Context</th><th>Input Cost</th><th>Output Cost</th><th>Status</th><th></th></tr></thead>
                 <tbody>
                   <template x-for="m in filteredModels" :key="m.id">
                     <tr>
@@ -3064,6 +3078,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                       <td class="text-xs" x-text="formatCost(m.input_cost_per_m)"></td>
                       <td class="text-xs" x-text="formatCost(m.output_cost_per_m)"></td>
                       <td><span class="badge" :class="m.available ? 'badge-success' : 'badge-muted'" x-text="m.available ? 'Available' : 'Needs Key'"></span></td>
+                      <td><button x-show="m.tier === 'custom'" class="btn btn-ghost btn-sm" @click="deleteCustomModel(m.id)" title="Delete custom model" style="padding:2px 6px;font-size:11px;color:var(--text-muted)">&#x2715;</button></td>
                     </tr>
                   </template>
                 </tbody>
@@ -3078,6 +3093,12 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <input placeholder="Search tools..." x-model="toolSearch">
             </div>
             <div class="text-xs text-dim mb-2" x-text="filteredTools.length + ' of ' + tools.length + ' tools'"></div>
+            <div x-show="!filteredTools.length && !settingsLoading" style="text-align:center;padding:32px 16px">
+              <div style="font-size:32px;margin-bottom:8px;opacity:0.5">&#x1F527;</div>
+              <h3 style="margin:0 0 4px;font-size:14px" x-text="tools.length ? 'No tools match your search' : 'No tools available'"></h3>
+              <p class="text-xs text-dim" x-text="tools.length ? 'Try a different search term.' : 'Tools will appear once agents are configured.'"></p>
+              <button class="btn btn-ghost btn-sm mt-2" x-show="tools.length && toolSearch" @click="toolSearch=''">Clear Search</button>
+            </div>
             <div class="table-wrap" x-show="filteredTools.length">
               <table>
                 <thead><tr><th>Tool</th><th>Description</th></tr></thead>
