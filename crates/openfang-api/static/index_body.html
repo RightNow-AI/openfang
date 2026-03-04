@@ -3067,7 +3067,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             </div>
             <div class="table-wrap" x-show="filteredModels.length">
               <table>
-                <thead><tr><th>Model</th><th>Provider</th><th>Tier</th><th>Context</th><th>Input Cost</th><th>Output Cost</th><th>Status</th></tr></thead>
+                <thead><tr><th>Model</th><th>Provider</th><th>Tier</th><th>Context</th><th>Input Cost</th><th>Output Cost</th><th>Status</th><th></th></tr></thead>
                 <tbody>
                   <template x-for="m in filteredModels" :key="m.id">
                     <tr>
@@ -3078,6 +3078,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                       <td class="text-xs" x-text="formatCost(m.input_cost_per_m)"></td>
                       <td class="text-xs" x-text="formatCost(m.output_cost_per_m)"></td>
                       <td><span class="badge" :class="m.available ? 'badge-success' : 'badge-muted'" x-text="m.available ? 'Available' : 'Needs Key'"></span></td>
+                      <td><button x-show="m.tier === 'custom'" class="btn btn-ghost btn-sm" @click="deleteCustomModel(m.id)" title="Delete custom model" style="padding:2px 6px;font-size:11px;color:var(--text-muted)">&#x2715;</button></td>
                     </tr>
                   </template>
                 </tbody>

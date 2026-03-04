@@ -258,6 +258,17 @@ function settingsPage() {
       }
     },
 
+    async deleteCustomModel(modelId) {
+      if (!confirm('Delete custom model "' + modelId + '"?')) return;
+      try {
+        await OpenFangAPI.del('/api/models/custom/' + encodeURIComponent(modelId));
+        OpenFangToast.success('Model deleted');
+        await this.loadModels();
+      } catch(e) {
+        OpenFangToast.error('Failed to delete: ' + (e.message || 'Unknown error'));
+      }
+    },
+
     async loadConfigSchema() {
       try {
         var results = await Promise.all([

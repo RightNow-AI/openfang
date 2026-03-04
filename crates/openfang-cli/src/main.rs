@@ -1306,8 +1306,14 @@ fn detect_best_provider() -> (&'static str, &'static str, &'static str) {
         ui::success("Detected Gemini (GOOGLE_API_KEY)");
         return ("gemini", "GOOGLE_API_KEY", "gemini-2.5-flash");
     }
+    // Check if Ollama is running locally (no API key needed)
+    if check_ollama_available() {
+        ui::success("Detected Ollama running locally (no API key needed)");
+        return ("ollama", "OLLAMA_API_KEY", "llama3.2");
+    }
     ui::hint("No LLM provider API keys found");
     ui::hint("Groq offers a free tier: https://console.groq.com");
+    ui::hint("Or install Ollama for local models: https://ollama.com");
     ("groq", "GROQ_API_KEY", "llama-3.3-70b-versatile")
 }
 
@@ -1331,6 +1337,15 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
             "OpenRouter",
         ),
     ]
+}
+
+/// Quick probe to check if Ollama is running on localhost.
+fn check_ollama_available() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], 11434)),
+        std::time::Duration::from_millis(500),
+    )
+    .is_ok()
 }
 
 /// Write config.toml if it doesn't already exist.

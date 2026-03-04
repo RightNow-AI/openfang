@@ -50,7 +50,8 @@ impl LlmDriver for StubDriver {
     async fn complete(&self, _request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         Err(LlmError::MissingApiKey(
             "No LLM provider configured. Set an API key (e.g. GROQ_API_KEY) and restart, \
-             or configure a provider via the dashboard."
+             configure a provider via the dashboard, \
+             or use Ollama for local models (no API key needed)."
                 .to_string(),
         ))
     }

@@ -110,6 +110,24 @@ const PROVIDERS: &[ProviderInfo] = &[
         needs_key: true,
     },
     ProviderInfo {
+        name: "moonshot",
+        env_var: "MOONSHOT_API_KEY",
+        default_model: "moonshot-v1-128k",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "zhipu",
+        env_var: "ZHIPU_API_KEY",
+        default_model: "glm-4-plus",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "zhipu_coding",
+        env_var: "ZHIPU_API_KEY",
+        default_model: "codegeex-4",
+        needs_key: true,
+    },
+    ProviderInfo {
         name: "ollama",
         env_var: "OLLAMA_API_KEY",
         default_model: "llama3.2",

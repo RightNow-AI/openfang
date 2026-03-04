@@ -2025,6 +2025,12 @@ pub async fn configure_channel(
             unsafe {
                 std::env::set_var(env_var, value);
             }
+            // Also write the env var NAME to config.toml so the channel section
+            // is not empty and the kernel knows which env var to read.
+            config_fields.insert(
+                field_def.key.to_string(),
+                (env_var.to_string(), FieldType::Text),
+            );
         } else {
             // Config field — collect for TOML write with type info
             config_fields.insert(field_def.key.to_string(), (value.to_string(), field_def.field_type));
