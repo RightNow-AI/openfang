@@ -1082,6 +1082,7 @@ function chatPage() {
 
     formatToolJson: function(text) {
       if (!text) return '';
+	  if (text instanceof Object) return JSON.stringify(text);
       try { return JSON.stringify(JSON.parse(text), null, 2); }
       catch(e) { return text; }
     },
