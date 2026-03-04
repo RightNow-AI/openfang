@@ -126,15 +126,13 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
         .into_iter()
         .map(|e| {
             // Resolve "default" provider/model to actual kernel defaults
-            let provider = if e.manifest.model.provider.is_empty()
-                || e.manifest.model.provider == "default"
-            {
-                dm.provider.as_str()
-            } else {
-                e.manifest.model.provider.as_str()
-            };
-            let model = if e.manifest.model.model.is_empty()
-                || e.manifest.model.model == "default"
+            let provider =
+                if e.manifest.model.provider.is_empty() || e.manifest.model.provider == "default" {
+                    dm.provider.as_str()
+                } else {
+                    e.manifest.model.provider.as_str()
+                };
+            let model = if e.manifest.model.model.is_empty() || e.manifest.model.model == "default"
             {
                 dm.model.as_str()
             } else {
@@ -372,68 +370,7 @@ pub async fn get_agent_session(
 
     match state.kernel.memory.get_session(entry.session_id) {
         Ok(Some(session)) => {
-            let messages: Vec<serde_json::Value> = session
-                .messages
-                .iter()
-                .filter_map(|m| {
-                    let mut tools: Vec<serde_json::Value> = Vec::new();
-                    let content = match &m.content {
-                        openfang_types::message::MessageContent::Text(t) => t.clone(),
-                        openfang_types::message::MessageContent::Blocks(blocks) => {
-                            // Extract human-readable text and tool info from blocks
-                            let mut texts = Vec::new();
-                            for b in blocks {
-                                match b {
-                                    openfang_types::message::ContentBlock::Text { text } => {
-                                        texts.push(text.clone());
-                                    }
-                                    openfang_types::message::ContentBlock::Image { .. } => {
-                                        texts.push("[Image]".to_string());
-                                    }
-                                    openfang_types::message::ContentBlock::ToolUse {
-                                        name, ..
-                                    } => {
-                                        tools.push(serde_json::json!({
-                                            "name": name,
-                                            "running": false,
-                                            "expanded": false,
-                                        }));
-                                    }
-                                    openfang_types::message::ContentBlock::ToolResult {
-                                        content: result,
-                                        is_error,
-                                        ..
-                                    } => {
-                                        // Attach result to the most recent tool without a result
-                                        if let Some(last_tool) = tools.last_mut() {
-                                            let preview: String =
-                                                result.chars().take(300).collect();
-                                            last_tool["result"] =
-                                                serde_json::Value::String(preview);
-                                            last_tool["is_error"] =
-                                                serde_json::Value::Bool(*is_error);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            texts.join("\n")
-                        }
-                    };
-                    // Skip messages that are purely tool results (User role with only ToolResult blocks)
-                    if content.is_empty() && tools.is_empty() {
-                        return None;
-                    }
-                    let mut msg = serde_json::json!({
-                        "role": format!("{:?}", m.role),
-                        "content": content,
-                    });
-                    if !tools.is_empty() {
-                        msg["tools"] = serde_json::Value::Array(tools);
-                    }
-                    Some(msg)
-                })
-                .collect();
+            let messages = serialize_session_messages(&session.messages);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -2151,7 +2088,10 @@ pub async fn configure_channel(
             );
         } else {
             // Config field — collect for TOML write with type info
-            config_fields.insert(field_def.key.to_string(), (value.to_string(), field_def.field_type));
+            config_fields.insert(
+                field_def.key.to_string(),
+                (value.to_string(), field_def.field_type),
+            );
         }
     }
 
@@ -3804,7 +3744,12 @@ pub async fn activate_hand(
             // If the hand agent has a non-reactive schedule (autonomous hands),
             // start its background loop so it begins running immediately.
             if let Some(agent_id) = instance.agent_id {
-                let entry = state.kernel.registry.list().into_iter().find(|e| e.id == agent_id);
+                let entry = state
+                    .kernel
+                    .registry
+                    .list()
+                    .into_iter()
+                    .find(|e| e.id == agent_id);
                 if let Some(entry) = entry {
                     if !matches!(
                         entry.manifest.schedule,
@@ -10151,4 +10096,117 @@ pub async fn comms_task(
             Json(serde_json::json!({"error": format!("Failed to post task: {e}")})),
         ),
     }
+}
+
+fn serialize_session_messages(
+    messages: &[openfang_types::message::Message],
+) -> Vec<serde_json::Value> {
+    use std::collections::HashMap;
+    let mut global_tool_map: HashMap<String, serde_json::Value> = HashMap::new();
+
+    for m in messages {
+        if let openfang_types::message::MessageContent::Blocks(blocks) = &m.content {
+            for b in blocks {
+                match b {
+                    openfang_types::message::ContentBlock::ToolUse {
+                        id, name, input, ..
+                    } => {
+                        global_tool_map.insert(
+                            id.clone(),
+                            serde_json::json!({
+                                "id": id,
+                                "name": name,
+                                "input": input,
+                            }),
+                        );
+                    }
+                    openfang_types::message::ContentBlock::ToolResult {
+                        tool_use_id,
+                        tool_name,
+                        content: result,
+                        is_error,
+                        ..
+                    } => {
+                        if let Some(tool) = global_tool_map.get_mut(tool_use_id) {
+                            tool["name"] = serde_json::Value::String(tool_name.clone());
+                            tool["result"] = serde_json::Value::String(result.clone());
+                            tool["is_error"] = serde_json::Value::Bool(*is_error);
+                        } else {
+                            global_tool_map.insert(
+                                tool_use_id.clone(),
+                                serde_json::json!({
+                                    "id": tool_use_id,
+                                    "name": tool_name,
+                                    "result": result,
+                                    "is_error": is_error,
+                                }),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    messages
+        .iter()
+        .filter_map(|m| {
+            let content = match &m.content {
+                openfang_types::message::MessageContent::Text(t) => t.clone(),
+                openfang_types::message::MessageContent::Blocks(blocks) => {
+                    let mut texts = Vec::new();
+                    let mut msg_tools = Vec::new();
+
+                    for b in blocks {
+                        match b {
+                            openfang_types::message::ContentBlock::Text { text } => {
+                                texts.push(text.clone());
+                            }
+                            openfang_types::message::ContentBlock::Image { .. } => {
+                                texts.push("[Image]".to_string());
+                            }
+                            openfang_types::message::ContentBlock::ToolUse { id, .. } => {
+                                if m.role == openfang_types::message::Role::Assistant {
+                                    if let Some(tool) = global_tool_map.get(id) {
+                                        msg_tools.push(tool.clone());
+                                    }
+                                }
+                            }
+                            openfang_types::message::ContentBlock::ToolResult { .. } => {}
+                            _ => {}
+                        }
+                    }
+
+                    if texts.is_empty() && msg_tools.is_empty() {
+                        return None;
+                    }
+
+                    let role = if !msg_tools.is_empty() {
+                        "Assistant"
+                    } else {
+                        &format!("{:?}", m.role)
+                    };
+
+                    let mut msg = serde_json::json!({
+                        "role": role,
+                        "content": texts.join("\n"),
+                    });
+                    if !msg_tools.is_empty() {
+                        msg["tools"] = serde_json::Value::Array(msg_tools);
+                    }
+                    return Some(msg);
+                }
+            };
+
+            if content.is_empty() {
+                return None;
+            }
+
+            Some(serde_json::json!({
+                "role": format!("{:?}", m.role),
+                "content": content,
+            }))
+        })
+        .collect()
 }
