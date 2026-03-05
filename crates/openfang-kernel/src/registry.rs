@@ -177,6 +177,21 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Update an agent's fallback model chain.
+    pub fn update_fallback_models(
+        &self,
+        id: AgentId,
+        fallback_models: Vec<openfang_types::agent::FallbackModel>,
+    ) -> OpenFangResult<()> {
+        let mut entry = self
+            .agents
+            .get_mut(&id)
+            .ok_or_else(|| OpenFangError::AgentNotFound(id.to_string()))?;
+        entry.manifest.fallback_models = fallback_models;
+        entry.last_active = chrono::Utc::now();
+        Ok(())
+    }
+
     /// Update an agent's skill allowlist.
     pub fn update_skills(&self, id: AgentId, skills: Vec<String>) -> OpenFangResult<()> {
         let mut entry = self

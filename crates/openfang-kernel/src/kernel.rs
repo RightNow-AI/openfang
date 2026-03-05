@@ -1027,24 +1027,31 @@ impl OpenFangKernel {
                         &mut restored_entry.manifest.resources,
                     );
 
-                    // Apply default_model to restored agents (same logic as spawn)
+                    // Apply default_model to restored agents.
+                    //
+                    // Two cases:
+                    // 1. Agent has empty/default provider → always apply default_model
+                    // 2. Agent named "assistant" (auto-spawned) → update to match
+                    //    default_model so config.toml changes take effect on restart
                     {
+                        let dm = &kernel.config.default_model;
                         let is_default_provider = restored_entry.manifest.model.provider.is_empty()
                             || restored_entry.manifest.model.provider == "default";
                         let is_default_model = restored_entry.manifest.model.model.is_empty()
                             || restored_entry.manifest.model.model == "default";
-                        if is_default_provider && is_default_model {
-                            let dm = &kernel.config.default_model;
+                        let is_auto_spawned = restored_entry.name == "assistant"
+                            && restored_entry.manifest.description == "General-purpose assistant";
+                        if is_default_provider && is_default_model || is_auto_spawned {
                             if !dm.provider.is_empty() {
                                 restored_entry.manifest.model.provider = dm.provider.clone();
                             }
                             if !dm.model.is_empty() {
                                 restored_entry.manifest.model.model = dm.model.clone();
                             }
-                            if !dm.api_key_env.is_empty() && restored_entry.manifest.model.api_key_env.is_none() {
+                            if !dm.api_key_env.is_empty() {
                                 restored_entry.manifest.model.api_key_env = Some(dm.api_key_env.clone());
                             }
-                            if dm.base_url.is_some() && restored_entry.manifest.model.base_url.is_none() {
+                            if dm.base_url.is_some() {
                                 restored_entry.manifest.model.base_url.clone_from(&dm.base_url);
                             }
                         }

@@ -47,7 +47,8 @@ struct OaiRequest {
     /// New token limit field required by GPT-5 and o-series reasoning models.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_completion_tokens: Option<u32>,
-    temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OaiTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -309,7 +310,7 @@ impl LlmDriver for OpenAIDriver {
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
-            temperature: request.temperature,
+            temperature: Some(request.temperature),
             tools: oai_tools,
             tool_choice,
             stream: false,
@@ -396,6 +397,28 @@ impl LlmDriver for OpenAIDriver {
                     } else {
                         oai_request.max_tokens = Some(cap);
                     }
+                    continue;
+                }
+
+                // Model doesn't support function calling — retry without tools
+                // (e.g. GLM-5 on DashScope returns 500 "internal error" when tools are sent)
+                let body_lower = body.to_lowercase();
+                if !oai_request.tools.is_empty()
+                    && attempt < max_retries
+                    && (status == 500
+                        || body_lower.contains("internal error")
+                        || (status == 400
+                            && (body_lower.contains("does not support tools")
+                                || body_lower.contains("tool")
+                                    && body_lower.contains("not supported"))))
+                {
+                    warn!(
+                        model = %oai_request.model,
+                        status,
+                        "Model may not support tools, retrying without tools"
+                    );
+                    oai_request.tools.clear();
+                    oai_request.tool_choice = None;
                     continue;
                 }
 
@@ -612,7 +635,7 @@ impl LlmDriver for OpenAIDriver {
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
-            temperature: request.temperature,
+            temperature: Some(request.temperature),
             tools: oai_tools,
             tool_choice,
             stream: true,
@@ -701,6 +724,27 @@ impl LlmDriver for OpenAIDriver {
                     } else {
                         oai_request.max_tokens = Some(cap);
                     }
+                    continue;
+                }
+
+                // Model doesn't support function calling — retry without tools
+                let body_lower = body.to_lowercase();
+                if !oai_request.tools.is_empty()
+                    && attempt < max_retries
+                    && (status == 500
+                        || body_lower.contains("internal error")
+                        || (status == 400
+                            && (body_lower.contains("does not support tools")
+                                || body_lower.contains("tool")
+                                    && body_lower.contains("not supported"))))
+                {
+                    warn!(
+                        model = %oai_request.model,
+                        status,
+                        "Model may not support tools (stream), retrying without tools"
+                    );
+                    oai_request.tools.clear();
+                    oai_request.tool_choice = None;
                     continue;
                 }
 
