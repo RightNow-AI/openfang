@@ -27,6 +27,204 @@ impl OpenAIDriver {
             client: reqwest::Client::new(),
         }
     }
+
+    fn build_responses_input(request: &CompletionRequest) -> String {
+        let mut lines = Vec::new();
+        for msg in &request.messages {
+            let role = match msg.role {
+                Role::System => "system",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+            };
+
+            match &msg.content {
+                MessageContent::Text(text) => {
+                    if !text.trim().is_empty() {
+                        lines.push(format!("{role}: {text}"));
+                    }
+                }
+                MessageContent::Blocks(blocks) => {
+                    let mut parts = Vec::new();
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text } => {
+                                if !text.trim().is_empty() {
+                                    parts.push(text.clone());
+                                }
+                            }
+                            ContentBlock::ToolUse { name, input, .. } => {
+                                parts.push(format!(
+                                    "[tool_use:{name}] {}",
+                                    serde_json::to_string(input).unwrap_or_default()
+                                ));
+                            }
+                            ContentBlock::ToolResult { content, .. } => {
+                                parts.push(format!("[tool_result] {content}"));
+                            }
+                            ContentBlock::Image { .. } => {
+                                parts.push("[image omitted]".to_string());
+                            }
+                            ContentBlock::Thinking { .. } => {}
+                            _ => {}
+                        }
+                    }
+                    if !parts.is_empty() {
+                        lines.push(format!("{role}: {}", parts.join("\n")));
+                    }
+                }
+            }
+        }
+        lines.join("\n\n")
+    }
+
+    async fn complete_via_responses(
+        &self,
+        request: &CompletionRequest,
+        api_model: &str,
+    ) -> Result<CompletionResponse, LlmError> {
+        let instructions = request
+            .system
+            .clone()
+            .unwrap_or_else(|| "You are a helpful assistant.".to_string());
+        let input = Self::build_responses_input(request);
+        let reasoning =
+            configured_reasoning_effort(api_model).map(|effort| ResponsesReasoning { effort });
+
+        let tools: Vec<ResponsesTool> = request
+            .tools
+            .iter()
+            .map(|t| ResponsesTool {
+                tool_type: "function".to_string(),
+                name: t.name.clone(),
+                description: t.description.clone(),
+                parameters: openfang_types::tool::normalize_schema_for_provider(
+                    &t.input_schema,
+                    "openai",
+                ),
+            })
+            .collect();
+
+        let tool_choice = if tools.is_empty() {
+            None
+        } else {
+            Some(serde_json::json!("auto"))
+        };
+
+        let responses_request = ResponsesRequest {
+            model: api_model.to_string(),
+            instructions,
+            input,
+            reasoning,
+            max_output_tokens: Some(request.max_tokens),
+            temperature: Some(request.temperature),
+            tools,
+            tool_choice,
+            stream: false,
+        };
+
+        let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
+        debug!(url = %url, "Sending OpenAI Responses API request");
+
+        let mut req_builder = self
+            .client
+            .post(&url)
+            .header("content-type", "application/json")
+            .json(&responses_request);
+
+        if !self.api_key.as_str().is_empty() {
+            req_builder =
+                req_builder.header("authorization", format!("Bearer {}", self.api_key.as_str()));
+        }
+
+        let resp = req_builder
+            .send()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Api {
+                status,
+                message: body,
+            });
+        }
+
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
+        let responses: ResponsesResponse =
+            serde_json::from_str(&body).map_err(|e| LlmError::Parse(e.to_string()))?;
+
+        let mut content = Vec::new();
+        let mut tool_calls = Vec::new();
+
+        for (idx, item) in responses.output.into_iter().enumerate() {
+            match item.item_type.as_str() {
+                "message" => {
+                    let text = item
+                        .content
+                        .into_iter()
+                        .filter(|part| part.item_type == "output_text")
+                        .filter_map(|part| part.text)
+                        .collect::<Vec<_>>()
+                        .join("");
+                    if !text.is_empty() {
+                        content.push(ContentBlock::Text { text });
+                    }
+                }
+                "output_text" => {
+                    if let Some(text) = item.text {
+                        if !text.is_empty() {
+                            content.push(ContentBlock::Text { text });
+                        }
+                    }
+                }
+                "function_call" => {
+                    let id = item
+                        .call_id
+                        .or(item.id)
+                        .unwrap_or_else(|| format!("responses_tool_{idx}"));
+                    let name = item.name.unwrap_or_else(|| "tool".to_string());
+                    let input: serde_json::Value = item
+                        .arguments
+                        .as_deref()
+                        .and_then(|v| serde_json::from_str(v).ok())
+                        .unwrap_or_default();
+
+                    content.push(ContentBlock::ToolUse {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: input.clone(),
+                    });
+                    tool_calls.push(ToolCall { id, name, input });
+                }
+                _ => {}
+            }
+        }
+
+        let stop_reason = if tool_calls.is_empty() {
+            StopReason::EndTurn
+        } else {
+            StopReason::ToolUse
+        };
+
+        let usage = responses
+            .usage
+            .map(|u| TokenUsage {
+                input_tokens: u.input_tokens.unwrap_or(0),
+                output_tokens: u.output_tokens.unwrap_or(0),
+            })
+            .unwrap_or_default();
+
+        Ok(CompletionResponse {
+            content,
+            stop_reason,
+            tool_calls,
+            usage,
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +254,46 @@ fn uses_completion_tokens(model: &str) -> bool {
         || m.starts_with("o1")
         || m.starts_with("o3")
         || m.starts_with("o4")
+}
+
+/// Some providers expose reasoning-only models behind the Responses API.
+/// We route known models to `/responses` while keeping chat/completions unchanged.
+fn should_use_responses_api(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.starts_with("gpt-5.3-codex")
+}
+
+fn resolve_model_and_format(model: &str) -> (String, bool) {
+    let trimmed = model.trim();
+    if let Some(actual_model) = trimmed.strip_prefix("openai-responses/") {
+        return (actual_model.to_string(), true);
+    }
+    (trimmed.to_string(), should_use_responses_api(trimmed))
+}
+
+fn reasoning_effort_from_model(model: &str) -> Option<String> {
+    let m = model.to_lowercase();
+    if m.contains("xhigh") {
+        return Some("xhigh".to_string());
+    }
+    if m.ends_with("-high") {
+        return Some("high".to_string());
+    }
+    if m.ends_with("-medium") {
+        return Some("medium".to_string());
+    }
+    if m.ends_with("-low") {
+        return Some("low".to_string());
+    }
+    None
+}
+
+fn configured_reasoning_effort(model: &str) -> Option<String> {
+    std::env::var("OPENAI_REASONING_EFFORT")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| reasoning_effort_from_model(model))
 }
 
 #[derive(Debug, Serialize)]
@@ -144,9 +382,89 @@ struct OaiUsage {
     completion_tokens: u64,
 }
 
+#[derive(Debug, Serialize)]
+struct ResponsesRequest {
+    model: String,
+    instructions: String,
+    input: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ResponsesReasoning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<ResponsesTool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ResponsesReasoning {
+    effort: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ResponsesTool {
+    #[serde(rename = "type")]
+    tool_type: String,
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesResponse {
+    #[serde(default)]
+    output: Vec<ResponsesOutputItem>,
+    #[serde(default)]
+    usage: Option<ResponsesUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesOutputItem {
+    #[serde(rename = "type")]
+    item_type: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    call_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    content: Vec<ResponsesContentItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesContentItem {
+    #[serde(rename = "type")]
+    item_type: String,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesUsage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+}
+
 #[async_trait]
 impl LlmDriver for OpenAIDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        let (api_model, use_responses) = resolve_model_and_format(&request.model);
+        if use_responses {
+            return self.complete_via_responses(&request, &api_model).await;
+        }
+
         let mut oai_messages: Vec<OaiMessage> = Vec::new();
 
         // Add system message if present
@@ -291,13 +609,13 @@ impl LlmDriver for OpenAIDriver {
             Some(serde_json::json!("auto"))
         };
 
-        let (mt, mct) = if uses_completion_tokens(&request.model) {
+        let (mt, mct) = if uses_completion_tokens(&api_model) {
             (None, Some(request.max_tokens))
         } else {
             (Some(request.max_tokens), None)
         };
         let mut oai_request = OaiRequest {
-            model: request.model.clone(),
+            model: api_model,
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
@@ -473,6 +791,26 @@ impl LlmDriver for OpenAIDriver {
         request: CompletionRequest,
         tx: tokio::sync::mpsc::Sender<StreamEvent>,
     ) -> Result<CompletionResponse, LlmError> {
+        let (api_model, use_responses) = resolve_model_and_format(&request.model);
+        if use_responses {
+            let response = self.complete_via_responses(&request, &api_model).await?;
+            let text = response.text();
+            if !text.is_empty() {
+                let _ = tx
+                    .send(StreamEvent::TextDelta {
+                        text: text.to_string(),
+                    })
+                    .await;
+            }
+            let _ = tx
+                .send(StreamEvent::ContentComplete {
+                    stop_reason: response.stop_reason,
+                    usage: response.usage,
+                })
+                .await;
+            return Ok(response);
+        }
+
         // Build request (same as complete but with stream: true)
         let mut oai_messages: Vec<OaiMessage> = Vec::new();
 
@@ -591,13 +929,13 @@ impl LlmDriver for OpenAIDriver {
             Some(serde_json::json!("auto"))
         };
 
-        let (mt, mct) = if uses_completion_tokens(&request.model) {
+        let (mt, mct) = if uses_completion_tokens(&api_model) {
             (None, Some(request.max_tokens))
         } else {
             (Some(request.max_tokens), None)
         };
         let mut oai_request = OaiRequest {
-            model: request.model.clone(),
+            model: api_model,
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
@@ -1007,5 +1345,32 @@ mod tests {
         assert!(result.is_some());
         let resp = result.unwrap();
         assert_eq!(resp.tool_calls[0].name, "shell_exec");
+    }
+
+    #[test]
+    fn test_should_use_responses_api_for_gpt53_codex() {
+        assert!(should_use_responses_api("gpt-5.3-codex"));
+        assert!(should_use_responses_api("gpt-5.3-codex-high"));
+        assert!(!should_use_responses_api("gpt-5.2"));
+    }
+
+    #[test]
+    fn test_resolve_model_and_format_with_explicit_prefix() {
+        let (model, use_responses) = resolve_model_and_format("openai-responses/gpt-5.1");
+        assert_eq!(model, "gpt-5.1");
+        assert!(use_responses);
+    }
+
+    #[test]
+    fn test_reasoning_effort_from_model_suffix() {
+        assert_eq!(
+            reasoning_effort_from_model("gpt-5.3-codex-xhigh").as_deref(),
+            Some("xhigh")
+        );
+        assert_eq!(
+            reasoning_effort_from_model("gpt-5.3-codex-high").as_deref(),
+            Some("high")
+        );
+        assert_eq!(reasoning_effort_from_model("gpt-5.3-codex"), None);
     }
 }
