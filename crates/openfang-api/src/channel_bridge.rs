@@ -52,6 +52,7 @@ use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::agent::AgentId;
+use openfang_types::config::{WhatsAppConfig, WhatsAppMode};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
@@ -949,6 +950,46 @@ fn read_token(env_var: &str, adapter_name: &str) -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhatsAppDeliveryMode {
+    Gateway,
+    CloudApi,
+    Disabled,
+}
+
+fn select_whatsapp_delivery_mode(
+    wa_config: &WhatsAppConfig,
+    has_cloud_token: bool,
+    has_gateway_url: bool,
+    has_phone_number_id: bool,
+) -> WhatsAppDeliveryMode {
+    match wa_config.mode {
+        WhatsAppMode::WebQr => {
+            if has_gateway_url {
+                WhatsAppDeliveryMode::Gateway
+            } else {
+                WhatsAppDeliveryMode::Disabled
+            }
+        }
+        WhatsAppMode::CloudApi => {
+            if has_cloud_token && has_phone_number_id {
+                WhatsAppDeliveryMode::CloudApi
+            } else {
+                WhatsAppDeliveryMode::Disabled
+            }
+        }
+        WhatsAppMode::Auto => {
+            if has_gateway_url {
+                WhatsAppDeliveryMode::Gateway
+            } else if has_cloud_token && has_phone_number_id {
+                WhatsAppDeliveryMode::CloudApi
+            } else {
+                WhatsAppDeliveryMode::Disabled
+            }
+        }
+    }
+}
+
 /// Start the channel bridge for all configured channels based on kernel config.
 ///
 /// Returns `Some(BridgeManager)` if any channels were configured and started,
@@ -1062,26 +1103,57 @@ pub async fn start_channel_bridge_with_config(
         }
     }
 
-    // WhatsApp — supports Cloud API mode (access token) or Web/QR mode (gateway URL)
+    // WhatsApp — supports explicit `web_qr` and `cloud_api` modes plus `auto`.
     if let Some(ref wa_config) = config.whatsapp {
         let cloud_token = read_token(&wa_config.access_token_env, "WhatsApp");
-        let gateway_url = std::env::var(&wa_config.gateway_url_env).ok().filter(|u| !u.is_empty());
+        let verify_token =
+            read_token(&wa_config.verify_token_env, "WhatsApp (verify)").unwrap_or_default();
+        let gateway_url = wa_config.resolved_gateway_url();
+        let phone_number_id = wa_config.resolved_phone_number_id();
 
-        if cloud_token.is_some() || gateway_url.is_some() {
-            let token = cloud_token.unwrap_or_default();
-            let verify_token =
-                read_token(&wa_config.verify_token_env, "WhatsApp (verify)").unwrap_or_default();
-            let adapter = Arc::new(
-                WhatsAppAdapter::new(
-                    wa_config.phone_number_id.clone(),
-                    token,
-                    verify_token,
-                    wa_config.webhook_port,
-                    wa_config.allowed_users.clone(),
-                )
-                .with_gateway(gateway_url),
-            );
-            adapters.push((adapter, wa_config.default_agent.clone()));
+        let delivery_mode = select_whatsapp_delivery_mode(
+            wa_config,
+            cloud_token.is_some(),
+            gateway_url.is_some(),
+            !phone_number_id.is_empty(),
+        );
+
+        match delivery_mode {
+            WhatsAppDeliveryMode::Gateway => {
+                let adapter = Arc::new(
+                    WhatsAppAdapter::new(
+                        phone_number_id,
+                        cloud_token.unwrap_or_default(),
+                        verify_token,
+                        wa_config.webhook_port,
+                        wa_config.allowed_users.clone(),
+                    )
+                    .with_gateway(gateway_url),
+                );
+                adapters.push((adapter, wa_config.default_agent.clone()));
+            }
+            WhatsAppDeliveryMode::CloudApi => {
+                if let Some(token) = cloud_token {
+                    let adapter = Arc::new(WhatsAppAdapter::new(
+                        phone_number_id,
+                        token,
+                        verify_token,
+                        wa_config.webhook_port,
+                        wa_config.allowed_users.clone(),
+                    ));
+                    adapters.push((adapter, wa_config.default_agent.clone()));
+                }
+            }
+            WhatsAppDeliveryMode::Disabled => {
+                warn!(
+                    "WhatsApp configured but mode '{}' requirements are not met; skipping adapter startup",
+                    match wa_config.mode {
+                        WhatsAppMode::Auto => "auto",
+                        WhatsAppMode::CloudApi => "cloud_api",
+                        WhatsAppMode::WebQr => "web_qr",
+                    }
+                );
+            }
         }
     }
 
@@ -1646,6 +1718,8 @@ pub async fn reload_channels_from_disk(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[tokio::test]
     async fn test_bridge_skips_when_no_config() {
         let config = openfang_types::config::KernelConfig::default();
@@ -1692,5 +1766,43 @@ mod tests {
         assert!(config.channels.gotify.is_none());
         assert!(config.channels.webhook.is_none());
         assert!(config.channels.linkedin.is_none());
+    }
+
+    #[test]
+    fn test_select_whatsapp_delivery_mode_auto_prefers_gateway() {
+        let wa = openfang_types::config::WhatsAppConfig {
+            mode: openfang_types::config::WhatsAppMode::Auto,
+            ..Default::default()
+        };
+
+        let mode = select_whatsapp_delivery_mode(&wa, true, true, true);
+        assert_eq!(mode, WhatsAppDeliveryMode::Gateway);
+    }
+
+    #[test]
+    fn test_select_whatsapp_delivery_mode_cloud_requires_phone_id() {
+        let wa = openfang_types::config::WhatsAppConfig {
+            mode: openfang_types::config::WhatsAppMode::CloudApi,
+            ..Default::default()
+        };
+
+        let missing_phone = select_whatsapp_delivery_mode(&wa, true, false, false);
+        assert_eq!(missing_phone, WhatsAppDeliveryMode::Disabled);
+
+        let ready = select_whatsapp_delivery_mode(&wa, true, false, true);
+        assert_eq!(ready, WhatsAppDeliveryMode::CloudApi);
+    }
+
+    #[test]
+    fn test_select_whatsapp_delivery_mode_web_qr_requires_gateway() {
+        let wa = openfang_types::config::WhatsAppConfig {
+            mode: openfang_types::config::WhatsAppMode::WebQr,
+            gateway_url: Some("http://127.0.0.1:3009".to_string()),
+            ..Default::default()
+        };
+
+        let mode =
+            select_whatsapp_delivery_mode(&wa, false, wa.resolved_gateway_url().is_some(), false);
+        assert_eq!(mode, WhatsAppDeliveryMode::Gateway);
     }
 }

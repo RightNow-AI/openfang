@@ -1211,12 +1211,15 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
     },
     ChannelMeta {
         name: "whatsapp", display_name: "WhatsApp", icon: "WA",
-        description: "Connect your personal WhatsApp via QR scan",
+        description: "Linked devices QR login (default) with Cloud API fallback",
         category: "messaging", difficulty: "Easy", setup_time: "~1 min",
-        quick_setup: "Scan QR code with your phone — no developer account needed",
+        quick_setup: "Scan QR code with your phone — no Meta developer account needed",
         setup_type: "qr",
         fields: &[
-            // Business API fallback fields — all advanced (hidden behind "Use Business API" toggle)
+            // Optional advanced mode controls / Cloud API fallback fields.
+            ChannelField { key: "mode", label: "Mode", field_type: FieldType::Text, env_var: None, required: false, placeholder: "web_qr", advanced: true },
+            ChannelField { key: "gateway_url", label: "Gateway URL", field_type: FieldType::Text, env_var: None, required: false, placeholder: "http://127.0.0.1:3009", advanced: true },
+            ChannelField { key: "gateway_url_env", label: "Gateway URL Env Var", field_type: FieldType::Text, env_var: None, required: false, placeholder: "WHATSAPP_WEB_GATEWAY_URL", advanced: true },
             ChannelField { key: "access_token_env", label: "Access Token", field_type: FieldType::Secret, env_var: Some("WHATSAPP_ACCESS_TOKEN"), required: false, placeholder: "EAAx...", advanced: true },
             ChannelField { key: "phone_number_id", label: "Phone Number ID", field_type: FieldType::Text, env_var: None, required: false, placeholder: "1234567890", advanced: true },
             ChannelField { key: "verify_token_env", label: "Verify Token", field_type: FieldType::Secret, env_var: Some("WHATSAPP_VERIFY_TOKEN"), required: false, placeholder: "my-verify-token", advanced: true },
@@ -1224,7 +1227,7 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
         ],
         setup_steps: &["Open WhatsApp on your phone", "Go to Linked Devices", "Tap Link a Device and scan the QR code"],
-        config_template: "[channels.whatsapp]\naccess_token_env = \"WHATSAPP_ACCESS_TOKEN\"\nphone_number_id = \"\"",
+        config_template: "[channels.whatsapp]\nmode = \"web_qr\"\ngateway_url_env = \"WHATSAPP_WEB_GATEWAY_URL\"",
     },
     ChannelMeta {
         name: "signal", display_name: "Signal", icon: "SG",
@@ -2056,6 +2059,34 @@ pub async fn configure_channel(
         }
     }
 
+    // WhatsApp setup defaults: QR mode first, cloud mode when cloud credentials are provided.
+    if name == "whatsapp" && !config_fields.contains_key("mode") {
+        let has_cloud_fields = fields
+            .get("access_token_env")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+            || fields
+                .get("phone_number_id")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false)
+            || fields
+                .get("verify_token_env")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+
+        if has_cloud_fields {
+            config_fields.insert("mode".to_string(), "cloud_api".to_string());
+        } else {
+            config_fields.insert("mode".to_string(), "web_qr".to_string());
+            config_fields
+                .entry("gateway_url_env".to_string())
+                .or_insert_with(|| "WHATSAPP_WEB_GATEWAY_URL".to_string());
+        }
+    }
+
     // Write config.toml section
     if let Err(e) = upsert_channel_config(&config_path, &name, &config_fields) {
         return (
@@ -2232,16 +2263,15 @@ pub async fn reload_channels(State(state): State<Arc<AppState>>) -> impl IntoRes
 ///
 /// If a WhatsApp Web gateway is available (e.g. a Baileys-based bridge process),
 /// this proxies the request and returns a base64 QR code data URL. If no gateway
-/// is running, it returns instructions to set one up.
-pub async fn whatsapp_qr_start() -> impl IntoResponse {
-    // Check for WhatsApp Web gateway URL in config or env
-    let gateway_url = std::env::var("WHATSAPP_WEB_GATEWAY_URL").unwrap_or_default();
+/// is running, it returns setup guidance.
+pub async fn whatsapp_qr_start(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let gateway_url = resolve_whatsapp_gateway_url(&state).await;
 
     if gateway_url.is_empty() {
         return Json(serde_json::json!({
             "available": false,
-            "message": "WhatsApp Web gateway not running. Start the gateway or use Business API mode.",
-            "help": "Run: npx openfang-whatsapp-gateway   (or set WHATSAPP_WEB_GATEWAY_URL)"
+            "message": "WhatsApp Web gateway not configured.",
+            "help": "Set channels.whatsapp.mode = \"web_qr\" (or WHATSAPP_WEB_GATEWAY_URL) and restart daemon"
         }));
     }
 
@@ -2277,7 +2307,7 @@ pub async fn whatsapp_qr_start() -> impl IntoResponse {
         Err(e) => Json(serde_json::json!({
             "available": false,
             "message": format!("Could not reach WhatsApp Web gateway: {e}"),
-            "help": "Make sure the gateway is running at the configured URL"
+            "help": format!("Make sure gateway is running at {gateway_url}")
         })),
     }
 }
@@ -2287,9 +2317,10 @@ pub async fn whatsapp_qr_start() -> impl IntoResponse {
 /// After calling `/qr/start`, the frontend polls this to check if the user
 /// has scanned the QR code and the WhatsApp Web session is connected.
 pub async fn whatsapp_qr_status(
+    State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let gateway_url = std::env::var("WHATSAPP_WEB_GATEWAY_URL").unwrap_or_default();
+    let gateway_url = resolve_whatsapp_gateway_url(&state).await;
 
     if gateway_url.is_empty() {
         return Json(serde_json::json!({
@@ -2327,6 +2358,15 @@ pub async fn whatsapp_qr_status(
         }
         Err(_) => Json(serde_json::json!({ "connected": false, "message": "Gateway unreachable" })),
     }
+}
+
+/// Resolve effective WhatsApp Web gateway URL from live channel config and env.
+async fn resolve_whatsapp_gateway_url(state: &Arc<AppState>) -> String {
+    if let Some(wa) = state.channels_config.read().await.whatsapp.as_ref() {
+        return wa.resolved_gateway_url().unwrap_or_default();
+    }
+
+    std::env::var("WHATSAPP_WEB_GATEWAY_URL").unwrap_or_default()
 }
 
 /// Lightweight HTTP POST to a gateway URL. Returns parsed JSON body.
