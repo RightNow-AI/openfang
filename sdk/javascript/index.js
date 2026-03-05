@@ -34,11 +34,15 @@ class OpenFang {
    */
   constructor(baseUrl, opts) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
-    this._headers = Object.assign({ "Content-Type": "application/json" }, (opts && opts.headers) || {});
+    this._headers = Object.assign(
+      { "Content-Type": "application/json" },
+      (opts && opts.headers) || {}
+    );
     this.agents = new AgentResource(this);
     this.sessions = new SessionResource(this);
     this.workflows = new WorkflowResource(this);
     this.skills = new SkillResource(this);
+    this.mcp = new McpResource(this);
     this.channels = new ChannelResource(this);
     this.tools = new ToolResource(this);
     this.models = new ModelResource(this);
@@ -57,8 +61,14 @@ class OpenFang {
     }
     var res = await fetch(url, init);
     if (!res.ok) {
-      var text = await res.text().catch(function () { return ""; });
-      throw new OpenFangError("HTTP " + res.status + ": " + text, res.status, text);
+      var text = await res.text().catch(function () {
+        return "";
+      });
+      throw new OpenFangError(
+        "HTTP " + res.status + ": " + text,
+        res.status,
+        text
+      );
     }
     var ct = res.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
@@ -70,15 +80,23 @@ class OpenFang {
   /** Low-level SSE streaming. Returns an async iterator of parsed events. */
   async *_stream(method, path, body) {
     var url = this.baseUrl + path;
-    var headers = Object.assign({}, this._headers, { Accept: "text/event-stream" });
+    var headers = Object.assign({}, this._headers, {
+      Accept: "text/event-stream",
+    });
     var init = { method: method, headers: headers };
     if (body !== undefined) {
       init.body = JSON.stringify(body);
     }
     var res = await fetch(url, init);
     if (!res.ok) {
-      var text = await res.text().catch(function () { return ""; });
-      throw new OpenFangError("HTTP " + res.status + ": " + text, res.status, text);
+      var text = await res.text().catch(function () {
+        return "";
+      });
+      throw new OpenFangError(
+        "HTTP " + res.status + ": " + text,
+        res.status,
+        text
+      );
     }
     var reader = res.body.getReader();
     var decoder = new TextDecoder();
@@ -143,7 +161,9 @@ class OpenFang {
 // ── Agent Resource ──────────────────────────────────────────────
 
 class AgentResource {
-  constructor(client) { this._c = client; }
+  constructor(client) {
+    this._c = client;
+  }
 
   /** List all agents. */
   async list() {
@@ -184,12 +204,16 @@ class AgentResource {
 
   /** Set agent mode. */
   async setMode(id, mode) {
-    return this._c._request("PUT", "/api/agents/" + id + "/mode", { mode: mode });
+    return this._c._request("PUT", "/api/agents/" + id + "/mode", {
+      mode: mode,
+    });
   }
 
   /** Set agent model. */
   async setModel(id, model) {
-    return this._c._request("PUT", "/api/agents/" + id + "/model", { model: model });
+    return this._c._request("PUT", "/api/agents/" + id + "/model", {
+      model: model,
+    });
   }
 
   /** Send a message and get the full response. */
@@ -206,7 +230,11 @@ class AgentResource {
    */
   async *stream(id, text, opts) {
     var body = Object.assign({ message: text }, opts || {});
-    yield* this._c._stream("POST", "/api/agents/" + id + "/message/stream", body);
+    yield* this._c._stream(
+      "POST",
+      "/api/agents/" + id + "/message/stream",
+      body
+    );
   }
 
   /** Get agent session. */
@@ -231,12 +259,17 @@ class AgentResource {
 
   /** Create a new session. */
   async createSession(id, label) {
-    return this._c._request("POST", "/api/agents/" + id + "/sessions", { label: label });
+    return this._c._request("POST", "/api/agents/" + id + "/sessions", {
+      label: label,
+    });
   }
 
   /** Switch to a session. */
   async switchSession(id, sessionId) {
-    return this._c._request("POST", "/api/agents/" + id + "/sessions/" + sessionId + "/switch");
+    return this._c._request(
+      "POST",
+      "/api/agents/" + id + "/sessions/" + sessionId + "/switch"
+    );
   }
 
   /** Get agent skills. */
@@ -255,13 +288,18 @@ class AgentResource {
     var form = new FormData();
     form.append("file", file, filename);
     var res = await fetch(url, { method: "POST", body: form });
-    if (!res.ok) throw new OpenFangError("Upload failed: " + res.status, res.status);
+    if (!res.ok)
+      throw new OpenFangError("Upload failed: " + res.status, res.status);
     return res.json();
   }
 
   /** Update agent identity. */
   async setIdentity(id, identity) {
-    return this._c._request("PATCH", "/api/agents/" + id + "/identity", identity);
+    return this._c._request(
+      "PATCH",
+      "/api/agents/" + id + "/identity",
+      identity
+    );
   }
 
   /** Patch agent config. */
@@ -273,7 +311,9 @@ class AgentResource {
 // ── Session Resource ────────────────────────────────────────────
 
 class SessionResource {
-  constructor(client) { this._c = client; }
+  constructor(client) {
+    this._c = client;
+  }
 
   async list() {
     return this._c._request("GET", "/api/sessions");
@@ -284,14 +324,18 @@ class SessionResource {
   }
 
   async setLabel(id, label) {
-    return this._c._request("PUT", "/api/sessions/" + id + "/label", { label: label });
+    return this._c._request("PUT", "/api/sessions/" + id + "/label", {
+      label: label,
+    });
   }
 }
 
 // ── Workflow Resource ───────────────────────────────────────────
 
 class WorkflowResource {
-  constructor(client) { this._c = client; }
+  constructor(client) {
+    this._c = client;
+  }
 
   async list() {
     return this._c._request("GET", "/api/workflows");
@@ -310,10 +354,32 @@ class WorkflowResource {
   }
 }
 
-// ── Skill Resource ──────────────────────────────────────────────
+// ── Mcp Resource ──────────────────────────────────────────────
+class McpResource {
+  constructor(client) {
+    this._c = client;
+  }
 
+  async list() {
+    return this._c._request("GET", "/api/mcp/servers");
+  }
+
+  async list_available(id) {
+    return this._c._request("GET", "/api/agents/" + id + "/mcp_servers");
+  }
+
+  async setAvailable(id, mcp_servers = []) {
+    return this._c._request("PUT", "/api/agents/" + id + "/mcp_servers", {
+      mcp_servers,
+    });
+  }
+}
+
+// ── Skill Resource ──────────────────────────────────────────────
 class SkillResource {
-  constructor(client) { this._c = client; }
+  constructor(client) {
+    this._c = client;
+  }
 
   async list() {
     return this._c._request("GET", "/api/skills");
@@ -328,21 +394,30 @@ class SkillResource {
   }
 
   async search(query) {
-    return this._c._request("GET", "/api/marketplace/search?q=" + encodeURIComponent(query));
+    return this._c._request(
+      "GET",
+      "/api/marketplace/search?q=" + encodeURIComponent(query)
+    );
   }
 }
 
 // ── Channel Resource ────────────────────────────────────────────
 
 class ChannelResource {
-  constructor(client) { this._c = client; }
+  constructor(client) {
+    this._c = client;
+  }
 
   async list() {
     return this._c._request("GET", "/api/channels");
   }
 
   async configure(name, config) {
-    return this._c._request("POST", "/api/channels/" + name + "/configure", config);
+    return this._c._request(
+      "POST",
+      "/api/channels/" + name + "/configure",
+      config
+    );
   }
 
   async remove(name) {
@@ -357,17 +432,32 @@ class ChannelResource {
 // ── Tool Resource ───────────────────────────────────────────────
 
 class ToolResource {
-  constructor(client) { this._c = client; }
+  constructor(client) {
+    this._c = client;
+  }
 
   async list() {
     return this._c._request("GET", "/api/tools");
+  }
+
+  async getBuiltinTools(id) {
+    return this._c._request("GET", "/api/agents/" + id + "/builtin_tools");
+  }
+
+  async setBuiltinTools(id, { allowlist, blocklist } = {}) {
+    return this._c._request("PUT", "/api/agents/" + id + "/builtin_tools", {
+      tool_allowlist: allowlist || [],
+      tool_blocklist: blocklist || [],
+    });
   }
 }
 
 // ── Model Resource ──────────────────────────────────────────────
 
 class ModelResource {
-  constructor(client) { this._c = client; }
+  constructor(client) {
+    this._c = client;
+  }
 
   async list() {
     return this._c._request("GET", "/api/models");
@@ -385,14 +475,18 @@ class ModelResource {
 // ── Provider Resource ───────────────────────────────────────────
 
 class ProviderResource {
-  constructor(client) { this._c = client; }
+  constructor(client) {
+    this._c = client;
+  }
 
   async list() {
     return this._c._request("GET", "/api/providers");
   }
 
   async setKey(name, key) {
-    return this._c._request("POST", "/api/providers/" + name + "/key", { key: key });
+    return this._c._request("POST", "/api/providers/" + name + "/key", {
+      key: key,
+    });
   }
 
   async deleteKey(name) {
@@ -407,29 +501,43 @@ class ProviderResource {
 // ── Memory Resource ─────────────────────────────────────────────
 
 class MemoryResource {
-  constructor(client) { this._c = client; }
+  constructor(client) {
+    this._c = client;
+  }
 
   async getAll(agentId) {
     return this._c._request("GET", "/api/memory/agents/" + agentId + "/kv");
   }
 
   async get(agentId, key) {
-    return this._c._request("GET", "/api/memory/agents/" + agentId + "/kv/" + key);
+    return this._c._request(
+      "GET",
+      "/api/memory/agents/" + agentId + "/kv/" + key
+    );
   }
 
   async set(agentId, key, value) {
-    return this._c._request("PUT", "/api/memory/agents/" + agentId + "/kv/" + key, { value: value });
+    return this._c._request(
+      "PUT",
+      "/api/memory/agents/" + agentId + "/kv/" + key,
+      { value: value }
+    );
   }
 
   async delete(agentId, key) {
-    return this._c._request("DELETE", "/api/memory/agents/" + agentId + "/kv/" + key);
+    return this._c._request(
+      "DELETE",
+      "/api/memory/agents/" + agentId + "/kv/" + key
+    );
   }
 }
 
 // ── Trigger Resource ────────────────────────────────────────────
 
 class TriggerResource {
-  constructor(client) { this._c = client; }
+  constructor(client) {
+    this._c = client;
+  }
 
   async list() {
     return this._c._request("GET", "/api/triggers");
@@ -451,7 +559,9 @@ class TriggerResource {
 // ── Schedule Resource ───────────────────────────────────────────
 
 class ScheduleResource {
-  constructor(client) { this._c = client; }
+  constructor(client) {
+    this._c = client;
+  }
 
   async list() {
     return this._c._request("GET", "/api/schedules");

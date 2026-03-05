@@ -320,9 +320,10 @@ impl McpConnection {
                 Ok(response.result)
             }
             McpTransportHandle::Sse { client, url } => {
+                tracing::debug!("MCP SSE request url:{}, params: {:?}", url, request.params);
                 let response = client
-                    .post(url.as_str())
-                    .json(&request)
+                    .get(url.as_str())
+                    // .json(&request)
                     .timeout(std::time::Duration::from_secs(self.config.timeout_secs))
                     .send()
                     .await
@@ -404,9 +405,7 @@ impl McpConnection {
                 let has_cmd = std::env::var("PATH")
                     .unwrap_or_default()
                     .split(';')
-                    .any(|dir| {
-                        std::path::Path::new(dir).join(&cmd_variant).exists()
-                    });
+                    .any(|dir| std::path::Path::new(dir).join(&cmd_variant).exists());
                 if has_cmd {
                     cmd_variant
                 } else {
