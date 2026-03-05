@@ -295,6 +295,12 @@ pub async fn run_agent_loop(
             warn!("Context overflow unrecoverable — suggest /reset or /compact");
         }
 
+        // Re-validate tool_call/tool_result pairing after overflow drains
+        // which may have broken assistant→tool ordering invariants.
+        if recovery != RecoveryStage::None {
+            messages = crate::session_repair::validate_and_repair(&messages);
+        }
+
         // Context guard: compact oversized tool results before LLM call
         apply_context_guard(&mut messages, &context_budget, available_tools);
 

@@ -996,16 +996,19 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Channel send tool (proactive outbound messaging) ---
         ToolDefinition {
             name: "channel_send".to_string(),
-            description: "Send a message to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally prefix the message with 'Subject: Your Subject\\n\\n' to set the email subject.".to_string(),
+            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url or file_url to send an image or file instead of (or alongside) text.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "channel": { "type": "string", "description": "Channel adapter name (e.g., 'email', 'telegram', 'slack', 'discord')" },
                     "recipient": { "type": "string", "description": "Platform-specific recipient identifier (email address, user ID, etc.)" },
                     "subject": { "type": "string", "description": "Optional subject line (used for email; ignored for other channels)" },
-                    "message": { "type": "string", "description": "The message body to send" }
+                    "message": { "type": "string", "description": "The message body to send (required for text, optional caption for media)" },
+                    "image_url": { "type": "string", "description": "URL of an image to send (supported on Telegram, Discord, Slack)" },
+                    "file_url": { "type": "string", "description": "URL of a file to send as attachment" },
+                    "filename": { "type": "string", "description": "Filename for file attachments (defaults to 'file')" }
                 },
-                "required": ["channel", "recipient", "message"]
+                "required": ["channel", "recipient"]
             }),
         },
         // --- Hand tools (curated autonomous capability packages) ---
@@ -2119,24 +2122,44 @@ async fn tool_channel_send(
         .as_str()
         .ok_or("Missing 'recipient' parameter")?
         .trim();
-    let message = input["message"]
-        .as_str()
-        .ok_or("Missing 'message' parameter")?;
 
     if recipient.is_empty() {
         return Err("Recipient cannot be empty".to_string());
     }
+
+    // Check for media content (image_url or file_url)
+    let image_url = input["image_url"].as_str().filter(|s| !s.is_empty());
+    let file_url = input["file_url"].as_str().filter(|s| !s.is_empty());
+
+    if let Some(url) = image_url {
+        let caption = input["message"].as_str().filter(|s| !s.is_empty());
+        return kh
+            .send_channel_media(&channel, recipient, "image", url, caption, None)
+            .await;
+    }
+
+    if let Some(url) = file_url {
+        let caption = input["message"].as_str().filter(|s| !s.is_empty());
+        let filename = input["filename"].as_str();
+        return kh
+            .send_channel_media(&channel, recipient, "file", url, caption, filename)
+            .await;
+    }
+
+    // Text-only message
+    let message = input["message"]
+        .as_str()
+        .ok_or("Missing 'message' parameter (required for text messages)")?;
+
     if message.is_empty() {
         return Err("Message cannot be empty".to_string());
     }
 
     // For email channels, validate email format and prepend subject
     let final_message = if channel == "email" {
-        // Basic email format validation
         if !recipient.contains('@') || !recipient.contains('.') {
             return Err(format!("Invalid email address: '{recipient}'"));
         }
-        // Prepend subject if provided
         if let Some(subject) = input["subject"].as_str() {
             if !subject.is_empty() {
                 format!("Subject: {subject}\n\n{message}")
