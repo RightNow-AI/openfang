@@ -23,6 +23,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
     npm install -g @anthropic-ai/claude-code && \
     rm -rf /var/lib/apt/lists/*
+RUN GOBIN=/usr/local/bin go install github.com/steipete/gogcli@latest
 RUN useradd -m -s /bin/bash openfang && echo "openfang ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/openfang
 COPY --from=builder /build/target/release/openfang /usr/local/bin/
 COPY --from=builder /build/agents /opt/openfang/agents
