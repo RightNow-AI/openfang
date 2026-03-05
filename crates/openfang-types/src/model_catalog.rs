@@ -28,7 +28,7 @@ pub const SAMBANOVA_BASE_URL: &str = "https://api.sambanova.ai/v1";
 pub const HUGGINGFACE_BASE_URL: &str = "https://api-inference.huggingface.co/v1";
 pub const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const REPLICATE_BASE_URL: &str = "https://api.replicate.com/v1";
-pub const LEMONADE_BASE_URL: &str = "http://127.0.0.1:8000";
+pub const LEMONADE_BASE_URL: &str = "http://127.0.0.1:8000/v1";
 
 // ── GitHub Copilot ──────────────────────────────────────────────
 pub const GITHUB_COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";

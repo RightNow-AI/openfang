@@ -24,7 +24,7 @@ pub struct ProbeResult {
 pub fn is_local_provider(provider: &str) -> bool {
     matches!(
         provider.to_lowercase().as_str(),
-        "ollama" | "vllm" | "lmstudio"
+        "ollama" | "vllm" | "lmstudio" | "lemonade"
     )
 }
 
