@@ -755,12 +755,13 @@ impl OpenFangKernel {
             Arc<dyn openfang_runtime::embedding::EmbeddingDriver + Send + Sync>,
         > = {
             use openfang_runtime::embedding::create_embedding_driver;
+            let configured_model = &config.memory.embedding_model;
             if let Some(ref provider) = config.memory.embedding_provider {
-                // Explicit config takes priority
+                // Explicit config takes priority — use the configured embedding model
                 let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
-                match create_embedding_driver(provider, "text-embedding-3-small", api_key_env) {
+                match create_embedding_driver(provider, configured_model, api_key_env) {
                     Ok(d) => {
-                        info!(provider = %provider, "Embedding driver configured from memory config");
+                        info!(provider = %provider, model = %configured_model, "Embedding driver configured from memory config");
                         Some(Arc::from(d))
                     }
                     Err(e) => {
@@ -769,8 +770,12 @@ impl OpenFangKernel {
                     }
                 }
             } else if std::env::var("OPENAI_API_KEY").is_ok() {
-                match create_embedding_driver("openai", "text-embedding-3-small", "OPENAI_API_KEY")
-                {
+                let model = if configured_model == "all-MiniLM-L6-v2" {
+                    "text-embedding-3-small"
+                } else {
+                    configured_model.as_str()
+                };
+                match create_embedding_driver("openai", model, "OPENAI_API_KEY") {
                     Ok(d) => {
                         info!("Embedding driver auto-detected: OpenAI");
                         Some(Arc::from(d))
@@ -782,7 +787,12 @@ impl OpenFangKernel {
                 }
             } else {
                 // Try Ollama (local, no key needed)
-                match create_embedding_driver("ollama", "nomic-embed-text", "") {
+                let model = if configured_model == "all-MiniLM-L6-v2" {
+                    "nomic-embed-text"
+                } else {
+                    configured_model.as_str()
+                };
+                match create_embedding_driver("ollama", model, "") {
                     Ok(d) => {
                         info!("Embedding driver auto-detected: Ollama (local)");
                         Some(Arc::from(d))

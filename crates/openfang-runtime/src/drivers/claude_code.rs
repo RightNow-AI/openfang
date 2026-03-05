@@ -134,6 +134,7 @@ impl LlmDriver for ClaudeCodeDriver {
         let mut cmd = tokio::process::Command::new(&self.cli_path);
         cmd.arg("-p")
             .arg(&prompt)
+            .arg("--dangerously-skip-permissions")
             .arg("--output-format")
             .arg("json");
 
@@ -204,6 +205,7 @@ impl LlmDriver for ClaudeCodeDriver {
         let mut cmd = tokio::process::Command::new(&self.cli_path);
         cmd.arg("-p")
             .arg(&prompt)
+            .arg("--dangerously-skip-permissions")
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose");
