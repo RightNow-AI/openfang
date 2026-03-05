@@ -1,6 +1,6 @@
 # LLM Providers Guide
 
-OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **20 providers**, **51 builtin models**, and **23 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
+OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **21 providers**, **54 builtin models**, and **24 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
 
 ---
 
@@ -542,6 +542,33 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 
 ---
 
+### 21. Venice.ai
+
+| | |
+|---|---|
+| **Display Name** | Venice.ai |
+| **Driver** | OpenAI-compatible |
+| **Env Var** | `VENICE_API_KEY` |
+| **Base URL** | `https://api.venice.ai/api/v1` |
+| **Key Required** | Yes |
+| **Free Tier** | No |
+| **Auth** | `Authorization: Bearer` header |
+| **Models** | 3 |
+
+**Available Models:**
+- `venice-uncensored` (Fast) -- Venice's signature uncensored model
+- `llama-3.3-70b` (Balanced) -- Llama 3.3 70B with privacy
+- `qwen3-235b-a22b-instruct-2507` (Smart) -- Qwen3 235B on Venice
+
+**Setup:**
+1. Sign up at [venice.ai](https://venice.ai)
+2. Go to Settings > API and create an API key
+3. `export VENICE_API_KEY="..."`
+
+**Notes:** Venice.ai is a privacy-focused AI platform. All models run with zero data retention in private mode. Venice also offers an uncensored model variant. The API is OpenAI-compatible.
+
+---
+
 ## Model Catalog
 
 The complete catalog of all 51 builtin models, sorted by provider. Pricing is per million tokens.
@@ -594,6 +621,9 @@ The complete catalog of all 51 builtin models, sorted by provider. Pricing is pe
 | 44 | `grok-2-mini` | Grok 2 Mini | xai | Fast | 131,072 | 32,768 | $0.30 | $0.50 | Yes | No |
 | 45 | `hf/meta-llama/Llama-3.3-70B-Instruct` | Llama 3.3 70B (HF) | huggingface | Balanced | 128,000 | 4,096 | $0.30 | $0.30 | No | No |
 | 46 | `replicate/meta-llama-3.3-70b-instruct` | Llama 3.3 70B (Replicate) | replicate | Balanced | 128,000 | 4,096 | $0.40 | $0.40 | No | No |
+| 47 | `venice-uncensored` | Venice Uncensored | venice | Fast | 32,000 | 4,096 | $0.20 | $0.90 | No | No |
+| 48 | `llama-3.3-70b` | Llama 3.3 70B (Venice) | venice | Balanced | 128,000 | 4,096 | $0.70 | $2.80 | Yes | No |
+| 49 | `qwen3-235b-a22b-instruct-2507` | Qwen3 235B Instruct (Venice) | venice | Smart | 128,000 | 12,288 | $0.15 | $0.75 | Yes | No |
 
 **Model Tiers:**
 
@@ -640,6 +670,7 @@ All 23 aliases resolve to canonical model IDs. Aliases are case-insensitive.
 | `sonar` | `sonar-pro` |
 | `jamba` | `jamba-1.5-large` |
 | `command-r` | `command-r-plus` |
+| `venice` | `venice-uncensored` |
 
 You can use aliases anywhere a model ID is accepted: in config files, REST API calls, chat commands, and the model routing configuration.
 
@@ -762,6 +793,7 @@ The `MeteringEngine` first checks the **model catalog** for exact pricing. If th
 | `*cerebras*` | $0.06 | $0.06 |
 | `*sambanova*` | $0.06 | $0.06 |
 | `*replicate*` | $0.40 | $0.40 |
+| `*venice*` | $0.20 | $0.90 |
 | `*llama*` / `*mixtral*` | $0.05 | $0.10 |
 | `*qwen*` | $0.20 | $0.60 |
 | `mistral-large*` | $2.00 | $6.00 |
@@ -889,7 +921,7 @@ Returns a map of all alias-to-canonical-ID mappings.
 GET /api/providers
 ```
 
-Returns all 20 providers with auth status and model counts.
+Returns all 21 providers with auth status and model counts.
 
 **Response:**
 ```json
@@ -984,7 +1016,7 @@ Local:
 
 ### `/providers`
 
-Lists all 20 providers with their authentication status.
+Lists all 21 providers with their authentication status.
 
 ```
 /providers
@@ -992,7 +1024,7 @@ Lists all 20 providers with their authentication status.
 
 Example output:
 ```
-LLM Providers (20):
+LLM Providers (21):
 
   Anthropic          ANTHROPIC_API_KEY       Configured    3 models
   OpenAI             OPENAI_API_KEY          Missing       6 models
@@ -1033,6 +1065,7 @@ Quick reference for all provider environment variables:
 | Hugging Face | `HF_API_KEY` | Yes |
 | xAI | `XAI_API_KEY` | Yes |
 | Replicate | `REPLICATE_API_TOKEN` | Yes |
+| Venice.ai | `VENICE_API_KEY` | Yes |
 
 ---
 

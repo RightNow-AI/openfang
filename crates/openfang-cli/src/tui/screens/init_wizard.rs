@@ -173,6 +173,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "venice",
+        display: "Venice.ai",
+        env_var: "VENICE_API_KEY",
+        default_model: "venice-uncensored",
+        needs_key: true,
+        hint: "privacy-focused",
+    },
+    ProviderInfo {
         name: "ai21",
         display: "AI21",
         env_var: "AI21_API_KEY",

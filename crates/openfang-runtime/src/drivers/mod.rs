@@ -17,7 +17,7 @@ use openfang_types::model_catalog::{
     FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, LMSTUDIO_BASE_URL,
     MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
     OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL,
+    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
     VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
     ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
@@ -129,6 +129,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "REPLICATE_API_TOKEN",
             key_required: true,
         }),
+        "venice" => Some(ProviderDefaults {
+            base_url: VENICE_BASE_URL,
+            api_key_env: "VENICE_API_KEY",
+            key_required: true,
+        }),
         "github-copilot" | "copilot" => Some(ProviderDefaults {
             base_url: copilot::GITHUB_COPILOT_BASE_URL,
             api_key_env: "GITHUB_TOKEN",
@@ -220,6 +225,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
 /// - `huggingface` — Hugging Face Inference API
 /// - `xai` — xAI (Grok)
 /// - `replicate` — Replicate
+/// - `venice` — Venice.ai (privacy-focused, uncensored)
 /// - Any custom provider with `base_url` set uses OpenAI-compatible format
 pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmError> {
     let provider = config.provider.as_str();
@@ -344,8 +350,8 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         message: format!(
             "Unknown provider '{}'. Supported: anthropic, gemini, openai, groq, openrouter, \
              deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, perplexity, \
-             cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot, \
-             codex, claude-code. Or set base_url for a custom OpenAI-compatible endpoint.",
+             cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, venice, \
+             github-copilot, codex, claude-code. Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
         ),
     })
@@ -374,6 +380,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "huggingface",
         "xai",
         "replicate",
+        "venice",
         "github-copilot",
         "moonshot",
         "qwen",
@@ -470,6 +477,7 @@ mod tests {
         assert!(providers.contains(&"huggingface"));
         assert!(providers.contains(&"xai"));
         assert!(providers.contains(&"replicate"));
+        assert!(providers.contains(&"venice"));
         assert!(providers.contains(&"github-copilot"));
         assert!(providers.contains(&"moonshot"));
         assert!(providers.contains(&"qwen"));
@@ -480,7 +488,7 @@ mod tests {
         assert!(providers.contains(&"volcengine"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
-        assert_eq!(providers.len(), 30);
+        assert_eq!(providers.len(), 31);
     }
 
     #[test]

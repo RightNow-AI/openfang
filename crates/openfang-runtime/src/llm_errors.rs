@@ -4,7 +4,7 @@
 //! against error messages and HTTP status codes. Handles error formats from
 //! all 19+ providers OpenFang supports: Anthropic, OpenAI, Gemini, Groq,
 //! DeepSeek, Mistral, Together, Fireworks, Ollama, vLLM, LM Studio,
-//! Perplexity, Cohere, AI21, Cerebras, SambaNova, HuggingFace, XAI, Replicate.
+//! Perplexity, Cohere, AI21, Cerebras, SambaNova, HuggingFace, XAI, Replicate, Venice.
 //!
 //! Pattern matching is done via case-insensitive substring checks with no
 //! external regex dependency, keeping the crate dependency graph lean.
