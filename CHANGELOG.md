@@ -5,6 +5,35 @@ All notable changes to OpenFang will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.12] - 2026-03-04
+
+### Added
+
+#### Feishu Integration
+- **WebSocket long connection support** for Feishu/Lark messaging platform
+  - Enables local development without public IP or port forwarding
+  - Custom protobuf protocol implementation with manual encoding/decoding
+  - Automatic ping/pong keepalive mechanism (configurable interval)
+  - Message fragmentation handling for large payloads
+  - Gzip compression support for message payloads
+  - Dynamic WebSocket URL fetching via HTTP config endpoint
+- **Connection mode configuration**: Choose between webhook (HTTP) and WebSocket modes
+- **Enhanced logging**: Improved visibility for WebSocket connection status and message flow
+
+### Changed
+
+#### Feishu Integration
+- `FeishuAdapter::new()`: Now requires `connection_mode` parameter instead of `webhook_port`
+- Fixed `receive_id` error by using `chat_id` instead of `sender_id` for user platform_id
+- Upgraded log levels from `trace!` to `info!` for better production visibility
+
+### Dependencies
+
+- Added `tokio-tungstenite` for WebSocket client functionality
+- Added `prost` and `prost-types` for protobuf encoding
+- Added `flate2` for gzip decompression
+- Updated `Cargo.lock` with new dependency versions
+
 ## [0.1.0] - 2026-02-24
 
 ### Added

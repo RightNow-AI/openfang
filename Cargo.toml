@@ -54,7 +54,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Database
-rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
+rusqlite = { version = "0.31", features = ["serde_json"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -78,6 +78,10 @@ futures = "0.3"
 # WebSocket client (for Discord/Slack gateway)
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 url = "2"
+
+# Protocol Buffers (for Feishu WebSocket)
+prost = "0.13"
+prost-types = "0.12"
 
 # WASM sandbox
 wasmtime = "41"
@@ -133,6 +137,9 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "h
 imap = "2"
 native-tls = "0.2"
 mailparse = "0.15"
+
+# Compression
+flate2 = "1"
 
 # Testing
 tokio-test = "0.4"

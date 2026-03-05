@@ -1316,7 +1316,7 @@ pub async fn start_channel_bridge_with_config(
             let adapter = Arc::new(FeishuAdapter::new(
                 fs_config.app_id.clone(),
                 secret,
-                fs_config.webhook_port,
+                fs_config.connection_mode,
             ));
             adapters.push((adapter, fs_config.default_agent.clone()));
         }

@@ -145,8 +145,17 @@ pub fn validate_command_allowlist(command: &str, policy: &ExecPolicy) -> Result<
             Err("Shell execution is disabled (exec_policy.mode = deny)".to_string())
         }
         ExecSecurityMode::Full => {
+            // Safely truncate at character boundary
+            let safe_command = if command.len() > 100 {
+                command.char_indices()
+                    .nth(100)
+                    .and_then(|(i, _)| Some(&command[..i]))
+                    .unwrap_or(command)
+            } else {
+                command
+            };
             tracing::warn!(
-                command = &command[..command.len().min(100)],
+                command = &safe_command[..safe_command.len().min(100)],
                 "Shell exec in full mode — no restrictions"
             );
             Ok(())

@@ -26,6 +26,10 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+flate2 = { workspace = true }
+bytes = { workspace = true }
 
 lettre = { workspace = true }
 imap = { workspace = true }
