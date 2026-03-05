@@ -351,6 +351,39 @@ openfang start
 
 ---
 
+## Module Roadmap (2026)
+
+Roadmap below prioritizes reliability and maintainability across existing modules.
+
+### Phase 1 (Next 30 days) — Reliability Baseline
+
+- `openfang-runtime`: build a unified tool execution policy engine (quota/timeout/retry/audit) for all tools, and add deterministic replay for agent-loop production incident debugging.
+- `openfang-api`: version endpoints under `/api/v1`, add automated contract tests across API/dashboard/SDK, and enforce explicit SSE/WS backpressure (stream session limits + timeout policy).
+- `openfang-channels`: ship adapter conformance test kit shared by all channel implementations.
+- `openfang-kernel`: standardize internal event contracts with explicit schema + versioning to reduce side effects when adding new features.
+
+### Phase 2 (31-60 days) — Architecture Hardening
+
+- `openfang-kernel`: split orchestration into clear sub-domains (`agent lifecycle`, `workflow`, `governance` for approval/capability/metering) to reduce coupling.
+- `openfang-memory`: formalize retention/compaction policies and add pluggable vector backend abstraction.
+- `openfang-types`: enforce schema evolution tests (serde compatibility) in CI for all shared contracts.
+- `openfang-skills` + `openfang-hands`: tighten provenance/signing checks and runtime resource budgets per package.
+
+### Phase 3 (61-90 days) — Platform Scale
+
+- `openfang-wire`: improve peer discovery/health telemetry and failure visibility for distributed deployments.
+- `openfang-extensions`: add token rotation lifecycle and degraded-mode health states.
+- `openfang-cli` + `openfang-desktop`: consolidate shared service/client logic to remove duplicated behavior paths.
+- `openfang-migrate`: move to plugin-style importers for easier support of additional agent frameworks.
+
+### Cross-Cutting Milestones
+
+- 100% critical-path API + adapter + kernel contract coverage in CI.
+- Production SLO dashboard for latency, tool failure rate, and token cost per agent.
+- Zero breaking changes to public API and SDKs without explicit migration notes.
+
+---
+
 ## Development
 
 ```bash
