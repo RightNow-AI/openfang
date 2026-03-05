@@ -124,8 +124,7 @@ impl EmailAdapter {
     async fn build_smtp_transport(
         &self,
     ) -> Result<AsyncSmtpTransport<Tokio1Executor>, Box<dyn std::error::Error>> {
-        let creds =
-            Credentials::new(self.username.clone(), self.password.as_str().to_string());
+        let creds = Credentials::new(self.username.clone(), self.password.as_str().to_string());
 
         let transport = if self.smtp_port == 465 {
             // Implicit TLS (port 465)
@@ -200,8 +199,8 @@ fn fetch_unseen_emails(
         .build()
         .map_err(|e| format!("TLS connector error: {e}"))?;
 
-    let client = imap::connect((host, port), host, &tls)
-        .map_err(|e| format!("IMAP connect failed: {e}"))?;
+    let client =
+        imap::connect((host, port), host, &tls).map_err(|e| format!("IMAP connect failed: {e}"))?;
 
     let mut session = client
         .login(username, password)
@@ -362,8 +361,7 @@ impl ChannelAdapter for EmailAdapter {
                     }
 
                     // Extract target agent from subject brackets (stored in metadata for router)
-                    let _target_agent =
-                        EmailAdapter::extract_agent_from_subject(&subject);
+                    let _target_agent = EmailAdapter::extract_agent_from_subject(&subject);
                     let clean_subject = EmailAdapter::strip_agent_tag(&subject);
 
                     // Build the message body: prepend subject context

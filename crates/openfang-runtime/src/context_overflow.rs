@@ -107,7 +107,11 @@ pub fn recover_from_overflow(
                         let safe_keep = if content.is_char_boundary(keep) {
                             keep
                         } else {
-                            content[..keep].char_indices().next_back().map(|(i, _)| i).unwrap_or(0)
+                            content[..keep]
+                                .char_indices()
+                                .next_back()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0)
                         };
                         *content = format!(
                             "{}\n\n[OVERFLOW RECOVERY: truncated from {} to {} chars]",

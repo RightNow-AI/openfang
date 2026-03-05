@@ -287,8 +287,7 @@ impl CronScheduler {
                 );
                 meta.job.enabled = false;
             } else {
-                meta.job.next_run =
-                    Some(compute_next_run_after(&meta.job.schedule, Utc::now()));
+                meta.job.next_run = Some(compute_next_run_after(&meta.job.schedule, Utc::now()));
             }
         }
     }

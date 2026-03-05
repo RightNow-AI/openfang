@@ -516,8 +516,7 @@ impl App {
             }
             AppEvent::CommsEventsLoaded(events) => {
                 self.comms.events = events;
-                if !self.comms.events.is_empty()
-                    && self.comms.event_list_state.selected().is_none()
+                if !self.comms.events.is_empty() && self.comms.event_list_state.selected().is_none()
                 {
                     self.comms.event_list_state.select(Some(0));
                 }
@@ -1869,14 +1868,8 @@ impl App {
                                             .as_str()
                                             .unwrap_or("")
                                             .to_string(),
-                                        provider: m["provider"]
-                                            .as_str()
-                                            .unwrap_or("")
-                                            .to_string(),
-                                        tier: m["tier"]
-                                            .as_str()
-                                            .unwrap_or("Balanced")
-                                            .to_string(),
+                                        provider: m["provider"].as_str().unwrap_or("").to_string(),
+                                        tier: m["tier"].as_str().unwrap_or("Balanced").to_string(),
                                     })
                                     .collect()
                             })
@@ -1935,8 +1928,7 @@ impl App {
                                 .send()
                             {
                                 if let Ok(body) = resp.json::<serde_json::Value>() {
-                                    let provider =
-                                        body["model_provider"].as_str().unwrap_or("?");
+                                    let provider = body["model_provider"].as_str().unwrap_or("?");
                                     let model = body["model_name"].as_str().unwrap_or("?");
                                     self.chat.model_label = format!("{provider}/{model}");
                                 }
@@ -1988,10 +1980,8 @@ impl App {
                             );
                         }
                         Err(e) => {
-                            self.chat.push_message(
-                                chat::Role::System,
-                                format!("Switch failed: {e}"),
-                            );
+                            self.chat
+                                .push_message(chat::Role::System, format!("Switch failed: {e}"));
                         }
                     }
                 }
