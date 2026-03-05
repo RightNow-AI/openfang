@@ -12,7 +12,6 @@ jobs:
       - name: Checkout fork
         uses: actions/checkout@v4
         with:
-          ref: custom
           fetch-depth: 0
 
       - name: Fetch upstream tags
@@ -33,7 +32,7 @@ jobs:
             echo "new_release=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Rebase custom on latest tag
+      - name: Rebase on latest tag
         if: steps.check.outputs.new_release == 'true'
         run: |
           git config user.name "github-actions"
