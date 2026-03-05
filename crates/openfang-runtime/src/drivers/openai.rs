@@ -16,6 +16,7 @@ pub struct OpenAIDriver {
     api_key: Zeroizing<String>,
     base_url: String,
     client: reqwest::Client,
+    extra_headers: Vec<(String, String)>,
 }
 
 impl OpenAIDriver {
@@ -25,7 +26,14 @@ impl OpenAIDriver {
             api_key: Zeroizing::new(api_key),
             base_url,
             client: reqwest::Client::new(),
+            extra_headers: Vec::new(),
         }
+    }
+
+    /// Create a driver with additional HTTP headers (e.g. for Copilot IDE auth).
+    pub fn with_extra_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = headers;
+        self
     }
 }
 
@@ -321,6 +329,9 @@ impl LlmDriver for OpenAIDriver {
             if !self.api_key.as_str().is_empty() {
                 req_builder = req_builder
                     .header("authorization", format!("Bearer {}", self.api_key.as_str()));
+            }
+            for (k, v) in &self.extra_headers {
+                req_builder = req_builder.header(k, v);
             }
 
             let resp = req_builder
@@ -622,6 +633,9 @@ impl LlmDriver for OpenAIDriver {
             if !self.api_key.as_str().is_empty() {
                 req_builder = req_builder
                     .header("authorization", format!("Bearer {}", self.api_key.as_str()));
+            }
+            for (k, v) in &self.extra_headers {
+                req_builder = req_builder.header(k, v);
             }
 
             let resp = req_builder
