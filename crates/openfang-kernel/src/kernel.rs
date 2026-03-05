@@ -4652,17 +4652,23 @@ fn apply_budget_defaults(
 /// This is a defense-in-depth fallback — models should ideally be in the catalog.
 fn infer_provider_from_model(model: &str) -> Option<String> {
     let lower = model.to_lowercase();
-    // Check for explicit provider prefix (e.g., "minimax/MiniMax-M2.5")
-    if let Some(prefix) = lower.split('/').next() {
+    // Check for explicit provider prefix with / or : delimiter
+    // (e.g., "minimax/MiniMax-M2.5" or "qwen:qwen-plus")
+    let (prefix, has_delim) = if let Some(idx) = lower.find('/') {
+        (&lower[..idx], true)
+    } else if let Some(idx) = lower.find(':') {
+        (&lower[..idx], true)
+    } else {
+        (lower.as_str(), false)
+    };
+    if has_delim {
         match prefix {
             "minimax" | "gemini" | "anthropic" | "openai" | "groq" | "deepseek" | "mistral"
             | "cohere" | "xai" | "ollama" | "together" | "fireworks" | "perplexity"
             | "cerebras" | "sambanova" | "replicate" | "huggingface" | "ai21" | "codex"
-            | "claude-code" | "copilot" | "github-copilot" | "qwen" | "zhipu" | "moonshot"
-            | "openrouter" => {
-                if model.contains('/') {
-                    return Some(prefix.to_string());
-                }
+            | "claude-code" | "copilot" | "github-copilot" | "qwen" | "zhipu" | "zai" | "moonshot"
+            | "openrouter" | "volcengine" | "doubao" | "dashscope" => {
+                return Some(prefix.to_string());
             }
             _ => {}
         }

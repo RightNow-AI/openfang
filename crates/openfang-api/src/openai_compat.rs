@@ -179,9 +179,8 @@ fn resolve_agent(state: &AppState, model: &str) -> Option<(AgentId, String)> {
         return Some((entry.id, entry.name.clone()));
     }
 
-    // 4. Fallback → first registered agent
-    let agents = state.kernel.registry.list();
-    agents.first().map(|e| (e.id, e.name.clone()))
+    // No match — return None so the caller returns a proper 404
+    None
 }
 
 // ── Message conversion ──────────────────────────────────────────────────────
