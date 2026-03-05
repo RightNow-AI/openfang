@@ -57,9 +57,12 @@ const MAX_HISTORY_MESSAGES: usize = 20;
 /// but the upstream API expects just `org/model`. This also handles special routers
 /// like `openrouter/auto` → `auto`.
 pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
-    let prefix = format!("{}/", provider);
-    if model.starts_with(&prefix) {
-        model[prefix.len()..].to_string()
+    let slash_prefix = format!("{}/", provider);
+    let colon_prefix = format!("{}:", provider);
+    if model.starts_with(&slash_prefix) {
+        model[slash_prefix.len()..].to_string()
+    } else if model.starts_with(&colon_prefix) {
+        model[colon_prefix.len()..].to_string()
     } else {
         model.to_string()
     }

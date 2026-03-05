@@ -407,8 +407,15 @@ async fn dispatch_message(
                     }
                 }
                 GroupPolicy::MentionOnly => {
-                    // Pass through — adapters should only forward mentioned messages.
-                    // This is a hint for adapters, not enforced here.
+                    // Only allow messages where the bot was @mentioned or commands.
+                    let was_mentioned = message.metadata.get("was_mentioned")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let is_command = matches!(&message.content, ChannelContent::Command { .. });
+                    if !was_mentioned && !is_command {
+                        debug!("Ignoring group message on {ct_str} (group_policy=mention_only, not mentioned)");
+                        return;
+                    }
                 }
                 GroupPolicy::All => {}
             }

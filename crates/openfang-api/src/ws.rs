@@ -1114,7 +1114,11 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
         }
         llm_errors::LlmErrorCategory::Auth => "Verify your API key in config.".to_string(),
         llm_errors::LlmErrorCategory::ModelNotFound => {
-            "Model unavailable. Use /model to see options.".to_string()
+            if inner.contains("localhost:11434") || inner.contains("ollama") {
+                "Model not found on Ollama. Run `ollama pull <model>` to download it, then try again. Use /model to see options.".to_string()
+            } else {
+                "Model unavailable. Use /model to see options or check your provider configuration.".to_string()
+            }
         }
         llm_errors::LlmErrorCategory::Format => {
             "LLM request failed. Check your API key and model configuration in Settings.".to_string()
