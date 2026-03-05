@@ -2198,6 +2198,9 @@ impl Default for BlueskyConfig {
 }
 
 /// Feishu/Lark Open Platform channel adapter configuration.
+///
+/// Supports both Feishu (China domestic, `open.feishu.cn`) and Lark
+/// (International, `open.larksuite.com`) via the `region` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FeishuConfig {
@@ -2207,6 +2210,17 @@ pub struct FeishuConfig {
     pub app_secret_env: String,
     /// Port for the incoming webhook.
     pub webhook_port: u16,
+    /// Region: "cn" for Feishu (open.feishu.cn), "intl" for Lark (open.larksuite.com).
+    pub region: String,
+    /// Webhook URL path (default: "/feishu/webhook").
+    pub webhook_path: String,
+    /// Optional verification token for webhook event validation.
+    pub verification_token: Option<String>,
+    /// Env var name holding the encrypt key for event decryption (AES-256-CBC).
+    pub encrypt_key_env: Option<String>,
+    /// Bot name aliases for group-chat @mention detection.
+    #[serde(default)]
+    pub bot_names: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
     /// Per-channel behavior overrides.
@@ -2220,6 +2234,11 @@ impl Default for FeishuConfig {
             app_id: String::new(),
             app_secret_env: "FEISHU_APP_SECRET".to_string(),
             webhook_port: 8453,
+            region: "cn".to_string(),
+            webhook_path: "/feishu/webhook".to_string(),
+            verification_token: None,
+            encrypt_key_env: None,
+            bot_names: Vec::new(),
             default_agent: None,
             overrides: ChannelOverrides::default(),
         }

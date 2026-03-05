@@ -1313,10 +1313,21 @@ pub async fn start_channel_bridge_with_config(
     // Feishu/Lark
     if let Some(ref fs_config) = config.feishu {
         if let Some(secret) = read_token(&fs_config.app_secret_env, "Feishu") {
-            let adapter = Arc::new(FeishuAdapter::new(
+            let region =
+                openfang_channels::feishu::FeishuRegion::parse_region(&fs_config.region);
+            let encrypt_key = fs_config
+                .encrypt_key_env
+                .as_ref()
+                .and_then(|env| read_token(env, "Feishu encrypt_key"));
+            let adapter = Arc::new(FeishuAdapter::with_config(
                 fs_config.app_id.clone(),
                 secret,
                 fs_config.webhook_port,
+                region,
+                Some(fs_config.webhook_path.clone()),
+                fs_config.verification_token.clone(),
+                encrypt_key,
+                fs_config.bot_names.clone(),
             ));
             adapters.push((adapter, fs_config.default_agent.clone()));
         }
