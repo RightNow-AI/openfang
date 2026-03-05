@@ -83,9 +83,16 @@ impl ClaudeCodeDriver {
 }
 
 /// JSON output from `claude -p --output-format json`.
+///
+/// The CLI may return the response text in different fields depending on
+/// version: `result`, `content`, or `text`. We try all three.
 #[derive(Debug, Deserialize)]
 struct ClaudeJsonOutput {
     result: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
     #[serde(default)]
     usage: Option<ClaudeUsage>,
     #[serde(default)]
@@ -157,7 +164,10 @@ impl LlmDriver for ClaudeCodeDriver {
 
         // Try JSON parse first
         if let Ok(parsed) = serde_json::from_str::<ClaudeJsonOutput>(&stdout) {
-            let text = parsed.result.unwrap_or_default();
+            let text = parsed.result
+                .or(parsed.content)
+                .or(parsed.text)
+                .unwrap_or_default();
             let usage = parsed.usage.unwrap_or_default();
             return Ok(CompletionResponse {
                 content: vec![ContentBlock::Text { text: text.clone() }],
@@ -195,7 +205,8 @@ impl LlmDriver for ClaudeCodeDriver {
         cmd.arg("-p")
             .arg(&prompt)
             .arg("--output-format")
-            .arg("stream-json");
+            .arg("stream-json")
+            .arg("--verbose");
 
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);
@@ -232,7 +243,7 @@ impl LlmDriver for ClaudeCodeDriver {
             match serde_json::from_str::<ClaudeStreamEvent>(&line) {
                 Ok(event) => {
                     match event.r#type.as_str() {
-                        "content" | "text" => {
+                        "content" | "text" | "assistant" | "content_block_delta" => {
                             if let Some(ref content) = event.content {
                                 full_text.push_str(content);
                                 let _ = tx

@@ -52,30 +52,8 @@ pub async fn auth(
     request: Request<Body>,
     next: Next,
 ) -> Response<Body> {
-    // If no API key configured, restrict to loopback addresses only.
+    // If no API key configured, skip authentication entirely (open access).
     if api_key.is_empty() {
-        let is_loopback = request
-            .extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|ci| ci.0.ip().is_loopback())
-            .unwrap_or(false);
-
-        if !is_loopback {
-            tracing::warn!(
-                "Rejected non-localhost request: no API key configured. \
-                 Set api_key in config.toml for remote access."
-            );
-            return Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "error": "No API key configured. Remote access denied. Configure api_key in ~/.openfang/config.toml"
-                    })
-                    .to_string(),
-                ))
-                .unwrap_or_default();
-        }
         return next.run(request).await;
     }
 

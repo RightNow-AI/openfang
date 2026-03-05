@@ -10,7 +10,7 @@ use openfang_types::model_catalog::{
     LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL,
     OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
     REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
-    XAI_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -169,9 +169,18 @@ impl ModelCatalog {
     ///
     /// Each entry maps a provider ID to a custom base URL.
     /// Unknown providers are silently skipped.
+    /// Providers with explicit URL overrides are marked as configured since
+    /// the user intentionally set them up (e.g. local proxies, custom endpoints).
     pub fn apply_url_overrides(&mut self, overrides: &HashMap<String, String>) {
         for (provider, url) in overrides {
-            self.set_provider_url(provider, url);
+            if self.set_provider_url(provider, url) {
+                // Mark as configured so models from this provider show as available
+                if let Some(p) = self.providers.iter_mut().find(|p| p.id == *provider) {
+                    if p.auth_status == AuthStatus::Missing {
+                        p.auth_status = AuthStatus::Configured;
+                    }
+                }
+            }
         }
     }
 
@@ -579,6 +588,24 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             display_name: "Zhipu Coding (CodeGeeX)".into(),
             api_key_env: "ZHIPU_API_KEY".into(),
             base_url: ZHIPU_CODING_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
+            id: "zai".into(),
+            display_name: "Z.AI".into(),
+            api_key_env: "ZHIPU_API_KEY".into(),
+            base_url: ZAI_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
+            id: "zai_coding".into(),
+            display_name: "Z.AI Coding".into(),
+            api_key_env: "ZHIPU_API_KEY".into(),
+            base_url: ZAI_CODING_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -3053,7 +3080,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 31);
+        assert_eq!(catalog.list_providers().len(), 33);
     }
 
     #[test]

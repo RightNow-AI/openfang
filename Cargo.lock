@@ -2619,7 +2619,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2",
+ "socket2 0.6.2",
  "tokio",
  "tower-service",
  "tracing",
@@ -3128,7 +3128,7 @@ dependencies = [
  "percent-encoding",
  "quoted_printable",
  "rustls",
- "socket2",
+ "socket2 0.6.2",
  "tokio",
  "tokio-rustls",
  "url",
@@ -3866,7 +3866,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-api"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "async-trait",
  "axum",
@@ -3888,6 +3888,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "socket2 0.5.10",
  "subtle",
  "tempfile",
  "tokio",
@@ -3902,7 +3903,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-channels"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "async-trait",
  "axum",
@@ -3933,7 +3934,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-cli"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3960,7 +3961,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-desktop"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "axum",
  "open",
@@ -3986,7 +3987,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-extensions"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -4014,7 +4015,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-hands"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "chrono",
  "dashmap",
@@ -4031,7 +4032,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-kernel"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4067,7 +4068,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-memory"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4086,7 +4087,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-migrate"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -4105,7 +4106,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-runtime"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4137,7 +4138,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-skills"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "chrono",
  "hex",
@@ -4160,7 +4161,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-types"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4179,7 +4180,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-wire"
-version = "0.3.12"
+version = "0.3.16"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4870,7 +4871,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2",
+ "socket2 0.6.2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4907,7 +4908,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2",
+ "socket2 0.6.2",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -5969,6 +5970,16 @@ dependencies = [
 
 [[package]]
 name = "socket2"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "socket2"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86f4aa3ad99f2088c990dfa82d367e19cb29268ed67c574d10d0a4bfe71f07e0"
@@ -6820,7 +6831,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2",
+ "socket2 0.6.2",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]
@@ -8791,7 +8802,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.3.12"
+version = "0.3.16"
 
 [[package]]
 name = "yoke"

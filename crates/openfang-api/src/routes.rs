@@ -298,6 +298,14 @@ pub async fn send_message(
         );
     }
 
+    // Check agent exists before processing
+    if state.kernel.registry.get(agent_id).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Agent not found"})),
+        );
+    }
+
     // Resolve file attachments into image content blocks
     if !req.attachments.is_empty() {
         let image_blocks = resolve_attachments(&req.attachments);
@@ -337,8 +345,15 @@ pub async fn send_message(
         }
         Err(e) => {
             tracing::warn!("send_message failed for agent {id}: {e}");
+            let status = if format!("{e}").contains("Agent not found") {
+                StatusCode::NOT_FOUND
+            } else if format!("{e}").contains("quota") || format!("{e}").contains("Quota") {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                status,
                 Json(serde_json::json!({"error": format!("Message delivery failed: {e}")})),
             )
         }

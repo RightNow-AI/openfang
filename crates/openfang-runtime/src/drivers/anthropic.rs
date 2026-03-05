@@ -415,12 +415,13 @@ impl LlmDriver for AnthropicDriver {
                             }
                         }
                         "content_block_delta" => {
+                            let block_idx = json["index"].as_u64().unwrap_or(0) as usize;
                             let delta = &json["delta"];
                             match delta["type"].as_str().unwrap_or("") {
                                 "text_delta" => {
                                     if let Some(text) = delta["text"].as_str() {
                                         if let Some(ContentBlockAccum::Text(ref mut t)) =
-                                            blocks.last_mut()
+                                            blocks.get_mut(block_idx)
                                         {
                                             t.push_str(text);
                                         }
@@ -436,7 +437,7 @@ impl LlmDriver for AnthropicDriver {
                                         if let Some(ContentBlockAccum::ToolUse {
                                             ref mut input_json,
                                             ..
-                                        }) = blocks.last_mut()
+                                        }) = blocks.get_mut(block_idx)
                                         {
                                             input_json.push_str(partial);
                                         }
@@ -450,7 +451,7 @@ impl LlmDriver for AnthropicDriver {
                                 "thinking_delta" => {
                                     if let Some(thinking) = delta["thinking"].as_str() {
                                         if let Some(ContentBlockAccum::Thinking(ref mut t)) =
-                                            blocks.last_mut()
+                                            blocks.get_mut(block_idx)
                                         {
                                             t.push_str(thinking);
                                         }
@@ -460,11 +461,12 @@ impl LlmDriver for AnthropicDriver {
                             }
                         }
                         "content_block_stop" => {
+                            let block_idx = json["index"].as_u64().unwrap_or(0) as usize;
                             if let Some(ContentBlockAccum::ToolUse {
                                 id,
                                 name,
                                 input_json,
-                            }) = blocks.last()
+                            }) = blocks.get(block_idx)
                             {
                                 let input: serde_json::Value =
                                     serde_json::from_str(input_json).unwrap_or_default();

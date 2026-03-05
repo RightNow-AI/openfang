@@ -33,6 +33,7 @@ governor = { workspace = true }
 tokio-stream = { workspace = true }
 subtle = { workspace = true }
 base64 = { workspace = true }
+socket2 = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
