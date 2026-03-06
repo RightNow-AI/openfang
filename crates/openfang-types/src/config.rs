@@ -1521,6 +1521,8 @@ pub struct ChannelsConfig {
     pub webhook: Option<WebhookConfig>,
     /// LinkedIn messaging configuration (None = disabled).
     pub linkedin: Option<LinkedInConfig>,
+    /// MQTT pub/sub configuration (None = disabled).
+    pub mqtt: Option<MqttConfig>,
 }
 
 /// Telegram channel adapter configuration.
@@ -2737,6 +2739,58 @@ impl Default for LinkedInConfig {
     }
 }
 
+/// MQTT channel adapter configuration.
+///
+/// MQTT is a lightweight pub/sub protocol ideal for IoT scenarios,
+/// low-bandwidth environments, and real-time messaging.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MqttConfig {
+    /// MQTT broker URL (e.g., "tcp://localhost:1883" or "ssl://broker.hivemq.com:8883").
+    pub broker_url: String,
+    /// Client identifier (must be unique per connection).
+    /// If empty, a random ID will be generated.
+    pub client_id: String,
+    /// Env var name holding the username (optional, for authentication).
+    pub username_env: String,
+    /// Env var name holding the password (optional, for authentication).
+    pub password_env: String,
+    /// Topic to subscribe for incoming messages (e.g., "openfang/inbox").
+    pub subscribe_topic: String,
+    /// Topic prefix for outgoing responses (e.g., "openfang/reply").
+    /// The full topic will be `{publish_topic_prefix}/{client_id}`.
+    pub publish_topic_prefix: String,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Quality of Service level (0, 1, or 2).
+    pub qos: u8,
+    /// Use TLS/SSL for secure connection.
+    pub use_tls: bool,
+    /// Keep alive interval in seconds.
+    pub keep_alive_secs: u16,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for MqttConfig {
+    fn default() -> Self {
+        Self {
+            broker_url: "tcp://localhost:1883".to_string(),
+            client_id: String::new(),
+            username_env: "MQTT_USERNAME".to_string(),
+            password_env: "MQTT_PASSWORD".to_string(),
+            subscribe_topic: "openfang/inbox".to_string(),
+            publish_topic_prefix: "openfang/reply".to_string(),
+            default_agent: None,
+            qos: 1,
+            use_tls: false,
+            keep_alive_secs: 60,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
 impl KernelConfig {
     /// Validate the configuration, returning a list of warnings.
     ///
@@ -3132,6 +3186,15 @@ impl KernelConfig {
                     "LinkedIn configured but {} is not set",
                     li.access_token_env
                 ));
+            }
+        }
+        // MQTT - username/password are optional, only warn if broker_url is empty
+        if let Some(ref mq) = self.channels.mqtt {
+            if mq.broker_url.is_empty() {
+                warnings.push("MQTT configured but broker_url is empty".to_string());
+            }
+            if mq.subscribe_topic.is_empty() {
+                warnings.push("MQTT configured but subscribe_topic is empty".to_string());
             }
         }
 

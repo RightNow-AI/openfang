@@ -48,6 +48,7 @@ use openfang_channels::gitter::GitterAdapter;
 use openfang_channels::gotify::GotifyAdapter;
 use openfang_channels::linkedin::LinkedInAdapter;
 use openfang_channels::mumble::MumbleAdapter;
+use openfang_channels::mqtt::MqttAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_kernel::OpenFangKernel;
@@ -733,6 +734,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             "gotify" => channels.gotify.as_ref().map(|c| c.overrides.clone()),
             "webhook" => channels.webhook.as_ref().map(|c| c.overrides.clone()),
             "linkedin" => channels.linkedin.as_ref().map(|c| c.overrides.clone()),
+            "mqtt" => channels.mqtt.as_ref().map(|c| c.overrides.clone()),
             _ => None,
         }
     }
@@ -1008,7 +1010,8 @@ pub async fn start_channel_bridge_with_config(
         || config.ntfy.is_some()
         || config.gotify.is_some()
         || config.webhook.is_some()
-        || config.linkedin.is_some();
+        || config.linkedin.is_some()
+        || config.mqtt.is_some();
 
     if !has_any {
         return (None, Vec::new());
@@ -1515,6 +1518,18 @@ pub async fn start_channel_bridge_with_config(
                 li_config.organization_id.clone(),
             ));
             adapters.push((adapter, li_config.default_agent.clone()));
+        }
+    }
+
+    // MQTT
+    if let Some(ref mqtt_config) = config.mqtt {
+        if !mqtt_config.broker_url.is_empty() && !mqtt_config.subscribe_topic.is_empty() {
+            let adapter = Arc::new(MqttAdapter::from_config(mqtt_config.clone()));
+            adapters.push((adapter, mqtt_config.default_agent.clone()));
+            info!(
+                "MQTT adapter configured: {} -> {}",
+                mqtt_config.broker_url, mqtt_config.subscribe_topic
+            );
         }
     }
 

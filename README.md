@@ -260,9 +260,39 @@ Connect your agents to every platform your users are on.
 **Social:** LINE, Viber, Facebook Messenger, Mastodon, Bluesky, Reddit, LinkedIn, Twitch
 **Community:** IRC, XMPP, Guilded, Revolt, Keybase, Discourse, Gitter
 **Privacy:** Threema, Nostr, Mumble, Nextcloud Talk, Rocket.Chat, Ntfy, Gotify
+**IoT/Edge:** MQTT
 **Workplace:** Pumble, Flock, Twist, DingTalk, Zalo, Webhooks
 
 Each adapter supports per-channel model overrides, DM/group policies, rate limiting, and output formatting.
+
+### MQTT Configuration
+
+MQTT is ideal for IoT devices, edge computing, and low-bandwidth environments. Configure it in `~/.openfang/config.toml`:
+
+```toml
+[channels.mqtt]
+broker_url = "tcp://broker.hivemq.com:1883"  # or "ssl://..." for TLS
+client_id = ""                                # empty = auto-generate
+subscribe_topic = "openfang/inbox"
+publish_topic_prefix = "openfang/reply"
+default_agent = "assistant"
+qos = 1                    # 0=at most once, 1=at least once, 2=exactly once
+use_tls = false
+keep_alive_secs = 60
+
+# Optional authentication
+username_env = "MQTT_USERNAME"
+password_env = "MQTT_PASSWORD"
+```
+
+Test with any MQTT client:
+```bash
+# Send a message
+mosquitto_pub -h broker.hivemq.com -t "openfang/inbox" -m "What's the weather?"
+
+# Subscribe to replies
+mosquitto_sub -h broker.hivemq.com -t "openfang/reply/#"
+```
 
 ---
 

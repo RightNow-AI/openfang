@@ -134,6 +134,9 @@ imap = "2"
 native-tls = "0.2"
 mailparse = "0.15"
 
+# MQTT
+rumqttc = "0.24"
+
 # Testing
 tokio-test = "0.4"
 tempfile = "3"

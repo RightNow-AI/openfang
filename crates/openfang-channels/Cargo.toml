@@ -32,5 +32,8 @@ imap = { workspace = true }
 native-tls = { workspace = true }
 mailparse = { workspace = true }
 
+# MQTT support
+rumqttc = { workspace = true }
+
 [dev-dependencies]
 tokio-test = { workspace = true }
