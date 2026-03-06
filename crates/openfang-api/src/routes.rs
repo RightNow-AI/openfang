@@ -321,8 +321,11 @@ pub async fn send_message(
         .await
     {
         Ok(result) => {
+            // Strip <think>...</think> blocks from model output
+            let cleaned = crate::ws::strip_think_tags(&result.response);
+
             // Guard: ensure we never return an empty response to the client
-            let response = if result.response.trim().is_empty() {
+            let response = if cleaned.trim().is_empty() {
                 format!(
                     "[The agent completed processing but returned no text response. ({} in / {} out | {} iter)]",
                     result.total_usage.input_tokens,
@@ -330,7 +333,7 @@ pub async fn send_message(
                     result.iterations,
                 )
             } else {
-                result.response
+                cleaned
             };
             (
                 StatusCode::OK,
@@ -999,6 +1002,7 @@ pub async fn get_agent(
             "skills_mode": if entry.manifest.skills.is_empty() { "all" } else { "allowlist" },
             "mcp_servers": entry.manifest.mcp_servers,
             "mcp_servers_mode": if entry.manifest.mcp_servers.is_empty() { "all" } else { "allowlist" },
+            "fallback_models": entry.manifest.fallback_models,
         })),
     )
 }
@@ -2158,8 +2162,15 @@ pub async fn remove_channel(
     }
 }
 
-/// POST /api/channels/{name}/test — Basic connectivity check for a channel.
-pub async fn test_channel(Path(name): Path<String>) -> impl IntoResponse {
+/// POST /api/channels/{name}/test — Connectivity check + optional live test message.
+///
+/// Accepts an optional JSON body with `channel_id` (for Discord/Slack) or `chat_id`
+/// (for Telegram). When provided, sends a real test message to verify the bot can
+/// post to that channel.
+pub async fn test_channel(
+    Path(name): Path<String>,
+    raw_body: axum::body::Bytes,
+) -> impl IntoResponse {
     let meta = match find_channel_meta(&name) {
         Some(m) => m,
         None => {
@@ -2192,13 +2203,110 @@ pub async fn test_channel(Path(name): Path<String>) -> impl IntoResponse {
         );
     }
 
+    // If a target channel/chat ID is provided, send a real test message
+    let body: serde_json::Value = if raw_body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&raw_body).unwrap_or(serde_json::Value::Null)
+    };
+    let target = body
+        .get("channel_id")
+        .or_else(|| body.get("chat_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    if let Some(target_id) = target {
+        match send_channel_test_message(&name, &target_id).await {
+            Ok(()) => {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "status": "ok",
+                        "message": format!("Test message sent to {} channel {}.", meta.display_name, target_id)
+                    })),
+                );
+            }
+            Err(e) => {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("Credentials valid but failed to send test message: {e}")
+                    })),
+                );
+            }
+        }
+    }
+
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "status": "ok",
-            "message": format!("All required credentials for {} are set.", meta.display_name)
+            "message": format!("All required credentials for {} are set. Provide channel_id or chat_id to send a test message.", meta.display_name)
         })),
     )
+}
+
+/// Send a real test message to a specific channel/chat on the given platform.
+async fn send_channel_test_message(channel_name: &str, target_id: &str) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let test_msg = "OpenFang test message — your channel is connected!";
+
+    match channel_name {
+        "discord" => {
+            let token = std::env::var("DISCORD_BOT_TOKEN")
+                .map_err(|_| "DISCORD_BOT_TOKEN not set".to_string())?;
+            let url = format!("https://discord.com/api/v10/channels/{target_id}/messages");
+            let resp = client
+                .post(&url)
+                .header("Authorization", format!("Bot {token}"))
+                .json(&serde_json::json!({ "content": test_msg }))
+                .send()
+                .await
+                .map_err(|e| format!("HTTP request failed: {e}"))?;
+            if !resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("Discord API error: {body}"));
+            }
+        }
+        "telegram" => {
+            let token = std::env::var("TELEGRAM_BOT_TOKEN")
+                .map_err(|_| "TELEGRAM_BOT_TOKEN not set".to_string())?;
+            let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+            let resp = client
+                .post(&url)
+                .json(&serde_json::json!({ "chat_id": target_id, "text": test_msg }))
+                .send()
+                .await
+                .map_err(|e| format!("HTTP request failed: {e}"))?;
+            if !resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("Telegram API error: {body}"));
+            }
+        }
+        "slack" => {
+            let token = std::env::var("SLACK_BOT_TOKEN")
+                .map_err(|_| "SLACK_BOT_TOKEN not set".to_string())?;
+            let url = "https://slack.com/api/chat.postMessage";
+            let resp = client
+                .post(url)
+                .header("Authorization", format!("Bearer {token}"))
+                .json(&serde_json::json!({ "channel": target_id, "text": test_msg }))
+                .send()
+                .await
+                .map_err(|e| format!("HTTP request failed: {e}"))?;
+            if !resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("Slack API error: {body}"));
+            }
+        }
+        _ => {
+            return Err(format!(
+                "Live test messaging not supported for {channel_name}. Credentials are valid."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// POST /api/channels/reload — Manually trigger a channel hot-reload from disk config.
@@ -2238,7 +2346,7 @@ pub async fn whatsapp_qr_start() -> impl IntoResponse {
         return Json(serde_json::json!({
             "available": false,
             "message": "WhatsApp Web gateway not running. Start the gateway or use Business API mode.",
-            "help": "Run: npx openfang-whatsapp-gateway   (or set WHATSAPP_WEB_GATEWAY_URL)"
+            "help": "The WhatsApp Web gateway auto-starts with the daemon when configured. Ensure Node.js >= 18 is installed and WhatsApp is configured in config.toml. Set WHATSAPP_WEB_GATEWAY_URL to use an external gateway."
         }));
     }
 
@@ -5357,7 +5465,7 @@ pub async fn add_custom_model(
     if !catalog.add_custom_model(entry) {
         return (
             StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": format!("Model '{}' already exists", id)})),
+            Json(serde_json::json!({"error": format!("Model '{}' already exists for provider '{}'", id, provider)})),
         );
     }
 
@@ -6333,21 +6441,6 @@ pub async fn set_provider_key(
     Path(name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    // Validate provider name against known list
-    {
-        let catalog = state
-            .kernel
-            .model_catalog
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        if catalog.get_provider(&name).is_none() {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": format!("Unknown provider '{}'", name)})),
-            );
-        }
-    }
-
     let key = match body["key"].as_str() {
         Some(k) if !k.trim().is_empty() => k.trim().to_string(),
         _ => {
@@ -6358,6 +6451,7 @@ pub async fn set_provider_key(
         }
     };
 
+    // Look up env var from catalog; for unknown/custom providers derive one.
     let env_var = {
         let catalog = state
             .kernel
@@ -6367,15 +6461,14 @@ pub async fn set_provider_key(
         catalog
             .get_provider(&name)
             .map(|p| p.api_key_env.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(|| {
+                // Custom provider — derive env var: MY_PROVIDER → MY_PROVIDER_API_KEY
+                format!(
+                    "{}_API_KEY",
+                    name.to_uppercase().replace('-', "_")
+                )
+            })
     };
-
-    if env_var.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Provider does not require an API key"})),
-        );
-    }
 
     // Write to secrets.env file
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
@@ -6563,22 +6656,7 @@ pub async fn set_provider_url(
     Path(name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    // Validate provider exists
-    let provider_exists = {
-        let catalog = state
-            .kernel
-            .model_catalog
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        catalog.get_provider(&name).is_some()
-    };
-    if !provider_exists {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("Unknown provider '{}'", name)})),
-        );
-    }
-
+    // Accept any provider name — custom providers are supported via OpenAI-compatible format.
     let base_url = match body["base_url"].as_str() {
         Some(u) if !u.trim().is_empty() => u.trim().to_string(),
         _ => {
@@ -7602,10 +7680,16 @@ pub async fn update_agent_identity(
     };
 
     match state.kernel.registry.update_identity(agent_id, identity) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "agent_id": id})),
-        ),
+        Ok(()) => {
+            // Persist identity to SQLite
+            if let Some(entry) = state.kernel.registry.get(agent_id) {
+                let _ = state.kernel.memory.save_agent(&entry);
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "ok", "agent_id": id})),
+            )
+        }
         Err(_) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Agent not found"})),
@@ -7633,6 +7717,7 @@ pub struct PatchAgentConfigRequest {
     pub provider: Option<String>,
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
+    pub fallback_models: Option<Vec<openfang_types::agent::FallbackModel>>,
 }
 
 /// PATCH /api/agents/{id}/config — Hot-update agent name, description, system prompt, and identity.
@@ -7830,6 +7915,21 @@ pub async fn patch_agent_config(
                     Json(serde_json::json!({"error": "Agent not found"})),
                 );
             }
+        }
+    }
+
+    // Update fallback model chain
+    if let Some(fallbacks) = req.fallback_models {
+        if state
+            .kernel
+            .registry
+            .update_fallback_models(agent_id, fallbacks)
+            .is_err()
+        {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            );
         }
     }
 

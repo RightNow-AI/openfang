@@ -194,6 +194,21 @@ pub trait KernelHandle: Send + Sync {
         Err("Channel send not available".to_string())
     }
 
+    /// Send media content (image/file) to a user on a named channel adapter.
+    /// `media_type` is "image" or "file", `media_url` is the URL, `caption` is optional text.
+    async fn send_channel_media(
+        &self,
+        channel: &str,
+        recipient: &str,
+        media_type: &str,
+        media_url: &str,
+        caption: Option<&str>,
+        filename: Option<&str>,
+    ) -> Result<String, String> {
+        let _ = (channel, recipient, media_type, media_url, caption, filename);
+        Err("Channel media send not available".to_string())
+    }
+
     /// Spawn an agent with capability inheritance enforcement.
     /// `parent_caps` are the parent's granted capabilities. The kernel MUST verify
     /// that every capability in the child manifest is covered by `parent_caps`.

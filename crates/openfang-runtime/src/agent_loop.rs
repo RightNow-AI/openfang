@@ -1835,6 +1835,136 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
         });
     }
 
+    // Pattern 3: <tool>TOOL_NAME{JSON}</tool>  (Qwen / DeepSeek variant)
+    search_from = 0;
+    while let Some(start) = text[search_from..].find("<tool>") {
+        let abs_start = search_from + start;
+        let after_tag = abs_start + "<tool>".len();
+
+        let Some(close_offset) = text[after_tag..].find("</tool>") else {
+            search_from = after_tag;
+            continue;
+        };
+        let inner = &text[after_tag..after_tag + close_offset];
+        search_from = after_tag + close_offset + "</tool>".len();
+
+        let Some(brace_pos) = inner.find('{') else {
+            continue;
+        };
+        let tool_name = inner[..brace_pos].trim();
+        let json_body = inner[brace_pos..].trim();
+
+        if tool_name.is_empty() || !tool_names.contains(&tool_name) {
+            continue;
+        }
+
+        let input: serde_json::Value = match serde_json::from_str(json_body) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if calls
+            .iter()
+            .any(|c| c.name == tool_name && c.input == input)
+        {
+            continue;
+        }
+
+        info!(
+            tool = tool_name,
+            "Recovered text-based tool call (<tool> variant) → synthetic ToolUse"
+        );
+        calls.push(ToolCall {
+            id: format!("recovered_{}", uuid::Uuid::new_v4()),
+            name: tool_name.to_string(),
+            input,
+        });
+    }
+
+    // Pattern 4: Markdown code blocks containing tool_name {JSON}
+    // Matches: ```\nexec {"command":"ls"}\n``` or ```bash\nexec {"command":"ls"}\n```
+    {
+        let mut in_block = false;
+        let mut block_content = String::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("```") {
+                if in_block {
+                    // End of block — try to extract tool call from content
+                    let content = block_content.trim();
+                    if let Some(brace_pos) = content.find('{') {
+                        let potential_tool = content[..brace_pos].trim();
+                        if tool_names.contains(&potential_tool) {
+                            if let Ok(input) = serde_json::from_str::<serde_json::Value>(
+                                content[brace_pos..].trim(),
+                            ) {
+                                if !calls
+                                    .iter()
+                                    .any(|c| c.name == potential_tool && c.input == input)
+                                {
+                                    info!(
+                                        tool = potential_tool,
+                                        "Recovered tool call from markdown code block"
+                                    );
+                                    calls.push(ToolCall {
+                                        id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                                        name: potential_tool.to_string(),
+                                        input,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    block_content.clear();
+                    in_block = false;
+                } else {
+                    in_block = true;
+                    block_content.clear();
+                }
+            } else if in_block {
+                if !block_content.is_empty() {
+                    block_content.push('\n');
+                }
+                block_content.push_str(trimmed);
+            }
+        }
+    }
+
+    // Pattern 5: Backtick-wrapped tool call: `tool_name {"key":"value"}`
+    {
+        let parts: Vec<&str> = text.split('`').collect();
+        // Every odd-indexed element is inside backticks
+        for chunk in parts.iter().skip(1).step_by(2) {
+            let trimmed = chunk.trim();
+            if let Some(brace_pos) = trimmed.find('{') {
+                let potential_tool = trimmed[..brace_pos].trim();
+                if !potential_tool.is_empty()
+                    && !potential_tool.contains(' ')
+                    && tool_names.contains(&potential_tool)
+                {
+                    if let Ok(input) =
+                        serde_json::from_str::<serde_json::Value>(trimmed[brace_pos..].trim())
+                    {
+                        if !calls
+                            .iter()
+                            .any(|c| c.name == potential_tool && c.input == input)
+                        {
+                            info!(
+                                tool = potential_tool,
+                                "Recovered tool call from backtick-wrapped text"
+                            );
+                            calls.push(ToolCall {
+                                id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                                name: potential_tool.to_string(),
+                                input,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     calls
 }
 
@@ -2690,6 +2820,86 @@ mod tests {
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].name, "web_search");
         assert_eq!(calls[1].name, "web_fetch");
+    }
+
+    #[test]
+    fn test_recover_tool_tag_variant() {
+        let tools = vec![ToolDefinition {
+            name: "exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = r#"I'll run that for you. <tool>exec{"command":"ls -la"}</tool>"#;
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "exec");
+        assert_eq!(calls[0].input["command"], "ls -la");
+    }
+
+    #[test]
+    fn test_recover_markdown_code_block() {
+        let tools = vec![ToolDefinition {
+            name: "exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "I'll execute that command:\n```\nexec {\"command\": \"ls -la\"}\n```";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "exec");
+        assert_eq!(calls[0].input["command"], "ls -la");
+    }
+
+    #[test]
+    fn test_recover_markdown_code_block_with_lang() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "```json\nweb_search {\"query\": \"rust\"}\n```";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "web_search");
+    }
+
+    #[test]
+    fn test_recover_backtick_wrapped() {
+        let tools = vec![ToolDefinition {
+            name: "exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = r#"Let me run `exec {"command":"pwd"}` for you."#;
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "exec");
+        assert_eq!(calls[0].input["command"], "pwd");
+    }
+
+    #[test]
+    fn test_recover_backtick_ignores_unknown_tool() {
+        let tools = vec![ToolDefinition {
+            name: "exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = r#"Try `unknown_tool {"key":"val"}` instead."#;
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_recover_no_duplicates_across_patterns() {
+        let tools = vec![ToolDefinition {
+            name: "exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        // Same call in both function tag and tool tag — should only appear once
+        let text = r#"<function=exec>{"command":"ls"}</function> <tool>exec{"command":"ls"}</tool>"#;
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
     }
 
     // --- End-to-end integration test: text-as-tool-call recovery through agent loop ---

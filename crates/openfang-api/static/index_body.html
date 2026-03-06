@@ -912,6 +912,36 @@
                       </template>
                     </div>
                     <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value" x-text="detailAgent.created_at ? new Date(detailAgent.created_at).toLocaleString() : '-'"></span></div>
+
+                    <!-- Fallback Model Chain -->
+                    <div class="detail-row" style="align-items:flex-start">
+                      <span class="detail-label">Fallbacks</span>
+                      <div style="flex:1">
+                        <template x-if="detailAgent._fallbacks && detailAgent._fallbacks.length > 0">
+                          <div>
+                            <template x-for="(fb, idx) in detailAgent._fallbacks" :key="idx">
+                              <div class="flex gap-1 items-center" style="margin-bottom:4px">
+                                <span class="badge" style="font-size:11px;font-family:var(--font-mono)" x-text="(idx+1) + '. ' + fb.provider + '/' + fb.model"></span>
+                                <button class="btn btn-ghost btn-sm" style="padding:1px 4px;font-size:10px;color:var(--danger)" @click="removeFallback(idx)">&times;</button>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
+                        <template x-if="!detailAgent._fallbacks || detailAgent._fallbacks.length === 0">
+                          <span class="text-dim" style="font-size:12px">None — add a fallback chain</span>
+                        </template>
+                        <template x-if="!editingFallback">
+                          <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;margin-top:4px" @click="editingFallback = true; newFallbackValue = ''">+ Add</button>
+                        </template>
+                        <template x-if="editingFallback">
+                          <div class="flex gap-1 mt-1" style="align-items:center">
+                            <input class="form-input" style="width:220px;font-size:12px" x-model="newFallbackValue" placeholder="provider/model" @keydown.enter="addFallback()" @keydown.escape="editingFallback = false">
+                            <button class="btn btn-primary btn-sm" @click="addFallback()" style="padding:2px 10px;font-size:11px">Add</button>
+                            <button class="btn btn-ghost btn-sm" @click="editingFallback = false" style="padding:2px 8px;font-size:11px">Cancel</button>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
                   </div>
                   <div class="flex gap-2 mt-4">
                     <button class="btn btn-primary" @click="chatWithAgent(detailAgent); showDetailModal = false">Chat</button>

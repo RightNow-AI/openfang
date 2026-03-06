@@ -26,8 +26,16 @@ impl ModelCatalog {
     /// Create a new catalog populated with builtin models and providers.
     pub fn new() -> Self {
         let models = builtin_models();
-        let aliases = builtin_aliases();
+        let mut aliases = builtin_aliases();
         let mut providers = builtin_providers();
+
+        // Auto-register aliases defined on model entries
+        for model in &models {
+            for alias in &model.aliases {
+                let lower = alias.to_lowercase();
+                aliases.entry(lower).or_insert_with(|| model.id.clone());
+            }
+        }
 
         // Set model counts on providers
         for provider in &mut providers {
@@ -162,14 +170,27 @@ impl ModelCatalog {
             p.base_url = url.to_string();
             true
         } else {
-            false
+            // Custom provider — add a new entry so it appears in /api/providers
+            let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
+            self.providers.push(ProviderInfo {
+                id: provider.to_string(),
+                display_name: provider.to_string(),
+                api_key_env: env_var,
+                base_url: url.to_string(),
+                key_required: true,
+                auth_status: AuthStatus::Missing,
+                model_count: 0,
+            });
+            // Re-detect auth for the newly added provider
+            self.detect_auth();
+            true
         }
     }
 
     /// Apply a batch of provider URL overrides from config.
     ///
     /// Each entry maps a provider ID to a custom base URL.
-    /// Unknown providers are silently skipped.
+    /// Unknown providers are automatically added as custom OpenAI-compatible entries.
     /// Providers with explicit URL overrides are marked as configured since
     /// the user intentionally set them up (e.g. local proxies, custom endpoints).
     pub fn apply_url_overrides(&mut self, overrides: &HashMap<String, String>) {
@@ -240,11 +261,16 @@ impl ModelCatalog {
 
     /// Add a custom model at runtime.
     ///
-    /// Returns `true` if the model was added, `false` if a model with that ID
-    /// already exists (case-insensitive).
+    /// Returns `true` if the model was added, `false` if a model with the same
+    /// ID **and** provider already exists (case-insensitive).
     pub fn add_custom_model(&mut self, entry: ModelCatalogEntry) -> bool {
-        let lower = entry.id.to_lowercase();
-        if self.models.iter().any(|m| m.id.to_lowercase() == lower) {
+        let lower_id = entry.id.to_lowercase();
+        let lower_provider = entry.provider.to_lowercase();
+        if self
+            .models
+            .iter()
+            .any(|m| m.id.to_lowercase() == lower_id && m.provider.to_lowercase() == lower_provider)
+        {
             return false;
         }
         let provider = entry.provider.clone();
@@ -2571,6 +2597,76 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec![],
         },
+        ModelCatalogEntry {
+            id: "qwen3-235b-a22b".into(),
+            display_name: "Qwen3 235B".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Frontier,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 4.00,
+            output_cost_per_m: 12.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["qwen3".into()],
+        },
+        ModelCatalogEntry {
+            id: "qwen3-30b-a3b".into(),
+            display_name: "Qwen3 30B".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Fast,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.30,
+            output_cost_per_m: 0.60,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "qwen-coder-plus-latest".into(),
+            display_name: "Qwen Coder Plus (Latest)".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.80,
+            output_cost_per_m: 2.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["qwen-coder".into()],
+        },
+        ModelCatalogEntry {
+            id: "qwen2.5-coder-32b-instruct".into(),
+            display_name: "Qwen 2.5 Coder 32B".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Balanced,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.80,
+            output_cost_per_m: 2.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "qwen-vl-max".into(),
+            display_name: "Qwen VL Max".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Frontier,
+            context_window: 32_768,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 3.00,
+            output_cost_per_m: 9.00,
+            supports_tools: false,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
         // ══════════════════════════════════════════════════════════════
         // MiniMax (4)
         // ══════════════════════════════════════════════════════════════
@@ -3361,8 +3457,15 @@ mod tests {
     #[test]
     fn test_set_provider_url_unknown() {
         let mut catalog = ModelCatalog::new();
-        let updated = catalog.set_provider_url("nonexistent", "http://localhost:9999");
-        assert!(!updated);
+        let initial_count = catalog.list_providers().len();
+        let updated = catalog.set_provider_url("my-custom-llm", "http://localhost:9999");
+        // Unknown providers are now auto-registered as custom entries
+        assert!(updated);
+        assert_eq!(catalog.list_providers().len(), initial_count + 1);
+        assert_eq!(
+            catalog.get_provider("my-custom-llm").unwrap().base_url,
+            "http://localhost:9999"
+        );
     }
 
     #[test]

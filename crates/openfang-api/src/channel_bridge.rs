@@ -1621,6 +1621,35 @@ pub async fn reload_channels_from_disk(
         *guard = None;
     }
 
+    // Re-read secrets.env so new API tokens are available in std::env
+    let secrets_path = state.kernel.config.home_dir.join("secrets.env");
+    if secrets_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&secrets_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some(eq_pos) = trimmed.find('=') {
+                    let key = trimmed[..eq_pos].trim();
+                    let mut value = trimmed[eq_pos + 1..].trim().to_string();
+                    if !key.is_empty() {
+                        // Strip matching quotes
+                        if ((value.starts_with('"') && value.ends_with('"'))
+                            || (value.starts_with('\'') && value.ends_with('\'')))
+                            && value.len() >= 2
+                        {
+                            value = value[1..value.len() - 1].to_string();
+                        }
+                        // Always overwrite — the file is the source of truth after dashboard edits
+                        std::env::set_var(key, &value);
+                    }
+                }
+            }
+            info!("Reloaded secrets.env for channel hot-reload");
+        }
+    }
+
     // Re-read config from disk
     let config_path = state.kernel.config.home_dir.join("config.toml");
     let fresh_config = openfang_kernel::config::load_config(Some(&config_path));

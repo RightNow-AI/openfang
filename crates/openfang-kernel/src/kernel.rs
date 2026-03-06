@@ -1027,24 +1027,31 @@ impl OpenFangKernel {
                         &mut restored_entry.manifest.resources,
                     );
 
-                    // Apply default_model to restored agents (same logic as spawn)
+                    // Apply default_model to restored agents.
+                    //
+                    // Two cases:
+                    // 1. Agent has empty/default provider → always apply default_model
+                    // 2. Agent named "assistant" (auto-spawned) → update to match
+                    //    default_model so config.toml changes take effect on restart
                     {
+                        let dm = &kernel.config.default_model;
                         let is_default_provider = restored_entry.manifest.model.provider.is_empty()
                             || restored_entry.manifest.model.provider == "default";
                         let is_default_model = restored_entry.manifest.model.model.is_empty()
                             || restored_entry.manifest.model.model == "default";
-                        if is_default_provider && is_default_model {
-                            let dm = &kernel.config.default_model;
+                        let is_auto_spawned = restored_entry.name == "assistant"
+                            && restored_entry.manifest.description == "General-purpose assistant";
+                        if is_default_provider && is_default_model || is_auto_spawned {
                             if !dm.provider.is_empty() {
                                 restored_entry.manifest.model.provider = dm.provider.clone();
                             }
                             if !dm.model.is_empty() {
                                 restored_entry.manifest.model.model = dm.model.clone();
                             }
-                            if !dm.api_key_env.is_empty() && restored_entry.manifest.model.api_key_env.is_none() {
+                            if !dm.api_key_env.is_empty() {
                                 restored_entry.manifest.model.api_key_env = Some(dm.api_key_env.clone());
                             }
-                            if dm.base_url.is_some() && restored_entry.manifest.model.base_url.is_none() {
+                            if dm.base_url.is_some() {
                                 restored_entry.manifest.model.base_url.clone_from(&dm.base_url);
                             }
                         }
@@ -5272,6 +5279,59 @@ impl KernelHandle for OpenFangKernel {
             .map_err(|e| format!("Channel send failed: {e}"))?;
 
         Ok(format!("Message sent to {} via {}", recipient, channel))
+    }
+
+    async fn send_channel_media(
+        &self,
+        channel: &str,
+        recipient: &str,
+        media_type: &str,
+        media_url: &str,
+        caption: Option<&str>,
+        filename: Option<&str>,
+    ) -> Result<String, String> {
+        let adapter = self
+            .channel_adapters
+            .get(channel)
+            .ok_or_else(|| {
+                let available: Vec<String> = self
+                    .channel_adapters
+                    .iter()
+                    .map(|e| e.key().clone())
+                    .collect();
+                format!(
+                    "Channel '{}' not found. Available channels: {:?}",
+                    channel, available
+                )
+            })?
+            .clone();
+
+        let user = openfang_channels::types::ChannelUser {
+            platform_id: recipient.to_string(),
+            display_name: recipient.to_string(),
+            openfang_user: None,
+        };
+
+        let content = match media_type {
+            "image" => openfang_channels::types::ChannelContent::Image {
+                url: media_url.to_string(),
+                caption: caption.map(|s| s.to_string()),
+            },
+            "file" => openfang_channels::types::ChannelContent::File {
+                url: media_url.to_string(),
+                filename: filename.unwrap_or("file").to_string(),
+            },
+            _ => {
+                return Err(format!("Unsupported media type: '{media_type}'. Use 'image' or 'file'."));
+            }
+        };
+
+        adapter
+            .send(&user, content)
+            .await
+            .map_err(|e| format!("Channel media send failed: {e}"))?;
+
+        Ok(format!("{} sent to {} via {}", media_type, recipient, channel))
     }
 
     async fn spawn_agent_checked(
