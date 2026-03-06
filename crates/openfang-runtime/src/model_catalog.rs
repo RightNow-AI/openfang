@@ -179,6 +179,7 @@ impl ModelCatalog {
                 key_required: true,
                 auth_status: AuthStatus::Missing,
                 model_count: 0,
+                is_local: provider == "vllm" || provider == "ollama",
             });
             // Re-detect auth for the newly added provider
             self.detect_auth();
@@ -732,6 +733,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         ProviderInfo {
             id: "volcengine_coding".into(),
@@ -741,6 +743,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
+            is_local: false,
         },
         // ── AWS Bedrock ──────────────────────────────────────────────
         ProviderInfo {
