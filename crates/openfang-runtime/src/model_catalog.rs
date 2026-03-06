@@ -1,6 +1,6 @@
 //! Model catalog — registry of known models with metadata, pricing, and auth detection.
 //!
-//! Provides a comprehensive catalog of 130+ builtin models across 27 providers,
+//! Provides a comprehensive catalog of 130+ builtin models across 28 providers,
 //! with alias resolution, auth status detection, and pricing lookups.
 
 use openfang_types::model_catalog::{
@@ -9,7 +9,7 @@ use openfang_types::model_catalog::{
     GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
     LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL,
     OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL,
+    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
     VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
     ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
@@ -582,6 +582,16 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::Missing,
             model_count: 0,
         },
+        // ── Venice.ai ────────────────────────────────────────────────
+        ProviderInfo {
+            id: "venice".into(),
+            display_name: "Venice.ai".into(),
+            api_key_env: "VENICE_API_KEY".into(),
+            base_url: VENICE_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
         // ── Chinese providers (5) ────────────────────────────────────
         ProviderInfo {
             id: "qwen".into(),
@@ -767,6 +777,8 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("codex", "codex/gpt-4.1"),
         ("codex-4.1", "codex/gpt-4.1"),
         ("codex-o4", "codex/o4-mini"),
+        // Venice aliases
+        ("venice", "venice-uncensored"),
         // Claude Code aliases
         ("claude-code", "claude-code/sonnet"),
         ("claude-code-opus", "claude-code/opus"),
@@ -3170,6 +3182,51 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec!["claude-code-haiku".into()],
         },
+        // ══════════════════════════════════════════════════════════════
+        // Venice.ai (3)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "venice-uncensored".into(),
+            display_name: "Venice Uncensored".into(),
+            provider: "venice".into(),
+            tier: ModelTier::Fast,
+            context_window: 32_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.20,
+            output_cost_per_m: 0.90,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["venice".into()],
+        },
+        ModelCatalogEntry {
+            id: "llama-3.3-70b".into(),
+            display_name: "Llama 3.3 70B (Venice)".into(),
+            provider: "venice".into(),
+            tier: ModelTier::Balanced,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.20,
+            output_cost_per_m: 0.90,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "qwen3-235b-a22b-instruct-2507".into(),
+            display_name: "Qwen3 235B A22B (Venice)".into(),
+            provider: "venice".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.20,
+            output_cost_per_m: 0.90,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
     ]
 }
 
@@ -3186,7 +3243,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 34);
+        assert_eq!(catalog.list_providers().len(), 35);
     }
 
     #[test]
