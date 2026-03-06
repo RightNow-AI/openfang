@@ -17,6 +17,7 @@ use crate::SkillError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -427,20 +428,66 @@ impl ClawHubClient {
 
         info!(slug, "Downloading skill from ClawHub");
 
-        let response = self
-            .client
-            .get(&url)
-            .header("User-Agent", "OpenFang/0.1")
-            .send()
-            .await
-            .map_err(|e| SkillError::Network(format!("ClawHub download failed: {e}")))?;
-
-        if !response.status().is_success() {
-            return Err(SkillError::Network(format!(
-                "ClawHub download returned {}",
-                response.status()
-            )));
-        }
+        const MAX_ATTEMPTS: usize = 4;
+        let response = {
+            let mut attempt = 0usize;
+            loop {
+                attempt += 1;
+                match self
+                    .client
+                    .get(&url)
+                    .header("User-Agent", "OpenFang/0.1")
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => break resp,
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let retryable = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                            || status.is_server_error();
+                        if retryable && attempt < MAX_ATTEMPTS {
+                            let delay = retry_delay(&resp, attempt);
+                            warn!(
+                                slug,
+                                %status,
+                                attempt,
+                                max_attempts = MAX_ATTEMPTS,
+                                wait_secs = delay.as_secs(),
+                                "ClawHub download throttled/server error; retrying"
+                            );
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        if retryable {
+                            return Err(SkillError::Network(format!(
+                                "ClawHub download returned {status} after {attempt} attempt(s)"
+                            )));
+                        }
+                        return Err(SkillError::Network(format!(
+                            "ClawHub download returned {status}"
+                        )));
+                    }
+                    Err(e) => {
+                        if attempt < MAX_ATTEMPTS {
+                            let delay = exponential_backoff(attempt);
+                            warn!(
+                                slug,
+                                attempt,
+                                max_attempts = MAX_ATTEMPTS,
+                                wait_secs = delay.as_secs(),
+                                error = %e,
+                                "ClawHub download request failed; retrying"
+                            );
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        return Err(SkillError::Network(format!(
+                            "ClawHub download failed after {attempt} attempt(s): {e}"
+                        )));
+                    }
+                }
+            }
+        };
 
         let bytes = response
             .bytes()
@@ -621,9 +668,28 @@ fn which_check(name: &str) -> Option<PathBuf> {
     }
 }
 
+fn retry_delay(response: &reqwest::Response, attempt: usize) -> Duration {
+    if let Some(retry_after) = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+    {
+        return Duration::from_secs(retry_after.min(60));
+    }
+    exponential_backoff(attempt)
+}
+
+fn exponential_backoff(attempt: usize) -> Duration {
+    // attempt starts at 1
+    let secs = 1u64 << attempt.saturating_sub(1).min(5);
+    Duration::from_secs(secs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 
     #[test]
     fn test_browse_entry_serde_real_format() {
@@ -820,5 +886,24 @@ mod tests {
             }),
         };
         assert_eq!(ClawHubClient::entry_version(&entry), "2.0.0");
+    }
+
+    #[test]
+    fn test_exponential_backoff_caps() {
+        assert_eq!(exponential_backoff(1).as_secs(), 1);
+        assert_eq!(exponential_backoff(2).as_secs(), 2);
+        assert_eq!(exponential_backoff(3).as_secs(), 4);
+        assert_eq!(exponential_backoff(10).as_secs(), 32);
+    }
+
+    #[test]
+    fn test_retry_after_parse_seconds() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("7"));
+        let parsed = headers
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        assert_eq!(parsed, Some(7));
     }
 }
