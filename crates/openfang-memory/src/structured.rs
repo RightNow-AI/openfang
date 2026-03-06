@@ -130,11 +130,19 @@ impl StructuredStore {
             "ALTER TABLE agents ADD COLUMN session_id TEXT DEFAULT ''",
             [],
         );
+        // Add identity column (migration compat)
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN identity TEXT DEFAULT '{}'",
+            [],
+        );
+
+        let identity_json = serde_json::to_string(&entry.identity)
+            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
 
         conn.execute(
-            "INSERT INTO agents (id, name, manifest, state, created_at, updated_at, session_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(id) DO UPDATE SET name = ?2, manifest = ?3, state = ?4, updated_at = ?6, session_id = ?7",
+            "INSERT INTO agents (id, name, manifest, state, created_at, updated_at, session_id, identity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET name = ?2, manifest = ?3, state = ?4, updated_at = ?6, session_id = ?7, identity = ?8",
             rusqlite::params![
                 entry.id.0.to_string(),
                 entry.name,
@@ -143,6 +151,7 @@ impl StructuredStore {
                 entry.created_at.to_rfc3339(),
                 now,
                 entry.session_id.0.to_string(),
+                identity_json,
             ],
         )
         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
@@ -157,10 +166,13 @@ impl StructuredStore {
             .map_err(|e| OpenFangError::Internal(e.to_string()))?;
 
         let mut stmt = conn
-            .prepare("SELECT id, name, manifest, state, created_at, updated_at, session_id FROM agents WHERE id = ?1")
+            .prepare("SELECT id, name, manifest, state, created_at, updated_at, session_id, identity FROM agents WHERE id = ?1")
             .or_else(|_| {
-                // Fallback without session_id column for old DBs
-                conn.prepare("SELECT id, name, manifest, state, created_at, updated_at FROM agents WHERE id = ?1")
+                conn.prepare("SELECT id, name, manifest, state, created_at, updated_at, session_id FROM agents WHERE id = ?1")
+                    .or_else(|_| {
+                        // Fallback without session_id column for old DBs
+                        conn.prepare("SELECT id, name, manifest, state, created_at, updated_at FROM agents WHERE id = ?1")
+                    })
             })
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
@@ -175,11 +187,16 @@ impl StructuredStore {
             } else {
                 None
             };
-            Ok((name, manifest_blob, state_str, created_str, session_id_str))
+            let identity_str: Option<String> = if col_count >= 8 {
+                row.get(7).ok()
+            } else {
+                None
+            };
+            Ok((name, manifest_blob, state_str, created_str, session_id_str, identity_str))
         });
 
         match result {
-            Ok((name, manifest_blob, state_str, created_str, session_id_str)) => {
+            Ok((name, manifest_blob, state_str, created_str, session_id_str, identity_str)) => {
                 let manifest = rmp_serde::from_slice(&manifest_blob)
                     .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
                 let state = serde_json::from_str(&state_str)
@@ -191,6 +208,9 @@ impl StructuredStore {
                     .and_then(|s| uuid::Uuid::parse_str(&s).ok())
                     .map(openfang_types::agent::SessionId)
                     .unwrap_or_else(openfang_types::agent::SessionId::new);
+                let identity = identity_str
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default();
                 Ok(Some(AgentEntry {
                     id: agent_id,
                     name,
@@ -203,7 +223,7 @@ impl StructuredStore {
                     children: vec![],
                     session_id,
                     tags: vec![],
-                    identity: Default::default(),
+                    identity,
                     onboarding_completed: false,
                     onboarding_completed_at: None,
                 }))
@@ -239,11 +259,14 @@ impl StructuredStore {
             .lock()
             .map_err(|e| OpenFangError::Internal(e.to_string()))?;
 
-        // Try with session_id column first, fall back without
+        // Try with identity+session_id columns first, fall back gracefully
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, manifest, state, created_at, updated_at, session_id FROM agents",
+                "SELECT id, name, manifest, state, created_at, updated_at, session_id, identity FROM agents",
             )
+            .or_else(|_| {
+                conn.prepare("SELECT id, name, manifest, state, created_at, updated_at, session_id FROM agents")
+            })
             .or_else(|_| {
                 conn.prepare("SELECT id, name, manifest, state, created_at, updated_at FROM agents")
             })
@@ -262,6 +285,11 @@ impl StructuredStore {
                 } else {
                     None
                 };
+                let identity_str: Option<String> = if col_count >= 8 {
+                    row.get(7).ok()
+                } else {
+                    None
+                };
                 Ok((
                     id_str,
                     name,
@@ -269,6 +297,7 @@ impl StructuredStore {
                     state_str,
                     created_str,
                     session_id_str,
+                    identity_str,
                 ))
             })
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
@@ -278,7 +307,7 @@ impl StructuredStore {
         let mut repair_queue: Vec<(String, Vec<u8>, String)> = Vec::new();
 
         for row in rows {
-            let (id_str, name, manifest_blob, state_str, created_str, session_id_str) = match row {
+            let (id_str, name, manifest_blob, state_str, created_str, session_id_str, identity_str) = match row {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!("Skipping agent row with read error: {e}");
@@ -342,6 +371,10 @@ impl StructuredStore {
                 .map(openfang_types::agent::SessionId)
                 .unwrap_or_else(openfang_types::agent::SessionId::new);
 
+            let identity = identity_str
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+
             agents.push(AgentEntry {
                 id: agent_id,
                 name,
@@ -354,7 +387,7 @@ impl StructuredStore {
                 children: vec![],
                 session_id,
                 tags: vec![],
-                identity: Default::default(),
+                identity,
                 onboarding_completed: false,
                 onboarding_completed_at: None,
             });

@@ -63,6 +63,9 @@ function agentsPage() {
     editingModel: false,
     newModelValue: '',
     modelSaving: false,
+    // -- Fallback chain --
+    editingFallback: false,
+    newFallbackValue: '',
 
     // -- Templates state --
     tplTemplates: [],
@@ -316,12 +319,15 @@ function agentsPage() {
       OpenFangAPI.wsDisconnect();
     },
 
-    showDetail(agent) {
+    async showDetail(agent) {
       this.detailAgent = agent;
+      this.detailAgent._fallbacks = [];
       this.detailTab = 'info';
       this.agentFiles = [];
       this.editingFile = null;
       this.fileContent = '';
+      this.editingFallback = false;
+      this.newFallbackValue = '';
       this.configForm = {
         name: agent.name || '',
         system_prompt: agent.system_prompt || '',
@@ -331,6 +337,11 @@ function agentsPage() {
         vibe: (agent.identity && agent.identity.vibe) || ''
       };
       this.showDetailModal = true;
+      // Fetch full agent detail to get fallback_models
+      try {
+        var full = await OpenFangAPI.get('/api/agents/' + agent.id);
+        this.detailAgent._fallbacks = full.fallback_models || [];
+      } catch(e) { /* ignore */ }
     },
 
     killAgent(agent) {
@@ -599,6 +610,41 @@ function agentsPage() {
         OpenFangToast.error('Failed to change model: ' + e.message);
       }
       this.modelSaving = false;
+    },
+
+    // ── Fallback model chain ──
+    async addFallback() {
+      if (!this.detailAgent || !this.newFallbackValue.trim()) return;
+      var parts = this.newFallbackValue.trim().split('/');
+      var provider = parts.length > 1 ? parts[0] : this.detailAgent.model_provider;
+      var model = parts.length > 1 ? parts.slice(1).join('/') : parts[0];
+      if (!this.detailAgent._fallbacks) this.detailAgent._fallbacks = [];
+      this.detailAgent._fallbacks.push({ provider: provider, model: model });
+      try {
+        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', {
+          fallback_models: this.detailAgent._fallbacks
+        });
+        OpenFangToast.success('Fallback added: ' + provider + '/' + model);
+      } catch(e) {
+        OpenFangToast.error('Failed to save fallbacks: ' + e.message);
+        this.detailAgent._fallbacks.pop();
+      }
+      this.editingFallback = false;
+      this.newFallbackValue = '';
+    },
+
+    async removeFallback(idx) {
+      if (!this.detailAgent || !this.detailAgent._fallbacks) return;
+      var removed = this.detailAgent._fallbacks.splice(idx, 1);
+      try {
+        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', {
+          fallback_models: this.detailAgent._fallbacks
+        });
+        OpenFangToast.success('Fallback removed');
+      } catch(e) {
+        OpenFangToast.error('Failed to save fallbacks: ' + e.message);
+        this.detailAgent._fallbacks.splice(idx, 0, removed[0]);
+      }
     },
 
     // ── Tool filters ──
