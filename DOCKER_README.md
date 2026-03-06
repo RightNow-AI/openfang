@@ -14,7 +14,7 @@ Custom [OpenFang](https://github.com/RightNow-AI/openfang) Docker image optimize
 - **Homebrew** — package manager for additional tools
 - **uv** — fast Python package manager
 - **gh** — GitHub CLI
-- **gogcli** — GOG.com CLI client
+- **gog** — [Google Workspace CLI](https://gogcli.sh/) (Gmail, Calendar, Drive, Sheets, etc.)
 - **ffmpeg** — multimedia processing
 - **jq** — JSON processor
 - **git, curl, wget** — standard utilities
