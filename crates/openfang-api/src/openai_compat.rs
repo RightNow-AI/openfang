@@ -335,7 +335,7 @@ pub async fn chat_completions(
                     index: 0,
                     message: ChoiceMessage {
                         role: "assistant",
-                        content: Some(result.response),
+                        content: Some(crate::ws::strip_think_tags(&result.response)),
                         tool_calls: None,
                     },
                     finish_reason: "stop",
