@@ -87,14 +87,57 @@ pub struct A2aTask {
     /// Optional session identifier for conversation continuity.
     #[serde(default)]
     pub session_id: Option<String>,
-    /// Current task status.
-    pub status: A2aTaskStatus,
+    /// Current task status (may be object or string per A2A spec).
+    pub status: A2aTaskStatusWrapper,
     /// Messages exchanged during the task.
     #[serde(default)]
     pub messages: Vec<A2aMessage>,
     /// Artifacts produced by the task.
     #[serde(default)]
     pub artifacts: Vec<A2aArtifact>,
+}
+
+/// Wrapper to handle both string and object forms of A2A task status.
+///
+/// Some implementations return `{"state": "completed", "message": null}`,
+/// others return the enum directly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum A2aTaskStatusWrapper {
+    /// Object form: `{"state": "completed", "message": null}`
+    Object(A2aTaskStatusObject),
+    /// String/enum form: `"completed"`
+    Enum(A2aTaskStatus),
+}
+
+impl A2aTaskStatusWrapper {
+    /// Resolve to the inner status enum.
+    pub fn state(&self) -> &A2aTaskStatus {
+        match self {
+            A2aTaskStatusWrapper::Object(o) => &o.state,
+            A2aTaskStatusWrapper::Enum(s) => s,
+        }
+    }
+}
+
+impl From<A2aTaskStatus> for A2aTaskStatusWrapper {
+    fn from(s: A2aTaskStatus) -> Self {
+        A2aTaskStatusWrapper::Enum(s)
+    }
+}
+
+impl PartialEq<A2aTaskStatus> for A2aTaskStatusWrapper {
+    fn eq(&self, other: &A2aTaskStatus) -> bool {
+        self.state() == other
+    }
+}
+
+/// Object form of A2A task status returned by some implementations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct A2aTaskStatusObject {
+    pub state: A2aTaskStatus,
+    #[serde(default)]
+    pub message: Option<serde_json::Value>,
 }
 
 /// A2A task status.
@@ -147,9 +190,22 @@ pub enum A2aPart {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct A2aArtifact {
     /// Artifact name.
-    pub name: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Artifact description.
+    #[serde(default)]
+    pub description: Option<String>,
     /// Artifact content parts.
     pub parts: Vec<A2aPart>,
+    /// Artifact metadata.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    /// Artifact index.
+    #[serde(default)]
+    pub index: Option<u32>,
+    /// Whether this is the last chunk.
+    #[serde(default)]
+    pub last_chunk: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +241,7 @@ impl A2aTaskStore {
                 .iter()
                 .filter(|(_, t)| {
                     matches!(
-                        t.status,
+                        t.status.state(),
                         A2aTaskStatus::Completed | A2aTaskStatus::Failed | A2aTaskStatus::Cancelled
                     )
                 })
@@ -211,7 +267,7 @@ impl A2aTaskStore {
     pub fn update_status(&self, task_id: &str, status: A2aTaskStatus) -> bool {
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(task) = tasks.get_mut(task_id) {
-            task.status = status;
+            task.status = status.into();
             true
         } else {
             false
@@ -224,7 +280,7 @@ impl A2aTaskStore {
         if let Some(task) = tasks.get_mut(task_id) {
             task.messages.push(response);
             task.artifacts.extend(artifacts);
-            task.status = A2aTaskStatus::Completed;
+            task.status = A2aTaskStatus::Completed.into();
         }
     }
 
@@ -233,7 +289,7 @@ impl A2aTaskStore {
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(task) = tasks.get_mut(task_id) {
             task.messages.push(error_message);
-            task.status = A2aTaskStatus::Failed;
+            task.status = A2aTaskStatus::Failed.into();
         }
     }
 
@@ -490,7 +546,7 @@ mod tests {
         let task = A2aTask {
             id: "task-1".to_string(),
             session_id: None,
-            status: A2aTaskStatus::Submitted,
+            status: A2aTaskStatus::Submitted.into(),
             messages: vec![],
             artifacts: vec![],
         };
@@ -498,25 +554,25 @@ mod tests {
 
         // Simulate progression
         let working = A2aTask {
-            status: A2aTaskStatus::Working,
+            status: A2aTaskStatus::Working.into(),
             ..task.clone()
         };
         assert_eq!(working.status, A2aTaskStatus::Working);
 
         let completed = A2aTask {
-            status: A2aTaskStatus::Completed,
+            status: A2aTaskStatus::Completed.into(),
             ..task.clone()
         };
         assert_eq!(completed.status, A2aTaskStatus::Completed);
 
         let cancelled = A2aTask {
-            status: A2aTaskStatus::Cancelled,
+            status: A2aTaskStatus::Cancelled.into(),
             ..task.clone()
         };
         assert_eq!(cancelled.status, A2aTaskStatus::Cancelled);
 
         let failed = A2aTask {
-            status: A2aTaskStatus::Failed,
+            status: A2aTaskStatus::Failed.into(),
             ..task
         };
         assert_eq!(failed.status, A2aTaskStatus::Failed);
@@ -554,7 +610,7 @@ mod tests {
         let task = A2aTask {
             id: "t-1".to_string(),
             session_id: None,
-            status: A2aTaskStatus::Working,
+            status: A2aTaskStatus::Working.into(),
             messages: vec![],
             artifacts: vec![],
         };
@@ -571,7 +627,7 @@ mod tests {
         let task = A2aTask {
             id: "t-2".to_string(),
             session_id: None,
-            status: A2aTaskStatus::Working,
+            status: A2aTaskStatus::Working.into(),
             messages: vec![],
             artifacts: vec![],
         };
@@ -599,7 +655,7 @@ mod tests {
         let task = A2aTask {
             id: "t-3".to_string(),
             session_id: None,
-            status: A2aTaskStatus::Working,
+            status: A2aTaskStatus::Working.into(),
             messages: vec![],
             artifacts: vec![],
         };
@@ -618,7 +674,7 @@ mod tests {
             let task = A2aTask {
                 id: format!("t-{i}"),
                 session_id: None,
-                status: A2aTaskStatus::Completed,
+                status: A2aTaskStatus::Completed.into(),
                 messages: vec![],
                 artifacts: vec![],
             };
@@ -630,7 +686,7 @@ mod tests {
         let task = A2aTask {
             id: "t-2".to_string(),
             session_id: None,
-            status: A2aTaskStatus::Working,
+            status: A2aTaskStatus::Working.into(),
             messages: vec![],
             artifacts: vec![],
         };

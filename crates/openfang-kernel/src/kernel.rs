@@ -5229,7 +5229,7 @@ impl KernelHandle for OpenFangKernel {
             .unwrap_or_else(|e| e.into_inner());
         agents
             .iter()
-            .map(|(url, card)| (card.name.clone(), url.clone()))
+            .map(|(_, card)| (card.name.clone(), card.url.clone()))
             .collect()
     }
 
@@ -5242,7 +5242,7 @@ impl KernelHandle for OpenFangKernel {
         agents
             .iter()
             .find(|(_, card)| card.name.to_lowercase() == name_lower)
-            .map(|(url, _)| url.clone())
+            .map(|(_, card)| card.url.clone())
     }
 
     async fn send_channel_message(
