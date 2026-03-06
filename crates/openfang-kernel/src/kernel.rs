@@ -2479,7 +2479,7 @@ impl OpenFangKernel {
                 .take(5)
                 .enumerate()
                 .map(|(i, t)| {
-                    let truncated = if t.len() > 200 { &t[..200] } else { t };
+                    let truncated = openfang_types::truncate_str(t, 200);
                     format!("{}. {}", i + 1, truncated)
                 })
                 .collect::<Vec<_>>()
@@ -5229,7 +5229,7 @@ impl KernelHandle for OpenFangKernel {
             .unwrap_or_else(|e| e.into_inner());
         agents
             .iter()
-            .map(|(url, card)| (card.name.clone(), url.clone()))
+            .map(|(_, card)| (card.name.clone(), card.url.clone()))
             .collect()
     }
 
@@ -5242,7 +5242,7 @@ impl KernelHandle for OpenFangKernel {
         agents
             .iter()
             .find(|(_, card)| card.name.to_lowercase() == name_lower)
-            .map(|(url, _)| url.clone())
+            .map(|(_, card)| card.url.clone())
     }
 
     async fn send_channel_message(

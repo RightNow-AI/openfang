@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.24"
+version = "0.3.25"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
@@ -118,6 +118,9 @@ colored = "3"
 # Encryption
 aes-gcm = "0.10"
 argon2 = "0.5"
+
+# HTML entity decoding
+html-escape = "0.2"
 
 # Lightweight regex
 regex-lite = "0.1"

@@ -453,16 +453,21 @@ async fn dispatch_message(
             send_response(adapter, &message.sender, result, thread_id, output_format).await;
             return;
         }
-        _ => {
-            send_response(
-                adapter,
-                &message.sender,
-                "I can only handle text messages for now.".to_string(),
-                thread_id,
-                output_format,
-            )
-            .await;
-            return;
+        ChannelContent::Image { ref url, ref caption } => {
+            let desc = match caption {
+                Some(c) => format!("[User sent a photo: {url}]\nCaption: {c}"),
+                None => format!("[User sent a photo: {url}]"),
+            };
+            desc
+        }
+        ChannelContent::File { ref url, ref filename } => {
+            format!("[User sent a file ({filename}): {url}]")
+        }
+        ChannelContent::Voice { ref url, duration_seconds } => {
+            format!("[User sent a voice message ({duration_seconds}s): {url}]")
+        }
+        ChannelContent::Location { lat, lon } => {
+            format!("[User shared location: {lat}, {lon}]")
         }
     };
 
