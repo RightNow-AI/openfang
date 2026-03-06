@@ -3047,6 +3047,28 @@ impl OpenFangKernel {
             .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(e.to_string())))
     }
 
+    /// Get a hand instance by ID.
+    pub fn get_hand_instance(&self, instance_id: uuid::Uuid) -> KernelResult<openfang_hands::HandInstance> {
+        self.hand_registry
+            .get_instance(instance_id)
+            .ok_or_else(|| {
+                KernelError::OpenFang(OpenFangError::AgentNotFound(format!(
+                    "Hand instance not found: {instance_id}"
+                )))
+            })
+    }
+
+    /// Update the config of an active hand instance.
+    pub fn update_hand_config(
+        &self,
+        instance_id: uuid::Uuid,
+        config: std::collections::HashMap<String, serde_json::Value>,
+    ) -> KernelResult<openfang_hands::HandInstance> {
+        self.hand_registry
+            .update_instance_config(instance_id, config)
+            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(e.to_string())))
+    }
+
     /// Set the weak self-reference for trigger dispatch.
     ///
     /// Must be called once after the kernel is wrapped in `Arc`.

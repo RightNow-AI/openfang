@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use dashmap::DashMap;
+use serde::Deserialize;
 use openfang_kernel::triggers::{TriggerId, TriggerPattern};
 use openfang_kernel::workflow::{
     ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowStep,
@@ -4130,6 +4131,79 @@ pub async fn hand_instance_browser(
             "screenshot_base64": screenshot_base64,
         })),
     )
+}
+
+/// GET /api/hands/instances/{id}/settings — Get the current config of a hand instance.
+pub async fn get_hand_settings(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    match state.kernel.get_hand_instance(id) {
+        Ok(instance) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "instance_id": instance.instance_id,
+                "hand_id": instance.hand_id,
+                "config": instance.config,
+            })),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
+/// PUT /api/hands/instances/{id}/settings — Update the config of a hand instance.
+#[derive(Debug, Deserialize)]
+pub struct UpdateHandSettingsRequest {
+    pub config: std::collections::HashMap<String, serde_json::Value>,
+}
+
+pub async fn update_hand_settings(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+    Json(body): Json<UpdateHandSettingsRequest>,
+) -> impl IntoResponse {
+    match state.kernel.update_hand_config(id, body.config) {
+        Ok(instance) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "instance_id": instance.instance_id,
+                "hand_id": instance.hand_id,
+                "config": instance.config,
+                "status": format!("{}", instance.status),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
+/// PATCH /api/hands/instances/{id}/settings — Partially update the config of a hand instance.
+pub async fn patch_hand_settings(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+    Json(body): Json<UpdateHandSettingsRequest>,
+) -> impl IntoResponse {
+    // PATCH merges config like PUT (for hand settings, behavior is the same)
+    match state.kernel.update_hand_config(id, body.config) {
+        Ok(instance) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "instance_id": instance.instance_id,
+                "hand_id": instance.hand_id,
+                "config": instance.config,
+                "status": format!("{}", instance.status),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
