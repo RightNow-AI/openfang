@@ -65,3 +65,12 @@ jobs:
             fliva/openfang:${{ steps.check.outputs.latest }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Update Docker Hub description
+        if: steps.check.outputs.new_release == 'true'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: fliva/openfang
+          readme-filepath: ./DOCKER_README.md
