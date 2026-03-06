@@ -54,10 +54,11 @@ impl SetupWizard {
     /// model configuration, capabilities, and schedule.
     pub fn build_plan(intent: AgentIntent) -> SetupPlan {
         // Map model tier to provider/model
+        // Use "default" so the kernel applies config.toml's [default_model].
+        // Only "complex" tier gets an explicit Anthropic override.
         let (provider, model) = match intent.model_tier.as_str() {
-            "simple" => ("groq", "llama-3.3-70b-versatile"),
             "complex" => ("anthropic", "claude-sonnet-4-20250514"),
-            _ => ("groq", "llama-3.3-70b-versatile"), // medium default
+            _ => ("default", "default"),
         };
 
         // Build capabilities from intent
@@ -285,7 +286,7 @@ mod tests {
         let plan = SetupWizard::build_plan(intent);
 
         assert_eq!(plan.manifest.name, "research-bot");
-        assert_eq!(plan.manifest.model.provider, "groq");
+        assert_eq!(plan.manifest.model.provider, "default");
         assert!(plan
             .manifest
             .capabilities

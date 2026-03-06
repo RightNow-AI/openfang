@@ -755,12 +755,13 @@ impl OpenFangKernel {
             Arc<dyn openfang_runtime::embedding::EmbeddingDriver + Send + Sync>,
         > = {
             use openfang_runtime::embedding::create_embedding_driver;
+            let configured_model = &config.memory.embedding_model;
             if let Some(ref provider) = config.memory.embedding_provider {
-                // Explicit config takes priority
+                // Explicit config takes priority — use the configured embedding model
                 let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
-                match create_embedding_driver(provider, "text-embedding-3-small", api_key_env) {
+                match create_embedding_driver(provider, configured_model, api_key_env) {
                     Ok(d) => {
-                        info!(provider = %provider, "Embedding driver configured from memory config");
+                        info!(provider = %provider, model = %configured_model, "Embedding driver configured from memory config");
                         Some(Arc::from(d))
                     }
                     Err(e) => {
@@ -769,8 +770,12 @@ impl OpenFangKernel {
                     }
                 }
             } else if std::env::var("OPENAI_API_KEY").is_ok() {
-                match create_embedding_driver("openai", "text-embedding-3-small", "OPENAI_API_KEY")
-                {
+                let model = if configured_model == "all-MiniLM-L6-v2" {
+                    "text-embedding-3-small"
+                } else {
+                    configured_model.as_str()
+                };
+                match create_embedding_driver("openai", model, "OPENAI_API_KEY") {
                     Ok(d) => {
                         info!("Embedding driver auto-detected: OpenAI");
                         Some(Arc::from(d))
@@ -782,7 +787,12 @@ impl OpenFangKernel {
                 }
             } else {
                 // Try Ollama (local, no key needed)
-                match create_embedding_driver("ollama", "nomic-embed-text", "") {
+                let model = if configured_model == "all-MiniLM-L6-v2" {
+                    "nomic-embed-text"
+                } else {
+                    configured_model.as_str()
+                };
+                match create_embedding_driver("ollama", model, "") {
                     Ok(d) => {
                         info!("Embedding driver auto-detected: Ollama (local)");
                         Some(Arc::from(d))
@@ -1017,24 +1027,31 @@ impl OpenFangKernel {
                         &mut restored_entry.manifest.resources,
                     );
 
-                    // Apply default_model to restored agents (same logic as spawn)
+                    // Apply default_model to restored agents.
+                    //
+                    // Two cases:
+                    // 1. Agent has empty/default provider → always apply default_model
+                    // 2. Agent named "assistant" (auto-spawned) → update to match
+                    //    default_model so config.toml changes take effect on restart
                     {
+                        let dm = &kernel.config.default_model;
                         let is_default_provider = restored_entry.manifest.model.provider.is_empty()
                             || restored_entry.manifest.model.provider == "default";
                         let is_default_model = restored_entry.manifest.model.model.is_empty()
                             || restored_entry.manifest.model.model == "default";
-                        if is_default_provider && is_default_model {
-                            let dm = &kernel.config.default_model;
+                        let is_auto_spawned = restored_entry.name == "assistant"
+                            && restored_entry.manifest.description == "General-purpose assistant";
+                        if is_default_provider && is_default_model || is_auto_spawned {
                             if !dm.provider.is_empty() {
                                 restored_entry.manifest.model.provider = dm.provider.clone();
                             }
                             if !dm.model.is_empty() {
                                 restored_entry.manifest.model.model = dm.model.clone();
                             }
-                            if !dm.api_key_env.is_empty() && restored_entry.manifest.model.api_key_env.is_none() {
+                            if !dm.api_key_env.is_empty() {
                                 restored_entry.manifest.model.api_key_env = Some(dm.api_key_env.clone());
                             }
-                            if dm.base_url.is_some() && restored_entry.manifest.model.base_url.is_none() {
+                            if dm.base_url.is_some() {
                                 restored_entry.manifest.model.base_url.clone_from(&dm.base_url);
                             }
                         }
@@ -5262,6 +5279,59 @@ impl KernelHandle for OpenFangKernel {
             .map_err(|e| format!("Channel send failed: {e}"))?;
 
         Ok(format!("Message sent to {} via {}", recipient, channel))
+    }
+
+    async fn send_channel_media(
+        &self,
+        channel: &str,
+        recipient: &str,
+        media_type: &str,
+        media_url: &str,
+        caption: Option<&str>,
+        filename: Option<&str>,
+    ) -> Result<String, String> {
+        let adapter = self
+            .channel_adapters
+            .get(channel)
+            .ok_or_else(|| {
+                let available: Vec<String> = self
+                    .channel_adapters
+                    .iter()
+                    .map(|e| e.key().clone())
+                    .collect();
+                format!(
+                    "Channel '{}' not found. Available channels: {:?}",
+                    channel, available
+                )
+            })?
+            .clone();
+
+        let user = openfang_channels::types::ChannelUser {
+            platform_id: recipient.to_string(),
+            display_name: recipient.to_string(),
+            openfang_user: None,
+        };
+
+        let content = match media_type {
+            "image" => openfang_channels::types::ChannelContent::Image {
+                url: media_url.to_string(),
+                caption: caption.map(|s| s.to_string()),
+            },
+            "file" => openfang_channels::types::ChannelContent::File {
+                url: media_url.to_string(),
+                filename: filename.unwrap_or("file").to_string(),
+            },
+            _ => {
+                return Err(format!("Unsupported media type: '{media_type}'. Use 'image' or 'file'."));
+            }
+        };
+
+        adapter
+            .send(&user, content)
+            .await
+            .map_err(|e| format!("Channel media send failed: {e}"))?;
+
+        Ok(format!("{} sent to {} via {}", media_type, recipient, channel))
     }
 
     async fn spawn_agent_checked(

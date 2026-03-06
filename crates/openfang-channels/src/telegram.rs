@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
 /// Maximum backoff duration on API failures.
@@ -318,10 +318,14 @@ impl ChannelAdapter for TelegramAdapter {
                     continue;
                 }
 
-                // Handle conflict (another bot instance polling)
+                // Handle conflict (another bot instance or stale session polling).
+                // On daemon restart, the old long-poll may still be active on Telegram's
+                // side for up to 30s. Retry with backoff instead of stopping permanently.
                 if status.as_u16() == 409 {
-                    error!("Telegram 409 Conflict — another bot instance is running. Stopping.");
-                    break;
+                    warn!("Telegram 409 Conflict — stale polling session, retrying in {backoff:?}");
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                    continue;
                 }
 
                 if !status.is_success() {

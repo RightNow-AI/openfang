@@ -123,7 +123,7 @@ pub struct ClawHubSearchEntry {
     #[serde(default)]
     pub summary: String,
     #[serde(default)]
-    pub version: String,
+    pub version: Option<String>,
     /// Unix ms timestamp.
     #[serde(default)]
     pub updated_at: i64,
@@ -698,7 +698,7 @@ mod tests {
         assert_eq!(entry.slug, "github");
         assert_eq!(entry.display_name, "Github");
         assert!(entry.score > 3.0);
-        assert_eq!(entry.version, "1.0.0");
+        assert_eq!(entry.version.as_deref(), Some("1.0.0"));
         assert_eq!(entry.updated_at, 1771777539580);
     }
 
