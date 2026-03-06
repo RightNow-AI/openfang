@@ -371,7 +371,7 @@ impl ChannelAdapter for TelegramAdapter {
                     }
 
                     // Parse the message
-                    let msg = match parse_telegram_update(update, &allowed_users) {
+                    let msg = match parse_telegram_update(update, &allowed_users, &token, &client).await {
                         Some(m) => m,
                         None => continue, // filtered out or unparseable
                     };
@@ -449,9 +449,12 @@ impl ChannelAdapter for TelegramAdapter {
 
 /// Parse a Telegram update JSON into a `ChannelMessage`, or `None` if filtered/unparseable.
 /// Handles both `message` and `edited_message` update types.
-fn parse_telegram_update(
+/// Supports text, photo, document, voice, and location message types.
+async fn parse_telegram_update(
     update: &serde_json::Value,
     allowed_users: &[i64],
+    token: &str,
+    client: &reqwest::Client,
 ) -> Option<ChannelMessage> {
     let message = update
         .get("message")
@@ -477,37 +480,88 @@ fn parse_telegram_update(
     let chat_type = message["chat"]["type"].as_str().unwrap_or("private");
     let is_group = chat_type == "group" || chat_type == "supergroup";
 
-    let text = message["text"].as_str()?;
     let message_id = message["message_id"].as_i64().unwrap_or(0);
     let timestamp = message["date"]
         .as_i64()
         .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
         .unwrap_or_else(chrono::Utc::now);
 
-    // Parse bot commands (Telegram sends entities for /commands)
-    let content = if let Some(entities) = message["entities"].as_array() {
-        let is_bot_command = entities
-            .iter()
-            .any(|e| e["type"].as_str() == Some("bot_command") && e["offset"].as_i64() == Some(0));
-        if is_bot_command {
-            let parts: Vec<&str> = text.splitn(2, ' ').collect();
-            let cmd_name = parts[0].trim_start_matches('/');
-            // Strip @botname from command (e.g. /agents@mybot -> agents)
-            let cmd_name = cmd_name.split('@').next().unwrap_or(cmd_name);
-            let args = if parts.len() > 1 {
-                parts[1].split_whitespace().map(String::from).collect()
+    // Determine content type: text, photo, document, voice, or location
+    let content = if let Some(text) = message["text"].as_str() {
+        // Parse bot commands (Telegram sends entities for /commands)
+        if let Some(entities) = message["entities"].as_array() {
+            let is_bot_command = entities.iter().any(|e| {
+                e["type"].as_str() == Some("bot_command") && e["offset"].as_i64() == Some(0)
+            });
+            if is_bot_command {
+                let parts: Vec<&str> = text.splitn(2, ' ').collect();
+                let cmd_name = parts[0].trim_start_matches('/');
+                let cmd_name = cmd_name.split('@').next().unwrap_or(cmd_name);
+                let args = if parts.len() > 1 {
+                    parts[1].split_whitespace().map(String::from).collect()
+                } else {
+                    vec![]
+                };
+                ChannelContent::Command {
+                    name: cmd_name.to_string(),
+                    args,
+                }
             } else {
-                vec![]
-            };
-            ChannelContent::Command {
-                name: cmd_name.to_string(),
-                args,
+                ChannelContent::Text(text.to_string())
             }
         } else {
             ChannelContent::Text(text.to_string())
         }
+    } else if let Some(photos) = message["photo"].as_array() {
+        // Telegram sends multiple sizes — pick the largest (last in array)
+        let largest = photos.last()?;
+        let file_id = largest["file_id"].as_str()?;
+        let caption = message["caption"].as_str().map(String::from);
+
+        match telegram_get_file_url(token, client, file_id).await {
+            Ok(url) => ChannelContent::Image { url, caption },
+            Err(e) => {
+                warn!("Telegram: failed to get file URL for photo: {e}");
+                ChannelContent::Text(
+                    caption.unwrap_or_else(|| "[Photo — could not retrieve]".to_string()),
+                )
+            }
+        }
+    } else if let Some(doc) = message.get("document") {
+        let file_id = doc["file_id"].as_str()?;
+        let filename = doc["file_name"]
+            .as_str()
+            .unwrap_or("document")
+            .to_string();
+
+        match telegram_get_file_url(token, client, file_id).await {
+            Ok(url) => ChannelContent::File { url, filename },
+            Err(e) => {
+                warn!("Telegram: failed to get file URL for document: {e}");
+                ChannelContent::Text(format!("[Document: {filename} — could not retrieve]"))
+            }
+        }
+    } else if let Some(voice) = message.get("voice") {
+        let file_id = voice["file_id"].as_str()?;
+        let duration = voice["duration"].as_u64().unwrap_or(0) as u32;
+
+        match telegram_get_file_url(token, client, file_id).await {
+            Ok(url) => ChannelContent::Voice {
+                url,
+                duration_seconds: duration,
+            },
+            Err(e) => {
+                warn!("Telegram: failed to get file URL for voice: {e}");
+                ChannelContent::Text("[Voice message — could not retrieve]".to_string())
+            }
+        }
+    } else if let Some(location) = message.get("location") {
+        let lat = location["latitude"].as_f64()?;
+        let lon = location["longitude"].as_f64()?;
+        ChannelContent::Location { lat, lon }
     } else {
-        ChannelContent::Text(text.to_string())
+        debug!("Telegram: ignoring unsupported message type");
+        return None;
     };
 
     // Use chat_id as the platform_id (so responses go to the right chat)
@@ -526,6 +580,41 @@ fn parse_telegram_update(
         thread_id: None,
         metadata: HashMap::new(),
     })
+}
+
+/// Resolve a Telegram file_id to a download URL via the Bot API `getFile` method.
+async fn telegram_get_file_url(
+    token: &str,
+    client: &reqwest::Client,
+    file_id: &str,
+) -> Result<String, String> {
+    let url = format!("https://api.telegram.org/bot{token}/getFile");
+    let body = serde_json::json!({ "file_id": file_id });
+
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("getFile request failed: {e}"))?;
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("getFile response parse failed: {e}"))?;
+
+    if json["ok"].as_bool() != Some(true) {
+        let desc = json["description"].as_str().unwrap_or("unknown error");
+        return Err(format!("getFile failed: {desc}"));
+    }
+
+    let file_path = json["result"]["file_path"]
+        .as_str()
+        .ok_or("getFile: missing file_path")?;
+
+    Ok(format!(
+        "https://api.telegram.org/file/bot{token}/{file_path}"
+    ))
 }
 
 /// Calculate exponential backoff capped at MAX_BACKOFF.
@@ -594,8 +683,8 @@ fn sanitize_telegram_html(text: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_parse_telegram_update() {
+    #[tokio::test]
+    async fn test_parse_telegram_update() {
         let update = serde_json::json!({
             "update_id": 123456,
             "message": {
@@ -614,15 +703,16 @@ mod tests {
             }
         });
 
-        let msg = parse_telegram_update(&update, &[]).unwrap();
+        let client = reqwest::Client::new();
+        let msg = parse_telegram_update(&update, &[], "test_token", &client).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
         assert_eq!(msg.sender.display_name, "Alice Smith");
         assert_eq!(msg.sender.platform_id, "111222333");
         assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Hello, agent!"));
     }
 
-    #[test]
-    fn test_parse_telegram_command() {
+    #[tokio::test]
+    async fn test_parse_telegram_command() {
         let update = serde_json::json!({
             "update_id": 123457,
             "message": {
@@ -645,7 +735,8 @@ mod tests {
             }
         });
 
-        let msg = parse_telegram_update(&update, &[]).unwrap();
+        let client = reqwest::Client::new();
+        let msg = parse_telegram_update(&update, &[], "test_token", &client).await.unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -655,8 +746,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_allowed_users_filter() {
+    #[tokio::test]
+    async fn test_allowed_users_filter() {
         let update = serde_json::json!({
             "update_id": 123458,
             "message": {
@@ -674,21 +765,23 @@ mod tests {
             }
         });
 
+        let client = reqwest::Client::new();
+
         // Empty allowed_users = allow all
-        let msg = parse_telegram_update(&update, &[]);
+        let msg = parse_telegram_update(&update, &[], "test_token", &client).await;
         assert!(msg.is_some());
 
         // Non-matching allowed_users = filter out
-        let msg = parse_telegram_update(&update, &[111, 222]);
+        let msg = parse_telegram_update(&update, &[111, 222], "test_token", &client).await;
         assert!(msg.is_none());
 
         // Matching allowed_users = allow
-        let msg = parse_telegram_update(&update, &[999]);
+        let msg = parse_telegram_update(&update, &[999], "test_token", &client).await;
         assert!(msg.is_some());
     }
 
-    #[test]
-    fn test_parse_telegram_edited_message() {
+    #[tokio::test]
+    async fn test_parse_telegram_edited_message() {
         let update = serde_json::json!({
             "update_id": 123459,
             "edited_message": {
@@ -708,7 +801,8 @@ mod tests {
             }
         });
 
-        let msg = parse_telegram_update(&update, &[]).unwrap();
+        let client = reqwest::Client::new();
+        let msg = parse_telegram_update(&update, &[], "test_token", &client).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
         assert_eq!(msg.sender.display_name, "Alice Smith");
         assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Edited message!"));
@@ -729,8 +823,8 @@ mod tests {
         assert_eq!(b4, Duration::from_secs(60)); // stays at cap
     }
 
-    #[test]
-    fn test_parse_command_with_botname() {
+    #[tokio::test]
+    async fn test_parse_command_with_botname() {
         let update = serde_json::json!({
             "update_id": 100,
             "message": {
@@ -743,7 +837,8 @@ mod tests {
             }
         });
 
-        let msg = parse_telegram_update(&update, &[]).unwrap();
+        let client = reqwest::Client::new();
+        let msg = parse_telegram_update(&update, &[], "test_token", &client).await.unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agents");

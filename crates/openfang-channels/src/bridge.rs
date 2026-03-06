@@ -453,16 +453,22 @@ async fn dispatch_message(
             send_response(adapter, &message.sender, result, thread_id, output_format).await;
             return;
         }
-        _ => {
-            send_response(
-                adapter,
-                &message.sender,
-                "I can only handle text messages for now.".to_string(),
-                thread_id,
-                output_format,
-            )
-            .await;
-            return;
+        ChannelContent::Image { url, caption } => {
+            let cap = caption.as_deref().unwrap_or("");
+            if cap.is_empty() {
+                format!("[User sent an image: {url} ]\nPlease analyze this image.")
+            } else {
+                format!("[User sent an image: {url} ]\nCaption: {cap}")
+            }
+        }
+        ChannelContent::File { url, filename } => {
+            format!("[User sent a file: {filename} — {url} ]")
+        }
+        ChannelContent::Voice { url, duration_seconds } => {
+            format!("[User sent a voice message ({duration_seconds}s): {url} ]")
+        }
+        ChannelContent::Location { lat, lon } => {
+            format!("[User sent a location: lat={lat}, lon={lon}]")
         }
     };
 
