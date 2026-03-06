@@ -38,6 +38,7 @@ impl MarketplaceClient {
             config,
             http: reqwest::Client::builder()
                 .user_agent("openfang-skills/0.1")
+                .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .expect("Failed to build HTTP client"),
         }

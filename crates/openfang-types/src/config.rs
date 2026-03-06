@@ -513,6 +513,34 @@ pub struct DockerSandboxConfig {
     pub blocked_mounts: Vec<String>,
 }
 
+/// Local providers configuration.
+///
+/// Configure in config.toml:
+/// ```toml
+/// [local_providers]
+/// # Whether to show offline warnings for local providers
+/// show_offline_warnings = false
+/// # List of local providers to check
+/// enabled_providers = ["ollama"]
+/// # Check interval in seconds (default: 60)
+/// check_interval_secs = 10
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalProvidersConfig {
+    /// Whether to show offline warnings for local providers.
+    pub show_offline_warnings: bool,
+    /// List of local providers to check. Available values: ollama, vllm, lmstudio, claude-code.
+    pub enabled_providers: Vec<String>,
+    /// Check interval in seconds.
+    #[serde(default = "default_check_interval")]
+    pub check_interval_secs: u64,
+}
+
+fn default_check_interval() -> u64 {
+    60
+}
+
 fn default_reuse_cool_secs() -> u64 {
     300
 }
@@ -1045,6 +1073,9 @@ pub struct KernelConfig {
     /// OAuth client ID overrides for PKCE flows.
     #[serde(default)]
     pub oauth: OAuthConfig,
+    /// Local providers configuration.
+    #[serde(default)]
+    pub local_providers: LocalProvidersConfig,
 }
 
 /// OAuth client ID overrides for PKCE flows.
@@ -1212,6 +1243,7 @@ impl Default for KernelConfig {
             budget: BudgetConfig::default(),
             provider_urls: HashMap::new(),
             oauth: OAuthConfig::default(),
+            local_providers: LocalProvidersConfig::default(),
         }
     }
 }

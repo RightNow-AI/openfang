@@ -3394,6 +3394,92 @@ impl OpenFangKernel {
             });
         }
 
+        // Start continuous local provider health monitoring
+        {
+            let kernel = Arc::clone(self);
+            tokio::spawn(async move {
+                // Track provider states to detect changes
+                let mut provider_states: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+                
+                loop {
+                    // Get check interval from config
+                    let check_interval_secs = kernel.config.local_providers.check_interval_secs;
+                    
+                    // Sleep for the configured interval
+                    tokio::time::sleep(std::time::Duration::from_secs(check_interval_secs)).await;
+                    
+                    if kernel.supervisor.is_shutting_down() {
+                        break;
+                    }
+                    
+                    // Get list of local providers
+                    let local_providers: Vec<(String, String)> = {
+                        let catalog = kernel
+                            .model_catalog
+                            .read()
+                            .unwrap_or_else(|e| e.into_inner());
+                        catalog
+                            .list_providers()
+                            .iter()
+                            .filter(|p| !p.key_required)
+                            .map(|p| (p.id.clone(), p.base_url.clone()))
+                            .collect()
+                    };
+                    
+                    // Check only enabled providers if specified in config
+                    let enabled_providers: Vec<String> = kernel.config.local_providers.enabled_providers.clone();
+                    let filtered_providers: Vec<(String, String)> = if enabled_providers.is_empty() {
+                        local_providers
+                    } else {
+                        local_providers
+                            .into_iter()
+                            .filter(|(id, _)| enabled_providers.contains(id))
+                            .collect()
+                    };
+                    
+                    // Probe each provider
+                    for (provider_id, base_url) in &filtered_providers {
+                        let result =
+                            openfang_runtime::provider_health::probe_provider(provider_id, base_url)
+                                .await;
+                        
+                        // Check if state has changed
+                        let previous_state = provider_states.get(provider_id).unwrap_or(&false);
+                        let current_state = result.reachable;
+                        
+                        if current_state != *previous_state {
+                            // State changed, log the event
+                            if current_state {
+                                info!(
+                                    provider = %provider_id,
+                                    models = result.discovered_models.len(),
+                                    latency_ms = result.latency_ms,
+                                    "Local provider online"
+                                );
+                                if !result.discovered_models.is_empty() {
+                                    if let Ok(mut catalog) = kernel.model_catalog.write() {
+                                        catalog.merge_discovered_models(
+                                            provider_id,
+                                            &result.discovered_models,
+                                        );
+                                    }
+                                }
+                            } else if kernel.config.local_providers.show_offline_warnings {
+                                warn!(
+                                    provider = %provider_id,
+                                    error = result.error.as_deref().unwrap_or("unknown"),
+                                    "Local provider offline"
+                                );
+                            }
+                            
+                            // Update state
+                            provider_states.insert(provider_id.to_string(), current_state);
+                        }
+                    }
+                }
+            });
+        }
+
         // Periodic usage data cleanup (every 24 hours, retain 90 days)
         {
             let kernel = Arc::clone(self);

@@ -244,7 +244,7 @@ impl ClawHubClient {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_default(),
             _cache_dir: cache_dir,
