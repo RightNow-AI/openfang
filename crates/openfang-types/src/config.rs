@@ -1507,8 +1507,10 @@ pub struct ChannelsConfig {
     // Wave 5 — Niche & differentiating channels
     /// Mumble text chat configuration (None = disabled).
     pub mumble: Option<MumbleConfig>,
-    /// DingTalk robot configuration (None = disabled).
+    /// DingTalk robot configuration — webhook mode (None = disabled).
     pub dingtalk: Option<DingTalkConfig>,
+    /// DingTalk Stream mode — long-lived WebSocket (None = disabled).
+    pub dingtalk_stream: Option<DingTalkStreamConfig>,
     /// Discourse forum configuration (None = disabled).
     pub discourse: Option<DiscourseConfig>,
     /// Gitter streaming configuration (None = disabled).
@@ -2566,6 +2568,39 @@ impl Default for DingTalkConfig {
     }
 }
 
+/// DingTalk Stream channel adapter configuration.
+///
+/// Uses the DingTalk Stream Mode (WebSocket long-connection) instead of
+/// the legacy webhook approach. Requires an Enterprise Internal App with
+/// Stream Mode enabled in the DingTalk Open Platform console.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DingTalkStreamConfig {
+    /// Env var holding the App Key (client_id).
+    pub app_key_env: String,
+    /// Env var holding the App Secret (client_secret).
+    pub app_secret_env: String,
+    /// Robot code for outbound batchSend (often same as app_key).
+    pub robot_code_env: String,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for DingTalkStreamConfig {
+    fn default() -> Self {
+        Self {
+            app_key_env: "DINGTALK_APP_KEY".to_string(),
+            app_secret_env: "DINGTALK_APP_SECRET".to_string(),
+            robot_code_env: "DINGTALK_ROBOT_CODE".to_string(),
+            default_agent: None,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
 /// Discourse forum channel adapter configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -3078,6 +3113,26 @@ impl KernelConfig {
                 warnings.push(format!(
                     "DingTalk configured but {} is not set",
                     dt.access_token_env
+                ));
+            }
+        }
+        if let Some(ref ds) = self.channels.dingtalk_stream {
+            if std::env::var(&ds.app_key_env)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                warnings.push(format!(
+                    "DingTalk Stream configured but {} is not set",
+                    ds.app_key_env
+                ));
+            }
+            if std::env::var(&ds.app_secret_env)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                warnings.push(format!(
+                    "DingTalk Stream configured but {} is not set",
+                    ds.app_secret_env
                 ));
             }
         }
