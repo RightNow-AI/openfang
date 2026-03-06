@@ -111,18 +111,68 @@ install() {
     chmod +x "$INSTALL_DIR/openfang"
 
     # Add to PATH
+    # Detect current shell with fallback to $SHELL, parent process, and defaults
+    detect_shell() {
+        # Check if we're running under fish directly
+        if [ -n "${FISH_VERSION:-}" ]; then
+            echo "fish"
+            return
+        fi
+
+        # Check if we're running under zsh
+        if [ -n "${ZSH_VERSION:-}" ]; then
+            echo "zsh"
+            return
+        fi
+
+        # Check if we're running under bash
+        if [ -n "${BASH:-}" ]; then
+            echo "bash"
+            return
+        fi
+
+        # Fallback to $SHELL environment variable
+        if [ -n "${SHELL:-}" ]; then
+            case "$SHELL" in
+                */fish) echo "fish"; return ;;
+                */zsh) echo "zsh"; return ;;
+                */bash) echo "bash"; return ;;
+            esac
+        fi
+
+        # Try to detect from parent process
+        if command -v ps &>/dev/null; then
+            local parent_shell=$(ps -p $PPID -o comm= 2>/dev/null || echo "")
+            case "$parent_shell" in
+                *fish) echo "fish"; return ;;
+                *zsh) echo "zsh"; return ;;
+                *bash) echo "bash"; return ;;
+            esac
+        fi
+
+        # Last resort: default to bash for compatibility
+        echo "bash"
+    }
+
+    CURRENT_SHELL=$(detect_shell)
     SHELL_RC=""
-    case "${SHELL:-}" in
-        */zsh) SHELL_RC="$HOME/.zshrc" ;;
-        */bash) SHELL_RC="$HOME/.bashrc" ;;
-        */fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
+    case "$CURRENT_SHELL" in
+        zsh) SHELL_RC="$HOME/.zshrc" ;;
+        bash) SHELL_RC="$HOME/.bashrc" ;;
+        fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
     esac
 
     if [ -n "$SHELL_RC" ] && ! grep -q "openfang" "$SHELL_RC" 2>/dev/null; then
-        case "${SHELL:-}" in
-            */fish)
+        case "$CURRENT_SHELL" in
+            fish)
                 mkdir -p "$(dirname "$SHELL_RC")"
-                echo "set -gx PATH \"$INSTALL_DIR\" \$PATH" >> "$SHELL_RC"
+                # Use fish_add_path for cleaner PATH management (Fish 3.3+)
+                # Fallback to set -gx for older Fish versions
+                echo 'if command -q fish_add_path' >> "$SHELL_RC"
+                echo "    fish_add_path \"$INSTALL_DIR\"" >> "$SHELL_RC"
+                echo 'else' >> "$SHELL_RC"
+                echo "    set -gx PATH \"$INSTALL_DIR\" \$PATH" >> "$SHELL_RC"
+                echo 'end' >> "$SHELL_RC"
                 ;;
             *)
                 echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_RC"
