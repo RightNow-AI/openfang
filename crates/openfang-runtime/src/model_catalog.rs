@@ -56,6 +56,19 @@ impl ModelCatalog {
     /// Only checks presence — never reads or stores the actual secret.
     pub fn detect_auth(&mut self) {
         for provider in &mut self.providers {
+            // Claude Code: detect CLI installation + authentication
+            if provider.id == "claude-code" {
+                let cli_installed = crate::drivers::claude_code::ClaudeCodeDriver::detect().is_some();
+                if cli_installed && crate::drivers::claude_code::claude_code_available() {
+                    provider.auth_status = AuthStatus::Configured;
+                } else if cli_installed {
+                    provider.auth_status = AuthStatus::Missing;
+                } else {
+                    provider.auth_status = AuthStatus::NotRequired;
+                }
+                continue;
+            }
+
             if !provider.key_required {
                 provider.auth_status = AuthStatus::NotRequired;
                 continue;
@@ -71,7 +84,6 @@ impl ModelCatalog {
                     std::env::var("OPENAI_API_KEY").is_ok()
                         || read_codex_credential().is_some()
                 }
-                "claude-code" => crate::drivers::claude_code::claude_code_available(),
                 _ => false,
             };
 
