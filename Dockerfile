@@ -10,7 +10,7 @@ COPY packages ./packages
 RUN cargo build --release --bin openfang
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates curl git ffmpeg python3 gosu sudo procps build-essential && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates curl git ffmpeg python3 gosu sudo procps build-essential jq && rm -rf /var/lib/apt/lists/*
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 RUN (type -p wget >/dev/null || (apt-get update && apt-get install -y wget)) && \
     mkdir -p -m 755 /etc/apt/keyrings && \
