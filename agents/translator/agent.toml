@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["translation", "languages", "localization", "multilingual", "communication", "i18n"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 8192
 temperature = 0.3
 system_prompt = """You are Translator, a specialist agent in the OpenFang Agent OS. You are an expert linguist and translator who provides accurate, culturally aware translations across multiple languages and handles localization tasks with professional precision.

@@ -49,6 +49,7 @@ pub async fn build_router(
         bridge_manager: tokio::sync::Mutex::new(bridge),
         channels_config: tokio::sync::RwLock::new(channels_config),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+        clawhub_cache: dashmap::DashMap::new(),
     });
 
     // CORS: allow localhost origins by default. If API key is set, the API
@@ -157,6 +158,10 @@ pub async fn build_router(
             axum::routing::post(routes::reset_session),
         )
         .route(
+            "/api/agents/{id}/history",
+            axum::routing::delete(routes::clear_agent_history),
+        )
+        .route(
             "/api/agents/{id}/session/compact",
             axum::routing::post(routes::compact_session),
         )
@@ -167,6 +172,10 @@ pub async fn build_router(
         .route(
             "/api/agents/{id}/model",
             axum::routing::put(routes::set_model),
+        )
+        .route(
+            "/api/agents/{id}/tools",
+            axum::routing::get(routes::get_agent_tools).put(routes::set_agent_tools),
         )
         .route(
             "/api/agents/{id}/skills",
@@ -313,11 +322,19 @@ pub async fn build_router(
             axum::routing::get(routes::clawhub_skill_detail),
         )
         .route(
+            "/api/clawhub/skill/{slug}/code",
+            axum::routing::get(routes::clawhub_skill_code),
+        )
+        .route(
             "/api/clawhub/install",
             axum::routing::post(routes::clawhub_install),
         )
         // Hands endpoints
         .route("/api/hands", axum::routing::get(routes::list_hands))
+        .route(
+            "/api/hands/install",
+            axum::routing::post(routes::install_hand),
+        )
         .route(
             "/api/hands/active",
             axum::routing::get(routes::list_active_hands),
@@ -447,7 +464,8 @@ pub async fn build_router(
         )
         .route(
             "/api/budget/agents/{id}",
-            axum::routing::get(routes::agent_budget_status),
+            axum::routing::get(routes::agent_budget_status)
+                .put(routes::update_agent_budget),
         )
         // Session endpoints
         .route("/api/sessions", axum::routing::get(routes::list_sessions))
@@ -722,7 +740,8 @@ pub async fn run_daemon(
         if info_path.exists() {
             if let Ok(existing) = std::fs::read_to_string(info_path) {
                 if let Ok(info) = serde_json::from_str::<DaemonInfo>(&existing) {
-                    if is_process_alive(info.pid) {
+                    // PID alive AND the health endpoint responds → truly running
+                    if is_process_alive(info.pid) && is_daemon_responding(&info.listen_addr) {
                         return Err(format!(
                             "Another daemon (PID {}) is already running at {}",
                             info.pid, info.listen_addr
@@ -731,7 +750,8 @@ pub async fn run_daemon(
                     }
                 }
             }
-            // Stale PID file, remove it
+            // Stale PID file (process dead or different process reused PID), remove it
+            info!("Removing stale daemon info file");
             let _ = std::fs::remove_file(info_path);
         }
 
@@ -753,7 +773,22 @@ pub async fn run_daemon(
     info!("WebChat UI available at http://{addr}/",);
     info!("WebSocket endpoint: ws://{addr}/api/agents/{{id}}/ws",);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // Use SO_REUSEADDR to allow binding immediately after reboot (avoids TIME_WAIT).
+    let socket = socket2::Socket::new(
+        if addr.is_ipv4() {
+            socket2::Domain::IPV4
+        } else {
+            socket2::Domain::IPV6
+        },
+        socket2::Type::STREAM,
+        None,
+    )?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+    let listener =
+        tokio::net::TcpListener::from_std(std::net::TcpListener::from(socket))?;
 
     // Run server with graceful shutdown.
     // SECURITY: `into_make_service_with_connect_info` injects the peer
@@ -871,5 +906,28 @@ fn is_process_alive(pid: u32) -> bool {
     {
         let _ = pid;
         false
+    }
+}
+
+/// Check if an OpenFang daemon is actually responding at the given address.
+/// This avoids false positives where a different process reused the same PID
+/// after a system reboot.
+fn is_daemon_responding(addr: &str) -> bool {
+    // Quick TCP connect check — don't make a full HTTP request to avoid delays
+    let addr_only = addr
+        .strip_prefix("http://")
+        .or_else(|| addr.strip_prefix("https://"))
+        .unwrap_or(addr);
+    if let Ok(sock_addr) = addr_only.parse::<std::net::SocketAddr>() {
+        std::net::TcpStream::connect_timeout(
+            &sock_addr,
+            std::time::Duration::from_millis(500),
+        )
+        .is_ok()
+    } else {
+        // Fallback: try connecting to hostname
+        std::net::TcpStream::connect(addr_only)
+            .map(|_| true)
+            .unwrap_or(false)
     }
 }

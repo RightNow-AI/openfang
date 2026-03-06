@@ -5,8 +5,17 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 use ratatui::Frame;
+
+/// Model entry for the picker.
+#[derive(Clone)]
+pub struct ModelEntry {
+    pub id: String,
+    pub display_name: String,
+    pub provider: String,
+    pub tier: String,
+}
 
 /// Tool call metadata for rich rendering.
 #[derive(Clone)]
@@ -68,6 +77,14 @@ pub struct ChatState {
     pub staged_messages: Vec<String>,
     /// Accumulates ToolInputDelta text for the current tool call.
     pub tool_input_buf: String,
+    /// Model picker overlay state.
+    pub show_model_picker: bool,
+    /// Available models for the picker.
+    pub model_picker_models: Vec<ModelEntry>,
+    /// Filter text for model search.
+    pub model_picker_filter: String,
+    /// Selected index in the filtered model list.
+    pub model_picker_idx: usize,
 }
 
 pub enum ChatAction {
@@ -75,6 +92,10 @@ pub enum ChatAction {
     SendMessage(String),
     Back,
     SlashCommand(String),
+    /// Open the model picker (fetch models first).
+    OpenModelPicker,
+    /// Switch to a specific model by id.
+    SwitchModel(String),
 }
 
 impl ChatState {
@@ -97,6 +118,10 @@ impl ChatState {
             status_msg: None,
             staged_messages: Vec::new(),
             tool_input_buf: String::new(),
+            show_model_picker: false,
+            model_picker_models: Vec::new(),
+            model_picker_filter: String::new(),
+            model_picker_idx: 0,
         }
     }
 
@@ -115,6 +140,9 @@ impl ChatState {
         self.status_msg = None;
         self.staged_messages.clear();
         self.tool_input_buf.clear();
+        self.show_model_picker = false;
+        self.model_picker_filter.clear();
+        self.model_picker_idx = 0;
     }
 
     /// Push a completed message into history.
@@ -205,9 +233,79 @@ impl ChatState {
         }
     }
 
+    /// Return filtered models based on the current picker filter.
+    pub fn filtered_models(&self) -> Vec<&ModelEntry> {
+        if self.model_picker_filter.is_empty() {
+            return self.model_picker_models.iter().collect();
+        }
+        let f = self.model_picker_filter.to_lowercase();
+        self.model_picker_models
+            .iter()
+            .filter(|m| {
+                m.id.to_lowercase().contains(&f)
+                    || m.display_name.to_lowercase().contains(&f)
+                    || m.provider.to_lowercase().contains(&f)
+            })
+            .collect()
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> ChatAction {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.show_model_picker {
+                self.show_model_picker = false;
+                return ChatAction::Continue;
+            }
             return ChatAction::Back;
+        }
+
+        // Ctrl+M: toggle model picker
+        if key.code == KeyCode::Char('m') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.is_streaming {
+                return ChatAction::Continue;
+            }
+            if self.show_model_picker {
+                self.show_model_picker = false;
+                return ChatAction::Continue;
+            }
+            return ChatAction::OpenModelPicker;
+        }
+
+        // Model picker mode: intercept all keys
+        if self.show_model_picker {
+            match key.code {
+                KeyCode::Esc => {
+                    self.show_model_picker = false;
+                }
+                KeyCode::Up => {
+                    self.model_picker_idx = self.model_picker_idx.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    let max = self.filtered_models().len().saturating_sub(1);
+                    if self.model_picker_idx < max {
+                        self.model_picker_idx += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    let filtered = self.filtered_models();
+                    if let Some(entry) = filtered.get(self.model_picker_idx) {
+                        let model_id = entry.id.clone();
+                        self.show_model_picker = false;
+                        self.model_picker_filter.clear();
+                        self.model_picker_idx = 0;
+                        return ChatAction::SwitchModel(model_id);
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.model_picker_filter.pop();
+                    self.model_picker_idx = 0;
+                }
+                KeyCode::Char(c) => {
+                    self.model_picker_filter.push(c);
+                    self.model_picker_idx = 0;
+                }
+                _ => {}
+            }
+            return ChatAction::Continue;
         }
 
         // When streaming, allow typing + staging messages, scrolling, and Esc
@@ -361,13 +459,136 @@ pub fn draw(f: &mut Frame, area: Rect, state: &mut ChatState) {
     f.render_widget(Paragraph::new(input_line), chunks[2]);
 
     // ── Hints ────────────────────────────────────────────────────────────────
-    let hints = if state.is_streaming {
+    let hints = if state.show_model_picker {
+        "    [\u{2191}\u{2193}] Navigate  [Enter] Select  [Esc] Close  [type] Filter"
+    } else if state.is_streaming {
         "    [Enter] Stage  [\u{2191}\u{2193}] Scroll  [Esc] Stop"
     } else {
-        "    [Enter] Send  [\u{2191}\u{2193}/PgUp/PgDn] Scroll  [Esc] Back"
+        "    [Enter] Send  [Ctrl+M] Models  [\u{2191}\u{2193}] Scroll  [Esc] Back"
     };
     let hints = Paragraph::new(Line::from(vec![Span::styled(hints, theme::hint_style())]));
     f.render_widget(hints, chunks[3]);
+
+    // ── Model picker overlay ────────────────────────────────────────────────
+    if state.show_model_picker {
+        draw_model_picker(f, inner, state);
+    }
+}
+
+fn draw_model_picker(f: &mut Frame, area: Rect, state: &ChatState) {
+    let filtered = state.filtered_models();
+
+    // Center a popup — width ~50 cols, height capped at area
+    if area.height < 6 || area.width < 20 {
+        return; // Too small to show picker
+    }
+    let popup_w = area.width.clamp(30, 54);
+    let popup_h = (filtered.len() as u16 + 4)
+        .clamp(5, area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    let popup_area = Rect::new(x, y, popup_w, popup_h);
+
+    // Clear background
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(Line::from(vec![Span::styled(
+            " Switch Model ",
+            theme::title_style(),
+        )]))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::ACCENT))
+        .padding(Padding::horizontal(1));
+
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    if inner.height < 2 || inner.width < 10 {
+        return;
+    }
+
+    // Layout: search bar | model list
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+
+    // Search bar
+    let search_line = Line::from(vec![
+        Span::styled("/ ", theme::dim_style()),
+        Span::raw(&state.model_picker_filter),
+        Span::styled(
+            "\u{2588}",
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::SLOW_BLINK),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(search_line), chunks[0]);
+
+    // Model list
+    let visible_h = chunks[1].height as usize;
+    let total = filtered.len();
+
+    if total == 0 {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                " No models match",
+                theme::dim_style(),
+            )])),
+            chunks[1],
+        );
+        return;
+    }
+
+    // Scroll window: keep selected item visible
+    let scroll_start = if state.model_picker_idx >= visible_h {
+        state.model_picker_idx - visible_h + 1
+    } else {
+        0
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    let max_name = (chunks[1].width as usize).saturating_sub(14);
+    for (i, entry) in filtered.iter().enumerate().skip(scroll_start).take(visible_h) {
+        let selected = i == state.model_picker_idx;
+        let indicator = if selected { "\u{25b6} " } else { "  " };
+
+        let name = if entry.display_name.is_empty() {
+            &entry.id
+        } else {
+            &entry.display_name
+        };
+        let name_display = if name.len() > max_name && max_name > 1 {
+            let truncated = openfang_types::truncate_str(name, max_name.saturating_sub(1));
+            format!("{truncated}\u{2026}")
+        } else {
+            name.to_string()
+        };
+
+        let tier_style = match entry.tier.to_lowercase().as_str() {
+            "frontier" => Style::default().fg(theme::PURPLE),
+            "smart" => Style::default().fg(theme::BLUE),
+            "balanced" => Style::default().fg(theme::GREEN),
+            "fast" => Style::default().fg(theme::YELLOW),
+            _ => theme::dim_style(),
+        };
+
+        let bg = if selected {
+            Style::default()
+                .fg(theme::TEXT_PRIMARY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::TEXT_SECONDARY)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(indicator, Style::default().fg(theme::ACCENT)),
+            Span::styled(name_display, bg),
+            Span::raw(" "),
+            Span::styled(entry.tier.to_lowercase(), tier_style),
+        ]));
+    }
+
+    f.render_widget(Paragraph::new(lines), chunks[1]);
 }
 
 fn draw_messages(f: &mut Frame, area: Rect, state: &ChatState) {

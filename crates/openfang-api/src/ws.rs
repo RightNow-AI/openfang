@@ -621,8 +621,12 @@ async fn handle_text_message(
                                 return;
                             }
 
+                            // Strip <think>...</think> blocks from model output
+                            // (e.g. MiniMax, DeepSeek reasoning tokens)
+                            let cleaned_response = strip_think_tags(&result.response);
+
                             // Guard: ensure we never send an empty response
-                            let content = if result.response.trim().is_empty() {
+                            let content = if cleaned_response.trim().is_empty() {
                                 format!(
                                     "[The agent completed processing but returned no text response. ({} in / {} out | {} iter)]",
                                     result.total_usage.input_tokens,
@@ -630,7 +634,7 @@ async fn handle_text_message(
                                     result.iterations,
                                 )
                             } else {
-                                result.response
+                                cleaned_response
                             };
 
                             // Estimate context pressure from last call
@@ -796,7 +800,12 @@ async fn handle_command(
             } else {
                 match state.kernel.set_agent_model(agent_id, args) {
                     Ok(()) => {
-                        serde_json::json!({"type": "command_result", "command": cmd, "message": format!("Model switched to: {args}")})
+                        let msg = if let Some(entry) = state.kernel.registry.get(agent_id) {
+                            format!("Model switched to: {} (provider: {})", entry.manifest.model.model, entry.manifest.model.provider)
+                        } else {
+                            format!("Model switched to: {args}")
+                        };
+                        serde_json::json!({"type": "command_result", "command": cmd, "message": msg})
                     }
                     Err(e) => {
                         serde_json::json!({"type": "error", "content": format!("Model switch failed: {e}")})
@@ -1109,7 +1118,11 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
         }
         llm_errors::LlmErrorCategory::Auth => "Verify your API key in config.".to_string(),
         llm_errors::LlmErrorCategory::ModelNotFound => {
-            "Model unavailable. Use /model to see options.".to_string()
+            if inner.contains("localhost:11434") || inner.contains("ollama") {
+                "Model not found on Ollama. Run `ollama pull <model>` to download it, then try again. Use /model to see options.".to_string()
+            } else {
+                "Model unavailable. Use /model to see options or check your provider configuration.".to_string()
+            }
         }
         llm_errors::LlmErrorCategory::Format => {
             "LLM request failed. Check your API key and model configuration in Settings.".to_string()
@@ -1145,6 +1158,27 @@ fn extract_status_code(s: &str) -> Option<u16> {
         }
     }
     None
+}
+
+/// Strip `<think>...</think>` blocks from model output.
+///
+/// Some models (MiniMax, DeepSeek, etc.) wrap their reasoning in `<think>` tags.
+/// These are internal chain-of-thought and shouldn't be shown to the user.
+pub fn strip_think_tags(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(start) = remaining.find("<think>") {
+        result.push_str(&remaining[..start]);
+        if let Some(end) = remaining[start..].find("</think>") {
+            remaining = &remaining[(start + end + 8)..]; // 8 = "</think>".len()
+        } else {
+            // Unclosed <think> tag — strip to end
+            remaining = "";
+            break;
+        }
+    }
+    result.push_str(remaining);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,5 +1256,19 @@ mod tests {
     #[test]
     fn test_sanitize_trims_whitespace() {
         assert_eq!(sanitize_user_input("  hello  "), "hello");
+    }
+
+    #[test]
+    fn test_strip_think_tags() {
+        assert_eq!(
+            strip_think_tags("<think>reasoning here</think>The answer is 42."),
+            "The answer is 42."
+        );
+        assert_eq!(
+            strip_think_tags("Hello <think>\nsome thinking\n</think> world"),
+            "Hello  world"
+        );
+        assert_eq!(strip_think_tags("No thinking here"), "No thinking here");
+        assert_eq!(strip_think_tags("<think>all thinking</think>"), "");
     }
 }

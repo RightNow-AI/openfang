@@ -145,7 +145,14 @@ pub fn apply_context_guard(
     let mut compacted = 0;
     for loc in &locations {
         if loc.char_len > single_max {
+            // Bounds check: indices may be stale if messages were modified concurrently
+            if loc.msg_idx >= messages.len() {
+                continue;
+            }
             if let MessageContent::Blocks(blocks) = &mut messages[loc.msg_idx].content {
+                if loc.block_idx >= blocks.len() {
+                    continue;
+                }
                 if let ContentBlock::ToolResult { content, .. } = &mut blocks[loc.block_idx] {
                     let old_len = content.len();
                     *content = truncate_to(content, single_max);
@@ -167,7 +174,13 @@ pub fn apply_context_guard(
         if loc.char_len <= compact_target {
             continue;
         }
+        if loc.msg_idx >= messages.len() {
+            continue;
+        }
         if let MessageContent::Blocks(blocks) = &mut messages[loc.msg_idx].content {
+            if loc.block_idx >= blocks.len() {
+                continue;
+            }
             if let ContentBlock::ToolResult { content, .. } = &mut blocks[loc.block_idx] {
                 if content.len() > compact_target {
                     let old_len = content.len();
@@ -188,11 +201,32 @@ fn truncate_to(content: &str, max_chars: usize) -> String {
     if content.len() <= max_chars {
         return content.to_string();
     }
-    let keep = max_chars.saturating_sub(80);
+    let keep = max_chars.saturating_sub(80).min(content.len());
+    // Ensure keep is a valid char boundary
+    let keep = if content.is_char_boundary(keep) {
+        keep
+    } else {
+        content[..keep]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    };
+    let search_start = keep.saturating_sub(100);
+    // Ensure search_start is a valid char boundary
+    let search_start = if content.is_char_boundary(search_start) {
+        search_start
+    } else {
+        content[..search_start]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    };
     // Try to break at newline
-    let break_point = content[keep.saturating_sub(100)..keep]
+    let break_point = content[search_start..keep]
         .rfind('\n')
-        .map(|pos| keep.saturating_sub(100) + pos)
+        .map(|pos| search_start + pos)
         .unwrap_or(keep);
     format!(
         "{}\n\n[COMPACTED: {} → {} chars by context guard]",

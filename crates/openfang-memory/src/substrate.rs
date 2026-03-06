@@ -164,6 +164,16 @@ impl MemorySubstrate {
         self.sessions.delete_session(session_id)
     }
 
+    /// Delete all sessions belonging to an agent.
+    pub fn delete_agent_sessions(&self, agent_id: AgentId) -> OpenFangResult<()> {
+        self.sessions.delete_agent_sessions(agent_id)
+    }
+
+    /// Delete the canonical (cross-channel) session for an agent.
+    pub fn delete_canonical_session(&self, agent_id: AgentId) -> OpenFangResult<()> {
+        self.sessions.delete_canonical_session(agent_id)
+    }
+
     /// Set or clear a session label.
     pub fn set_session_label(
         &self,

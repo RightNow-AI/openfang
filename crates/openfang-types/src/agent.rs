@@ -476,6 +476,12 @@ pub struct AgentManifest {
     /// Per-agent exec policy override. If None, uses global exec_policy.
     #[serde(default)]
     pub exec_policy: Option<crate::config::ExecPolicy>,
+    /// Tool allowlist — only these tools are available (empty = all tools).
+    #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
+    pub tool_allowlist: Vec<String>,
+    /// Tool blocklist — these tools are excluded (applied after allowlist).
+    #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
+    pub tool_blocklist: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -508,6 +514,8 @@ impl Default for AgentManifest {
             workspace: None,
             generate_identity_files: true,
             exec_policy: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
         }
     }
 }
@@ -763,6 +771,8 @@ mod tests {
             workspace: None,
             generate_identity_files: true,
             exec_policy: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let deserialized: AgentManifest = serde_json::from_str(&json).unwrap();

@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
 /// Maximum backoff duration on API failures.
@@ -79,12 +79,18 @@ impl TelegramAdapter {
             self.token.as_str()
         );
 
+        // Sanitize: strip unsupported HTML tags so Telegram doesn't reject with 400.
+        // Telegram only allows: b, i, u, s, tg-spoiler, a, code, pre, blockquote.
+        // Any other tag (e.g. <name>, <thinking>) causes a 400 Bad Request.
+        let sanitized = sanitize_telegram_html(text);
+
         // Telegram has a 4096 character limit per message — split if needed
-        let chunks = split_message(text, 4096);
+        let chunks = split_message(&sanitized, 4096);
         for chunk in chunks {
             let body = serde_json::json!({
                 "chat_id": chat_id,
                 "text": chunk,
+                "parse_mode": "HTML",
             });
 
             let resp = self.client.post(&url).json(&body).send().await?;
@@ -93,6 +99,103 @@ impl TelegramAdapter {
                 let body_text = resp.text().await.unwrap_or_default();
                 warn!("Telegram sendMessage failed ({status}): {body_text}");
             }
+        }
+        Ok(())
+    }
+
+    /// Call `sendPhoto` on the Telegram API.
+    async fn api_send_photo(
+        &self,
+        chat_id: i64,
+        photo_url: &str,
+        caption: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendPhoto",
+            self.token.as_str()
+        );
+        let mut body = serde_json::json!({
+            "chat_id": chat_id,
+            "photo": photo_url,
+        });
+        if let Some(cap) = caption {
+            body["caption"] = serde_json::Value::String(cap.to_string());
+            body["parse_mode"] = serde_json::Value::String("HTML".to_string());
+        }
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram sendPhoto failed: {body_text}");
+        }
+        Ok(())
+    }
+
+    /// Call `sendDocument` on the Telegram API.
+    async fn api_send_document(
+        &self,
+        chat_id: i64,
+        document_url: &str,
+        filename: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendDocument",
+            self.token.as_str()
+        );
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "document": document_url,
+            "caption": filename,
+        });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram sendDocument failed: {body_text}");
+        }
+        Ok(())
+    }
+
+    /// Call `sendVoice` on the Telegram API.
+    async fn api_send_voice(
+        &self,
+        chat_id: i64,
+        voice_url: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendVoice",
+            self.token.as_str()
+        );
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "voice": voice_url,
+        });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram sendVoice failed: {body_text}");
+        }
+        Ok(())
+    }
+
+    /// Call `sendLocation` on the Telegram API.
+    async fn api_send_location(
+        &self,
+        chat_id: i64,
+        lat: f64,
+        lon: f64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendLocation",
+            self.token.as_str()
+        );
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "latitude": lat,
+            "longitude": lon,
+        });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram sendLocation failed: {body_text}");
         }
         Ok(())
     }
@@ -129,6 +232,26 @@ impl ChannelAdapter for TelegramAdapter {
         // Validate token first (fail fast)
         let bot_name = self.validate_token().await?;
         info!("Telegram bot @{bot_name} connected");
+
+        // Clear any existing webhook to avoid 409 Conflict during getUpdates polling.
+        // This is necessary when the daemon restarts — the old polling session may
+        // still be active on Telegram's side for ~30s, causing 409 errors.
+        {
+            let delete_url = format!(
+                "https://api.telegram.org/bot{}/deleteWebhook",
+                self.token.as_str()
+            );
+            match self
+                .client
+                .post(&delete_url)
+                .json(&serde_json::json!({"drop_pending_updates": true}))
+                .send()
+                .await
+            {
+                Ok(_) => info!("Telegram: cleared webhook, polling mode active"),
+                Err(e) => tracing::warn!("Telegram: deleteWebhook failed (non-fatal): {e}"),
+            }
+        }
 
         let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
 
@@ -195,10 +318,14 @@ impl ChannelAdapter for TelegramAdapter {
                     continue;
                 }
 
-                // Handle conflict (another bot instance polling)
+                // Handle conflict (another bot instance or stale session polling).
+                // On daemon restart, the old long-poll may still be active on Telegram's
+                // side for up to 30s. Retry with backoff instead of stopping permanently.
                 if status.as_u16() == 409 {
-                    error!("Telegram 409 Conflict — another bot instance is running. Stopping.");
-                    break;
+                    warn!("Telegram 409 Conflict — stale polling session, retrying in {backoff:?}");
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                    continue;
                 }
 
                 if !status.is_success() {
@@ -285,9 +412,22 @@ impl ChannelAdapter for TelegramAdapter {
             ChannelContent::Text(text) => {
                 self.api_send_message(chat_id, &text).await?;
             }
-            _ => {
-                self.api_send_message(chat_id, "(Unsupported content type)")
+            ChannelContent::Image { url, caption } => {
+                self.api_send_photo(chat_id, &url, caption.as_deref())
                     .await?;
+            }
+            ChannelContent::File { url, filename } => {
+                self.api_send_document(chat_id, &url, &filename).await?;
+            }
+            ChannelContent::Voice { url, .. } => {
+                self.api_send_voice(chat_id, &url).await?;
+            }
+            ChannelContent::Location { lat, lon } => {
+                self.api_send_location(chat_id, lat, lon).await?;
+            }
+            ChannelContent::Command { name, args } => {
+                let text = format!("/{name} {}", args.join(" "));
+                self.api_send_message(chat_id, text.trim()).await?;
             }
         }
         Ok(())
@@ -391,6 +531,63 @@ fn parse_telegram_update(
 /// Calculate exponential backoff capped at MAX_BACKOFF.
 pub fn calculate_backoff(current: Duration) -> Duration {
     (current * 2).min(MAX_BACKOFF)
+}
+
+/// Sanitize text for Telegram HTML parse mode.
+///
+/// Escapes angle brackets that are NOT part of Telegram-allowed HTML tags.
+/// Allowed tags: b, i, u, s, tg-spoiler, a, code, pre, blockquote.
+/// Everything else (e.g. `<name>`, `<thinking>`) gets escaped to `&lt;...&gt;`.
+fn sanitize_telegram_html(text: &str) -> String {
+    const ALLOWED: &[&str] = &[
+        "b", "i", "u", "s", "em", "strong", "a", "code", "pre", "blockquote", "tg-spoiler",
+        "tg-emoji",
+    ];
+
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.char_indices().peekable();
+
+    while let Some(&(i, ch)) = chars.peek() {
+        if ch == '<' {
+            // Try to parse an HTML tag
+            if let Some(end_offset) = text[i..].find('>') {
+                let tag_end = i + end_offset;
+                let tag_content = &text[i + 1..tag_end]; // content between < and >
+                let tag_name = tag_content
+                    .trim_start_matches('/')
+                    .split(|c: char| c.is_whitespace() || c == '/' || c == '>')
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
+
+                if !tag_name.is_empty() && ALLOWED.contains(&tag_name.as_str()) {
+                    // Allowed tag — keep as-is
+                    result.push_str(&text[i..tag_end + 1]);
+                } else {
+                    // Unknown tag — escape both brackets
+                    result.push_str("&lt;");
+                    result.push_str(tag_content);
+                    result.push_str("&gt;");
+                }
+                // Advance past the whole tag
+                while let Some(&(j, _)) = chars.peek() {
+                    chars.next();
+                    if j >= tag_end {
+                        break;
+                    }
+                }
+            } else {
+                // No closing > — escape the lone <
+                result.push_str("&lt;");
+                chars.next();
+            }
+        } else {
+            result.push(ch);
+            chars.next();
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]

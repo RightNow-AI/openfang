@@ -41,7 +41,7 @@ fn check_taint_shell_exec(command: &str) -> Option<String> {
             labels.insert(TaintLabel::ExternalNetwork);
             let tainted = TaintedValue::new(command, labels, "llm_tool_call");
             if let Err(violation) = tainted.check_sink(&TaintSink::shell_exec()) {
-                warn!(command = &command[..command.len().min(80)], %violation, "Shell taint check failed");
+                warn!(command = crate::str_utils::safe_truncate_str(command, 80), %violation, "Shell taint check failed");
                 return Some(violation.to_string());
             }
         }
@@ -68,7 +68,7 @@ fn check_taint_net_fetch(url: &str) -> Option<String> {
             labels.insert(TaintLabel::Secret);
             let tainted = TaintedValue::new(url, labels, "llm_tool_call");
             if let Err(violation) = tainted.check_sink(&TaintSink::net_fetch()) {
-                warn!(url = &url[..url.len().min(80)], %violation, "Net fetch taint check failed");
+                warn!(url = crate::str_utils::safe_truncate_str(url, 80), %violation, "Net fetch taint check failed");
                 return Some(violation.to_string());
             }
         }
@@ -187,8 +187,11 @@ pub async fn execute_tool(
                     is_error: true,
                 };
             }
+            let method = input["method"].as_str().unwrap_or("GET");
+            let headers = input.get("headers").and_then(|v| v.as_object());
+            let body = input["body"].as_str();
             if let Some(ctx) = web_ctx {
-                ctx.fetch.fetch(url).await
+                ctx.fetch.fetch_with_options(url, method, headers, body).await
             } else {
                 tool_web_fetch_legacy(input).await
             }
@@ -213,7 +216,11 @@ pub async fn execute_tool(
                 {
                     return ToolResult {
                         tool_use_id: tool_use_id.to_string(),
-                        content: format!("Exec policy denied: {reason}"),
+                        content: format!(
+                            "shell_exec blocked: {reason}. Current exec_policy.mode = '{:?}'. \
+                             To allow shell commands, set exec_policy.mode = 'full' in the agent manifest or config.toml.",
+                            policy.mode
+                        ),
                         is_error: true,
                     };
                 }
@@ -330,7 +337,7 @@ pub async fn execute_tool(
                     crate::browser::tool_browser_navigate(input, mgr, aid).await
                 }
                 None => Err(
-                    "Browser tools not available. Ensure Python and playwright are installed."
+                    "Browser tools not available. Ensure Chrome/Chromium is installed."
                         .to_string(),
                 ),
             }
@@ -340,35 +347,63 @@ pub async fn execute_tool(
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_click(input, mgr, aid).await
             }
-            None => Err("Browser tools not available.".to_string()),
+            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
         "browser_type" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_type(input, mgr, aid).await
             }
-            None => Err("Browser tools not available.".to_string()),
+            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
         "browser_screenshot" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_screenshot(input, mgr, aid).await
             }
-            None => Err("Browser tools not available.".to_string()),
+            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
         "browser_read_page" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_read_page(input, mgr, aid).await
             }
-            None => Err("Browser tools not available.".to_string()),
+            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
         "browser_close" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_close(input, mgr, aid).await
             }
-            None => Err("Browser tools not available.".to_string()),
+            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+        },
+        "browser_scroll" => match browser_ctx {
+            Some(mgr) => {
+                let aid = caller_agent_id.unwrap_or("default");
+                crate::browser::tool_browser_scroll(input, mgr, aid).await
+            }
+            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+        },
+        "browser_wait" => match browser_ctx {
+            Some(mgr) => {
+                let aid = caller_agent_id.unwrap_or("default");
+                crate::browser::tool_browser_wait(input, mgr, aid).await
+            }
+            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+        },
+        "browser_run_js" => match browser_ctx {
+            Some(mgr) => {
+                let aid = caller_agent_id.unwrap_or("default");
+                crate::browser::tool_browser_run_js(input, mgr, aid).await
+            }
+            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+        },
+        "browser_back" => match browser_ctx {
+            Some(mgr) => {
+                let aid = caller_agent_id.unwrap_or("default");
+                crate::browser::tool_browser_back(input, mgr, aid).await
+            }
+            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
 
         // Canvas / A2UI tool
@@ -501,11 +536,14 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Web tools ---
         ToolDefinition {
             name: "web_fetch".to_string(),
-            description: "Fetch a web page and extract its content as Markdown. Includes SSRF protection and result caching.".to_string(),
+            description: "Fetch a URL with SSRF protection. Supports GET/POST/PUT/PATCH/DELETE. For GET, HTML is converted to Markdown. For other methods, returns raw response body.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "url": { "type": "string", "description": "The URL to fetch (http/https only)" }
+                    "url": { "type": "string", "description": "The URL to fetch (http/https only)" },
+                    "method": { "type": "string", "enum": ["GET","POST","PUT","PATCH","DELETE"], "description": "HTTP method (default: GET)" },
+                    "headers": { "type": "object", "description": "Custom HTTP headers as key-value pairs" },
+                    "body": { "type": "string", "description": "Request body for POST/PUT/PATCH" }
                 },
                 "required": ["url"]
             }),
@@ -589,7 +627,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "The storage key" },
-                    "value": { "description": "The JSON value to store (any type)" }
+                    "value": { "type": "string", "description": "The value to store (JSON-encode objects/arrays, or pass a plain string)" }
                 },
                 "required": ["key", "value"]
             }),
@@ -667,7 +705,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "event_type": { "type": "string", "description": "Type identifier for the event (e.g., 'code_review_requested')" },
-                    "payload": { "description": "JSON payload data for the event" }
+                    "payload": { "type": "object", "description": "JSON payload data for the event" }
                 },
                 "required": ["event_type"]
             }),
@@ -828,6 +866,48 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {}
             }),
         },
+        ToolDefinition {
+            name: "browser_scroll".to_string(),
+            description: "Scroll the browser page. Use this to see content below the fold or navigate long pages.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "direction": { "type": "string", "description": "Scroll direction: 'up', 'down', 'left', 'right' (default: 'down')" },
+                    "amount": { "type": "integer", "description": "Pixels to scroll (default: 600)" }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "browser_wait".to_string(),
+            description: "Wait for a CSS selector to appear on the page. Useful for dynamic content that loads asynchronously.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "selector": { "type": "string", "description": "CSS selector to wait for" },
+                    "timeout_ms": { "type": "integer", "description": "Max wait time in milliseconds (default: 5000, max: 30000)" }
+                },
+                "required": ["selector"]
+            }),
+        },
+        ToolDefinition {
+            name: "browser_run_js".to_string(),
+            description: "Run JavaScript on the current browser page and return the result. For advanced interactions that other browser tools cannot handle.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "expression": { "type": "string", "description": "JavaScript expression to run in the page context" }
+                },
+                "required": ["expression"]
+            }),
+        },
+        ToolDefinition {
+            name: "browser_back".to_string(),
+            description: "Go back to the previous page in browser history.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
         // --- Media understanding tools ---
         ToolDefinition {
             name: "media_describe".to_string(),
@@ -916,16 +996,19 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Channel send tool (proactive outbound messaging) ---
         ToolDefinition {
             name: "channel_send".to_string(),
-            description: "Send a message to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally prefix the message with 'Subject: Your Subject\\n\\n' to set the email subject.".to_string(),
+            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url or file_url to send an image or file instead of (or alongside) text.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "channel": { "type": "string", "description": "Channel adapter name (e.g., 'email', 'telegram', 'slack', 'discord')" },
                     "recipient": { "type": "string", "description": "Platform-specific recipient identifier (email address, user ID, etc.)" },
                     "subject": { "type": "string", "description": "Optional subject line (used for email; ignored for other channels)" },
-                    "message": { "type": "string", "description": "The message body to send" }
+                    "message": { "type": "string", "description": "The message body to send (required for text, optional caption for media)" },
+                    "image_url": { "type": "string", "description": "URL of an image to send (supported on Telegram, Discord, Slack)" },
+                    "file_url": { "type": "string", "description": "URL of a file to send as attachment" },
+                    "filename": { "type": "string", "description": "Filename for file attachments (defaults to 'file')" }
                 },
-                "required": ["channel", "recipient", "message"]
+                "required": ["channel", "recipient"]
             }),
         },
         // --- Hand tools (curated autonomous capability packages) ---
@@ -2039,24 +2122,44 @@ async fn tool_channel_send(
         .as_str()
         .ok_or("Missing 'recipient' parameter")?
         .trim();
-    let message = input["message"]
-        .as_str()
-        .ok_or("Missing 'message' parameter")?;
 
     if recipient.is_empty() {
         return Err("Recipient cannot be empty".to_string());
     }
+
+    // Check for media content (image_url or file_url)
+    let image_url = input["image_url"].as_str().filter(|s| !s.is_empty());
+    let file_url = input["file_url"].as_str().filter(|s| !s.is_empty());
+
+    if let Some(url) = image_url {
+        let caption = input["message"].as_str().filter(|s| !s.is_empty());
+        return kh
+            .send_channel_media(&channel, recipient, "image", url, caption, None)
+            .await;
+    }
+
+    if let Some(url) = file_url {
+        let caption = input["message"].as_str().filter(|s| !s.is_empty());
+        let filename = input["filename"].as_str();
+        return kh
+            .send_channel_media(&channel, recipient, "file", url, caption, filename)
+            .await;
+    }
+
+    // Text-only message
+    let message = input["message"]
+        .as_str()
+        .ok_or("Missing 'message' parameter (required for text messages)")?;
+
     if message.is_empty() {
         return Err("Message cannot be empty".to_string());
     }
 
     // For email channels, validate email format and prepend subject
     let final_message = if channel == "email" {
-        // Basic email format validation
         if !recipient.contains('@') || !recipient.contains('.') {
             return Err(format!("Invalid email address: '{recipient}'"));
         }
-        // Prepend subject if provided
         if let Some(subject) = input["subject"].as_str() {
             if !subject.is_empty() {
                 format!("Subject: {subject}\n\n{message}")
@@ -3018,6 +3121,10 @@ mod tests {
         assert!(names.contains(&"browser_screenshot"));
         assert!(names.contains(&"browser_read_page"));
         assert!(names.contains(&"browser_close"));
+        assert!(names.contains(&"browser_scroll"));
+        assert!(names.contains(&"browser_wait"));
+        assert!(names.contains(&"browser_run_js"));
+        assert!(names.contains(&"browser_back"));
         // 3 media/image generation tools
         assert!(names.contains(&"media_describe"));
         assert!(names.contains(&"media_transcribe"));

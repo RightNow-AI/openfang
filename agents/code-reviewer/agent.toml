@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["review", "code-quality", "best-practices"]
 
 [model]
-provider = "gemini"
-model = "gemini-2.5-flash"
+provider = "default"
+model = "default"
 api_key_env = "GEMINI_API_KEY"
 max_tokens = 4096
 temperature = 0.3
@@ -34,8 +34,8 @@ Rules:
 - Focus on things that matter for production"""
 
 [[fallback_models]]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 api_key_env = "GROQ_API_KEY"
 
 [resources]

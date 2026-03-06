@@ -33,6 +33,9 @@ pub struct AppState {
     pub channels_config: tokio::sync::RwLock<openfang_types::config::ChannelsConfig>,
     /// Notify handle to trigger graceful HTTP server shutdown from the API.
     pub shutdown_notify: Arc<tokio::sync::Notify>,
+    /// ClawHub response cache — prevents 429 rate limiting on rapid dashboard refreshes.
+    /// Maps cache key → (fetched_at, response_json) with 120s TTL.
+    pub clawhub_cache: DashMap<String, (Instant, serde_json::Value)>,
 }
 
 /// POST /api/agents — Spawn a new agent.
@@ -112,20 +115,63 @@ pub async fn spawn_agent(
 
 /// GET /api/agents — List all agents.
 pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Snapshot catalog once for enrichment
+    let catalog = state.kernel.model_catalog.read().ok();
+    let dm = &state.kernel.config.default_model;
+
     let agents: Vec<serde_json::Value> = state
         .kernel
         .registry
         .list()
         .into_iter()
         .map(|e| {
+            // Resolve "default" provider/model to actual kernel defaults
+            let provider = if e.manifest.model.provider.is_empty()
+                || e.manifest.model.provider == "default"
+            {
+                dm.provider.as_str()
+            } else {
+                e.manifest.model.provider.as_str()
+            };
+            let model = if e.manifest.model.model.is_empty()
+                || e.manifest.model.model == "default"
+            {
+                dm.model.as_str()
+            } else {
+                e.manifest.model.model.as_str()
+            };
+
+            // Enrich from catalog
+            let (tier, auth_status) = catalog
+                .as_ref()
+                .map(|cat| {
+                    let tier = cat
+                        .find_model(model)
+                        .map(|m| format!("{:?}", m.tier).to_lowercase())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let auth = cat
+                        .get_provider(provider)
+                        .map(|p| format!("{:?}", p.auth_status).to_lowercase())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    (tier, auth)
+                })
+                .unwrap_or(("unknown".to_string(), "unknown".to_string()));
+
+            let ready = matches!(e.state, openfang_types::agent::AgentState::Running)
+                && auth_status != "missing";
+
             serde_json::json!({
                 "id": e.id.to_string(),
                 "name": e.name,
                 "state": format!("{:?}", e.state),
                 "mode": e.mode,
                 "created_at": e.created_at.to_rfc3339(),
-                "model_provider": e.manifest.model.provider,
-                "model_name": e.manifest.model.model,
+                "last_active": e.last_active.to_rfc3339(),
+                "model_provider": provider,
+                "model_name": model,
+                "model_tier": tier,
+                "auth_status": auth_status,
+                "ready": ready,
                 "profile": e.manifest.profile,
                 "identity": {
                     "emoji": e.identity.emoji,
@@ -252,6 +298,14 @@ pub async fn send_message(
         );
     }
 
+    // Check agent exists before processing
+    if state.kernel.registry.get(agent_id).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Agent not found"})),
+        );
+    }
+
     // Resolve file attachments into image content blocks
     if !req.attachments.is_empty() {
         let image_blocks = resolve_attachments(&req.attachments);
@@ -267,8 +321,11 @@ pub async fn send_message(
         .await
     {
         Ok(result) => {
+            // Strip <think>...</think> blocks from model output
+            let cleaned = crate::ws::strip_think_tags(&result.response);
+
             // Guard: ensure we never return an empty response to the client
-            let response = if result.response.trim().is_empty() {
+            let response = if cleaned.trim().is_empty() {
                 format!(
                     "[The agent completed processing but returned no text response. ({} in / {} out | {} iter)]",
                     result.total_usage.input_tokens,
@@ -276,7 +333,7 @@ pub async fn send_message(
                     result.iterations,
                 )
             } else {
-                result.response
+                cleaned
             };
             (
                 StatusCode::OK,
@@ -291,8 +348,15 @@ pub async fn send_message(
         }
         Err(e) => {
             tracing::warn!("send_message failed for agent {id}: {e}");
+            let status = if format!("{e}").contains("Agent not found") {
+                StatusCode::NOT_FOUND
+            } else if format!("{e}").contains("quota") || format!("{e}").contains("Quota") {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                status,
                 Json(serde_json::json!({"error": format!("Message delivery failed: {e}")})),
             )
         }
@@ -480,6 +544,10 @@ pub async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "default_provider": state.kernel.config.default_model.provider,
         "default_model": state.kernel.config.default_model.model,
         "uptime_seconds": uptime,
+        "api_listen": state.kernel.config.api_listen,
+        "home_dir": state.kernel.config.home_dir.display().to_string(),
+        "log_level": state.kernel.config.log_level,
+        "network_enabled": state.kernel.config.network_enabled,
         "agents": agents,
     }))
 }
@@ -934,6 +1002,7 @@ pub async fn get_agent(
             "skills_mode": if entry.manifest.skills.is_empty() { "all" } else { "allowlist" },
             "mcp_servers": entry.manifest.mcp_servers,
             "mcp_servers_mode": if entry.manifest.mcp_servers.is_empty() { "all" } else { "allowlist" },
+            "fallback_models": entry.manifest.fallback_models,
         })),
     )
 }
@@ -1043,7 +1112,7 @@ pub async fn send_message_stream(
 // ---------------------------------------------------------------------------
 
 /// Field type for the channel configuration form.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum FieldType {
     Secret,
     Text,
@@ -1119,8 +1188,9 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         fields: &[
             ChannelField { key: "bot_token_env", label: "Bot Token", field_type: FieldType::Secret, env_var: Some("DISCORD_BOT_TOKEN"), required: true, placeholder: "MTIz...", advanced: false },
             ChannelField { key: "allowed_guilds", label: "Allowed Guild IDs", field_type: FieldType::List, env_var: None, required: false, placeholder: "123456789, 987654321", advanced: true },
+            ChannelField { key: "allowed_users", label: "Allowed User IDs", field_type: FieldType::List, env_var: None, required: false, placeholder: "123456789, 987654321", advanced: true },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
-            ChannelField { key: "intents", label: "Intents Bitmask", field_type: FieldType::Number, env_var: None, required: false, placeholder: "33280", advanced: true },
+            ChannelField { key: "intents", label: "Intents Bitmask", field_type: FieldType::Number, env_var: None, required: false, placeholder: "37376", advanced: true },
         ],
         setup_steps: &["Go to discord.com/developers/applications", "Create a bot and copy the token", "Paste it below"],
         config_template: "[channels.discord]\nbot_token_env = \"DISCORD_BOT_TOKEN\"",
@@ -1756,12 +1826,16 @@ fn is_channel_configured(config: &openfang_types::config::ChannelsConfig, name: 
 }
 
 /// Build a JSON field descriptor, checking env var presence but never exposing secrets.
-fn build_field_json(f: &ChannelField) -> serde_json::Value {
+/// For non-secret fields, includes the actual config value from `config_values` if available.
+fn build_field_json(
+    f: &ChannelField,
+    config_values: Option<&serde_json::Value>,
+) -> serde_json::Value {
     let has_value = f
         .env_var
         .map(|ev| std::env::var(ev).map(|v| !v.is_empty()).unwrap_or(false))
         .unwrap_or(false);
-    serde_json::json!({
+    let mut field = serde_json::json!({
         "key": f.key,
         "label": f.label,
         "type": f.field_type.as_str(),
@@ -1770,12 +1844,96 @@ fn build_field_json(f: &ChannelField) -> serde_json::Value {
         "has_value": has_value,
         "placeholder": f.placeholder,
         "advanced": f.advanced,
-    })
+    });
+    // For non-secret fields, include the actual saved config value so the
+    // dashboard can pre-populate forms when editing existing configs.
+    if f.env_var.is_none() {
+        if let Some(obj) = config_values.and_then(|v| v.as_object()) {
+            if let Some(val) = obj.get(f.key) {
+                // Convert arrays to comma-separated string for list fields
+                let display_val = if f.field_type == FieldType::List {
+                    if let Some(arr) = val.as_array() {
+                        serde_json::Value::String(
+                            arr.iter()
+                                .filter_map(|v| {
+                                    v.as_str()
+                                        .map(|s| s.to_string())
+                                        .or_else(|| Some(v.to_string()))
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        )
+                    } else {
+                        val.clone()
+                    }
+                } else {
+                    val.clone()
+                };
+                field["value"] = display_val;
+                if !val.is_null()
+                    && val.as_str().map(|s| !s.is_empty()).unwrap_or(true)
+                {
+                    field["has_value"] = serde_json::Value::Bool(true);
+                }
+            }
+        }
+    }
+    field
 }
 
 /// Find a channel definition by name.
 fn find_channel_meta(name: &str) -> Option<&'static ChannelMeta> {
     CHANNEL_REGISTRY.iter().find(|c| c.name == name)
+}
+
+/// Serialize a channel's config to a JSON Value for pre-populating dashboard forms.
+fn channel_config_values(
+    config: &openfang_types::config::ChannelsConfig,
+    name: &str,
+) -> Option<serde_json::Value> {
+    match name {
+        "telegram" => config.telegram.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "discord" => config.discord.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "slack" => config.slack.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "whatsapp" => config.whatsapp.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "signal" => config.signal.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "matrix" => config.matrix.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "email" => config.email.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "teams" => config.teams.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "mattermost" => config.mattermost.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "irc" => config.irc.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "google_chat" => config.google_chat.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "twitch" => config.twitch.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "rocketchat" => config.rocketchat.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "zulip" => config.zulip.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "xmpp" => config.xmpp.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "line" => config.line.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "viber" => config.viber.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "messenger" => config.messenger.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "reddit" => config.reddit.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "mastodon" => config.mastodon.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "bluesky" => config.bluesky.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "feishu" => config.feishu.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "revolt" => config.revolt.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "nextcloud" => config.nextcloud.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "guilded" => config.guilded.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "keybase" => config.keybase.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "threema" => config.threema.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "nostr" => config.nostr.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "webex" => config.webex.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "pumble" => config.pumble.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "flock" => config.flock.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "twist" => config.twist.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "mumble" => config.mumble.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "dingtalk" => config.dingtalk.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "discourse" => config.discourse.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "gitter" => config.gitter.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "ntfy" => config.ntfy.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "gotify" => config.gotify.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "webhook" => config.webhook.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "linkedin" => config.linkedin.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        _ => None,
+    }
 }
 
 /// GET /api/channels — List all 40 channel adapters with status and field metadata.
@@ -1803,7 +1961,12 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> impl IntoRespo
                     .unwrap_or(true)
             });
 
-        let fields: Vec<serde_json::Value> = meta.fields.iter().map(build_field_json).collect();
+        let config_vals = channel_config_values(&live_channels, meta.name);
+        let fields: Vec<serde_json::Value> = meta
+            .fields
+            .iter()
+            .map(|f| build_field_json(f, config_vals.as_ref()))
+            .collect();
 
         channels.push(serde_json::json!({
             "name": meta.name,
@@ -1859,7 +2022,7 @@ pub async fn configure_channel(
     let home = openfang_kernel::config::openfang_home();
     let secrets_path = home.join("secrets.env");
     let config_path = home.join("config.toml");
-    let mut config_fields: HashMap<String, String> = HashMap::new();
+    let mut config_fields: HashMap<String, (String, FieldType)> = HashMap::new();
 
     for field_def in meta.fields {
         let value = fields
@@ -1882,9 +2045,15 @@ pub async fn configure_channel(
             unsafe {
                 std::env::set_var(env_var, value);
             }
+            // Also write the env var NAME to config.toml so the channel section
+            // is not empty and the kernel knows which env var to read.
+            config_fields.insert(
+                field_def.key.to_string(),
+                (env_var.to_string(), FieldType::Text),
+            );
         } else {
-            // Config field — collect for TOML write
-            config_fields.insert(field_def.key.to_string(), value.to_string());
+            // Config field — collect for TOML write with type info
+            config_fields.insert(field_def.key.to_string(), (value.to_string(), field_def.field_type));
         }
     }
 
@@ -1993,8 +2162,15 @@ pub async fn remove_channel(
     }
 }
 
-/// POST /api/channels/{name}/test — Basic connectivity check for a channel.
-pub async fn test_channel(Path(name): Path<String>) -> impl IntoResponse {
+/// POST /api/channels/{name}/test — Connectivity check + optional live test message.
+///
+/// Accepts an optional JSON body with `channel_id` (for Discord/Slack) or `chat_id`
+/// (for Telegram). When provided, sends a real test message to verify the bot can
+/// post to that channel.
+pub async fn test_channel(
+    Path(name): Path<String>,
+    raw_body: axum::body::Bytes,
+) -> impl IntoResponse {
     let meta = match find_channel_meta(&name) {
         Some(m) => m,
         None => {
@@ -2027,13 +2203,110 @@ pub async fn test_channel(Path(name): Path<String>) -> impl IntoResponse {
         );
     }
 
+    // If a target channel/chat ID is provided, send a real test message
+    let body: serde_json::Value = if raw_body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&raw_body).unwrap_or(serde_json::Value::Null)
+    };
+    let target = body
+        .get("channel_id")
+        .or_else(|| body.get("chat_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    if let Some(target_id) = target {
+        match send_channel_test_message(&name, &target_id).await {
+            Ok(()) => {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "status": "ok",
+                        "message": format!("Test message sent to {} channel {}.", meta.display_name, target_id)
+                    })),
+                );
+            }
+            Err(e) => {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("Credentials valid but failed to send test message: {e}")
+                    })),
+                );
+            }
+        }
+    }
+
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "status": "ok",
-            "message": format!("All required credentials for {} are set.", meta.display_name)
+            "message": format!("All required credentials for {} are set. Provide channel_id or chat_id to send a test message.", meta.display_name)
         })),
     )
+}
+
+/// Send a real test message to a specific channel/chat on the given platform.
+async fn send_channel_test_message(channel_name: &str, target_id: &str) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let test_msg = "OpenFang test message — your channel is connected!";
+
+    match channel_name {
+        "discord" => {
+            let token = std::env::var("DISCORD_BOT_TOKEN")
+                .map_err(|_| "DISCORD_BOT_TOKEN not set".to_string())?;
+            let url = format!("https://discord.com/api/v10/channels/{target_id}/messages");
+            let resp = client
+                .post(&url)
+                .header("Authorization", format!("Bot {token}"))
+                .json(&serde_json::json!({ "content": test_msg }))
+                .send()
+                .await
+                .map_err(|e| format!("HTTP request failed: {e}"))?;
+            if !resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("Discord API error: {body}"));
+            }
+        }
+        "telegram" => {
+            let token = std::env::var("TELEGRAM_BOT_TOKEN")
+                .map_err(|_| "TELEGRAM_BOT_TOKEN not set".to_string())?;
+            let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+            let resp = client
+                .post(&url)
+                .json(&serde_json::json!({ "chat_id": target_id, "text": test_msg }))
+                .send()
+                .await
+                .map_err(|e| format!("HTTP request failed: {e}"))?;
+            if !resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("Telegram API error: {body}"));
+            }
+        }
+        "slack" => {
+            let token = std::env::var("SLACK_BOT_TOKEN")
+                .map_err(|_| "SLACK_BOT_TOKEN not set".to_string())?;
+            let url = "https://slack.com/api/chat.postMessage";
+            let resp = client
+                .post(url)
+                .header("Authorization", format!("Bearer {token}"))
+                .json(&serde_json::json!({ "channel": target_id, "text": test_msg }))
+                .send()
+                .await
+                .map_err(|e| format!("HTTP request failed: {e}"))?;
+            if !resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("Slack API error: {body}"));
+            }
+        }
+        _ => {
+            return Err(format!(
+                "Live test messaging not supported for {channel_name}. Credentials are valid."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// POST /api/channels/reload — Manually trigger a channel hot-reload from disk config.
@@ -2073,7 +2346,7 @@ pub async fn whatsapp_qr_start() -> impl IntoResponse {
         return Json(serde_json::json!({
             "available": false,
             "message": "WhatsApp Web gateway not running. Start the gateway or use Business API mode.",
-            "help": "Run: npx openfang-whatsapp-gateway   (or set WHATSAPP_WEB_GATEWAY_URL)"
+            "help": "The WhatsApp Web gateway auto-starts with the daemon when configured. Ensure Node.js >= 18 is installed and WhatsApp is configured in config.toml. Set WHATSAPP_WEB_GATEWAY_URL to use an external gateway."
         }));
     }
 
@@ -2355,19 +2628,14 @@ pub async fn get_template(Path(name): Path<String>) -> impl IntoResponse {
 // ---------------------------------------------------------------------------
 
 /// GET /api/memory/agents/:id/kv — List KV pairs for an agent.
+///
+/// Note: memory_store tool writes to a shared namespace, so we read from that
+/// same namespace regardless of which agent ID is in the URL.
 pub async fn get_agent_kv(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    Path(_id): Path<String>,
 ) -> impl IntoResponse {
-    let agent_id: AgentId = match id.parse() {
-        Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid agent ID"})),
-            );
-        }
-    };
+    let agent_id = openfang_kernel::kernel::shared_memory_agent_id();
 
     match state.kernel.memory.list_kv(agent_id) {
         Ok(pairs) => {
@@ -2378,7 +2646,7 @@ pub async fn get_agent_kv(
             (StatusCode::OK, Json(serde_json::json!({"kv_pairs": kv})))
         }
         Err(e) => {
-            tracing::warn!("Memory list_kv failed for agent {id}: {e}");
+            tracing::warn!("Memory list_kv failed: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Memory operation failed"})),
@@ -2390,17 +2658,9 @@ pub async fn get_agent_kv(
 /// GET /api/memory/agents/:id/kv/:key — Get a specific KV value.
 pub async fn get_agent_kv_key(
     State(state): State<Arc<AppState>>,
-    Path((id, key)): Path<(String, String)>,
+    Path((_id, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let agent_id: AgentId = match id.parse() {
-        Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid agent ID"})),
-            );
-        }
-    };
+    let agent_id = openfang_kernel::kernel::shared_memory_agent_id();
 
     match state.kernel.memory.structured_get(agent_id, &key) {
         Ok(Some(val)) => (
@@ -2412,7 +2672,7 @@ pub async fn get_agent_kv_key(
             Json(serde_json::json!({"error": "Key not found"})),
         ),
         Err(e) => {
-            tracing::warn!("Memory get failed for agent {id}, key '{key}': {e}");
+            tracing::warn!("Memory get failed for key '{key}': {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Memory operation failed"})),
@@ -2424,18 +2684,10 @@ pub async fn get_agent_kv_key(
 /// PUT /api/memory/agents/:id/kv/:key — Set a KV value.
 pub async fn set_agent_kv_key(
     State(state): State<Arc<AppState>>,
-    Path((id, key)): Path<(String, String)>,
+    Path((_id, key)): Path<(String, String)>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let agent_id: AgentId = match id.parse() {
-        Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid agent ID"})),
-            );
-        }
-    };
+    let agent_id = openfang_kernel::kernel::shared_memory_agent_id();
 
     let value = body.get("value").cloned().unwrap_or(body);
 
@@ -2445,7 +2697,7 @@ pub async fn set_agent_kv_key(
             Json(serde_json::json!({"status": "stored", "key": key})),
         ),
         Err(e) => {
-            tracing::warn!("Memory set failed for agent {id}, key '{key}': {e}");
+            tracing::warn!("Memory set failed for key '{key}': {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Memory operation failed"})),
@@ -2457,17 +2709,9 @@ pub async fn set_agent_kv_key(
 /// DELETE /api/memory/agents/:id/kv/:key — Delete a KV value.
 pub async fn delete_agent_kv_key(
     State(state): State<Arc<AppState>>,
-    Path((id, key)): Path<(String, String)>,
+    Path((_id, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let agent_id: AgentId = match id.parse() {
-        Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid agent ID"})),
-            );
-        }
-    };
+    let agent_id = openfang_kernel::kernel::shared_memory_agent_id();
 
     match state.kernel.memory.structured_delete(agent_id, &key) {
         Ok(()) => (
@@ -2475,7 +2719,7 @@ pub async fn delete_agent_kv_key(
             Json(serde_json::json!({"status": "deleted", "key": key})),
         ),
         Err(e) => {
-            tracing::warn!("Memory delete failed for agent {id}, key '{key}': {e}");
+            tracing::warn!("Memory delete failed for key '{key}': {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Memory operation failed"})),
@@ -2782,6 +3026,14 @@ pub async fn clawhub_search(
         .and_then(|v| v.parse().ok())
         .unwrap_or(20);
 
+    // Check cache (120s TTL)
+    let cache_key = format!("search:{}:{}", query, limit);
+    if let Some(entry) = state.clawhub_cache.get(&cache_key) {
+        if entry.0.elapsed().as_secs() < 120 {
+            return (StatusCode::OK, Json(entry.1.clone()));
+        }
+    }
+
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
@@ -2801,20 +3053,26 @@ pub async fn clawhub_search(
                     })
                 })
                 .collect();
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "items": items,
-                    "next_cursor": null,
-                })),
-            )
+            let resp = serde_json::json!({
+                "items": items,
+                "next_cursor": null,
+            });
+            state.clawhub_cache.insert(cache_key, (Instant::now(), resp.clone()));
+            (StatusCode::OK, Json(resp))
         }
         Err(e) => {
-            tracing::warn!("ClawHub search failed: {e}");
+            let msg = format!("{e}");
+            tracing::warn!("ClawHub search failed: {msg}");
+            // Propagate 429 status instead of masking as 200
+            let status = if msg.contains("429") || msg.contains("rate limit") {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::OK
+            };
             (
-                StatusCode::OK,
+                status,
                 Json(
-                    serde_json::json!({"items": [], "next_cursor": null, "error": format!("{e}")}),
+                    serde_json::json!({"items": [], "next_cursor": null, "error": msg}),
                 ),
             )
         }
@@ -2846,6 +3104,14 @@ pub async fn clawhub_browse(
 
     let cursor = params.get("cursor").map(|s| s.as_str());
 
+    // Check cache (120s TTL)
+    let cache_key = format!("browse:{:?}:{}:{}", sort, limit, cursor.unwrap_or(""));
+    if let Some(entry) = state.clawhub_cache.get(&cache_key) {
+        if entry.0.elapsed().as_secs() < 120 {
+            return (StatusCode::OK, Json(entry.1.clone()));
+        }
+    }
+
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
@@ -2856,20 +3122,25 @@ pub async fn clawhub_browse(
                 .iter()
                 .map(clawhub_browse_entry_to_json)
                 .collect();
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "items": items,
-                    "next_cursor": results.next_cursor,
-                })),
-            )
+            let resp = serde_json::json!({
+                "items": items,
+                "next_cursor": results.next_cursor,
+            });
+            state.clawhub_cache.insert(cache_key, (Instant::now(), resp.clone()));
+            (StatusCode::OK, Json(resp))
         }
         Err(e) => {
-            tracing::warn!("ClawHub browse failed: {e}");
+            let msg = format!("{e}");
+            tracing::warn!("ClawHub browse failed: {msg}");
+            let status = if msg.contains("429") || msg.contains("rate limit") {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::OK
+            };
             (
-                StatusCode::OK,
+                status,
                 Json(
-                    serde_json::json!({"items": [], "next_cursor": null, "error": format!("{e}")}),
+                    serde_json::json!({"items": [], "next_cursor": null, "error": msg}),
                 ),
             )
         }
@@ -2936,6 +3207,46 @@ pub async fn clawhub_skill_detail(
     }
 }
 
+/// GET /api/clawhub/skill/{slug}/code — Fetch the source code (SKILL.md) of a ClawHub skill.
+pub async fn clawhub_skill_code(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+) -> impl IntoResponse {
+    let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+
+    // Try to fetch SKILL.md first, then fallback to package.json
+    let mut code = String::new();
+    let mut filename = String::new();
+
+    if let Ok(content) = client.get_file(&slug, "SKILL.md").await {
+        code = content;
+        filename = "SKILL.md".to_string();
+    } else if let Ok(content) = client.get_file(&slug, "package.json").await {
+        code = content;
+        filename = "package.json".to_string();
+    } else if let Ok(content) = client.get_file(&slug, "skill.toml").await {
+        code = content;
+        filename = "skill.toml".to_string();
+    }
+
+    if code.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "No source code found for this skill"})),
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "slug": slug,
+            "filename": filename,
+            "code": code,
+        })),
+    )
+}
+
 /// POST /api/clawhub/install — Install a skill from ClawHub.
 ///
 /// Runs the full security pipeline: SHA256 verification, format detection,
@@ -2992,13 +3303,18 @@ pub async fn clawhub_install(
             )
         }
         Err(e) => {
-            let status = if e.to_string().contains("SecurityBlocked") {
+            let msg = format!("{e}");
+            let status = if msg.contains("SecurityBlocked") {
                 StatusCode::FORBIDDEN
+            } else if msg.contains("429") || msg.contains("rate limit") {
+                StatusCode::TOO_MANY_REQUESTS
+            } else if msg.contains("Network error") || msg.contains("returned 4") || msg.contains("returned 5") {
+                StatusCode::BAD_GATEWAY
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
-            tracing::warn!("ClawHub install failed: {e}");
-            (status, Json(serde_json::json!({"error": format!("{e}")})))
+            tracing::warn!("ClawHub install failed: {msg}");
+            (status, Json(serde_json::json!({"error": msg})))
         }
     }
 }
@@ -3442,6 +3758,42 @@ pub async fn install_hand_deps(
     )
 }
 
+/// POST /api/hands/install — Install a hand from TOML content.
+pub async fn install_hand(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let toml_content = body["toml_content"].as_str().unwrap_or("");
+    let skill_content = body["skill_content"].as_str().unwrap_or("");
+
+    if toml_content.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Missing toml_content field"})),
+        );
+    }
+
+    match state
+        .kernel
+        .hand_registry
+        .install_from_content(toml_content, skill_content)
+    {
+        Ok(def) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "id": def.id,
+                "name": def.name,
+                "description": def.description,
+                "category": format!("{:?}", def.category),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
 /// POST /api/hands/{hand_id}/activate — Activate a hand (spawns agent).
 pub async fn activate_hand(
     State(state): State<Arc<AppState>>,
@@ -3451,17 +3803,36 @@ pub async fn activate_hand(
     let config = body.map(|b| b.0.config).unwrap_or_default();
 
     match state.kernel.activate_hand(&hand_id, config) {
-        Ok(instance) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "instance_id": instance.instance_id,
-                "hand_id": instance.hand_id,
-                "status": format!("{}", instance.status),
-                "agent_id": instance.agent_id.map(|a| a.to_string()),
-                "agent_name": instance.agent_name,
-                "activated_at": instance.activated_at.to_rfc3339(),
-            })),
-        ),
+        Ok(instance) => {
+            // If the hand agent has a non-reactive schedule (autonomous hands),
+            // start its background loop so it begins running immediately.
+            if let Some(agent_id) = instance.agent_id {
+                let entry = state.kernel.registry.list().into_iter().find(|e| e.id == agent_id);
+                if let Some(entry) = entry {
+                    if !matches!(
+                        entry.manifest.schedule,
+                        openfang_types::agent::ScheduleMode::Reactive
+                    ) {
+                        state.kernel.start_background_for_agent(
+                            agent_id,
+                            &entry.name,
+                            &entry.manifest.schedule,
+                        );
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "instance_id": instance.instance_id,
+                    "hand_id": instance.hand_id,
+                    "status": format!("{}", instance.status),
+                    "agent_id": instance.agent_id.map(|a| a.to_string()),
+                    "agent_name": instance.agent_name,
+                    "activated_at": instance.activated_at.to_rfc3339(),
+                })),
+            )
+        }
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": format!("{e}")})),
@@ -4352,6 +4723,55 @@ pub async fn agent_budget_ranking(State(state): State<Arc<AppState>>) -> impl In
     Json(serde_json::json!({"agents": agents, "total": agents.len()}))
 }
 
+/// PUT /api/budget/agents/{id} — Update per-agent budget limits at runtime.
+pub async fn update_agent_budget(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            )
+        }
+    };
+
+    let hourly = body["max_cost_per_hour_usd"].as_f64();
+    let daily = body["max_cost_per_day_usd"].as_f64();
+    let monthly = body["max_cost_per_month_usd"].as_f64();
+
+    if hourly.is_none() && daily.is_none() && monthly.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Provide at least one of: max_cost_per_hour_usd, max_cost_per_day_usd, max_cost_per_month_usd"})),
+        );
+    }
+
+    match state
+        .kernel
+        .registry
+        .update_resources(agent_id, hourly, daily, monthly)
+    {
+        Ok(()) => {
+            // Persist updated entry
+            if let Some(entry) = state.kernel.registry.get(agent_id) {
+                let _ = state.kernel.memory.save_agent(&entry);
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "ok", "message": "Agent budget updated"})),
+            )
+        }
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Session listing endpoints
 // ---------------------------------------------------------------------------
@@ -4803,10 +5223,11 @@ pub async fn list_models(
             true
         })
         .map(|m| {
+            // Custom models from unknown providers are assumed available
             let available = catalog
                 .get_provider(&m.provider)
                 .map(|p| p.auth_status != openfang_types::model_catalog::AuthStatus::Missing)
-                .unwrap_or(false);
+                .unwrap_or(m.tier == openfang_types::model_catalog::ModelTier::Custom);
             serde_json::json!({
                 "id": m.id,
                 "display_name": m.display_name,
@@ -4880,7 +5301,7 @@ pub async fn get_model(
             let available = catalog
                 .get_provider(&m.provider)
                 .map(|p| p.auth_status != openfang_types::model_catalog::AuthStatus::Missing)
-                .unwrap_or(false);
+                .unwrap_or(m.tier == openfang_types::model_catalog::ModelTier::Custom);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -4942,6 +5363,10 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
             entry["latency_ms"] = serde_json::json!(probe.latency_ms);
             if !probe.discovered_models.is_empty() {
                 entry["discovered_models"] = serde_json::json!(probe.discovered_models);
+                // Merge discovered models into the catalog so agents can use them
+                if let Ok(mut catalog) = state.kernel.model_catalog.write() {
+                    catalog.merge_discovered_models(&p.id, &probe.discovered_models);
+                }
             }
             if let Some(err) = &probe.error {
                 entry["error"] = serde_json::json!(err);
@@ -5040,7 +5465,7 @@ pub async fn add_custom_model(
     if !catalog.add_custom_model(entry) {
         return (
             StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": format!("Model '{}' already exists", id)})),
+            Json(serde_json::json!({"error": format!("Model '{}' already exists for provider '{}'", id, provider)})),
         );
     }
 
@@ -5632,6 +6057,32 @@ pub async fn reset_session(
     }
 }
 
+/// DELETE /api/agents/{id}/history — Clear ALL conversation history for an agent.
+pub async fn clear_agent_history(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            )
+        }
+    };
+    match state.kernel.clear_agent_history(agent_id) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "ok", "message": "All history cleared"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
 /// POST /api/agents/{id}/session/compact — Trigger LLM session compaction.
 pub async fn compact_session(
     State(state): State<Arc<AppState>>,
@@ -5716,6 +6167,92 @@ pub async fn set_model(
         Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "ok", "model": model})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
+/// GET /api/agents/{id}/tools — Get an agent's tool allowlist/blocklist.
+pub async fn get_agent_tools(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            )
+        }
+    };
+    let entry = match state.kernel.registry.get(agent_id) {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            )
+        }
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "tool_allowlist": entry.manifest.tool_allowlist,
+            "tool_blocklist": entry.manifest.tool_blocklist,
+        })),
+    )
+}
+
+/// PUT /api/agents/{id}/tools — Update an agent's tool allowlist/blocklist.
+pub async fn set_agent_tools(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            )
+        }
+    };
+    let allowlist = body
+        .get("tool_allowlist")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect::<Vec<_>>()
+        });
+    let blocklist = body
+        .get("tool_blocklist")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect::<Vec<_>>()
+        });
+
+    if allowlist.is_none() && blocklist.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Provide 'tool_allowlist' and/or 'tool_blocklist'"})),
+        );
+    }
+
+    match state
+        .kernel
+        .set_agent_tool_filters(agent_id, allowlist, blocklist)
+    {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "ok"})),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -5904,21 +6441,6 @@ pub async fn set_provider_key(
     Path(name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    // Validate provider name against known list
-    {
-        let catalog = state
-            .kernel
-            .model_catalog
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        if catalog.get_provider(&name).is_none() {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": format!("Unknown provider '{}'", name)})),
-            );
-        }
-    }
-
     let key = match body["key"].as_str() {
         Some(k) if !k.trim().is_empty() => k.trim().to_string(),
         _ => {
@@ -5929,6 +6451,7 @@ pub async fn set_provider_key(
         }
     };
 
+    // Look up env var from catalog; for unknown/custom providers derive one.
     let env_var = {
         let catalog = state
             .kernel
@@ -5938,15 +6461,14 @@ pub async fn set_provider_key(
         catalog
             .get_provider(&name)
             .map(|p| p.api_key_env.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(|| {
+                // Custom provider — derive env var: MY_PROVIDER → MY_PROVIDER_API_KEY
+                format!(
+                    "{}_API_KEY",
+                    name.to_uppercase().replace('-', "_")
+                )
+            })
     };
-
-    if env_var.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Provider does not require an API key"})),
-        );
-    }
 
     // Write to secrets.env file
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
@@ -6034,14 +6556,25 @@ pub async fn test_provider(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let (env_var, base_url, key_required) = {
+    let (env_var, base_url, key_required, default_model) = {
         let catalog = state
             .kernel
             .model_catalog
             .read()
             .unwrap_or_else(|e| e.into_inner());
         match catalog.get_provider(&name) {
-            Some(p) => (p.api_key_env.clone(), p.base_url.clone(), p.key_required),
+            Some(p) => {
+                // Find a default model for this provider to use in the test request
+                let model_id = catalog
+                    .default_model_for_provider(&name)
+                    .unwrap_or_default();
+                (
+                    p.api_key_env.clone(),
+                    p.base_url.clone(),
+                    p.key_required,
+                    model_id,
+                )
+            }
             None => {
                 return (
                     StatusCode::NOT_FOUND,
@@ -6076,7 +6609,7 @@ pub async fn test_provider(
         Ok(driver) => {
             // Send a minimal completion request to test connectivity
             let test_req = openfang_runtime::llm_driver::CompletionRequest {
-                model: String::new(), // Driver will use default
+                model: default_model.clone(),
                 messages: vec![openfang_types::message::Message::user("Hi")],
                 tools: vec![],
                 max_tokens: 1,
@@ -6123,22 +6656,7 @@ pub async fn set_provider_url(
     Path(name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    // Validate provider exists
-    let provider_exists = {
-        let catalog = state
-            .kernel
-            .model_catalog
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        catalog.get_provider(&name).is_some()
-    };
-    if !provider_exists {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("Unknown provider '{}'", name)})),
-        );
-    }
-
+    // Accept any provider name — custom providers are supported via OpenAI-compatible format.
     let base_url = match body["base_url"].as_str() {
         Some(u) if !u.trim().is_empty() => u.trim().to_string(),
         _ => {
@@ -6180,16 +6698,25 @@ pub async fn set_provider_url(
     let probe =
         openfang_runtime::provider_health::probe_provider(&name, &base_url).await;
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "saved",
-            "provider": name,
-            "base_url": base_url,
-            "reachable": probe.reachable,
-            "latency_ms": probe.latency_ms,
-        })),
-    )
+    // Merge discovered models into catalog
+    if !probe.discovered_models.is_empty() {
+        if let Ok(mut catalog) = state.kernel.model_catalog.write() {
+            catalog.merge_discovered_models(&name, &probe.discovered_models);
+        }
+    }
+
+    let mut resp = serde_json::json!({
+        "status": "saved",
+        "provider": name,
+        "base_url": base_url,
+        "reachable": probe.reachable,
+        "latency_ms": probe.latency_ms,
+    });
+    if !probe.discovered_models.is_empty() {
+        resp["discovered_models"] = serde_json::json!(probe.discovered_models);
+    }
+
+    (StatusCode::OK, Json(resp))
 }
 
 /// Upsert a provider URL in the `[provider_urls]` section of config.toml.
@@ -6376,7 +6903,7 @@ fn remove_secret_env(path: &std::path::Path, key: &str) -> Result<(), std::io::E
 fn upsert_channel_config(
     config_path: &std::path::Path,
     channel_name: &str,
-    fields: &HashMap<String, String>,
+    fields: &HashMap<String, (String, FieldType)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let content = if config_path.exists() {
         std::fs::read_to_string(config_path)?
@@ -6404,10 +6931,33 @@ fn upsert_channel_config(
         .and_then(|v| v.as_table_mut())
         .ok_or("channels is not a table")?;
 
-    // Build channel sub-table
+    // Build channel sub-table with correct TOML types
     let mut ch_table = toml::map::Map::new();
-    for (k, v) in fields {
-        ch_table.insert(k.clone(), toml::Value::String(v.clone()));
+    for (k, (v, ft)) in fields {
+        let toml_val = match ft {
+            FieldType::Number => {
+                if let Ok(n) = v.parse::<i64>() {
+                    toml::Value::Integer(n)
+                } else {
+                    toml::Value::String(v.clone())
+                }
+            }
+            FieldType::List => {
+                let items: Vec<toml::Value> = v
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        s.parse::<i64>()
+                            .map(toml::Value::Integer)
+                            .unwrap_or_else(|_| toml::Value::String(s.to_string()))
+                    })
+                    .collect();
+                toml::Value::Array(items)
+            }
+            _ => toml::Value::String(v.clone()),
+        };
+        ch_table.insert(k.clone(), toml_val);
     }
     channels_table.insert(channel_name.to_string(), toml::Value::Table(ch_table));
 
@@ -6785,6 +7335,29 @@ pub async fn create_schedule(
     }
 
     let agent_id_str = req["agent_id"].as_str().unwrap_or("").to_string();
+    if agent_id_str.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Missing required field: agent_id"})),
+        );
+    }
+    // Validate agent exists (UUID or name lookup)
+    let agent_exists = if let Ok(aid) = agent_id_str.parse::<AgentId>() {
+        state.kernel.registry.get(aid).is_some()
+    } else {
+        state
+            .kernel
+            .registry
+            .list()
+            .iter()
+            .any(|a| a.name == agent_id_str)
+    };
+    if !agent_exists {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("Agent not found: {agent_id_str}")})),
+        );
+    }
     let message = req["message"].as_str().unwrap_or("").to_string();
     let enabled = req.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
 
@@ -6958,10 +7531,14 @@ pub async fn run_schedule(
         .unwrap_or("Scheduled task triggered manually.");
     let name = schedule["name"].as_str().unwrap_or("(unnamed)");
 
-    // Find the target agent
+    // Find the target agent — require explicit agent_id, no silent fallback
     let target_agent = if !agent_id_str.is_empty() {
         if let Ok(aid) = agent_id_str.parse::<AgentId>() {
-            Some(aid)
+            if state.kernel.registry.get(aid).is_some() {
+                Some(aid)
+            } else {
+                None
+            }
         } else {
             state
                 .kernel
@@ -6972,7 +7549,7 @@ pub async fn run_schedule(
                 .map(|a| a.id)
         }
     } else {
-        state.kernel.registry.list().first().map(|a| a.id)
+        None
     };
 
     let target_agent = match target_agent {
@@ -7013,7 +7590,8 @@ pub async fn run_schedule(
         serde_json::Value::Array(schedules_updated),
     );
 
-    match state.kernel.send_message(target_agent, &run_message).await {
+    let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
+    match state.kernel.send_message_with_handle(target_agent, &run_message, Some(kernel_handle)).await {
         Ok(result) => (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -7102,10 +7680,16 @@ pub async fn update_agent_identity(
     };
 
     match state.kernel.registry.update_identity(agent_id, identity) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "agent_id": id})),
-        ),
+        Ok(()) => {
+            // Persist identity to SQLite
+            if let Some(entry) = state.kernel.registry.get(agent_id) {
+                let _ = state.kernel.memory.save_agent(&entry);
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "ok", "agent_id": id})),
+            )
+        }
         Err(_) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Agent not found"})),
@@ -7133,6 +7717,7 @@ pub struct PatchAgentConfigRequest {
     pub provider: Option<String>,
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
+    pub fallback_models: Option<Vec<openfang_types::agent::FallbackModel>>,
 }
 
 /// PATCH /api/agents/{id}/config — Hot-update agent name, description, system prompt, and identity.
@@ -7330,6 +7915,28 @@ pub async fn patch_agent_config(
                     Json(serde_json::json!({"error": "Agent not found"})),
                 );
             }
+        }
+    }
+
+    // Update fallback model chain
+    if let Some(fallbacks) = req.fallback_models {
+        if state
+            .kernel
+            .registry
+            .update_fallback_models(agent_id, fallbacks)
+            .is_err()
+        {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            );
+        }
+    }
+
+    // Persist updated manifest to database so changes survive restart
+    if let Some(entry) = state.kernel.registry.get(agent_id) {
+        if let Err(e) = state.kernel.memory.save_agent(&entry) {
+            tracing::warn!("Failed to persist agent config update: {e}");
         }
     }
 
@@ -8146,7 +8753,19 @@ pub async fn config_reload(State(state): State<Arc<AppState>>) -> impl IntoRespo
 // ---------------------------------------------------------------------------
 
 /// GET /api/config/schema — Return a simplified JSON description of the config structure.
-pub async fn config_schema() -> impl IntoResponse {
+pub async fn config_schema(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    // Build provider/model options from model catalog for dropdowns
+    let catalog = state.kernel.model_catalog.read().unwrap_or_else(|e| e.into_inner());
+    let provider_options: Vec<String> = catalog.list_providers().iter().map(|p| p.id.clone()).collect();
+    let model_options: Vec<serde_json::Value> = catalog
+        .list_models()
+        .iter()
+        .map(|m| serde_json::json!({"id": m.id, "name": m.display_name, "provider": m.provider}))
+        .collect();
+    drop(catalog);
+
     Json(serde_json::json!({
         "sections": {
             "api": {
@@ -8157,9 +8776,10 @@ pub async fn config_schema() -> impl IntoResponse {
                 }
             },
             "default_model": {
+                "hot_reloadable": true,
                 "fields": {
-                    "provider": "string",
-                    "model": "string",
+                    "provider": { "type": "select", "options": provider_options },
+                    "model": { "type": "select", "options": model_options },
                     "api_key_env": "string",
                     "base_url": "string"
                 }
@@ -8354,7 +8974,9 @@ fn json_to_toml_value(value: &serde_json::Value) -> toml::Value {
     match value {
         serde_json::Value::String(s) => toml::Value::String(s.clone()),
         serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
+            if let Some(i) = n.as_u64() {
+                toml::Value::Integer(i as i64)
+            } else if let Some(i) = n.as_i64() {
                 toml::Value::Integer(i)
             } else if let Some(f) = n.as_f64() {
                 toml::Value::Float(f)
@@ -9253,39 +9875,46 @@ fn audit_to_comms_event(
     };
 
     let action_str = format!("{:?}", entry.action);
-    let (kind, detail) = match action_str.as_str() {
-        "AgentMessage" => (
-            CommsEventKind::AgentMessage,
-            openfang_types::truncate_str(&entry.detail, 200).to_string(),
-        ),
+    let (kind, detail, target_label) = match action_str.as_str() {
+        "AgentMessage" => {
+            // Format detail: "tokens_in=X, tokens_out=Y" → readable summary
+            let detail = if entry.detail.starts_with("tokens_in=") {
+                let parts: Vec<&str> = entry.detail.split(", ").collect();
+                let in_tok = parts.first().and_then(|p| p.strip_prefix("tokens_in=")).unwrap_or("?");
+                let out_tok = parts.get(1).and_then(|p| p.strip_prefix("tokens_out=")).unwrap_or("?");
+                if entry.outcome == "ok" {
+                    format!("{} in / {} out tokens", in_tok, out_tok)
+                } else {
+                    format!("{} in / {} out — {}", in_tok, out_tok, openfang_types::truncate_str(&entry.outcome, 80))
+                }
+            } else if entry.outcome != "ok" {
+                format!("{} — {}", openfang_types::truncate_str(&entry.detail, 80), openfang_types::truncate_str(&entry.outcome, 80))
+            } else {
+                openfang_types::truncate_str(&entry.detail, 200).to_string()
+            };
+            (CommsEventKind::AgentMessage, detail, "user")
+        }
         "AgentSpawn" => (
             CommsEventKind::AgentSpawned,
             format!("Agent spawned: {}", openfang_types::truncate_str(&entry.detail, 100)),
+            "",
         ),
         "AgentKill" => (
             CommsEventKind::AgentTerminated,
             format!("Agent killed: {}", openfang_types::truncate_str(&entry.detail, 100)),
+            "",
         ),
-        "ToolInvoke" => return None,
-        "CapabilityCheck" => return None,
-        "MemoryAccess" => return None,
-        "FileAccess" => return None,
-        "NetworkAccess" => return None,
-        "ShellExec" => return None,
-        "AuthAttempt" => return None,
-        "WireConnect" => return None,
-        "ConfigChange" => return None,
         _ => return None,
     };
 
     Some(CommsEvent {
-        id: entry.seq.to_string(),
+        id: format!("audit-{}", entry.seq),
         timestamp: entry.timestamp.clone(),
         kind,
         source_id: entry.agent_id.clone(),
         source_name: resolve_name(&entry.agent_id),
-        target_id: String::new(),
-        target_name: String::new(),
+        target_id: if target_label.is_empty() { String::new() } else { target_label.to_string() },
+        target_name: if target_label.is_empty() { String::new() } else { target_label.to_string() },
         detail,
     })
 }

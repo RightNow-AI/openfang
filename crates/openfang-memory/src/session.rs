@@ -128,6 +128,20 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Delete the canonical (cross-channel) session for an agent.
+    pub fn delete_canonical_session(&self, agent_id: AgentId) -> OpenFangResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM canonical_sessions WHERE agent_id = ?1",
+            rusqlite::params![agent_id.0.to_string()],
+        )
+        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        Ok(())
+    }
+
     /// List all sessions with metadata (session_id, agent_id, message_count, created_at).
     pub fn list_sessions(&self) -> OpenFangResult<Vec<serde_json::Value>> {
         let conn = self

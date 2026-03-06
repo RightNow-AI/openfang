@@ -441,8 +441,8 @@ function wizardPage() {
       toml += 'description = "' + tpl.description.replace(/"/g, '\\"') + '"\n';
       toml += 'profile = "' + tpl.profile + '"\n\n';
       toml += '[model]\nprovider = "' + provider + '"\n';
-      toml += 'name = "' + model + '"\n\n';
-      toml += '[prompt]\nsystem = """\n' + tpl.system_prompt + '\n"""\n';
+      toml += 'model = "' + model + '"\n';
+      toml += 'system_prompt = """\n' + tpl.system_prompt + '\n"""\n';
 
       this.creatingAgent = true;
       try {

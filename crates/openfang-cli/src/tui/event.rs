@@ -1492,7 +1492,13 @@ pub fn spawn_browse_clawhub(backend: BackendRef, sort: String, tx: mpsc::Sender<
 }
 
 fn parse_clawhub_results(body: &serde_json::Value) -> Vec<ClawHubResult> {
-    body.as_array()
+    // API returns {"items": [...]} wrapper, fall back to bare array for compat
+    let items = body
+        .get("items")
+        .and_then(|v| v.as_array())
+        .or_else(|| body.as_array());
+
+    items
         .map(|arr| {
             arr.iter()
                 .map(|r| ClawHubResult {

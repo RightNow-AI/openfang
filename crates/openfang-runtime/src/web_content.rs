@@ -7,6 +7,31 @@
 use sha2::{Digest, Sha256};
 
 // ---------------------------------------------------------------------------
+// ASCII case-insensitive find — byte offsets always valid on original string
+// ---------------------------------------------------------------------------
+
+/// Find `needle` in `haystack` starting at byte offset `from`, comparing
+/// ASCII characters case-insensitively. Since HTML tags are ASCII, this
+/// avoids the byte-length mismatch caused by `str::to_lowercase()` on
+/// multi-byte Unicode (e.g. `İ` 2 bytes → `i̇` 4 bytes).
+fn find_ci(haystack: &str, needle: &str, from: usize) -> Option<usize> {
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    if n.is_empty() || from + n.len() > h.len() {
+        return None;
+    }
+    'outer: for i in from..=(h.len() - n.len()) {
+        for j in 0..n.len() {
+            if !h[i + j].eq_ignore_ascii_case(&n[j]) {
+                continue 'outer;
+            }
+        }
+        return Some(i);
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // External content markers
 // ---------------------------------------------------------------------------
 
@@ -79,19 +104,17 @@ fn remove_non_content_blocks(html: &str) -> String {
 /// Remove all occurrences of a specific tag and its contents (case-insensitive).
 fn remove_tag_blocks(html: &str, tag: &str) -> String {
     let mut result = String::with_capacity(html.len());
-    let lower = html.to_lowercase();
     let open_tag = format!("<{}", tag);
     let close_tag = format!("</{}>", tag);
 
     let mut pos = 0;
     while pos < html.len() {
-        if let Some(start) = lower[pos..].find(&open_tag) {
-            let abs_start = pos + start;
+        if let Some(abs_start) = find_ci(html, &open_tag, pos) {
             result.push_str(&html[pos..abs_start]);
 
             // Find the matching close tag
-            if let Some(end) = lower[abs_start..].find(&close_tag) {
-                pos = abs_start + end + close_tag.len();
+            if let Some(end) = find_ci(html, &close_tag, abs_start) {
+                pos = end + close_tag.len();
             } else {
                 // No close tag — remove to end of self-closing or skip the open tag
                 if let Some(gt) = html[abs_start..].find('>') {
@@ -110,16 +133,15 @@ fn remove_tag_blocks(html: &str, tag: &str) -> String {
 
 /// Extract the content from <main>, <article>, or <body> (in priority order).
 fn extract_main_content(html: &str) -> String {
-    let lower = html.to_lowercase();
     for tag in &["main", "article", "body"] {
         let open = format!("<{}", tag);
         let close = format!("</{}>", tag);
-        if let Some(start) = lower.find(&open) {
+        if let Some(start) = find_ci(html, &open, 0) {
             // Skip past the opening tag's >
             if let Some(gt) = html[start..].find('>') {
                 let content_start = start + gt + 1;
-                if let Some(end) = lower[content_start..].find(&close) {
-                    return html[content_start..content_start + end].to_string();
+                if let Some(end) = find_ci(html, &close, content_start) {
+                    return html[content_start..end].to_string();
                 }
             }
         }
@@ -193,23 +215,21 @@ fn convert_inline_tag(
     md_close: &str,
 ) -> String {
     let mut result = String::with_capacity(html.len());
-    let lower = html.to_lowercase();
     let mut pos = 0;
 
     while pos < html.len() {
-        if let Some(start) = lower[pos..].find(open_prefix) {
-            let abs_start = pos + start;
+        if let Some(abs_start) = find_ci(html, open_prefix, pos) {
             result.push_str(&html[pos..abs_start]);
 
             // Find the end of the opening tag
             if let Some(gt) = html[abs_start..].find('>') {
                 let content_start = abs_start + gt + 1;
                 // Find the close tag
-                if let Some(end) = lower[content_start..].find(close) {
+                if let Some(end) = find_ci(html, close, content_start) {
                     result.push_str(md_open);
-                    result.push_str(&html[content_start..content_start + end]);
+                    result.push_str(&html[content_start..end]);
                     result.push_str(md_close);
-                    pos = content_start + end + close.len();
+                    pos = end + close.len();
                 } else {
                     // No close tag, just skip the open tag
                     result.push_str(md_open);
@@ -230,12 +250,10 @@ fn convert_inline_tag(
 /// Convert <a href="url">text</a> to [text](url).
 fn convert_links(html: &str) -> String {
     let mut result = String::with_capacity(html.len());
-    let lower = html.to_lowercase();
     let mut pos = 0;
 
     while pos < html.len() {
-        if let Some(start) = lower[pos..].find("<a ") {
-            let abs_start = pos + start;
+        if let Some(abs_start) = find_ci(html, "<a ", pos) {
             result.push_str(&html[pos..abs_start]);
 
             // Extract href
@@ -244,14 +262,14 @@ fn convert_links(html: &str) -> String {
 
             if let Some(gt) = tag_content.find('>') {
                 let text_start = abs_start + gt + 1;
-                if let Some(end) = lower[text_start..].find("</a>") {
-                    let link_text = strip_all_tags(&html[text_start..text_start + end]);
+                if let Some(end) = find_ci(html, "</a>", text_start) {
+                    let link_text = strip_all_tags(&html[text_start..end]);
                     if let Some(url) = href {
                         result.push_str(&format!("[{}]({})", link_text.trim(), url));
                     } else {
                         result.push_str(link_text.trim());
                     }
-                    pos = text_start + end + 4; // skip </a>
+                    pos = end + 4; // skip </a>
                 } else {
                     pos = text_start;
                 }
@@ -269,9 +287,8 @@ fn convert_links(html: &str) -> String {
 
 /// Extract an attribute value from an HTML tag.
 fn extract_attribute(tag: &str, attr: &str) -> Option<String> {
-    let lower = tag.to_lowercase();
     let pattern = format!("{}=\"", attr);
-    if let Some(start) = lower.find(&pattern) {
+    if let Some(start) = find_ci(tag, &pattern, 0) {
         let val_start = start + pattern.len();
         if let Some(end) = tag[val_start..].find('"') {
             return Some(tag[val_start..val_start + end].to_string());
@@ -279,7 +296,7 @@ fn extract_attribute(tag: &str, attr: &str) -> Option<String> {
     }
     // Try single quotes
     let pattern_sq = format!("{}='", attr);
-    if let Some(start) = lower.find(&pattern_sq) {
+    if let Some(start) = find_ci(tag, &pattern_sq, 0) {
         let val_start = start + pattern_sq.len();
         if let Some(end) = tag[val_start..].find('\'') {
             return Some(tag[val_start..val_start + end].to_string());
@@ -388,5 +405,42 @@ mod tests {
         assert!(!result.contains("alert"));
         assert!(result.contains("Keep"));
         assert!(result.contains("this"));
+    }
+
+    #[test]
+    fn test_find_ci_basic() {
+        assert_eq!(find_ci("Hello World", "hello", 0), Some(0));
+        assert_eq!(find_ci("Hello World", "WORLD", 0), Some(6));
+        assert_eq!(find_ci("Hello World", "xyz", 0), None);
+        assert_eq!(find_ci("Hello World", "world", 6), Some(6));
+        assert_eq!(find_ci("Hello World", "hello", 1), None);
+    }
+
+    #[test]
+    fn test_unicode_no_panic() {
+        // Turkish dotted I: İ is 2 bytes, but lowercase i̇ is 4 bytes.
+        // German sharp S: ẞ is 3 bytes, lowercase ß is 2 bytes.
+        // This used to panic because to_lowercase() changed byte lengths.
+        let html = "<body>İstanbul ẞtraße <B>bold</B> text</body>";
+        let md = html_to_markdown(html);
+        assert!(md.contains("**bold**"), "Expected bold, got: {md}");
+        assert!(md.contains("İstanbul"), "Expected unicode preserved, got: {md}");
+    }
+
+    #[test]
+    fn test_unicode_in_script_removal() {
+        let html = "<div>Ünïcödé <SCRIPT>İstanbul</SCRIPT> keep</div>";
+        let result = remove_non_content_blocks(html);
+        assert!(!result.contains("İstanbul"));
+        assert!(result.contains("Ünïcödé"));
+        assert!(result.contains("keep"));
+    }
+
+    #[test]
+    fn test_mixed_case_tags() {
+        let html = "<HTML><BODY><H1>Title</H1><P>Hello <STRONG>world</STRONG>.</P></BODY></HTML>";
+        let md = html_to_markdown(html);
+        assert!(md.contains("# Title"), "Expected heading, got: {md}");
+        assert!(md.contains("**world**"), "Expected bold, got: {md}");
     }
 }

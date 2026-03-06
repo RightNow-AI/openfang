@@ -101,6 +101,86 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "xai",
+        display: "xAI (Grok)",
+        env_var: "XAI_API_KEY",
+        default_model: "grok-4-0709",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "perplexity",
+        display: "Perplexity",
+        env_var: "PERPLEXITY_API_KEY",
+        default_model: "sonar-pro",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "cohere",
+        display: "Cohere",
+        env_var: "COHERE_API_KEY",
+        default_model: "command-a-03-2025",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "cerebras",
+        display: "Cerebras",
+        env_var: "CEREBRAS_API_KEY",
+        default_model: "llama-4-scout-17b-16e-instruct",
+        needs_key: true,
+        hint: "fast inference",
+    },
+    ProviderInfo {
+        name: "sambanova",
+        display: "SambaNova",
+        env_var: "SAMBANOVA_API_KEY",
+        default_model: "DeepSeek-R1",
+        needs_key: true,
+        hint: "fast inference",
+    },
+    ProviderInfo {
+        name: "qwen",
+        display: "Qwen (Alibaba)",
+        env_var: "QWEN_API_KEY",
+        default_model: "qwen-plus",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "huggingface",
+        display: "Hugging Face",
+        env_var: "HUGGINGFACE_API_KEY",
+        default_model: "meta-llama/Llama-3.3-70B-Instruct",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "github-copilot",
+        display: "GitHub Copilot",
+        env_var: "GITHUB_TOKEN",
+        default_model: "gpt-4o",
+        needs_key: true,
+        hint: "via PAT",
+    },
+    ProviderInfo {
+        name: "replicate",
+        display: "Replicate",
+        env_var: "REPLICATE_API_KEY",
+        default_model: "meta/meta-llama-3-70b-instruct",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "ai21",
+        display: "AI21",
+        env_var: "AI21_API_KEY",
+        default_model: "jamba-1.5-large",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
         name: "ollama",
         display: "Ollama",
         env_var: "OLLAMA_API_KEY",
@@ -112,6 +192,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         name: "lmstudio",
         display: "LM Studio",
         env_var: "LMSTUDIO_API_KEY",
+        default_model: "local-model",
+        needs_key: false,
+        hint: "local",
+    },
+    ProviderInfo {
+        name: "vllm",
+        display: "vLLM",
+        env_var: "VLLM_API_KEY",
         default_model: "local-model",
         needs_key: false,
         hint: "local",
@@ -825,8 +913,11 @@ fn handle_migration_key(
                 if yes {
                     state.migration_phase = MigrationPhase::Running;
                     let source_dir = state.openclaw_path.clone().unwrap_or_default();
-                    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-                    let target_dir = home.join(".openfang");
+                    let target_dir = if let Ok(h) = std::env::var("OPENFANG_HOME") {
+                        PathBuf::from(h)
+                    } else {
+                        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".openfang")
+                    };
                     let tx = migrate_tx.clone();
                     std::thread::spawn(move || {
                         let options = openfang_migrate::MigrateOptions {
@@ -945,15 +1036,17 @@ fn save_config(state: &mut State) {
         }
     };
 
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => {
-            state.save_error = "Could not determine home directory".to_string();
-            return;
+    let openfang_dir = if let Ok(h) = std::env::var("OPENFANG_HOME") {
+        PathBuf::from(h)
+    } else {
+        match dirs::home_dir() {
+            Some(h) => h.join(".openfang"),
+            None => {
+                state.save_error = "Could not determine home directory".to_string();
+                return;
+            }
         }
     };
-
-    let openfang_dir = home.join(".openfang");
     let _ = std::fs::create_dir_all(openfang_dir.join("agents"));
     let _ = std::fs::create_dir_all(openfang_dir.join("data"));
     crate::restrict_dir_permissions(&openfang_dir);
