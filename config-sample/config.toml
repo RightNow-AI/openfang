@@ -1,0 +1,93 @@
+# OpenFang Agent OS configuration
+# See https://github.com/RightNow-AI/openfang or https://www.openfang.sh/docs/configuration for documentation
+
+# --- Top-level fields ---
+home_dir = "D:\\Work\\AI\\AI\\RightNow-AI\\.openfang"             # OpenFang home directory
+data_dir = "D:\\Work\\AI\\AI\\RightNow-AI\\.openfang\\data"        # SQLite databases and data files
+log_level = "warn"                   # trace | debug | info | warn | error
+api_listen = "127.0.0.1:4200"        # HTTP/WS API bind address
+network_enabled = false              # Enable OFP peer-to-peer network
+api_key = ""                         # API Bearer token (empty = unauthenticated)
+mode = "default"                     # stable | default | dev
+language = "zh"                      # Locale for CLI/messages
+usage_footer = "full"                # off | tokens | cost | full
+
+# --- Default LLM Provider ---
+[default_model]
+provider = "qwen"
+model = "qwen-turbo"
+api_key_env = "DASHSCOPE_API_KEY"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"  # Uses catalog default if omitted
+max_tokens = 8192
+temperature = 0.5
+
+# provider = "ollama"
+# model = "qwen3-coder:30b"
+# api_key_env = ""
+# base_url = "http://localhost:11434/v1"  # Uses catalog default if omitted
+
+# --- Fallback Providers ---
+[[fallback_providers]]
+provider = "qwen"
+model = "qwen-plus"
+api_key_env = "DASHSCOPE_API_KEY"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"  # Optional override
+max_tokens = 81920
+temperature = 0.5
+
+[[fallback_providers]]
+provider = "qwen"
+model = "qwen-long"
+api_key_env = "DASHSCOPE_API_KEY"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"  # Uses catalog default if omitted
+max_tokens = 81920
+temperature = 0.5
+
+[memory]
+sqlite_path = "D:\\Work\\AI\\AI\\RightNow-AI\\.openfang\\data\\openfang.db"  # Auto-resolved if omitted
+embedding_model = "qwen3-embedding:latest"
+# consolidation_threshold = 10000   #默认通常是 3 次 左右，除非你有非常特殊的记忆管理需求（例如希望 AI 更快地“记住”某些事，或者更保守地避免错误固化），否则不需要手动设置此参数。
+decay_rate = 0.05
+
+# --- Web Tools ---
+[web]
+search_provider = "auto"             # auto | brave | tavily | perplexity | duckduckgo
+cache_ttl_minutes = 15
+
+[web.tavily]
+api_key_env = "TAVILY_API_KEY"
+search_depth = "basic"               # basic | advanced
+max_results = 5
+include_answer = true
+
+[routing]
+simple_model = "qwen-turbo"
+medium_model = "qwen-plus"
+complex_model = "qwen-max"
+simple_threshold = 100
+complex_threshold = 500
+
+# 工具与插件配置
+# 定义 Agent 可以调用的工具权限
+[tools]
+browser_enabled = true
+code_interpreter_enabled = true
+file_operations_allowed = true
+
+# 安全与沙盒配置
+# OpenFang 的核心优势之一：WASM 沙盒
+[sandbox]
+enabled = true
+memory_limit_mb = 256
+timeout_seconds = 30
+
+# 本地提供者配置
+# 控制本地提供者的警告和健康检查
+[local_providers]
+# 是否显示本地提供者离线的警告
+show_offline_warnings = true
+# 要检查的本地提供者列表
+# 可用值: ollama, vllm, lmstudio, claude-code
+enabled_providers = ["ollama", "vllm", "lmstudio"]
+# 检查间隔时间（秒）
+check_interval_secs = 10
