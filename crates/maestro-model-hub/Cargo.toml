@@ -1,0 +1,17 @@
+[package]
+name = "maestro-model-hub"
+description = "Model Hub integrating Rig.rs into OpenFang. Provides capability-aware model selection (ported from Maestro), unified provider abstraction across 19+ providers, and intelligent routing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+rig-core.workspace = true
+dashmap.workspace = true

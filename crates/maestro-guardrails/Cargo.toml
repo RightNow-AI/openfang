@@ -1,0 +1,16 @@
+[package]
+name = "maestro-guardrails"
+description = "Input/output guardrails system inspired by Kore.ai's 6-scanner architecture. Provides PII detection, prompt injection defense, toxicity filtering, topic enforcement, and custom regex scanners."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+regex.workspace = true

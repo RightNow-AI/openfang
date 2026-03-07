@@ -1,0 +1,18 @@
+[package]
+name = "maestro-rlm"
+description = "Real Recursive Language Model (RLM) implementation based on the MIT CSAIL paper (arXiv:2512.24601). Uses Rig.rs for model abstraction and PyO3 for REPL execution. Enables 10M+ token context processing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+rig-core.workspace = true
+pyo3.workspace = true
+regex.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "maestro-pai"
+description = "PAI (Personal AI Infrastructure) self-evolution framework. Implements Daniel Miessler's learning hooks, pattern synthesis, and algorithm upgrade workflows as structured Rust types that integrate with OpenFang's skill and memory systems."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+rusqlite.workspace = true

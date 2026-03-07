@@ -43,3 +43,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Local staging area
+.maestro-staging/

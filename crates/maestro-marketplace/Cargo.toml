@@ -1,0 +1,18 @@
+[package]
+name = "maestro-marketplace"
+description = "Agent/Skill Marketplace inspired by Kore.ai's Agent Marketplace. Provides skill packaging, versioning, discovery, and installation for OpenFang agents."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+semver.workspace = true
+sha2.workspace = true
+reqwest.workspace = true

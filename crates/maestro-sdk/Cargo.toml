@@ -1,0 +1,14 @@
+[package]
+name = "maestro-sdk"
+description = "External SDK for interacting with the Maestro-OpenFang fusion platform. Provides typed client for agent management, session handling, and observability queries."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true

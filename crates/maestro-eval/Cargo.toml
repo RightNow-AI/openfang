@@ -1,0 +1,17 @@
+[package]
+name = "maestro-eval"
+description = "Evaluation Studio inspired by Kore.ai's Evaluation Studio. Provides test suite management, automated evaluation runs, and quality scoring for agent outputs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+uuid.workspace = true

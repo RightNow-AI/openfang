@@ -1,0 +1,18 @@
+[package]
+name = "maestro-algorithm"
+description = "7-Phase Algorithm Pipeline (OBSERVE → ORIENT → PLAN → EXECUTE → VERIFY → LEARN → ADAPT) ported from Maestro's PAI framework. Designed to plug into OpenFang's workflow engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+rig-core.workspace = true

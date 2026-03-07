@@ -1,0 +1,19 @@
+[package]
+name = "maestro-observability"
+description = "Observability suite inspired by Kore.ai's analytics. Provides OpenTelemetry-based tracing, session tracking, cost metering, alert rules, and audit logging."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+chrono.workspace = true
+uuid.workspace = true

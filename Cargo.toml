@@ -15,6 +15,16 @@ members = [
     "crates/openfang-hands",
     "crates/openfang-extensions",
     "xtask",
+    "crates/maestro-algorithm",
+    "crates/maestro-guardrails",
+    "crates/maestro-knowledge",
+    "crates/maestro-model-hub",
+    "crates/maestro-observability",
+    "crates/maestro-pai",
+    "crates/maestro-rlm",
+    "crates/maestro-marketplace",
+    "crates/maestro-eval",
+    "crates/maestro-sdk",
 ]
 
 [workspace.package]
@@ -107,6 +117,23 @@ subtle = "2"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 zeroize = { version = "1", features = ["derive"] }
+
+# Rig.rs - Core LLM abstraction layer
+rig-core = "0.31"
+
+# OpenTelemetry
+opentelemetry = "0.28"
+opentelemetry-otlp = "0.28"
+opentelemetry_sdk = "0.28"
+
+# Python execution (for RLM REPL)
+pyo3 = { version = "0.23", features = ["auto-initialize"] }
+
+# Regex
+regex = "1"
+
+# Semver
+semver = { version = "1", features = ["serde"] }
 
 # Rate limiting
 governor = "0.8"
