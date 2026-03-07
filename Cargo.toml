@@ -112,7 +112,7 @@ zeroize = { version = "1", features = ["derive"] }
 governor = "0.8"
 
 # Interactive CLI
-ratatui = "0.29"
+ratatui = "0.30"
 colored = "3"
 
 # Encryption
