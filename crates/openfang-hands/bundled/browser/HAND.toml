@@ -17,7 +17,7 @@ tools = [
 key = "python3"
 label = "Python 3 must be installed"
 requirement_type = "binary"
-check_value = "python"
+check_value = "python3"
 description = "Python 3 is required to run Playwright, the browser automation library that powers this hand."
 
 [requires.install]
