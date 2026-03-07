@@ -196,12 +196,47 @@ fn fetch_unseen_emails(
     password: &str,
     folders: &[String],
 ) -> Result<Vec<(String, String, String, String)>, String> {
-    let tls = native_tls::TlsConnector::builder()
-        .build()
-        .map_err(|e| format!("TLS connector error: {e}"))?;
+    use rustls::ClientConfig;
+    use rustls_native_certs::CertificateResult;
+    use std::net::TcpStream;
+    use std::sync::Arc;
 
-    let client = imap::connect((host, port), host, &tls)
-        .map_err(|e| format!("IMAP connect failed: {e}"))?;
+    // Build a rustls ClientConfig with system-native root certificates.
+    // This avoids any dynamic linking dependency on OpenSSL / libssl.
+    let CertificateResult { certs, errors , .. } = rustls_native_certs::load_native_certs();
+    if certs.is_empty() {
+        let err_msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        return Err(format!(
+            "No native TLS certificates found: {}",
+            err_msgs.join("; ")
+        ));
+    }
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.add_parsable_certificates(certs);
+
+    let config = Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth(),
+    );
+
+    let server_name: rustls_pki_types::ServerName<'_> = host
+        .to_string()
+        .try_into()
+        .map_err(|e| format!("Invalid IMAP server hostname '{host}': {e}"))?;
+
+    let tcp = TcpStream::connect((host, port))
+        .map_err(|e| format!("IMAP TCP connect failed: {e}"))?;
+
+    let tls_conn = rustls::ClientConnection::new(config, server_name)
+        .map_err(|e| format!("TLS handshake init failed: {e}"))?;
+
+    let tls_stream = rustls::StreamOwned::new(tls_conn, tcp);
+
+    let mut client = imap::Client::new(tls_stream);
+    client
+        .read_greeting()
+        .map_err(|e| format!("IMAP greeting failed: {e}"))?;
 
     let mut session = client
         .login(username, password)

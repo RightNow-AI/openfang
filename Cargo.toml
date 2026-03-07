@@ -63,6 +63,11 @@ clap_complete = "4"
 # HTTP client (for LLM drivers)
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls"] }
 
+# TLS (pure-Rust, no system OpenSSL dependency)
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+rustls-native-certs = "0.8"
+rustls-pki-types = "1"
+
 # Async trait
 async-trait = "0.1"
 
@@ -133,8 +138,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Email (SMTP + IMAP)
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
-imap = "2"
-native-tls = "0.2"
+imap = { version = "2", default-features = false }
 mailparse = "0.15"
 
 # Testing
