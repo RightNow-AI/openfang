@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: '0 */6 * * *'  # ogni 6 ore
   workflow_dispatch:        # trigger manuale
+  push:
+    branches: [main]        # rebuild ad ogni push su main
 
 jobs:
   sync-and-build:
@@ -16,12 +18,14 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
 
       - name: Fetch upstream tags
+        if: github.event_name != 'push'
         run: |
           git remote add upstream https://github.com/RightNow-AI/openfang.git || true
           git fetch upstream --tags
 
       - name: Check for new release
         id: check
+        if: github.event_name != 'push'
         run: |
           LATEST_TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
           CURRENT=$(cat .current-upstream-version 2>/dev/null || echo "none")
@@ -34,7 +38,7 @@ jobs:
           fi
 
       - name: Rebase on latest tag
-        if: steps.check.outputs.new_release == 'true'
+        if: github.event_name != 'push' && steps.check.outputs.new_release == 'true'
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
@@ -45,30 +49,30 @@ jobs:
           git push --force
 
       - name: Set up Docker Buildx
-        if: steps.check.outputs.new_release == 'true'
+        if: github.event_name == 'push' || steps.check.outputs.new_release == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
-        if: steps.check.outputs.new_release == 'true'
+        if: github.event_name == 'push' || steps.check.outputs.new_release == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
-        if: steps.check.outputs.new_release == 'true'
+        if: github.event_name == 'push' || steps.check.outputs.new_release == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
             fliva/openfang:latest
-            fliva/openfang:${{ steps.check.outputs.latest }}
+            fliva/openfang:${{ steps.check.outputs.latest || 'custom' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Update Docker Hub description
-        if: steps.check.outputs.new_release == 'true'
+        if: github.event_name == 'push' || steps.check.outputs.new_release == 'true'
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
