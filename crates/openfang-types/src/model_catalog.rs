@@ -20,6 +20,7 @@ pub const FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
 pub const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 pub const VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub const LMSTUDIO_BASE_URL: &str = "http://localhost:1234/v1";
+pub const LEMONADE_BASE_URL: &str = "http://localhost:8888/api/v1";
 pub const PERPLEXITY_BASE_URL: &str = "https://api.perplexity.ai";
 pub const COHERE_BASE_URL: &str = "https://api.cohere.com/v2";
 pub const AI21_BASE_URL: &str = "https://api.ai21.com/studio/v1";

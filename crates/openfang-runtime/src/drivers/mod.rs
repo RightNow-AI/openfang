@@ -14,7 +14,8 @@ pub mod openai;
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL,
-    FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, LMSTUDIO_BASE_URL,
+    FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, LEMONADE_BASE_URL,
+    LMSTUDIO_BASE_URL,
     MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
     OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
     REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
@@ -87,6 +88,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "lmstudio" => Some(ProviderDefaults {
             base_url: LMSTUDIO_BASE_URL,
             api_key_env: "LMSTUDIO_API_KEY",
+            key_required: false,
+        }),
+        "lemonade" => Some(ProviderDefaults {
+            base_url: LEMONADE_BASE_URL,
+            api_key_env: "LEMONADE_API_KEY",
             key_required: false,
         }),
         "perplexity" => Some(ProviderDefaults {

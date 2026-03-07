@@ -572,7 +572,12 @@ impl OpenFangKernel {
             }
         }
 
-        // Add fallback providers to the chain
+        // Add fallback providers to the chain (with model names for cross-provider fallback)
+        let mut model_chain: Vec<(Arc<dyn LlmDriver>, String)> = Vec::new();
+        // Primary driver uses empty model name (uses the request's model field as-is)
+        for d in &driver_chain {
+            model_chain.push((d.clone(), String::new()));
+        }
         for fb in &config.fallback_providers {
             let fb_config = DriverConfig {
                 provider: fb.provider.clone(),
@@ -593,7 +598,8 @@ impl OpenFangKernel {
                         model = %fb.model,
                         "Fallback provider configured"
                     );
-                    driver_chain.push(d);
+                    driver_chain.push(d.clone());
+                    model_chain.push((d, fb.model.clone()));
                 }
                 Err(e) => {
                     warn!(
@@ -607,8 +613,8 @@ impl OpenFangKernel {
 
         // Use the chain, or create a stub driver if everything failed
         let driver: Arc<dyn LlmDriver> = if driver_chain.len() > 1 {
-            Arc::new(openfang_runtime::drivers::fallback::FallbackDriver::new(
-                driver_chain,
+            Arc::new(openfang_runtime::drivers::fallback::FallbackDriver::with_models(
+                model_chain,
             ))
         } else if let Some(single) = driver_chain.into_iter().next() {
             single

@@ -126,7 +126,7 @@ pub async fn build_router(
         )
         .route(
             "/api/agents/{id}",
-            axum::routing::get(routes::get_agent).delete(routes::kill_agent),
+            axum::routing::get(routes::get_agent).delete(routes::kill_agent).patch(routes::patch_agent),
         )
         .route(
             "/api/agents/{id}/mode",
