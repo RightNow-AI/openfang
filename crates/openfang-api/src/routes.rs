@@ -1040,6 +1040,9 @@ pub async fn get_agent(
             "mcp_servers": entry.manifest.mcp_servers,
             "mcp_servers_mode": if entry.manifest.mcp_servers.is_empty() { "all" } else { "allowlist" },
             "fallback_models": entry.manifest.fallback_models,
+            "tool_allowlist": entry.manifest.tool_allowlist,
+            "tool_blocklist": entry.manifest.tool_blocklist,
+            "workspace": entry.manifest.workspace,
         })),
     )
 }

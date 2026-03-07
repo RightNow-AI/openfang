@@ -313,6 +313,10 @@ class AgentResource {
       content: "# Soul\n" + soulContent,
     });
   }
+  /**get agent config */
+  async getConfig(id) {
+    return this._c._request("GET", "/api/agents/" + id);
+  }
 }
 
 // ── Session Resource ────────────────────────────────────────────
