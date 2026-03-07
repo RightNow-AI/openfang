@@ -141,6 +141,22 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "fast inference",
     },
     ProviderInfo {
+        name: "z.ai",
+        display: "Z.AI",
+        env_var: "ZHIPU_API_KEY",
+        default_model: "glm-5-20250605",
+        needs_key: true,
+        hint: "Chinese models",
+    },
+    ProviderInfo {
+        name: "kimi2",
+        display: "Kimi 2",
+        env_var: "MOONSHOT_API_KEY",
+        default_model: "kimi-k2.5-0711",
+        needs_key: true,
+        hint: "long context",
+    },
+    ProviderInfo {
         name: "qwen",
         display: "Qwen (Alibaba)",
         env_var: "QWEN_API_KEY",

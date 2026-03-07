@@ -150,7 +150,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "",
             key_required: false,
         }),
-        "moonshot" | "kimi" => Some(ProviderDefaults {
+        "moonshot" | "kimi" | "kimi2" => Some(ProviderDefaults {
             base_url: MOONSHOT_BASE_URL,
             api_key_env: "MOONSHOT_API_KEY",
             key_required: true,
@@ -175,7 +175,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "ZHIPU_API_KEY",
             key_required: true,
         }),
-        "zai" => Some(ProviderDefaults {
+        "zai" | "z.ai" => Some(ProviderDefaults {
             base_url: ZAI_BASE_URL,
             api_key_env: "ZHIPU_API_KEY",
             key_required: true,
@@ -423,6 +423,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "minimax",
         "zhipu",
         "zhipu_coding",
+        "zai",
         "qianfan",
         "volcengine",
         "venice",
@@ -520,11 +521,12 @@ mod tests {
         assert!(providers.contains(&"minimax"));
         assert!(providers.contains(&"zhipu"));
         assert!(providers.contains(&"zhipu_coding"));
+        assert!(providers.contains(&"zai"));
         assert!(providers.contains(&"qianfan"));
         assert!(providers.contains(&"volcengine"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
-        assert_eq!(providers.len(), 31);
+        assert_eq!(providers.len(), 32);
     }
 
     #[test]
