@@ -49,7 +49,7 @@ jobs:
 
     runs-on: ${{ matrix.platform.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
@@ -162,7 +162,7 @@ jobs:
             archive: zip
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -210,7 +210,7 @@ jobs:
     name: Docker Image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
