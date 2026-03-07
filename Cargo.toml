@@ -54,7 +54,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Database
-rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
+rusqlite = { version = "0.38", features = ["bundled", "serde_json"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
