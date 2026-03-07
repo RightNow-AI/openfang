@@ -531,7 +531,10 @@ function chatPage() {
                 is_error: !!t.is_error
               };
             });
-            return { id: ++msgId, role: role, text: text, meta: '', tools: tools };
+            var images = (m.images || []).map(function(img) {
+              return { file_id: img.file_id, filename: img.filename || 'image' };
+            });
+            return { id: ++msgId, role: role, text: text, meta: '', tools: tools, images: images };
           });
           self.$nextTick(function() { self.scrollToBottom(); });
         }

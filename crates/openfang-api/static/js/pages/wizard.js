@@ -320,7 +320,7 @@ function wizardPage() {
     },
 
     get popularProviders() {
-      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter'];
+      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code'];
       return this.providers.filter(function(p) {
         return popular.indexOf(p.id) >= 0;
       }).sort(function(a, b) {
@@ -329,7 +329,7 @@ function wizardPage() {
     },
 
     get otherProviders() {
-      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter'];
+      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code'];
       return this.providers.filter(function(p) {
         return popular.indexOf(p.id) < 0;
       });
@@ -355,7 +355,8 @@ function wizardPage() {
         fireworks: { url: 'https://fireworks.ai/account/api-keys', text: 'Get your key from Fireworks AI' },
         perplexity: { url: 'https://www.perplexity.ai/settings/api', text: 'Get your key from Perplexity Settings' },
         cohere: { url: 'https://dashboard.cohere.com/api-keys', text: 'Get your key from the Cohere Dashboard' },
-        xai: { url: 'https://console.x.ai/', text: 'Get your key from the xAI Console' }
+        xai: { url: 'https://console.x.ai/', text: 'Get your key from the xAI Console' },
+        'claude-code': { url: 'https://docs.anthropic.com/en/docs/claude-code', text: 'Install: npm install -g @anthropic-ai/claude-code && claude auth (no API key needed)' }
       };
       return help[id] || null;
     },
@@ -474,7 +475,8 @@ function wizardPage() {
         fireworks: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
         perplexity: 'llama-3.1-sonar-large-128k-online',
         cohere: 'command-r-plus',
-        xai: 'grok-2'
+        xai: 'grok-2',
+        'claude-code': 'claude-code/sonnet'
       };
       return defaults[providerId] || '';
     },

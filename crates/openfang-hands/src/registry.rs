@@ -311,8 +311,15 @@ impl Default for HandRegistry {
 fn check_requirement(req: &HandRequirement) -> bool {
     match req.requirement_type {
         RequirementType::Binary => {
-            // Check if binary exists on PATH
-            which_binary(&req.check_value)
+            // Check if binary exists on PATH.
+            // For python3, also try "python" (Windows ships python not python3).
+            if which_binary(&req.check_value) {
+                return true;
+            }
+            if req.check_value == "python3" {
+                return which_binary("python");
+            }
+            false
         }
         RequirementType::EnvVar | RequirementType::ApiKey => {
             // Check if env var is set and non-empty

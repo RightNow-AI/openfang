@@ -395,12 +395,14 @@ pub async fn get_agent_session(
             // collects all tool_use entries keyed by id; pass 2 attaches results.
 
             // Pass 1: build messages and a lookup from tool_use_id → (msg_idx, tool_idx)
+            use base64::Engine as _;
             let mut built_messages: Vec<serde_json::Value> = Vec::new();
             let mut tool_use_index: std::collections::HashMap<String, (usize, usize)> =
                 std::collections::HashMap::new();
 
             for m in &session.messages {
                 let mut tools: Vec<serde_json::Value> = Vec::new();
+                let mut msg_images: Vec<serde_json::Value> = Vec::new();
                 let content = match &m.content {
                     openfang_types::message::MessageContent::Text(t) => t.clone(),
                     openfang_types::message::MessageContent::Blocks(blocks) => {
@@ -410,8 +412,36 @@ pub async fn get_agent_session(
                                 openfang_types::message::ContentBlock::Text { text } => {
                                     texts.push(text.clone());
                                 }
-                                openfang_types::message::ContentBlock::Image { .. } => {
+                                openfang_types::message::ContentBlock::Image {
+                                    media_type,
+                                    data,
+                                } => {
                                     texts.push("[Image]".to_string());
+                                    // Persist image to upload dir so it can be
+                                    // served back when loading session history.
+                                    let file_id = uuid::Uuid::new_v4().to_string();
+                                    let upload_dir =
+                                        std::env::temp_dir().join("openfang_uploads");
+                                    let _ = std::fs::create_dir_all(&upload_dir);
+                                    if let Ok(bytes) =
+                                        base64::engine::general_purpose::STANDARD.decode(data)
+                                    {
+                                        let _ = std::fs::write(
+                                            upload_dir.join(&file_id),
+                                            &bytes,
+                                        );
+                                        UPLOAD_REGISTRY.insert(
+                                            file_id.clone(),
+                                            UploadMeta {
+                                                filename: format!("image.{}", media_type.rsplit('/').next().unwrap_or("png")),
+                                                content_type: media_type.clone(),
+                                            },
+                                        );
+                                        msg_images.push(serde_json::json!({
+                                            "file_id": file_id,
+                                            "filename": format!("image.{}", media_type.rsplit('/').next().unwrap_or("png")),
+                                        }));
+                                    }
                                 }
                                 openfang_types::message::ContentBlock::ToolUse {
                                     id,
@@ -454,6 +484,9 @@ pub async fn get_agent_session(
                 });
                 if !tools.is_empty() {
                     msg["tools"] = serde_json::Value::Array(tools);
+                }
+                if !msg_images.is_empty() {
+                    msg["images"] = serde_json::Value::Array(msg_images);
                 }
                 built_messages.push(msg);
             }

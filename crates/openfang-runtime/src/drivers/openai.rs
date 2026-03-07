@@ -67,6 +67,17 @@ fn uses_completion_tokens(model: &str) -> bool {
         || m.starts_with("o4")
 }
 
+/// Returns true if a model rejects the `temperature` parameter.
+///
+/// OpenAI's o-series reasoning models and some GPT-5 variants do not support
+/// temperature and return 400 if it is included.
+fn rejects_temperature(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.starts_with("o1")
+        || m.starts_with("o3")
+        || m.starts_with("o4")
+}
+
 #[derive(Debug, Serialize)]
 struct OaiMessage {
     role: String,
@@ -310,7 +321,7 @@ impl LlmDriver for OpenAIDriver {
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
-            temperature: Some(request.temperature),
+            temperature: if rejects_temperature(&request.model) { None } else { Some(request.temperature) },
             tools: oai_tools,
             tool_choice,
             stream: false,
@@ -370,6 +381,18 @@ impl LlmDriver for OpenAIDriver {
                         tokio::time::sleep(std::time::Duration::from_millis(retry_ms)).await;
                         continue;
                     }
+                }
+
+                // o-series / reasoning models: strip temperature if rejected
+                if status == 400
+                    && body.contains("temperature")
+                    && body.contains("unsupported_parameter")
+                    && oai_request.temperature.is_some()
+                    && attempt < max_retries
+                {
+                    warn!(model = %oai_request.model, "Stripping temperature for this model");
+                    oai_request.temperature = None;
+                    continue;
                 }
 
                 // GPT-5 / o-series: switch from max_tokens to max_completion_tokens
@@ -635,7 +658,7 @@ impl LlmDriver for OpenAIDriver {
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
-            temperature: Some(request.temperature),
+            temperature: if rejects_temperature(&request.model) { None } else { Some(request.temperature) },
             tools: oai_tools,
             tool_choice,
             stream: true,
@@ -697,6 +720,18 @@ impl LlmDriver for OpenAIDriver {
                         tokio::time::sleep(std::time::Duration::from_millis(retry_ms)).await;
                         continue;
                     }
+                }
+
+                // o-series / reasoning models: strip temperature if rejected
+                if status == 400
+                    && body.contains("temperature")
+                    && body.contains("unsupported_parameter")
+                    && oai_request.temperature.is_some()
+                    && attempt < max_retries
+                {
+                    warn!(model = %oai_request.model, "Stripping temperature for this model (stream)");
+                    oai_request.temperature = None;
+                    continue;
                 }
 
                 // GPT-5 / o-series: switch from max_tokens to max_completion_tokens

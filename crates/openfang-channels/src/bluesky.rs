@@ -435,7 +435,11 @@ impl ChannelAdapter for BlueskyAdapter {
                     service_url
                 );
                 if let Some(ref seen) = last_seen_at {
-                    url.push_str(&format!("&seenAt={}", seen));
+                    let encoded: String = url::form_urlencoded::Serializer::new(String::new())
+                        .append_pair("seenAt", seen)
+                        .finish();
+                    url.push('&');
+                    url.push_str(&encoded);
                 }
 
                 let resp = match client.get(&url).bearer_auth(&token).send().await {

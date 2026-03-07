@@ -3042,6 +3042,30 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 </div>
               </template>
             </div>
+            <!-- Add Custom Provider -->
+            <div class="info-card mt-4" style="border:1px solid var(--border)">
+              <h4 style="margin-top:0">Add Custom Provider</h4>
+              <p class="text-xs text-dim mb-2">Connect any OpenAI-compatible API (vLLM, LiteLLM, LocalAI, etc.)</p>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
+                <div>
+                  <label class="text-xs text-dim">Provider Name</label>
+                  <input class="form-input" x-model="customProviderName" placeholder="e.g. my-local-llm">
+                </div>
+                <div>
+                  <label class="text-xs text-dim">Base URL (required)</label>
+                  <input class="form-input" x-model="customProviderUrl" placeholder="http://localhost:8080/v1">
+                </div>
+              </div>
+              <div class="mt-2">
+                <label class="text-xs text-dim">API Key (optional)</label>
+                <input class="form-input" type="password" x-model="customProviderKey" placeholder="sk-... (leave blank if not needed)">
+              </div>
+              <button class="btn btn-primary btn-sm mt-2" @click="addCustomProvider()" :disabled="!customProviderName.trim() || !customProviderUrl.trim() || addingCustomProvider">
+                <span x-show="!addingCustomProvider">Add Provider</span>
+                <span x-show="addingCustomProvider" class="spinner" style="width:10px;height:10px;border-width:2px"></span>
+              </button>
+              <span class="text-xs text-dim ml-2" x-text="customProviderStatus"></span>
+            </div>
             <div class="empty-state" x-show="!providers.length">
               <h4>No providers found</h4>
               <p class="hint">Provider information could not be loaded. Check that the API is running.</p>

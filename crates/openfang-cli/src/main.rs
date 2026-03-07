@@ -1163,6 +1163,10 @@ fn cmd_init(quick: bool) {
 
     if quick {
         cmd_init_quick(&openfang_dir);
+    } else if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        ui::hint("Non-interactive terminal detected — running in quick mode");
+        ui::hint("For the interactive wizard, run: openfang init (in a terminal)");
+        cmd_init_quick(&openfang_dir);
     } else {
         cmd_init_interactive(&openfang_dir);
     }

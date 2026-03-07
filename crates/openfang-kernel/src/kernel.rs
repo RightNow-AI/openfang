@@ -567,8 +567,34 @@ impl OpenFangKernel {
                 warn!(
                     provider = %config.default_model.provider,
                     error = %e,
-                    "Primary LLM driver init failed — dashboard will still be accessible"
+                    "Primary LLM driver init failed — trying auto-detect"
                 );
+                // Auto-detect: scan env for any configured provider key
+                if let Some((provider, model, env_var)) = drivers::detect_available_provider() {
+                    let auto_config = DriverConfig {
+                        provider: provider.to_string(),
+                        api_key: std::env::var(env_var).ok(),
+                        base_url: config.provider_urls.get(provider).cloned(),
+                    };
+                    match drivers::create_driver(&auto_config) {
+                        Ok(d) => {
+                            info!(
+                                provider = %provider,
+                                model = %model,
+                                "Auto-detected provider from {} — using as default",
+                                env_var
+                            );
+                            driver_chain.push(d);
+                            // Update the running config so agents get the right model
+                            config.default_model.provider = provider.to_string();
+                            config.default_model.model = model.to_string();
+                            config.default_model.api_key_env = env_var.to_string();
+                        }
+                        Err(e2) => {
+                            warn!(provider = %provider, error = %e2, "Auto-detected provider also failed");
+                        }
+                    }
+                }
             }
         }
 
@@ -765,7 +791,8 @@ impl OpenFangKernel {
             if let Some(ref provider) = config.memory.embedding_provider {
                 // Explicit config takes priority — use the configured embedding model
                 let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
-                match create_embedding_driver(provider, configured_model, api_key_env) {
+                let custom_url = config.provider_urls.get(provider.as_str()).map(|s| s.as_str());
+                match create_embedding_driver(provider, configured_model, api_key_env, custom_url) {
                     Ok(d) => {
                         info!(provider = %provider, model = %configured_model, "Embedding driver configured from memory config");
                         Some(Arc::from(d))
@@ -781,7 +808,7 @@ impl OpenFangKernel {
                 } else {
                     configured_model.as_str()
                 };
-                match create_embedding_driver("openai", model, "OPENAI_API_KEY") {
+                match create_embedding_driver("openai", model, "OPENAI_API_KEY", None) {
                     Ok(d) => {
                         info!("Embedding driver auto-detected: OpenAI");
                         Some(Arc::from(d))
@@ -798,7 +825,8 @@ impl OpenFangKernel {
                 } else {
                     configured_model.as_str()
                 };
-                match create_embedding_driver("ollama", model, "") {
+                let ollama_url = config.provider_urls.get("ollama").map(|s| s.as_str());
+                match create_embedding_driver("ollama", model, "", ollama_url) {
                     Ok(d) => {
                         info!("Embedding driver auto-detected: Ollama (local)");
                         Some(Arc::from(d))
@@ -2315,6 +2343,9 @@ impl OpenFangKernel {
         self.registry
             .update_session_id(agent_id, new_session.id)
             .map_err(KernelError::OpenFang)?;
+
+        // Reset quota tracking so /new clears "token quota exceeded"
+        self.scheduler.reset_usage(agent_id);
 
         info!(agent_id = %agent_id, "Session reset (summary saved to memory)");
         Ok(())
