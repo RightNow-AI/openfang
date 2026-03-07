@@ -7,10 +7,11 @@
 //! workflow wiring without making real API calls.
 
 use openfang_kernel::workflow::{
-    ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowStep,
+    ErrorMode, StepAgent, StepMode, Workflow, WorkflowEngine, WorkflowId, WorkflowRunState,
+    WorkflowStep,
 };
 use openfang_kernel::OpenFangKernel;
-use openfang_types::agent::AgentManifest;
+use openfang_types::agent::{AgentId, AgentManifest};
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
 use std::sync::Arc;
 
@@ -293,6 +294,228 @@ memory_write = ["self.*"]
     assert_eq!(remaining[0].id, t2);
 
     kernel.shutdown();
+}
+
+/// End-to-end workflow engine test (no LLM): review rejection returns to planning,
+/// then approved output proceeds to dispatch.
+#[tokio::test]
+async fn test_workflow_e2e_reject_return_without_llm() {
+    let engine = WorkflowEngine::new();
+    let workflow = Workflow {
+        id: WorkflowId::new(),
+        name: "e2e-review-return".to_string(),
+        description: "integration e2e for reject-return".to_string(),
+        steps: vec![
+            WorkflowStep {
+                name: "planning".to_string(),
+                agent: StepAgent::ByName {
+                    name: "planner".to_string(),
+                },
+                prompt_template: "Plan: {{input}}".to_string(),
+                mode: StepMode::Sequential,
+                timeout_secs: 30,
+                error_mode: ErrorMode::Fail,
+                output_var: None,
+            },
+            WorkflowStep {
+                name: "review".to_string(),
+                agent: StepAgent::ByName {
+                    name: "reviewer".to_string(),
+                },
+                prompt_template: "Review: {{input}}".to_string(),
+                mode: StepMode::Review {
+                    reject_if_contains: "reject".to_string(),
+                    return_to_step: "planning".to_string(),
+                    max_rejects: 2,
+                },
+                timeout_secs: 30,
+                error_mode: ErrorMode::Fail,
+                output_var: None,
+            },
+            WorkflowStep {
+                name: "dispatch".to_string(),
+                agent: StepAgent::ByName {
+                    name: "dispatcher".to_string(),
+                },
+                prompt_template: "Dispatch: {{input}}".to_string(),
+                mode: StepMode::Sequential,
+                timeout_secs: 30,
+                error_mode: ErrorMode::Fail,
+                output_var: None,
+            },
+        ],
+        created_at: chrono::Utc::now(),
+    };
+
+    let workflow_id = engine.register(workflow).await;
+    let run_id = engine
+        .create_run(workflow_id, "initial request".to_string())
+        .await
+        .unwrap();
+
+    let prompts = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let plan_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let review_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+    let prompts_ref = prompts.clone();
+    let plan_ref = plan_count.clone();
+    let review_ref = review_count.clone();
+
+    let resolver = |_agent: &StepAgent| Some((AgentId::new(), "mock-agent".to_string()));
+    let sender = move |_agent_id: AgentId, message: String| {
+        let prompts_ref = prompts_ref.clone();
+        let plan_ref = plan_ref.clone();
+        let review_ref = review_ref.clone();
+        async move {
+            prompts_ref.lock().unwrap().push(message.clone());
+            if message.starts_with("Plan:") {
+                let n = plan_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    Ok(("plan-v1".to_string(), 10u64, 5u64))
+                } else {
+                    Ok(("plan-v2".to_string(), 10u64, 5u64))
+                }
+            } else if message.starts_with("Review:") {
+                let n = review_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    Ok(("REJECT: incomplete".to_string(), 10u64, 5u64))
+                } else {
+                    Ok(("APPROVED: good".to_string(), 10u64, 5u64))
+                }
+            } else {
+                Ok((format!("dispatch-final: {message}"), 10u64, 5u64))
+            }
+        }
+    };
+
+    let result = engine.execute_run(run_id, resolver, sender).await;
+    assert!(
+        result.is_ok(),
+        "workflow should complete: {:?}",
+        result.err()
+    );
+    let output = result.unwrap();
+    assert!(output.contains("dispatch-final: Dispatch: APPROVED"));
+
+    let run = engine.get_run(run_id).await.unwrap();
+    assert!(matches!(run.state, WorkflowRunState::Completed));
+    assert_eq!(run.step_results.len(), 5); // planning x2 + review x2 + dispatch x1
+    assert_eq!(plan_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(review_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+    let prompts = prompts.lock().unwrap();
+    let planning_prompts: Vec<&String> =
+        prompts.iter().filter(|p| p.starts_with("Plan:")).collect();
+    assert_eq!(planning_prompts.len(), 2);
+    assert!(planning_prompts[1].contains("REJECT: incomplete"));
+}
+
+/// End-to-end workflow engine test (no LLM): fan-out branches aggregate into a
+/// single collected payload consumed by downstream step.
+#[tokio::test]
+async fn test_workflow_e2e_parallel_fanout_aggregation_without_llm() {
+    let engine = WorkflowEngine::new();
+    let workflow = Workflow {
+        id: WorkflowId::new(),
+        name: "e2e-fanout-collect".to_string(),
+        description: "integration e2e for fan-out/fan-in".to_string(),
+        steps: vec![
+            WorkflowStep {
+                name: "prepare".to_string(),
+                agent: StepAgent::ByName {
+                    name: "planner".to_string(),
+                },
+                prompt_template: "Prepare: {{input}}".to_string(),
+                mode: StepMode::Sequential,
+                timeout_secs: 30,
+                error_mode: ErrorMode::Fail,
+                output_var: None,
+            },
+            WorkflowStep {
+                name: "branch-a".to_string(),
+                agent: StepAgent::ByName {
+                    name: "worker-a".to_string(),
+                },
+                prompt_template: "Branch A: {{input}}".to_string(),
+                mode: StepMode::FanOut,
+                timeout_secs: 30,
+                error_mode: ErrorMode::Fail,
+                output_var: None,
+            },
+            WorkflowStep {
+                name: "branch-b".to_string(),
+                agent: StepAgent::ByName {
+                    name: "worker-b".to_string(),
+                },
+                prompt_template: "Branch B: {{input}}".to_string(),
+                mode: StepMode::FanOut,
+                timeout_secs: 30,
+                error_mode: ErrorMode::Fail,
+                output_var: None,
+            },
+            WorkflowStep {
+                name: "collect".to_string(),
+                agent: StepAgent::ByName {
+                    name: "collector".to_string(),
+                },
+                prompt_template: "unused".to_string(),
+                mode: StepMode::Collect,
+                timeout_secs: 30,
+                error_mode: ErrorMode::Fail,
+                output_var: None,
+            },
+            WorkflowStep {
+                name: "finalize".to_string(),
+                agent: StepAgent::ByName {
+                    name: "finalizer".to_string(),
+                },
+                prompt_template: "Finalize: {{input}}".to_string(),
+                mode: StepMode::Sequential,
+                timeout_secs: 30,
+                error_mode: ErrorMode::Fail,
+                output_var: None,
+            },
+        ],
+        created_at: chrono::Utc::now(),
+    };
+
+    let workflow_id = engine.register(workflow).await;
+    let run_id = engine
+        .create_run(workflow_id, "raw-task".to_string())
+        .await
+        .unwrap();
+
+    let resolver = |_agent: &StepAgent| Some((AgentId::new(), "mock-agent".to_string()));
+    let sender = |_agent_id: AgentId, message: String| async move {
+        let output = if message.starts_with("Prepare:") {
+            "prepared".to_string()
+        } else if message.starts_with("Branch A:") {
+            "branch-a-result".to_string()
+        } else if message.starts_with("Branch B:") {
+            "branch-b-result".to_string()
+        } else if message.starts_with("Finalize:") {
+            format!("finalized: {message}")
+        } else {
+            format!("unexpected: {message}")
+        };
+        Ok((output, 10u64, 5u64))
+    };
+
+    let result = engine.execute_run(run_id, resolver, sender).await;
+    assert!(
+        result.is_ok(),
+        "workflow should complete: {:?}",
+        result.err()
+    );
+    let output = result.unwrap();
+
+    assert!(output.contains("branch-a-result"));
+    assert!(output.contains("branch-b-result"));
+    assert!(!output.contains("prepared"));
+
+    let run = engine.get_run(run_id).await.unwrap();
+    assert!(matches!(run.state, WorkflowRunState::Completed));
+    assert_eq!(run.step_results.len(), 4); // prepare + 2 fanout branches + finalize
 }
 
 // ---------------------------------------------------------------------------

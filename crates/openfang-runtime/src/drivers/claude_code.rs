@@ -70,9 +70,7 @@ impl ClaudeCodeDriver {
 
     /// Map a model ID like "claude-code/opus" to CLI --model flag value.
     fn model_flag(model: &str) -> Option<String> {
-        let stripped = model
-            .strip_prefix("claude-code/")
-            .unwrap_or(model);
+        let stripped = model.strip_prefix("claude-code/").unwrap_or(model);
         match stripped {
             "opus" => Some("opus".to_string()),
             "sonnet" => Some("sonnet".to_string()),
@@ -124,10 +122,7 @@ struct ClaudeStreamEvent {
 
 #[async_trait]
 impl LlmDriver for ClaudeCodeDriver {
-    async fn complete(
-        &self,
-        request: CompletionRequest,
-    ) -> Result<CompletionResponse, LlmError> {
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let prompt = Self::build_prompt(&request);
         let model_flag = Self::model_flag(&request.model);
 
@@ -164,7 +159,8 @@ impl LlmDriver for ClaudeCodeDriver {
 
         // Try JSON parse first
         if let Ok(parsed) = serde_json::from_str::<ClaudeJsonOutput>(&stdout) {
-            let text = parsed.result
+            let text = parsed
+                .result
                 .or(parsed.content)
                 .or(parsed.text)
                 .unwrap_or_default();
@@ -288,9 +284,7 @@ impl LlmDriver for ClaudeCodeDriver {
                     // Not valid JSON — treat as raw text
                     warn!(line = %line, error = %e, "Non-JSON line from Claude CLI");
                     full_text.push_str(&line);
-                    let _ = tx
-                        .send(StreamEvent::TextDelta { text: line })
-                        .await;
+                    let _ = tx.send(StreamEvent::TextDelta { text: line }).await;
                 }
             }
         }
@@ -323,8 +317,7 @@ impl LlmDriver for ClaudeCodeDriver {
 
 /// Check if the Claude Code CLI is available.
 pub fn claude_code_available() -> bool {
-    ClaudeCodeDriver::detect().is_some()
-        || claude_credentials_exist()
+    ClaudeCodeDriver::detect().is_some() || claude_credentials_exist()
 }
 
 /// Check if Claude credentials file exists (~/.claude/.credentials.json).
@@ -340,7 +333,9 @@ fn claude_credentials_exist() -> bool {
 fn home_dir() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from)
+        std::env::var("USERPROFILE")
+            .ok()
+            .map(std::path::PathBuf::from)
     }
     #[cfg(not(target_os = "windows"))]
     {

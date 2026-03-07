@@ -222,11 +222,9 @@ impl ChannelAdapter for WhatsAppAdapter {
         if let Some(ref gw) = self.gateway_url {
             let text = match &content {
                 ChannelContent::Text(t) => t.clone(),
-                ChannelContent::Image { caption, .. } => {
-                    caption
-                        .clone()
-                        .unwrap_or_else(|| "(Image — not supported in Web mode)".to_string())
-                }
+                ChannelContent::Image { caption, .. } => caption
+                    .clone()
+                    .unwrap_or_else(|| "(Image — not supported in Web mode)".to_string()),
                 ChannelContent::File { filename, .. } => {
                     format!("(File: {filename} — not supported in Web mode)")
                 }

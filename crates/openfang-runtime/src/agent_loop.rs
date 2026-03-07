@@ -685,10 +685,13 @@ pub async fn run_agent_loop(
                 }
 
                 // Detect approval denials and inject guidance to prevent infinite retry loops
-                let denial_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
+                let denial_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| {
+                        matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
                         if content.contains("requires human approval and was denied"))
-                }).count();
+                    })
+                    .count();
                 if denial_count > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
                         text: format!(
@@ -1608,10 +1611,13 @@ pub async fn run_agent_loop_streaming(
                 }
 
                 // Detect approval denials and inject guidance to prevent infinite retry loops
-                let denial_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
+                let denial_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| {
+                        matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
                         if content.contains("requires human approval and was denied"))
-                }).count();
+                    })
+                    .count();
                 if denial_count > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
                         text: format!(

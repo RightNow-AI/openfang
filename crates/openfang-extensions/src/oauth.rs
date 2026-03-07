@@ -27,9 +27,7 @@ pub fn default_client_ids() -> HashMap<&'static str, &'static str> {
 }
 
 /// Resolve OAuth client IDs with config overrides applied on top of defaults.
-pub fn resolve_client_ids(
-    config: &openfang_types::config::OAuthConfig,
-) -> HashMap<String, String> {
+pub fn resolve_client_ids(config: &openfang_types::config::OAuthConfig) -> HashMap<String, String> {
     let defaults = default_client_ids();
     let mut resolved: HashMap<String, String> = defaults
         .into_iter()

@@ -291,8 +291,24 @@ pub async fn build_router(
             axum::routing::post(routes::run_workflow),
         )
         .route(
+            "/api/workflows/{id}/rollout",
+            axum::routing::get(routes::get_workflow_rollout).put(routes::update_workflow_rollout),
+        )
+        .route(
+            "/api/workflows/{id}/rollback",
+            axum::routing::post(routes::rollback_workflow_to_stable_path),
+        )
+        .route(
             "/api/workflows/{id}/runs",
             axum::routing::get(routes::list_workflow_runs),
+        )
+        .route(
+            "/api/workflows/metrics",
+            axum::routing::get(routes::workflow_observability_metrics),
+        )
+        .route(
+            "/api/workflows/traces/{trace_id}/events",
+            axum::routing::get(routes::list_workflow_trace_events),
         )
         // Skills endpoints
         .route("/api/skills", axum::routing::get(routes::list_skills))
@@ -354,8 +370,7 @@ pub async fn build_router(
         )
         .route(
             "/api/hands/{hand_id}/settings",
-            axum::routing::get(routes::get_hand_settings)
-                .put(routes::update_hand_settings),
+            axum::routing::get(routes::get_hand_settings).put(routes::update_hand_settings),
         )
         .route(
             "/api/hands/instances/{id}/pause",
@@ -412,14 +427,8 @@ pub async fn build_router(
             "/api/comms/events/stream",
             axum::routing::get(routes::comms_events_stream),
         )
-        .route(
-            "/api/comms/send",
-            axum::routing::post(routes::comms_send),
-        )
-        .route(
-            "/api/comms/task",
-            axum::routing::post(routes::comms_task),
-        )
+        .route("/api/comms/send", axum::routing::post(routes::comms_send))
+        .route("/api/comms/task", axum::routing::post(routes::comms_task))
         // Tools endpoint
         .route("/api/tools", axum::routing::get(routes::list_tools))
         // Config endpoints
@@ -464,8 +473,7 @@ pub async fn build_router(
         )
         .route(
             "/api/budget/agents/{id}",
-            axum::routing::get(routes::agent_budget_status)
-                .put(routes::update_agent_budget),
+            axum::routing::get(routes::agent_budget_status).put(routes::update_agent_budget),
         )
         // Session endpoints
         .route("/api/sessions", axum::routing::get(routes::list_sessions))
@@ -787,8 +795,7 @@ pub async fn run_daemon(
     socket.set_nonblocking(true)?;
     socket.bind(&addr.into())?;
     socket.listen(1024)?;
-    let listener =
-        tokio::net::TcpListener::from_std(std::net::TcpListener::from(socket))?;
+    let listener = tokio::net::TcpListener::from_std(std::net::TcpListener::from(socket))?;
 
     // Run server with graceful shutdown.
     // SECURITY: `into_make_service_with_connect_info` injects the peer
@@ -919,11 +926,8 @@ fn is_daemon_responding(addr: &str) -> bool {
         .or_else(|| addr.strip_prefix("https://"))
         .unwrap_or(addr);
     if let Ok(sock_addr) = addr_only.parse::<std::net::SocketAddr>() {
-        std::net::TcpStream::connect_timeout(
-            &sock_addr,
-            std::time::Duration::from_millis(500),
-        )
-        .is_ok()
+        std::net::TcpStream::connect_timeout(&sock_addr, std::time::Duration::from_millis(500))
+            .is_ok()
     } else {
         // Fallback: try connecting to hostname
         std::net::TcpStream::connect(addr_only)

@@ -404,9 +404,7 @@ impl McpConnection {
                 let has_cmd = std::env::var("PATH")
                     .unwrap_or_default()
                     .split(';')
-                    .any(|dir| {
-                        std::path::Path::new(dir).join(&cmd_variant).exists()
-                    });
+                    .any(|dir| std::path::Path::new(dir).join(&cmd_variant).exists());
                 if has_cmd {
                     cmd_variant
                 } else {

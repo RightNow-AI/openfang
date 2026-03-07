@@ -427,6 +427,11 @@ async fn handle_text_message(
             }
 
             // Resolve file attachments into image content blocks
+            let requested_session_id = parsed["session_id"]
+                .as_str()
+                .and_then(|sid| sid.parse::<uuid::Uuid>().ok())
+                .map(openfang_types::agent::SessionId);
+
             let mut has_images = false;
             if let Some(attachments) = parsed["attachments"].as_array() {
                 let refs: Vec<crate::types::AttachmentRef> = attachments
@@ -440,6 +445,7 @@ async fn handle_text_message(
                         crate::routes::inject_attachments_into_session(
                             &state.kernel,
                             agent_id,
+                            requested_session_id,
                             image_blocks,
                         );
                     }
@@ -491,10 +497,12 @@ async fn handle_text_message(
             // Send message to agent with streaming
             let kernel_handle: Arc<dyn KernelHandle> =
                 state.kernel.clone() as Arc<dyn KernelHandle>;
-            match state
-                .kernel
-                .send_message_streaming(agent_id, &content, Some(kernel_handle))
-            {
+            match state.kernel.send_message_streaming_in_session(
+                agent_id,
+                &content,
+                Some(kernel_handle),
+                requested_session_id,
+            ) {
                 Ok((mut rx, handle)) => {
                     // Forward stream events to WebSocket with debouncing
                     let sender_stream = Arc::clone(sender);
@@ -797,7 +805,10 @@ async fn handle_command(
                 match state.kernel.set_agent_model(agent_id, args) {
                     Ok(()) => {
                         let msg = if let Some(entry) = state.kernel.registry.get(agent_id) {
-                            format!("Model switched to: {} (provider: {})", entry.manifest.model.model, entry.manifest.model.provider)
+                            format!(
+                                "Model switched to: {} (provider: {})",
+                                entry.manifest.model.model, entry.manifest.model.provider
+                            )
                         } else {
                             format!("Model switched to: {args}")
                         };
@@ -1117,11 +1128,13 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
             if inner.contains("localhost:11434") || inner.contains("ollama") {
                 "Model not found on Ollama. Run `ollama pull <model>` to download it, then try again. Use /model to see options.".to_string()
             } else {
-                "Model unavailable. Use /model to see options or check your provider configuration.".to_string()
+                "Model unavailable. Use /model to see options or check your provider configuration."
+                    .to_string()
             }
         }
         llm_errors::LlmErrorCategory::Format => {
-            "LLM request failed. Check your API key and model configuration in Settings.".to_string()
+            "LLM request failed. Check your API key and model configuration in Settings."
+                .to_string()
         }
         _ => classified.sanitized_message,
     }

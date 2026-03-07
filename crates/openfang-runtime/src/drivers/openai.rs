@@ -377,9 +377,16 @@ impl LlmDriver for OpenAIDriver {
 
                 // Auto-cap max_tokens when model rejects our value (e.g. Groq Maverick limit 8192)
                 if status == 400 && body.contains("max_tokens") && attempt < max_retries {
-                    let current = oai_request.max_tokens.or(oai_request.max_completion_tokens).unwrap_or(4096);
+                    let current = oai_request
+                        .max_tokens
+                        .or(oai_request.max_completion_tokens)
+                        .unwrap_or(4096);
                     let cap = extract_max_tokens_limit(&body).unwrap_or(current / 2);
-                    warn!(old = current, new = cap, "Auto-capping max_tokens to model limit");
+                    warn!(
+                        old = current,
+                        new = cap,
+                        "Auto-capping max_tokens to model limit"
+                    );
                     if oai_request.max_completion_tokens.is_some() {
                         oai_request.max_completion_tokens = Some(cap);
                     } else {
@@ -679,7 +686,10 @@ impl LlmDriver for OpenAIDriver {
 
                 // Auto-cap max_tokens when model rejects our value
                 if status == 400 && body.contains("max_tokens") && attempt < max_retries {
-                    let current = oai_request.max_tokens.or(oai_request.max_completion_tokens).unwrap_or(4096);
+                    let current = oai_request
+                        .max_tokens
+                        .or(oai_request.max_completion_tokens)
+                        .unwrap_or(4096);
                     let cap = extract_max_tokens_limit(&body).unwrap_or(current / 2);
                     warn!(old = current, new = cap, "Auto-capping max_tokens (stream)");
                     if oai_request.max_completion_tokens.is_some() {

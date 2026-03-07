@@ -116,6 +116,14 @@ async fn start_test_server_with_provider(
             axum::routing::post(routes::run_workflow),
         )
         .route(
+            "/api/workflows/{id}/rollout",
+            axum::routing::get(routes::get_workflow_rollout).put(routes::update_workflow_rollout),
+        )
+        .route(
+            "/api/workflows/{id}/rollback",
+            axum::routing::post(routes::rollback_workflow_to_stable_path),
+        )
+        .route(
             "/api/workflows/{id}/runs",
             axum::routing::get(routes::list_workflow_runs),
         )
@@ -158,6 +166,30 @@ system_prompt = "You are a test agent. Reply concisely."
 tools = ["file_read"]
 memory_read = ["*"]
 memory_write = ["self.*"]
+"#;
+
+const WORKFLOW_ECHO_WAT: &str = r#"
+    (module
+        (memory (export "memory") 1)
+        (global $bump (mut i32) (i32.const 1024))
+
+        (func (export "alloc") (param $size i32) (result i32)
+            (local $ptr i32)
+            (local.set $ptr (global.get $bump))
+            (global.set $bump (i32.add (global.get $bump) (local.get $size)))
+            (local.get $ptr)
+        )
+
+        (func (export "execute") (param $ptr i32) (param $len i32) (result i64)
+            (i64.or
+                (i64.shl
+                    (i64.extend_i32_u (local.get $ptr))
+                    (i64.const 32)
+                )
+                (i64.extend_i32_u (local.get $len))
+            )
+        )
+    )
 "#;
 
 /// Manifest that uses Groq for real LLM tests.
@@ -363,6 +395,202 @@ async fn test_send_message_with_llm() {
         .unwrap();
     let session: serde_json::Value = resp.json().await.unwrap();
     assert!(session["message_count"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn test_workflow_shadow_run_compares_against_production_output() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    std::fs::write(
+        server._tmp.path().join("workflow-echo.wat"),
+        WORKFLOW_ECHO_WAT,
+    )
+    .unwrap();
+
+    let wasm_manifest = r#"
+name = "workflow-echo"
+version = "0.1.0"
+description = "Workflow echo wasm"
+author = "test"
+module = "wasm:workflow-echo.wat"
+
+[model]
+provider = "ollama"
+model = "test-model"
+system_prompt = "Echo workflow agent."
+
+[capabilities]
+memory_read = ["*"]
+memory_write = ["self.*"]
+"#;
+
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": wasm_manifest}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let agent_name = body["name"].as_str().unwrap().to_string();
+
+    let resp = client
+        .post(format!("{}/api/workflows", server.base_url))
+        .json(&serde_json::json!({
+            "name": "shadow-workflow",
+            "description": "Compare workflow output against production",
+            "steps": [
+                {
+                    "name": "step1",
+                    "agent_name": agent_name,
+                    "prompt": "Echo: {{input}}",
+                    "mode": "sequential",
+                    "timeout_secs": 30
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let workflow: serde_json::Value = resp.json().await.unwrap();
+    let workflow_id = workflow["workflow_id"].as_str().unwrap();
+
+    let resp = client
+        .post(format!(
+            "{}/api/workflows/{}/run",
+            server.base_url, workflow_id
+        ))
+        .json(&serde_json::json!({
+            "input": "hello shadow",
+            "shadow": {
+                "enabled": true,
+                "production_output": "legacy: hello shadow"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "shadow_completed");
+    assert_eq!(body["output"], "legacy: hello shadow");
+    assert!(body["shadow_output"]
+        .as_str()
+        .unwrap()
+        .contains("hello shadow"));
+    assert_eq!(body["shadow"]["matches"], false);
+    assert!(body["shadow"]["first_mismatch_index"].is_number());
+
+    let resp = client
+        .get(format!(
+            "{}/api/workflows/{}/runs",
+            server.base_url, workflow_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let runs: Vec<serde_json::Value> = resp.json().await.unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["shadow"]["matches"], false);
+    assert!(runs[0]["shadow"]["compared_at"].is_string());
+}
+
+#[tokio::test]
+async fn test_workflow_rollout_controls_promote_and_rollback_with_checklist() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let agent_name = body["name"].as_str().unwrap().to_string();
+
+    let resp = client
+        .post(format!("{}/api/workflows", server.base_url))
+        .json(&serde_json::json!({
+            "name": "rollback-workflow",
+            "description": "Rollback control integration test",
+            "steps": [
+                {
+                    "name": "step1",
+                    "agent_name": agent_name,
+                    "prompt": "Echo: {{input}}",
+                    "mode": "sequential",
+                    "timeout_secs": 30
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let workflow: serde_json::Value = resp.json().await.unwrap();
+    let workflow_id = workflow["workflow_id"].as_str().unwrap();
+
+    let resp = client
+        .get(format!(
+            "{}/api/workflows/{}/rollout",
+            server.base_url, workflow_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let rollout: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(rollout["primary_path"], "production");
+    assert_eq!(rollout["stable_path"], "production");
+    assert_eq!(rollout["shadow_enabled"], false);
+    assert!(rollout["rollback_checklist"].as_array().unwrap().len() >= 4);
+
+    let resp = client
+        .put(format!(
+            "{}/api/workflows/{}/rollout",
+            server.base_url, workflow_id
+        ))
+        .json(&serde_json::json!({
+            "primary_path": "openfang",
+            "stable_path": "production",
+            "shadow_enabled": true,
+            "rollback_window_secs": 300
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let rollout: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(rollout["primary_path"], "openfang");
+    assert_eq!(rollout["stable_path"], "production");
+    assert_eq!(rollout["shadow_enabled"], true);
+    assert_eq!(rollout["rollback_window_secs"], 300);
+
+    let resp = client
+        .post(format!(
+            "{}/api/workflows/{}/rollback",
+            server.base_url, workflow_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let rollback: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(rollback["rollout"]["primary_path"], "production");
+    assert_eq!(rollback["rollout"]["stable_path"], "production");
+    assert_eq!(rollback["rollout"]["shadow_enabled"], false);
+    assert_eq!(rollback["rollback"]["from_path"], "openfang");
+    assert_eq!(rollback["rollback"]["to_path"], "production");
+    assert_eq!(rollback["rollback"]["shadow_enabled_before"], true);
+    assert_eq!(rollback["rollback"]["shadow_enabled_after"], false);
+    assert_eq!(rollback["rollback"]["within_window"], true);
+    assert!(rollback["rollback"]["duration_ms"].as_u64().unwrap() <= 300_000);
+    assert!(rollback["rollback"]["checklist"].as_array().unwrap().len() >= 4);
 }
 
 #[tokio::test]
@@ -744,6 +972,14 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         .route(
             "/api/workflows/{id}/run",
             axum::routing::post(routes::run_workflow),
+        )
+        .route(
+            "/api/workflows/{id}/rollout",
+            axum::routing::get(routes::get_workflow_rollout).put(routes::update_workflow_rollout),
+        )
+        .route(
+            "/api/workflows/{id}/rollback",
+            axum::routing::post(routes::rollback_workflow_to_stable_path),
         )
         .route(
             "/api/workflows/{id}/runs",

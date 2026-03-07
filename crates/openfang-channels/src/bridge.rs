@@ -408,7 +408,9 @@ async fn dispatch_message(
                 }
                 GroupPolicy::MentionOnly => {
                     // Only allow messages where the bot was @mentioned or commands.
-                    let was_mentioned = message.metadata.get("was_mentioned")
+                    let was_mentioned = message
+                        .metadata
+                        .get("was_mentioned")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     let is_command = matches!(&message.content, ChannelContent::Command { .. });

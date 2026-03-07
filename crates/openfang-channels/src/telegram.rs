@@ -536,7 +536,17 @@ pub fn calculate_backoff(current: Duration) -> Duration {
 /// Everything else (e.g. `<name>`, `<thinking>`) gets escaped to `&lt;...&gt;`.
 fn sanitize_telegram_html(text: &str) -> String {
     const ALLOWED: &[&str] = &[
-        "b", "i", "u", "s", "em", "strong", "a", "code", "pre", "blockquote", "tg-spoiler",
+        "b",
+        "i",
+        "u",
+        "s",
+        "em",
+        "strong",
+        "a",
+        "code",
+        "pre",
+        "blockquote",
+        "tg-spoiler",
         "tg-emoji",
     ];
 

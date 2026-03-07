@@ -8,12 +8,13 @@ use axum::Json;
 use dashmap::DashMap;
 use openfang_kernel::triggers::{TriggerId, TriggerPattern};
 use openfang_kernel::workflow::{
-    ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowStep,
+    ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowRunId, WorkflowShadowComparison,
+    WorkflowStep, WorkflowTrafficPath,
 };
 use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::tool_runner::builtin_tool_definitions;
-use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
+use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest, SessionId};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
@@ -126,15 +127,13 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
         .into_iter()
         .map(|e| {
             // Resolve "default" provider/model to actual kernel defaults
-            let provider = if e.manifest.model.provider.is_empty()
-                || e.manifest.model.provider == "default"
-            {
-                dm.provider.as_str()
-            } else {
-                e.manifest.model.provider.as_str()
-            };
-            let model = if e.manifest.model.model.is_empty()
-                || e.manifest.model.model == "default"
+            let provider =
+                if e.manifest.model.provider.is_empty() || e.manifest.model.provider == "default" {
+                    dm.provider.as_str()
+                } else {
+                    e.manifest.model.provider.as_str()
+                };
+            let model = if e.manifest.model.model.is_empty() || e.manifest.model.model == "default"
             {
                 dm.model.as_str()
             } else {
@@ -243,6 +242,7 @@ pub fn resolve_attachments(
 pub fn inject_attachments_into_session(
     kernel: &OpenFangKernel,
     agent_id: AgentId,
+    session_id: Option<SessionId>,
     image_blocks: Vec<openfang_types::message::ContentBlock>,
 ) {
     use openfang_types::message::{Message, MessageContent, Role};
@@ -252,10 +252,12 @@ pub fn inject_attachments_into_session(
         None => return,
     };
 
-    let mut session = match kernel.memory.get_session(entry.session_id) {
+    let resolved_session_id = session_id.unwrap_or(entry.session_id);
+
+    let mut session = match kernel.memory.get_session(resolved_session_id) {
         Ok(Some(s)) => s,
         _ => openfang_memory::session::Session {
-            id: entry.session_id,
+            id: resolved_session_id,
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -270,6 +272,21 @@ pub fn inject_attachments_into_session(
 
     if let Err(e) = kernel.memory.save_session(&session) {
         tracing::warn!(error = %e, "Failed to save session with image attachments");
+    }
+}
+
+fn parse_requested_session_id(
+    session_id: Option<&str>,
+) -> Result<Option<SessionId>, (StatusCode, Json<serde_json::Value>)> {
+    match session_id {
+        Some(session_id) => match session_id.parse::<uuid::Uuid>() {
+            Ok(parsed) => Ok(Some(SessionId(parsed))),
+            Err(_) => Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid session ID"})),
+            )),
+        },
+        None => Ok(None),
     }
 }
 
@@ -306,18 +323,33 @@ pub async fn send_message(
         );
     }
 
+    let requested_session_id = match parse_requested_session_id(req.session_id.as_deref()) {
+        Ok(session_id) => session_id,
+        Err(response) => return response,
+    };
+
     // Resolve file attachments into image content blocks
     if !req.attachments.is_empty() {
         let image_blocks = resolve_attachments(&req.attachments);
         if !image_blocks.is_empty() {
-            inject_attachments_into_session(&state.kernel, agent_id, image_blocks);
+            inject_attachments_into_session(
+                &state.kernel,
+                agent_id,
+                requested_session_id,
+                image_blocks,
+            );
         }
     }
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(agent_id, &req.message, Some(kernel_handle))
+        .send_message_with_handle_in_session(
+            agent_id,
+            &req.message,
+            Some(kernel_handle),
+            requested_session_id,
+        )
         .await
     {
         Ok(result) => {
@@ -687,16 +719,75 @@ pub async fn run_workflow(
     });
 
     let input = req["input"].as_str().unwrap_or("").to_string();
+    let shadow_request = req.get("shadow");
+    let shadow_enabled = shadow_request
+        .and_then(|shadow| shadow.get("enabled").and_then(|value| value.as_bool()))
+        .unwrap_or_else(|| shadow_request.is_some());
+    let production_output = shadow_request
+        .and_then(|shadow| shadow.get("production_output"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
 
-    match state.kernel.run_workflow(workflow_id, input).await {
-        Ok((run_id, output)) => (
-            StatusCode::OK,
+    if shadow_enabled && production_output.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "run_id": run_id.to_string(),
-                "output": output,
-                "status": "completed",
+                "error": "Shadow run requires shadow.production_output"
             })),
+        );
+    }
+
+    let run_result: Result<
+        (
+            WorkflowRunId,
+            Option<String>,
+            Option<WorkflowShadowComparison>,
         ),
+        _,
+    > = if let Some(production_output) = production_output {
+        state
+            .kernel
+            .run_workflow_shadow(workflow_id, input, production_output)
+            .await
+            .map(|(run_id, comparison)| (run_id, None, Some(comparison)))
+    } else {
+        state
+            .kernel
+            .run_workflow(workflow_id, input)
+            .await
+            .map(|(run_id, output)| (run_id, Some(output), None))
+    };
+
+    match run_result {
+        Ok((run_id, output, shadow_comparison)) => {
+            let trace_id = state
+                .kernel
+                .workflows
+                .get_run(run_id)
+                .await
+                .map(|run| run.trace_id)
+                .unwrap_or_default();
+            let response = if let Some(shadow) = shadow_comparison {
+                let production_output = shadow.production_output.clone();
+                let shadow_output = shadow.shadow_output.clone();
+                serde_json::json!({
+                    "run_id": run_id.to_string(),
+                    "trace_id": trace_id,
+                    "output": production_output,
+                    "shadow_output": shadow_output,
+                    "shadow": shadow,
+                    "status": "shadow_completed",
+                })
+            } else {
+                serde_json::json!({
+                    "run_id": run_id.to_string(),
+                    "trace_id": trace_id,
+                    "output": output.unwrap_or_default(),
+                    "status": "completed",
+                })
+            };
+            (StatusCode::OK, Json(response))
+        }
         Err(e) => {
             tracing::warn!("Workflow run failed for {id}: {e}");
             (
@@ -704,6 +795,151 @@ pub async fn run_workflow(
                 Json(serde_json::json!({"error": "Workflow execution failed"})),
             )
         }
+    }
+}
+
+/// GET /api/workflows/:id/rollout — Inspect rollout + rollback controls for a workflow.
+pub async fn get_workflow_rollout(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workflow_id = WorkflowId(match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid workflow ID"})),
+            );
+        }
+    });
+
+    match state.kernel.workflows.get_rollout_state(workflow_id).await {
+        Some(rollout) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(rollout).unwrap_or_default()),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Workflow not found"})),
+        ),
+    }
+}
+
+/// PUT /api/workflows/:id/rollout — Update authoritative path / stable path / shadow policy.
+pub async fn update_workflow_rollout(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let workflow_id = WorkflowId(match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid workflow ID"})),
+            );
+        }
+    });
+
+    let parse_path = |field: &str| -> Result<Option<WorkflowTrafficPath>, String> {
+        match req.get(field) {
+            Some(value) => serde_json::from_value::<WorkflowTrafficPath>(value.clone())
+                .map(Some)
+                .map_err(|_| format!("Invalid '{}' value", field)),
+            None => Ok(None),
+        }
+    };
+
+    let primary_path = match parse_path("primary_path") {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": error})),
+            );
+        }
+    };
+    let stable_path = match parse_path("stable_path") {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": error})),
+            );
+        }
+    };
+    let shadow_enabled = req.get("shadow_enabled").and_then(|value| value.as_bool());
+    let rollback_window_secs = req
+        .get("rollback_window_secs")
+        .and_then(|value| value.as_u64());
+
+    match state
+        .kernel
+        .workflows
+        .update_rollout_state(
+            workflow_id,
+            primary_path,
+            stable_path,
+            shadow_enabled,
+            rollback_window_secs,
+        )
+        .await
+    {
+        Ok(rollout) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(rollout).unwrap_or_default()),
+        ),
+        Err(error) if error.contains("not found") => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": error})),
+        ),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error})),
+        ),
+    }
+}
+
+/// POST /api/workflows/:id/rollback — Switch primary traffic back to the last stable path.
+pub async fn rollback_workflow_to_stable_path(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workflow_id = WorkflowId(match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid workflow ID"})),
+            );
+        }
+    });
+
+    match state
+        .kernel
+        .workflows
+        .rollback_to_stable_path(workflow_id)
+        .await
+    {
+        Ok(rollout) => {
+            let rollback = rollout.last_rollback.clone();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "workflow_id": workflow_id.to_string(),
+                    "rollout": rollout,
+                    "rollback": rollback,
+                })),
+            )
+        }
+        Err(error) if error.contains("not found") => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": error})),
+        ),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error})),
+        ),
     }
 }
 
@@ -718,15 +954,64 @@ pub async fn list_workflow_runs(
         .map(|r| {
             serde_json::json!({
                 "id": r.id.to_string(),
+                "trace_id": r.trace_id,
                 "workflow_name": r.workflow_name,
                 "state": serde_json::to_value(&r.state).unwrap_or_default(),
                 "steps_completed": r.step_results.len(),
+                "audit_events": r.audit_events.len(),
+                "shadow": r.shadow.as_ref().map(|shadow| serde_json::json!({
+                    "matches": shadow.matches,
+                    "normalized_matches": shadow.normalized_matches,
+                    "first_mismatch_index": shadow.first_mismatch_index,
+                    "compared_at": shadow.compared_at.to_rfc3339(),
+                })),
                 "started_at": r.started_at.to_rfc3339(),
                 "completed_at": r.completed_at.map(|t| t.to_rfc3339()),
             })
         })
         .collect();
     Json(list)
+}
+
+/// GET /api/workflows/traces/:trace_id/events — List audit events for one workflow trace.
+pub async fn list_workflow_trace_events(
+    State(state): State<Arc<AppState>>,
+    Path(trace_id): Path<String>,
+) -> impl IntoResponse {
+    let events = state
+        .kernel
+        .workflows
+        .list_audit_events_by_trace_id(&trace_id)
+        .await;
+
+    let payload: Vec<serde_json::Value> = events
+        .into_iter()
+        .map(|event| {
+            serde_json::json!({
+                "event_id": event.event_id.to_string(),
+                "trace_id": event.trace_id,
+                "run_id": event.run_id.to_string(),
+                "workflow_id": event.workflow_id.to_string(),
+                "step_name": event.step_name,
+                "event_type": event.event_type,
+                "detail": event.detail,
+                "outcome": event.outcome,
+                "timestamp": event.timestamp.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "trace_id": trace_id,
+        "events": payload,
+    }))
+}
+
+/// GET /api/workflows/metrics — Aggregated workflow observability metrics.
+pub async fn workflow_observability_metrics(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    Json(state.kernel.workflows.observability_metrics().await)
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,22 +1327,28 @@ pub async fn send_message_stream(
             .into_response();
     }
 
+    let requested_session_id = match parse_requested_session_id(req.session_id.as_deref()) {
+        Ok(session_id) => session_id,
+        Err(response) => return response.into_response(),
+    };
+
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
-    let (rx, _handle) =
-        match state
-            .kernel
-            .send_message_streaming(agent_id, &req.message, Some(kernel_handle))
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                tracing::warn!("Streaming message failed for agent {id}: {e}");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "Streaming message failed"})),
-                )
-                    .into_response();
-            }
-        };
+    let (rx, _handle) = match state.kernel.send_message_streaming_in_session(
+        agent_id,
+        &req.message,
+        Some(kernel_handle),
+        requested_session_id,
+    ) {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::warn!("Streaming message failed for agent {id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Streaming message failed"})),
+            )
+                .into_response();
+        }
+    };
 
     let sse_stream = stream::unfold(rx, |mut rx| async move {
         match rx.recv().await {
@@ -1866,9 +2157,7 @@ fn build_field_json(
                     val.clone()
                 };
                 field["value"] = display_val;
-                if !val.is_null()
-                    && val.as_str().map(|s| !s.is_empty()).unwrap_or(true)
-                {
+                if !val.is_null() && val.as_str().map(|s| !s.is_empty()).unwrap_or(true) {
                     field["has_value"] = serde_json::Value::Bool(true);
                 }
             }
@@ -1888,46 +2177,166 @@ fn channel_config_values(
     name: &str,
 ) -> Option<serde_json::Value> {
     match name {
-        "telegram" => config.telegram.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "discord" => config.discord.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "slack" => config.slack.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "whatsapp" => config.whatsapp.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "signal" => config.signal.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "matrix" => config.matrix.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "email" => config.email.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "teams" => config.teams.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "mattermost" => config.mattermost.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "irc" => config.irc.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "google_chat" => config.google_chat.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "twitch" => config.twitch.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "rocketchat" => config.rocketchat.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "zulip" => config.zulip.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "xmpp" => config.xmpp.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "line" => config.line.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "viber" => config.viber.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "messenger" => config.messenger.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "reddit" => config.reddit.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "mastodon" => config.mastodon.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "bluesky" => config.bluesky.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "feishu" => config.feishu.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "revolt" => config.revolt.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "nextcloud" => config.nextcloud.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "guilded" => config.guilded.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "keybase" => config.keybase.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "threema" => config.threema.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "nostr" => config.nostr.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "webex" => config.webex.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "pumble" => config.pumble.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "flock" => config.flock.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "twist" => config.twist.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "mumble" => config.mumble.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "dingtalk" => config.dingtalk.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "discourse" => config.discourse.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "gitter" => config.gitter.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "ntfy" => config.ntfy.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "gotify" => config.gotify.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "webhook" => config.webhook.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "linkedin" => config.linkedin.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "telegram" => config
+            .telegram
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "discord" => config
+            .discord
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "slack" => config
+            .slack
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "whatsapp" => config
+            .whatsapp
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "signal" => config
+            .signal
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "matrix" => config
+            .matrix
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "email" => config
+            .email
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "teams" => config
+            .teams
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "mattermost" => config
+            .mattermost
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "irc" => config
+            .irc
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "google_chat" => config
+            .google_chat
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "twitch" => config
+            .twitch
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "rocketchat" => config
+            .rocketchat
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "zulip" => config
+            .zulip
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "xmpp" => config
+            .xmpp
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "line" => config
+            .line
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "viber" => config
+            .viber
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "messenger" => config
+            .messenger
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "reddit" => config
+            .reddit
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "mastodon" => config
+            .mastodon
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "bluesky" => config
+            .bluesky
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "feishu" => config
+            .feishu
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "revolt" => config
+            .revolt
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "nextcloud" => config
+            .nextcloud
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "guilded" => config
+            .guilded
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "keybase" => config
+            .keybase
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "threema" => config
+            .threema
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "nostr" => config
+            .nostr
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "webex" => config
+            .webex
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "pumble" => config
+            .pumble
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "flock" => config
+            .flock
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "twist" => config
+            .twist
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "mumble" => config
+            .mumble
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "dingtalk" => config
+            .dingtalk
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "discourse" => config
+            .discourse
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "gitter" => config
+            .gitter
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "ntfy" => config
+            .ntfy
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "gotify" => config
+            .gotify
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "webhook" => config
+            .webhook
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "linkedin" => config
+            .linkedin
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
         _ => None,
     }
 }
@@ -2049,7 +2458,10 @@ pub async fn configure_channel(
             );
         } else {
             // Config field — collect for TOML write with type info
-            config_fields.insert(field_def.key.to_string(), (value.to_string(), field_def.field_type));
+            config_fields.insert(
+                field_def.key.to_string(),
+                (value.to_string(), field_def.field_type),
+            );
         }
     }
 
@@ -2737,6 +3149,55 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
         health.restart_count
     ));
 
+    // Workflow observability rates
+    let wf_metrics = state.kernel.workflows.observability_metrics().await;
+    out.push_str("# HELP openfang_workflow_success_rate Successful terminal workflow run rate.\n");
+    out.push_str("# TYPE openfang_workflow_success_rate gauge\n");
+    out.push_str(&format!(
+        "openfang_workflow_success_rate {}\n",
+        wf_metrics.success_rate
+    ));
+    out.push_str(
+        "# HELP openfang_workflow_failure_rate Failed/blocked terminal workflow run rate.\n",
+    );
+    out.push_str("# TYPE openfang_workflow_failure_rate gauge\n");
+    out.push_str(&format!(
+        "openfang_workflow_failure_rate {}\n",
+        wf_metrics.failure_rate
+    ));
+    out.push_str("# HELP openfang_workflow_retry_rate Workflow execution retry event rate.\n");
+    out.push_str("# TYPE openfang_workflow_retry_rate gauge\n");
+    out.push_str(&format!(
+        "openfang_workflow_retry_rate {}\n",
+        wf_metrics.retry_rate
+    ));
+    out.push_str("# HELP openfang_workflow_reject_rate Workflow review rejection rate.\n");
+    out.push_str("# TYPE openfang_workflow_reject_rate gauge\n");
+    out.push_str(&format!(
+        "openfang_workflow_reject_rate {}\n",
+        wf_metrics.reject_rate
+    ));
+    out.push_str(
+        "# HELP openfang_workflow_resume_time_ms Average workflow resume delay in milliseconds.\n",
+    );
+    out.push_str("# TYPE openfang_workflow_resume_time_ms gauge\n");
+    out.push_str(&format!(
+        "openfang_workflow_resume_time_ms {}\n",
+        wf_metrics.resume_time_ms
+    ));
+    out.push_str("# HELP openfang_workflow_runs_total Total tracked workflow runs.\n");
+    out.push_str("# TYPE openfang_workflow_runs_total gauge\n");
+    out.push_str(&format!(
+        "openfang_workflow_runs_total {}\n",
+        wf_metrics.runs_total
+    ));
+    out.push_str("# HELP openfang_workflow_terminal_runs_total Total terminal workflow runs.\n");
+    out.push_str("# TYPE openfang_workflow_terminal_runs_total gauge\n");
+    out.push_str(&format!(
+        "openfang_workflow_terminal_runs_total {}\n\n",
+        wf_metrics.terminal_runs_total
+    ));
+
     // Version info
     out.push_str("# HELP openfang_info OpenFang version and build info.\n");
     out.push_str("# TYPE openfang_info gauge\n");
@@ -2949,7 +3410,9 @@ pub async fn clawhub_search(
                 "items": items,
                 "next_cursor": null,
             });
-            state.clawhub_cache.insert(cache_key, (Instant::now(), resp.clone()));
+            state
+                .clawhub_cache
+                .insert(cache_key, (Instant::now(), resp.clone()));
             (StatusCode::OK, Json(resp))
         }
         Err(e) => {
@@ -2963,9 +3426,7 @@ pub async fn clawhub_search(
             };
             (
                 status,
-                Json(
-                    serde_json::json!({"items": [], "next_cursor": null, "error": msg}),
-                ),
+                Json(serde_json::json!({"items": [], "next_cursor": null, "error": msg})),
             )
         }
     }
@@ -3018,7 +3479,9 @@ pub async fn clawhub_browse(
                 "items": items,
                 "next_cursor": results.next_cursor,
             });
-            state.clawhub_cache.insert(cache_key, (Instant::now(), resp.clone()));
+            state
+                .clawhub_cache
+                .insert(cache_key, (Instant::now(), resp.clone()));
             (StatusCode::OK, Json(resp))
         }
         Err(e) => {
@@ -3031,9 +3494,7 @@ pub async fn clawhub_browse(
             };
             (
                 status,
-                Json(
-                    serde_json::json!({"items": [], "next_cursor": null, "error": msg}),
-                ),
+                Json(serde_json::json!({"items": [], "next_cursor": null, "error": msg})),
             )
         }
     }
@@ -3200,7 +3661,10 @@ pub async fn clawhub_install(
                 StatusCode::FORBIDDEN
             } else if msg.contains("429") || msg.contains("rate limit") {
                 StatusCode::TOO_MANY_REQUESTS
-            } else if msg.contains("Network error") || msg.contains("returned 4") || msg.contains("returned 5") {
+            } else if msg.contains("Network error")
+                || msg.contains("returned 4")
+                || msg.contains("returned 5")
+            {
                 StatusCode::BAD_GATEWAY
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -3699,7 +4163,12 @@ pub async fn activate_hand(
             // If the hand agent has a non-reactive schedule (autonomous hands),
             // start its background loop so it begins running immediately.
             if let Some(agent_id) = instance.agent_id {
-                let entry = state.kernel.registry.list().into_iter().find(|e| e.id == agent_id);
+                let entry = state
+                    .kernel
+                    .registry
+                    .list()
+                    .into_iter()
+                    .find(|e| e.id == agent_id);
                 if let Some(entry) = entry {
                     if !matches!(
                         entry.manifest.schedule,
@@ -3855,7 +4324,9 @@ pub async fn update_hand_settings(
         },
         None => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("No active instance for hand: {hand_id}. Activate the hand first.")})),
+            Json(
+                serde_json::json!({"error": format!("No active instance for hand: {hand_id}. Activate the hand first.")}),
+            ),
         ),
     }
 }
@@ -3982,7 +4453,10 @@ pub async fn hand_instance_browser(
                 content = data["content"].as_str().unwrap_or("").to_string();
                 // Truncate content to avoid huge payloads (UTF-8 safe)
                 if content.len() > 2000 {
-                    content = format!("{}... (truncated)", openfang_types::truncate_str(&content, 2000));
+                    content = format!(
+                        "{}... (truncated)",
+                        openfang_types::truncate_str(&content, 2000)
+                    );
                 }
             }
         }
@@ -4638,7 +5112,9 @@ pub async fn update_agent_budget(
     if hourly.is_none() && daily.is_none() && monthly.is_none() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Provide at least one of: max_cost_per_hour_usd, max_cost_per_day_usd, max_cost_per_month_usd"})),
+            Json(
+                serde_json::json!({"error": "Provide at least one of: max_cost_per_hour_usd, max_cost_per_day_usd, max_cost_per_month_usd"}),
+            ),
         );
     }
 
@@ -6142,10 +6618,7 @@ pub async fn set_agent_tools(
         .kernel
         .set_agent_tool_filters(agent_id, allowlist, blocklist)
     {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "ok"})),
-        ),
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("{e}")})),
@@ -6617,8 +7090,7 @@ pub async fn set_provider_url(
     }
 
     // Probe reachability at the new URL
-    let probe =
-        openfang_runtime::provider_health::probe_provider(&name, &base_url).await;
+    let probe = openfang_runtime::provider_health::probe_provider(&name, &base_url).await;
 
     // Merge discovered models into catalog
     if !probe.discovered_models.is_empty() {
@@ -7513,7 +7985,11 @@ pub async fn run_schedule(
     );
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
-    match state.kernel.send_message_with_handle(target_agent, &run_message, Some(kernel_handle)).await {
+    match state
+        .kernel
+        .send_message_with_handle(target_agent, &run_message, Some(kernel_handle))
+        .await
+    {
         Ok(result) => (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -7660,7 +8136,9 @@ pub async fn patch_agent_config(
         if name.len() > MAX_NAME_LEN {
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
-                Json(serde_json::json!({"error": format!("Name exceeds max length ({MAX_NAME_LEN} chars)")})),
+                Json(
+                    serde_json::json!({"error": format!("Name exceeds max length ({MAX_NAME_LEN} chars)")}),
+                ),
             );
         }
     }
@@ -7668,7 +8146,9 @@ pub async fn patch_agent_config(
         if desc.len() > MAX_DESC_LEN {
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
-                Json(serde_json::json!({"error": format!("Description exceeds max length ({MAX_DESC_LEN} chars)")})),
+                Json(
+                    serde_json::json!({"error": format!("Description exceeds max length ({MAX_DESC_LEN} chars)")}),
+                ),
             );
         }
     }
@@ -7676,7 +8156,9 @@ pub async fn patch_agent_config(
         if prompt.len() > MAX_PROMPT_LEN {
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
-                Json(serde_json::json!({"error": format!("System prompt exceeds max length ({MAX_PROMPT_LEN} chars)")})),
+                Json(
+                    serde_json::json!({"error": format!("System prompt exceeds max length ({MAX_PROMPT_LEN} chars)")}),
+                ),
             );
         }
     }
@@ -8653,12 +9135,18 @@ pub async fn config_reload(State(state): State<Arc<AppState>>) -> impl IntoRespo
 // ---------------------------------------------------------------------------
 
 /// GET /api/config/schema — Return a simplified JSON description of the config structure.
-pub async fn config_schema(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn config_schema(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Build provider/model options from model catalog for dropdowns
-    let catalog = state.kernel.model_catalog.read().unwrap_or_else(|e| e.into_inner());
-    let provider_options: Vec<String> = catalog.list_providers().iter().map(|p| p.id.clone()).collect();
+    let catalog = state
+        .kernel
+        .model_catalog
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    let provider_options: Vec<String> = catalog
+        .list_providers()
+        .iter()
+        .map(|p| p.id.clone())
+        .collect();
     let model_options: Vec<serde_json::Value> = catalog
         .list_models()
         .iter()
@@ -9511,8 +9999,7 @@ pub async fn copilot_oauth_start() -> impl IntoResponse {
                 CopilotFlowState {
                     device_code: resp.device_code,
                     interval: resp.interval,
-                    expires_at: Instant::now()
-                        + std::time::Duration::from_secs(resp.expires_in),
+                    expires_at: Instant::now() + std::time::Duration::from_secs(resp.expires_in),
                 },
             );
 
@@ -9576,7 +10063,9 @@ pub async fn copilot_oauth_poll(
             if let Err(e) = write_secret_env(&secrets_path, "GITHUB_TOKEN", &access_token) {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"status": "error", "error": format!("Failed to save token: {e}")})),
+                    Json(
+                        serde_json::json!({"status": "error", "error": format!("Failed to save token: {e}")}),
+                    ),
                 );
             }
 
@@ -9780,15 +10269,30 @@ fn audit_to_comms_event(
             // Format detail: "tokens_in=X, tokens_out=Y" → readable summary
             let detail = if entry.detail.starts_with("tokens_in=") {
                 let parts: Vec<&str> = entry.detail.split(", ").collect();
-                let in_tok = parts.first().and_then(|p| p.strip_prefix("tokens_in=")).unwrap_or("?");
-                let out_tok = parts.get(1).and_then(|p| p.strip_prefix("tokens_out=")).unwrap_or("?");
+                let in_tok = parts
+                    .first()
+                    .and_then(|p| p.strip_prefix("tokens_in="))
+                    .unwrap_or("?");
+                let out_tok = parts
+                    .get(1)
+                    .and_then(|p| p.strip_prefix("tokens_out="))
+                    .unwrap_or("?");
                 if entry.outcome == "ok" {
                     format!("{} in / {} out tokens", in_tok, out_tok)
                 } else {
-                    format!("{} in / {} out — {}", in_tok, out_tok, openfang_types::truncate_str(&entry.outcome, 80))
+                    format!(
+                        "{} in / {} out — {}",
+                        in_tok,
+                        out_tok,
+                        openfang_types::truncate_str(&entry.outcome, 80)
+                    )
                 }
             } else if entry.outcome != "ok" {
-                format!("{} — {}", openfang_types::truncate_str(&entry.detail, 80), openfang_types::truncate_str(&entry.outcome, 80))
+                format!(
+                    "{} — {}",
+                    openfang_types::truncate_str(&entry.detail, 80),
+                    openfang_types::truncate_str(&entry.outcome, 80)
+                )
             } else {
                 openfang_types::truncate_str(&entry.detail, 200).to_string()
             };
@@ -9796,12 +10300,18 @@ fn audit_to_comms_event(
         }
         "AgentSpawn" => (
             CommsEventKind::AgentSpawned,
-            format!("Agent spawned: {}", openfang_types::truncate_str(&entry.detail, 100)),
+            format!(
+                "Agent spawned: {}",
+                openfang_types::truncate_str(&entry.detail, 100)
+            ),
             "",
         ),
         "AgentKill" => (
             CommsEventKind::AgentTerminated,
-            format!("Agent killed: {}", openfang_types::truncate_str(&entry.detail, 100)),
+            format!(
+                "Agent killed: {}",
+                openfang_types::truncate_str(&entry.detail, 100)
+            ),
             "",
         ),
         _ => return None,
@@ -9813,8 +10323,16 @@ fn audit_to_comms_event(
         kind,
         source_id: entry.agent_id.clone(),
         source_name: resolve_name(&entry.agent_id),
-        target_id: if target_label.is_empty() { String::new() } else { target_label.to_string() },
-        target_name: if target_label.is_empty() { String::new() } else { target_label.to_string() },
+        target_id: if target_label.is_empty() {
+            String::new()
+        } else {
+            target_label.to_string()
+        },
+        target_name: if target_label.is_empty() {
+            String::new()
+        } else {
+            target_label.to_string()
+        },
         detail,
     })
 }
@@ -9865,9 +10383,7 @@ pub async fn comms_events(
 /// GET /api/comms/events/stream — SSE stream of inter-agent communication events.
 ///
 /// Polls the audit log every 500ms for new inter-agent events.
-pub async fn comms_events_stream(
-    State(state): State<Arc<AppState>>,
-) -> axum::response::Response {
+pub async fn comms_events_stream(State(state): State<Arc<AppState>>) -> axum::response::Response {
     use axum::response::sse::{Event, KeepAlive, Sse};
 
     let (tx, rx) = tokio::sync::mpsc::channel::<

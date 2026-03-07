@@ -99,13 +99,12 @@ impl StructuredStore {
         let mut pairs = Vec::new();
         for row in rows {
             let (key, blob) = row.map_err(|e| OpenFangError::Memory(e.to_string()))?;
-            let value: serde_json::Value = serde_json::from_slice(&blob)
-                .unwrap_or_else(|_| {
-                    // Fallback: try as UTF-8 string
-                    String::from_utf8(blob)
-                        .map(serde_json::Value::String)
-                        .unwrap_or(serde_json::Value::Null)
-                });
+            let value: serde_json::Value = serde_json::from_slice(&blob).unwrap_or_else(|_| {
+                // Fallback: try as UTF-8 string
+                String::from_utf8(blob)
+                    .map(serde_json::Value::String)
+                    .unwrap_or(serde_json::Value::Null)
+            });
             pairs.push((key, value));
         }
         Ok(pairs)

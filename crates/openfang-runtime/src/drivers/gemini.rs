@@ -334,10 +334,7 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
             }
         }
         None => {
-            let reason = candidate
-                .finish_reason
-                .as_deref()
-                .unwrap_or("unknown");
+            let reason = candidate.finish_reason.as_deref().unwrap_or("unknown");
             warn!(finish_reason = %reason, "Gemini returned candidate with no content");
             return Err(LlmError::Parse(format!(
                 "Gemini returned empty response (finish_reason: {reason})"

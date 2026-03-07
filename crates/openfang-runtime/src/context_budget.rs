@@ -68,7 +68,11 @@ pub fn truncate_tool_result_dynamic(content: &str, budget: &ContextBudget) -> St
     let safe_cap = if content.is_char_boundary(cap) {
         cap
     } else {
-        content[..cap].char_indices().next_back().map(|(i, _)| i).unwrap_or(0)
+        content[..cap]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(0)
     };
     let search_start = safe_cap.saturating_sub(200);
     let break_point = content[search_start..safe_cap]
@@ -79,7 +83,11 @@ pub fn truncate_tool_result_dynamic(content: &str, budget: &ContextBudget) -> St
     let break_point = if content.is_char_boundary(break_point) {
         break_point
     } else {
-        content[..break_point].char_indices().next_back().map(|(i, _)| i).unwrap_or(0)
+        content[..break_point]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(0)
     };
 
     format!(

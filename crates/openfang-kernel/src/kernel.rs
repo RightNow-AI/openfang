@@ -11,7 +11,10 @@ use crate::registry::AgentRegistry;
 use crate::scheduler::AgentScheduler;
 use crate::supervisor::Supervisor;
 use crate::triggers::{TriggerEngine, TriggerId, TriggerPattern};
-use crate::workflow::{StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowRunId};
+use crate::workflow::{
+    StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowRouteRequest, WorkflowRunId,
+    WorkflowShadowComparison,
+};
 
 use openfang_memory::MemorySubstrate;
 use openfang_runtime::agent_loop::{
@@ -148,9 +151,11 @@ pub struct OpenFangKernel {
     /// WhatsApp Web gateway child process PID (for shutdown cleanup).
     pub whatsapp_gateway_pid: Arc<std::sync::Mutex<Option<u32>>>,
     /// Channel adapters registered at bridge startup (for proactive `channel_send` tool).
-    pub channel_adapters: dashmap::DashMap<String, Arc<dyn openfang_channels::types::ChannelAdapter>>,
+    pub channel_adapters:
+        dashmap::DashMap<String, Arc<dyn openfang_channels::types::ChannelAdapter>>,
     /// Hot-reloadable default model override (set via config hot-reload, read at agent spawn).
-    pub default_model_override: std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
+    pub default_model_override:
+        std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
 }
@@ -474,6 +479,30 @@ fn read_identity_file(workspace: &Path, filename: &str) -> Option<String> {
     }
 }
 
+fn read_identity_file_from_workspaces(
+    workspace: Option<&Path>,
+    fallback_workspace: Option<&Path>,
+    filename: &str,
+) -> Option<String> {
+    workspace
+        .and_then(|w| read_identity_file(w, filename))
+        .or_else(|| fallback_workspace.and_then(|w| read_identity_file(w, filename)))
+}
+
+fn session_workspace_root(base_workspace: &Path, session_id: SessionId) -> PathBuf {
+    let already_scoped = base_workspace
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        == Some(".session-workspaces");
+    if already_scoped {
+        return base_workspace.to_path_buf();
+    }
+    base_workspace
+        .join(".session-workspaces")
+        .join(session_id.to_string())
+}
+
 /// Get the system hostname as a String.
 fn gethostname() -> Option<String> {
     #[cfg(unix)]
@@ -550,11 +579,12 @@ impl OpenFangKernel {
         let driver_config = DriverConfig {
             provider: config.default_model.provider.clone(),
             api_key: std::env::var(&config.default_model.api_key_env).ok(),
-            base_url: config
-                .default_model
-                .base_url
-                .clone()
-                .or_else(|| config.provider_urls.get(&config.default_model.provider).cloned()),
+            base_url: config.default_model.base_url.clone().or_else(|| {
+                config
+                    .provider_urls
+                    .get(&config.default_model.provider)
+                    .cloned()
+            }),
         };
         // Primary driver failure is non-fatal: the dashboard should remain accessible
         // even if the LLM provider is misconfigured. Users can fix config via dashboard.
@@ -954,11 +984,16 @@ impl OpenFangKernel {
                                     Ok(disk_manifest) => {
                                         // Compare key fields to detect changes
                                         let changed = disk_manifest.name != entry.manifest.name
-                                            || disk_manifest.description != entry.manifest.description
-                                            || disk_manifest.model.system_prompt != entry.manifest.model.system_prompt
-                                            || disk_manifest.model.provider != entry.manifest.model.provider
-                                            || disk_manifest.model.model != entry.manifest.model.model
-                                            || disk_manifest.capabilities.tools != entry.manifest.capabilities.tools;
+                                            || disk_manifest.description
+                                                != entry.manifest.description
+                                            || disk_manifest.model.system_prompt
+                                                != entry.manifest.model.system_prompt
+                                            || disk_manifest.model.provider
+                                                != entry.manifest.model.provider
+                                            || disk_manifest.model.model
+                                                != entry.manifest.model.model
+                                            || disk_manifest.capabilities.tools
+                                                != entry.manifest.capabilities.tools;
                                         if changed {
                                             info!(
                                                 agent = %name,
@@ -1031,11 +1066,20 @@ impl OpenFangKernel {
                             if !dm.model.is_empty() {
                                 restored_entry.manifest.model.model = dm.model.clone();
                             }
-                            if !dm.api_key_env.is_empty() && restored_entry.manifest.model.api_key_env.is_none() {
-                                restored_entry.manifest.model.api_key_env = Some(dm.api_key_env.clone());
+                            if !dm.api_key_env.is_empty()
+                                && restored_entry.manifest.model.api_key_env.is_none()
+                            {
+                                restored_entry.manifest.model.api_key_env =
+                                    Some(dm.api_key_env.clone());
                             }
-                            if dm.base_url.is_some() && restored_entry.manifest.model.base_url.is_none() {
-                                restored_entry.manifest.model.base_url.clone_from(&dm.base_url);
+                            if dm.base_url.is_some()
+                                && restored_entry.manifest.model.base_url.is_none()
+                            {
+                                restored_entry
+                                    .manifest
+                                    .model
+                                    .base_url
+                                    .clone_from(&dm.base_url);
                             }
                         }
                     }
@@ -1113,15 +1157,16 @@ impl OpenFangKernel {
         parent: Option<AgentId>,
     ) -> KernelResult<AgentId> {
         let agent_id = AgentId::new();
-        let session_id = SessionId::new();
         let name = manifest.name.clone();
 
         info!(agent = %name, id = %agent_id, parent = ?parent, "Spawning agent");
 
         // Create session
-        self.memory
+        let session_id = self
+            .memory
             .create_session(agent_id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OpenFang)?
+            .id;
 
         // Inherit kernel exec_policy as fallback if agent manifest doesn't have one
         let mut manifest = manifest;
@@ -1174,9 +1219,10 @@ impl OpenFangKernel {
         apply_budget_defaults(&self.config.budget, &mut manifest.resources);
 
         // Create workspace directory for the agent (name-based, so SOUL.md survives recreation)
-        let workspace_dir = manifest.workspace.clone().unwrap_or_else(|| {
-            self.config.effective_workspaces_dir().join(&name)
-        });
+        let workspace_dir = manifest
+            .workspace
+            .clone()
+            .unwrap_or_else(|| self.config.effective_workspaces_dir().join(&name));
         ensure_workspace(&workspace_dir)?;
         if manifest.generate_identity_files {
             generate_identity_files(&workspace_dir, &manifest);
@@ -1281,6 +1327,45 @@ impl OpenFangKernel {
         Ok(signed.manifest)
     }
 
+    fn has_concurrent_agent_sessions(&self, agent_id: AgentId) -> bool {
+        match self.memory.list_agent_sessions(agent_id) {
+            Ok(sessions) => sessions.len() > 1,
+            Err(e) => {
+                warn!(agent_id = %agent_id, "Failed to list agent sessions for isolation guardrails: {e}");
+                true
+            }
+        }
+    }
+
+    fn resolve_requested_session_id(
+        &self,
+        entry: &AgentEntry,
+        requested_session_id: Option<SessionId>,
+    ) -> KernelResult<SessionId> {
+        let Some(session_id) = requested_session_id else {
+            return Ok(entry.session_id);
+        };
+
+        let session = self
+            .memory
+            .get_session(session_id)
+            .map_err(KernelError::OpenFang)?
+            .ok_or_else(|| {
+                KernelError::OpenFang(OpenFangError::Internal(format!(
+                    "Session not found: {session_id}",
+                )))
+            })?;
+
+        if session.agent_id != entry.id {
+            return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                "Session {session_id} does not belong to agent {}",
+                entry.id
+            ))));
+        }
+
+        Ok(session_id)
+    }
+
     /// Send a message to an agent and get a response.
     ///
     /// Automatically upgrades the kernel handle from `self_handle` so that
@@ -1291,12 +1376,21 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
     ) -> KernelResult<AgentLoopResult> {
+        self.send_message_in_session(agent_id, message, None).await
+    }
+
+    pub async fn send_message_in_session(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        requested_session_id: Option<SessionId>,
+    ) -> KernelResult<AgentLoopResult> {
         let handle: Option<Arc<dyn KernelHandle>> = self
             .self_handle
             .get()
             .and_then(|w| w.upgrade())
             .map(|arc| arc as Arc<dyn KernelHandle>);
-        self.send_message_with_handle(agent_id, message, handle)
+        self.send_message_with_handle_in_session(agent_id, message, handle, requested_session_id)
             .await
     }
 
@@ -1307,6 +1401,17 @@ impl OpenFangKernel {
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
     ) -> KernelResult<AgentLoopResult> {
+        self.send_message_with_handle_in_session(agent_id, message, kernel_handle, None)
+            .await
+    }
+
+    pub async fn send_message_with_handle_in_session(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        requested_session_id: Option<SessionId>,
+    ) -> KernelResult<AgentLoopResult> {
         // Enforce quota before running the agent loop
         self.scheduler
             .check_quota(agent_id)
@@ -1315,6 +1420,8 @@ impl OpenFangKernel {
         let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
         })?;
+        let resolved_session_id =
+            self.resolve_requested_session_id(&entry, requested_session_id)?;
 
         // Dispatch based on module type
         let result = if entry.manifest.module.starts_with("wasm:") {
@@ -1324,19 +1431,20 @@ impl OpenFangKernel {
             self.execute_python_agent(&entry, agent_id, message).await
         } else {
             // Default: LLM agent loop (builtin:chat or any unrecognized module)
-            self.execute_llm_agent(&entry, agent_id, message, kernel_handle)
-                .await
+            self.execute_llm_agent(
+                &entry,
+                agent_id,
+                message,
+                kernel_handle,
+                resolved_session_id,
+            )
+            .await
         };
 
         match result {
             Ok(result) => {
-                // Record token usage for quota tracking
                 self.scheduler.record_usage(agent_id, &result.total_usage);
-
-                // Update last active time
                 let _ = self.registry.set_state(agent_id, AgentState::Running);
-
-                // SECURITY: Record successful message in audit trail
                 self.audit_log.record(
                     agent_id.to_string(),
                     openfang_runtime::audit::AuditAction::AgentMessage,
@@ -1346,19 +1454,15 @@ impl OpenFangKernel {
                     ),
                     "ok",
                 );
-
                 Ok(result)
             }
             Err(e) => {
-                // SECURITY: Record failed message in audit trail
                 self.audit_log.record(
                     agent_id.to_string(),
                     openfang_runtime::audit::AuditAction::AgentMessage,
                     "agent loop failed",
                     format!("error: {e}"),
                 );
-
-                // Record the failure in supervisor for health reporting
                 self.supervisor.record_panic();
                 warn!(agent_id = %agent_id, error = %e, "Agent loop failed — recorded in supervisor");
                 Err(e)
@@ -1383,7 +1487,19 @@ impl OpenFangKernel {
         tokio::sync::mpsc::Receiver<StreamEvent>,
         tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
     )> {
-        // Enforce quota before spawning the streaming task
+        self.send_message_streaming_in_session(agent_id, message, kernel_handle, None)
+    }
+
+    pub fn send_message_streaming_in_session(
+        self: &Arc<Self>,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        requested_session_id: Option<SessionId>,
+    ) -> KernelResult<(
+        tokio::sync::mpsc::Receiver<StreamEvent>,
+        tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
+    )> {
         self.scheduler
             .check_quota(agent_id)
             .map_err(KernelError::OpenFang)?;
@@ -1391,6 +1507,8 @@ impl OpenFangKernel {
         let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
         })?;
+        let resolved_session_id =
+            self.resolve_requested_session_id(&entry, requested_session_id)?;
 
         let is_wasm = entry.manifest.module.starts_with("wasm:");
         let is_python = entry.manifest.module.starts_with("python:");
@@ -1449,10 +1567,10 @@ impl OpenFangKernel {
         // LLM agent: true streaming via agent loop
         let mut session = self
             .memory
-            .get_session(entry.session_id)
+            .get_session(resolved_session_id)
             .map_err(KernelError::OpenFang)?
             .unwrap_or_else(|| openfang_memory::session::Session {
-                id: entry.session_id,
+                id: resolved_session_id,
                 agent_id,
                 messages: Vec::new(),
                 context_window_tokens: 0,
@@ -1496,8 +1614,9 @@ impl OpenFangKernel {
 
         let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let mut manifest = entry.manifest.clone();
+        let session_isolation_enabled = self.has_concurrent_agent_sessions(agent_id);
 
-        // Lazy backfill: create workspace for existing agents spawned before workspaces
+        // Lazy backfill: create base workspace for existing agents spawned before workspaces
         if manifest.workspace.is_none() {
             let workspace_dir = self.config.effective_workspaces_dir().join(&manifest.name);
             if let Err(e) = ensure_workspace(&workspace_dir) {
@@ -1507,6 +1626,20 @@ impl OpenFangKernel {
                 let _ = self
                     .registry
                     .update_workspace(agent_id, manifest.workspace.clone());
+            }
+        }
+
+        let base_workspace = manifest.workspace.clone();
+        if session_isolation_enabled {
+            if let Some(session_workspace) = base_workspace
+                .as_deref()
+                .map(|workspace| session_workspace_root(workspace, resolved_session_id))
+            {
+                if let Err(e) = ensure_workspace(&session_workspace) {
+                    warn!(agent_id = %agent_id, "Failed to prepare session workspace (streaming): {e}");
+                } else {
+                    manifest.workspace = Some(session_workspace);
+                }
             }
         }
 
@@ -1548,23 +1681,29 @@ impl OpenFangKernel {
                     String::new()
                 },
                 workspace_path: manifest.workspace.as_ref().map(|p| p.display().to_string()),
-                soul_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "SOUL.md")),
-                user_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "USER.md")),
-                memory_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "MEMORY.md")),
-                canonical_context: self
-                    .memory
-                    .canonical_context(agent_id, None)
-                    .ok()
-                    .and_then(|(s, _)| s),
+                soul_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "SOUL.md",
+                ),
+                user_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "USER.md",
+                ),
+                memory_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "MEMORY.md",
+                ),
+                canonical_context: if session_isolation_enabled {
+                    None
+                } else {
+                    self.memory
+                        .canonical_context(agent_id, None)
+                        .ok()
+                        .and_then(|(s, _)| s)
+                },
                 user_name,
                 channel_type: None,
                 is_subagent: manifest
@@ -1573,36 +1712,45 @@ impl OpenFangKernel {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 is_autonomous: manifest.autonomous.is_some(),
-                agents_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "AGENTS.md")),
-                bootstrap_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "BOOTSTRAP.md")),
+                agents_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "AGENTS.md",
+                ),
+                bootstrap_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "BOOTSTRAP.md",
+                ),
                 workspace_context: manifest.workspace.as_ref().map(|w| {
                     let mut ws_ctx =
                         openfang_runtime::workspace_context::WorkspaceContext::detect(w);
                     ws_ctx.build_context_section()
                 }),
-                identity_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "IDENTITY.md")),
+                identity_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "IDENTITY.md",
+                ),
                 heartbeat_md: if manifest.autonomous.is_some() {
-                    manifest
-                        .workspace
-                        .as_ref()
-                        .and_then(|w| read_identity_file(w, "HEARTBEAT.md"))
+                    read_identity_file_from_workspaces(
+                        manifest.workspace.as_deref(),
+                        base_workspace.as_deref(),
+                        "HEARTBEAT.md",
+                    )
                 } else {
                     None
                 },
                 peer_agents,
-                current_date: Some(chrono::Local::now().format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)").to_string()),
+                current_date: Some(
+                    chrono::Local::now()
+                        .format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)")
+                        .to_string(),
+                ),
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
+            manifest.metadata.remove("canonical_context_msg");
             // Store canonical context separately for injection as user message
             // (keeps system prompt stable across turns for provider prompt caching)
             if let Some(cc_msg) =
@@ -1718,7 +1866,7 @@ impl OpenFangKernel {
             match result {
                 Ok(result) => {
                     // Append new messages to canonical session for cross-channel memory
-                    if session.messages.len() > messages_before {
+                    if !session_isolation_enabled && session.messages.len() > messages_before {
                         let new_messages = session.messages[messages_before..].to_vec();
                         if let Err(e) = memory.append_canonical(agent_id, &new_messages, None) {
                             warn!(agent_id = %agent_id, "Failed to update canonical session (streaming): {e}");
@@ -1931,6 +2079,7 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
+        resolved_session_id: SessionId,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -1939,10 +2088,10 @@ impl OpenFangKernel {
 
         let mut session = self
             .memory
-            .get_session(entry.session_id)
+            .get_session(resolved_session_id)
             .map_err(KernelError::OpenFang)?
             .unwrap_or_else(|| openfang_memory::session::Session {
-                id: entry.session_id,
+                id: resolved_session_id,
                 agent_id,
                 messages: Vec::new(),
                 context_window_tokens: 0,
@@ -1964,8 +2113,9 @@ impl OpenFangKernel {
 
         // Apply model routing if configured (disabled in Stable mode)
         let mut manifest = entry.manifest.clone();
+        let session_isolation_enabled = self.has_concurrent_agent_sessions(agent_id);
 
-        // Lazy backfill: create workspace for existing agents spawned before workspaces
+        // Lazy backfill: create base workspace for existing agents spawned before workspaces
         if manifest.workspace.is_none() {
             let workspace_dir = self.config.effective_workspaces_dir().join(&manifest.name);
             if let Err(e) = ensure_workspace(&workspace_dir) {
@@ -1976,6 +2126,20 @@ impl OpenFangKernel {
                 let _ = self
                     .registry
                     .update_workspace(agent_id, manifest.workspace.clone());
+            }
+        }
+
+        let base_workspace = manifest.workspace.clone();
+        if session_isolation_enabled {
+            if let Some(session_workspace) = base_workspace
+                .as_deref()
+                .map(|workspace| session_workspace_root(workspace, resolved_session_id))
+            {
+                if let Err(e) = ensure_workspace(&session_workspace) {
+                    warn!(agent_id = %agent_id, "Failed to prepare session workspace: {e}");
+                } else {
+                    manifest.workspace = Some(session_workspace);
+                }
             }
         }
 
@@ -2017,23 +2181,29 @@ impl OpenFangKernel {
                     String::new()
                 },
                 workspace_path: manifest.workspace.as_ref().map(|p| p.display().to_string()),
-                soul_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "SOUL.md")),
-                user_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "USER.md")),
-                memory_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "MEMORY.md")),
-                canonical_context: self
-                    .memory
-                    .canonical_context(agent_id, None)
-                    .ok()
-                    .and_then(|(s, _)| s),
+                soul_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "SOUL.md",
+                ),
+                user_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "USER.md",
+                ),
+                memory_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "MEMORY.md",
+                ),
+                canonical_context: if session_isolation_enabled {
+                    None
+                } else {
+                    self.memory
+                        .canonical_context(agent_id, None)
+                        .ok()
+                        .and_then(|(s, _)| s)
+                },
                 user_name,
                 channel_type: None,
                 is_subagent: manifest
@@ -2042,36 +2212,45 @@ impl OpenFangKernel {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 is_autonomous: manifest.autonomous.is_some(),
-                agents_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "AGENTS.md")),
-                bootstrap_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "BOOTSTRAP.md")),
+                agents_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "AGENTS.md",
+                ),
+                bootstrap_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "BOOTSTRAP.md",
+                ),
                 workspace_context: manifest.workspace.as_ref().map(|w| {
                     let mut ws_ctx =
                         openfang_runtime::workspace_context::WorkspaceContext::detect(w);
                     ws_ctx.build_context_section()
                 }),
-                identity_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "IDENTITY.md")),
+                identity_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "IDENTITY.md",
+                ),
                 heartbeat_md: if manifest.autonomous.is_some() {
-                    manifest
-                        .workspace
-                        .as_ref()
-                        .and_then(|w| read_identity_file(w, "HEARTBEAT.md"))
+                    read_identity_file_from_workspaces(
+                        manifest.workspace.as_deref(),
+                        base_workspace.as_deref(),
+                        "HEARTBEAT.md",
+                    )
                 } else {
                     None
                 },
                 peer_agents,
-                current_date: Some(chrono::Local::now().format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)").to_string()),
+                current_date: Some(
+                    chrono::Local::now()
+                        .format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)")
+                        .to_string(),
+                ),
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
+            manifest.metadata.remove("canonical_context_msg");
             // Store canonical context separately for injection as user message
             // (keeps system prompt stable across turns for provider prompt caching)
             if let Some(cc_msg) =
@@ -2197,7 +2376,7 @@ impl OpenFangKernel {
         .map_err(KernelError::OpenFang)?;
 
         // Append new messages to canonical session for cross-channel memory
-        if session.messages.len() > messages_before {
+        if !session_isolation_enabled && session.messages.len() > messages_before {
             let new_messages = session.messages[messages_before..].to_vec();
             if let Err(e) = self.memory.append_canonical(agent_id, &new_messages, None) {
                 warn!("Failed to update canonical session: {e}");
@@ -2476,7 +2655,15 @@ impl OpenFangKernel {
                 .structured_set(agent_id, &key, serde_json::Value::String(summary.clone()));
 
         // Also write to workspace memory/ dir if workspace exists
-        if let Some(ref workspace) = entry.manifest.workspace {
+        let summary_workspace = entry.manifest.workspace.as_ref().map(|workspace| {
+            if self.has_concurrent_agent_sessions(agent_id) {
+                session_workspace_root(workspace, entry.session_id)
+            } else {
+                workspace.to_path_buf()
+            }
+        });
+        if let Some(workspace) = summary_workspace {
+            let _ = ensure_workspace(&workspace);
             let mem_dir = workspace.join("memory");
             let filename = format!("{date}-{slug}.md");
             let _ = std::fs::write(mem_dir.join(&filename), &summary);
@@ -2492,15 +2679,11 @@ impl OpenFangKernel {
     /// Switch an agent's model.
     pub fn set_agent_model(&self, agent_id: AgentId, model: &str) -> KernelResult<()> {
         // Resolve provider from model catalog so switching models also switches provider
-        let resolved_provider = self
-            .model_catalog
-            .read()
-            .ok()
-            .and_then(|catalog| {
-                catalog
-                    .find_model(model)
-                    .map(|entry| entry.provider.clone())
-            });
+        let resolved_provider = self.model_catalog.read().ok().and_then(|catalog| {
+            catalog
+                .find_model(model)
+                .map(|entry| entry.provider.clone())
+        });
 
         // If catalog lookup failed, try to infer provider from model name prefix
         let provider = resolved_provider.or_else(|| infer_provider_from_model(model));
@@ -2721,9 +2904,11 @@ impl OpenFangKernel {
             .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(e)))?;
 
         // Store the LLM summary in the canonical session
-        self.memory
-            .store_llm_summary(agent_id, &result.summary, result.kept_messages.clone())
-            .map_err(KernelError::OpenFang)?;
+        if !self.has_concurrent_agent_sessions(agent_id) {
+            self.memory
+                .store_llm_summary(agent_id, &result.summary, result.kept_messages.clone())
+                .map_err(KernelError::OpenFang)?;
+        }
 
         // Post-compaction audit: validate and repair the kept messages
         let (repaired_messages, repair_stats) =
@@ -2961,7 +3146,11 @@ impl OpenFangKernel {
         }
 
         // If an agent with this hand's name already exists, remove it first
-        let existing = self.registry.list().into_iter().find(|e| e.name == def.agent.name);
+        let existing = self
+            .registry
+            .list()
+            .into_iter()
+            .find(|e| e.name == def.agent.name);
         if let Some(old) = existing {
             info!(agent = %old.name, id = %old.id, "Removing existing hand agent for reactivation");
             let _ = self.kill_agent(old.id);
@@ -3286,6 +3475,42 @@ impl OpenFangKernel {
         Ok((run_id, output))
     }
 
+    pub async fn run_workflow_shadow(
+        &self,
+        workflow_id: WorkflowId,
+        input: String,
+        production_output: String,
+    ) -> KernelResult<(WorkflowRunId, WorkflowShadowComparison)> {
+        let (run_id, _shadow_output) = self.run_workflow(workflow_id, input).await?;
+        let comparison = self
+            .workflows
+            .record_shadow_comparison(run_id, production_output)
+            .await
+            .map_err(|error| {
+                KernelError::OpenFang(OpenFangError::Internal(format!(
+                    "Shadow comparison failed: {error}"
+                )))
+            })?;
+        Ok((run_id, comparison))
+    }
+
+    pub async fn route_workflow(&self, request: &WorkflowRouteRequest) -> Option<WorkflowId> {
+        self.workflows.route_workflow(request).await
+    }
+
+    pub async fn run_routed_workflow(
+        &self,
+        request: WorkflowRouteRequest,
+        input: String,
+    ) -> KernelResult<(WorkflowRunId, String)> {
+        let workflow_id = self.route_workflow(&request).await.ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::Internal(
+                "No matching workflow route rule".to_string(),
+            ))
+        })?;
+        self.run_workflow(workflow_id, input).await
+    }
+
     /// Start background loops for all non-reactive agents.
     ///
     /// Must be called after the kernel is wrapped in `Arc` (e.g., from the daemon).
@@ -3293,14 +3518,17 @@ impl OpenFangKernel {
     /// `Continuous`, `Periodic`, or `Proactive` schedules.
     pub fn start_background_agents(self: &Arc<Self>) {
         let agents = self.registry.list();
-        let mut bg_agents: Vec<(openfang_types::agent::AgentId, String, ScheduleMode)> =
-            Vec::new();
+        let mut bg_agents: Vec<(openfang_types::agent::AgentId, String, ScheduleMode)> = Vec::new();
 
         for entry in &agents {
             if matches!(entry.manifest.schedule, ScheduleMode::Reactive) {
                 continue;
             }
-            bg_agents.push((entry.id, entry.name.clone(), entry.manifest.schedule.clone()));
+            bg_agents.push((
+                entry.id,
+                entry.name.clone(),
+                entry.manifest.schedule.clone(),
+            ));
         }
 
         if !bg_agents.is_empty() {
@@ -3507,7 +3735,9 @@ impl OpenFangKernel {
                                 let timeout_s = timeout_secs.unwrap_or(120);
                                 let timeout = std::time::Duration::from_secs(timeout_s);
                                 let delivery = job.delivery.clone();
-                                let kh: std::sync::Arc<dyn openfang_runtime::kernel_handle::KernelHandle> = kernel.clone();
+                                let kh: std::sync::Arc<
+                                    dyn openfang_runtime::kernel_handle::KernelHandle,
+                                > = kernel.clone();
                                 match tokio::time::timeout(
                                     timeout,
                                     kernel.send_message_with_handle(agent_id, message, Some(kh)),
@@ -3878,14 +4108,18 @@ impl OpenFangKernel {
             let base_url = if has_custom_url {
                 manifest.model.base_url.clone()
             } else if agent_provider == default_provider {
-                self.config
-                    .default_model
-                    .base_url
-                    .clone()
-                    .or_else(|| self.config.provider_urls.get(agent_provider.as_str()).cloned())
+                self.config.default_model.base_url.clone().or_else(|| {
+                    self.config
+                        .provider_urls
+                        .get(agent_provider.as_str())
+                        .cloned()
+                })
             } else {
                 // Check provider_urls before falling back to hardcoded defaults
-                self.config.provider_urls.get(agent_provider.as_str()).cloned()
+                self.config
+                    .provider_urls
+                    .get(agent_provider.as_str())
+                    .cloned()
             };
 
             let driver_config = DriverConfig {
@@ -3902,8 +4136,10 @@ impl OpenFangKernel {
         // If fallback models are configured, wrap in FallbackDriver
         if !manifest.fallback_models.is_empty() {
             // Primary driver uses the agent's own model name (already set in request)
-            let mut chain: Vec<(std::sync::Arc<dyn openfang_runtime::llm_driver::LlmDriver>, String)> =
-                vec![(primary.clone(), String::new())];
+            let mut chain: Vec<(
+                std::sync::Arc<dyn openfang_runtime::llm_driver::LlmDriver>,
+                String,
+            )> = vec![(primary.clone(), String::new())];
             for fb in &manifest.fallback_models {
                 let config = DriverConfig {
                     provider: fb.provider.clone(),
@@ -4328,7 +4564,12 @@ impl OpenFangKernel {
         // Apply per-agent tool allowlist/blocklist (manifest-level filtering)
         let (tool_allowlist, tool_blocklist) = entry
             .as_ref()
-            .map(|e| (e.manifest.tool_allowlist.clone(), e.manifest.tool_blocklist.clone()))
+            .map(|e| {
+                (
+                    e.manifest.tool_allowlist.clone(),
+                    e.manifest.tool_blocklist.clone(),
+                )
+            })
             .unwrap_or_default();
 
         if !tool_allowlist.is_empty() {
@@ -4487,7 +4728,8 @@ impl OpenFangKernel {
                 tool_names.join(", ")
             ));
         }
-        summary.push_str("MCP tools are prefixed with mcp_{server}_ and work like regular tools.\n");
+        summary
+            .push_str("MCP tools are prefixed with mcp_{server}_ and work like regular tools.\n");
         // Add filesystem-specific guidance when a filesystem MCP server is connected
         let has_filesystem = servers.keys().any(|s| s.contains("filesystem"));
         if has_filesystem {
@@ -4666,8 +4908,8 @@ fn infer_provider_from_model(model: &str) -> Option<String> {
             "minimax" | "gemini" | "anthropic" | "openai" | "groq" | "deepseek" | "mistral"
             | "cohere" | "xai" | "ollama" | "together" | "fireworks" | "perplexity"
             | "cerebras" | "sambanova" | "replicate" | "huggingface" | "ai21" | "codex"
-            | "claude-code" | "copilot" | "github-copilot" | "qwen" | "zhipu" | "zai" | "moonshot"
-            | "openrouter" | "volcengine" | "doubao" | "dashscope" => {
+            | "claude-code" | "copilot" | "github-copilot" | "qwen" | "zhipu" | "zai"
+            | "moonshot" | "openrouter" | "volcengine" | "doubao" | "dashscope" => {
                 return Some(prefix.to_string());
             }
             _ => {}
@@ -4680,16 +4922,26 @@ fn infer_provider_from_model(model: &str) -> Option<String> {
         Some("gemini".to_string())
     } else if lower.starts_with("claude") {
         Some("anthropic".to_string())
-    } else if lower.starts_with("gpt") || lower.starts_with("o1") || lower.starts_with("o3") || lower.starts_with("o4") {
+    } else if lower.starts_with("gpt")
+        || lower.starts_with("o1")
+        || lower.starts_with("o3")
+        || lower.starts_with("o4")
+    {
         Some("openai".to_string())
-    } else if lower.starts_with("llama") || lower.starts_with("mixtral") || lower.starts_with("qwen") {
+    } else if lower.starts_with("llama")
+        || lower.starts_with("mixtral")
+        || lower.starts_with("qwen")
+    {
         // These could be on multiple providers; don't infer
         None
     } else if lower.starts_with("grok") {
         Some("xai".to_string())
     } else if lower.starts_with("deepseek") {
         Some("deepseek".to_string())
-    } else if lower.starts_with("mistral") || lower.starts_with("codestral") || lower.starts_with("pixtral") {
+    } else if lower.starts_with("mistral")
+        || lower.starts_with("codestral")
+        || lower.starts_with("pixtral")
+    {
         Some("mistral".to_string())
     } else if lower.starts_with("command") || lower.starts_with("embed-") {
         Some("cohere".to_string())
@@ -5257,7 +5509,10 @@ impl KernelHandle for OpenFangKernel {
         };
 
         adapter
-            .send(&user, openfang_channels::types::ChannelContent::Text(message.to_string()))
+            .send(
+                &user,
+                openfang_channels::types::ChannelContent::Text(message.to_string()),
+            )
             .await
             .map_err(|e| format!("Channel send failed: {e}"))?;
 
@@ -5575,5 +5830,57 @@ mod tests {
         assert!(!caps
             .iter()
             .any(|c| matches!(c, Capability::ToolInvoke(name) if name == "shell_exec")));
+    }
+    #[test]
+    fn test_session_workspace_root_is_scoped_by_session_id() {
+        let base_workspace = PathBuf::from("/tmp/openfang-agent");
+        let session_id = SessionId::new();
+        let scoped = session_workspace_root(&base_workspace, session_id);
+        assert_eq!(
+            scoped,
+            base_workspace
+                .join(".session-workspaces")
+                .join(session_id.to_string())
+        );
+    }
+
+    #[test]
+    fn test_session_workspace_root_is_idempotent_for_scoped_workspaces() {
+        let session_id = SessionId::new();
+        let scoped = PathBuf::from("/tmp/openfang-agent")
+            .join(".session-workspaces")
+            .join(session_id.to_string());
+        assert_eq!(session_workspace_root(&scoped, session_id), scoped);
+    }
+
+    #[test]
+    fn test_read_identity_file_prefers_session_workspace_then_falls_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_workspace = temp.path().join("agent");
+        let session_workspace = base_workspace.join(".session-workspaces").join("session-a");
+        std::fs::create_dir_all(&base_workspace).unwrap();
+        std::fs::create_dir_all(&session_workspace).unwrap();
+
+        std::fs::write(base_workspace.join("USER.md"), "base-user").unwrap();
+        assert_eq!(
+            read_identity_file_from_workspaces(
+                Some(session_workspace.as_path()),
+                Some(base_workspace.as_path()),
+                "USER.md",
+            )
+            .as_deref(),
+            Some("base-user")
+        );
+
+        std::fs::write(session_workspace.join("USER.md"), "session-user").unwrap();
+        assert_eq!(
+            read_identity_file_from_workspaces(
+                Some(session_workspace.as_path()),
+                Some(base_workspace.as_path()),
+                "USER.md",
+            )
+            .as_deref(),
+            Some("session-user")
+        );
     }
 }

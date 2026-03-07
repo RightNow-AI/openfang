@@ -17,6 +17,25 @@ use tracing::{debug, warn};
 /// Maximum inter-agent call depth to prevent infinite recursion (A->B->C->...).
 const MAX_AGENT_CALL_DEPTH: u32 = 5;
 
+fn isolated_tool_scope(caller_agent_id: Option<&str>, workspace_root: Option<&Path>) -> String {
+    let agent_id = caller_agent_id.unwrap_or("default");
+    let session_scope = workspace_root
+        .filter(|root| {
+            root.parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                == Some(".session-workspaces")
+        })
+        .and_then(|root| root.file_name())
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty());
+
+    match session_scope {
+        Some(scope) => format!("{scope}-{agent_id}"),
+        None => agent_id.to_string(),
+    }
+}
+
 /// Check if a shell command should be blocked by taint tracking.
 ///
 /// Commands containing patterns that look like injected external data
@@ -120,7 +139,11 @@ pub async fn execute_tool(
     // Capability enforcement: reject tools not in the allowed list
     if let Some(allowed) = allowed_tools {
         if !allowed.iter().any(|t| t == tool_name) {
-            warn!(tool_name, "Capability denied: tool not in allowed list");
+            warn!(
+                tool_name,
+                agent_id = caller_agent_id.unwrap_or("unknown"),
+                "Capability denied: tool not in allowed list"
+            );
             return ToolResult {
                 tool_use_id: tool_use_id.to_string(),
                 content: format!(
@@ -143,10 +166,18 @@ pub async fn execute_tool(
             );
             match kh.request_approval(agent_id_str, tool_name, &summary).await {
                 Ok(true) => {
-                    debug!(tool_name, "Approval granted — proceeding with execution");
+                    debug!(
+                        tool_name,
+                        agent_id = agent_id_str,
+                        "Approval granted — proceeding with execution"
+                    );
                 }
                 Ok(false) => {
-                    warn!(tool_name, "Approval denied — blocking tool execution");
+                    warn!(
+                        tool_name,
+                        agent_id = agent_id_str,
+                        "Approval denied — blocking tool execution"
+                    );
                     return ToolResult {
                         tool_use_id: tool_use_id.to_string(),
                         content: format!(
@@ -157,7 +188,12 @@ pub async fn execute_tool(
                     };
                 }
                 Err(e) => {
-                    warn!(tool_name, error = %e, "Approval system error");
+                    warn!(
+                        tool_name,
+                        agent_id = agent_id_str,
+                        error = %e,
+                        "Approval system error"
+                    );
                     return ToolResult {
                         tool_use_id: tool_use_id.to_string(),
                         content: format!("Approval system error: {e}"),
@@ -167,6 +203,8 @@ pub async fn execute_tool(
             }
         }
     }
+
+    let tool_scope = isolated_tool_scope(caller_agent_id, workspace_root);
 
     debug!(tool_name, "Executing tool");
     let result = match tool_name {
@@ -191,7 +229,9 @@ pub async fn execute_tool(
             let headers = input.get("headers").and_then(|v| v.as_object());
             let body = input["body"].as_str();
             if let Some(ctx) = web_ctx {
-                ctx.fetch.fetch_with_options(url, method, headers, body).await
+                ctx.fetch
+                    .fetch_with_options(url, method, headers, body)
+                    .await
             } else {
                 tool_web_fetch_legacy(input).await
             }
@@ -290,7 +330,7 @@ pub async fn execute_tool(
 
         // Docker sandbox tool
         "docker_exec" => {
-            tool_docker_exec(input, docker_config, workspace_root, caller_agent_id).await
+            tool_docker_exec(input, docker_config, workspace_root, tool_scope.as_str()).await
         }
 
         // Location tool
@@ -305,11 +345,11 @@ pub async fn execute_tool(
         "channel_send" => tool_channel_send(input, kernel).await,
 
         // Persistent process tools
-        "process_start" => tool_process_start(input, process_manager, caller_agent_id).await,
-        "process_poll" => tool_process_poll(input, process_manager).await,
-        "process_write" => tool_process_write(input, process_manager).await,
-        "process_kill" => tool_process_kill(input, process_manager).await,
-        "process_list" => tool_process_list(process_manager, caller_agent_id).await,
+        "process_start" => tool_process_start(input, process_manager, tool_scope.as_str()).await,
+        "process_poll" => tool_process_poll(input, process_manager, tool_scope.as_str()).await,
+        "process_write" => tool_process_write(input, process_manager, tool_scope.as_str()).await,
+        "process_kill" => tool_process_kill(input, process_manager, tool_scope.as_str()).await,
+        "process_list" => tool_process_list(process_manager, tool_scope.as_str()).await,
 
         // Hand tools (curated autonomous capability packages)
         "hand_list" => tool_hand_list(kernel).await,
@@ -333,77 +373,70 @@ pub async fn execute_tool(
             }
             match browser_ctx {
                 Some(mgr) => {
-                    let aid = caller_agent_id.unwrap_or("default");
-                    crate::browser::tool_browser_navigate(input, mgr, aid).await
+                    crate::browser::tool_browser_navigate(input, mgr, tool_scope.as_str()).await
                 }
                 None => Err(
-                    "Browser tools not available. Ensure Chrome/Chromium is installed."
-                        .to_string(),
+                    "Browser tools not available. Ensure Chrome/Chromium is installed.".to_string(),
                 ),
             }
         }
         "browser_click" => match browser_ctx {
-            Some(mgr) => {
-                let aid = caller_agent_id.unwrap_or("default");
-                crate::browser::tool_browser_click(input, mgr, aid).await
+            Some(mgr) => crate::browser::tool_browser_click(input, mgr, tool_scope.as_str()).await,
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
         "browser_type" => match browser_ctx {
-            Some(mgr) => {
-                let aid = caller_agent_id.unwrap_or("default");
-                crate::browser::tool_browser_type(input, mgr, aid).await
+            Some(mgr) => crate::browser::tool_browser_type(input, mgr, tool_scope.as_str()).await,
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
         "browser_screenshot" => match browser_ctx {
             Some(mgr) => {
-                let aid = caller_agent_id.unwrap_or("default");
-                crate::browser::tool_browser_screenshot(input, mgr, aid).await
+                crate::browser::tool_browser_screenshot(input, mgr, tool_scope.as_str()).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_read_page" => match browser_ctx {
             Some(mgr) => {
-                let aid = caller_agent_id.unwrap_or("default");
-                crate::browser::tool_browser_read_page(input, mgr, aid).await
+                crate::browser::tool_browser_read_page(input, mgr, tool_scope.as_str()).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_close" => match browser_ctx {
-            Some(mgr) => {
-                let aid = caller_agent_id.unwrap_or("default");
-                crate::browser::tool_browser_close(input, mgr, aid).await
+            Some(mgr) => crate::browser::tool_browser_close(input, mgr, tool_scope.as_str()).await,
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
         "browser_scroll" => match browser_ctx {
-            Some(mgr) => {
-                let aid = caller_agent_id.unwrap_or("default");
-                crate::browser::tool_browser_scroll(input, mgr, aid).await
+            Some(mgr) => crate::browser::tool_browser_scroll(input, mgr, tool_scope.as_str()).await,
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
         "browser_wait" => match browser_ctx {
-            Some(mgr) => {
-                let aid = caller_agent_id.unwrap_or("default");
-                crate::browser::tool_browser_wait(input, mgr, aid).await
+            Some(mgr) => crate::browser::tool_browser_wait(input, mgr, tool_scope.as_str()).await,
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
         "browser_run_js" => match browser_ctx {
-            Some(mgr) => {
-                let aid = caller_agent_id.unwrap_or("default");
-                crate::browser::tool_browser_run_js(input, mgr, aid).await
+            Some(mgr) => crate::browser::tool_browser_run_js(input, mgr, tool_scope.as_str()).await,
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
         "browser_back" => match browser_ctx {
-            Some(mgr) => {
-                let aid = caller_agent_id.unwrap_or("default");
-                crate::browser::tool_browser_back(input, mgr, aid).await
+            Some(mgr) => crate::browser::tool_browser_back(input, mgr, tool_scope.as_str()).await,
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
         },
 
         // Canvas / A2UI tool
@@ -2803,7 +2836,7 @@ async fn tool_docker_exec(
     input: &serde_json::Value,
     docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
     workspace_root: Option<&Path>,
-    caller_agent_id: Option<&str>,
+    caller_scope: &str,
 ) -> Result<String, String> {
     let config = docker_config.ok_or("Docker sandbox not configured")?;
 
@@ -2816,7 +2849,6 @@ async fn tool_docker_exec(
         .ok_or("Missing 'command' parameter")?;
 
     let workspace = workspace_root.ok_or("Docker exec requires a workspace directory")?;
-    let agent_id = caller_agent_id.unwrap_or("default");
 
     // Check Docker availability
     if !crate::docker_sandbox::is_docker_available().await {
@@ -2826,7 +2858,7 @@ async fn tool_docker_exec(
     }
 
     // Create sandbox container
-    let container = crate::docker_sandbox::create_sandbox(config, agent_id, workspace).await?;
+    let container = crate::docker_sandbox::create_sandbox(config, caller_scope, workspace).await?;
 
     // Execute command with timeout
     let timeout = std::time::Duration::from_secs(config.timeout_secs);
@@ -2857,10 +2889,9 @@ async fn tool_docker_exec(
 async fn tool_process_start(
     input: &serde_json::Value,
     pm: Option<&crate::process_manager::ProcessManager>,
-    caller_agent_id: Option<&str>,
+    caller_scope: &str,
 ) -> Result<String, String> {
     let pm = pm.ok_or("Process manager not available")?;
-    let agent_id = caller_agent_id.unwrap_or("default");
     let command = input["command"]
         .as_str()
         .ok_or("Missing 'command' parameter")?;
@@ -2873,7 +2904,7 @@ async fn tool_process_start(
         })
         .unwrap_or_default();
 
-    let proc_id = pm.start(agent_id, command, &args).await?;
+    let proc_id = pm.start(caller_scope, command, &args).await?;
     Ok(serde_json::json!({
         "process_id": proc_id,
         "status": "started"
@@ -2885,11 +2916,13 @@ async fn tool_process_start(
 async fn tool_process_poll(
     input: &serde_json::Value,
     pm: Option<&crate::process_manager::ProcessManager>,
+    caller_scope: &str,
 ) -> Result<String, String> {
     let pm = pm.ok_or("Process manager not available")?;
     let proc_id = input["process_id"]
         .as_str()
         .ok_or("Missing 'process_id' parameter")?;
+    pm.verify_owner(proc_id, caller_scope)?;
     let (stdout, stderr) = pm.read(proc_id).await?;
     Ok(serde_json::json!({
         "stdout": stdout,
@@ -2902,11 +2935,13 @@ async fn tool_process_poll(
 async fn tool_process_write(
     input: &serde_json::Value,
     pm: Option<&crate::process_manager::ProcessManager>,
+    caller_scope: &str,
 ) -> Result<String, String> {
     let pm = pm.ok_or("Process manager not available")?;
     let proc_id = input["process_id"]
         .as_str()
         .ok_or("Missing 'process_id' parameter")?;
+    pm.verify_owner(proc_id, caller_scope)?;
     let data = input["data"].as_str().ok_or("Missing 'data' parameter")?;
     // Always append newline if not present (common expectation for REPLs)
     let data = if data.ends_with('\n') {
@@ -2922,11 +2957,13 @@ async fn tool_process_write(
 async fn tool_process_kill(
     input: &serde_json::Value,
     pm: Option<&crate::process_manager::ProcessManager>,
+    caller_scope: &str,
 ) -> Result<String, String> {
     let pm = pm.ok_or("Process manager not available")?;
     let proc_id = input["process_id"]
         .as_str()
         .ok_or("Missing 'process_id' parameter")?;
+    pm.verify_owner(proc_id, caller_scope)?;
     pm.kill(proc_id).await?;
     Ok(r#"{"status": "killed"}"#.to_string())
 }
@@ -2934,11 +2971,10 @@ async fn tool_process_kill(
 /// List processes for the current agent.
 async fn tool_process_list(
     pm: Option<&crate::process_manager::ProcessManager>,
-    caller_agent_id: Option<&str>,
+    caller_scope: &str,
 ) -> Result<String, String> {
     let pm = pm.ok_or("Process manager not available")?;
-    let agent_id = caller_agent_id.unwrap_or("default");
-    let procs = pm.list(agent_id);
+    let procs = pm.list(caller_scope);
     let list: Vec<serde_json::Value> = procs
         .iter()
         .map(|p| {
@@ -3059,6 +3095,138 @@ async fn tool_canvas_present(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, RwLock,
+    };
+
+    #[derive(Debug)]
+    struct MockApprovalKernel {
+        approval_required_tools: std::collections::HashSet<String>,
+        approval_result: RwLock<Result<bool, String>>,
+        approval_requests: AtomicUsize,
+    }
+
+    impl MockApprovalKernel {
+        fn new(approval_required_tools: &[&str], approval_result: Result<bool, String>) -> Self {
+            Self {
+                approval_required_tools: approval_required_tools
+                    .iter()
+                    .map(|tool| (*tool).to_string())
+                    .collect(),
+                approval_result: RwLock::new(approval_result),
+                approval_requests: AtomicUsize::new(0),
+            }
+        }
+
+        fn approval_request_count(&self) -> usize {
+            self.approval_requests.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl KernelHandle for MockApprovalKernel {
+        async fn spawn_agent(
+            &self,
+            _manifest_toml: &str,
+            _parent_id: Option<&str>,
+        ) -> Result<(String, String), String> {
+            Err("not implemented".to_string())
+        }
+
+        async fn send_to_agent(&self, _agent_id: &str, _message: &str) -> Result<String, String> {
+            Err("not implemented".to_string())
+        }
+
+        fn list_agents(&self) -> Vec<crate::kernel_handle::AgentInfo> {
+            vec![]
+        }
+
+        fn kill_agent(&self, _agent_id: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn memory_store(&self, _key: &str, _value: serde_json::Value) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn memory_recall(&self, _key: &str) -> Result<Option<serde_json::Value>, String> {
+            Ok(None)
+        }
+
+        fn find_agents(&self, _query: &str) -> Vec<crate::kernel_handle::AgentInfo> {
+            vec![]
+        }
+
+        async fn task_post(
+            &self,
+            _title: &str,
+            _description: &str,
+            _assigned_to: Option<&str>,
+            _created_by: Option<&str>,
+        ) -> Result<String, String> {
+            Ok("task-1".to_string())
+        }
+
+        async fn task_claim(&self, _agent_id: &str) -> Result<Option<serde_json::Value>, String> {
+            Ok(None)
+        }
+
+        async fn task_complete(&self, _task_id: &str, _result: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn task_list(&self, _status: Option<&str>) -> Result<Vec<serde_json::Value>, String> {
+            Ok(vec![])
+        }
+
+        async fn publish_event(
+            &self,
+            _event_type: &str,
+            _payload: serde_json::Value,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn knowledge_add_entity(
+            &self,
+            _entity: openfang_types::memory::Entity,
+        ) -> Result<String, String> {
+            Ok("entity-1".to_string())
+        }
+
+        async fn knowledge_add_relation(
+            &self,
+            _relation: openfang_types::memory::Relation,
+        ) -> Result<String, String> {
+            Ok("relation-1".to_string())
+        }
+
+        async fn knowledge_query(
+            &self,
+            _pattern: openfang_types::memory::GraphPattern,
+        ) -> Result<Vec<openfang_types::memory::GraphMatch>, String> {
+            Ok(vec![])
+        }
+
+        fn requires_approval(&self, tool_name: &str) -> bool {
+            self.approval_required_tools.contains(tool_name)
+        }
+
+        async fn request_approval(
+            &self,
+            _agent_id: &str,
+            _tool_name: &str,
+            _action_summary: &str,
+        ) -> Result<bool, String> {
+            self.approval_requests.fetch_add(1, Ordering::SeqCst);
+            self.approval_result
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
+    }
 
     #[test]
     fn test_builtin_tool_definitions() {
@@ -3391,6 +3559,106 @@ mod tests {
         assert!(result.content.contains("Failed to read"));
     }
 
+    #[tokio::test]
+    async fn test_approval_required_denied() {
+        let kernel_impl = Arc::new(MockApprovalKernel::new(&["file_read"], Ok(false)));
+        let kernel: Arc<dyn KernelHandle> = kernel_impl.clone();
+        let allowed = vec!["file_read".to_string()];
+
+        let result = execute_tool(
+            "test-id",
+            "file_read",
+            &serde_json::json!({"path": "/tmp/should-not-run.txt"}),
+            Some(&kernel),
+            Some(&allowed),
+            Some("agent-1"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // exec_policy
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
+
+        assert!(result.is_error);
+        assert!(result.content.contains("Execution denied"));
+        assert_eq!(kernel_impl.approval_request_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_approval_required_approved() {
+        let kernel_impl = Arc::new(MockApprovalKernel::new(&["file_read"], Ok(true)));
+        let kernel: Arc<dyn KernelHandle> = kernel_impl.clone();
+        let allowed = vec!["file_read".to_string()];
+
+        let result = execute_tool(
+            "test-id",
+            "file_read",
+            &serde_json::json!({"path": "/tmp/does-not-exist.txt"}),
+            Some(&kernel),
+            Some(&allowed),
+            Some("agent-2"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // exec_policy
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
+
+        assert!(result.is_error);
+        assert!(!result.content.contains("Execution denied"));
+        assert!(result.content.contains("Failed to read"));
+        assert_eq!(kernel_impl.approval_request_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_approval_system_error_denied() {
+        let kernel_impl = Arc::new(MockApprovalKernel::new(
+            &["file_read"],
+            Err("approval backend unavailable".to_string()),
+        ));
+        let kernel: Arc<dyn KernelHandle> = kernel_impl.clone();
+        let allowed = vec!["file_read".to_string()];
+
+        let result = execute_tool(
+            "test-id",
+            "file_read",
+            &serde_json::json!({"path": "/tmp/should-not-run.txt"}),
+            Some(&kernel),
+            Some(&allowed),
+            Some("agent-3"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // exec_policy
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
+
+        assert!(result.is_error);
+        assert!(result.content.contains("Approval system error"));
+        assert_eq!(kernel_impl.approval_request_count(), 1);
+    }
+
     // --- Schedule parser tests ---
     #[test]
     fn test_parse_schedule_every_minutes() {
@@ -3688,5 +3956,167 @@ mod tests {
         assert_eq!(output["title"], "Test");
         // Cleanup
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn process_scope_dir(name: &str) -> PathBuf {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp
+            .keep()
+            .join("agent")
+            .join(".session-workspaces")
+            .join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn persistent_process_command() -> (String, Vec<String>) {
+        if cfg!(windows) {
+            (
+                "cmd".to_string(),
+                vec![
+                    "/C".to_string(),
+                    "timeout".to_string(),
+                    "/t".to_string(),
+                    "30".to_string(),
+                ],
+            )
+        } else {
+            ("cat".to_string(), vec![])
+        }
+    }
+
+    async fn execute_process_tool_for_scope(
+        tool_name: &str,
+        input: serde_json::Value,
+        workspace: &Path,
+        pm: &crate::process_manager::ProcessManager,
+    ) -> ToolResult {
+        execute_tool(
+            "test-id",
+            tool_name,
+            &input,
+            None,
+            None,
+            Some("agent-under-test"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(workspace),
+            None,
+            None,
+            None,
+            None,
+            Some(pm),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_process_list_filters_by_scope() {
+        let pm = crate::process_manager::ProcessManager::new(5);
+        let scope_a = process_scope_dir("session-a");
+        let scope_b = process_scope_dir("session-b");
+        let (command_a, args_a) = persistent_process_command();
+
+        let start_a = execute_process_tool_for_scope(
+            "process_start",
+            serde_json::json!({"command": command_a, "args": args_a}),
+            &scope_a,
+            &pm,
+        )
+        .await;
+        assert!(!start_a.is_error);
+        let started_a: serde_json::Value = serde_json::from_str(&start_a.content).unwrap();
+        let proc_id_a = started_a["process_id"].as_str().unwrap().to_string();
+
+        let (command_b, args_b) = persistent_process_command();
+        let start_b = execute_process_tool_for_scope(
+            "process_start",
+            serde_json::json!({"command": command_b, "args": args_b}),
+            &scope_b,
+            &pm,
+        )
+        .await;
+        assert!(!start_b.is_error);
+        let started_b: serde_json::Value = serde_json::from_str(&start_b.content).unwrap();
+        let proc_id_b = started_b["process_id"].as_str().unwrap().to_string();
+
+        let list_a =
+            execute_process_tool_for_scope("process_list", serde_json::json!({}), &scope_a, &pm)
+                .await;
+        assert!(!list_a.is_error);
+        let list_a_json: serde_json::Value = serde_json::from_str(&list_a.content).unwrap();
+        let list_a_items = list_a_json.as_array().unwrap();
+        assert_eq!(list_a_items.len(), 1);
+        assert_eq!(list_a_items[0]["id"].as_str(), Some(proc_id_a.as_str()));
+
+        let list_b =
+            execute_process_tool_for_scope("process_list", serde_json::json!({}), &scope_b, &pm)
+                .await;
+        assert!(!list_b.is_error);
+        let list_b_json: serde_json::Value = serde_json::from_str(&list_b.content).unwrap();
+        let list_b_items = list_b_json.as_array().unwrap();
+        assert_eq!(list_b_items.len(), 1);
+        assert_eq!(list_b_items[0]["id"].as_str(), Some(proc_id_b.as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_process_poll_denies_cross_scope_access() {
+        let pm = crate::process_manager::ProcessManager::new(5);
+        let scope_a = process_scope_dir("session-a");
+        let scope_b = process_scope_dir("session-b");
+        let (command, args) = persistent_process_command();
+
+        let start = execute_process_tool_for_scope(
+            "process_start",
+            serde_json::json!({"command": command, "args": args}),
+            &scope_a,
+            &pm,
+        )
+        .await;
+        assert!(!start.is_error);
+        let started: serde_json::Value = serde_json::from_str(&start.content).unwrap();
+        let proc_id = started["process_id"].as_str().unwrap().to_string();
+
+        let denied = execute_process_tool_for_scope(
+            "process_poll",
+            serde_json::json!({"process_id": proc_id.clone()}),
+            &scope_b,
+            &pm,
+        )
+        .await;
+        assert!(denied.is_error);
+        assert!(denied.content.contains("not owned"));
+    }
+
+    #[tokio::test]
+    async fn test_process_kill_denies_cross_scope_access() {
+        let pm = crate::process_manager::ProcessManager::new(5);
+        let scope_a = process_scope_dir("session-a");
+        let scope_b = process_scope_dir("session-b");
+        let (command, args) = persistent_process_command();
+
+        let start = execute_process_tool_for_scope(
+            "process_start",
+            serde_json::json!({"command": command, "args": args}),
+            &scope_a,
+            &pm,
+        )
+        .await;
+        assert!(!start.is_error);
+        let started: serde_json::Value = serde_json::from_str(&start.content).unwrap();
+        let proc_id = started["process_id"].as_str().unwrap().to_string();
+
+        let denied = execute_process_tool_for_scope(
+            "process_kill",
+            serde_json::json!({"process_id": proc_id.clone()}),
+            &scope_b,
+            &pm,
+        )
+        .await;
+        assert!(denied.is_error);
+        assert!(denied.content.contains("not owned"));
     }
 }

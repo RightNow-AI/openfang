@@ -58,8 +58,7 @@ impl ModelCatalog {
             let has_fallback = match provider.id.as_str() {
                 "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
                 "codex" => {
-                    std::env::var("OPENAI_API_KEY").is_ok()
-                        || read_codex_credential().is_some()
+                    std::env::var("OPENAI_API_KEY").is_ok() || read_codex_credential().is_some()
                 }
                 "claude-code" => crate::drivers::claude_code::claude_code_available(),
                 _ => false,
@@ -3115,10 +3114,7 @@ mod tests {
     #[test]
     fn test_resolve_alias() {
         let catalog = ModelCatalog::new();
-        assert_eq!(
-            catalog.resolve_alias("sonnet"),
-            Some("claude-sonnet-4-6")
-        );
+        assert_eq!(catalog.resolve_alias("sonnet"), Some("claude-sonnet-4-6"));
         assert_eq!(
             catalog.resolve_alias("haiku"),
             Some("claude-haiku-4-5-20251001")

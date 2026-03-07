@@ -158,11 +158,7 @@ impl CommsState {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.focus == CommsFocus::EventList && !self.events.is_empty() {
                     let i = self.event_list_state.selected().unwrap_or(0);
-                    let next = if i == 0 {
-                        self.events.len() - 1
-                    } else {
-                        i - 1
-                    };
+                    let next = if i == 0 { self.events.len() - 1 } else { i - 1 };
                     self.event_list_state.select(Some(next));
                 }
             }
@@ -339,12 +335,12 @@ pub fn draw(f: &mut Frame, area: Rect, state: &mut CommsState) {
     f.render_widget(block, area);
 
     let chunks = Layout::vertical([
-        Constraint::Length(2),  // header
-        Constraint::Length(1),  // separator
+        Constraint::Length(2),      // header
+        Constraint::Length(1),      // separator
         Constraint::Percentage(35), // topology
-        Constraint::Length(1),  // separator
-        Constraint::Min(4),     // event list
-        Constraint::Length(1),  // hints
+        Constraint::Length(1),      // separator
+        Constraint::Min(4),         // event list
+        Constraint::Length(1),      // hints
     ])
     .split(inner);
 
@@ -441,10 +437,7 @@ fn draw_topology(f: &mut Frame, area: Rect, state: &CommsState) {
 
     if state.nodes.is_empty() {
         f.render_widget(
-            Paragraph::new(Span::styled(
-                "  No agents running.",
-                theme::dim_style(),
-            )),
+            Paragraph::new(Span::styled("  No agents running.", theme::dim_style())),
             area,
         );
         return;
@@ -491,7 +484,10 @@ fn draw_topology(f: &mut Frame, area: Rect, state: &CommsState) {
                 Span::styled("    ", Style::default()),
                 Span::styled(branch, theme::dim_style()),
                 Span::styled(format!("[{}]", child.state), state_color(&child.state)),
-                Span::styled(format!(" {} ", child.name), Style::default().fg(theme::TEXT)),
+                Span::styled(
+                    format!(" {} ", child.name),
+                    Style::default().fg(theme::TEXT),
+                ),
                 Span::styled(format!("({})", child.model), theme::dim_style()),
             ]));
         }
@@ -679,7 +675,10 @@ fn draw_task_modal(f: &mut Frame, area: Rect, state: &CommsState) {
         rows[3],
     );
     f.render_widget(
-        Paragraph::new(Span::styled("Assign to (agent ID, optional):", field_style(2))),
+        Paragraph::new(Span::styled(
+            "Assign to (agent ID, optional):",
+            field_style(2),
+        )),
         rows[4],
     );
     f.render_widget(
