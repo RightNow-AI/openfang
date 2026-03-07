@@ -1034,6 +1034,7 @@ pub async fn get_agent(
                 "avatar_url": entry.identity.avatar_url,
                 "color": entry.identity.color,
             },
+            "system_prompt": entry.manifest.model.system_prompt,
             "skills": entry.manifest.skills,
             "skills_mode": if entry.manifest.skills.is_empty() { "all" } else { "allowlist" },
             "mcp_servers": entry.manifest.mcp_servers,
