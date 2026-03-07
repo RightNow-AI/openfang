@@ -5133,7 +5133,7 @@ fn apply_budget_defaults(
     budget: &openfang_types::config::BudgetConfig,
     resources: &mut ResourceQuota,
 ) {
-    // Only override hourly if agent has unlimited (0.0) and global is set
+    // Only override hourly if agent has unlimited default (0.0) and global is set
     if budget.max_hourly_usd > 0.0 && resources.max_cost_per_hour_usd == 0.0 {
         resources.max_cost_per_hour_usd = budget.max_hourly_usd;
     }
