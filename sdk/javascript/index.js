@@ -306,6 +306,13 @@ class AgentResource {
   async patchConfig(id, config) {
     return this._c._request("PATCH", "/api/agents/" + id + "/config", config);
   }
+
+  /**set Soul MD */
+  async setSoulMD(id, soulContent) {
+    return this._c._request("PUT", "/api/agents/" + id + "/files/SOUL.md", {
+      content: "# Soul\n" + soulContent,
+    });
+  }
 }
 
 // ── Session Resource ────────────────────────────────────────────
