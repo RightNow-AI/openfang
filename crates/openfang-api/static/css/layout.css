@@ -50,6 +50,11 @@
   transition: opacity 0.2s, transform 0.2s;
 }
 
+[data-theme="light"] .sidebar-logo img,
+[data-theme="light"] .message-avatar img {
+  filter: invert(1);
+}
+
 .sidebar-logo img:hover {
   opacity: 1;
   transform: scale(1.05);
