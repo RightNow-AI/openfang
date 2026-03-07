@@ -6,7 +6,7 @@
 # api_listen = "127.0.0.1:50051"             # HTTP API bind address (use 0.0.0.0 for public)
 
 [default_model]
-provider = "anthropic"                    # "anthropic", "gemini", "openai", "groq", "ollama", etc.
+provider = "anthropic"                    # "anthropic", "gemini", "openai", "groq", "z.ai", "kimi2", "ollama", etc.
 model = "claude-sonnet-4-20250514"        # Model identifier
 api_key_env = "ANTHROPIC_API_KEY"         # Environment variable holding API key
 # base_url = "https://api.anthropic.com"  # Optional: override API endpoint

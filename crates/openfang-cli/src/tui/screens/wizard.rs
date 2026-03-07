@@ -116,6 +116,18 @@ const PROVIDERS: &[ProviderInfo] = &[
         needs_key: true,
     },
     ProviderInfo {
+        name: "kimi2",
+        env_var: "MOONSHOT_API_KEY",
+        default_model: "kimi-k2.5-0711",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "z.ai",
+        env_var: "ZHIPU_API_KEY",
+        default_model: "glm-5-20250605",
+        needs_key: true,
+    },
+    ProviderInfo {
         name: "zhipu",
         env_var: "ZHIPU_API_KEY",
         default_model: "glm-4-plus",

@@ -1336,6 +1336,8 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
             "openrouter/auto",
             "OpenRouter",
         ),
+        ("z.ai", "ZHIPU_API_KEY", "glm-5-20250605", "Z.AI"),
+        ("kimi2", "MOONSHOT_API_KEY", "kimi-k2.5-0711", "Kimi 2"),
     ]
 }
 
@@ -4194,6 +4196,8 @@ fn provider_to_env_var(provider: &str) -> String {
         "perplexity" => "PERPLEXITY_API_KEY".to_string(),
         "cohere" => "COHERE_API_KEY".to_string(),
         "xai" => "XAI_API_KEY".to_string(),
+        "moonshot" | "kimi" | "kimi2" => "MOONSHOT_API_KEY".to_string(),
+        "zai" | "z.ai" => "ZHIPU_API_KEY".to_string(),
         "brave" => "BRAVE_API_KEY".to_string(),
         "tavily" => "TAVILY_API_KEY".to_string(),
         other => format!("{}_API_KEY", other.to_uppercase()),
