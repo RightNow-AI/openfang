@@ -10,11 +10,11 @@ use openfang_kernel::workflow::{
 use openfang_kernel::OpenFangKernel;
 use openfang_memory::session::Session;
 use openfang_types::agent::{AgentId, AgentManifest, SessionId};
-use uuid::Uuid;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
 use openfang_types::message::Message;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use uuid::Uuid;
 
 fn test_config(tmp: &tempfile::TempDir) -> KernelConfig {
     KernelConfig {
@@ -69,7 +69,12 @@ fn only_markdown_file(dir: &Path) -> PathBuf {
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
         .collect();
-    assert_eq!(entries.len(), 1, "expected one markdown file in {}", dir.display());
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected one markdown file in {}",
+        dir.display()
+    );
     entries[0].clone()
 }
 
@@ -122,8 +127,10 @@ fn test_multi_session_e2e_session_summaries_stay_scoped() {
         .join(session_b.to_string())
         .join("memory");
 
-    let session_a_summary = std::fs::read_to_string(only_markdown_file(&session_a_memory_dir)).unwrap();
-    let session_b_summary = std::fs::read_to_string(only_markdown_file(&session_b_memory_dir)).unwrap();
+    let session_a_summary =
+        std::fs::read_to_string(only_markdown_file(&session_a_memory_dir)).unwrap();
+    let session_b_summary =
+        std::fs::read_to_string(only_markdown_file(&session_b_memory_dir)).unwrap();
 
     assert!(session_a_summary.contains("alpha confidential thread"));
     assert!(!session_a_summary.contains("bravo isolated topic"));
