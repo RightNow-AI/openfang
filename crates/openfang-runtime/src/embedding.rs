@@ -179,6 +179,7 @@ pub fn create_embedding_driver(
     provider: &str,
     model: &str,
     api_key_env: &str,
+    base_url_override: Option<&str>,
 ) -> Result<Box<dyn EmbeddingDriver + Send + Sync>, EmbeddingError> {
     let api_key = if api_key_env.is_empty() {
         String::new()
@@ -186,18 +187,22 @@ pub fn create_embedding_driver(
         std::env::var(api_key_env).unwrap_or_default()
     };
 
-    let base_url = match provider {
-        "openai" => OPENAI_BASE_URL.to_string(),
-        "groq" => GROQ_BASE_URL.to_string(),
-        "together" => TOGETHER_BASE_URL.to_string(),
-        "fireworks" => FIREWORKS_BASE_URL.to_string(),
-        "mistral" => MISTRAL_BASE_URL.to_string(),
-        "ollama" => OLLAMA_BASE_URL.to_string(),
-        "vllm" => VLLM_BASE_URL.to_string(),
-        "lmstudio" => LMSTUDIO_BASE_URL.to_string(),
-        other => {
-            warn!("Unknown embedding provider '{other}', using OpenAI-compatible format");
-            format!("https://{other}/v1")
+    let base_url = if let Some(url) = base_url_override {
+        url.to_string()
+    } else {
+        match provider {
+            "openai" => OPENAI_BASE_URL.to_string(),
+            "groq" => GROQ_BASE_URL.to_string(),
+            "together" => TOGETHER_BASE_URL.to_string(),
+            "fireworks" => FIREWORKS_BASE_URL.to_string(),
+            "mistral" => MISTRAL_BASE_URL.to_string(),
+            "ollama" => OLLAMA_BASE_URL.to_string(),
+            "vllm" => VLLM_BASE_URL.to_string(),
+            "lmstudio" => LMSTUDIO_BASE_URL.to_string(),
+            other => {
+                warn!("Unknown embedding provider '{other}', using OpenAI-compatible format");
+                format!("https://{other}/v1")
+            }
         }
     };
 
@@ -351,8 +356,46 @@ mod tests {
     #[test]
     fn test_create_embedding_driver_ollama() {
         // Should succeed even without API key (ollama is local)
-        let driver = create_embedding_driver("ollama", "all-MiniLM-L6-v2", "");
+        let driver = create_embedding_driver("ollama", "all-MiniLM-L6-v2", "", None);
         assert!(driver.is_ok());
         assert_eq!(driver.unwrap().dimensions(), 384);
+    }
+
+    #[test]
+    fn test_create_embedding_driver_with_url_override() {
+        let driver = create_embedding_driver(
+            "ollama",
+            "nomic-embed-text",
+            "",
+            Some("http://192.168.1.100:11434/v1"),
+        );
+        assert!(driver.is_ok());
+
+        let driver = create_embedding_driver(
+            "ollama",
+            "all-MiniLM-L6-v2",
+            "",
+            Some("https://ollama.remote.com/v1"),
+        );
+        assert!(driver.is_ok());
+        assert_eq!(driver.unwrap().dimensions(), 384);
+    }
+
+    #[test]
+    fn test_create_embedding_driver_openai_with_url_override() {
+        // Test that URL override works for OpenAI provider
+        let driver = create_embedding_driver(
+            "openai",
+            "text-embedding-3-small",
+            "OPENAI_API_KEY",
+            Some("https://custom-openai-compatible.example.com/v1"),
+        );
+        assert!(driver.is_ok());
+    }
+
+    #[test]
+    fn test_create_embedding_driver_fallback_to_default_url() {
+        let driver = create_embedding_driver("ollama", "nomic-embed-text", "", None);
+        assert!(driver.is_ok());
     }
 }
