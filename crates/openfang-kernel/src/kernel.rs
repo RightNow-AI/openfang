@@ -1045,9 +1045,12 @@ impl OpenFangKernel {
                             || restored_entry.manifest.model.provider == "default";
                         let is_default_model = restored_entry.manifest.model.model.is_empty()
                             || restored_entry.manifest.model.model == "default";
-                        let is_auto_spawned = restored_entry.name == "assistant"
-                            && restored_entry.manifest.description == "General-purpose assistant";
-                        if is_default_provider && is_default_model || is_auto_spawned {
+                        // Hand agents always declare `model = "default"` in their HAND.toml,
+                        // but the DB stores the resolved name from when they were spawned.
+                        // Always re-apply the current default_model for hand agents so that
+                        // changing default_model in config.toml takes effect after restart.
+                        let is_hand_agent = restored_entry.tags.iter().any(|t| t.starts_with("hand:"));
+                        if is_default_provider && is_default_model || is_hand_agent {
                             if !dm.provider.is_empty() {
                                 restored_entry.manifest.model.provider = dm.provider.clone();
                             }
@@ -1055,9 +1058,14 @@ impl OpenFangKernel {
                                 restored_entry.manifest.model.model = dm.model.clone();
                             }
                             if !dm.api_key_env.is_empty() {
-                                restored_entry.manifest.model.api_key_env = Some(dm.api_key_env.clone());
+                                // For hand agents always override; for default agents only if unset
+                                if is_hand_agent || restored_entry.manifest.model.api_key_env.is_none() {
+                                    restored_entry.manifest.model.api_key_env = Some(dm.api_key_env.clone());
+                                }
                             }
-                            if dm.base_url.is_some() {
+                            if dm.base_url.is_some()
+                                && (is_hand_agent || restored_entry.manifest.model.base_url.is_none())
+                            {
                                 restored_entry.manifest.model.base_url.clone_from(&dm.base_url);
                             }
                         }
@@ -1151,7 +1159,7 @@ impl OpenFangKernel {
         if manifest.exec_policy.is_none() {
             manifest.exec_policy = Some(self.config.exec_policy.clone());
         }
-        info!(agent = %name, id = %agent_id, exec_mode = ?manifest.exec_policy.as_ref().map(|p| &p.mode), "Agent exec_policy resolved");
+        info!(agent = %name, id = %agent_id, exec_mode = ?manifest.exec_policy.as_ref().map(|p| &p.mode), exec_cmds = ?manifest.exec_policy.as_ref().map(|p| &p.allowed_commands), "Agent exec_policy resolved");
 
         // Overlay kernel default_model onto agent if agent didn't explicitly choose.
         // Treat empty or "default" as "use the kernel's configured default_model".
@@ -3928,21 +3936,65 @@ impl OpenFangKernel {
             let mut chain: Vec<(std::sync::Arc<dyn openfang_runtime::llm_driver::LlmDriver>, String)> =
                 vec![(primary.clone(), String::new())];
             for fb in &manifest.fallback_models {
-                let config = DriverConfig {
-                    provider: fb.provider.clone(),
-                    api_key: fb
-                        .api_key_env
+                // Resolve "default" sentinel: inherit the kernel's configured default provider/model
+                let is_default_provider =
+                    fb.provider.is_empty() || fb.provider == "default";
+                let is_default_model = fb.model.is_empty() || fb.model == "default";
+                let (resolved_provider, resolved_model) = if is_default_provider || is_default_model {
+                    let override_guard = self
+                        .default_model_override
+                        .read()
+                        .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+                    let dm = override_guard
                         .as_ref()
-                        .and_then(|env| std::env::var(env).ok()),
+                        .unwrap_or(&self.config.default_model);
+                    let provider = if is_default_provider {
+                        dm.provider.clone()
+                    } else {
+                        fb.provider.clone()
+                    };
+                    let model = if is_default_model {
+                        dm.model.clone()
+                    } else {
+                        fb.model.clone()
+                    };
+                    (provider, model)
+                } else {
+                    (fb.provider.clone(), fb.model.clone())
+                };
+
+                let api_key = if is_default_provider {
+                    // For default provider, prefer agent's api_key_env hint, then fall back to
+                    // the kernel's default key env var
+                    let override_guard = self
+                        .default_model_override
+                        .read()
+                        .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+                    let dm = override_guard
+                        .as_ref()
+                        .unwrap_or(&self.config.default_model);
+                    fb.api_key_env
+                        .as_ref()
+                        .and_then(|env| std::env::var(env).ok())
+                        .or_else(|| std::env::var(&dm.api_key_env).ok())
+                } else {
+                    fb.api_key_env
+                        .as_ref()
+                        .and_then(|env| std::env::var(env).ok())
+                };
+
+                let config = DriverConfig {
+                    provider: resolved_provider.clone(),
+                    api_key,
                     base_url: fb
                         .base_url
                         .clone()
-                        .or_else(|| self.config.provider_urls.get(&fb.provider).cloned()),
+                        .or_else(|| self.config.provider_urls.get(&resolved_provider).cloned()),
                 };
                 match drivers::create_driver(&config) {
-                    Ok(d) => chain.push((d, fb.model.clone())),
+                    Ok(d) => chain.push((d, resolved_model)),
                     Err(e) => {
-                        warn!("Fallback driver '{}' failed to init: {e}", fb.provider);
+                        warn!("Fallback driver '{}' failed to init: {e}", resolved_provider);
                     }
                 }
             }
@@ -5226,6 +5278,65 @@ impl KernelHandle for OpenFangKernel {
 
         let decision = self.approval_manager.request_approval(req).await;
         Ok(decision == ApprovalDecision::Approved)
+    }
+
+    fn is_cmd_approved(&self, _agent_id: &str, base_cmd: &str) -> bool {
+        // Check static allowlist from config
+        if self.config.exec_policy.allowed_commands.iter().any(|c| c == base_cmd) {
+            return true;
+        }
+        // Check runtime-approved set (approved this session, pending restart pickup)
+        self.approval_manager.runtime_allowed_cmds.contains(base_cmd)
+    }
+
+    async fn persist_cmd_approval(&self, base_cmd: &str) -> Result<(), String> {
+        // Skip if already approved (static or runtime)
+        if self.is_cmd_approved("", base_cmd) {
+            return Ok(());
+        }
+
+        // Add to runtime set so the current session doesn't ask again
+        self.approval_manager.runtime_allowed_cmds.insert(base_cmd.to_string());
+
+        // Update in-memory config (unsafe cell-bypass via interior mutability workaround:
+        // KernelConfig.exec_policy is not behind a lock, so we patch config.toml on disk
+        // and rely on the fact that exec_policy is checked fresh each call from the manifest).
+        // Write the updated allowlist to config.toml so future restarts pick it up.
+        let config_path = self.config.home_dir.join("config.toml");
+        let raw = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config.toml: {e}"))?;
+
+        let mut doc = raw
+            .parse::<toml_edit::Document>()
+            .map_err(|e| format!("Failed to parse config.toml: {e}"))?;
+
+        // Ensure [exec_policy] table exists
+        if !doc.contains_key("exec_policy") {
+            doc["exec_policy"] = toml_edit::table();
+        }
+        let ep = doc["exec_policy"]
+            .as_table_mut()
+            .ok_or("exec_policy is not a table")?;
+
+        // Ensure allowed_commands array exists
+        if !ep.contains_key("allowed_commands") {
+            ep["allowed_commands"] = toml_edit::value(toml_edit::Array::new());
+        }
+        let arr = ep["allowed_commands"]
+            .as_array_mut()
+            .ok_or("allowed_commands is not an array")?;
+
+        // Add if not already present
+        let already = arr.iter().any(|v: &toml_edit::Value| v.as_str() == Some(base_cmd));
+        if !already {
+            arr.push(base_cmd);
+        }
+
+        std::fs::write(&config_path, doc.to_string())
+            .map_err(|e| format!("Failed to write config.toml: {e}"))?;
+
+        info!(base_cmd, "Persisted exec_policy.allowed_commands entry to config.toml");
+        Ok(())
     }
 
     fn list_a2a_agents(&self) -> Vec<(String, String)> {

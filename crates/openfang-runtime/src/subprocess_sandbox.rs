@@ -105,7 +105,7 @@ fn extract_base_command(cmd: &str) -> &str {
 
 /// Extract all commands from a shell command string.
 /// Handles pipes (`|`), semicolons (`;`), `&&`, and `||`.
-fn extract_all_commands(command: &str) -> Vec<&str> {
+pub(crate) fn extract_all_commands(command: &str) -> Vec<&str> {
     let mut commands = Vec::new();
     // Split on pipe, semicolon, &&, ||
     // We need to split carefully: first split on ; and &&/||, then on |
@@ -153,6 +153,7 @@ pub fn validate_command_allowlist(command: &str, policy: &ExecPolicy) -> Result<
         }
         ExecSecurityMode::Allowlist => {
             let base_commands = extract_all_commands(command);
+            tracing::debug!(?base_commands, ?policy.allowed_commands, "Checking allowlist");
             for base in &base_commands {
                 // Check safe_bins first
                 if policy.safe_bins.iter().any(|sb| sb == base) {

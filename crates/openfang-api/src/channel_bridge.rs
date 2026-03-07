@@ -555,6 +555,12 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         }
     }
 
+    fn approval_pending_rx(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<openfang_types::approval::ApprovalRequest>> {
+        Some(self.kernel.approval_manager.subscribe())
+    }
+
     async fn list_approvals_text(&self) -> String {
         let pending = self.kernel.approval_manager.list_pending();
         if pending.is_empty() {

@@ -525,6 +525,12 @@ impl ChannelAdapter for TwistAdapter {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let text = match content {
             ChannelContent::Text(text) => text,
+            ChannelContent::ApprovalRequest { request_id, agent_id, tool_name, action_summary } => {
+                format!(
+                    "⏳ 待审批\nAgent: {}\n操作: {} — {}\nID: {}\n/reject {}",
+                    agent_id, tool_name, action_summary, &request_id[..8], &request_id[..8]
+                )
+            }
             _ => "(Unsupported content type)".to_string(),
         };
 

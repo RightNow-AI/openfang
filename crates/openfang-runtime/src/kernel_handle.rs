@@ -134,6 +134,18 @@ pub trait KernelHandle: Send + Sync {
         Ok(true) // Default: auto-approve
     }
 
+    /// Check whether a base command has already been persistently approved for an agent.
+    /// Returns true if the command is in the exec allowlist (no approval needed).
+    fn is_cmd_approved(&self, _agent_id: &str, _base_cmd: &str) -> bool {
+        false
+    }
+
+    /// Persist approval of a base command: adds it to exec_policy.allowed_commands
+    /// in memory and saves to config.toml so it survives restarts.
+    async fn persist_cmd_approval(&self, _base_cmd: &str) -> Result<(), String> {
+        Ok(())
+    }
+
     /// List available Hands and their activation status.
     async fn hand_list(&self) -> Result<Vec<serde_json::Value>, String> {
         Err("Hands system not available".to_string())
