@@ -429,6 +429,13 @@ impl ChannelAdapter for TelegramAdapter {
                 let text = format!("/{name} {}", args.join(" "));
                 self.api_send_message(chat_id, text.trim()).await?;
             }
+            ChannelContent::ApprovalRequest { request_id, agent_id, tool_name, action_summary } => {
+                let text = format!(
+                    "⏳ 待审批\nAgent: {}\n操作: {} — {}\nID: {}\n\n/reject {}",
+                    agent_id, tool_name, action_summary, &request_id[..8], &request_id[..8]
+                );
+                self.api_send_message(chat_id, &text).await?;
+            }
         }
         Ok(())
     }

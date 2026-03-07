@@ -3,3 +3,9 @@ pre-build = [
   "dpkg --add-architecture $CROSS_DEB_ARCH",
   "apt-get update && apt-get install --assume-yes libssl-dev:$CROSS_DEB_ARCH"
 ]
+
+[build.env]
+passthrough = [
+    "OPENSSL_STATIC",
+    "OPENSSL_NO_VENDOR",
+]

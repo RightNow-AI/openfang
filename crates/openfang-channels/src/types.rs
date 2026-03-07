@@ -61,6 +61,14 @@ pub enum ChannelContent {
         name: String,
         args: Vec<String>,
     },
+    /// Approval request with action buttons (approve/reject).
+    /// Fields: request_id, agent_id, tool_name, action_summary
+    ApprovalRequest {
+        request_id: String,
+        agent_id: String,
+        tool_name: String,
+        action_summary: String,
+    },
 }
 
 /// A unified message from any channel.

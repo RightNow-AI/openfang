@@ -5,16 +5,27 @@ use dashmap::DashMap;
 use openfang_types::approval::{
     ApprovalDecision, ApprovalPolicy, ApprovalRequest, ApprovalResponse, RiskLevel,
 };
+use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Max pending requests per agent.
 const MAX_PENDING_PER_AGENT: usize = 5;
 
+/// Broadcast channel capacity for approval notifications.
+const NOTIFY_CAPACITY: usize = 32;
+
 /// Manages approval requests with oneshot channels for blocking resolution.
 pub struct ApprovalManager {
     pending: DashMap<Uuid, PendingRequest>,
     policy: std::sync::RwLock<ApprovalPolicy>,
+    /// Broadcast channel — fires when a new approval request is submitted.
+    /// Channel adapters subscribe to this to notify users in real time.
+    notification_tx: broadcast::Sender<ApprovalRequest>,
+    /// Runtime-approved base commands (e.g. "openfang", "curl").
+    /// Populated when a user approves an unlisted command; persisted to config.toml
+    /// but also kept here so the same session doesn't ask again.
+    pub runtime_allowed_cmds: dashmap::DashSet<String>,
 }
 
 struct PendingRequest {
@@ -24,10 +35,22 @@ struct PendingRequest {
 
 impl ApprovalManager {
     pub fn new(policy: ApprovalPolicy) -> Self {
+        let (notification_tx, _) = broadcast::channel(NOTIFY_CAPACITY);
         Self {
             pending: DashMap::new(),
             policy: std::sync::RwLock::new(policy),
+            notification_tx,
+            runtime_allowed_cmds: dashmap::DashSet::new(),
         }
+    }
+
+    /// Subscribe to approval pending notifications.
+    ///
+    /// Each new approval request is broadcast to all subscribers immediately
+    /// before the agent blocks. Channel adapters use this to notify users in
+    /// real time so they can send `/approve <id>` without polling.
+    pub fn subscribe(&self) -> broadcast::Receiver<ApprovalRequest> {
+        self.notification_tx.subscribe()
     }
 
     /// Check if a tool requires approval based on current policy.
@@ -51,6 +74,10 @@ impl ApprovalManager {
 
         let timeout = std::time::Duration::from_secs(req.timeout_secs);
         let id = req.id;
+
+        // Notify subscribers BEFORE inserting into pending map / blocking.
+        // This lets channel adapters send a real-time notification to the user.
+        let _ = self.notification_tx.send(req.clone());
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.insert(

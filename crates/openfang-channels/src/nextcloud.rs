@@ -414,6 +414,13 @@ impl ChannelAdapter for NextcloudAdapter {
             ChannelContent::Text(text) => {
                 self.api_send_message(&user.platform_id, &text).await?;
             }
+            ChannelContent::ApprovalRequest { request_id, agent_id, tool_name, action_summary } => {
+                let text = format!(
+                    "⏳ 待审批\nAgent: {}\n操作: {} — {}\nID: {}\n/reject {}",
+                    agent_id, tool_name, action_summary, &request_id[..8], &request_id[..8]
+                );
+                self.api_send_message(&user.platform_id, &text).await?;
+            }
             _ => {
                 self.api_send_message(&user.platform_id, "(Unsupported content type)")
                     .await?;

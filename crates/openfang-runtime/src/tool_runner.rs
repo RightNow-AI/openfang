@@ -5,6 +5,7 @@
 
 use crate::kernel_handle::KernelHandle;
 use crate::mcp;
+use crate::subprocess_sandbox::validate_command_allowlist;
 use crate::web_search::{parse_ddg_results, WebToolsContext};
 use openfang_skills::registry::SkillRegistry;
 use openfang_types::taint::{TaintLabel, TaintSink, TaintedValue};
@@ -131,7 +132,34 @@ pub async fn execute_tool(
         }
     }
 
+    // For shell_exec: check exec_policy BEFORE the approval gate.
+    // - If command is in allowlist, skip approval entirely (fast path)
+    // - If NOT in allowlist, escalate to approval gate (line ~280)
+    // This avoids asking for approval for commands that are already pre-approved.
+    let requires_approval_bypass_check = if tool_name == "shell_exec" {
+        let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(policy) = exec_policy {
+            // Check if command passes allowlist WITHOUT triggering approval
+            if validate_command_allowlist(command, policy).is_ok() {
+                // Command is in allowlist - skip approval entirely
+                tracing::debug!(command, "Shell command in allowlist - bypassing approval");
+                false // doesn't require approval
+            } else {
+                // Command NOT in allowlist - will need approval
+                true // requires approval (will be checked below)
+            }
+        } else {
+            // No exec_policy = allow all, no approval needed
+            false
+        }
+    } else {
+        // Non-shell_exec tools: use normal approval logic
+        true
+    };
+
     // Approval gate: check if this tool requires human approval before execution
+    // Skip this check for shell_exec if already validated by exec_policy allowlist above
+    if requires_approval_bypass_check {
     if let Some(kh) = kernel {
         if kh.requires_approval(tool_name) {
             let agent_id_str = caller_agent_id.unwrap_or("unknown");
@@ -144,6 +172,16 @@ pub async fn execute_tool(
             match kh.request_approval(agent_id_str, tool_name, &summary).await {
                 Ok(true) => {
                     debug!(tool_name, "Approval granted — proceeding with execution");
+                    // Persist approved shell commands to config.toml
+                    if tool_name == "shell_exec" {
+                        if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+                            for base in crate::subprocess_sandbox::extract_all_commands(cmd) {
+                                if let Err(e) = kh.persist_cmd_approval(base).await {
+                                    warn!(base_cmd = %base, error = %e, "Failed to persist command approval");
+                                }
+                            }
+                        }
+                    }
                 }
                 Ok(false) => {
                     warn!(tool_name, "Approval denied — blocking tool execution");
@@ -166,6 +204,7 @@ pub async fn execute_tool(
                 }
             }
         }
+    }
     }
 
     debug!(tool_name, "Executing tool");
@@ -207,25 +246,39 @@ pub async fn execute_tool(
         }
 
         // Shell tool — exec policy + taint check
+        // NOTE: Early check at line ~140 already handled allowlist bypass and approval escalation.
+        // This block only handles edge cases: deny mode, or no kernel available.
         "shell_exec" => {
             let command = input["command"].as_str().unwrap_or("");
-            // Exec policy enforcement
+            // Only check for edge cases - main flow handled by early check
             if let Some(policy) = exec_policy {
                 if let Err(reason) =
                     crate::subprocess_sandbox::validate_command_allowlist(command, policy)
                 {
-                    return ToolResult {
-                        tool_use_id: tool_use_id.to_string(),
-                        content: format!(
-                            "shell_exec blocked: {reason}. Current exec_policy.mode = '{:?}'. \
-                             To allow shell commands, set exec_policy.mode = 'full' in the agent manifest or config.toml.",
-                            policy.mode
-                        ),
-                        is_error: true,
-                    };
+                    // Deny mode: hard block
+                    if matches!(policy.mode, openfang_types::config::ExecSecurityMode::Deny) {
+                        return ToolResult {
+                            tool_use_id: tool_use_id.to_string(),
+                            content: format!(
+                                "shell_exec blocked: {reason}. Set exec_policy.mode = 'allowlist' or 'full'.",
+                            ),
+                            is_error: true,
+                        };
+                    }
+                    // No kernel: hard block (no approval system available)
+                    if kernel.is_none() {
+                        return ToolResult {
+                            tool_use_id: tool_use_id.to_string(),
+                            content: format!(
+                                "shell_exec blocked: {reason}. Add '{command}' to exec_policy.allowed_commands.",
+                            ),
+                            is_error: true,
+                        };
+                    }
+                    // Kernel exists: early check already handled approval
                 }
             }
-            // Skip taint check for Full exec policy (e.g. hand agents that need curl for APIs)
+            // Skip taint check for Full exec policy
             let is_full_exec = exec_policy
                 .is_some_and(|p| p.mode == openfang_types::config::ExecSecurityMode::Full);
             if !is_full_exec {

@@ -58,10 +58,17 @@ struct OaiRequest {
 }
 
 /// Returns true if a model uses `max_completion_tokens` instead of `max_tokens`.
+///
+/// Only matches canonical OpenAI model families. Custom/proxy model names that
+/// happen to start with "gpt-5" (e.g. "gpt-5.3-codex") are excluded because
+/// third-party endpoints typically only support `max_tokens`.
 fn uses_completion_tokens(model: &str) -> bool {
     let m = model.to_lowercase();
-    m.starts_with("gpt-5")
-        || m.starts_with("gpt5")
+    // Only match clean GPT-5 IDs: "gpt-5", "gpt-5-mini", etc.
+    // Exclude names with version dots like "gpt-5.3-codex" (proxy/custom models).
+    let is_gpt5 = (m == "gpt-5" || m.starts_with("gpt-5-") || m == "gpt5" || m.starts_with("gpt5-"))
+        && !m.contains('.');
+    is_gpt5
         || m.starts_with("o1")
         || m.starts_with("o3")
         || m.starts_with("o4")
