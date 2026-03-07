@@ -765,7 +765,8 @@ impl OpenFangKernel {
             if let Some(ref provider) = config.memory.embedding_provider {
                 // Explicit config takes priority — use the configured embedding model
                 let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
-                match create_embedding_driver(provider, configured_model, api_key_env) {
+                let url = config.provider_urls.get(provider).map(|s| s.as_str());
+                match create_embedding_driver(provider, configured_model, api_key_env, url) {
                     Ok(d) => {
                         info!(provider = %provider, model = %configured_model, "Embedding driver configured from memory config");
                         Some(Arc::from(d))
@@ -781,7 +782,8 @@ impl OpenFangKernel {
                 } else {
                     configured_model.as_str()
                 };
-                match create_embedding_driver("openai", model, "OPENAI_API_KEY") {
+                let url = config.provider_urls.get("openai").map(|s| s.as_str());
+                match create_embedding_driver("openai", model, "OPENAI_API_KEY", url) {
                     Ok(d) => {
                         info!("Embedding driver auto-detected: OpenAI");
                         Some(Arc::from(d))
@@ -798,7 +800,8 @@ impl OpenFangKernel {
                 } else {
                     configured_model.as_str()
                 };
-                match create_embedding_driver("ollama", model, "") {
+                let url = config.provider_urls.get("ollama").map(|s| s.as_str());
+                match create_embedding_driver("ollama", model, "", url) {
                     Ok(d) => {
                         info!("Embedding driver auto-detected: Ollama (local)");
                         Some(Arc::from(d))
