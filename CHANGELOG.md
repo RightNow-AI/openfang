@@ -5,6 +5,39 @@ All notable changes to OpenFang will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - Phase 4 Complete ✅
+
+### Added
+
+#### Phase 4: SurrealDB Memory Substrate Replacement
+- **Complete SurrealDB backend migration**: Replaced SQLite with SurrealDB graph database for memory persistence
+- **New crate**: `maestro-surreal-memory` implementing full Memory trait with SurrealDB operations
+- **Advanced knowledge graph**: Entity-relation graph operations with graph pattern queries
+- **SurrealDB schema**: Tables for memory fragments, entities, relations, agents, and sessions
+- **Export/Import system**: JSON format memory backup and restore capabilities
+- **Verification system**: Gate-based verification script ensuring implementation quality
+- **Session management**: Create, load, save, delete sessions with SurrealDB persistence
+
+#### Enhanced Memory Capabilities
+- **Graph operations**: Add/query entities and relations for knowledge management
+- **Memory consolidation**: Decay confidence scores over time
+- **KV operations**: Agent-scoped key-value storage
+- **MessagePack support structure**: Ready for MessagePack export format
+- **Async operations**: Full async/await implementation for database operations
+- **Schema flexibility**: Runtime table creation and field validation
+
+#### Development Infrastructure
+- **Verification script**: `.maestro/verify/verify_phase4_surrealdb.sh` with 4-gate checking
+- **Integration testing**: Live testing procedures for memory substrate validation
+- **Documentation updates**: README and architecture documentation updated
+- **Migration path**: Clear upgrade process from SQLite to SurrealDB backend
+
+### Changed
+- **Memory substrate**: Moved from SQLite to SurrealDB graph database
+- **Architecture**: Updated crate descriptions and module dependencies
+- **Dependencies**: Added SurrealDB workspace dependency
+- **Session types**: Enhanced Session struct with SurrealDB compatibility
+
 ## [0.1.0] - 2026-02-24
 
 ### Added

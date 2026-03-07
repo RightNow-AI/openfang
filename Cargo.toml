@@ -25,6 +25,7 @@ members = [
     "crates/maestro-marketplace",
     "crates/maestro-eval",
     "crates/maestro-sdk",
+    "crates/maestro-surreal-memory",
 ]
 
 [workspace.package]
@@ -65,6 +66,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # Database
 rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
+surrealdb = "2"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

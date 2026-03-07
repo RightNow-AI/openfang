@@ -41,7 +41,7 @@ openfang-kernel         Kernel: assembles all subsystems, workflow engine, RBAC,
     +-- openfang-migrate    Migration engine (OpenClaw YAML->TOML)
     +-- openfang-skills     60 bundled skills, FangHub marketplace, ClawHub client
     |
-openfang-memory         SQLite memory substrate, sessions, semantic search, usage tracking
+maestro-surreal-memory  SurrealDB graph database substrate, sessions, knowledge graph, semantic search, usage tracking
     |
 openfang-types          Shared types: Agent, Capability, Event, Memory, Message, Tool, Config,
                         Taint, ManifestSigning, ModelCatalog, MCP/A2A config, Web config
@@ -279,11 +279,11 @@ The session compactor handles all content block types (Text, ToolUse, ToolResult
 
 ## Memory Substrate
 
-The memory substrate (`openfang-memory`) provides six layers of storage:
+The memory substrate (`maestro-surreal-memory`) provides six layers of storage backed by SurrealDB:
 
 ### 1. Structured KV Store
 
-Per-agent key-value storage backed by SQLite. Keys are strings, values are JSON. Used by the `memory_store` and `memory_recall` tools.
+Per-agent key-value storage backed by SurrealDB. Keys are strings, values are JSON. Used by the `memory_store` and `memory_recall` tools. SurrealDB enables more flexible querying of key-value data with additional metadata and relationships.
 
 A shared memory namespace (fixed agent ID `00000000-...01`) enables cross-agent data sharing.
 
@@ -301,11 +301,11 @@ Vector embeddings for similarity-based memory retrieval. Documents are embedded 
 
 ### 3. Knowledge Graph
 
-Entity-relation storage for structured knowledge. Agents can store entities (with types and properties) and relations between them. Supports graph traversal queries.
+Entity-relation storage for structured knowledge in SurrealDB graph database. Agents can store entities (with types and properties) and relations between them. Supports advanced graph pattern queries and relationship analysis using SurrealDB's native graph capabilities.
 
 ### 4. Session Manager
 
-Conversation history storage. Each agent has a session containing its message history (user, assistant, tool use, tool result, image). Sessions track context window token counts. Sessions are persisted to SQLite and restored on kernel reboot.
+Conversation history storage. Each agent has a session containing its message history (user, assistant, tool use, tool result, image). Sessions track context window token counts. Sessions are persisted to SurrealDB and restored on kernel reboot with enhanced query capabilities.
 
 ### 5. Task Board
 
@@ -318,11 +318,11 @@ A shared task queue for multi-agent collaboration:
 ### 6. Usage and Canonical Sessions
 
 - **Usage tracking**: `usage_events` table persists token counts, cost estimates, and model usage per agent. `UsageStore` provides query and aggregation APIs.
-- **Canonical sessions**: Cross-channel memory. `CanonicalSession` tracks a user's conversation context across multiple channels. Compaction produces summaries that are injected into system prompts. Stored in `canonical_sessions` table (schema v5).
+- **Canonical sessions**: Cross-channel memory. `CanonicalSession` tracks a user's conversation context across multiple channels. Compaction produces summaries that are injected into system prompts. Stored in SurrealDB with enhanced relational linking capabilities.
 
-### SQLite Architecture
+### SurrealDB Architecture
 
-All memory operations go through `Arc<Mutex<Connection>>` with Tokio's `spawn_blocking` for async bridging. This ensures thread safety without requiring an async SQLite driver. Schema migrations run automatically through five versions.
+All memory operations use SurrealDB's native async API with proper schema definition via DEFINE statements. SurrealDB provides concurrent access, ACID transactions, and advanced querying capabilities. Tables are created automatically with proper field validations and relationships. SurrealDB's graph database features enable complex knowledge graph operations and flexible data modeling.
 
 ---
 

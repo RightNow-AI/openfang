@@ -20,6 +20,7 @@
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
   <img src="https://img.shields.io/badge/version-0.1.0-green?style=flat-square" alt="v0.1.0" />
+  <img src="https://img.shields.io/badge/phase-4%20✅%20complete-blue?style=flat-square" alt="Phase 4 Complete" />
   <img src="https://img.shields.io/badge/tests-1,767%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
   <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
@@ -27,9 +28,9 @@
 
 ---
 
-> **v0.1.0 — First Release (February 2026)**
+> **v0.1.0 — First Release (February 2026)** - **Phase 4: SurrealDB Memory Substrate ✅ COMPLETE**
 >
-> OpenFang is feature-complete but this is the first public release. You may encounter instability, rough edges, or breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
+> OpenFang is feature-complete but this is the first public release. Phase 4 introduced SurrealDB as the new memory substrate, replacing SQLite with advanced graph database capabilities for knowledge management and session persistence. You may encounter minor integration issues or breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
 
 ---
 
@@ -237,7 +238,7 @@ openfang-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget
 openfang-runtime     Agent loop, 3 LLM drivers, 53 tools, WASM sandbox, MCP, A2A
 openfang-api         140+ REST/WS/SSE endpoints, OpenAI-compatible API, dashboard
 openfang-channels    40 messaging adapters with rate limiting, DM/group policies
-openfang-memory      SQLite persistence, vector embeddings, canonical sessions, compaction
+maestro-surreal-memory  SurrealDB graph persistence, vector embeddings, knowledge graph, canonical sessions
 openfang-types       Core types, taint tracking, Ed25519 manifest signing, model catalog
 openfang-skills      60 bundled skills, SKILL.md parser, FangHub marketplace
 openfang-hands       7 autonomous Hands, HAND.toml parser, lifecycle management

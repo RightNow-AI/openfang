@@ -6,14 +6,17 @@ use crate::capabilities::CapabilityManager;
 use crate::config::load_config;
 use crate::error::{KernelError, KernelResult};
 use crate::event_bus::EventBus;
-use crate::metering::MeteringEngine;
+use crate::metering::{MeteringEngine, UsageRecord};
 use crate::registry::AgentRegistry;
 use crate::scheduler::AgentScheduler;
 use crate::supervisor::Supervisor;
 use crate::triggers::{TriggerEngine, TriggerId, TriggerPattern};
 use crate::workflow::{StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowRunId};
 
-use openfang_memory::MemorySubstrate;
+use maestro_surreal_memory::SurrealMemorySubstrate;
+use maestro_surreal_memory::Session;
+use openfang_types::agent::{AgentEntry, AgentId, SessionId};
+use openfang_types::message::Message;
 use openfang_runtime::agent_loop::{
     run_agent_loop, run_agent_loop_streaming, strip_provider_prefix, AgentLoopResult,
 };
@@ -69,7 +72,7 @@ pub struct OpenFangKernel {
     /// Agent scheduler.
     pub scheduler: AgentScheduler,
     /// Memory substrate.
-    pub memory: Arc<MemorySubstrate>,
+    pub memory: Arc<SurrealMemorySubstrate>,
     /// Process supervisor.
     pub supervisor: Supervisor,
     /// Workflow engine.
@@ -542,7 +545,7 @@ impl OpenFangKernel {
             .clone()
             .unwrap_or_else(|| config.data_dir.join("openfang.db"));
         let memory = Arc::new(
-            MemorySubstrate::open(&db_path, config.memory.decay_rate)
+            SurrealMemorySubstrate::connect_sync(&db_path)
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
         );
 
