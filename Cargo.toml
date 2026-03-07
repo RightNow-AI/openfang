@@ -76,7 +76,7 @@ bytes = "1"
 futures = "0.3"
 
 # WebSocket client (for Discord/Slack gateway)
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 url = "2"
 
 # WASM sandbox
