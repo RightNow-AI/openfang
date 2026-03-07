@@ -27,6 +27,11 @@ jobs:
             args: "--target x86_64-unknown-linux-gnu"
             rust_target: x86_64-unknown-linux-gnu
 
+          - name: Linux aarch64
+            os: ubuntu-22.04
+            args: "--target aarch64-unknown-linux-gnu"
+            rust_target: aarch64-unknown-linux-gnu
+
           - name: macOS x86_64
             os: macos-latest
             args: "--target x86_64-apple-darwin"
@@ -51,8 +56,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system deps (Linux)
-        if: runner.os == 'Linux'
+      - name: Install system deps (Linux x86_64)
+        if: runner.os == 'Linux' && matrix.platform.rust_target != 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -61,6 +66,37 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
+
+      - name: Install system deps (Linux aarch64 cross)
+        if: matrix.platform.rust_target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo dpkg --add-architecture arm64
+          # Restrict existing repos to amd64, add arm64 from ports mirror
+          sudo sed -i 's/^deb http/deb [arch=amd64] http/g' /etc/apt/sources.list
+          cat <<'SOURCES' | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-security main restricted universe multiverse
+          SOURCES
+          sudo sed -i 's/^[[:space:]]*//' /etc/apt/sources.list.d/arm64-ports.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            patchelf \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev:arm64 \
+            libgtk-3-dev:arm64 \
+            libayatana-appindicator3-dev:arm64 \
+            librsvg2-dev:arm64
+          # Configure cross-compilation env
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=/" >> $GITHUB_ENV
 
       - uses: dtolnay/rust-toolchain@stable
         with:

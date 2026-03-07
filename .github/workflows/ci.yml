@@ -63,6 +63,39 @@ jobs:
       # Tests that need a display (Tauri) are skipped in headless CI via cfg
       - run: cargo test --workspace
 
+  # ── Linux aarch64 (cross-compiled + QEMU tests) ──────────────────────────
+  check-linux-aarch64:
+    name: Check / Linux aarch64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: check-linux-aarch64
+      - name: Install cross
+        run: cargo install cross --locked
+      - name: Cross check
+        run: cross check --workspace --target aarch64-unknown-linux-gnu
+
+  test-linux-aarch64:
+    name: Test / Linux aarch64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-linux-aarch64
+      - name: Install cross
+        run: cargo install cross --locked
+      - name: Cross test
+        run: cross test --workspace --target aarch64-unknown-linux-gnu
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
