@@ -572,7 +572,12 @@ impl OpenFangKernel {
             }
         }
 
-        // Add fallback providers to the chain
+        // Add fallback providers to the chain (with model names for cross-provider fallback)
+        let mut model_chain: Vec<(Arc<dyn LlmDriver>, String)> = Vec::new();
+        // Primary driver uses empty model name (uses the request's model field as-is)
+        for d in &driver_chain {
+            model_chain.push((d.clone(), String::new()));
+        }
         for fb in &config.fallback_providers {
             let fb_config = DriverConfig {
                 provider: fb.provider.clone(),
@@ -593,7 +598,8 @@ impl OpenFangKernel {
                         model = %fb.model,
                         "Fallback provider configured"
                     );
-                    driver_chain.push(d);
+                    driver_chain.push(d.clone());
+                    model_chain.push((d, fb.model.clone()));
                 }
                 Err(e) => {
                     warn!(
@@ -607,8 +613,8 @@ impl OpenFangKernel {
 
         // Use the chain, or create a stub driver if everything failed
         let driver: Arc<dyn LlmDriver> = if driver_chain.len() > 1 {
-            Arc::new(openfang_runtime::drivers::fallback::FallbackDriver::new(
-                driver_chain,
+            Arc::new(openfang_runtime::drivers::fallback::FallbackDriver::with_models(
+                model_chain,
             ))
         } else if let Some(single) = driver_chain.into_iter().next() {
             single
@@ -2479,7 +2485,7 @@ impl OpenFangKernel {
                 .take(5)
                 .enumerate()
                 .map(|(i, t)| {
-                    let truncated = if t.len() > 200 { &t[..200] } else { t };
+                    let truncated = openfang_types::truncate_str(t, 200);
                     format!("{}. {}", i + 1, truncated)
                 })
                 .collect::<Vec<_>>()
@@ -5315,7 +5321,7 @@ impl KernelHandle for OpenFangKernel {
             .unwrap_or_else(|e| e.into_inner());
         agents
             .iter()
-            .map(|(url, card)| (card.name.clone(), url.clone()))
+            .map(|(_, card)| (card.name.clone(), card.url.clone()))
             .collect()
     }
 
@@ -5328,7 +5334,7 @@ impl KernelHandle for OpenFangKernel {
         agents
             .iter()
             .find(|(_, card)| card.name.to_lowercase() == name_lower)
-            .map(|(url, _)| url.clone())
+            .map(|(_, card)| card.url.clone())
     }
 
     async fn send_channel_message(

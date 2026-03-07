@@ -55,6 +55,11 @@
   transform: scale(1.05);
 }
 
+[data-theme="light"] .sidebar-logo img,
+[data-theme="light"] .message-avatar img {
+  filter: invert(1);
+}
+
 .sidebar-header h1 {
   font-size: 14px;
   font-weight: 700;

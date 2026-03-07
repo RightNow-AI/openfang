@@ -593,14 +593,25 @@ impl ClawHubClient {
     }
 }
 
-/// Minimal URL-encoding for query parameters.
+/// RFC 3986 percent-encoding for query parameters.
+/// Unreserved characters pass through, space becomes `+`, everything else is `%XX`.
 fn urlencoded(s: &str) -> String {
-    s.replace(' ', "+")
-        .replace('&', "%26")
-        .replace('=', "%3D")
-        .replace('?', "%3F")
-        .replace('#', "%23")
-        .replace('/', "%2F")
+    const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
+    let mut result = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(b as char);
+            }
+            b' ' => result.push('+'),
+            _ => {
+                result.push('%');
+                result.push(HEX_UPPER[(b >> 4) as usize] as char);
+                result.push(HEX_UPPER[(b & 0xf) as usize] as char);
+            }
+        }
+    }
+    result
 }
 
 /// Check if a binary is available on PATH.
@@ -786,6 +797,11 @@ mod tests {
         assert_eq!(urlencoded("hello world"), "hello+world");
         assert_eq!(urlencoded("a&b=c"), "a%26b%3Dc");
         assert_eq!(urlencoded("path/to#frag"), "path%2Fto%23frag");
+        // Previously missed characters
+        assert_eq!(urlencoded("100%"), "100%25");
+        assert_eq!(urlencoded("a+b"), "a%2Bb");
+        // Unreserved chars pass through
+        assert_eq!(urlencoded("hello-world_2.0~test"), "hello-world_2.0~test");
     }
 
     #[test]

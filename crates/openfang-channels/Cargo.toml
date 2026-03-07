@@ -26,6 +26,7 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
+html-escape = { workspace = true }
 
 lettre = { workspace = true }
 imap = { workspace = true }

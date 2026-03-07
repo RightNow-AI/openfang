@@ -196,6 +196,10 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Bo
         "cache-control",
         "no-store, no-cache, must-revalidate".parse().unwrap(),
     );
+    headers.insert(
+        "strict-transport-security",
+        "max-age=63072000; includeSubDomains".parse().unwrap(),
+    );
     response
 }
 
