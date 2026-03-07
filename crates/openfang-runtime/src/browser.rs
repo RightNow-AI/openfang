@@ -258,6 +258,12 @@ impl BrowserSession {
             args.insert(0, "--headless=new".to_string());
             args.push("--disable-gpu".to_string());
         }
+        // Chromium refuses to run as root without --no-sandbox. Detect this
+        // without adding a libc dependency by reading the effective UID from
+        // /proc/self/status (Linux) or falling back to the HOME env var.
+        if is_running_as_root() {
+            args.push("--no-sandbox".to_string());
+        }
 
         let mut cmd = tokio::process::Command::new(&chrome_path);
         cmd.args(&args);
@@ -1154,6 +1160,36 @@ const EXTRACT_CONTENT_JS: &str = r#"(() => {
     return JSON.stringify({title, url, content});
 })()"#;
 
+// ── Root detection ─────────────────────────────────────────────────────────
+
+/// Returns true if the current process is running as root (UID 0).
+///
+/// On Linux, reads `/proc/self/status` to get the effective UID without
+/// requiring a `libc` dependency. Falls back to checking the `HOME` env var
+/// on systems where `/proc` is not available.
+fn is_running_as_root() -> bool {
+    #[cfg(unix)]
+    {
+        // Primary: read effective UID from /proc/self/status (Linux)
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if let Some(rest) = line.strip_prefix("Uid:") {
+                    // Format: "Uid:	<real> <effective> <saved> <fs>"
+                    if let Some(euid_str) = rest.split_whitespace().nth(1) {
+                        return euid_str == "0";
+                    }
+                }
+            }
+        }
+        // Fallback: HOME=/root is a reliable indicator on most Unix systems
+        std::env::var("HOME").map(|h| h == "/root").unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1288,6 +1324,12 @@ mod tests {
         let config = BrowserConfig::default();
         let mgr = BrowserManager::new(config);
         assert!(mgr.sessions.is_empty());
+    }
+
+    #[test]
+    fn test_is_running_as_root_returns_bool() {
+        // Just verify it doesn't panic and returns a bool.
+        let _ = is_running_as_root();
     }
 
     #[test]
