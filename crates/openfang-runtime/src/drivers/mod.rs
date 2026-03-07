@@ -18,7 +18,8 @@ use openfang_types::model_catalog::{
     LMSTUDIO_BASE_URL,
     MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
     OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
+    QWEN_CODING_BASE_URL, QWEN_CODING_INTL_BASE_URL, QWEN_INTL_BASE_URL, REPLICATE_BASE_URL,
+    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
     VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
     ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
@@ -157,6 +158,22 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         }),
         "qwen" | "dashscope" | "model_studio" => Some(ProviderDefaults {
             base_url: QWEN_BASE_URL,
+            api_key_env: "DASHSCOPE_API_KEY",
+            key_required: true,
+        }),
+        "qwen_intl" | "dashscope_intl" => Some(ProviderDefaults {
+            base_url: QWEN_INTL_BASE_URL,
+            api_key_env: "DASHSCOPE_API_KEY",
+            key_required: true,
+        }),
+        // DashScope Coding Plan — multi-brand (Qwen, Zhipu/GLM, Kimi, MiniMax)
+        "qwen_coding" | "dashscope_coding" => Some(ProviderDefaults {
+            base_url: QWEN_CODING_BASE_URL,
+            api_key_env: "DASHSCOPE_API_KEY",
+            key_required: true,
+        }),
+        "qwen_coding_intl" | "dashscope_coding_intl" => Some(ProviderDefaults {
+            base_url: QWEN_CODING_INTL_BASE_URL,
             api_key_env: "DASHSCOPE_API_KEY",
             key_required: true,
         }),
@@ -420,6 +437,9 @@ pub fn known_providers() -> &'static [&'static str] {
         "github-copilot",
         "moonshot",
         "qwen",
+        "qwen_intl",
+        "qwen_coding",
+        "qwen_coding_intl",
         "minimax",
         "zhipu",
         "zhipu_coding",
@@ -517,6 +537,9 @@ mod tests {
         assert!(providers.contains(&"github-copilot"));
         assert!(providers.contains(&"moonshot"));
         assert!(providers.contains(&"qwen"));
+        assert!(providers.contains(&"qwen_intl"));
+        assert!(providers.contains(&"qwen_coding"));
+        assert!(providers.contains(&"qwen_coding_intl"));
         assert!(providers.contains(&"minimax"));
         assert!(providers.contains(&"zhipu"));
         assert!(providers.contains(&"zhipu_coding"));
@@ -524,7 +547,7 @@ mod tests {
         assert!(providers.contains(&"volcengine"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
-        assert_eq!(providers.len(), 31);
+        assert_eq!(providers.len(), 34);
     }
 
     #[test]
