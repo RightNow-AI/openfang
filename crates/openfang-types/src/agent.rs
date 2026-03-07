@@ -267,7 +267,7 @@ impl Default for ResourceQuota {
             max_tool_calls_per_minute: 60,
             max_llm_tokens_per_hour: 1_000_000,
             max_network_bytes_per_hour: 100 * 1024 * 1024, // 100 MB
-            max_cost_per_hour_usd: 1.0,
+            max_cost_per_hour_usd: 0.0,   // unlimited
             max_cost_per_day_usd: 0.0,   // unlimited
             max_cost_per_month_usd: 0.0, // unlimited
         }
