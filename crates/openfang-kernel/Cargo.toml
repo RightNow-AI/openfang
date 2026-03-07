@@ -8,6 +8,7 @@ description = "Core kernel for the OpenFang Agent OS"
 [dependencies]
 openfang-types = { path = "../openfang-types" }
 maestro-surreal-memory = { path = "../maestro-surreal-memory" }
+openfang-memory = { path = "../openfang-memory" }
 openfang-runtime = { path = "../openfang-runtime" }
 openfang-skills = { path = "../openfang-skills" }
 openfang-hands = { path = "../openfang-hands" }
@@ -33,6 +34,7 @@ rand = { workspace = true }
 hex = { workspace = true }
 reqwest = { workspace = true }
 cron = "0.15"
+rusqlite = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

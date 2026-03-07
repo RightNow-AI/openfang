@@ -1,6 +1,7 @@
 //! Metering engine — tracks LLM cost and enforces spending quotas.
 
-use openfang_memory::usage::{ModelUsage, UsageRecord, UsageStore, UsageSummary};
+use openfang_types::usage::{ModelUsage, UsageRecord, UsageSummary};
+use openfang_memory::usage::UsageStore;
 use openfang_types::agent::{AgentId, ResourceQuota};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use std::sync::Arc;

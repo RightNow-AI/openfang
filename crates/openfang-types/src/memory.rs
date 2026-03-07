@@ -318,6 +318,47 @@ pub trait Memory: Send + Sync {
         pattern: GraphPattern,
     ) -> crate::error::OpenFangResult<Vec<GraphMatch>>;
 
+    // -- Session persistence --
+
+    /// Save a session to the backing store.
+    async fn save_session(
+        &self,
+        session: &crate::session::Session,
+    ) -> crate::error::OpenFangResult<()> {
+        let _ = session;
+        Err(crate::error::OpenFangError::Internal(
+            "save_session not implemented".into(),
+        ))
+    }
+
+    // -- Embedding-aware operations --
+
+    /// Semantic search with a pre-computed embedding vector.
+    async fn recall_with_embedding_async(
+        &self,
+        query: &str,
+        limit: usize,
+        filter: Option<MemoryFilter>,
+        _query_embedding: Option<&[f32]>,
+    ) -> crate::error::OpenFangResult<Vec<MemoryFragment>> {
+        // Default: fall back to text-only recall
+        self.recall(query, limit, filter).await
+    }
+
+    /// Store a memory fragment with a pre-computed embedding vector.
+    async fn remember_with_embedding_async(
+        &self,
+        agent_id: AgentId,
+        content: &str,
+        source: MemorySource,
+        scope: &str,
+        metadata: HashMap<String, serde_json::Value>,
+        _embedding: Option<&[f32]>,
+    ) -> crate::error::OpenFangResult<MemoryId> {
+        // Default: fall back to text-only remember
+        self.remember(agent_id, content, source, scope, metadata).await
+    }
+
     // -- Maintenance --
 
     /// Consolidate and optimize memory.

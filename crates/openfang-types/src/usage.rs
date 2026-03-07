@@ -21,7 +21,7 @@ pub struct UsageRecord {
 }
 
 /// Summary of usage over a period.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UsageSummary {
     /// Total input tokens.
     pub total_input_tokens: u64,

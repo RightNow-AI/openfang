@@ -4708,7 +4708,7 @@ pub async fn agent_budget_status(
     };
 
     let quota = &entry.manifest.resources;
-    let usage_store = openfang_memory::usage::UsageStore::new(state.kernel.memory.usage_conn());
+    let usage_store = state.kernel.memory.usage();
     let hourly = usage_store.query_hourly(agent_id).unwrap_or(0.0);
     let daily = usage_store.query_daily(agent_id).unwrap_or(0.0);
     let monthly = usage_store.query_monthly(agent_id).unwrap_or(0.0);
@@ -4739,7 +4739,7 @@ pub async fn agent_budget_status(
 
 /// GET /api/budget/agents — Per-agent cost ranking (top spenders).
 pub async fn agent_budget_ranking(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let usage_store = openfang_memory::usage::UsageStore::new(state.kernel.memory.usage_conn());
+    let usage_store = state.kernel.memory.usage();
     let agents: Vec<serde_json::Value> = state
         .kernel
         .registry
@@ -4881,7 +4881,7 @@ pub async fn set_session_label(
         }
     }
 
-    match state.kernel.memory.set_session_label(session_id, label) {
+    match state.kernel.memory.set_session_label(session_id, label.map(|s| s.to_string())) {
         Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({

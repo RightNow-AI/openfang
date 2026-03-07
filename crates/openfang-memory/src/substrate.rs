@@ -10,6 +10,7 @@ use crate::semantic::SemanticStore;
 use crate::session::{Session, SessionStore};
 use crate::structured::StructuredStore;
 use crate::usage::UsageStore;
+use openfang_types::session::SessionPersistence;
 
 use async_trait::async_trait;
 use openfang_types::agent::{AgentEntry, AgentId, SessionId};
@@ -668,6 +669,57 @@ impl Memory for MemorySubstrate {
             errors: vec!["Import not yet implemented in Phase 1".to_string()],
         })
     }
+
+    async fn save_session(
+        &self,
+        session: &openfang_types::session::Session,
+    ) -> OpenFangResult<()> {
+        self.sessions.save_session(session)
+    }
+
+    async fn recall_with_embedding_async(
+        &self,
+        query: &str,
+        limit: usize,
+        filter: Option<MemoryFilter>,
+        query_embedding: Option<&[f32]>,
+    ) -> OpenFangResult<Vec<MemoryFragment>> {
+        let store = self.semantic.clone();
+        let query = query.to_string();
+        let embedding_owned = query_embedding.map(|e| e.to_vec());
+        tokio::task::spawn_blocking(move || {
+            store.recall_with_embedding(&query, limit, filter, embedding_owned.as_deref())
+        })
+        .await
+        .map_err(|e| OpenFangError::Internal(e.to_string()))?
+    }
+
+    async fn remember_with_embedding_async(
+        &self,
+        agent_id: AgentId,
+        content: &str,
+        source: MemorySource,
+        scope: &str,
+        metadata: HashMap<String, serde_json::Value>,
+        embedding: Option<&[f32]>,
+    ) -> OpenFangResult<MemoryId> {
+        let store = self.semantic.clone();
+        let content = content.to_string();
+        let scope = scope.to_string();
+        let embedding_owned = embedding.map(|e| e.to_vec());
+        tokio::task::spawn_blocking(move || {
+            store.remember_with_embedding(
+                agent_id,
+                &content,
+                source,
+                &scope,
+                metadata,
+                embedding_owned.as_deref(),
+            )
+        })
+        .await
+        .map_err(|e| OpenFangError::Internal(e.to_string()))?
+    }
 }
 
 #[cfg(test)]
@@ -762,5 +814,11 @@ mod tests {
         let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
         let claimed = substrate.task_claim("nobody").await.unwrap();
         assert!(claimed.is_none());
+    }
+}
+
+impl SessionPersistence for MemorySubstrate {
+    fn save_session(&self, session: &Session) -> OpenFangResult<()> {
+        self.sessions.save_session(session)
     }
 }

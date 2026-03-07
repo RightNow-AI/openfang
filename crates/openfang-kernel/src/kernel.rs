@@ -6,7 +6,8 @@ use crate::capabilities::CapabilityManager;
 use crate::config::load_config;
 use crate::error::{KernelError, KernelResult};
 use crate::event_bus::EventBus;
-use crate::metering::{MeteringEngine, UsageRecord};
+use crate::metering::MeteringEngine;
+use openfang_types::usage::UsageRecord;
 use crate::registry::AgentRegistry;
 use crate::scheduler::AgentScheduler;
 use crate::supervisor::Supervisor;
@@ -14,7 +15,7 @@ use crate::triggers::{TriggerEngine, TriggerId, TriggerPattern};
 use crate::workflow::{StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowRunId};
 
 use maestro_surreal_memory::SurrealMemorySubstrate;
-use maestro_surreal_memory::Session;
+use openfang_types::session::Session;
 use openfang_types::agent::{AgentEntry, AgentId, SessionId};
 use openfang_types::message::Message;
 use openfang_runtime::agent_loop::{
@@ -628,10 +629,26 @@ impl OpenFangKernel {
             Arc::new(StubDriver) as Arc<dyn LlmDriver>
         };
 
-        // Initialize metering engine (shares the same SQLite connection as the memory substrate)
-        let metering = Arc::new(MeteringEngine::new(Arc::new(
-            openfang_memory::usage::UsageStore::new(memory.usage_conn()),
-        )));
+        // Initialize metering engine with a standalone SQLite connection for usage tracking
+        let usage_db_path = config.data_dir.join("usage.db");
+        let usage_conn = rusqlite::Connection::open(&usage_db_path)
+            .map_err(|e| KernelError::BootFailed(format!("Usage DB init failed: {e}")))?;
+        usage_conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS usage_events (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                tool_calls INTEGER NOT NULL DEFAULT 0
+            )"
+        ).map_err(|e| KernelError::BootFailed(format!("Usage table init failed: {e}")))?;
+        let usage_store = Arc::new(openfang_memory::usage::UsageStore::new(
+            std::sync::Arc::new(std::sync::Mutex::new(usage_conn)),
+        ));
+        let metering = Arc::new(MeteringEngine::new(usage_store));
 
         let supervisor = Supervisor::new();
         let background = BackgroundExecutor::new(supervisor.subscribe());
@@ -857,14 +874,15 @@ impl OpenFangKernel {
             let persist_memory = Arc::clone(&memory);
             pairing.set_persist(Box::new(move |device, op| match op {
                 crate::pairing::PersistOp::Save => {
-                    if let Err(e) = persist_memory.save_paired_device(
-                        &device.device_id,
-                        &device.display_name,
-                        &device.platform,
-                        &device.paired_at.to_rfc3339(),
-                        &device.last_seen.to_rfc3339(),
-                        device.push_token.as_deref(),
-                    ) {
+                    let device_json = serde_json::json!({
+                        "device_id": device.device_id,
+                        "display_name": device.display_name,
+                        "platform": device.platform,
+                        "paired_at": device.paired_at.to_rfc3339(),
+                        "last_seen": device.last_seen.to_rfc3339(),
+                        "push_token": device.push_token,
+                    });
+                    if let Err(e) = persist_memory.save_paired_device(device_json) {
                         tracing::warn!("Failed to persist paired device: {e}");
                     }
                 }
@@ -1477,7 +1495,7 @@ impl OpenFangKernel {
             .memory
             .get_session(entry.session_id)
             .map_err(KernelError::OpenFang)?
-            .unwrap_or_else(|| openfang_memory::session::Session {
+            .unwrap_or_else(|| openfang_types::session::Session {
                 id: entry.session_id,
                 agent_id,
                 messages: Vec::new(),
@@ -1590,7 +1608,21 @@ impl OpenFangKernel {
                     .memory
                     .canonical_context(agent_id, None)
                     .ok()
-                    .and_then(|(s, _)| s),
+                    .map(|msgs| {
+                        msgs.iter()
+                            .filter_map(|m| match &m.content {
+                                openfang_types::message::MessageContent::Text(s) => Some(s.clone()),
+                                openfang_types::message::MessageContent::Blocks(blocks) => {
+                                    let texts: Vec<String> = blocks.iter().filter_map(|b| match b {
+                                        openfang_types::message::ContentBlock::Text { text } => Some(text.clone()),
+                                        _ => None,
+                                    }).collect();
+                                    if texts.is_empty() { None } else { Some(texts.join("\n")) }
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }),
                 user_name,
                 channel_type: None,
                 is_subagent: manifest
@@ -1712,7 +1744,7 @@ impl OpenFangKernel {
                 &manifest,
                 &message_owned,
                 &mut session,
-                &memory,
+                &*memory as &dyn openfang_types::memory::Memory,
                 driver,
                 &tools,
                 kernel_handle,
@@ -1967,7 +1999,7 @@ impl OpenFangKernel {
             .memory
             .get_session(entry.session_id)
             .map_err(KernelError::OpenFang)?
-            .unwrap_or_else(|| openfang_memory::session::Session {
+            .unwrap_or_else(|| openfang_types::session::Session {
                 id: entry.session_id,
                 agent_id,
                 messages: Vec::new(),
@@ -2059,7 +2091,21 @@ impl OpenFangKernel {
                     .memory
                     .canonical_context(agent_id, None)
                     .ok()
-                    .and_then(|(s, _)| s),
+                    .map(|msgs| {
+                        msgs.iter()
+                            .filter_map(|m| match &m.content {
+                                openfang_types::message::MessageContent::Text(s) => Some(s.clone()),
+                                openfang_types::message::MessageContent::Blocks(blocks) => {
+                                    let texts: Vec<String> = blocks.iter().filter_map(|b| match b {
+                                        openfang_types::message::ContentBlock::Text { text } => Some(text.clone()),
+                                        _ => None,
+                                    }).collect();
+                                    if texts.is_empty() { None } else { Some(texts.join("\n")) }
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }),
                 user_name,
                 channel_type: None,
                 is_subagent: manifest
@@ -2193,7 +2239,7 @@ impl OpenFangKernel {
             &manifest,
             &message_with_links,
             &mut session,
-            &self.memory,
+            &*self.memory as &dyn openfang_types::memory::Memory,
             driver,
             &tools,
             kernel_handle,
@@ -2250,7 +2296,7 @@ impl OpenFangKernel {
             result.total_usage.input_tokens,
             result.total_usage.output_tokens,
         );
-        let _ = self.metering.record(&openfang_memory::usage::UsageRecord {
+        let _ = self.metering.record(&openfang_types::usage::UsageRecord {
             agent_id,
             model: model.clone(),
             input_tokens: result.total_usage.input_tokens,
@@ -2447,7 +2493,7 @@ impl OpenFangKernel {
         &self,
         agent_id: AgentId,
         entry: &AgentEntry,
-        session: &openfang_memory::session::Session,
+        session: &openfang_types::session::Session,
     ) {
         use openfang_types::message::{MessageContent, Role};
 
@@ -2721,7 +2767,7 @@ impl OpenFangKernel {
             .memory
             .get_session(entry.session_id)
             .map_err(KernelError::OpenFang)?
-            .unwrap_or_else(|| openfang_memory::session::Session {
+            .unwrap_or_else(|| openfang_types::session::Session {
                 id: entry.session_id,
                 agent_id,
                 messages: Vec::new(),
@@ -2804,7 +2850,7 @@ impl OpenFangKernel {
             .memory
             .get_session(entry.session_id)
             .map_err(KernelError::OpenFang)?
-            .unwrap_or_else(|| openfang_memory::session::Session {
+            .unwrap_or_else(|| openfang_types::session::Session {
                 id: entry.session_id,
                 agent_id,
                 messages: Vec::new(),

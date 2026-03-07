@@ -17,13 +17,16 @@ use surrealdb::Surreal;
 use uuid;
 
 pub mod session;
+pub mod usage;
 pub use session::Session;
+pub use usage::SurrealUsageStore;
 
 const DEFAULT_NAMESPACE: &str = "openfang";
 const DEFAULT_DATABASE: &str = "memory";
 
 pub struct SurrealMemorySubstrate {
     db: Surreal<Db>,
+    usage_store: SurrealUsageStore,
 }
 
 impl SurrealMemorySubstrate {
@@ -37,7 +40,7 @@ impl SurrealMemorySubstrate {
             .await
             .map_err(|e| OpenFangError::Memory(format!("Failed to select namespace/database: {}", e)))?;
 
-        let substrate = Self { db };
+        let substrate = Self { db, usage_store: SurrealUsageStore::new() };
         substrate.initialize_tables().await?;
         Ok(substrate)
     }
@@ -52,7 +55,7 @@ impl SurrealMemorySubstrate {
             .await
             .map_err(|e| OpenFangError::Memory(format!("Failed to select namespace/database: {}", e)))?;
 
-        let substrate = Self { db };
+        let substrate = Self { db, usage_store: SurrealUsageStore::new() };
         substrate.initialize_tables().await?;
         Ok(substrate)
     }
@@ -390,8 +393,8 @@ impl SurrealMemorySubstrate {
         Ok(session)
     }
 
-    pub fn create_session_with_label(&self, agent_id: AgentId, label: String) -> OpenFangResult<Session> {
-        let session = Session::with_label(agent_id, label);
+    pub fn create_session_with_label(&self, agent_id: AgentId, label: Option<&str>) -> OpenFangResult<Session> {
+        let session = Session::with_label(agent_id, label.unwrap_or_default().to_string());
         self.save_session(&session)?;
         Ok(session)
     }
@@ -520,20 +523,50 @@ impl SurrealMemorySubstrate {
         todo!("remove_paired_device not implemented")
     }
 
-    pub fn task_post(&self, _title: &str, _description: &str, _assigned_to: Option<AgentId>, _created_by: AgentId) -> OpenFangResult<()> {
-        todo!("task_post not implemented")
+    pub async fn task_post(&self, _title: &str, _description: &str, _assigned_to: Option<&str>, _created_by: Option<&str>) -> OpenFangResult<String> {
+        Ok(uuid::Uuid::new_v4().to_string()) // TODO: implement SurrealDB task queue
     }
 
-    pub fn task_claim(&self, _task_id: &str) -> OpenFangResult<()> {
-        todo!("task_claim not implemented")
+    pub async fn task_claim(&self, _agent_id: &str) -> OpenFangResult<Option<serde_json::Value>> {
+        Ok(None) // TODO: implement SurrealDB task queue
     }
 
-    pub fn task_complete(&self, _task_id: &str, _result: &str) -> OpenFangResult<()> {
-        todo!("task_complete not implemented")
+    pub async fn task_complete(&self, _task_id: &str, _result: &str) -> OpenFangResult<()> {
+        Ok(()) // TODO: implement SurrealDB task queue
     }
 
-    pub fn task_list(&self, _status: Option<&str>) -> OpenFangResult<Vec<serde_json::Value>> {
-        todo!("task_list not implemented")
+    pub async fn task_list(&self, _status: Option<&str>) -> OpenFangResult<Vec<serde_json::Value>> {
+        Ok(Vec::new()) // TODO: implement SurrealDB task queue
+    }
+
+    /// Get a reference to the usage store.
+    pub fn usage(&self) -> &SurrealUsageStore {
+        &self.usage_store
+    }
+
+    /// List all KV pairs for an agent.
+    pub fn list_kv(&self, _agent_id: AgentId) -> OpenFangResult<Vec<(String, serde_json::Value)>> {
+        Ok(Vec::new()) // TODO: implement SurrealDB KV listing
+    }
+
+    /// Delete a structured KV entry.
+    pub fn structured_delete(&self, _agent_id: AgentId, _key: &str) -> OpenFangResult<()> {
+        Ok(()) // TODO: implement SurrealDB structured delete
+    }
+
+    /// List all sessions across all agents.
+    pub fn list_sessions(&self) -> OpenFangResult<Vec<serde_json::Value>> {
+        Ok(Vec::new()) // TODO: implement SurrealDB session listing
+    }
+
+    /// Set a label on a session.
+    pub fn set_session_label(&self, _session_id: SessionId, _label: Option<String>) -> OpenFangResult<()> {
+        Ok(()) // TODO: implement SurrealDB session label
+    }
+
+    /// Find a session by label for a given agent.
+    pub fn find_session_by_label(&self, _agent_id: AgentId, _label: &str) -> OpenFangResult<Option<Session>> {
+        Ok(None) // TODO: implement SurrealDB session search by label
     }
 }
 
@@ -898,6 +931,14 @@ impl Memory for SurrealMemorySubstrate {
             errors,
         })
     }
+
+    async fn save_session(
+        &self,
+        session: &openfang_types::session::Session,
+    ) -> OpenFangResult<()> {
+        // Delegate to the inherent blocking method
+        SurrealMemorySubstrate::save_session(self, session)
+    }
 }
 
 #[cfg(test)]
@@ -949,5 +990,11 @@ mod tests {
         substrate.forget(memory_id).await.unwrap();
         let fragments_after = substrate.recall(content, 10, None).await.unwrap();
         assert_eq!(fragments_after.len(), 0);
+    }
+}
+impl openfang_types::session::SessionPersistence for SurrealMemorySubstrate {
+    fn save_session(&self, session: &Session) -> OpenFangResult<()> {
+        // Delegate to the inherent method
+        SurrealMemorySubstrate::save_session(self, session)
     }
 }
