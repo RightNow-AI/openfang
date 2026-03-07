@@ -8,12 +8,13 @@ use axum::Json;
 use dashmap::DashMap;
 use openfang_kernel::triggers::{TriggerId, TriggerPattern};
 use openfang_kernel::workflow::{
-    ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowStep,
+    ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowRunId,
+    WorkflowShadowComparison, WorkflowStep, WorkflowTrafficPath,
 };
 use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::tool_runner::builtin_tool_definitions;
-use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
+use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest, SessionId};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
@@ -295,19 +296,23 @@ pub fn resolve_attachments(
 pub fn inject_attachments_into_session(
     kernel: &OpenFangKernel,
     agent_id: AgentId,
+    resolved_session_id: SessionId,
     image_blocks: Vec<openfang_types::message::ContentBlock>,
-) {
+) -> Result<(), String> {
     use openfang_types::message::{Message, MessageContent, Role};
 
-    let entry = match kernel.registry.get(agent_id) {
-        Some(e) => e,
-        None => return,
-    };
-
-    let mut session = match kernel.memory.get_session(entry.session_id) {
-        Ok(Some(s)) => s,
+    let mut session = match kernel.memory.get_session(resolved_session_id) {
+        Ok(Some(s)) => {
+            if s.agent_id != agent_id {
+                return Err(format!(
+                    "Session {} does not belong to agent {}",
+                    resolved_session_id, agent_id
+                ));
+            }
+            s
+        }
         _ => openfang_memory::session::Session {
-            id: entry.session_id,
+            id: resolved_session_id,
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -320,8 +325,65 @@ pub fn inject_attachments_into_session(
         content: MessageContent::Blocks(image_blocks),
     });
 
-    if let Err(e) = kernel.memory.save_session(&session) {
-        tracing::warn!(error = %e, "Failed to save session with image attachments");
+    kernel
+        .memory
+        .save_session(&session)
+        .map_err(|e| format!("Failed to save session with image attachments: {e}"))
+}
+
+pub(crate) fn parse_requested_session_id(
+    session_id: Option<&str>,
+) -> Result<Option<SessionId>, (StatusCode, Json<serde_json::Value>)> {
+    match session_id {
+        Some(session_id) => match session_id.parse::<uuid::Uuid>() {
+            Ok(parsed) => Ok(Some(SessionId(parsed))),
+            Err(_) => Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid session ID"})),
+            )),
+        },
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn resolve_session_for_attachments(
+    kernel: &OpenFangKernel,
+    agent_id: AgentId,
+    requested_session_id: Option<SessionId>,
+) -> Result<SessionId, (StatusCode, Json<serde_json::Value>)> {
+    let entry = match kernel.registry.get(agent_id) {
+        Some(entry) => entry,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            ));
+        }
+    };
+
+    let resolved_session_id = requested_session_id.unwrap_or(entry.session_id);
+    if requested_session_id.is_none() {
+        return Ok(resolved_session_id);
+    }
+
+    match kernel.memory.get_session(resolved_session_id) {
+        Ok(Some(session)) => {
+            if session.agent_id != agent_id {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "Session belongs to a different agent"})),
+                ));
+            }
+            Ok(resolved_session_id)
+        }
+        Ok(None) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Session not found"})),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Session lookup failed: {e}")})),
+        )),
     }
 }
 
@@ -358,21 +420,47 @@ pub async fn send_message(
         );
     }
 
+    let requested_session_id = match parse_requested_session_id(req.session_id.as_deref()) {
+        Ok(session_id) => session_id,
+        Err(response) => return response,
+    };
+
     // Resolve file attachments into image content blocks
     if !req.attachments.is_empty() {
         let image_blocks = resolve_attachments(&req.attachments);
         if !image_blocks.is_empty() {
-            inject_attachments_into_session(&state.kernel, agent_id, image_blocks);
+            let resolved_session_id = match resolve_session_for_attachments(
+                &state.kernel,
+                agent_id,
+                requested_session_id,
+            ) {
+                Ok(session_id) => session_id,
+                Err(response) => return response,
+            };
+
+            if let Err(e) = inject_attachments_into_session(
+                &state.kernel,
+                agent_id,
+                resolved_session_id,
+                image_blocks,
+            ) {
+                tracing::warn!(agent_id = %agent_id, error = %e, "Failed to inject attachments into session");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "Failed to inject attachments"})),
+                );
+            }
         }
     }
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(
+        .send_message_with_handle_in_session(
             agent_id,
             &req.message,
             Some(kernel_handle),
+            requested_session_id,
             req.sender_id,
             req.sender_name,
         )
@@ -883,16 +971,75 @@ pub async fn run_workflow(
     });
 
     let input = req["input"].as_str().unwrap_or("").to_string();
+    let shadow_request = req.get("shadow");
+    let shadow_enabled = shadow_request
+        .and_then(|shadow| shadow.get("enabled").and_then(|value| value.as_bool()))
+        .unwrap_or_else(|| shadow_request.is_some());
+    let production_output = shadow_request
+        .and_then(|shadow| shadow.get("production_output"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
 
-    match state.kernel.run_workflow(workflow_id, input).await {
-        Ok((run_id, output)) => (
-            StatusCode::OK,
+    if shadow_enabled && production_output.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "run_id": run_id.to_string(),
-                "output": output,
-                "status": "completed",
+                "error": "Shadow run requires shadow.production_output"
             })),
+        );
+    }
+
+    let run_result: Result<
+        (
+            WorkflowRunId,
+            Option<String>,
+            Option<WorkflowShadowComparison>,
         ),
+        _,
+    > = if let Some(production_output) = production_output {
+        state
+            .kernel
+            .run_workflow_shadow(workflow_id, input, production_output)
+            .await
+            .map(|(run_id, comparison)| (run_id, None, Some(comparison)))
+    } else {
+        state
+            .kernel
+            .run_workflow(workflow_id, input)
+            .await
+            .map(|(run_id, output)| (run_id, Some(output), None))
+    };
+
+    match run_result {
+        Ok((run_id, output, shadow_comparison)) => {
+            let trace_id = state
+                .kernel
+                .workflows
+                .get_run(run_id)
+                .await
+                .map(|run| run.trace_id)
+                .unwrap_or_default();
+            let response = if let Some(shadow) = shadow_comparison {
+                let production_output = shadow.production_output.clone();
+                let shadow_output = shadow.shadow_output.clone();
+                serde_json::json!({
+                    "run_id": run_id.to_string(),
+                    "trace_id": trace_id,
+                    "output": production_output,
+                    "shadow_output": shadow_output,
+                    "shadow": shadow,
+                    "status": "shadow_completed",
+                })
+            } else {
+                serde_json::json!({
+                    "run_id": run_id.to_string(),
+                    "trace_id": trace_id,
+                    "output": output.unwrap_or_default(),
+                    "status": "completed",
+                })
+            };
+            (StatusCode::OK, Json(response))
+        }
         Err(e) => {
             tracing::warn!("Workflow run failed for {id}: {e}");
             (
@@ -900,6 +1047,151 @@ pub async fn run_workflow(
                 Json(serde_json::json!({"error": "Workflow execution failed"})),
             )
         }
+    }
+}
+
+/// GET /api/workflows/:id/rollout — Inspect rollout + rollback controls for a workflow.
+pub async fn get_workflow_rollout(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workflow_id = WorkflowId(match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid workflow ID"})),
+            );
+        }
+    });
+
+    match state.kernel.workflows.get_rollout_state(workflow_id).await {
+        Some(rollout) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(rollout).unwrap_or_default()),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Workflow not found"})),
+        ),
+    }
+}
+
+/// PUT /api/workflows/:id/rollout — Update authoritative path / stable path / shadow policy.
+pub async fn update_workflow_rollout(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let workflow_id = WorkflowId(match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid workflow ID"})),
+            );
+        }
+    });
+
+    let parse_path = |field: &str| -> Result<Option<WorkflowTrafficPath>, String> {
+        match req.get(field) {
+            Some(value) => serde_json::from_value::<WorkflowTrafficPath>(value.clone())
+                .map(Some)
+                .map_err(|_| format!("Invalid '{}' value", field)),
+            None => Ok(None),
+        }
+    };
+
+    let primary_path = match parse_path("primary_path") {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": error})),
+            );
+        }
+    };
+    let stable_path = match parse_path("stable_path") {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": error})),
+            );
+        }
+    };
+    let shadow_enabled = req.get("shadow_enabled").and_then(|value| value.as_bool());
+    let rollback_window_secs = req
+        .get("rollback_window_secs")
+        .and_then(|value| value.as_u64());
+
+    match state
+        .kernel
+        .workflows
+        .update_rollout_state(
+            workflow_id,
+            primary_path,
+            stable_path,
+            shadow_enabled,
+            rollback_window_secs,
+        )
+        .await
+    {
+        Ok(rollout) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(rollout).unwrap_or_default()),
+        ),
+        Err(error) if error.contains("not found") => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": error})),
+        ),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error})),
+        ),
+    }
+}
+
+/// POST /api/workflows/:id/rollback — Switch primary traffic back to the last stable path.
+pub async fn rollback_workflow_to_stable_path(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workflow_id = WorkflowId(match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid workflow ID"})),
+            );
+        }
+    });
+
+    match state
+        .kernel
+        .workflows
+        .rollback_to_stable_path(workflow_id)
+        .await
+    {
+        Ok(rollout) => {
+            let rollback = rollout.last_rollback.clone();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "workflow_id": workflow_id.to_string(),
+                    "rollout": rollout,
+                    "rollback": rollback,
+                })),
+            )
+        }
+        Err(error) if error.contains("not found") => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": error})),
+        ),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error})),
+        ),
     }
 }
 
@@ -914,15 +1206,64 @@ pub async fn list_workflow_runs(
         .map(|r| {
             serde_json::json!({
                 "id": r.id.to_string(),
+                "trace_id": r.trace_id,
                 "workflow_name": r.workflow_name,
                 "state": serde_json::to_value(&r.state).unwrap_or_default(),
                 "steps_completed": r.step_results.len(),
+                "audit_events": r.audit_events.len(),
+                "shadow": r.shadow.as_ref().map(|shadow| serde_json::json!({
+                    "matches": shadow.matches,
+                    "normalized_matches": shadow.normalized_matches,
+                    "first_mismatch_index": shadow.first_mismatch_index,
+                    "compared_at": shadow.compared_at.to_rfc3339(),
+                })),
                 "started_at": r.started_at.to_rfc3339(),
                 "completed_at": r.completed_at.map(|t| t.to_rfc3339()),
             })
         })
         .collect();
     Json(list)
+}
+
+/// GET /api/workflows/traces/:trace_id/events — List audit events for one workflow trace.
+pub async fn list_workflow_trace_events(
+    State(state): State<Arc<AppState>>,
+    Path(trace_id): Path<String>,
+) -> impl IntoResponse {
+    let events = state
+        .kernel
+        .workflows
+        .list_audit_events_by_trace_id(&trace_id)
+        .await;
+
+    let payload: Vec<serde_json::Value> = events
+        .into_iter()
+        .map(|event| {
+            serde_json::json!({
+                "event_id": event.event_id.to_string(),
+                "trace_id": event.trace_id,
+                "run_id": event.run_id.to_string(),
+                "workflow_id": event.workflow_id.to_string(),
+                "step_name": event.step_name,
+                "event_type": event.event_type,
+                "detail": event.detail,
+                "outcome": event.outcome,
+                "timestamp": event.timestamp.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "trace_id": trace_id,
+        "events": payload,
+    }))
+}
+
+/// GET /api/workflows/metrics — Aggregated workflow observability metrics.
+pub async fn workflow_observability_metrics(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    Json(state.kernel.workflows.observability_metrics().await)
 }
 
 /// GET /api/workflows/:id — Get a single workflow by ID.
@@ -1405,11 +1746,17 @@ pub async fn send_message_stream(
             .into_response();
     }
 
+    let requested_session_id = match parse_requested_session_id(req.session_id.as_deref()) {
+        Ok(session_id) => session_id,
+        Err(response) => return response.into_response(),
+    };
+
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
-    let (rx, _handle) = match state.kernel.send_message_streaming(
+    let (rx, _handle) = match state.kernel.send_message_streaming_with_sender_in_session(
         agent_id,
         &req.message,
         Some(kernel_handle),
+        requested_session_id,
         req.sender_id,
         req.sender_name,
     ) {

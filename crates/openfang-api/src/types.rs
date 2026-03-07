@@ -39,6 +39,8 @@ pub struct AttachmentRef {
 #[derive(Debug, Deserialize)]
 pub struct MessageRequest {
     pub message: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
     /// Optional file attachments (uploaded via /upload endpoint).
     #[serde(default)]
     pub attachments: Vec<AttachmentRef>,
