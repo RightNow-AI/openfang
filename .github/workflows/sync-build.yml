@@ -42,7 +42,7 @@ jobs:
           echo "${{ steps.check.outputs.latest }}" > .current-upstream-version
           git add .current-upstream-version
           git commit -m "chore: sync to upstream ${{ steps.check.outputs.latest }}" || true
-          git push --force-with-lease
+          git push --force
 
       - name: Set up Docker Buildx
         if: steps.check.outputs.new_release == 'true'
