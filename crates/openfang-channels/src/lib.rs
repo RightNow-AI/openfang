@@ -43,6 +43,7 @@ pub mod twist;
 pub mod webex;
 // Wave 5 — Niche & differentiating channels
 pub mod dingtalk;
+pub mod dingtalk_stream;
 pub mod discourse;
 pub mod gitter;
 pub mod gotify;
