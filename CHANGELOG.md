@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shadow and rollback controls are operator-facing guardrails; keep `stable_path` anchored to the last production route until each upstream slice is reviewed and landed.
 - OpenClaw migration compatibility covers historical identity/provider/bindings variants, so representative production exports should still be revalidated before promotion.
 
+### Operational Quality Gates
+- Added CI workflow `.github/workflows/pre-pr-review-gate.yml` to enforce comprehensive pre-PR checklist structure on `pull_request -> main`.
+- Added PR template `.github/pull_request_template.md` with mandatory sections: summary, scope, validation evidence, findings, risks, and rollback.
+- Added branch-protection automation script `scripts/ci/configure_branch_protection.sh` to apply required checks/review rules for `main`.
+- Added operator docs: `docs/pr-quality-gates.md`; linked from `docs/README.md` and `CONTRIBUTING.md`.
+
 ## [0.1.0] - 2026-02-24
 
 ### Added
