@@ -100,14 +100,14 @@ impl FalkorAnalytics {
         params: std::collections::HashMap<String, String>,
     ) -> OpenFangResult<()> {
         let mut graph = self.graph.lock().await;
-        
+
         let mut full_cypher = cypher.to_string();
         for (key, value) in params {
             let placeholder = format!("${}={}", key, value);
             let param_ref = format!("${}", key);
             full_cypher = full_cypher.replace(&param_ref, &placeholder);
         }
-        
+
         graph
             .query(&full_cypher)
             .execute()

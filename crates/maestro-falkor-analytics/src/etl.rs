@@ -84,7 +84,9 @@ pub struct MemoryExtractor;
 
 impl MemoryExtractor {
     pub async fn extract(memory: &dyn openfang_types::memory::Memory) -> Result<SurrealExportData> {
-        let export_data = memory.export(ExportFormat::Json).await
+        let export_data = memory
+            .export(ExportFormat::Json)
+            .await
             .map_err(|e| anyhow::anyhow!("Export failed: {}", e))?;
 
         let parsed: SurrealExportData = serde_json::from_slice(&export_data)
@@ -236,7 +238,9 @@ impl MemoryTransformer {
                 created_at,
                 accessed_at,
                 access_count: surreal_memory.access_count.unwrap_or(0),
-                scope: surreal_memory.scope.unwrap_or_else(|| "default".to_string()),
+                scope: surreal_memory
+                    .scope
+                    .unwrap_or_else(|| "default".to_string()),
             });
         }
 
@@ -274,7 +278,10 @@ impl MemoryLoader {
         Ok(loaded)
     }
 
-    pub async fn load_relations(analytics: &FalkorAnalytics, relations: &[Relation]) -> Result<usize> {
+    pub async fn load_relations(
+        analytics: &FalkorAnalytics,
+        relations: &[Relation],
+    ) -> Result<usize> {
         let mut loaded = 0;
 
         for relation in relations {
@@ -301,7 +308,10 @@ impl MemoryLoader {
         Ok(loaded)
     }
 
-    pub async fn load_memories(analytics: &FalkorAnalytics, memories: &[MemoryFragment]) -> Result<usize> {
+    pub async fn load_memories(
+        analytics: &FalkorAnalytics,
+        memories: &[MemoryFragment],
+    ) -> Result<usize> {
         let mut loaded = 0;
 
         for memory in memories {
@@ -399,15 +409,33 @@ mod tests {
 
     #[test]
     fn test_entity_type_label() {
-        assert_eq!(MemoryLoader::entity_type_label(&EntityType::Person), "Person");
-        assert_eq!(MemoryLoader::entity_type_label(&EntityType::Organization), "Organization");
-        assert_eq!(MemoryLoader::entity_type_label(&EntityType::Custom("CustomType".to_string())), "CustomType");
+        assert_eq!(
+            MemoryLoader::entity_type_label(&EntityType::Person),
+            "Person"
+        );
+        assert_eq!(
+            MemoryLoader::entity_type_label(&EntityType::Organization),
+            "Organization"
+        );
+        assert_eq!(
+            MemoryLoader::entity_type_label(&EntityType::Custom("CustomType".to_string())),
+            "CustomType"
+        );
     }
 
     #[test]
     fn test_relation_type_label() {
-        assert_eq!(MemoryLoader::relation_type_label(&RelationType::WorksAt), "WORKS_AT");
-        assert_eq!(MemoryLoader::relation_type_label(&RelationType::KnowsAbout), "KNOWS_ABOUT");
-        assert_eq!(MemoryLoader::relation_type_label(&RelationType::Custom("CustomRel".to_string())), "CUSTOMREL");
+        assert_eq!(
+            MemoryLoader::relation_type_label(&RelationType::WorksAt),
+            "WORKS_AT"
+        );
+        assert_eq!(
+            MemoryLoader::relation_type_label(&RelationType::KnowsAbout),
+            "KNOWS_ABOUT"
+        );
+        assert_eq!(
+            MemoryLoader::relation_type_label(&RelationType::Custom("CustomRel".to_string())),
+            "CUSTOMREL"
+        );
     }
 }

@@ -8,8 +8,8 @@ use maestro_falkor_analytics::etl::{run_etl, MemoryLoader};
 use maestro_falkor_analytics::FalkorAnalytics;
 use maestro_surreal_memory::SurrealMemorySubstrate;
 use openfang_types::memory::{Entity, EntityType, MemorySource, Relation, RelationType};
-use testcontainer_modules::redis::Redis;
 use testcontainer::clients::Cli;
+use testcontainer_modules::redis::Redis;
 
 #[tokio::test]
 async fn test_falkor_connection_and_health_check() {
@@ -110,7 +110,13 @@ async fn test_etl_from_surreal_to_falkor() {
     let agent_id = openfang_types::agent::AgentId::new();
 
     surreal
-        .remember(agent_id, "Alice works at TechCorp", MemorySource::Observation, "test", std::collections::HashMap::new())
+        .remember(
+            agent_id,
+            "Alice works at TechCorp",
+            MemorySource::Observation,
+            "test",
+            std::collections::HashMap::new(),
+        )
         .await
         .expect("Failed to add memory");
 
@@ -161,14 +167,21 @@ async fn test_etl_from_surreal_to_falkor() {
         .expect("Failed to connect to FalkorDB");
 
     // Run ETL
-    let report = run_etl(&surreal, &analytics)
-        .await
-        .expect("ETL failed");
+    let report = run_etl(&surreal, &analytics).await.expect("ETL failed");
 
     // Verify results
-    assert!(report.entities_loaded >= 2, "Should have loaded at least 2 entities");
-    assert!(report.relations_loaded >= 1, "Should have loaded at least 1 relation");
-    assert!(report.memories_loaded >= 1, "Should have loaded at least 1 memory");
+    assert!(
+        report.entities_loaded >= 2,
+        "Should have loaded at least 2 entities"
+    );
+    assert!(
+        report.relations_loaded >= 1,
+        "Should have loaded at least 1 relation"
+    );
+    assert!(
+        report.memories_loaded >= 1,
+        "Should have loaded at least 1 memory"
+    );
 
     // Verify data in FalkorDB
     let entity_count = analytics
@@ -176,5 +189,8 @@ async fn test_etl_from_surreal_to_falkor() {
         .await
         .expect("Failed to query entities");
 
-    assert!(entity_count >= 1, "Should have at least one Person entity in FalkorDB");
+    assert!(
+        entity_count >= 1,
+        "Should have at least one Person entity in FalkorDB"
+    );
 }
