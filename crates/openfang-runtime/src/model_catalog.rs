@@ -606,7 +606,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
         // ── DashScope / Qwen (Alibaba Cloud) ────────────────────────
         ProviderInfo {
             id: "qwen".into(),
-            display_name: "Qwen — DashScope (China)".into(),
+            display_name: "Qwen (Alibaba)".into(),
             api_key_env: "DASHSCOPE_API_KEY".into(),
             base_url: QWEN_BASE_URL.into(),
             key_required: true,
