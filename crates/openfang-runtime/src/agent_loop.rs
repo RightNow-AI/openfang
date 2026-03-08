@@ -873,7 +873,11 @@ async fn call_with_retry(
             Err(e) => {
                 // Use classifier for smarter error handling
                 let raw_error = e.to_string();
-                let classified = llm_errors::classify_error(&raw_error, None);
+                let status = match &e {
+                    LlmError::Api { status, .. } => Some(*status),
+                    _ => None,
+                };
+                let classified = llm_errors::classify_error(&raw_error, status);
                 warn!(
                     category = ?classified.category,
                     retryable = classified.is_retryable,
@@ -983,7 +987,11 @@ async fn stream_with_retry(
             }
             Err(e) => {
                 let raw_error = e.to_string();
-                let classified = llm_errors::classify_error(&raw_error, None);
+                let status = match &e {
+                    LlmError::Api { status, .. } => Some(*status),
+                    _ => None,
+                };
+                let classified = llm_errors::classify_error(&raw_error, status);
                 warn!(
                     category = ?classified.category,
                     retryable = classified.is_retryable,

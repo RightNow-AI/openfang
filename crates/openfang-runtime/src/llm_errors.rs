@@ -221,6 +221,7 @@ pub fn classify_error(message: &str, status: Option<u16>) -> ClassifiedError {
                 }
                 return build(LlmErrorCategory::Auth);
             }
+            404 => return build(LlmErrorCategory::ModelNotFound),
             _ => {}
         }
     }
@@ -582,6 +583,17 @@ mod tests {
         assert_eq!(e.category, LlmErrorCategory::ModelNotFound);
 
         let e = classify_error("Unknown model: claude-99", None);
+        assert_eq!(e.category, LlmErrorCategory::ModelNotFound);
+
+        // 404 must be ModelNotFound even when body contains "permission denied" (e.g. Moonshot API)
+        let e = classify_error(
+            "Not found the model kimi-k2.5-0711 or Permission denied",
+            Some(404),
+        );
+        assert_eq!(e.category, LlmErrorCategory::ModelNotFound);
+
+        // Status 404 alone (generic message) must classify as ModelNotFound
+        let e = classify_error("Not found", Some(404));
         assert_eq!(e.category, LlmErrorCategory::ModelNotFound);
     }
 

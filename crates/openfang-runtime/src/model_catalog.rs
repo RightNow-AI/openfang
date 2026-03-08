@@ -2884,7 +2884,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["kimi-k2".into()],
         },
         ModelCatalogEntry {
-            id: "kimi-k2.5-0711".into(),
+            id: "kimi-k2.5".into(),
             display_name: "Kimi K2.5".into(),
             provider: "moonshot".into(),
             tier: ModelTier::Frontier,
@@ -2895,7 +2895,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
-            aliases: vec!["kimi-k2.5".into()],
+            aliases: vec!["kimi-k2.5-0711".into()],
         },
         // ══════════════════════════════════════════════════════════════
         // Baidu Qianfan / ERNIE (3)
