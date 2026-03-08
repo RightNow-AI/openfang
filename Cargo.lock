@@ -4269,7 +4269,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-algorithm"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4285,7 +4285,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-eval"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4300,7 +4300,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-guardrails"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4314,7 +4314,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-knowledge"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4329,7 +4329,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-marketplace"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4345,7 +4345,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-model-hub"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4360,7 +4360,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-observability"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "chrono",
  "opentelemetry",
@@ -4377,7 +4377,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-pai"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4393,7 +4393,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-rlm"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4409,7 +4409,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-sdk"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",
@@ -4421,7 +4421,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-surreal-memory"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5243,7 +5243,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-api"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "async-trait",
  "axum",
@@ -5280,7 +5280,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-channels"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "async-trait",
  "axum",
@@ -5312,7 +5312,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-cli"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "clap",
  "clap_complete",
@@ -5339,7 +5339,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-desktop"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "axum",
  "open",
@@ -5365,7 +5365,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-extensions"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -5393,7 +5393,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-hands"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "chrono",
  "dashmap 6.1.0",
@@ -5410,7 +5410,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-kernel"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5448,7 +5448,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-memory"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5467,7 +5467,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-migrate"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -5486,7 +5486,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-runtime"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5518,7 +5518,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-skills"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "chrono",
  "hex",
@@ -5541,7 +5541,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-types"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5560,7 +5560,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-wire"
-version = "0.3.25"
+version = "0.3.26"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11383,7 +11383,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.3.25"
+version = "0.3.26"
 
 [[package]]
 name = "yoke"
