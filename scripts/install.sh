@@ -110,9 +110,15 @@ install() {
     tar xzf "$ARCHIVE" -C "$INSTALL_DIR"
     chmod +x "$INSTALL_DIR/openfang"
 
-    # Ad-hoc codesign on macOS (prevents SIGKILL on Apple Silicon)
-    if [ "$OS" = "darwin" ] && command -v codesign &>/dev/null; then
-        codesign --force --sign - "$INSTALL_DIR/openfang" 2>/dev/null || true
+    # macOS: strip quarantine/provenance attrs and re-sign for Apple Silicon
+    if [ "$OS" = "darwin" ]; then
+        xattr -cr "$INSTALL_DIR/openfang" 2>/dev/null || true
+        if command -v codesign &>/dev/null; then
+            if ! codesign --force --sign - "$INSTALL_DIR/openfang" 2>&1; then
+                echo "  Warning: codesign failed. Run manually:"
+                echo "    codesign --force --sign - \"$INSTALL_DIR/openfang\""
+            fi
+        fi
     fi
 
     # Add to PATH — detect the user's login shell
