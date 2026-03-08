@@ -4456,7 +4456,6 @@ dependencies = [
  "chrono",
  "dotenv",
  "falkordb",
- "futures",
  "maestro-surreal-memory",
  "openfang-types",
  "serde",

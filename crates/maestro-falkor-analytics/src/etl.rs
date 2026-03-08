@@ -83,8 +83,8 @@ struct SurrealMemory {
 pub struct MemoryExtractor;
 
 impl MemoryExtractor {
-    pub fn extract(memory: &dyn openfang_types::memory::Memory) -> Result<SurrealExportData> {
-        let export_data = futures::executor::block_on(async { memory.export(ExportFormat::Json).await })
+    pub async fn extract(memory: &dyn openfang_types::memory::Memory) -> Result<SurrealExportData> {
+        let export_data = memory.export(ExportFormat::Json).await
             .map_err(|e| anyhow::anyhow!("Export failed: {}", e))?;
 
         let parsed: SurrealExportData = serde_json::from_slice(&export_data)
@@ -252,17 +252,22 @@ impl MemoryLoader {
 
         for entity in entities {
             let label = format!("Entity:{}", Self::entity_type_label(&entity.entity_type));
-            let props = Self::entity_props(entity)?;
+
+            let mut params: HashMap<String, String> = HashMap::new();
+            params.insert("id".to_string(), entity.id.clone());
+            params.insert("name".to_string(), entity.name.clone());
+            params.insert("created_at".to_string(), entity.created_at.to_rfc3339());
+            params.insert("updated_at".to_string(), entity.updated_at.to_rfc3339());
+
+            let props_json = serde_json::to_string(&entity.properties)?;
+            params.insert("props".to_string(), props_json);
 
             let cypher = format!(
-                "MERGE (e:{} {{id: '{}'}}) SET e.name = '{}', e += {}",
-                label,
-                entity.id,
-                entity.name.replace("'", "\\'"),
-                props
+                "MERGE (e:{} {{id: $id}}) SET e.name = $name, e.created_at = $created_at, e.updated_at = $updated_at, e += $props",
+                label
             );
 
-            analytics.execute(&cypher).await?;
+            analytics.execute_with_params(&cypher, params).await?;
             loaded += 1;
         }
 
@@ -274,17 +279,22 @@ impl MemoryLoader {
 
         for relation in relations {
             let rel_type = Self::relation_type_label(&relation.relation);
-            let props = Self::relation_props(relation)?;
+
+            let mut params: HashMap<String, String> = HashMap::new();
+            params.insert("source".to_string(), relation.source.clone());
+            params.insert("target".to_string(), relation.target.clone());
+            params.insert("confidence".to_string(), relation.confidence.to_string());
+            params.insert("created_at".to_string(), relation.created_at.to_rfc3339());
+
+            let props_json = serde_json::to_string(&relation.properties)?;
+            params.insert("props".to_string(), props_json);
 
             let cypher = format!(
-                "MATCH (a {{id: '{}'}}), (b {{id: '{}'}}) MERGE (a)-[r:{} {}]->(b)",
-                relation.source,
-                relation.target,
-                rel_type,
-                props
+                "MATCH (a {{id: $source}}), (b {{id: $target}}) MERGE (a)-[r:{}]->(b) SET r.confidence = $confidence, r.created_at = $created_at, r += $props",
+                rel_type
             );
 
-            analytics.execute(&cypher).await?;
+            analytics.execute_with_params(&cypher, params).await?;
             loaded += 1;
         }
 
@@ -295,16 +305,23 @@ impl MemoryLoader {
         let mut loaded = 0;
 
         for memory in memories {
-            let props = Self::memory_props(memory)?;
+            let mut params: HashMap<String, String> = HashMap::new();
+            params.insert("id".to_string(), memory.id.to_string());
+            params.insert("content".to_string(), memory.content.clone());
+            params.insert("agent_id".to_string(), memory.agent_id.to_string());
+            params.insert("source".to_string(), serde_json::to_string(&memory.source)?);
+            params.insert("confidence".to_string(), memory.confidence.to_string());
+            params.insert("created_at".to_string(), memory.created_at.to_rfc3339());
+            params.insert("accessed_at".to_string(), memory.accessed_at.to_rfc3339());
+            params.insert("access_count".to_string(), memory.access_count.to_string());
+            params.insert("scope".to_string(), memory.scope.clone());
 
-            let cypher = format!(
-                "MERGE (m:Memory {{id: '{}'}}) SET m.content = '{}', m += {}",
-                memory.id,
-                memory.content.replace("'", "\\'"),
-                props
-            );
+            let metadata_json = serde_json::to_string(&memory.metadata)?;
+            params.insert("metadata".to_string(), metadata_json);
 
-            analytics.execute(&cypher).await?;
+            let cypher = "MERGE (m:Memory {id: $id}) SET m.content = $content, m.agent_id = $agent_id, m.source = $source, m.confidence = $confidence, m.created_at = $created_at, m.accessed_at = $accessed_at, m.access_count = $access_count, m.scope = $scope, m += $metadata";
+
+            analytics.execute_with_params(cypher, params).await?;
             loaded += 1;
         }
 
@@ -340,60 +357,13 @@ impl MemoryLoader {
             RelationType::Custom(s) => s.to_uppercase(),
         }
     }
-
-    fn entity_props(entity: &Entity) -> Result<String> {
-        let mut props = Vec::new();
-        props.push(format!("created_at: '{}'", entity.created_at.to_rfc3339()));
-        props.push(format!("updated_at: '{}'", entity.updated_at.to_rfc3339()));
-
-        for (key, value) in &entity.properties {
-            let value_str = serde_json::to_string(value)
-                .map_err(|e| anyhow::anyhow!("Failed to serialize property: {}", e))?;
-            props.push(format!("{}: {}", key, value_str));
-        }
-
-        Ok(format!("{{{}}}", props.join(", ")))
-    }
-
-    fn relation_props(relation: &Relation) -> Result<String> {
-        let mut props = Vec::new();
-        props.push(format!("confidence: {}", relation.confidence));
-        props.push(format!("created_at: '{}'", relation.created_at.to_rfc3339()));
-
-        for (key, value) in &relation.properties {
-            let value_str = serde_json::to_string(value)
-                .map_err(|e| anyhow::anyhow!("Failed to serialize property: {}", e))?;
-            props.push(format!("{}: {}", key, value_str));
-        }
-
-        Ok(format!("{{{}}}", props.join(", ")))
-    }
-
-    fn memory_props(memory: &MemoryFragment) -> Result<String> {
-        let mut props = Vec::new();
-        props.push(format!("agent_id: '{}'", memory.agent_id));
-        props.push(format!("source: '{}'", serde_json::to_string(&memory.source)?));
-        props.push(format!("confidence: {}", memory.confidence));
-        props.push(format!("created_at: '{}'", memory.created_at.to_rfc3339()));
-        props.push(format!("accessed_at: '{}'", memory.accessed_at.to_rfc3339()));
-        props.push(format!("access_count: {}", memory.access_count));
-        props.push(format!("scope: '{}'", memory.scope));
-
-        for (key, value) in &memory.metadata {
-            let value_str = serde_json::to_string(value)
-                .map_err(|e| anyhow::anyhow!("Failed to serialize metadata: {}", e))?;
-            props.push(format!("{}: {}", key, value_str));
-        }
-
-        Ok(format!("{{{}}}", props.join(", ")))
-    }
 }
 
 pub async fn run_etl(
     memory: &dyn openfang_types::memory::Memory,
     analytics: &FalkorAnalytics,
 ) -> Result<EtlReport> {
-    let export_data = MemoryExtractor::extract(memory)?;
+    let export_data = MemoryExtractor::extract(memory).await?;
 
     let entities = MemoryTransformer::transform_entities(export_data.entities)?;
     let relations = MemoryTransformer::transform_relations(export_data.relations)?;

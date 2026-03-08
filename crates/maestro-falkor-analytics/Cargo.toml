@@ -25,7 +25,6 @@ uuid = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 dotenv = "0.15"
-futures = "0.3"
 
 [dev-dependencies]
 # For integration tests - using testcontainers with redis/falkordb
