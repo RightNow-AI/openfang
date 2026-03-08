@@ -7,11 +7,11 @@
 pub mod config;
 pub mod etl;
 
+use etl::EtlReport;
 use falkordb::{AsyncGraph, FalkorClientBuilder, FalkorConnectionInfo};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::time::{interval, Duration};
 use tracing::{error, info};
 
 /// The main struct for interacting with FalkorDB analytics.
@@ -49,11 +49,6 @@ impl FalkorAnalytics {
             graph: Arc::new(Mutex::new(graph)),
             config,
         })
-    }
-
-    /// Returns a cloned Arc<Mutex<AsyncGraph>> for use in background tasks.
-    pub fn graph(&self) -> Arc<Mutex<AsyncGraph>> {
-        Arc::clone(&self.graph)
     }
 
     /// Performs a health check on the FalkorDB connection.
@@ -142,46 +137,42 @@ impl FalkorAnalytics {
     }
 }
 
-/// Runs ETL in the background with a specified interval.
+/// Spawns a background task that runs ETL once and returns a JoinHandle.
 ///
-/// This spawns a tokio task that periodically runs ETL from SurrealDB to FalkorDB.
-/// The task will run indefinitely until the runtime is shut down.
+/// This is a one-shot spawn that runs ETL from SurrealDB to FalkorDB once
+/// and returns immediately with a JoinHandle.
 ///
 /// # Arguments
 /// * `memory` - The memory substrate to extract data from
 /// * `analytics` - The FalkorAnalytics instance to load data into
-/// * `interval_secs` - The interval in seconds between ETL runs
-pub fn run_etl_background(
+///
+/// # Returns
+/// A JoinHandle that can be awaited to get the result of the ETL run.
+pub fn spawn_etl(
     memory: Arc<dyn openfang_types::memory::Memory>,
     analytics: FalkorAnalytics,
-    interval_secs: u64,
-) {
+) -> tokio::task::JoinHandle<Option<EtlReport>> {
     tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_secs(interval_secs));
+        info!("Starting background ETL run");
 
-        loop {
-            ticker.tick().await;
-
-            info!("Starting background ETL run");
-
-            match etl::run_etl(memory.as_ref(), &analytics).await {
-                Ok(report) => {
-                    info!(
-                        "ETL completed: {} entities, {} relations, {} memories",
-                        report.entities_loaded, report.relations_loaded, report.memories_loaded
-                    );
-                }
-                Err(e) => {
-                    error!("ETL failed: {}", e);
-                }
+        match etl::run_etl(memory.as_ref(), &analytics).await {
+            Ok(report) => {
+                info!(
+                    "ETL completed: {} entities, {} relations, {} memories",
+                    report.entities_loaded, report.relations_loaded, report.memories_loaded
+                );
+                Some(report)
+            }
+            Err(e) => {
+                error!("ETL failed: {}", e);
+                None
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     // Unit tests can be added here when not using the embedded feature
     // Integration tests are in tests/integration.rs

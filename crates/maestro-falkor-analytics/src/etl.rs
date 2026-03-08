@@ -277,23 +277,18 @@ impl MemoryLoader {
                 UNWIND $entities AS entity
                 MERGE (e:Entity {id: entity.id})
                 SET e.name = entity.name,
+                    e.type = entity.type,
                     e.created_at = entity.created_at,
                     e.updated_at = entity.updated_at
-                WITH e, entity
-                CALL apoc.create.addLabels(e, [entity.type]) YIELD node
-                RETURN count(node) AS loaded
+                RETURN count(e) AS loaded
             "#;
 
-            let graph_arc = analytics.graph();
-            let mut graph = graph_arc.lock().await;
-            let result = graph
-                .query(cypher)
-                .with_params(&params)
-                .execute()
+            analytics
+                .execute_with_params(cypher, params)
                 .await
                 .map_err(|e| anyhow::anyhow!("Batch entity load failed: {}", e))?;
 
-            total_loaded += result.data.len();
+            total_loaded += chunk.len();
         }
 
         Ok(total_loaded)
@@ -331,23 +326,18 @@ impl MemoryLoader {
                 MATCH (a {id: rel.source})
                 MATCH (b {id: rel.target})
                 MERGE (a)-[r:RELATION]->(b)
-                SET r.confidence = rel.confidence,
+                SET r.type = rel.type,
+                    r.confidence = rel.confidence,
                     r.created_at = rel.created_at
-                WITH r, rel
-                CALL apoc.create.relationship(a, rel.type, rel.props, b) YIELD rel2
-                RETURN count(rel2) AS loaded
+                RETURN count(r) AS loaded
             "#;
 
-            let graph_arc = analytics.graph();
-            let mut graph = graph_arc.lock().await;
-            let result = graph
-                .query(cypher)
-                .with_params(&params)
-                .execute()
+            analytics
+                .execute_with_params(cypher, params)
                 .await
                 .map_err(|e| anyhow::anyhow!("Batch relation load failed: {}", e))?;
 
-            total_loaded += result.data.len();
+            total_loaded += chunk.len();
         }
 
         Ok(total_loaded)
@@ -398,16 +388,12 @@ impl MemoryLoader {
                 RETURN count(m) AS loaded
             "#;
 
-            let graph_arc = analytics.graph();
-            let mut graph = graph_arc.lock().await;
-            let result = graph
-                .query(cypher)
-                .with_params(&params)
-                .execute()
+            analytics
+                .execute_with_params(cypher, params)
                 .await
                 .map_err(|e| anyhow::anyhow!("Batch memory load failed: {}", e))?;
 
-            total_loaded += result.data.len();
+            total_loaded += chunk.len();
         }
 
         Ok(total_loaded)

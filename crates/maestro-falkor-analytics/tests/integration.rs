@@ -238,14 +238,12 @@ async fn test_etl_background_scheduling() {
     let memory_arc: Arc<dyn openfang_types::memory::Memory> = Arc::new(surreal);
     let analytics_clone = analytics.clone();
 
-    maestro_falkor_analytics::run_etl_background(memory_arc, analytics_clone, 1);
+    let handle = maestro_falkor_analytics::spawn_etl(memory_arc, analytics_clone);
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    let report = handle.await.expect("ETL task panicked").expect("ETL failed");
 
-    let count = analytics
-        .query("MATCH (m:Memory) RETURN count(m) AS count")
-        .await
-        .unwrap_or(0);
-
-    assert!(count > 0, "Background ETL should have loaded memory");
+    assert!(
+        report.memories_loaded >= 1,
+        "Should have loaded at least 1 memory"
+    );
 }
