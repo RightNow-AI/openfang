@@ -11,11 +11,14 @@ use falkordb::{AsyncGraph, FalkorClientBuilder, FalkorConnectionInfo};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::time::{interval, Duration};
+use tracing::{error, info};
 
 /// The main struct for interacting with FalkorDB analytics.
 ///
 /// This is the primary entry point for all crate functionality.
 /// It holds an async connection to FalkorDB and configuration.
+#[derive(Clone)]
 pub struct FalkorAnalytics {
     /// The async FalkorDB graph handle
     graph: Arc<Mutex<AsyncGraph>>,
@@ -48,6 +51,11 @@ impl FalkorAnalytics {
         })
     }
 
+    /// Returns a cloned Arc<Mutex<AsyncGraph>> for use in background tasks.
+    pub fn graph(&self) -> Arc<Mutex<AsyncGraph>> {
+        Arc::clone(&self.graph)
+    }
+
     /// Performs a health check on the FalkorDB connection.
     ///
     /// Executes a simple Cypher query to verify connectivity.
@@ -63,7 +71,6 @@ impl FalkorAnalytics {
             .await
             .map_err(|e| OpenFangError::Memory(format!("Health check query failed: {}", e)))?;
 
-        // Check if we got results - LazyResultSet has len() method
         let has_results = !result.data.is_empty();
 
         Ok(has_results)
@@ -133,6 +140,43 @@ impl FalkorAnalytics {
     pub fn config(&self) -> &config::FalkorConfig {
         &self.config
     }
+}
+
+/// Runs ETL in the background with a specified interval.
+///
+/// This spawns a tokio task that periodically runs ETL from SurrealDB to FalkorDB.
+/// The task will run indefinitely until the runtime is shut down.
+///
+/// # Arguments
+/// * `memory` - The memory substrate to extract data from
+/// * `analytics` - The FalkorAnalytics instance to load data into
+/// * `interval_secs` - The interval in seconds between ETL runs
+pub fn run_etl_background(
+    memory: Arc<dyn openfang_types::memory::Memory>,
+    analytics: FalkorAnalytics,
+    interval_secs: u64,
+) {
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(interval_secs));
+
+        loop {
+            ticker.tick().await;
+
+            info!("Starting background ETL run");
+
+            match etl::run_etl(memory.as_ref(), &analytics).await {
+                Ok(report) => {
+                    info!(
+                        "ETL completed: {} entities, {} relations, {} memories",
+                        report.entities_loaded, report.relations_loaded, report.memories_loaded
+                    );
+                }
+                Err(e) => {
+                    error!("ETL failed: {}", e);
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]

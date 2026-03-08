@@ -1,10 +1,6 @@
 //! ETL (Extract, Transform, Load) module for migrating memory data from SurrealDB to FalkorDB.
 //!
-//! This module provides:
-//! - `MemoryExtractor`: Extracts raw JSON data from a SurrealMemorySubstrate
-//! - `MemoryTransformer`: Transforms raw SurrealDB export data into openfang-types structs
-//! - `MemoryLoader`: Loads entities, relations, and memory fragments into FalkorDB
-//! - `run_etl`: Main function that orchestrates the full ETL pipeline
+//! This module provides optimized batch loading using FalkorDB's UNWIND capability.
 
 use crate::FalkorAnalytics;
 use anyhow::Result;
@@ -250,92 +246,171 @@ impl MemoryTransformer {
 
 pub struct MemoryLoader;
 
+const BATCH_SIZE: usize = 100;
+
 impl MemoryLoader {
     pub async fn load_entities(analytics: &FalkorAnalytics, entities: &[Entity]) -> Result<usize> {
-        let mut loaded = 0;
+        let mut total_loaded = 0;
 
-        for entity in entities {
-            let label = format!("Entity:{}", Self::entity_type_label(&entity.entity_type));
-
+        for chunk in entities.chunks(BATCH_SIZE) {
             let mut params: HashMap<String, String> = HashMap::new();
-            params.insert("id".to_string(), entity.id.clone());
-            params.insert("name".to_string(), entity.name.clone());
-            params.insert("created_at".to_string(), entity.created_at.to_rfc3339());
-            params.insert("updated_at".to_string(), entity.updated_at.to_rfc3339());
+            let entities_json: Vec<serde_json::Value> = chunk
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "id": e.id,
+                        "name": e.name,
+                        "type": Self::entity_type_label(&e.entity_type),
+                        "props": e.properties,
+                        "created_at": e.created_at.to_rfc3339(),
+                        "updated_at": e.updated_at.to_rfc3339(),
+                    })
+                })
+                .collect();
 
-            let props_json = serde_json::to_string(&entity.properties)?;
-            params.insert("props".to_string(), props_json);
-
-            let cypher = format!(
-                "MERGE (e:{} {{id: $id}}) SET e.name = $name, e.created_at = $created_at, e.updated_at = $updated_at, e += $props",
-                label
+            params.insert(
+                "entities".to_string(),
+                serde_json::to_string(&entities_json)?,
             );
 
-            analytics.execute_with_params(&cypher, params).await?;
-            loaded += 1;
+            let cypher = r#"
+                UNWIND $entities AS entity
+                MERGE (e:Entity {id: entity.id})
+                SET e.name = entity.name,
+                    e.created_at = entity.created_at,
+                    e.updated_at = entity.updated_at
+                WITH e, entity
+                CALL apoc.create.addLabels(e, [entity.type]) YIELD node
+                RETURN count(node) AS loaded
+            "#;
+
+            let graph_arc = analytics.graph();
+            let mut graph = graph_arc.lock().await;
+            let result = graph
+                .query(cypher)
+                .with_params(&params)
+                .execute()
+                .await
+                .map_err(|e| anyhow::anyhow!("Batch entity load failed: {}", e))?;
+
+            total_loaded += result.data.len();
         }
 
-        Ok(loaded)
+        Ok(total_loaded)
     }
 
     pub async fn load_relations(
         analytics: &FalkorAnalytics,
         relations: &[Relation],
     ) -> Result<usize> {
-        let mut loaded = 0;
+        let mut total_loaded = 0;
 
-        for relation in relations {
-            let rel_type = Self::relation_type_label(&relation.relation);
-
+        for chunk in relations.chunks(BATCH_SIZE) {
             let mut params: HashMap<String, String> = HashMap::new();
-            params.insert("source".to_string(), relation.source.clone());
-            params.insert("target".to_string(), relation.target.clone());
-            params.insert("confidence".to_string(), relation.confidence.to_string());
-            params.insert("created_at".to_string(), relation.created_at.to_rfc3339());
+            let relations_json: Vec<serde_json::Value> = chunk
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "source": r.source,
+                        "target": r.target,
+                        "type": Self::relation_type_label(&r.relation),
+                        "props": r.properties,
+                        "confidence": r.confidence,
+                        "created_at": r.created_at.to_rfc3339(),
+                    })
+                })
+                .collect();
 
-            let props_json = serde_json::to_string(&relation.properties)?;
-            params.insert("props".to_string(), props_json);
-
-            let cypher = format!(
-                "MATCH (a {{id: $source}}), (b {{id: $target}}) MERGE (a)-[r:{}]->(b) SET r.confidence = $confidence, r.created_at = $created_at, r += $props",
-                rel_type
+            params.insert(
+                "relations".to_string(),
+                serde_json::to_string(&relations_json)?,
             );
 
-            analytics.execute_with_params(&cypher, params).await?;
-            loaded += 1;
+            let cypher = r#"
+                UNWIND $relations AS rel
+                MATCH (a {id: rel.source})
+                MATCH (b {id: rel.target})
+                MERGE (a)-[r:RELATION]->(b)
+                SET r.confidence = rel.confidence,
+                    r.created_at = rel.created_at
+                WITH r, rel
+                CALL apoc.create.relationship(a, rel.type, rel.props, b) YIELD rel2
+                RETURN count(rel2) AS loaded
+            "#;
+
+            let graph_arc = analytics.graph();
+            let mut graph = graph_arc.lock().await;
+            let result = graph
+                .query(cypher)
+                .with_params(&params)
+                .execute()
+                .await
+                .map_err(|e| anyhow::anyhow!("Batch relation load failed: {}", e))?;
+
+            total_loaded += result.data.len();
         }
 
-        Ok(loaded)
+        Ok(total_loaded)
     }
 
     pub async fn load_memories(
         analytics: &FalkorAnalytics,
         memories: &[MemoryFragment],
     ) -> Result<usize> {
-        let mut loaded = 0;
+        let mut total_loaded = 0;
 
-        for memory in memories {
+        for chunk in memories.chunks(BATCH_SIZE) {
             let mut params: HashMap<String, String> = HashMap::new();
-            params.insert("id".to_string(), memory.id.to_string());
-            params.insert("content".to_string(), memory.content.clone());
-            params.insert("agent_id".to_string(), memory.agent_id.to_string());
-            params.insert("source".to_string(), serde_json::to_string(&memory.source)?);
-            params.insert("confidence".to_string(), memory.confidence.to_string());
-            params.insert("created_at".to_string(), memory.created_at.to_rfc3339());
-            params.insert("accessed_at".to_string(), memory.accessed_at.to_rfc3339());
-            params.insert("access_count".to_string(), memory.access_count.to_string());
-            params.insert("scope".to_string(), memory.scope.clone());
+            let memories_json: Vec<serde_json::Value> = chunk
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id.to_string(),
+                        "content": m.content,
+                        "agent_id": m.agent_id.to_string(),
+                        "source": serde_json::to_string(&m.source).unwrap_or_default(),
+                        "confidence": m.confidence,
+                        "created_at": m.created_at.to_rfc3339(),
+                        "accessed_at": m.accessed_at.to_rfc3339(),
+                        "access_count": m.access_count,
+                        "scope": m.scope,
+                        "metadata": m.metadata,
+                    })
+                })
+                .collect();
 
-            let metadata_json = serde_json::to_string(&memory.metadata)?;
-            params.insert("metadata".to_string(), metadata_json);
+            params.insert(
+                "memories".to_string(),
+                serde_json::to_string(&memories_json)?,
+            );
 
-            let cypher = "MERGE (m:Memory {id: $id}) SET m.content = $content, m.agent_id = $agent_id, m.source = $source, m.confidence = $confidence, m.created_at = $created_at, m.accessed_at = $accessed_at, m.access_count = $access_count, m.scope = $scope, m += $metadata";
+            let cypher = r#"
+                UNWIND $memories AS mem
+                MERGE (m:Memory {id: mem.id})
+                SET m.content = mem.content,
+                    m.agent_id = mem.agent_id,
+                    m.source = mem.source,
+                    m.confidence = mem.confidence,
+                    m.created_at = mem.created_at,
+                    m.accessed_at = mem.accessed_at,
+                    m.access_count = mem.access_count,
+                    m.scope = mem.scope
+                RETURN count(m) AS loaded
+            "#;
 
-            analytics.execute_with_params(cypher, params).await?;
-            loaded += 1;
+            let graph_arc = analytics.graph();
+            let mut graph = graph_arc.lock().await;
+            let result = graph
+                .query(cypher)
+                .with_params(&params)
+                .execute()
+                .await
+                .map_err(|e| anyhow::anyhow!("Batch memory load failed: {}", e))?;
+
+            total_loaded += result.data.len();
         }
 
-        Ok(loaded)
+        Ok(total_loaded)
     }
 
     fn entity_type_label(entity_type: &EntityType) -> String {
@@ -393,7 +468,7 @@ pub async fn run_etl(
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct EtlReport {
     pub entities_extracted: u64,
     pub entities_loaded: u64,
