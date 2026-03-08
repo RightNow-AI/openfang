@@ -2954,16 +2954,53 @@ pub(crate) fn open_in_browser(url: &str) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .is_ok()
+        linux_browser_command(url)
+            .map(|mut command| command.spawn().is_ok())
+            .unwrap_or(false)
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         let _ = url;
         false
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_browser_command(url: &str) -> Option<std::process::Command> {
+    if let Some(command) = browser_command_from_env(url) {
+        return Some(command);
+    }
+
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(url);
+    Some(command)
+}
+
+#[cfg(target_os = "linux")]
+fn browser_command_from_env(url: &str) -> Option<std::process::Command> {
+    let browser = std::env::var("BROWSER").ok()?;
+    browser_command_from_str(&browser, url)
+}
+
+#[cfg(target_os = "linux")]
+fn browser_command_from_str(browser: &str, url: &str) -> Option<std::process::Command> {
+    let mut parts = browser.split_whitespace();
+    let program = parts.next()?;
+
+    let mut command = std::process::Command::new(program);
+    let mut inserted_url = false;
+    for part in parts {
+        if part.contains("%s") {
+            command.arg(part.replace("%s", url));
+            inserted_url = true;
+        } else {
+            command.arg(part);
+        }
+    }
+    if !inserted_url {
+        command.arg(url);
+    }
+    Some(command)
 }
 
 // ---------------------------------------------------------------------------
@@ -6583,5 +6620,42 @@ args = ["-y", "@modelcontextprotocol/server-github"]
         // Should NOT match: openfang lines that aren't PATH-related
         assert!(!is_openfang_path_line("# openfang config", dir));
         assert!(!is_openfang_path_line("alias of=openfang", dir));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_browser_command_from_str_appends_url() {
+        use super::browser_command_from_str;
+
+        let command = browser_command_from_str("firefox --new-tab", "http://127.0.0.1:4200/")
+            .unwrap();
+        assert_eq!(command.get_program(), "firefox");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["--new-tab", "http://127.0.0.1:4200/"]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_browser_command_from_str_replaces_placeholder() {
+        use super::browser_command_from_str;
+
+        let command = browser_command_from_str(
+            "chromium --app=%s --no-sandbox",
+            "http://127.0.0.1:4200/",
+        )
+        .unwrap();
+        assert_eq!(command.get_program(), "chromium");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["--app=http://127.0.0.1:4200/", "--no-sandbox"]
+        );
     }
 }
