@@ -706,6 +706,23 @@ pub async fn run_agent_loop(
                     });
                 }
 
+                // Detect tool errors and inject guidance to prevent fabrication
+                let error_count = tool_result_blocks.iter().filter(|b| {
+                    matches!(b, ContentBlock::ToolResult { is_error: true, .. })
+                }).count();
+                let non_denial_errors = error_count.saturating_sub(denial_count);
+                if non_denial_errors > 0 {
+                    tool_result_blocks.push(ContentBlock::Text {
+                        text: format!(
+                            "[System: {} tool(s) returned errors. Report the error honestly \
+                             to the user. Do NOT fabricate results or pretend the tool succeeded. \
+                             If a search or fetch failed, tell the user it failed and suggest \
+                             alternatives instead of making up data.]",
+                            non_denial_errors
+                        ),
+                    });
+                }
+
                 // Add tool results as a user message (Anthropic API requirement)
                 let tool_results_msg = Message {
                     role: Role::User,
@@ -1625,6 +1642,23 @@ pub async fn run_agent_loop_streaming(
                              Do NOT retry denied tools. Explain to the user what you \
                              wanted to do and that it requires their approval.]",
                             denial_count
+                        ),
+                    });
+                }
+
+                // Detect tool errors and inject guidance to prevent fabrication
+                let error_count = tool_result_blocks.iter().filter(|b| {
+                    matches!(b, ContentBlock::ToolResult { is_error: true, .. })
+                }).count();
+                let non_denial_errors = error_count.saturating_sub(denial_count);
+                if non_denial_errors > 0 {
+                    tool_result_blocks.push(ContentBlock::Text {
+                        text: format!(
+                            "[System: {} tool(s) returned errors. Report the error honestly \
+                             to the user. Do NOT fabricate results or pretend the tool succeeded. \
+                             If a search or fetch failed, tell the user it failed and suggest \
+                             alternatives instead of making up data.]",
+                            non_denial_errors
                         ),
                     });
                 }

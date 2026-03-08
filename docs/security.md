@@ -1,5 +1,7 @@
 # OpenFang Security Architecture
 
+> **Security Contact:** jaber@rightnowai.co — Report vulnerabilities via email. We respond within 48 hours.
+
 This document provides a comprehensive technical reference for every security
 system in the OpenFang Agent Operating System.  All struct names, function
 signatures, constant values, and algorithm descriptions are drawn directly from

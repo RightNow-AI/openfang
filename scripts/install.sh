@@ -111,8 +111,22 @@ install() {
     chmod +x "$INSTALL_DIR/openfang"
 
     # Ad-hoc codesign on macOS (prevents SIGKILL on Apple Silicon)
-    if [ "$OS" = "darwin" ] && command -v codesign &>/dev/null; then
-        codesign --force --sign - "$INSTALL_DIR/openfang" 2>/dev/null || true
+    # Must strip extended attributes (com.apple.quarantine) BEFORE signing,
+    # otherwise the signature is computed over the quarantine xattr and macOS
+    # rejects it as "Code Signature Invalid" → SIGKILL.
+    if [ "$OS" = "darwin" ]; then
+        if command -v xattr &>/dev/null; then
+            xattr -cr "$INSTALL_DIR/openfang" 2>/dev/null || true
+        fi
+        if command -v codesign &>/dev/null; then
+            if ! codesign --force --sign - "$INSTALL_DIR/openfang"; then
+                echo ""
+                echo "  Warning: ad-hoc code signing failed."
+                echo "  On Apple Silicon, the binary may be killed (SIGKILL) by Gatekeeper."
+                echo "  Try manually: xattr -cr $INSTALL_DIR/openfang && codesign --force --sign - $INSTALL_DIR/openfang"
+                echo ""
+            fi
+        fi
     fi
 
     # Add to PATH — detect the user's login shell

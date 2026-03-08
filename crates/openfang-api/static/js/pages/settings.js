@@ -295,11 +295,14 @@ function settingsPage() {
 
     async saveConfigField(section, field, value) {
       var key = section + '.' + field;
+      // Root-level fields (api_key, api_listen, log_level) use just the field name
+      var sectionMeta = this.configSchema && this.configSchema[section];
+      var path = (sectionMeta && sectionMeta.root_level) ? field : key;
       this.configSaving[key] = true;
       try {
-        await OpenFangAPI.post('/api/config/set', { path: key, value: value });
+        await OpenFangAPI.post('/api/config/set', { path: path, value: value });
         this.configDirty[key] = false;
-        OpenFangToast.success('Saved ' + key);
+        OpenFangToast.success('Saved ' + field);
       } catch(e) {
         OpenFangToast.error('Failed to save: ' + e.message);
       }

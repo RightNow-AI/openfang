@@ -183,7 +183,9 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} --bin openfang
       - name: Ad-hoc codesign CLI binary (macOS)
         if: runner.os == 'macOS'
-        run: codesign --force --sign - target/${{ matrix.target }}/release/openfang
+        run: |
+          xattr -cr target/${{ matrix.target }}/release/openfang || true
+          codesign --force --sign - target/${{ matrix.target }}/release/openfang
       - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
         run: |

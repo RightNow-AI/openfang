@@ -8,7 +8,7 @@ tags = ["git", "vcs", "code", "pull-requests", "ci", "atlassian"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-bitbucket"]
+args = ["-y", "@atlassian-mcp-server/bitbucket"]
 
 [[required_env]]
 name = "BITBUCKET_USERNAME"

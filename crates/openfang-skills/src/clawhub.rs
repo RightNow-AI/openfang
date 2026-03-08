@@ -427,25 +427,45 @@ impl ClawHubClient {
 
         info!(slug, "Downloading skill from ClawHub");
 
-        let response = self
-            .client
-            .get(&url)
-            .header("User-Agent", "OpenFang/0.1")
-            .send()
-            .await
-            .map_err(|e| SkillError::Network(format!("ClawHub download failed: {e}")))?;
-
-        if !response.status().is_success() {
-            return Err(SkillError::Network(format!(
-                "ClawHub download returned {}",
-                response.status()
-            )));
+        // Retry with exponential backoff on 429/5xx
+        let mut last_err = String::new();
+        let mut bytes_result = None;
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_millis(1000 * 2u64.pow(attempt));
+                tokio::time::sleep(delay).await;
+                info!(slug, attempt, "Retrying ClawHub download");
+            }
+            match self
+                .client
+                .get(&url)
+                .header("User-Agent", "OpenFang/0.1")
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    match resp.bytes().await {
+                        Ok(b) => {
+                            bytes_result = Some(b);
+                            break;
+                        }
+                        Err(e) => last_err = format!("Failed to read download: {e}"),
+                    }
+                }
+                Ok(resp) if resp.status().as_u16() == 429 || resp.status().is_server_error() => {
+                    last_err = format!("ClawHub download returned {}", resp.status());
+                }
+                Ok(resp) => {
+                    return Err(SkillError::Network(format!(
+                        "ClawHub download returned {}",
+                        resp.status()
+                    )));
+                }
+                Err(e) => last_err = format!("ClawHub download failed: {e}"),
+            }
         }
-
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| SkillError::Network(format!("Failed to read download: {e}")))?;
+        let bytes = bytes_result
+            .ok_or_else(|| SkillError::Network(format!("{last_err} (after 3 attempts)")))?;
 
         // Step 1: SHA256 of downloaded content
         let sha256 = {
