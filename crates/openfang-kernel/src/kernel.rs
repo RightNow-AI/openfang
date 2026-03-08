@@ -6745,6 +6745,7 @@ impl openfang_wire::peer::PeerHandle for OpenFangKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openfang_types::config::DefaultModelConfig;
     use std::collections::HashMap;
 
     #[test]
@@ -6813,6 +6814,50 @@ mod tests {
             tool_allowlist: vec![],
             tool_blocklist: vec![],
         }
+    }
+
+    fn boot_test_kernel() -> (OpenFangKernel, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "OLLAMA_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).unwrap();
+        (kernel, tmp)
+    }
+
+    #[tokio::test]
+    async fn test_compact_agent_session_in_session_rejects_cross_agent_session() {
+        let (kernel, _tmp) = boot_test_kernel();
+        let agent_a = kernel
+            .spawn_agent(test_manifest(
+                "agent-a",
+                "A routes test agent",
+                vec!["test".to_string()],
+            ))
+            .unwrap();
+        let agent_b = kernel
+            .spawn_agent(test_manifest(
+                "agent-b",
+                "B routes test agent",
+                vec!["test".to_string()],
+            ))
+            .unwrap();
+        let session_b = kernel.registry.get(agent_b).unwrap().session_id;
+
+        let err = kernel
+            .compact_agent_session_in_session(agent_a, session_b)
+            .await
+            .unwrap_err();
+        let err_text = err.to_string();
+        assert!(err_text.contains("belongs to a different agent"));
     }
 
     #[test]

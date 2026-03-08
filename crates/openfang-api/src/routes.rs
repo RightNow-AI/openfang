@@ -11662,3 +11662,86 @@ mod channel_config_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openfang_types::agent::AgentManifest;
+    use openfang_types::config::{DefaultModelConfig, KernelConfig};
+
+    const TEST_MANIFEST_TEMPLATE: &str = r#"
+name = "{name}"
+version = "0.1.0"
+description = "routes unit test agent"
+author = "test"
+module = "builtin:chat"
+
+[model]
+provider = "ollama"
+model = "test-model"
+system_prompt = "You are a test agent."
+"#;
+
+    fn boot_kernel() -> (OpenFangKernel, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "OLLAMA_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).unwrap();
+        (kernel, tmp)
+    }
+
+    fn spawn_agent(kernel: &OpenFangKernel, name: &str) -> AgentId {
+        let manifest_toml = TEST_MANIFEST_TEMPLATE.replace("{name}", name);
+        let manifest: AgentManifest = toml::from_str(&manifest_toml).unwrap();
+        kernel.spawn_agent(manifest).unwrap()
+    }
+
+    #[test]
+    fn test_resolve_session_for_attachments_rejects_cross_agent_session() {
+        let (kernel, _tmp) = boot_kernel();
+        let agent_a = spawn_agent(&kernel, "agent-a");
+        let agent_b = spawn_agent(&kernel, "agent-b");
+        let session_b = kernel.registry.get(agent_b).unwrap().session_id;
+
+        let err = resolve_session_for_attachments(&kernel, agent_a, Some(session_b)).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1 .0["error"], "Session belongs to a different agent");
+    }
+
+    #[test]
+    fn test_resolve_session_for_attachments_rejects_unknown_explicit_session() {
+        let (kernel, _tmp) = boot_kernel();
+        let agent_a = spawn_agent(&kernel, "agent-a");
+        let unknown = SessionId::new();
+
+        let err = resolve_session_for_attachments(&kernel, agent_a, Some(unknown)).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1 .0["error"], "Session not found");
+    }
+
+    #[test]
+    fn test_inject_attachments_into_session_rejects_cross_agent_session() {
+        let (kernel, _tmp) = boot_kernel();
+        let agent_a = spawn_agent(&kernel, "agent-a");
+        let agent_b = spawn_agent(&kernel, "agent-b");
+        let session_b = kernel.registry.get(agent_b).unwrap().session_id;
+
+        let image = openfang_types::message::ContentBlock::Image {
+            media_type: "image/png".to_string(),
+            data: "dGVzdA==".to_string(),
+        };
+
+        let err =
+            inject_attachments_into_session(&kernel, agent_a, session_b, vec![image]).unwrap_err();
+        assert!(err.contains("does not belong to agent"));
+    }
+}

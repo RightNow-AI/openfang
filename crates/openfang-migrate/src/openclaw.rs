@@ -1030,8 +1030,8 @@ fn default_api_key_env(provider: &str) -> String {
         "huggingface" => "HF_API_KEY".to_string(),
         "replicate" => "REPLICATE_API_TOKEN".to_string(),
         "github-copilot" => "GITHUB_TOKEN".to_string(),
-        "claude-code" => "ANTHROPIC_API_KEY".to_string(),
-        "ollama" => String::new(), // Ollama doesn't need an API key
+        "claude-code" => String::new(), // Claude Code provider doesn't need API key env
+        "ollama" => String::new(),      // Ollama doesn't need an API key
         // Keep explicit env names for local OpenAI-compatible providers to avoid
         // falling back to default_model.api_key_env in kernel driver resolution.
         "vllm" => "VLLM_API_KEY".to_string(),
@@ -4560,11 +4560,22 @@ mod tests {
         assert_eq!(map_provider("gpt"), "openai");
         assert_eq!(map_provider("groq"), "groq");
         assert_eq!(map_provider("custom"), "custom");
+        assert_eq!(map_provider("custom-provider"), "custom-provider");
         assert_eq!(map_provider("google"), "google");
         assert_eq!(map_provider("gemini"), "google");
         assert_eq!(map_provider("xai"), "xai");
         assert_eq!(map_provider("grok"), "xai");
         assert_eq!(map_provider("qwen"), "qwen");
+        assert_eq!(map_provider("claude-code"), "claude-code");
+        assert_eq!(map_provider("claude_code"), "claude-code");
+    }
+
+    #[test]
+    fn test_provider_alias_compatibility_mapping() {
+        assert_eq!(map_provider("codex"), "openai");
+        assert_eq!(map_provider("openai-codex"), "openai");
+        assert_eq!(map_provider("kimi"), "moonshot");
+        assert_eq!(map_provider("kimicode"), "moonshot");
         assert_eq!(map_provider("dashscope"), "qwen");
         assert_eq!(map_provider("qwencode"), "qwen");
         assert_eq!(map_provider("moonshot"), "moonshot");
@@ -4592,6 +4603,7 @@ mod tests {
         assert_eq!(default_api_key_env("huggingface"), "HF_API_KEY");
         assert_eq!(default_api_key_env("replicate"), "REPLICATE_API_TOKEN");
         assert_eq!(default_api_key_env("github-copilot"), "GITHUB_TOKEN");
+        assert!(default_api_key_env("claude-code").is_empty());
         assert!(default_api_key_env("ollama").is_empty());
         assert_eq!(default_api_key_env("vllm"), "VLLM_API_KEY");
         assert_eq!(default_api_key_env("lmstudio"), "LMSTUDIO_API_KEY");

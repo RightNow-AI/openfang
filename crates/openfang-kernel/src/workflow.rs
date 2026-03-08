@@ -136,16 +136,16 @@ impl WorkflowRouteRule {
     fn score(&self) -> i32 {
         let mut score = self.priority.saturating_mul(100);
         if self.user_id.is_some() {
-            score += 8;
+            score = score.saturating_add(8);
         }
         if self.channel.is_some() {
-            score += 4;
+            score = score.saturating_add(4);
         }
         if self.task_type.is_some() {
-            score += 2;
+            score = score.saturating_add(2);
         }
         if self.risk_policy != WorkflowRiskPolicy::Any {
-            score += 1;
+            score = score.saturating_add(1);
         }
         score
     }
@@ -4730,6 +4730,71 @@ Processed: Analyze this: raw data",
         assert_eq!(
             engine.route_workflow(&normal_request).await,
             Some(default_id)
+        );
+    }
+
+    #[test]
+    fn test_route_rule_score_saturates_without_overflow() {
+        let rule = WorkflowRouteRule {
+            workflow_id: WorkflowId::new(),
+            user_id: Some("u-1".to_string()),
+            channel: Some("feishu".to_string()),
+            task_type: Some("incident".to_string()),
+            risk_policy: WorkflowRiskPolicy::Max(RiskLevel::High),
+            priority: i32::MAX,
+        };
+        assert_eq!(rule.score(), i32::MAX);
+    }
+
+    #[tokio::test]
+    async fn test_route_workflow_for_primary_path_enforces_rollout_state() {
+        let engine = WorkflowEngine::new();
+        let workflow = test_workflow();
+        let workflow_id = workflow.id;
+        engine.register(workflow).await;
+
+        engine
+            .set_route_rules(vec![WorkflowRouteRule {
+                workflow_id,
+                user_id: None,
+                channel: Some("feishu".to_string()),
+                task_type: Some("incident".to_string()),
+                risk_policy: WorkflowRiskPolicy::Any,
+                priority: 1,
+            }])
+            .await;
+
+        let request = WorkflowRouteRequest {
+            user_id: "u-1".to_string(),
+            channel: "feishu".to_string(),
+            task_type: "incident".to_string(),
+            risk_level: RiskLevel::Low,
+        };
+
+        // Default rollout state is production, so routed OpenFang traffic is blocked.
+        assert_eq!(
+            engine
+                .route_workflow_for_primary_path(&request, WorkflowTrafficPath::Openfang)
+                .await,
+            None
+        );
+
+        engine
+            .update_rollout_state(
+                workflow_id,
+                Some(WorkflowTrafficPath::Openfang),
+                Some(WorkflowTrafficPath::Production),
+                Some(true),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            engine
+                .route_workflow_for_primary_path(&request, WorkflowTrafficPath::Openfang)
+                .await,
+            Some(workflow_id)
         );
     }
 }
