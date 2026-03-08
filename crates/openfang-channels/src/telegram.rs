@@ -4,7 +4,8 @@
 //! No external Telegram crate — just `reqwest` for full control over error handling.
 
 use crate::types::{
-    split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
+    split_message, AgentPhase, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType,
+    ChannelUser, LifecycleReaction,
 };
 use async_trait::async_trait;
 use futures::Stream;
@@ -211,6 +212,30 @@ impl TelegramAdapter {
             "action": "typing",
         });
         let _ = self.client.post(&url).json(&body).send().await?;
+        Ok(())
+    }
+
+    /// Call `setMessageReaction` to add an emoji reaction to a message.
+    async fn api_set_reaction(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        emoji: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/setMessageReaction",
+            self.token.as_str()
+        );
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reaction": [{"type": "emoji", "emoji": emoji}],
+        });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram setMessageReaction failed: {body_text}");
+        }
         Ok(())
     }
 }
@@ -441,6 +466,25 @@ impl ChannelAdapter for TelegramAdapter {
         self.api_send_typing(chat_id).await
     }
 
+    async fn send_reaction(
+        &self,
+        user: &ChannelUser,
+        message_id: &str,
+        reaction: &LifecycleReaction,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let chat_id: i64 = user
+            .platform_id
+            .parse()
+            .map_err(|_| format!("Invalid Telegram chat_id: {}", user.platform_id))?;
+        let msg_id: i64 = message_id
+            .parse()
+            .map_err(|_| format!("Invalid Telegram message_id: {message_id}"))?;
+        // Map lifecycle emojis to Telegram-supported reaction emojis
+        let emoji = telegram_reaction_emoji(&reaction.phase);
+        self.api_set_reaction(chat_id, msg_id, emoji)
+            .await
+    }
+
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
@@ -597,6 +641,19 @@ async fn parse_telegram_update(
 /// Calculate exponential backoff capped at MAX_BACKOFF.
 pub fn calculate_backoff(current: Duration) -> Duration {
     (current * 2).min(MAX_BACKOFF)
+}
+
+/// Map agent lifecycle phases to Telegram-supported reaction emojis.
+/// Telegram only allows a specific set of emojis for reactions.
+fn telegram_reaction_emoji(phase: &AgentPhase) -> &'static str {
+    match phase {
+        AgentPhase::Queued => "\u{1F440}",          // 👀
+        AgentPhase::Thinking => "\u{1F914}",         // 🤔
+        AgentPhase::ToolUse { .. } => "\u{1F525}",   // 🔥
+        AgentPhase::Streaming => "\u{270D}",         // ✍
+        AgentPhase::Done => "\u{1F44D}",             // 👍
+        AgentPhase::Error => "\u{1F44E}",            // 👎
+    }
 }
 
 /// Sanitize text for Telegram HTML parse mode.
