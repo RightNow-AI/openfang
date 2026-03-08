@@ -47,8 +47,10 @@ impl Drop for ServerHandle {
 /// any Tauri window is created. The actual axum server runs on a dedicated
 /// thread with its own tokio runtime.
 pub fn start_server() -> Result<ServerHandle, Box<dyn std::error::Error>> {
-    // Boot kernel (sync — no tokio needed)
-    let kernel = OpenFangKernel::boot(None)?;
+    // Boot kernel (async — use a temporary runtime to block_on)
+    let boot_rt = tokio::runtime::Runtime::new()?;
+    let kernel = boot_rt.block_on(OpenFangKernel::boot(None))?;
+    drop(boot_rt);
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 

@@ -494,6 +494,7 @@ async fn handle_text_message(
             match state
                 .kernel
                 .send_message_streaming(agent_id, &content, Some(kernel_handle))
+                .await
             {
                 Ok((mut rx, handle)) => {
                     // Forward stream events to WebSocket with debouncing
@@ -767,7 +768,7 @@ async fn handle_command(
     verbose: &Arc<AtomicU8>,
 ) -> serde_json::Value {
     match cmd {
-        "new" | "reset" => match state.kernel.reset_session(agent_id) {
+        "new" | "reset" => match state.kernel.reset_session(agent_id).await {
             Ok(()) => {
                 serde_json::json!({"type": "command_result", "command": cmd, "message": "Session reset. Chat history cleared."})
             }
@@ -798,7 +799,7 @@ async fn handle_command(
                     serde_json::json!({"type": "error", "content": "Agent not found"})
                 }
             } else {
-                match state.kernel.set_agent_model(agent_id, args) {
+                match state.kernel.set_agent_model(agent_id, args).await {
                     Ok(()) => {
                         let msg = if let Some(entry) = state.kernel.registry.get(agent_id) {
                             format!("Model switched to: {} (provider: {})", entry.manifest.model.model, entry.manifest.model.provider)
@@ -813,7 +814,7 @@ async fn handle_command(
                 }
             }
         }
-        "usage" => match state.kernel.session_usage_cost(agent_id) {
+        "usage" => match state.kernel.session_usage_cost(agent_id).await {
             Ok((input, output, cost)) => {
                 let mut msg = format!(
                     "Session usage: ~{input} in / ~{output} out (~{} total)",
@@ -828,7 +829,7 @@ async fn handle_command(
                 serde_json::json!({"type": "error", "content": format!("Usage query failed: {e}")})
             }
         },
-        "context" => match state.kernel.context_report(agent_id) {
+        "context" => match state.kernel.context_report(agent_id).await {
             Ok(report) => {
                 let formatted = openfang_runtime::compactor::format_context_report(&report);
                 serde_json::json!({

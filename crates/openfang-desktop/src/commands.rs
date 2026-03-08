@@ -40,7 +40,7 @@ pub fn get_agent_count(kernel_state: tauri::State<'_, KernelState>) -> usize {
 /// Validates the TOML as a valid `AgentManifest`, copies it to
 /// `~/.openfang/agents/{name}/agent.toml`, then spawns the agent.
 #[tauri::command]
-pub fn import_agent_toml(
+pub async fn import_agent_toml(
     app: tauri::AppHandle,
     kernel_state: tauri::State<'_, KernelState>,
 ) -> Result<String, String> {
@@ -72,7 +72,7 @@ pub fn import_agent_toml(
 
     kernel_state
         .kernel
-        .spawn_agent(manifest)
+        .spawn_agent(manifest).await
         .map_err(|e| format!("Failed to spawn agent: {e}"))?;
 
     info!("Imported and spawned agent \"{agent_name}\"");

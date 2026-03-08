@@ -12,7 +12,7 @@ use openfang_types::memory::{
 
 use std::collections::HashMap;
 use std::path::Path;
-use surrealdb::engine::local::{Db, RocksDb};
+use surrealdb::engine::local::{Db, SurrealKv};
 use surrealdb::Surreal;
 use uuid;
 
@@ -34,9 +34,9 @@ pub struct SurrealMemorySubstrate {
 }
 
 impl SurrealMemorySubstrate {
-    /// Connect to a SurrealDB instance backed by RocksDB at the given path.
+    /// Connect to a SurrealDB instance backed by SurrealKV at the given path.
     pub async fn connect<P: AsRef<Path>>(db_path: P) -> OpenFangResult<Self> {
-        let db = Surreal::new::<RocksDb>(db_path.as_ref())
+        let db: Surreal<Db> = Surreal::new::<SurrealKv>(db_path.as_ref())
             .await
             .map_err(|e| OpenFangError::Memory(format!("Failed to connect to SurrealDB: {}", e)))?;
 
@@ -53,7 +53,7 @@ impl SurrealMemorySubstrate {
 
     /// Connect to an in-memory SurrealDB instance (for testing).
     pub async fn connect_in_memory() -> OpenFangResult<Self> {
-        let db = Surreal::new::<surrealdb::engine::local::Mem>(())
+        let db: Surreal<Db> = Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
             .map_err(|e| OpenFangError::Memory(format!("Failed to connect to SurrealDB: {}", e)))?;
 

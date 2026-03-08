@@ -1835,7 +1835,8 @@ impl App {
                         }
                     };
                 let name = manifest.name.clone();
-                match kernel.spawn_agent(manifest) {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(kernel.spawn_agent(manifest)) {
                     Ok(id) => self.enter_chat_inprocess(id, name),
                     Err(e) => {
                         self.agents.status_msg = format!("Spawn failed: {e}");
@@ -2119,7 +2120,8 @@ impl App {
                         }
                         Backend::InProcess { kernel } => {
                             if let Some(id) = target.agent_id_inprocess {
-                                match kernel.kill_agent(id) {
+                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                match rt.block_on(kernel.kill_agent(id)) {
                                     Ok(()) => {
                                         self.chat.push_message(
                                             chat::Role::System,

@@ -879,11 +879,23 @@ fn main() {
         Some(Commands::Start) => cmd_start(cli.config),
         Some(Commands::Stop) => cmd_stop(),
         Some(Commands::Agent(sub)) => match sub {
-            AgentCommands::New { template } => cmd_agent_new(cli.config, template),
-            AgentCommands::Spawn { manifest } => cmd_agent_spawn(cli.config, manifest),
-            AgentCommands::List { json } => cmd_agent_list(cli.config, json),
+            AgentCommands::New { template } => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(cmd_agent_new(cli.config, template));
+            }
+            AgentCommands::Spawn { manifest } => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(cmd_agent_spawn(cli.config, manifest));
+            }
+            AgentCommands::List { json } => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(cmd_agent_list(cli.config, json));
+            }
             AgentCommands::Chat { agent_id } => cmd_agent_chat(cli.config, &agent_id),
-            AgentCommands::Kill { agent_id } => cmd_agent_kill(cli.config, &agent_id),
+            AgentCommands::Kill { agent_id } => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(cmd_agent_kill(cli.config, &agent_id));
+            }
             AgentCommands::Set {
                 agent_id,
                 field,
@@ -943,7 +955,10 @@ fn main() {
             ConfigCommands::TestKey { provider } => cmd_config_test_key(&provider),
         },
         Some(Commands::Chat { agent }) => cmd_quick_chat(cli.config, agent),
-        Some(Commands::Status { json }) => cmd_status(cli.config, json),
+        Some(Commands::Status { json }) => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(cmd_status(cli.config, json));
+        }
         Some(Commands::Doctor { json, repair }) => cmd_doctor(json, repair),
         Some(Commands::Dashboard) => cmd_dashboard(),
         Some(Commands::Completion { shell }) => cmd_completion(shell),
@@ -968,7 +983,10 @@ fn main() {
         Some(Commands::Gateway(sub)) => match sub {
             GatewayCommands::Start => cmd_start(cli.config),
             GatewayCommands::Stop => cmd_stop(),
-            GatewayCommands::Status { json } => cmd_status(cli.config, json),
+            GatewayCommands::Status { json } => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(cmd_status(cli.config, json));
+            }
         },
         Some(Commands::Approvals(sub)) => match sub {
             ApprovalsCommands::List { json } => cmd_approvals_list(json),
@@ -1400,7 +1418,7 @@ fn cmd_start(config: Option<PathBuf>) {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let kernel = match OpenFangKernel::boot(config.as_deref()) {
+        let kernel = match OpenFangKernel::boot(config.as_deref()).await {
             Ok(k) => k,
             Err(e) => {
                 boot_kernel_error(&e);
@@ -1547,7 +1565,7 @@ fn boot_kernel_error(e: &openfang_kernel::error::KernelError) {
     }
 }
 
-fn cmd_agent_spawn(config: Option<PathBuf>, manifest_path: PathBuf) {
+async fn cmd_agent_spawn(config: Option<PathBuf>, manifest_path: PathBuf) {
     if !manifest_path.exists() {
         ui::error_with_fix(
             &format!("Manifest file not found: {}", manifest_path.display()),
@@ -1585,8 +1603,8 @@ fn cmd_agent_spawn(config: Option<PathBuf>, manifest_path: PathBuf) {
             eprintln!("Error parsing manifest: {e}");
             std::process::exit(1);
         });
-        let kernel = boot_kernel(config);
-        match kernel.spawn_agent(manifest) {
+        let kernel = boot_kernel(config).await;
+        match kernel.spawn_agent(manifest).await {
             Ok(id) => {
                 println!("Agent spawned (in-process mode).");
                 println!("  ID: {id}");
@@ -1601,7 +1619,7 @@ fn cmd_agent_spawn(config: Option<PathBuf>, manifest_path: PathBuf) {
     }
 }
 
-fn cmd_agent_list(config: Option<PathBuf>, json: bool) {
+async fn cmd_agent_list(config: Option<PathBuf>, json: bool) {
     if let Some(base) = find_daemon() {
         let client = daemon_client();
         let body = daemon_json(client.get(format!("{base}/api/agents")).send());
@@ -1638,7 +1656,7 @@ fn cmd_agent_list(config: Option<PathBuf>, json: bool) {
             None => println!("No agents running."),
         }
     } else {
-        let kernel = boot_kernel(config);
+        let kernel = boot_kernel(config).await;
         let agents = kernel.registry.list();
 
         if json {
@@ -1683,7 +1701,7 @@ fn cmd_agent_chat(config: Option<PathBuf>, agent_id_str: &str) {
     tui::chat_runner::run_chat_tui(config, Some(agent_id_str.to_string()));
 }
 
-fn cmd_agent_kill(config: Option<PathBuf>, agent_id_str: &str) {
+async fn cmd_agent_kill(config: Option<PathBuf>, agent_id_str: &str) {
     if let Some(base) = find_daemon() {
         let client = daemon_client();
         let body = daemon_json(
@@ -1705,8 +1723,8 @@ fn cmd_agent_kill(config: Option<PathBuf>, agent_id_str: &str) {
             eprintln!("Invalid agent ID: {agent_id_str}");
             std::process::exit(1);
         });
-        let kernel = boot_kernel(config);
-        match kernel.kill_agent(agent_id) {
+        let kernel = boot_kernel(config).await;
+        match kernel.kill_agent(agent_id).await {
             Ok(()) => println!("Agent {agent_id} killed."),
             Err(e) => {
                 eprintln!("Failed to kill agent: {e}");
@@ -1748,7 +1766,7 @@ fn cmd_agent_set(agent_id_str: &str, field: &str, value: &str) {
     }
 }
 
-fn cmd_agent_new(config: Option<PathBuf>, template_name: Option<String>) {
+async fn cmd_agent_new(config: Option<PathBuf>, template_name: Option<String>) {
     let all_templates = templates::load_all_templates();
     if all_templates.is_empty() {
         ui::error_with_fix(
@@ -1802,11 +1820,11 @@ fn cmd_agent_new(config: Option<PathBuf>, template_name: Option<String>) {
     };
 
     // Spawn the agent
-    spawn_template_agent(config, chosen);
+    spawn_template_agent(config, chosen).await;
 }
 
 /// Spawn an agent from a template, via daemon or in-process.
-fn spawn_template_agent(config: Option<PathBuf>, template: &templates::AgentTemplate) {
+async fn spawn_template_agent(config: Option<PathBuf>, template: &templates::AgentTemplate) {
     if let Some(base) = find_daemon() {
         let client = daemon_client();
         let body = daemon_json(
@@ -1840,8 +1858,8 @@ fn spawn_template_agent(config: Option<PathBuf>, template: &templates::AgentTemp
             );
             std::process::exit(1);
         });
-        let kernel = boot_kernel(config);
-        match kernel.spawn_agent(manifest) {
+        let kernel = boot_kernel(config).await;
+        match kernel.spawn_agent(manifest).await {
             Ok(id) => {
                 ui::blank();
                 ui::success(&format!("Agent '{}' spawned (in-process)", template.name));
@@ -1859,7 +1877,7 @@ fn spawn_template_agent(config: Option<PathBuf>, template: &templates::AgentTemp
     }
 }
 
-fn cmd_status(config: Option<PathBuf>, json: bool) {
+async fn cmd_status(config: Option<PathBuf>, json: bool) {
     if let Some(base) = find_daemon() {
         let client = daemon_client();
         let body = daemon_json(client.get(format!("{base}/api/status")).send());
@@ -1906,7 +1924,7 @@ fn cmd_status(config: Option<PathBuf>, json: bool) {
             }
         }
     } else {
-        let kernel = boot_kernel(config);
+        let kernel = boot_kernel(config).await;
         let agent_count = kernel.registry.count();
 
         if json {
@@ -3165,8 +3183,8 @@ fn require_daemon(command: &str) -> String {
     })
 }
 
-fn boot_kernel(config: Option<PathBuf>) -> OpenFangKernel {
-    match OpenFangKernel::boot(config.as_deref()) {
+async fn boot_kernel(config: Option<PathBuf>) -> OpenFangKernel {
+    match OpenFangKernel::boot(config.as_deref()).await {
         Ok(k) => k,
         Err(e) => {
             boot_kernel_error(&e);

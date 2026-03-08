@@ -270,7 +270,7 @@ pub fn spawn_kernel_boot(config: Option<std::path::PathBuf>, tx: mpsc::Sender<Ap
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
 
-        match OpenFangKernel::boot(config.as_deref()) {
+        match rt.block_on(OpenFangKernel::boot(config.as_deref())) {
             Ok(k) => {
                 let k = Arc::new(k);
                 k.set_self_handle();
@@ -303,7 +303,7 @@ pub fn spawn_inprocess_stream(
         // send_message_streaming() finds the reactor.
         let _guard = rt.enter();
 
-        match kernel.send_message_streaming(agent_id, &message, None) {
+        match rt.block_on(kernel.send_message_streaming(agent_id, &message, None)) {
             Ok((mut rx, handle)) => {
                 rt.block_on(async {
                     while let Some(ev) = rx.recv().await {
@@ -978,7 +978,8 @@ pub fn spawn_kill_agent(backend: BackendRef, agent_id: String, tx: mpsc::Sender<
             // Try to parse as UUID-based AgentId
             if let Ok(uuid) = uuid::Uuid::parse_str(&agent_id) {
                 let aid = AgentId(uuid);
-                match kernel.kill_agent(aid) {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(kernel.kill_agent(aid)) {
                     Ok(()) => {
                         let _ = tx.send(AppEvent::AgentKilled { id: agent_id });
                     }
@@ -1157,7 +1158,8 @@ pub fn spawn_update_agent_skills(
         BackendRef::InProcess(kernel) => {
             if let Ok(uuid) = uuid::Uuid::parse_str(&agent_id) {
                 let aid = openfang_types::agent::AgentId(uuid);
-                match kernel.set_agent_skills(aid, skills) {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(kernel.set_agent_skills(aid, skills)) {
                     Ok(()) => {
                         let _ = tx.send(AppEvent::AgentSkillsUpdated(agent_id));
                     }
@@ -1201,7 +1203,8 @@ pub fn spawn_update_agent_mcp_servers(
         BackendRef::InProcess(kernel) => {
             if let Ok(uuid) = uuid::Uuid::parse_str(&agent_id) {
                 let aid = openfang_types::agent::AgentId(uuid);
-                match kernel.set_agent_mcp_servers(aid, servers) {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(kernel.set_agent_mcp_servers(aid, servers)) {
                     Ok(()) => {
                         let _ = tx.send(AppEvent::AgentMcpServersUpdated(agent_id));
                     }
@@ -2242,7 +2245,8 @@ pub fn spawn_activate_hand(backend: BackendRef, hand_id: String, tx: mpsc::Sende
             }
         }
         BackendRef::InProcess(kernel) => {
-            match kernel.activate_hand(&hand_id, std::collections::HashMap::new()) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            match rt.block_on(kernel.activate_hand(&hand_id, std::collections::HashMap::new())) {
                 Ok(_) => {
                     let _ = tx.send(AppEvent::HandActivated(hand_id));
                 }
@@ -2273,19 +2277,22 @@ pub fn spawn_deactivate_hand(backend: BackendRef, instance_id: String, tx: mpsc:
                 }
             }
         }
-        BackendRef::InProcess(kernel) => match uuid::Uuid::parse_str(&instance_id) {
-            Ok(uuid) => match kernel.deactivate_hand(uuid) {
-                Ok(()) => {
-                    let _ = tx.send(AppEvent::HandDeactivated(instance_id));
-                }
+        BackendRef::InProcess(kernel) => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            match uuid::Uuid::parse_str(&instance_id) {
+                Ok(uuid) => match rt.block_on(kernel.deactivate_hand(uuid)) {
+                    Ok(()) => {
+                        let _ = tx.send(AppEvent::HandDeactivated(instance_id));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::FetchError(format!("Deactivate failed: {e}")));
+                    }
+                },
                 Err(e) => {
-                    let _ = tx.send(AppEvent::FetchError(format!("Deactivate failed: {e}")));
+                    let _ = tx.send(AppEvent::FetchError(format!("Invalid instance ID: {e}")));
                 }
-            },
-            Err(e) => {
-                let _ = tx.send(AppEvent::FetchError(format!("Invalid instance ID: {e}")));
             }
-        },
+        }
     });
 }
 

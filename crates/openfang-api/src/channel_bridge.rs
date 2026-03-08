@@ -110,6 +110,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         let agent_id = self
             .kernel
             .spawn_agent(manifest)
+            .await
             .map_err(|e| format!("Failed to spawn agent: {e}"))?;
 
         Ok(agent_id)
@@ -621,6 +622,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
     async fn reset_session(&self, agent_id: AgentId) -> Result<String, String> {
         self.kernel
             .reset_session(agent_id)
+            .await
             .map_err(|e| format!("{e}"))?;
         Ok("Session reset. Chat history cleared.".to_string())
     }
@@ -647,6 +649,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         }
         self.kernel
             .set_agent_model(agent_id, model)
+            .await
             .map_err(|e| format!("{e}"))?;
         Ok(format!("Model switched to: {model}"))
     }
@@ -667,6 +670,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         let (input, output, cost) = self
             .kernel
             .session_usage_cost(agent_id)
+            .await
             .map_err(|e| format!("{e}"))?;
         let total = input + output;
         let mut msg = format!("Session usage:\n  Input: ~{input} tokens\n  Output: ~{output} tokens\n  Total: ~{total} tokens");

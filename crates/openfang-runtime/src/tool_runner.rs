@@ -250,11 +250,11 @@ pub async fn execute_tool(
         "agent_send" => tool_agent_send(input, kernel).await,
         "agent_spawn" => tool_agent_spawn(input, kernel, caller_agent_id).await,
         "agent_list" => tool_agent_list(kernel),
-        "agent_kill" => tool_agent_kill(input, kernel),
+        "agent_kill" => tool_agent_kill(input, kernel).await,
 
         // Shared memory tools
-        "memory_store" => tool_memory_store(input, kernel),
-        "memory_recall" => tool_memory_recall(input, kernel),
+        "memory_store" => tool_memory_store(input, kernel).await,
+        "memory_recall" => tool_memory_recall(input, kernel).await,
 
         // Collaboration tools
         "agent_find" => tool_agent_find(input, kernel),
@@ -1579,7 +1579,7 @@ fn tool_agent_list(kernel: Option<&Arc<dyn KernelHandle>>) -> Result<String, Str
     Ok(output)
 }
 
-fn tool_agent_kill(
+async fn tool_agent_kill(
     input: &serde_json::Value,
     kernel: Option<&Arc<dyn KernelHandle>>,
 ) -> Result<String, String> {
@@ -1587,7 +1587,7 @@ fn tool_agent_kill(
     let agent_id = input["agent_id"]
         .as_str()
         .ok_or("Missing 'agent_id' parameter")?;
-    kh.kill_agent(agent_id)?;
+    kh.kill_agent(agent_id).await?;
     Ok(format!("Agent {agent_id} killed successfully."))
 }
 
@@ -1595,24 +1595,24 @@ fn tool_agent_kill(
 // Shared memory tools
 // ---------------------------------------------------------------------------
 
-fn tool_memory_store(
+async fn tool_memory_store(
     input: &serde_json::Value,
     kernel: Option<&Arc<dyn KernelHandle>>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
     let key = input["key"].as_str().ok_or("Missing 'key' parameter")?;
     let value = input.get("value").ok_or("Missing 'value' parameter")?;
-    kh.memory_store(key, value.clone())?;
+    kh.memory_store(key, value.clone()).await?;
     Ok(format!("Stored value under key '{key}'."))
 }
 
-fn tool_memory_recall(
+async fn tool_memory_recall(
     input: &serde_json::Value,
     kernel: Option<&Arc<dyn KernelHandle>>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
     let key = input["key"].as_str().ok_or("Missing 'key' parameter")?;
-    match kh.memory_recall(key)? {
+    match kh.memory_recall(key).await? {
         Some(val) => Ok(serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string())),
         None => Ok(format!("No value found for key '{key}'.")),
     }
@@ -2015,13 +2015,13 @@ async fn tool_schedule_create(
     });
 
     // Load existing schedules from shared memory
-    let mut schedules: Vec<serde_json::Value> = match kh.memory_recall(SCHEDULES_KEY)? {
+    let mut schedules: Vec<serde_json::Value> = match kh.memory_recall(SCHEDULES_KEY).await? {
         Some(serde_json::Value::Array(arr)) => arr,
         _ => Vec::new(),
     };
 
     schedules.push(entry);
-    kh.memory_store(SCHEDULES_KEY, serde_json::Value::Array(schedules))?;
+    kh.memory_store(SCHEDULES_KEY, serde_json::Value::Array(schedules)).await?;
 
     Ok(format!(
         "Schedule created:\n  ID: {schedule_id}\n  Description: {description}\n  Cron: {cron_expr}\n  Original: {schedule_str}"
@@ -2031,7 +2031,7 @@ async fn tool_schedule_create(
 async fn tool_schedule_list(kernel: Option<&Arc<dyn KernelHandle>>) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
 
-    let schedules: Vec<serde_json::Value> = match kh.memory_recall(SCHEDULES_KEY)? {
+    let schedules: Vec<serde_json::Value> = match kh.memory_recall(SCHEDULES_KEY).await? {
         Some(serde_json::Value::Array(arr)) => arr,
         _ => Vec::new(),
     };
@@ -2064,7 +2064,7 @@ async fn tool_schedule_delete(
     let kh = require_kernel(kernel)?;
     let id = input["id"].as_str().ok_or("Missing 'id' parameter")?;
 
-    let mut schedules: Vec<serde_json::Value> = match kh.memory_recall(SCHEDULES_KEY)? {
+    let mut schedules: Vec<serde_json::Value> = match kh.memory_recall(SCHEDULES_KEY).await? {
         Some(serde_json::Value::Array(arr)) => arr,
         _ => Vec::new(),
     };
@@ -2076,7 +2076,7 @@ async fn tool_schedule_delete(
         return Err(format!("Schedule '{id}' not found."));
     }
 
-    kh.memory_store(SCHEDULES_KEY, serde_json::Value::Array(schedules))?;
+    kh.memory_store(SCHEDULES_KEY, serde_json::Value::Array(schedules)).await?;
     Ok(format!("Schedule '{id}' deleted."))
 }
 
