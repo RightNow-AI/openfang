@@ -119,10 +119,18 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    // SECURITY: If no API key configured, non-public endpoints still require auth.
-    // Fall through to the token check which will fail (no valid token matches empty key),
-    // returning 401 for any non-whitelisted route.
+    // SECURITY: If no API key configured, allow localhost access but reject remote.
+    // Many users skip the wizard or create config.toml manually without setting api_key.
+    // Blocking localhost access makes the dashboard unusable for them.
     if api_key.is_empty() {
+        let is_loopback = request
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip().is_loopback())
+            .unwrap_or(false);
+        if is_loopback {
+            return next.run(request).await;
+        }
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header("www-authenticate", "Bearer")
