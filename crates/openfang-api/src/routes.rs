@@ -6329,10 +6329,19 @@ pub async fn set_model(
         }
     };
     match state.kernel.set_agent_model(agent_id, model) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "model": model})),
-        ),
+        Ok(()) => {
+            // Return the resolved provider so frontend can update its state
+            let provider = state
+                .kernel
+                .registry
+                .get(agent_id)
+                .map(|e| e.manifest.model.provider.clone())
+                .unwrap_or_default();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "ok", "model": model, "provider": provider})),
+            )
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("{e}")})),

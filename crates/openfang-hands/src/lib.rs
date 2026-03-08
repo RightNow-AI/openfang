@@ -29,6 +29,8 @@ pub enum HandError {
     TomlParse(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Config error: {0}")]
+    Config(String),
 }
 
 pub type HandResult<T> = Result<T, HandError>;

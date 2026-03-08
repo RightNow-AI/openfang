@@ -155,7 +155,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "MOONSHOT_API_KEY",
             key_required: true,
         }),
-        "qwen" | "dashscope" => Some(ProviderDefaults {
+        "qwen" | "dashscope" | "model_studio" => Some(ProviderDefaults {
             base_url: QWEN_BASE_URL,
             api_key_env: "DASHSCOPE_API_KEY",
             key_required: true,
@@ -374,7 +374,7 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
         ("gemini", "gemini-2.5-flash", "GEMINI_API_KEY"),
         ("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY"),
         ("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY"),
-        ("openrouter", "openrouter/auto", "OPENROUTER_API_KEY"),
+        ("openrouter", "openrouter/anthropic/claude-sonnet-4", "OPENROUTER_API_KEY"),
         ("mistral", "mistral-large-latest", "MISTRAL_API_KEY"),
         ("together", "meta-llama/Llama-3-70b-chat-hf", "TOGETHER_API_KEY"),
         ("fireworks", "accounts/fireworks/models/llama-v3p1-70b-instruct", "FIREWORKS_API_KEY"),
