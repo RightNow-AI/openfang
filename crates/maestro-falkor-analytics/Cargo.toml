@@ -27,9 +27,8 @@ tracing = { workspace = true }
 dotenv = "0.15"
 
 [dev-dependencies]
-# For integration tests - using testcontainers with redis/falkordb
+# For integration tests - using testcontainers with GenericImage for FalkorDB
 testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["redis"] }
 
 [features]
 default = []
