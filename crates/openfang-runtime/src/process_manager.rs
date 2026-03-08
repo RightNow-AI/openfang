@@ -324,7 +324,11 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("max: 1"));
 
-        let _ = pm.kill(&id1).await;
+        // Avoid kill_process_tree() in this unit test because it may target the
+        // whole process group under some test runners.
+        if let Some((_, mut proc)) = pm.processes.remove(&id1) {
+            let _ = proc.child.kill().await;
+        }
     }
 
     #[tokio::test]
