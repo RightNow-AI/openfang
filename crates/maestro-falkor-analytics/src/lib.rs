@@ -90,7 +90,8 @@ impl FalkorAnalytics {
     /// Executes a parameterized Cypher query against the FalkorDB graph.
     ///
     /// Parameters are passed as a HashMap of key-value pairs.
-    /// Uses FalkorDB's native parameter syntax: $key=value embedded in query.
+    /// Uses FalkorDB's native `.with_params()` method which sends parameters
+    /// separately from the query, preventing Cypher injection.
     ///
     /// # Errors
     /// Returns an error if the query fails.
@@ -101,15 +102,9 @@ impl FalkorAnalytics {
     ) -> OpenFangResult<()> {
         let mut graph = self.graph.lock().await;
 
-        let mut full_cypher = cypher.to_string();
-        for (key, value) in params {
-            let placeholder = format!("${}={}", key, value);
-            let param_ref = format!("${}", key);
-            full_cypher = full_cypher.replace(&param_ref, &placeholder);
-        }
-
         graph
-            .query(&full_cypher)
+            .query(cypher)
+            .with_params(&params)
             .execute()
             .await
             .map_err(|e| OpenFangError::Memory(format!("Parameterized query failed: {}", e)))?;
