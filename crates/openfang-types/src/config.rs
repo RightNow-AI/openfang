@@ -404,6 +404,75 @@ pub struct FallbackProviderConfig {
     pub base_url: Option<String>,
 }
 
+/// CLI output format.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliOutputFormat {
+    /// Plain text output — use stdout as-is.
+    #[default]
+    Text,
+    /// JSON output — parse and extract text field.
+    Json,
+}
+
+/// How the prompt is passed to the CLI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliInputMode {
+    /// Pass prompt as a positional argument (last arg).
+    #[default]
+    Arg,
+    /// Send prompt via stdin.
+    Stdin,
+}
+
+/// Configuration for a CLI-based LLM backend.
+///
+/// Configure in config.toml:
+/// ```toml
+/// [[cli_backends]]
+/// id = "codex"
+/// command = "codex"
+/// args = ["exec"]
+/// output = "text"
+/// input = "arg"
+/// model_arg = "--model"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliBackendConfig {
+    /// Unique identifier (used in model refs: "cli-exec/<id>/<model>").
+    pub id: String,
+    /// Command to execute (binary name or absolute path).
+    pub command: String,
+    /// Default arguments passed before the prompt.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Output format: "text" or "json".
+    #[serde(default)]
+    pub output: CliOutputFormat,
+    /// Input mode: "arg" (prompt as last CLI arg) or "stdin" (prompt piped to stdin).
+    #[serde(default)]
+    pub input: CliInputMode,
+    /// CLI flag for specifying the model (e.g., "--model"). Empty = don't pass model.
+    #[serde(default)]
+    pub model_arg: String,
+    /// JSON field names to extract text from when output = "json".
+    /// Tried in order; first non-null wins.
+    #[serde(default = "default_json_text_fields")]
+    pub json_text_fields: Vec<String>,
+    /// Optional timeout in seconds (0 = no timeout). Default: 300.
+    #[serde(default = "default_cli_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_json_text_fields() -> Vec<String> {
+    vec!["result".into(), "content".into(), "text".into()]
+}
+
+fn default_cli_timeout() -> u64 {
+    300
+}
+
 /// Text-to-speech configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1065,6 +1134,9 @@ pub struct KernelConfig {
     /// OAuth client ID overrides for PKCE flows.
     #[serde(default)]
     pub oauth: OAuthConfig,
+    /// CLI backend configurations for the "cli-exec" provider.
+    #[serde(default)]
+    pub cli_backends: Vec<CliBackendConfig>,
 }
 
 /// OAuth client ID overrides for PKCE flows.
@@ -1236,6 +1308,7 @@ impl Default for KernelConfig {
             budget: BudgetConfig::default(),
             provider_urls: HashMap::new(),
             oauth: OAuthConfig::default(),
+            cli_backends: Vec::new(),
         }
     }
 }
@@ -1348,7 +1421,7 @@ fn openfang_home_dir() -> PathBuf {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DefaultModelConfig {
-    /// Provider name (e.g., "anthropic", "openai").
+    /// Provider name (e.g., "anthropic", "openai", "cli-exec").
     pub provider: String,
     /// Model identifier.
     pub model: String,
@@ -1356,6 +1429,9 @@ pub struct DefaultModelConfig {
     pub api_key_env: String,
     /// Optional base URL override.
     pub base_url: Option<String>,
+    /// CLI backend ID when provider = "cli-exec".
+    #[serde(default)]
+    pub cli_backend: Option<String>,
 }
 
 impl Default for DefaultModelConfig {
@@ -1365,6 +1441,7 @@ impl Default for DefaultModelConfig {
             model: "claude-sonnet-4-20250514".to_string(),
             api_key_env: "ANTHROPIC_API_KEY".to_string(),
             base_url: None,
+            cli_backend: None,
         }
     }
 }

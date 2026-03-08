@@ -167,6 +167,9 @@ pub struct DriverConfig {
     pub api_key: Option<String>,
     /// Base URL override.
     pub base_url: Option<String>,
+    /// CLI backend configuration (only used when provider = "cli-exec").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_backend_config: Option<openfang_types::config::CliBackendConfig>,
 }
 
 /// SECURITY: Custom Debug impl redacts the API key.
@@ -176,6 +179,7 @@ impl std::fmt::Debug for DriverConfig {
             .field("provider", &self.provider)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("base_url", &self.base_url)
+            .field("cli_backend_config", &self.cli_backend_config.as_ref().map(|c| &c.id))
             .finish()
     }
 }

@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod claude_code;
+pub mod cli_exec;
 pub mod copilot;
 pub mod fallback;
 pub mod gemini;
@@ -146,6 +147,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             key_required: true,
         }),
         "claude-code" => Some(ProviderDefaults {
+            base_url: "",
+            api_key_env: "",
+            key_required: false,
+        }),
+        "cli-exec" => Some(ProviderDefaults {
             base_url: "",
             api_key_env: "",
             key_required: false,
@@ -295,6 +301,19 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         return Ok(Arc::new(claude_code::ClaudeCodeDriver::new(cli_path)));
     }
 
+    // Generic CLI exec — configurable subprocess-based provider
+    if provider == "cli-exec" {
+        let backend_config = config.cli_backend_config.clone().ok_or_else(|| {
+            LlmError::Api {
+                status: 0,
+                message: "cli-exec provider requires a cli_backend_config. \
+                    Configure [[cli_backends]] in config.toml and set \
+                    cli_backend = \"<id>\" in [default_model].".to_string(),
+            }
+        })?;
+        return Ok(Arc::new(cli_exec::CliExecDriver::new(backend_config)));
+    }
+
     // GitHub Copilot — wraps OpenAI-compatible driver with automatic token exchange.
     // The CopilotDriver exchanges the GitHub PAT for a Copilot API token on demand,
     // caches it, and refreshes when expired.
@@ -428,6 +447,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "venice",
         "codex",
         "claude-code",
+        "cli-exec",
     ]
 }
 
@@ -467,6 +487,7 @@ mod tests {
             provider: "my-custom-llm".to_string(),
             api_key: Some("test".to_string()),
             base_url: Some("http://localhost:9999/v1".to_string()),
+            cli_backend_config: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok());
@@ -478,6 +499,7 @@ mod tests {
             provider: "nonexistent".to_string(),
             api_key: None,
             base_url: None,
+            cli_backend_config: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
@@ -524,7 +546,8 @@ mod tests {
         assert!(providers.contains(&"volcengine"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
-        assert_eq!(providers.len(), 31);
+        assert!(providers.contains(&"cli-exec"));
+        assert_eq!(providers.len(), 32);
     }
 
     #[test]

@@ -555,6 +555,19 @@ impl OpenFangKernel {
                 .base_url
                 .clone()
                 .or_else(|| config.provider_urls.get(&config.default_model.provider).cloned()),
+            cli_backend_config: if config.default_model.provider == "cli-exec" {
+                config.default_model.cli_backend.as_ref().and_then(|id| {
+                    config.cli_backends.iter().find(|b| b.id == *id).cloned()
+                }).or_else(|| {
+                    // Fall back to built-in presets
+                    config.default_model.cli_backend.as_ref().and_then(|id| {
+                        openfang_runtime::drivers::cli_exec::builtin_backends()
+                            .into_iter().find(|b| b.id == *id)
+                    })
+                })
+            } else {
+                None
+            },
         };
         // Primary driver failure is non-fatal: the dashboard should remain accessible
         // even if the LLM provider is misconfigured. Users can fix config via dashboard.
@@ -575,6 +588,7 @@ impl OpenFangKernel {
                         provider: provider.to_string(),
                         api_key: std::env::var(env_var).ok(),
                         base_url: config.provider_urls.get(provider).cloned(),
+                        cli_backend_config: None,
                     };
                     match drivers::create_driver(&auto_config) {
                         Ok(d) => {
@@ -616,6 +630,7 @@ impl OpenFangKernel {
                     .base_url
                     .clone()
                     .or_else(|| config.provider_urls.get(&fb.provider).cloned()),
+                cli_backend_config: None,
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {
@@ -3972,6 +3987,7 @@ impl OpenFangKernel {
                 provider: agent_provider.clone(),
                 api_key,
                 base_url,
+                cli_backend_config: None,
             };
 
             drivers::create_driver(&driver_config).map_err(|e| {
@@ -3995,6 +4011,7 @@ impl OpenFangKernel {
                         .base_url
                         .clone()
                         .or_else(|| self.config.provider_urls.get(&fb.provider).cloned()),
+                    cli_backend_config: None,
                 };
                 match drivers::create_driver(&config) {
                     Ok(d) => chain.push((d, fb.model.clone())),

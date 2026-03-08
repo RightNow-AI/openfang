@@ -192,6 +192,7 @@ pub fn create_embedding_driver(
         .map(|u| u.to_string())
         .unwrap_or_else(|| match provider {
             "openai" => OPENAI_BASE_URL.to_string(),
+            "openrouter" => "https://openrouter.ai/api/v1".to_string(),
             "groq" => GROQ_BASE_URL.to_string(),
             "together" => TOGETHER_BASE_URL.to_string(),
             "fireworks" => FIREWORKS_BASE_URL.to_string(),

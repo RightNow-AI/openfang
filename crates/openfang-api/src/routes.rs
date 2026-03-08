@@ -6817,6 +6817,7 @@ pub async fn test_provider(
         } else {
             Some(base_url)
         },
+        cli_backend_config: None,
     };
 
     match openfang_runtime::drivers::create_driver(&driver_config) {
