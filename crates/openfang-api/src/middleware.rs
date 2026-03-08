@@ -45,17 +45,16 @@ pub async fn request_logging(request: Request<Body>, next: Next) -> Response<Bod
 
 /// Bearer token authentication middleware.
 ///
-/// When `api_key` is non-empty, all requests must include
-/// `Authorization: Bearer <api_key>`. If the key is empty, auth is bypassed.
+/// When `api_key` is non-empty, requests to non-public endpoints must include
+/// `Authorization: Bearer <api_key>`. If the key is empty, only whitelisted
+/// public endpoints are accessible — all others return 401.
 pub async fn auth(
     axum::extract::State(api_key): axum::extract::State<String>,
     request: Request<Body>,
     next: Next,
 ) -> Response<Body> {
-    // If no API key configured, skip authentication entirely (open access).
-    if api_key.is_empty() {
-        return next.run(request).await;
-    }
+    // SECURITY: Capture method early for method-aware public endpoint checks.
+    let method = request.method().clone();
 
     // Shutdown is loopback-only (CLI on same machine) — skip token auth
     let path = request.uri().path();
@@ -64,53 +63,72 @@ pub async fn auth(
             .extensions()
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
             .map(|ci| ci.0.ip().is_loopback())
-            .unwrap_or(true); // default true for unix sockets / tests
+            .unwrap_or(false); // SECURITY: default-deny — unknown origin is NOT loopback
         if is_loopback {
             return next.run(request).await;
         }
     }
 
-    // Public endpoints that don't require auth (dashboard needs these)
-    if path == "/"
+    // Public endpoints that don't require auth (dashboard needs these).
+    // SECURITY: /api/agents is GET-only (listing). POST (spawn) requires auth.
+    // SECURITY: Public endpoints are GET-only unless explicitly noted.
+    // POST/PUT/DELETE to any endpoint ALWAYS requires auth to prevent
+    // unauthenticated writes (cron job creation, skill install, etc.).
+    let is_get = method == axum::http::Method::GET;
+    let is_public = path == "/"
         || path == "/logo.png"
         || path == "/favicon.ico"
-        || path == "/.well-known/agent.json"
-        || path.starts_with("/a2a/")
+        || (path == "/.well-known/agent.json" && is_get)
+        || (path.starts_with("/a2a/") && is_get)
         || path == "/api/health"
         || path == "/api/health/detail"
         || path == "/api/status"
         || path == "/api/version"
-        || path == "/api/agents"
-        || path == "/api/profiles"
-        || path == "/api/config"
-        || path.starts_with("/api/uploads/")
+        || (path == "/api/agents" && is_get)
+        || (path == "/api/profiles" && is_get)
+        || (path == "/api/config" && is_get)
+        || (path.starts_with("/api/uploads/") && is_get)
         // Dashboard read endpoints — allow unauthenticated so the SPA can
         // render before the user enters their API key.
-        || path == "/api/models"
-        || path == "/api/models/aliases"
-        || path == "/api/providers"
-        || path == "/api/budget"
-        || path == "/api/budget/agents"
-        || path.starts_with("/api/budget/agents/")
-        || path == "/api/network/status"
-        || path == "/api/a2a/agents"
-        || path == "/api/approvals"
-        || path.starts_with("/api/approvals/")
-        || path == "/api/channels"
-        || path == "/api/hands"
-        || path == "/api/hands/active"
-        || path.starts_with("/api/hands/")
-        || path == "/api/skills"
-        || path == "/api/sessions"
-        || path == "/api/integrations"
-        || path == "/api/integrations/available"
-        || path == "/api/integrations/health"
-        || path == "/api/workflows"
-        || path == "/api/logs/stream"
-        || path.starts_with("/api/cron/")
-        || path.starts_with("/api/providers/github-copilot/oauth/")
-    {
+        || (path == "/api/models" && is_get)
+        || (path == "/api/models/aliases" && is_get)
+        || (path == "/api/providers" && is_get)
+        || (path == "/api/budget" && is_get)
+        || (path == "/api/budget/agents" && is_get)
+        || (path.starts_with("/api/budget/agents/") && is_get)
+        || (path == "/api/network/status" && is_get)
+        || (path == "/api/a2a/agents" && is_get)
+        || (path == "/api/approvals" && is_get)
+        || (path.starts_with("/api/approvals/") && is_get)
+        || (path == "/api/channels" && is_get)
+        || (path == "/api/hands" && is_get)
+        || (path == "/api/hands/active" && is_get)
+        || (path.starts_with("/api/hands/") && is_get)
+        || (path == "/api/skills" && is_get)
+        || (path == "/api/sessions" && is_get)
+        || (path == "/api/integrations" && is_get)
+        || (path == "/api/integrations/available" && is_get)
+        || (path == "/api/integrations/health" && is_get)
+        || (path == "/api/workflows" && is_get)
+        || path == "/api/logs/stream"  // SSE stream, read-only
+        || (path.starts_with("/api/cron/") && is_get)
+        || path.starts_with("/api/providers/github-copilot/oauth/");
+
+    if is_public {
         return next.run(request).await;
+    }
+
+    // SECURITY: If no API key configured, non-public endpoints still require auth.
+    // Fall through to the token check which will fail (no valid token matches empty key),
+    // returning 401 for any non-whitelisted route.
+    if api_key.is_empty() {
+        return Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header("www-authenticate", "Bearer")
+            .body(Body::from(
+                serde_json::json!({"error": "No API key configured. Set api_key in config.toml or pass --api-key on startup."}).to_string(),
+            ))
+            .unwrap_or_default();
     }
 
     // Check Authorization: Bearer <token> header, then fallback to X-API-Key
@@ -184,7 +202,7 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Bo
     // All JS/CSS is bundled inline — only external resource is Google Fonts.
     headers.insert(
         "content-security-policy",
-        "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; font-src 'self' https://fonts.gstatic.com; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'"
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; font-src 'self' https://fonts.gstatic.com; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'"
             .parse()
             .unwrap(),
     );
