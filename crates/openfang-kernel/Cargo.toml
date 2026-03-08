@@ -8,6 +8,7 @@ description = "Core kernel for the OpenFang Agent OS"
 [dependencies]
 openfang-types = { path = "../openfang-types" }
 maestro-surreal-memory = { path = "../maestro-surreal-memory" }
+maestro-cache = { path = "../maestro-cache" }
 openfang-memory = { path = "../openfang-memory" }
 openfang-runtime = { path = "../openfang-runtime" }
 openfang-skills = { path = "../openfang-skills" }

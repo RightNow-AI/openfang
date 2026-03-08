@@ -15,6 +15,7 @@ use crate::triggers::{TriggerEngine, TriggerId, TriggerPattern};
 use crate::workflow::{StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowRunId};
 
 use maestro_surreal_memory::SurrealMemorySubstrate;
+use maestro_cache::{CachingMemory, CacheConfig};
 use openfang_types::session::Session;
 use openfang_types::agent::{AgentEntry, AgentId, SessionId};
 use openfang_types::message::Message;
@@ -73,7 +74,7 @@ pub struct OpenFangKernel {
     /// Agent scheduler.
     pub scheduler: AgentScheduler,
     /// Memory substrate.
-    pub memory: Arc<SurrealMemorySubstrate>,
+    pub memory: Arc<CachingMemory>,
     /// Process supervisor.
     pub supervisor: Supervisor,
     /// Workflow engine.
@@ -545,9 +546,12 @@ impl OpenFangKernel {
             .sqlite_path
             .clone()
             .unwrap_or_else(|| config.data_dir.join("openfang.db"));
-        let memory = Arc::new(
+        let l3 = Arc::new(
             SurrealMemorySubstrate::connect(&db_path).await
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
+        );
+        let memory = Arc::new(
+            CachingMemory::new(l3, CacheConfig::default()).await,
         );
 
         // Create LLM driver

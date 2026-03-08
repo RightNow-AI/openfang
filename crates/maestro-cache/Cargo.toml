@@ -1,0 +1,50 @@
+[package]
+name = "maestro-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "L1/L2 caching layer for Maestro — Moka in-process (L1) and optional Redis distributed (L2) cache on top of SurrealDB (L3)."
+
+[features]
+default = []
+redis-cache = ["dep:redis"]
+
+[dependencies]
+# L1: In-process cache
+moka = { version = "0.12", features = ["future"] }
+
+# L2: Distributed cache (optional)
+redis = { version = "1.0", features = ["tokio-comp", "aio"], optional = true }
+
+# L3: SurrealDB backend (the source of truth)
+maestro-surreal-memory = { path = "../maestro-surreal-memory" }
+
+# Types (Memory trait, AgentId, etc.)
+openfang-types = { path = "../openfang-types" }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization (for Redis JSON encoding)
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# IDs
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+tempfile = { workspace = true }

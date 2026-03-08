@@ -26,6 +26,7 @@ members = [
     "crates/maestro-eval",
     "crates/maestro-sdk",
     "crates/maestro-surreal-memory",
+    "crates/maestro-cache",
 ]
 
 [workspace.package]
