@@ -93,9 +93,11 @@ impl WebFetchEngine {
 
         let status = resp.status();
 
-        // Check response size
+        let max_bytes = self.config.max_response_bytes as u64;
+
+        // Check Content-Length header first (fast reject)
         if let Some(len) = resp.content_length() {
-            if len > self.config.max_response_bytes as u64 {
+            if len > max_bytes {
                 return Err(format!(
                     "Response too large: {} bytes (max {})",
                     len, self.config.max_response_bytes
@@ -110,10 +112,21 @@ impl WebFetchEngine {
             .unwrap_or("")
             .to_string();
 
-        let resp_body = resp
-            .text()
+        // Read body with size guard — handles chunked/streaming responses
+        // that lack Content-Length header
+        let resp_bytes = resp
+            .bytes()
             .await
             .map_err(|e| format!("Failed to read response body: {e}"))?;
+
+        if resp_bytes.len() as u64 > max_bytes {
+            return Err(format!(
+                "Response too large: {} bytes (max {})",
+                resp_bytes.len(), self.config.max_response_bytes
+            ));
+        }
+
+        let resp_body = String::from_utf8_lossy(&resp_bytes).to_string();
 
         // Step 4: For GET requests, detect HTML and convert to Markdown.
         // For non-GET (API calls), return raw body — don't mangle JSON/XML responses.
