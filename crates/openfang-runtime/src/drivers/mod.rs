@@ -325,6 +325,32 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         )));
     }
 
+    // DashScope Coding Plan — requires User-Agent: OpenClaw/1.0
+    if provider == "qwen_coding_intl" || provider == "dashscope_coding" || provider == "dashscope_coding_intl" {
+        let api_key = config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok())
+            .or_else(|| std::env::var("QWEN_API_KEY").ok())
+            .unwrap_or_default();
+
+        if api_key.is_empty() {
+            return Err(LlmError::MissingApiKey(
+                "Set DASHSCOPE_API_KEY environment variable for DashScope Coding Plan".to_string(),
+            ));
+        }
+
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| QWEN_CODING_INTL_BASE_URL.to_string());
+
+        return Ok(Arc::new(
+            openai::OpenAIDriver::new(api_key, base_url)
+                .with_extra_headers(vec![("User-Agent".to_string(), "OpenClaw/1.0".to_string())]),
+        ));
+    }
+
     // All other providers use OpenAI-compatible format
     if let Some(defaults) = provider_defaults(provider) {
         let api_key = config

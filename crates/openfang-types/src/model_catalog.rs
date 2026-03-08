@@ -44,7 +44,7 @@ pub const QWEN_CODING_BASE_URL: &str =
     "https://coding.dashscope.aliyuncs.com/compatible-mode/v1";
 /// DashScope Coding Plan — International endpoint. Multi-brand: Qwen, Zhipu, Kimi, MiniMax.
 pub const QWEN_CODING_INTL_BASE_URL: &str =
-    "https://coding-intl.dashscope.aliyuncs.com/compatible-mode/v1";
+    "https://coding-intl.dashscope.aliyuncs.com/v1";
 pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 pub const ZHIPU_CODING_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
