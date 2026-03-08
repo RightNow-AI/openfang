@@ -1438,39 +1438,66 @@ async fn tool_shell_exec(
     let policy_timeout = exec_policy.map(|p| p.timeout_secs).unwrap_or(30);
     let timeout_secs = input["timeout_seconds"].as_u64().unwrap_or(policy_timeout);
 
-    // Shell resolution: prefer sh (Git Bash/MSYS2) on Windows to avoid cmd.exe
-    // quoting issues (% expansion mangles yt-dlp templates, " in filenames
-    // converted to # by --restrict-filenames). Fall back to cmd if sh not found.
-    #[cfg(windows)]
-    let git_sh: Option<&str> = {
-        const SH_PATHS: &[&str] = &[
-            "C:\\Program Files\\Git\\usr\\bin\\sh.exe",
-            "C:\\Program Files (x86)\\Git\\usr\\bin\\sh.exe",
-        ];
-        SH_PATHS
-            .iter()
-            .copied()
-            .find(|p| std::path::Path::new(p).exists())
-    };
-    let (shell, shell_arg) = if cfg!(windows) {
-        #[cfg(windows)]
-        {
-            if let Some(sh) = git_sh {
-                (sh, "-c")
-            } else {
-                ("cmd", "/C")
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            ("sh", "-c")
-        }
-    } else {
-        ("sh", "-c")
-    };
+    // SECURITY: Determine execution strategy based on exec policy.
+    //
+    // In Allowlist mode (default): Use direct execution via shlex argv splitting.
+    // This avoids invoking a shell interpreter, which eliminates an entire class
+    // of injection attacks (encoding tricks, $IFS, glob expansion, etc.).
+    //
+    // In Full mode: User explicitly opted into unrestricted shell access,
+    // so we use sh -c / cmd /C as before.
+    let use_direct_exec = exec_policy
+        .map(|p| p.mode == openfang_types::config::ExecSecurityMode::Allowlist)
+        .unwrap_or(true); // Default to safe mode
 
-    let mut cmd = tokio::process::Command::new(shell);
-    cmd.arg(shell_arg).arg(command);
+    let mut cmd = if use_direct_exec {
+        // SAFE PATH: Split command into argv using POSIX shell lexer rules,
+        // then execute the binary directly — no shell interpreter involved.
+        let argv = shlex::split(command).ok_or_else(|| {
+            "Command contains unmatched quotes or invalid shell syntax".to_string()
+        })?;
+        if argv.is_empty() {
+            return Err("Empty command after parsing".to_string());
+        }
+        let mut c = tokio::process::Command::new(&argv[0]);
+        if argv.len() > 1 {
+            c.args(&argv[1..]);
+        }
+        c
+    } else {
+        // UNSAFE PATH: Full mode — user explicitly opted in to shell interpretation.
+        // Shell resolution: prefer sh (Git Bash/MSYS2) on Windows.
+        #[cfg(windows)]
+        let git_sh: Option<&str> = {
+            const SH_PATHS: &[&str] = &[
+                "C:\\Program Files\\Git\\usr\\bin\\sh.exe",
+                "C:\\Program Files (x86)\\Git\\usr\\bin\\sh.exe",
+            ];
+            SH_PATHS
+                .iter()
+                .copied()
+                .find(|p| std::path::Path::new(p).exists())
+        };
+        let (shell, shell_arg) = if cfg!(windows) {
+            #[cfg(windows)]
+            {
+                if let Some(sh) = git_sh {
+                    (sh, "-c")
+                } else {
+                    ("cmd", "/C")
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                ("sh", "-c")
+            }
+        } else {
+            ("sh", "-c")
+        };
+        let mut c = tokio::process::Command::new(shell);
+        c.arg(shell_arg).arg(command);
+        c
+    };
 
     // Set working directory to agent workspace so files are created there
     if let Some(ws) = workspace_root {
