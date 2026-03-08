@@ -377,6 +377,17 @@ pub async fn build_router(
             "/api/hands/instances/{id}/browser",
             axum::routing::get(routes::hand_instance_browser),
         )
+        // Goals endpoints
+        .route(
+            "/api/goals",
+            axum::routing::get(routes::list_goals).post(routes::create_goal),
+        )
+        .route(
+            "/api/goals/{id}",
+            axum::routing::get(routes::get_goal)
+                .put(routes::update_goal)
+                .delete(routes::delete_goal),
+        )
         // MCP server endpoints
         .route(
             "/api/mcp/servers",

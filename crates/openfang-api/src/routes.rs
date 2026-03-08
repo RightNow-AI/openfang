@@ -10287,3 +10287,116 @@ pub async fn comms_task(
         ),
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Goals endpoints
+// ═══════════════════════════════════════════════════════════════════
+
+/// GET /api/goals — List all goals.
+pub async fn list_goals(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.kernel.memory.goals().list() {
+        Ok(goals) => Json(serde_json::json!({ "goals": goals, "total": goals.len() })),
+        Err(e) => Json(serde_json::json!({ "goals": [], "total": 0, "error": e })),
+    }
+}
+
+/// POST /api/goals — Create a new goal.
+pub async fn create_goal(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<openfang_memory::goals::CreateGoalRequest>,
+) -> impl IntoResponse {
+    let valid_levels = ["mission", "strategy", "objective", "task"];
+    if !valid_levels.contains(&req.level.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("Invalid level '{}'. Must be one of: {}", req.level, valid_levels.join(", "))})),
+        );
+    }
+    let valid_statuses = ["planned", "active", "completed", "paused"];
+    if !valid_statuses.contains(&req.status.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("Invalid status '{}'. Must be one of: {}", req.status, valid_statuses.join(", "))})),
+        );
+    }
+    match state.kernel.memory.goals().create(&req) {
+        Ok(goal) => (StatusCode::CREATED, Json(serde_json::json!(goal))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e})),
+        ),
+    }
+}
+
+/// GET /api/goals/{id} — Get a single goal.
+pub async fn get_goal(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.kernel.memory.goals().get(&id) {
+        Ok(Some(goal)) => (StatusCode::OK, Json(serde_json::json!(goal))),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Goal not found"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e})),
+        ),
+    }
+}
+
+/// PUT /api/goals/{id} — Update a goal.
+pub async fn update_goal(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<openfang_memory::goals::UpdateGoalRequest>,
+) -> impl IntoResponse {
+    if let Some(ref level) = req.level {
+        let valid_levels = ["mission", "strategy", "objective", "task"];
+        if !valid_levels.contains(&level.as_str()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid level '{level}'")})),
+            );
+        }
+    }
+    if let Some(ref status) = req.status {
+        let valid_statuses = ["planned", "active", "completed", "paused"];
+        if !valid_statuses.contains(&status.as_str()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid status '{status}'")})),
+            );
+        }
+    }
+    match state.kernel.memory.goals().update(&id, &req) {
+        Ok(Some(goal)) => (StatusCode::OK, Json(serde_json::json!(goal))),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Goal not found"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e})),
+        ),
+    }
+}
+
+/// DELETE /api/goals/{id} — Delete a goal (children become root goals).
+pub async fn delete_goal(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.kernel.memory.goals().delete(&id) {
+        Ok(true) => (StatusCode::OK, Json(serde_json::json!({"deleted": true}))),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Goal not found"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e})),
+        ),
+    }
+}

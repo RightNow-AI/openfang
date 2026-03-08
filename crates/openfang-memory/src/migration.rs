@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 
 /// Current schema version.
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 8;
 
 /// Run all migrations to bring the database up to date.
 pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -37,6 +37,10 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
 
     if current_version < 7 {
         migrate_v7(conn)?;
+    }
+
+    if current_version < 8 {
+        migrate_v8(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -294,6 +298,35 @@ fn migrate_v7(conn: &Connection) -> Result<(), rusqlite::Error> {
 
         INSERT OR IGNORE INTO migrations (version, applied_at, description)
         VALUES (7, datetime('now'), 'Add paired_devices table for device pairing');
+        ",
+    )?;
+    Ok(())
+}
+
+/// Version 8: Add goals table for hierarchical goal tracking.
+fn migrate_v8(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS goals (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            description TEXT,
+            level TEXT NOT NULL DEFAULT 'task',
+            status TEXT NOT NULL DEFAULT 'planned',
+            parent_id TEXT,
+            owner_agent_id TEXT,
+            progress INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (parent_id) REFERENCES goals(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_goals_parent ON goals(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        CREATE INDEX IF NOT EXISTS idx_goals_level ON goals(level);
+
+        INSERT OR IGNORE INTO migrations (version, applied_at, description)
+        VALUES (8, datetime('now'), 'Add goals table for hierarchical goal tracking');
         ",
     )?;
     Ok(())

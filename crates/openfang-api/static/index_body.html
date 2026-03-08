@@ -120,6 +120,10 @@
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span>
               <span class="nav-label">Scheduler</span>
             </a>
+            <a class="nav-item" :class="{ active: page === 'goals' }" @click="navigate('goals')" :aria-current="page === 'goals' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg></span>
+              <span class="nav-label">Goals</span>
+            </a>
           </div>
         </template>
       </div>
@@ -1825,6 +1829,287 @@
             </div>
           </div>
 
+        </div>
+      </div>
+    </template>
+
+    <!-- Page: Goals -->
+    <template x-if="page === 'goals'">
+      <div x-data="goalsPage()">
+        <div class="page-header">
+          <h2>Goals <span class="badge badge-dim" x-show="goals.length" x-text="completedCount() + '/' + goals.length + ' completed'" style="margin-left:4px"></span></h2>
+          <button class="btn btn-primary btn-sm" @click="showCreateForm = true">+ New Goal</button>
+        </div>
+        <div class="tabs" role="tablist">
+          <div class="tab" role="tab" :class="{ active: tab === 'tree' }" @click="tab = 'tree'">Goal Tree</div>
+          <div class="tab" role="tab" :class="{ active: tab === 'board' }" @click="tab = 'board'">Board</div>
+          <div class="tab" role="tab" :class="{ active: tab === 'timeline' }" @click="tab = 'timeline'">Timeline</div>
+        </div>
+        <div class="page-body" x-init="loadData()">
+          <div x-show="loading" class="loading-state"><div class="spinner"></div><span>Loading goals...</span></div>
+          <div x-show="!loading && loadError" class="error-state">
+            <span class="error-icon">!</span>
+            <p x-text="loadError"></p>
+            <button class="btn btn-ghost btn-sm" @click="loadData()">Retry</button>
+          </div>
+          <div x-show="!loading && !loadError">
+
+            <!-- Stats Row -->
+            <div class="grid grid-cols-4" style="gap:12px;margin-bottom:20px" x-show="goals.length">
+              <div class="card stat-card"><div class="stat-label">Total</div><div class="stat-value" x-text="goals.length"></div></div>
+              <div class="card stat-card"><div class="stat-label">Active</div><div class="stat-value" x-text="activeCount()"></div></div>
+              <div class="card stat-card"><div class="stat-label">Completed</div><div class="stat-value" x-text="completedCount()"></div></div>
+              <div class="card stat-card"><div class="stat-label">Avg Progress</div><div class="stat-value" x-text="avgProgress() + '%'"></div></div>
+            </div>
+
+            <!-- TAB: Tree View -->
+            <div x-show="tab === 'tree'">
+              <div class="table-wrap" x-show="goals.length">
+                <table>
+                  <thead><tr><th>Goal</th><th>Level</th><th>Status</th><th>Owner</th><th>Progress</th><th>Actions</th></tr></thead>
+                  <tbody>
+                    <template x-for="item in treeOrder()" :key="item.goal.id">
+                      <tr>
+                        <td>
+                          <div :style="'padding-left:' + (item.depth * 24) + 'px'" class="flex items-center gap-2">
+                            <span x-text="levelIcon(item.goal.level)"></span>
+                            <span class="font-bold" x-text="item.goal.title"></span>
+                          </div>
+                          <div :style="'padding-left:' + (item.depth * 24 + 28) + 'px'" class="text-xs text-dim" x-show="item.goal.description" x-text="(item.goal.description || '').substring(0, 80)"></div>
+                        </td>
+                        <td><span class="badge" :class="levelBadgeClass(item.goal.level)" x-text="item.goal.level"></span></td>
+                        <td><span class="badge" :class="statusBadgeClass(item.goal.status)" x-text="item.goal.status"></span></td>
+                        <td class="text-xs" x-text="agentName(item.goal.owner_agent_id)"></td>
+                        <td>
+                          <div style="display:flex;align-items:center;gap:6px">
+                            <div style="width:60px;height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+                              <div :style="'width:' + item.goal.progress + '%;height:100%;background:var(--accent);border-radius:3px;transition:width 0.3s'"></div>
+                            </div>
+                            <span class="text-xs" x-text="item.goal.progress + '%'"></span>
+                          </div>
+                        </td>
+                        <td>
+                          <div class="flex gap-1">
+                            <button class="btn btn-ghost btn-sm" @click="openEdit(item.goal)">Edit</button>
+                            <button class="btn btn-danger btn-sm" @click="deleteGoal(item.goal)">Del</button>
+                          </div>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <div class="empty-state" x-show="!goals.length">
+                <div class="empty-state-icon">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+                </div>
+                <h3>No goals yet</h3>
+                <p>Create your first goal to start tracking what your agents are working toward.</p>
+                <button class="btn btn-primary mt-4" @click="showCreateForm = true">+ Create Goal</button>
+              </div>
+            </div>
+
+            <!-- TAB: Board (Kanban) -->
+            <div x-show="tab === 'board'">
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+                <template x-for="status in ['planned','active','completed','paused']" :key="status">
+                  <div>
+                    <div style="font-weight:600;font-size:13px;text-transform:capitalize;margin-bottom:8px;display:flex;align-items:center;gap:6px">
+                      <span class="badge" :class="statusBadgeClass(status)" x-text="status"></span>
+                      <span class="text-xs text-dim" x-text="goalsByStatus(status).length"></span>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:8px">
+                      <template x-for="goal in goalsByStatus(status)" :key="goal.id">
+                        <div class="card" style="padding:10px;cursor:pointer" @click="openEdit(goal)">
+                          <div class="flex items-center gap-2 mb-1">
+                            <span x-text="levelIcon(goal.level)" style="font-size:0.9rem"></span>
+                            <span class="font-bold text-sm" x-text="goal.title"></span>
+                          </div>
+                          <div class="text-xs text-dim" x-show="goal.description" x-text="(goal.description || '').substring(0, 60)"></div>
+                          <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+                            <div style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+                              <div :style="'width:' + goal.progress + '%;height:100%;background:var(--accent);border-radius:2px'"></div>
+                            </div>
+                            <span class="text-xs text-dim" x-text="goal.progress + '%'"></span>
+                          </div>
+                          <div class="text-xs text-dim" style="margin-top:4px" x-text="agentName(goal.owner_agent_id)"></div>
+                        </div>
+                      </template>
+                      <div class="text-xs text-dim" style="text-align:center;padding:12px" x-show="!goalsByStatus(status).length">No goals</div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <!-- TAB: Timeline -->
+            <div x-show="tab === 'timeline'">
+              <div class="table-wrap" x-show="goals.length">
+                <table>
+                  <thead><tr><th>Updated</th><th>Goal</th><th>Level</th><th>Status</th><th>Progress</th></tr></thead>
+                  <tbody>
+                    <template x-for="goal in [...goals].sort((a,b) => new Date(b.updated_at) - new Date(a.updated_at))" :key="goal.id">
+                      <tr style="cursor:pointer" @click="openEdit(goal)">
+                        <td class="text-xs" style="white-space:nowrap" x-text="relativeTime(goal.updated_at)" :title="new Date(goal.updated_at).toLocaleString()"></td>
+                        <td>
+                          <span class="font-bold" x-text="goal.title"></span>
+                          <div class="text-xs text-dim" x-show="goal.parent_id" x-text="'\u2514 ' + goalTitle(goal.parent_id)"></div>
+                        </td>
+                        <td><span class="badge" :class="levelBadgeClass(goal.level)" x-text="goal.level"></span></td>
+                        <td><span class="badge" :class="statusBadgeClass(goal.status)" x-text="goal.status"></span></td>
+                        <td>
+                          <div style="display:flex;align-items:center;gap:6px">
+                            <div style="width:60px;height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+                              <div :style="'width:' + goal.progress + '%;height:100%;background:var(--accent);border-radius:3px'"></div>
+                            </div>
+                            <span class="text-xs" x-text="goal.progress + '%'"></span>
+                          </div>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <div class="empty-state" x-show="!goals.length">
+                <h4>No goals yet</h4>
+                <p class="hint">Create goals to track what your agents are working toward.</p>
+              </div>
+            </div>
+
+            <!-- Create Goal Modal -->
+            <template x-if="showCreateForm">
+              <div class="modal-overlay" @click.self="showCreateForm = false" @keydown.escape.window="showCreateForm = false">
+                <div class="modal">
+                  <div class="modal-header">
+                    <h3>Create Goal</h3>
+                    <button class="modal-close" @click="showCreateForm = false">&times;</button>
+                  </div>
+                  <div class="form-group">
+                    <label>Title</label>
+                    <input class="form-input" x-model="newGoal.title" placeholder="e.g. Ship v1.0 to production">
+                  </div>
+                  <div class="form-group">
+                    <label>Description</label>
+                    <textarea class="form-textarea" x-model="newGoal.description" placeholder="What does achieving this goal look like?" rows="2"></textarea>
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                    <div class="form-group">
+                      <label>Level</label>
+                      <select class="form-select" x-model="newGoal.level">
+                        <option value="mission">Mission</option>
+                        <option value="strategy">Strategy</option>
+                        <option value="objective">Objective</option>
+                        <option value="task">Task</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label>Status</label>
+                      <select class="form-select" x-model="newGoal.status">
+                        <option value="planned">Planned</option>
+                        <option value="active">Active</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label>Parent Goal</label>
+                    <select class="form-select" x-model="newGoal.parent_id">
+                      <option value="">(none - root goal)</option>
+                      <template x-for="g in goals" :key="g.id">
+                        <option :value="g.id" x-text="levelIcon(g.level) + ' ' + g.title"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>Assign to Agent</label>
+                    <select class="form-select" x-model="newGoal.owner_agent_id">
+                      <option value="">(unassigned)</option>
+                      <template x-for="a in availableAgents" :key="a.id">
+                        <option :value="a.id" x-text="a.name"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>Progress: <span x-text="newGoal.progress + '%'"></span></label>
+                    <input type="range" min="0" max="100" step="5" x-model="newGoal.progress" style="width:100%">
+                  </div>
+                  <button class="btn btn-primary btn-block mt-4" @click="createGoal()" :disabled="creating">
+                    <span x-show="!creating">Create Goal</span>
+                    <span x-show="creating">Creating...</span>
+                  </button>
+                </div>
+              </div>
+            </template>
+
+            <!-- Edit Goal Modal -->
+            <template x-if="editGoal">
+              <div class="modal-overlay" @click.self="editGoal = null" @keydown.escape.window="editGoal = null">
+                <div class="modal">
+                  <div class="modal-header">
+                    <h3>Edit Goal</h3>
+                    <button class="modal-close" @click="editGoal = null">&times;</button>
+                  </div>
+                  <div class="form-group">
+                    <label>Title</label>
+                    <input class="form-input" x-model="editForm.title">
+                  </div>
+                  <div class="form-group">
+                    <label>Description</label>
+                    <textarea class="form-textarea" x-model="editForm.description" rows="2"></textarea>
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                    <div class="form-group">
+                      <label>Level</label>
+                      <select class="form-select" x-model="editForm.level">
+                        <option value="mission">Mission</option>
+                        <option value="strategy">Strategy</option>
+                        <option value="objective">Objective</option>
+                        <option value="task">Task</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label>Status</label>
+                      <select class="form-select" x-model="editForm.status">
+                        <option value="planned">Planned</option>
+                        <option value="active">Active</option>
+                        <option value="completed">Completed</option>
+                        <option value="paused">Paused</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label>Parent Goal</label>
+                    <select class="form-select" x-model="editForm.parent_id">
+                      <option value="">(none - root goal)</option>
+                      <template x-for="g in goals.filter(g => g.id !== editGoal.id)" :key="g.id">
+                        <option :value="g.id" x-text="levelIcon(g.level) + ' ' + g.title"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>Assign to Agent</label>
+                    <select class="form-select" x-model="editForm.owner_agent_id">
+                      <option value="">(unassigned)</option>
+                      <template x-for="a in availableAgents" :key="a.id">
+                        <option :value="a.id" x-text="a.name"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>Progress: <span x-text="editForm.progress + '%'"></span></label>
+                    <input type="range" min="0" max="100" step="5" x-model="editForm.progress" style="width:100%">
+                  </div>
+                  <div class="flex gap-2 mt-4">
+                    <button class="btn btn-primary" style="flex:1" @click="saveEdit()" :disabled="saving">
+                      <span x-show="!saving">Save Changes</span>
+                      <span x-show="saving">Saving...</span>
+                    </button>
+                    <button class="btn btn-danger" @click="var g = editGoal; editGoal = null; deleteGoal(g)">Delete</button>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+          </div>
         </div>
       </div>
     </template>

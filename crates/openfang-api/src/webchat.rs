@@ -110,6 +110,8 @@ const WEBCHAT_HTML: &str = concat!(
     "\n",
     include_str!("../static/js/pages/hands.js"),
     "\n",
+    include_str!("../static/js/pages/goals.js"),
+    "\n",
     include_str!("../static/js/pages/scheduler.js"),
     "\n",
     include_str!("../static/js/pages/settings.js"),
