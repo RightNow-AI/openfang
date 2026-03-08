@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["general", "assistant", "default", "multipurpose", "conversation", "productivity"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 8192
 temperature = 0.5
 system_prompt = """You are Waseem, responding to WhatsApp messages from your wife Tehmeena (also called Ayesha).
@@ -40,7 +40,7 @@ RULES:
 - NEVER send long paragraphs — Waseem never does"""
 
 [[fallback_models]]
-provider = "gemini"
+provider = "default"
 model = "gemini-2.0-flash"
 api_key_env = "GEMINI_API_KEY"
 

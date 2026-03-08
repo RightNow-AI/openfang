@@ -267,7 +267,7 @@ impl Default for ResourceQuota {
             max_tool_calls_per_minute: 60,
             max_llm_tokens_per_hour: 1_000_000,
             max_network_bytes_per_hour: 100 * 1024 * 1024, // 100 MB
-            max_cost_per_hour_usd: 1.0,
+            max_cost_per_hour_usd: 0.0, // unlimited by default
             max_cost_per_day_usd: 0.0,   // unlimited
             max_cost_per_month_usd: 0.0, // unlimited
         }
@@ -367,6 +367,7 @@ pub struct ModelConfig {
     /// LLM provider name.
     pub provider: String,
     /// Model identifier.
+    #[serde(alias = "name")]
     pub model: String,
     /// Maximum tokens for completion.
     pub max_tokens: u32,
@@ -474,7 +475,8 @@ pub struct AgentManifest {
     #[serde(default = "default_true")]
     pub generate_identity_files: bool,
     /// Per-agent exec policy override. If None, uses global exec_policy.
-    #[serde(default)]
+    /// Accepts string shorthand ("allow", "deny", "full", "allowlist") or full table.
+    #[serde(default, deserialize_with = "crate::serde_compat::exec_policy_lenient")]
     pub exec_policy: Option<crate::config::ExecPolicy>,
     /// Tool allowlist — only these tools are available (empty = all tools).
     #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
@@ -1142,5 +1144,29 @@ mod tests {
         let json = r#"{"name":"test"}"#;
         let manifest: AgentManifest = serde_json::from_str(json).unwrap();
         assert!(manifest.generate_identity_files);
+    }
+
+    // ----- ModelConfig alias tests -----
+
+    #[test]
+    fn test_model_config_name_alias_toml() {
+        let toml_str = r#"
+name = "llama-3.3-70b-versatile"
+provider = "groq"
+"#;
+        let cfg: ModelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.model, "llama-3.3-70b-versatile");
+        assert_eq!(cfg.provider, "groq");
+    }
+
+    #[test]
+    fn test_model_config_model_field_still_works() {
+        let toml_str = r#"
+model = "gpt-4o"
+provider = "openai"
+"#;
+        let cfg: ModelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.model, "gpt-4o");
+        assert_eq!(cfg.provider, "openai");
     }
 }

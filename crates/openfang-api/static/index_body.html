@@ -593,6 +593,14 @@
 
             <!-- Messages area -->
             <div class="messages" id="messages" @dragover.prevent="dragOver = true" @dragleave="dragOver = false" @drop.prevent="handleDrop($event); dragOver = false">
+              <!-- Empty state: no agent selected -->
+              <template x-if="!currentAgent">
+                <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:32px;opacity:0.8">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:16px;opacity:0.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                  <h3 style="margin:0 0 8px;font-size:16px;font-weight:600">Select an agent to start chatting</h3>
+                  <p class="text-dim" style="font-size:13px;max-width:320px">Choose an agent from the sidebar or go to the Agents tab to create a new one.</p>
+                </div>
+              </template>
               <!-- Message list -->
               <template x-if="currentAgent">
                 <div>
@@ -765,6 +773,12 @@
                       <div class="model-switcher-search">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;opacity:0.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                         <input id="model-switcher-search" type="text" x-model="modelSwitcherFilter" placeholder="Search models..." @keydown.escape.stop="showModelSwitcher = false" @keydown.arrow-down.prevent="modelSwitcherIdx = Math.min(modelSwitcherIdx + 1, filteredSwitcherModels.length - 1)" @keydown.arrow-up.prevent="modelSwitcherIdx = Math.max(modelSwitcherIdx - 1, 0)" @keydown.enter.prevent="filteredSwitcherModels[modelSwitcherIdx] && switchModel(filteredSwitcherModels[modelSwitcherIdx])">
+                        <select x-model="modelSwitcherProviderFilter" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text-dim);font-size:11px;padding:2px 6px;cursor:pointer;font-family:var(--font-mono);flex-shrink:0">
+                          <option value="">All</option>
+                          <template x-for="pn in switcherProviders" :key="pn">
+                            <option :value="pn" x-text="pn"></option>
+                          </template>
+                        </select>
                       </div>
                       <div x-show="modelSwitching" style="display:flex;align-items:center;justify-content:center;padding:12px;gap:8px">
                         <div class="tool-card-spinner"></div>
@@ -837,6 +851,9 @@
                     <div class="text-xs text-dim font-mono" style="font-size:11px" x-text="agent.model_name"></div>
                   </div>
                   <span class="badge" :class="'badge-' + agent.state.toLowerCase()" x-text="agent.state" style="font-size:10px"></span>
+                  <button class="agent-chip-config-btn" @click.stop="showDetail(agent)" title="Agent settings" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:transparent;cursor:pointer;color:var(--text-dim);transition:all 0.15s;flex-shrink:0" @mouseenter="$el.style.borderColor='var(--accent)';$el.style.color='var(--accent)';$el.style.background='var(--surface2)'" @mouseleave="$el.style.borderColor='var(--border)';$el.style.color='var(--text-dim)';$el.style.background='transparent'">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                  </button>
                 </div>
               </template>
             </div>
@@ -908,6 +925,36 @@
                       </template>
                     </div>
                     <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value" x-text="detailAgent.created_at ? new Date(detailAgent.created_at).toLocaleString() : '-'"></span></div>
+
+                    <!-- Fallback Model Chain -->
+                    <div class="detail-row" style="align-items:flex-start">
+                      <span class="detail-label">Fallbacks</span>
+                      <div style="flex:1">
+                        <template x-if="detailAgent._fallbacks && detailAgent._fallbacks.length > 0">
+                          <div>
+                            <template x-for="(fb, idx) in detailAgent._fallbacks" :key="idx">
+                              <div class="flex gap-1 items-center" style="margin-bottom:4px">
+                                <span class="badge" style="font-size:11px;font-family:var(--font-mono)" x-text="(idx+1) + '. ' + fb.provider + '/' + fb.model"></span>
+                                <button class="btn btn-ghost btn-sm" style="padding:1px 4px;font-size:10px;color:var(--danger)" @click="removeFallback(idx)">&times;</button>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
+                        <template x-if="!detailAgent._fallbacks || detailAgent._fallbacks.length === 0">
+                          <span class="text-dim" style="font-size:12px">None — add a fallback chain</span>
+                        </template>
+                        <template x-if="!editingFallback">
+                          <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;margin-top:4px" @click="editingFallback = true; newFallbackValue = ''">+ Add</button>
+                        </template>
+                        <template x-if="editingFallback">
+                          <div class="flex gap-1 mt-1" style="align-items:center">
+                            <input class="form-input" style="width:220px;font-size:12px" x-model="newFallbackValue" placeholder="provider/model" @keydown.enter="addFallback()" @keydown.escape="editingFallback = false">
+                            <button class="btn btn-primary btn-sm" @click="addFallback()" style="padding:2px 10px;font-size:11px">Add</button>
+                            <button class="btn btn-ghost btn-sm" @click="editingFallback = false" style="padding:2px 8px;font-size:11px">Cancel</button>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
                   </div>
                   <div class="flex gap-2 mt-4">
                     <button class="btn btn-primary" @click="chatWithAgent(detailAgent); showDetailModal = false">Chat</button>
@@ -3074,7 +3121,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
 
                         <!-- Text type -->
                         <template x-if="setting.setting_type === 'text'">
-                          <input type="text" class="input" x-model="settingsValues[setting.key]" :placeholder="setting.label" style="width:100%">
+                          <input type="text" class="form-input" x-model="settingsValues[setting.key]" :placeholder="setting.label" style="width:100%">
                         </template>
                       </div>
                     </template>
@@ -3290,6 +3337,30 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 </div>
               </template>
             </div>
+            <!-- Add Custom Provider -->
+            <div class="info-card mt-4" style="border:1px solid var(--border)">
+              <h4 style="margin-top:0">Add Custom Provider</h4>
+              <p class="text-xs text-dim mb-2">Connect any OpenAI-compatible API (vLLM, LiteLLM, LocalAI, etc.)</p>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
+                <div>
+                  <label class="text-xs text-dim">Provider Name</label>
+                  <input class="form-input" x-model="customProviderName" placeholder="e.g. my-local-llm">
+                </div>
+                <div>
+                  <label class="text-xs text-dim">Base URL (required)</label>
+                  <input class="form-input" x-model="customProviderUrl" placeholder="http://localhost:8080/v1">
+                </div>
+              </div>
+              <div class="mt-2">
+                <label class="text-xs text-dim">API Key (optional)</label>
+                <input class="form-input" type="password" x-model="customProviderKey" placeholder="sk-... (leave blank if not needed)">
+              </div>
+              <button class="btn btn-primary btn-sm mt-2" @click="addCustomProvider()" :disabled="!customProviderName.trim() || !customProviderUrl.trim() || addingCustomProvider">
+                <span x-show="!addingCustomProvider">Add Provider</span>
+                <span x-show="addingCustomProvider" class="spinner" style="width:10px;height:10px;border-width:2px"></span>
+              </button>
+              <span class="text-xs text-dim ml-2" x-text="customProviderStatus"></span>
+            </div>
             <div class="empty-state" x-show="!providers.length">
               <h4>No providers found</h4>
               <p class="hint">Provider information could not be loaded. Check that the API is running.</p>
@@ -3346,9 +3417,15 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <span class="text-xs text-dim ml-2" x-text="customModelStatus"></span>
             </div>
             <div class="text-xs text-dim mb-2" x-text="filteredModels.length + ' of ' + models.length + ' models'"></div>
+            <div x-show="!filteredModels.length && !settingsLoading" style="text-align:center;padding:32px 16px">
+              <div style="font-size:32px;margin-bottom:8px;opacity:0.5">&#x1F916;</div>
+              <h3 style="margin:0 0 4px;font-size:14px" x-text="models.length ? 'No models match your search' : 'No models available'"></h3>
+              <p class="text-xs text-dim" x-text="models.length ? 'Try a different search term or clear filters.' : 'Configure an LLM provider to see available models.'"></p>
+              <button class="btn btn-ghost btn-sm mt-2" x-show="models.length && (modelSearch || modelProviderFilter)" @click="modelSearch=''; modelProviderFilter=''">Clear Filters</button>
+            </div>
             <div class="table-wrap" x-show="filteredModels.length">
               <table>
-                <thead><tr><th>Model</th><th>Provider</th><th>Tier</th><th>Context</th><th>Input Cost</th><th>Output Cost</th><th>Status</th></tr></thead>
+                <thead><tr><th>Model</th><th>Provider</th><th>Tier</th><th>Context</th><th>Input Cost</th><th>Output Cost</th><th>Status</th><th></th></tr></thead>
                 <tbody>
                   <template x-for="m in filteredModels" :key="m.id">
                     <tr>
@@ -3359,6 +3436,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                       <td class="text-xs" x-text="formatCost(m.input_cost_per_m)"></td>
                       <td class="text-xs" x-text="formatCost(m.output_cost_per_m)"></td>
                       <td><span class="badge" :class="m.available ? 'badge-success' : 'badge-muted'" x-text="m.available ? 'Available' : 'Needs Key'"></span></td>
+                      <td><button x-show="m.tier === 'custom'" class="btn btn-ghost btn-sm" @click="deleteCustomModel(m.id)" title="Delete custom model" style="padding:2px 6px;font-size:11px;color:var(--text-muted)">&#x2715;</button></td>
                     </tr>
                   </template>
                 </tbody>
@@ -3373,6 +3451,12 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <input placeholder="Search tools..." x-model="toolSearch">
             </div>
             <div class="text-xs text-dim mb-2" x-text="filteredTools.length + ' of ' + tools.length + ' tools'"></div>
+            <div x-show="!filteredTools.length && !settingsLoading" style="text-align:center;padding:32px 16px">
+              <div style="font-size:32px;margin-bottom:8px;opacity:0.5">&#x1F527;</div>
+              <h3 style="margin:0 0 4px;font-size:14px" x-text="tools.length ? 'No tools match your search' : 'No tools available'"></h3>
+              <p class="text-xs text-dim" x-text="tools.length ? 'Try a different search term.' : 'Tools will appear once agents are configured.'"></p>
+              <button class="btn btn-ghost btn-sm mt-2" x-show="tools.length && toolSearch" @click="toolSearch=''">Clear Search</button>
+            </div>
             <div class="table-wrap" x-show="filteredTools.length">
               <table>
                 <thead><tr><th>Tool</th><th>Description</th></tr></thead>

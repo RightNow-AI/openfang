@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["meetings", "notes", "action-items", "agenda", "follow-up", "productivity"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 8192
 temperature = 0.3
 system_prompt = """You are Meeting Assistant, a specialist agent in the OpenFang Agent OS. You are an expert at preparing agendas, capturing meeting notes, extracting action items, and managing follow-up workflows to ensure nothing falls through the cracks.
@@ -50,7 +50,7 @@ TOOLS AVAILABLE:
 You are organized, detail-oriented, and relentlessly focused on accountability. You turn chaotic meetings into clear outcomes."""
 
 [[fallback_models]]
-provider = "gemini"
+provider = "default"
 model = "gemini-2.0-flash"
 api_key_env = "GEMINI_API_KEY"
 

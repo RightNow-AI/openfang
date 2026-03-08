@@ -11,6 +11,8 @@ use zeroize::Zeroizing;
 /// Copilot token exchange endpoint.
 const COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
 
+/// Token exchange timeout.
+const TOKEN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Refresh buffer — refresh token this many seconds before expiry.
 const REFRESH_BUFFER_SECS: u64 = 300; // 5 minutes
@@ -73,7 +75,12 @@ impl Default for CopilotTokenCache {
 /// Authorization: Bearer {github_token}
 ///
 /// Response: {"token": "tid=...;exp=...;sku=...;proxy-ep=...", "expires_at": unix_timestamp}
-pub async fn exchange_copilot_token(github_token: &str, client: &reqwest::Client) -> Result<CachedToken, String> {
+pub async fn exchange_copilot_token(github_token: &str) -> Result<CachedToken, String> {
+    let client = reqwest::Client::builder()
+        .timeout(TOKEN_EXCHANGE_TIMEOUT)
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
     debug!("Exchanging GitHub token for Copilot API token");
 
     let resp = client
@@ -159,15 +166,13 @@ pub fn copilot_auth_available() -> bool {
 pub struct CopilotDriver {
     github_token: Zeroizing<String>,
     token_cache: CopilotTokenCache,
-    client: reqwest::Client,
 }
 
 impl CopilotDriver {
-    pub fn new(github_token: String, _base_url: String, client: reqwest::Client) -> Self {
+    pub fn new(github_token: String, _base_url: String) -> Self {
         Self {
             github_token: Zeroizing::new(github_token),
             token_cache: CopilotTokenCache::new(),
-            client,
         }
     }
 
@@ -180,7 +185,7 @@ impl CopilotDriver {
 
         // Exchange GitHub PAT for Copilot token
         debug!("Copilot token expired or missing, exchanging...");
-        let token = exchange_copilot_token(&self.github_token, &self.client)
+        let token = exchange_copilot_token(&self.github_token)
             .await
             .map_err(|e| crate::llm_driver::LlmError::Api {
                 status: 401,
@@ -199,7 +204,12 @@ impl CopilotDriver {
         } else {
             token.base_url.clone()
         };
-        super::openai::OpenAIDriver::new(token.token.to_string(), base_url, self.client.clone())
+        super::openai::OpenAIDriver::new(token.token.to_string(), base_url)
+            .with_extra_headers(vec![
+                ("Editor-Version".to_string(), "vscode/1.96.0".to_string()),
+                ("Editor-Plugin-Version".to_string(), "copilot/1.250.0".to_string()),
+                ("Copilot-Integration-Id".to_string(), "vscode-chat".to_string()),
+            ])
     }
 }
 

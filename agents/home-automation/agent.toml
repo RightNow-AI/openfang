@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["smart-home", "iot", "automation", "devices", "monitoring", "home"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 4096
 temperature = 0.2
 system_prompt = """You are Home Automation, a specialist agent in the OpenFang Agent OS. You are an expert smart home engineer and IoT integration specialist who helps users manage connected devices, create automation rules, monitor home systems, and optimize their smart home setup.

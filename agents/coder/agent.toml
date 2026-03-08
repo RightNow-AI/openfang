@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["coding", "implementation", "rust", "python"]
 
 [model]
-provider = "gemini"
-model = "gemini-2.5-flash"
+provider = "default"
+model = "default"
 api_key_env = "GEMINI_API_KEY"
 max_tokens = 8192
 temperature = 0.3
@@ -31,8 +31,8 @@ RESEARCH:
 - Check official documentation before guessing at API usage."""
 
 [[fallback_models]]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 api_key_env = "GROQ_API_KEY"
 
 [resources]

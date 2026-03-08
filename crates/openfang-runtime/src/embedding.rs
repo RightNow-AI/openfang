@@ -88,7 +88,7 @@ struct EmbedData {
 
 impl OpenAIEmbeddingDriver {
     /// Create a new OpenAI-compatible embedding driver.
-    pub fn new(config: EmbeddingConfig, client: reqwest::Client) -> Result<Self, EmbeddingError> {
+    pub fn new(config: EmbeddingConfig) -> Result<Self, EmbeddingError> {
         // Infer dimensions from model name (common models)
         let dims = infer_dimensions(&config.model);
 
@@ -96,7 +96,7 @@ impl OpenAIEmbeddingDriver {
             api_key: Zeroizing::new(config.api_key),
             base_url: config.base_url,
             model: config.model,
-            client,
+            client: reqwest::Client::new(),
             dims,
         })
     }
@@ -179,7 +179,7 @@ pub fn create_embedding_driver(
     provider: &str,
     model: &str,
     api_key_env: &str,
-    client: reqwest::Client,
+    custom_base_url: Option<&str>,
 ) -> Result<Box<dyn EmbeddingDriver + Send + Sync>, EmbeddingError> {
     let api_key = if api_key_env.is_empty() {
         String::new()
@@ -187,20 +187,23 @@ pub fn create_embedding_driver(
         std::env::var(api_key_env).unwrap_or_default()
     };
 
-    let base_url = match provider {
-        "openai" => OPENAI_BASE_URL.to_string(),
-        "groq" => GROQ_BASE_URL.to_string(),
-        "together" => TOGETHER_BASE_URL.to_string(),
-        "fireworks" => FIREWORKS_BASE_URL.to_string(),
-        "mistral" => MISTRAL_BASE_URL.to_string(),
-        "ollama" => OLLAMA_BASE_URL.to_string(),
-        "vllm" => VLLM_BASE_URL.to_string(),
-        "lmstudio" => LMSTUDIO_BASE_URL.to_string(),
-        other => {
-            warn!("Unknown embedding provider '{other}', using OpenAI-compatible format");
-            format!("https://{other}/v1")
-        }
-    };
+    let base_url = custom_base_url
+        .filter(|u| !u.is_empty())
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| match provider {
+            "openai" => OPENAI_BASE_URL.to_string(),
+            "groq" => GROQ_BASE_URL.to_string(),
+            "together" => TOGETHER_BASE_URL.to_string(),
+            "fireworks" => FIREWORKS_BASE_URL.to_string(),
+            "mistral" => MISTRAL_BASE_URL.to_string(),
+            "ollama" => OLLAMA_BASE_URL.to_string(),
+            "vllm" => VLLM_BASE_URL.to_string(),
+            "lmstudio" => LMSTUDIO_BASE_URL.to_string(),
+            other => {
+                warn!("Unknown embedding provider '{other}', using OpenAI-compatible format");
+                format!("https://{other}/v1")
+            }
+        });
 
     // SECURITY: Warn when embedding requests will be sent to an external API
     let is_local = base_url.contains("localhost")
@@ -221,7 +224,7 @@ pub fn create_embedding_driver(
         base_url,
     };
 
-    let driver = OpenAIEmbeddingDriver::new(config, client)?;
+    let driver = OpenAIEmbeddingDriver::new(config)?;
     Ok(Box::new(driver))
 }
 
@@ -352,7 +355,7 @@ mod tests {
     #[test]
     fn test_create_embedding_driver_ollama() {
         // Should succeed even without API key (ollama is local)
-        let driver = create_embedding_driver("ollama", "all-MiniLM-L6-v2", "", reqwest::Client::new());
+        let driver = create_embedding_driver("ollama", "all-MiniLM-L6-v2", "", None);
         assert!(driver.is_ok());
         assert_eq!(driver.unwrap().dimensions(), 384);
     }

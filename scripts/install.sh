@@ -110,19 +110,44 @@ install() {
     tar xzf "$ARCHIVE" -C "$INSTALL_DIR"
     chmod +x "$INSTALL_DIR/openfang"
 
-    # Add to PATH
+    # Ad-hoc codesign on macOS (prevents SIGKILL on Apple Silicon)
+    if [ "$OS" = "darwin" ] && command -v codesign &>/dev/null; then
+        codesign --force --sign - "$INSTALL_DIR/openfang" 2>/dev/null || true
+    fi
+
+    # Add to PATH — detect the user's login shell
+    USER_SHELL="${SHELL:-}"
+    # Fallback: check /etc/passwd if $SHELL is unset (e.g. minimal containers)
+    if [ -z "$USER_SHELL" ] && command -v getent &>/dev/null; then
+        USER_SHELL=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7)
+    fi
+    if [ -z "$USER_SHELL" ] && [ -f /etc/passwd ]; then
+        USER_SHELL=$(grep "^$(id -un):" /etc/passwd 2>/dev/null | cut -d: -f7)
+    fi
+
     SHELL_RC=""
-    case "${SHELL:-}" in
-        */zsh) SHELL_RC="$HOME/.zshrc" ;;
+    case "$USER_SHELL" in
+        */zsh)  SHELL_RC="$HOME/.zshrc" ;;
         */bash) SHELL_RC="$HOME/.bashrc" ;;
         */fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
     esac
+    # Also check for config files if shell detection failed
+    if [ -z "$SHELL_RC" ]; then
+        if [ -f "$HOME/.config/fish/config.fish" ]; then
+            SHELL_RC="$HOME/.config/fish/config.fish"
+            USER_SHELL="/usr/bin/fish"
+        elif [ -f "$HOME/.zshrc" ]; then
+            SHELL_RC="$HOME/.zshrc"
+        elif [ -f "$HOME/.bashrc" ]; then
+            SHELL_RC="$HOME/.bashrc"
+        fi
+    fi
 
     if [ -n "$SHELL_RC" ] && ! grep -q "openfang" "$SHELL_RC" 2>/dev/null; then
-        case "${SHELL:-}" in
+        case "$USER_SHELL" in
             */fish)
                 mkdir -p "$(dirname "$SHELL_RC")"
-                echo "set -gx PATH \"$INSTALL_DIR\" \$PATH" >> "$SHELL_RC"
+                echo "fish_add_path \"$INSTALL_DIR\"" >> "$SHELL_RC"
                 ;;
             *)
                 echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_RC"

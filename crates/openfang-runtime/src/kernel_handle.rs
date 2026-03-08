@@ -139,6 +139,16 @@ pub trait KernelHandle: Send + Sync {
         Err("Hands system not available".to_string())
     }
 
+    /// Install a Hand from TOML content.
+    async fn hand_install(
+        &self,
+        toml_content: &str,
+        skill_content: &str,
+    ) -> Result<serde_json::Value, String> {
+        let _ = (toml_content, skill_content);
+        Err("Hands system not available".to_string())
+    }
+
     /// Activate a Hand — spawns a specialized autonomous agent.
     async fn hand_activate(
         &self,
@@ -182,6 +192,21 @@ pub trait KernelHandle: Send + Sync {
     ) -> Result<String, String> {
         let _ = (channel, recipient, message);
         Err("Channel send not available".to_string())
+    }
+
+    /// Send media content (image/file) to a user on a named channel adapter.
+    /// `media_type` is "image" or "file", `media_url` is the URL, `caption` is optional text.
+    async fn send_channel_media(
+        &self,
+        channel: &str,
+        recipient: &str,
+        media_type: &str,
+        media_url: &str,
+        caption: Option<&str>,
+        filename: Option<&str>,
+    ) -> Result<String, String> {
+        let _ = (channel, recipient, media_type, media_url, caption, filename);
+        Err("Channel media send not available".to_string())
     }
 
     /// Spawn an agent with capability inheritance enforcement.

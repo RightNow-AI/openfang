@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["research", "analysis", "web"]
 
 [model]
-provider = "gemini"
-model = "gemini-2.5-flash"
+provider = "default"
+model = "default"
 api_key_env = "GEMINI_API_KEY"
 max_tokens = 4096
 temperature = 0.5
@@ -36,8 +36,8 @@ OUTPUT:
 Always cite your sources. Never present uncertain information as fact."""
 
 [[fallback_models]]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 api_key_env = "GROQ_API_KEY"
 
 [resources]

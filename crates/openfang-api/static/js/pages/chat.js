@@ -37,6 +37,7 @@ function chatPage() {
     // Model switcher dropdown
     showModelSwitcher: false,
     modelSwitcherFilter: '',
+    modelSwitcherProviderFilter: '',
     modelSwitcherIdx: 0,
     modelSwitching: false,
     _modelCache: null,
@@ -99,14 +100,25 @@ function chatPage() {
       return short.length > 24 ? short.substring(0, 22) + '\u2026' : short;
     },
 
+    get switcherProviders() {
+      var seen = {};
+      (this._modelCache || []).forEach(function(m) { seen[m.provider] = true; });
+      return Object.keys(seen).sort();
+    },
+
     get filteredSwitcherModels() {
       var models = this._modelCache || [];
-      if (!this.modelSwitcherFilter) return models;
-      var f = this.modelSwitcherFilter.toLowerCase();
+      var provFilter = this.modelSwitcherProviderFilter;
+      var textFilter = this.modelSwitcherFilter ? this.modelSwitcherFilter.toLowerCase() : '';
+      if (!provFilter && !textFilter) return models;
       return models.filter(function(m) {
-        return m.id.toLowerCase().indexOf(f) !== -1 ||
-               (m.display_name || '').toLowerCase().indexOf(f) !== -1 ||
-               m.provider.toLowerCase().indexOf(f) !== -1;
+        if (provFilter && m.provider !== provFilter) return false;
+        if (textFilter) {
+          return m.id.toLowerCase().indexOf(textFilter) !== -1 ||
+                 (m.display_name || '').toLowerCase().indexOf(textFilter) !== -1 ||
+                 m.provider.toLowerCase().indexOf(textFilter) !== -1;
+        }
+        return true;
       });
     },
 
@@ -220,6 +232,7 @@ function chatPage() {
       var now = Date.now();
       if (this._modelCache && (now - this._modelCacheTime) < 300000) {
         this.modelSwitcherFilter = '';
+        this.modelSwitcherProviderFilter = '';
         this.modelSwitcherIdx = 0;
         this.showModelSwitcher = true;
         this.$nextTick(function() {
@@ -234,6 +247,7 @@ function chatPage() {
         self._modelCacheTime = Date.now();
         self.modelPickerList = models;
         self.modelSwitcherFilter = '';
+        self.modelSwitcherProviderFilter = '';
         self.modelSwitcherIdx = 0;
         self.showModelSwitcher = true;
         self.$nextTick(function() {
@@ -406,9 +420,10 @@ function chatPage() {
         case '/model':
           if (self.currentAgent) {
             if (cmdArgs) {
-              OpenFangAPI.put('/api/agents/' + self.currentAgent.id + '/model', { model: cmdArgs }).then(function() {
+              OpenFangAPI.put('/api/agents/' + self.currentAgent.id + '/model', { model: cmdArgs }).then(function(resp) {
                 self.currentAgent.model_name = cmdArgs;
-                self.messages.push({ id: ++msgId, role: 'system', text: 'Model switched to: `' + cmdArgs + '`', meta: '', tools: [] });
+                if (resp && resp.provider) { self.currentAgent.model_provider = resp.provider; }
+                self.messages.push({ id: ++msgId, role: 'system', text: 'Model switched to: `' + cmdArgs + '`' + (resp && resp.provider ? ' (provider: `' + resp.provider + '`)' : ''), meta: '', tools: [] });
                 self.scrollToBottom();
               }).catch(function(e) { OpenFangToast.error('Model switch failed: ' + e.message); });
             } else {
@@ -517,7 +532,10 @@ function chatPage() {
                 is_error: !!t.is_error
               };
             });
-            return { id: ++msgId, role: role, text: text, meta: '', tools: tools };
+            var images = (m.images || []).map(function(img) {
+              return { file_id: img.file_id, filename: img.filename || 'image' };
+            });
+            return { id: ++msgId, role: role, text: text, meta: '', tools: tools, images: images };
           });
           self.$nextTick(function() { self.scrollToBottom(); });
         }

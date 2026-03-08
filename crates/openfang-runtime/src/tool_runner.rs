@@ -41,7 +41,7 @@ fn check_taint_shell_exec(command: &str) -> Option<String> {
             labels.insert(TaintLabel::ExternalNetwork);
             let tainted = TaintedValue::new(command, labels, "llm_tool_call");
             if let Err(violation) = tainted.check_sink(&TaintSink::shell_exec()) {
-                warn!(command = &command[..command.len().min(80)], %violation, "Shell taint check failed");
+                warn!(command = crate::str_utils::safe_truncate_str(command, 80), %violation, "Shell taint check failed");
                 return Some(violation.to_string());
             }
         }
@@ -68,7 +68,7 @@ fn check_taint_net_fetch(url: &str) -> Option<String> {
             labels.insert(TaintLabel::Secret);
             let tainted = TaintedValue::new(url, labels, "llm_tool_call");
             if let Err(violation) = tainted.check_sink(&TaintSink::net_fetch()) {
-                warn!(url = &url[..url.len().min(80)], %violation, "Net fetch taint check failed");
+                warn!(url = crate::str_utils::safe_truncate_str(url, 80), %violation, "Net fetch taint check failed");
                 return Some(violation.to_string());
             }
         }
@@ -295,6 +295,9 @@ pub async fn execute_tool(
 
         // Location tool
         "location_get" => tool_location_get().await,
+
+        // System time tool
+        "system_time" => Ok(tool_system_time()),
 
         // Cron scheduling tools
         "cron_create" => tool_cron_create(input, kernel, caller_agent_id).await,
@@ -627,7 +630,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "The storage key" },
-                    "value": { "description": "The JSON value to store (any type)" }
+                    "value": { "type": "string", "description": "The value to store (JSON-encode objects/arrays, or pass a plain string)" }
                 },
                 "required": ["key", "value"]
             }),
@@ -705,7 +708,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "event_type": { "type": "string", "description": "Type identifier for the event (e.g., 'code_review_requested')" },
-                    "payload": { "description": "JSON payload data for the event" }
+                    "payload": { "type": "object", "description": "JSON payload data for the event" }
                 },
                 "required": ["event_type"]
             }),
@@ -996,16 +999,19 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Channel send tool (proactive outbound messaging) ---
         ToolDefinition {
             name: "channel_send".to_string(),
-            description: "Send a message to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally prefix the message with 'Subject: Your Subject\\n\\n' to set the email subject.".to_string(),
+            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url or file_url to send an image or file instead of (or alongside) text.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "channel": { "type": "string", "description": "Channel adapter name (e.g., 'email', 'telegram', 'slack', 'discord')" },
                     "recipient": { "type": "string", "description": "Platform-specific recipient identifier (email address, user ID, etc.)" },
                     "subject": { "type": "string", "description": "Optional subject line (used for email; ignored for other channels)" },
-                    "message": { "type": "string", "description": "The message body to send" }
+                    "message": { "type": "string", "description": "The message body to send (required for text, optional caption for media)" },
+                    "image_url": { "type": "string", "description": "URL of an image to send (supported on Telegram, Discord, Slack)" },
+                    "file_url": { "type": "string", "description": "URL of a file to send as attachment" },
+                    "filename": { "type": "string", "description": "Filename for file attachments (defaults to 'file')" }
                 },
-                "required": ["channel", "recipient", "message"]
+                "required": ["channel", "recipient"]
             }),
         },
         // --- Hand tools (curated autonomous capability packages) ---
@@ -1172,6 +1178,16 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {}
+            }),
+        },
+        // --- System time tool ---
+        ToolDefinition {
+            name: "system_time".to_string(),
+            description: "Get the current date, time, and timezone. Returns ISO 8601 timestamp, Unix epoch seconds, and timezone info.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
             }),
         },
         // --- Canvas / A2UI tool ---
@@ -2119,24 +2135,44 @@ async fn tool_channel_send(
         .as_str()
         .ok_or("Missing 'recipient' parameter")?
         .trim();
-    let message = input["message"]
-        .as_str()
-        .ok_or("Missing 'message' parameter")?;
 
     if recipient.is_empty() {
         return Err("Recipient cannot be empty".to_string());
     }
+
+    // Check for media content (image_url or file_url)
+    let image_url = input["image_url"].as_str().filter(|s| !s.is_empty());
+    let file_url = input["file_url"].as_str().filter(|s| !s.is_empty());
+
+    if let Some(url) = image_url {
+        let caption = input["message"].as_str().filter(|s| !s.is_empty());
+        return kh
+            .send_channel_media(&channel, recipient, "image", url, caption, None)
+            .await;
+    }
+
+    if let Some(url) = file_url {
+        let caption = input["message"].as_str().filter(|s| !s.is_empty());
+        let filename = input["filename"].as_str();
+        return kh
+            .send_channel_media(&channel, recipient, "file", url, caption, filename)
+            .await;
+    }
+
+    // Text-only message
+    let message = input["message"]
+        .as_str()
+        .ok_or("Missing 'message' parameter (required for text messages)")?;
+
     if message.is_empty() {
         return Err("Message cannot be empty".to_string());
     }
 
     // For email channels, validate email format and prepend subject
     let final_message = if channel == "email" {
-        // Basic email format validation
         if !recipient.contains('@') || !recipient.contains('.') {
             return Err(format!("Invalid email address: '{recipient}'"));
         }
-        // Prepend subject if provided
         if let Some(subject) = input["subject"].as_str() {
             if !subject.is_empty() {
                 format!("Subject: {subject}\n\n{message}")
@@ -2512,6 +2548,27 @@ async fn tool_location_get() -> Result<String, String> {
     });
 
     serde_json::to_string_pretty(&result).map_err(|e| format!("Serialize error: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// System time tool
+// ---------------------------------------------------------------------------
+
+/// Return current date, time, timezone, and Unix epoch.
+fn tool_system_time() -> String {
+    let now_utc = chrono::Utc::now();
+    let now_local = chrono::Local::now();
+    let result = serde_json::json!({
+        "utc": now_utc.to_rfc3339(),
+        "local": now_local.to_rfc3339(),
+        "unix_epoch": now_utc.timestamp(),
+        "timezone": now_local.format("%Z").to_string(),
+        "utc_offset": now_local.format("%:z").to_string(),
+        "date": now_local.format("%Y-%m-%d").to_string(),
+        "time": now_local.format("%H:%M:%S").to_string(),
+        "day_of_week": now_local.format("%A").to_string(),
+    });
+    serde_json::to_string_pretty(&result).unwrap_or_else(|_| now_utc.to_rfc3339())
 }
 
 // ---------------------------------------------------------------------------
@@ -3092,6 +3149,7 @@ mod tests {
         assert!(names.contains(&"schedule_delete"));
         assert!(names.contains(&"image_analyze"));
         assert!(names.contains(&"location_get"));
+        assert!(names.contains(&"system_time"));
         // 6 browser tools
         assert!(names.contains(&"browser_navigate"));
         assert!(names.contains(&"browser_click"));

@@ -224,15 +224,19 @@ pub fn deep_merge_toml(base: &mut toml::Value, overlay: &toml::Value) {
 }
 
 /// Get the default config file path.
+///
+/// Respects `OPENFANG_HOME` env var (e.g. `OPENFANG_HOME=/opt/openfang`).
 pub fn default_config_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".openfang")
-        .join("config.toml")
+    openfang_home().join("config.toml")
 }
 
-/// Get the default OpenFang home directory.
+/// Get the OpenFang home directory.
+///
+/// Priority: `OPENFANG_HOME` env var > `~/.openfang`.
 pub fn openfang_home() -> PathBuf {
+    if let Ok(home) = std::env::var("OPENFANG_HOME") {
+        return PathBuf::from(home);
+    }
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".openfang")
