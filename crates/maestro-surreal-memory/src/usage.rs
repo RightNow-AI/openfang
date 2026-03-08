@@ -33,8 +33,6 @@ impl SurrealUsageStore {
         Self { db: None }
     }
 
-    // block_on removed — all methods are now native async
-
     /// Get a reference to the database, returning an error if not initialized.
     fn db(&self) -> OpenFangResult<&Surreal<Db>> {
         self.db.as_ref().ok_or_else(|| {
@@ -95,24 +93,22 @@ impl SurrealUsageStore {
         let cost_usd = record.cost_usd;
         let tool_calls = record.tool_calls;
 
-        {
-            let id = uuid::Uuid::new_v4().to_string();
-            db
-                .query("CREATE type::record('usage_records', $id) CONTENT $data")
-                .bind(("id", id.clone()))
-                .bind(("data", serde_json::json!({
-                    "agent_id": agent_id,
-                    "model": model,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "cost_usd": cost_usd,
-                    "tool_calls": tool_calls,
-                    "created_at": chrono::Utc::now().to_rfc3339(),
-                })))
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("Usage record insert failed: {}", e)))?;
-            Ok(())
-        })
+        let id = uuid::Uuid::new_v4().to_string();
+        db
+            .query("CREATE type::record('usage_records', $id) CONTENT $data")
+            .bind(("id", id.clone()))
+            .bind(("data", serde_json::json!({
+                "agent_id": agent_id,
+                "model": model,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost_usd": cost_usd,
+                "tool_calls": tool_calls,
+                "created_at": chrono::Utc::now().to_rfc3339(),
+            })))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Usage record insert failed: {}", e)))?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -128,21 +124,19 @@ impl SurrealUsageStore {
         let aid = agent_id.0.to_string();
         let cutoff = Self::hours_ago(1);
 
-        {
-            let results: Vec<serde_json::Value> = db
-                .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE agent_id = $aid AND created_at >= $cutoff GROUP ALL")
-                .bind(("aid", aid))
-                .bind(("cutoff", cutoff))
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("Hourly query failed: {}", e)))?
-                .take(0)
-                .unwrap_or_default();
+        let results: Vec<serde_json::Value> = db
+            .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE agent_id = $aid AND created_at >= $cutoff GROUP ALL")
+            .bind(("aid", aid))
+            .bind(("cutoff", cutoff))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Hourly query failed: {}", e)))?
+            .take(0)
+            .unwrap_or_default();
 
-            Ok(results.first()
-                .and_then(|r| r.get("total"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0))
-        })
+        Ok(results.first()
+            .and_then(|r| r.get("total"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0))
     }
 
     /// Query daily cost for an agent (since start of today UTC).
@@ -154,21 +148,19 @@ impl SurrealUsageStore {
         let aid = agent_id.0.to_string();
         let cutoff = Self::start_of_today();
 
-        {
-            let results: Vec<serde_json::Value> = db
-                .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE agent_id = $aid AND created_at >= $cutoff GROUP ALL")
-                .bind(("aid", aid))
-                .bind(("cutoff", cutoff))
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("Daily query failed: {}", e)))?
-                .take(0)
-                .unwrap_or_default();
+        let results: Vec<serde_json::Value> = db
+            .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE agent_id = $aid AND created_at >= $cutoff GROUP ALL")
+            .bind(("aid", aid))
+            .bind(("cutoff", cutoff))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Daily query failed: {}", e)))?
+            .take(0)
+            .unwrap_or_default();
 
-            Ok(results.first()
-                .and_then(|r| r.get("total"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0))
-        })
+        Ok(results.first()
+            .and_then(|r| r.get("total"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0))
     }
 
     /// Query monthly cost for an agent (since start of this month UTC).
@@ -180,21 +172,19 @@ impl SurrealUsageStore {
         let aid = agent_id.0.to_string();
         let cutoff = Self::start_of_month();
 
-        {
-            let results: Vec<serde_json::Value> = db
-                .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE agent_id = $aid AND created_at >= $cutoff GROUP ALL")
-                .bind(("aid", aid))
-                .bind(("cutoff", cutoff))
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("Monthly query failed: {}", e)))?
-                .take(0)
-                .unwrap_or_default();
+        let results: Vec<serde_json::Value> = db
+            .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE agent_id = $aid AND created_at >= $cutoff GROUP ALL")
+            .bind(("aid", aid))
+            .bind(("cutoff", cutoff))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Monthly query failed: {}", e)))?
+            .take(0)
+            .unwrap_or_default();
 
-            Ok(results.first()
-                .and_then(|r| r.get("total"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0))
-        })
+        Ok(results.first()
+            .and_then(|r| r.get("total"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0))
     }
 
     // -----------------------------------------------------------------------
@@ -209,20 +199,18 @@ impl SurrealUsageStore {
         };
         let cutoff = Self::hours_ago(1);
 
-        {
-            let results: Vec<serde_json::Value> = db
-                .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE created_at >= $cutoff GROUP ALL")
-                .bind(("cutoff", cutoff))
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("Global hourly query failed: {}", e)))?
-                .take(0)
-                .unwrap_or_default();
+        let results: Vec<serde_json::Value> = db
+            .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE created_at >= $cutoff GROUP ALL")
+            .bind(("cutoff", cutoff))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Global hourly query failed: {}", e)))?
+            .take(0)
+            .unwrap_or_default();
 
-            Ok(results.first()
-                .and_then(|r| r.get("total"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0))
-        })
+        Ok(results.first()
+            .and_then(|r| r.get("total"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0))
     }
 
     /// Query global monthly cost (since start of this month, all agents).
@@ -233,20 +221,18 @@ impl SurrealUsageStore {
         };
         let cutoff = Self::start_of_month();
 
-        {
-            let results: Vec<serde_json::Value> = db
-                .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE created_at >= $cutoff GROUP ALL")
-                .bind(("cutoff", cutoff))
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("Global monthly query failed: {}", e)))?
-                .take(0)
-                .unwrap_or_default();
+        let results: Vec<serde_json::Value> = db
+            .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE created_at >= $cutoff GROUP ALL")
+            .bind(("cutoff", cutoff))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Global monthly query failed: {}", e)))?
+            .take(0)
+            .unwrap_or_default();
 
-            Ok(results.first()
-                .and_then(|r| r.get("total"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0))
-        })
+        Ok(results.first()
+            .and_then(|r| r.get("total"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0))
     }
 
     // -----------------------------------------------------------------------
@@ -260,46 +246,44 @@ impl SurrealUsageStore {
             None => return Ok(UsageSummary::default()),
         };
 
-        {
-            let (sql, bindings) = if let Some(aid) = agent_id {
-                (
-                    "SELECT math::sum(input_tokens) AS ti, math::sum(output_tokens) AS to_val, math::sum(cost_usd) AS tc, count() AS cc, math::sum(tool_calls) AS tt FROM usage_records WHERE agent_id = $aid GROUP ALL".to_string(),
-                    Some(("aid", aid.0.to_string())),
-                )
-            } else {
-                (
-                    "SELECT math::sum(input_tokens) AS ti, math::sum(output_tokens) AS to_val, math::sum(cost_usd) AS tc, count() AS cc, math::sum(tool_calls) AS tt FROM usage_records GROUP ALL".to_string(),
-                    None,
-                )
-            };
+        let (sql, bindings) = if let Some(aid) = agent_id {
+            (
+                "SELECT math::sum(input_tokens) AS ti, math::sum(output_tokens) AS to_val, math::sum(cost_usd) AS tc, count() AS cc, math::sum(tool_calls) AS tt FROM usage_records WHERE agent_id = $aid GROUP ALL".to_string(),
+                Some(("aid", aid.0.to_string())),
+            )
+        } else {
+            (
+                "SELECT math::sum(input_tokens) AS ti, math::sum(output_tokens) AS to_val, math::sum(cost_usd) AS tc, count() AS cc, math::sum(tool_calls) AS tt FROM usage_records GROUP ALL".to_string(),
+                None,
+            )
+        };
 
-            let results: Vec<serde_json::Value> = if let Some((key, val)) = bindings {
-                db.query(&sql)
-                    .bind((key, val))
-                    .await
-                    .map_err(|e| OpenFangError::Memory(format!("Usage summary query failed: {}", e)))?
-                    .take(0)
-                    .unwrap_or_default()
-            } else {
-                db.query(&sql)
-                    .await
-                    .map_err(|e| OpenFangError::Memory(format!("Usage summary query failed: {}", e)))?
-                    .take(0)
-                    .unwrap_or_default()
-            };
+        let results: Vec<serde_json::Value> = if let Some((key, val)) = bindings {
+            db.query(&sql)
+                .bind((key, val))
+                .await
+                .map_err(|e| OpenFangError::Memory(format!("Usage summary query failed: {}", e)))?
+                .take(0)
+                .unwrap_or_default()
+        } else {
+            db.query(&sql)
+                .await
+                .map_err(|e| OpenFangError::Memory(format!("Usage summary query failed: {}", e)))?
+                .take(0)
+                .unwrap_or_default()
+        };
 
-            if let Some(row) = results.first() {
-                Ok(UsageSummary {
-                    total_input_tokens: row.get("ti").and_then(|v| v.as_u64()).unwrap_or(0),
-                    total_output_tokens: row.get("to_val").and_then(|v| v.as_u64()).unwrap_or(0),
-                    total_cost_usd: row.get("tc").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                    call_count: row.get("cc").and_then(|v| v.as_u64()).unwrap_or(0),
-                    total_tool_calls: row.get("tt").and_then(|v| v.as_u64()).unwrap_or(0),
-                })
-            } else {
-                Ok(UsageSummary::default())
-            }
-        })
+        if let Some(row) = results.first() {
+            Ok(UsageSummary {
+                total_input_tokens: row.get("ti").and_then(|v| v.as_u64()).unwrap_or(0),
+                total_output_tokens: row.get("to_val").and_then(|v| v.as_u64()).unwrap_or(0),
+                total_cost_usd: row.get("tc").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                call_count: row.get("cc").and_then(|v| v.as_u64()).unwrap_or(0),
+                total_tool_calls: row.get("tt").and_then(|v| v.as_u64()).unwrap_or(0),
+            })
+        } else {
+            Ok(UsageSummary::default())
+        }
     }
 
     /// Get usage grouped by model.
@@ -309,33 +293,31 @@ impl SurrealUsageStore {
             None => return Ok(Vec::new()),
         };
 
-        {
-            let results: Vec<serde_json::Value> = db
-                .query(r#"
-                    SELECT
-                        model,
-                        math::sum(input_tokens) AS ti,
-                        math::sum(output_tokens) AS to_val,
-                        math::sum(cost_usd) AS tc,
-                        count() AS cc
-                    FROM usage_records
-                    GROUP BY model
-                "#)
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("Usage by model query failed: {}", e)))?
-                .take(0)
-                .unwrap_or_default();
+        let results: Vec<serde_json::Value> = db
+            .query(r#"
+                SELECT
+                    model,
+                    math::sum(input_tokens) AS ti,
+                    math::sum(output_tokens) AS to_val,
+                    math::sum(cost_usd) AS tc,
+                    count() AS cc
+                FROM usage_records
+                GROUP BY model
+            "#)
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Usage by model query failed: {}", e)))?
+            .take(0)
+            .unwrap_or_default();
 
-            Ok(results.iter().filter_map(|row| {
-                Some(ModelUsage {
-                    model: row.get("model")?.as_str()?.to_string(),
-                    total_cost_usd: row.get("tc").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                    total_input_tokens: row.get("ti").and_then(|v| v.as_u64()).unwrap_or(0),
-                    total_output_tokens: row.get("to_val").and_then(|v| v.as_u64()).unwrap_or(0),
-                    call_count: row.get("cc").and_then(|v| v.as_u64()).unwrap_or(0),
-                })
-            }).collect())
-        })
+        Ok(results.iter().filter_map(|row| {
+            Some(ModelUsage {
+                model: row.get("model")?.as_str()?.to_string(),
+                total_cost_usd: row.get("tc").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                total_input_tokens: row.get("ti").and_then(|v| v.as_u64()).unwrap_or(0),
+                total_output_tokens: row.get("to_val").and_then(|v| v.as_u64()).unwrap_or(0),
+                call_count: row.get("cc").and_then(|v| v.as_u64()).unwrap_or(0),
+            })
+        }).collect())
     }
 
     /// Get daily usage breakdown for the last N days.
@@ -346,34 +328,32 @@ impl SurrealUsageStore {
         };
         let cutoff = Self::days_ago(days as i64);
 
-        {
-            let results: Vec<serde_json::Value> = db
-                .query(r#"
-                    SELECT
-                        string::slice(created_at, 0, 10) AS date,
-                        math::sum(cost_usd) AS tc,
-                        math::sum(input_tokens) + math::sum(output_tokens) AS tokens,
-                        count() AS cc
-                    FROM usage_records
-                    WHERE created_at >= $cutoff
-                    GROUP BY string::slice(created_at, 0, 10)
-                    ORDER BY date DESC
-                "#)
-                .bind(("cutoff", cutoff))
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("Daily breakdown query failed: {}", e)))?
-                .take(0)
-                .unwrap_or_default();
+        let results: Vec<serde_json::Value> = db
+            .query(r#"
+                SELECT
+                    string::slice(created_at, 0, 10) AS date,
+                    math::sum(cost_usd) AS tc,
+                    math::sum(input_tokens) + math::sum(output_tokens) AS tokens,
+                    count() AS cc
+                FROM usage_records
+                WHERE created_at >= $cutoff
+                GROUP BY string::slice(created_at, 0, 10)
+                ORDER BY date DESC
+            "#)
+            .bind(("cutoff", cutoff))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Daily breakdown query failed: {}", e)))?
+            .take(0)
+            .unwrap_or_default();
 
-            Ok(results.iter().filter_map(|row| {
-                Some(DailyBreakdown {
-                    date: row.get("date")?.as_str()?.to_string(),
-                    cost_usd: row.get("tc").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                    tokens: row.get("tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                    calls: row.get("cc").and_then(|v| v.as_u64()).unwrap_or(0),
-                })
-            }).collect())
-        })
+        Ok(results.iter().filter_map(|row| {
+            Some(DailyBreakdown {
+                date: row.get("date")?.as_str()?.to_string(),
+                cost_usd: row.get("tc").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                tokens: row.get("tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                calls: row.get("cc").and_then(|v| v.as_u64()).unwrap_or(0),
+            })
+        }).collect())
     }
 
     /// Get the date of the first usage event.
@@ -383,19 +363,17 @@ impl SurrealUsageStore {
             None => return Ok(None),
         };
 
-        {
-            let results: Vec<serde_json::Value> = db
-                .query("SELECT created_at FROM usage_records ORDER BY created_at ASC LIMIT 1")
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("First event date query failed: {}", e)))?
-                .take(0)
-                .unwrap_or_default();
+        let results: Vec<serde_json::Value> = db
+            .query("SELECT created_at FROM usage_records ORDER BY created_at ASC LIMIT 1")
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("First event date query failed: {}", e)))?
+            .take(0)
+            .unwrap_or_default();
 
-            Ok(results.first()
-                .and_then(|r| r.get("created_at"))
-                .and_then(|v| v.as_str())
-                .map(|s| s[..10].to_string()))
-        })
+        Ok(results.first()
+            .and_then(|r| r.get("created_at"))
+            .and_then(|v| v.as_str())
+            .map(|s| s[..10].to_string()))
     }
 
     /// Get today's total cost across all agents.
@@ -406,20 +384,18 @@ impl SurrealUsageStore {
         };
         let cutoff = Self::start_of_today();
 
-        {
-            let results: Vec<serde_json::Value> = db
-                .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE created_at >= $cutoff GROUP ALL")
-                .bind(("cutoff", cutoff))
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("Today cost query failed: {}", e)))?
-                .take(0)
-                .unwrap_or_default();
+        let results: Vec<serde_json::Value> = db
+            .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE created_at >= $cutoff GROUP ALL")
+            .bind(("cutoff", cutoff))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Today cost query failed: {}", e)))?
+            .take(0)
+            .unwrap_or_default();
 
-            Ok(results.first()
-                .and_then(|r| r.get("total"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0))
-        })
+        Ok(results.first()
+            .and_then(|r| r.get("total"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0))
     }
 
     /// Clean up usage records older than N days.
@@ -430,29 +406,27 @@ impl SurrealUsageStore {
         };
         let cutoff = Self::days_ago(days as i64);
 
-        {
-            // Count before delete
-            let count_result: Vec<serde_json::Value> = db
-                .query("SELECT count() AS cnt FROM usage_records WHERE created_at < $cutoff GROUP ALL")
-                .bind(("cutoff", cutoff.clone()))
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("Cleanup count failed: {}", e)))?
-                .take(0)
-                .unwrap_or_default();
+        // Count before delete
+        let count_result: Vec<serde_json::Value> = db
+            .query("SELECT count() AS cnt FROM usage_records WHERE created_at < $cutoff GROUP ALL")
+            .bind(("cutoff", cutoff.clone()))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Cleanup count failed: {}", e)))?
+            .take(0)
+            .unwrap_or_default();
 
-            let count = count_result.first()
-                .and_then(|r| r.get("cnt"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize;
+        let count = count_result.first()
+            .and_then(|r| r.get("cnt"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
 
-            // Delete old records
-            db.query("DELETE usage_records WHERE created_at < $cutoff")
-                .bind(("cutoff", cutoff))
-                .await
-                .map_err(|e| OpenFangError::Memory(format!("Cleanup delete failed: {}", e)))?;
+        // Delete old records
+        db.query("DELETE usage_records WHERE created_at < $cutoff")
+            .bind(("cutoff", cutoff))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Cleanup delete failed: {}", e)))?;
 
-            Ok(count)
-        })
+        Ok(count)
     }
 }
 

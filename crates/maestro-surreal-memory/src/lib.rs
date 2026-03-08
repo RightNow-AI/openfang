@@ -1276,7 +1276,8 @@ impl Memory for SurrealMemorySubstrate {
             for entity in entities {
                 let entity_id = entity.get("id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("unknown_entity");
+                    .unwrap_or("unknown_entity")
+                    .to_string();
                 self.db
                     .query("CREATE type::record('entities', $id) CONTENT $data")
                     .bind(("id", entity_id))
@@ -1291,7 +1292,8 @@ impl Memory for SurrealMemorySubstrate {
             for relation in relations {
                 let relation_id = relation.get("id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("unknown_relation");
+                    .unwrap_or("unknown_relation")
+                    .to_string();
                 self.db
                     .query("CREATE type::record('relations', $id) CONTENT $data")
                     .bind(("id", relation_id))
@@ -1306,7 +1308,8 @@ impl Memory for SurrealMemorySubstrate {
             for memory in memories {
                 let memory_id = memory.get("id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("unknown_memory");
+                    .unwrap_or("unknown_memory")
+                    .to_string();
                 self.db
                     .query("CREATE type::record('memory_fragments', $id) CONTENT $data")
                     .bind(("id", memory_id))
