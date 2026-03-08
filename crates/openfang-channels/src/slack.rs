@@ -35,12 +35,12 @@ pub struct SlackAdapter {
 }
 
 impl SlackAdapter {
-    pub fn new(app_token: String, bot_token: String, allowed_channels: Vec<String>) -> Self {
+    pub fn new(app_token: String, bot_token: String, allowed_channels: Vec<String>, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             app_token: Zeroizing::new(app_token),
             bot_token: Zeroizing::new(bot_token),
-            client: reqwest::Client::new(),
+            client,
             allowed_channels,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
@@ -568,6 +568,7 @@ mod tests {
             "xapp-test".to_string(),
             "xoxb-test".to_string(),
             vec!["C123".to_string()],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "slack");
         assert_eq!(adapter.channel_type(), ChannelType::Slack);

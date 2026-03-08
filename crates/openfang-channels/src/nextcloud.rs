@@ -53,14 +53,14 @@ impl NextcloudAdapter {
     /// * `server_url` - Base URL of the Nextcloud instance.
     /// * `token` - Authentication token (app password or OAuth2 token).
     /// * `allowed_rooms` - Room tokens to listen on (empty = discover joined rooms).
-    pub fn new(server_url: String, token: String, allowed_rooms: Vec<String>) -> Self {
+    pub fn new(server_url: String, token: String, allowed_rooms: Vec<String>, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let server_url = server_url.trim_end_matches('/').to_string();
         Self {
             server_url,
             token: Zeroizing::new(token),
             allowed_rooms,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             last_known_ids: Arc::new(RwLock::new(HashMap::new())),
@@ -443,6 +443,7 @@ mod tests {
             "https://cloud.example.com".to_string(),
             "test-token".to_string(),
             vec!["room1".to_string()],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "nextcloud");
         assert_eq!(
@@ -457,6 +458,7 @@ mod tests {
             "https://cloud.example.com/".to_string(),
             "tok".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.server_url, "https://cloud.example.com");
     }
@@ -467,6 +469,7 @@ mod tests {
             "https://cloud.example.com".to_string(),
             "tok".to_string(),
             vec!["room1".to_string(), "room2".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed_room("room1"));
         assert!(adapter.is_allowed_room("room2"));
@@ -476,6 +479,7 @@ mod tests {
             "https://cloud.example.com".to_string(),
             "tok".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert!(open.is_allowed_room("any-room"));
     }
@@ -486,6 +490,7 @@ mod tests {
             "https://cloud.example.com".to_string(),
             "my-token".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         let builder = adapter.client.get("https://example.com");
         let builder = adapter.ocs_headers(builder);
@@ -503,6 +508,7 @@ mod tests {
             "https://cloud.example.com".to_string(),
             "secret-token-value".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.token.as_str(), "secret-token-value");
     }

@@ -539,6 +539,9 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                             openfang_types::scheduler::CronAction::SystemEvent { text } => {
                                 text.clone()
                             }
+                            openfang_types::scheduler::CronAction::Workflow {
+                                input, ..
+                            } => input.clone(),
                         };
                         match self.kernel.send_message(j.agent_id, &message).await {
                             Ok(result) => {
@@ -859,7 +862,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             return "OFP peer network is disabled. Set network_enabled = true in config.toml."
                 .to_string();
         }
-        match &self.kernel.peer_registry {
+        match self.kernel.peer_registry.get() {
             Some(registry) => {
                 let peers = registry.all_peers();
                 if peers.is_empty() {
@@ -966,6 +969,9 @@ pub async fn start_channel_bridge_with_config(
     kernel: Arc<OpenFangKernel>,
     config: &openfang_types::config::ChannelsConfig,
 ) -> (Option<BridgeManager>, Vec<String>) {
+    let http_client = kernel.http_clients.default.clone();
+    let streaming_client = kernel.http_clients.streaming.clone();
+
     let has_any = config.telegram.is_some()
         || config.discord.is_some()
         || config.slack.is_some()
@@ -1056,6 +1062,7 @@ pub async fn start_channel_bridge_with_config(
                     app_token,
                     bot_token,
                     sl_config.allowed_channels.clone(),
+                    http_client.clone(),
                 ));
                 adapters.push((adapter, sl_config.default_agent.clone()));
             }
@@ -1078,6 +1085,7 @@ pub async fn start_channel_bridge_with_config(
                     verify_token,
                     wa_config.webhook_port,
                     wa_config.allowed_users.clone(),
+                    http_client.clone(),
                 )
                 .with_gateway(gateway_url),
             );
@@ -1092,6 +1100,7 @@ pub async fn start_channel_bridge_with_config(
                 sig_config.api_url.clone(),
                 sig_config.phone_number.clone(),
                 sig_config.allowed_users.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, sig_config.default_agent.clone()));
         } else {
@@ -1107,6 +1116,7 @@ pub async fn start_channel_bridge_with_config(
                 mx_config.user_id.clone(),
                 token,
                 mx_config.allowed_rooms.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, mx_config.default_agent.clone()));
         }
@@ -1125,6 +1135,7 @@ pub async fn start_channel_bridge_with_config(
                 em_config.poll_interval_secs,
                 em_config.folders.clone(),
                 em_config.allowed_senders.clone(),
+                em_config.read_only,
             ));
             adapters.push((adapter, em_config.default_agent.clone()));
         }
@@ -1138,6 +1149,7 @@ pub async fn start_channel_bridge_with_config(
                 password,
                 tm_config.webhook_port,
                 tm_config.allowed_tenants.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, tm_config.default_agent.clone()));
         }
@@ -1150,6 +1162,7 @@ pub async fn start_channel_bridge_with_config(
                 mm_config.server_url.clone(),
                 token,
                 mm_config.allowed_channels.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, mm_config.default_agent.clone()));
         }
@@ -1183,6 +1196,7 @@ pub async fn start_channel_bridge_with_config(
                 key,
                 gc_config.space_ids.clone(),
                 gc_config.webhook_port,
+                http_client.clone(),
             ));
             adapters.push((adapter, gc_config.default_agent.clone()));
         }
@@ -1208,6 +1222,7 @@ pub async fn start_channel_bridge_with_config(
                 token,
                 rc_config.user_id.clone(),
                 rc_config.allowed_channels.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, rc_config.default_agent.clone()));
         }
@@ -1221,6 +1236,7 @@ pub async fn start_channel_bridge_with_config(
                 z_config.bot_email.clone(),
                 api_key,
                 z_config.streams.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, z_config.default_agent.clone()));
         }
@@ -1246,7 +1262,7 @@ pub async fn start_channel_bridge_with_config(
     if let Some(ref ln_config) = config.line {
         if let Some(secret) = read_token(&ln_config.channel_secret_env, "LINE (secret)") {
             if let Some(token) = read_token(&ln_config.access_token_env, "LINE (token)") {
-                let adapter = Arc::new(LineAdapter::new(secret, token, ln_config.webhook_port));
+                let adapter = Arc::new(LineAdapter::new(secret, token, ln_config.webhook_port, http_client.clone()));
                 adapters.push((adapter, ln_config.default_agent.clone()));
             }
         }
@@ -1259,6 +1275,7 @@ pub async fn start_channel_bridge_with_config(
                 token,
                 vb_config.webhook_url.clone(),
                 vb_config.webhook_port,
+                http_client.clone(),
             ));
             adapters.push((adapter, vb_config.default_agent.clone()));
         }
@@ -1273,6 +1290,7 @@ pub async fn start_channel_bridge_with_config(
                 page_token,
                 verify_token,
                 ms_config.webhook_port,
+                http_client.clone(),
             ));
             adapters.push((adapter, ms_config.default_agent.clone()));
         }
@@ -1288,6 +1306,7 @@ pub async fn start_channel_bridge_with_config(
                     rd_config.username.clone(),
                     password,
                     rd_config.subreddits.clone(),
+                    http_client.clone(),
                 ));
                 adapters.push((adapter, rd_config.default_agent.clone()));
             }
@@ -1297,7 +1316,7 @@ pub async fn start_channel_bridge_with_config(
     // Mastodon
     if let Some(ref md_config) = config.mastodon {
         if let Some(token) = read_token(&md_config.access_token_env, "Mastodon") {
-            let adapter = Arc::new(MastodonAdapter::new(md_config.instance_url.clone(), token));
+            let adapter = Arc::new(MastodonAdapter::new(md_config.instance_url.clone(), token, http_client.clone()));
             adapters.push((adapter, md_config.default_agent.clone()));
         }
     }
@@ -1305,7 +1324,7 @@ pub async fn start_channel_bridge_with_config(
     // Bluesky
     if let Some(ref bs_config) = config.bluesky {
         if let Some(password) = read_token(&bs_config.app_password_env, "Bluesky") {
-            let adapter = Arc::new(BlueskyAdapter::new(bs_config.identifier.clone(), password));
+            let adapter = Arc::new(BlueskyAdapter::new(bs_config.identifier.clone(), password, http_client.clone()));
             adapters.push((adapter, bs_config.default_agent.clone()));
         }
     }
@@ -1317,6 +1336,7 @@ pub async fn start_channel_bridge_with_config(
                 fs_config.app_id.clone(),
                 secret,
                 fs_config.webhook_port,
+                http_client.clone(),
             ));
             adapters.push((adapter, fs_config.default_agent.clone()));
         }
@@ -1325,7 +1345,7 @@ pub async fn start_channel_bridge_with_config(
     // Revolt
     if let Some(ref rv_config) = config.revolt {
         if let Some(token) = read_token(&rv_config.bot_token_env, "Revolt") {
-            let adapter = Arc::new(RevoltAdapter::new(token));
+            let adapter = Arc::new(RevoltAdapter::new(token, http_client.clone()));
             adapters.push((adapter, rv_config.default_agent.clone()));
         }
     }
@@ -1339,6 +1359,7 @@ pub async fn start_channel_bridge_with_config(
                 nc_config.server_url.clone(),
                 token,
                 nc_config.allowed_rooms.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, nc_config.default_agent.clone()));
         }
@@ -1347,7 +1368,7 @@ pub async fn start_channel_bridge_with_config(
     // Guilded
     if let Some(ref gd_config) = config.guilded {
         if let Some(token) = read_token(&gd_config.bot_token_env, "Guilded") {
-            let adapter = Arc::new(GuildedAdapter::new(token, gd_config.server_ids.clone()));
+            let adapter = Arc::new(GuildedAdapter::new(token, gd_config.server_ids.clone(), http_client.clone()));
             adapters.push((adapter, gd_config.default_agent.clone()));
         }
     }
@@ -1359,6 +1380,7 @@ pub async fn start_channel_bridge_with_config(
                 kb_config.username.clone(),
                 paperkey,
                 kb_config.allowed_teams.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, kb_config.default_agent.clone()));
         }
@@ -1371,6 +1393,7 @@ pub async fn start_channel_bridge_with_config(
                 tm_config.threema_id.clone(),
                 secret,
                 tm_config.webhook_port,
+                http_client.clone(),
             ));
             adapters.push((adapter, tm_config.default_agent.clone()));
         }
@@ -1387,7 +1410,7 @@ pub async fn start_channel_bridge_with_config(
     // Webex
     if let Some(ref wx_config) = config.webex {
         if let Some(token) = read_token(&wx_config.bot_token_env, "Webex") {
-            let adapter = Arc::new(WebexAdapter::new(token, wx_config.allowed_rooms.clone()));
+            let adapter = Arc::new(WebexAdapter::new(token, wx_config.allowed_rooms.clone(), http_client.clone()));
             adapters.push((adapter, wx_config.default_agent.clone()));
         }
     }
@@ -1395,7 +1418,7 @@ pub async fn start_channel_bridge_with_config(
     // Pumble
     if let Some(ref pb_config) = config.pumble {
         if let Some(token) = read_token(&pb_config.bot_token_env, "Pumble") {
-            let adapter = Arc::new(PumbleAdapter::new(token, pb_config.webhook_port));
+            let adapter = Arc::new(PumbleAdapter::new(token, pb_config.webhook_port, http_client.clone()));
             adapters.push((adapter, pb_config.default_agent.clone()));
         }
     }
@@ -1403,7 +1426,7 @@ pub async fn start_channel_bridge_with_config(
     // Flock
     if let Some(ref fl_config) = config.flock {
         if let Some(token) = read_token(&fl_config.bot_token_env, "Flock") {
-            let adapter = Arc::new(FlockAdapter::new(token, fl_config.webhook_port));
+            let adapter = Arc::new(FlockAdapter::new(token, fl_config.webhook_port, http_client.clone()));
             adapters.push((adapter, fl_config.default_agent.clone()));
         }
     }
@@ -1415,6 +1438,7 @@ pub async fn start_channel_bridge_with_config(
                 token,
                 tw_config.workspace_id.clone(),
                 tw_config.allowed_channels.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, tw_config.default_agent.clone()));
         }
@@ -1440,7 +1464,7 @@ pub async fn start_channel_bridge_with_config(
     if let Some(ref dt_config) = config.dingtalk {
         if let Some(token) = read_token(&dt_config.access_token_env, "DingTalk") {
             let secret = read_token(&dt_config.secret_env, "DingTalk (secret)").unwrap_or_default();
-            let adapter = Arc::new(DingTalkAdapter::new(token, secret, dt_config.webhook_port));
+            let adapter = Arc::new(DingTalkAdapter::new(token, secret, dt_config.webhook_port, http_client.clone()));
             adapters.push((adapter, dt_config.default_agent.clone()));
         }
     }
@@ -1453,6 +1477,7 @@ pub async fn start_channel_bridge_with_config(
                 api_key,
                 dc_config.api_username.clone(),
                 dc_config.categories.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, dc_config.default_agent.clone()));
         }
@@ -1461,7 +1486,7 @@ pub async fn start_channel_bridge_with_config(
     // Gitter
     if let Some(ref gt_config) = config.gitter {
         if let Some(token) = read_token(&gt_config.token_env, "Gitter") {
-            let adapter = Arc::new(GitterAdapter::new(token, gt_config.room_id.clone()));
+            let adapter = Arc::new(GitterAdapter::new(token, gt_config.room_id.clone(), streaming_client.clone()));
             adapters.push((adapter, gt_config.default_agent.clone()));
         }
     }
@@ -1477,6 +1502,7 @@ pub async fn start_channel_bridge_with_config(
             nf_config.server_url.clone(),
             nf_config.topic.clone(),
             token,
+            streaming_client.clone(),
         ));
         adapters.push((adapter, nf_config.default_agent.clone()));
     }
@@ -1490,6 +1516,7 @@ pub async fn start_channel_bridge_with_config(
                 gf_config.server_url.clone(),
                 app_token,
                 client_token,
+                http_client.clone(),
             ));
             adapters.push((adapter, gf_config.default_agent.clone()));
         }
@@ -1502,6 +1529,7 @@ pub async fn start_channel_bridge_with_config(
                 secret,
                 wh_config.listen_port,
                 wh_config.callback_url.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, wh_config.default_agent.clone()));
         }
@@ -1513,6 +1541,7 @@ pub async fn start_channel_bridge_with_config(
             let adapter = Arc::new(LinkedInAdapter::new(
                 token,
                 li_config.organization_id.clone(),
+                http_client.clone(),
             ));
             adapters.push((adapter, li_config.default_agent.clone()));
         }

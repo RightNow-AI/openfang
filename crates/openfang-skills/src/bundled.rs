@@ -179,6 +179,11 @@ pub fn bundled_skills() -> Vec<(&'static str, &'static str)> {
             "wasm-expert",
             include_str!("../bundled/wasm-expert/SKILL.md"),
         ),
+        // Tier 6 — Domain specialists (1)
+        (
+            "arxiv-researcher",
+            include_str!("../bundled/arxiv-researcher/SKILL.md"),
+        ),
     ]
 }
 
@@ -195,7 +200,7 @@ mod tests {
     #[test]
     fn test_bundled_skills_count() {
         let skills = bundled_skills();
-        assert_eq!(skills.len(), 60, "Expected 60 bundled skills");
+        assert_eq!(skills.len(), 61, "Expected 61 bundled skills");
     }
 
     #[test]

@@ -71,6 +71,30 @@ pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
 /// Default context window size (tokens) for token-based trimming.
 const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
 
+/// Strip `<thinking>...</thinking>` blocks from LLM response text.
+///
+/// Some models emit chain-of-thought reasoning wrapped in `<thinking>` tags
+/// as part of their regular text output (not the structured thinking API).
+/// These must be stripped before sending responses to end-users via channels.
+fn strip_thinking_tags(text: &str) -> String {
+    use regex_lite::Regex;
+    use std::sync::OnceLock;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"(?s)<thinking>.*?</thinking>").unwrap()
+    });
+    let cleaned = re.replace_all(text, "");
+    // Collapse leading/trailing whitespace left by removal
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() && !text.trim().is_empty() {
+        // Model only produced thinking with no actual response — return empty
+        // so the empty-response guard downstream can handle it.
+        String::new()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Agent lifecycle phase within the execution loop.
 /// Used for UX indicators (typing, reactions) without coupling to channel types.
 #[derive(Debug, Clone, PartialEq)]
@@ -365,7 +389,8 @@ pub async fn run_agent_loop(
                 // Parse reply directives from the response text
                 let (cleaned_text, parsed_directives) =
                     crate::reply_directives::parse_directives(&text);
-                let text = cleaned_text;
+                // Strip <thinking> tags that models sometimes emit in regular output
+                let text = strip_thinking_tags(&cleaned_text);
 
                 // NO_REPLY: agent intentionally chose not to reply
                 if text.trim() == "NO_REPLY" || parsed_directives.silent {
@@ -723,7 +748,7 @@ pub async fn run_agent_loop(
                 consecutive_max_tokens += 1;
                 if consecutive_max_tokens >= MAX_CONTINUATIONS {
                     // Return partial response instead of continuing forever
-                    let text = response.text();
+                    let text = strip_thinking_tags(&response.text());
                     let text = if text.trim().is_empty() {
                         "[Partial response — token limit reached with no text output.]".to_string()
                     } else {
@@ -1280,7 +1305,8 @@ pub async fn run_agent_loop_streaming(
                 // Parse reply directives from the streaming response text
                 let (cleaned_text_s, parsed_directives_s) =
                     crate::reply_directives::parse_directives(&text);
-                let text = cleaned_text_s;
+                // Strip <thinking> tags that models sometimes emit in regular output
+                let text = strip_thinking_tags(&cleaned_text_s);
 
                 // NO_REPLY: agent intentionally chose not to reply
                 if text.trim() == "NO_REPLY" || parsed_directives_s.silent {
@@ -1643,7 +1669,7 @@ pub async fn run_agent_loop_streaming(
             StopReason::MaxTokens => {
                 consecutive_max_tokens += 1;
                 if consecutive_max_tokens >= MAX_CONTINUATIONS {
-                    let text = response.text();
+                    let text = strip_thinking_tags(&response.text());
                     let text = if text.trim().is_empty() {
                         "[Partial response — token limit reached with no text output.]".to_string()
                     } else {
@@ -3156,5 +3182,42 @@ mod tests {
             events.push(ev);
         }
         assert!(!events.is_empty(), "Should have received stream events");
+    }
+
+    // --- strip_thinking_tags tests ---
+
+    #[test]
+    fn test_strip_thinking_tags_basic() {
+        let input = "<thinking>\nThe user said hello.\n</thinking>\nHello jaan!";
+        let result = strip_thinking_tags(input);
+        assert_eq!(result, "Hello jaan!");
+    }
+
+    #[test]
+    fn test_strip_thinking_tags_no_tags() {
+        let input = "Hello, how are you?";
+        let result = strip_thinking_tags(input);
+        assert_eq!(result, "Hello, how are you?");
+    }
+
+    #[test]
+    fn test_strip_thinking_tags_only_thinking() {
+        let input = "<thinking>Internal reasoning only</thinking>";
+        let result = strip_thinking_tags(input);
+        assert!(result.is_empty(), "Should return empty when only thinking tags present");
+    }
+
+    #[test]
+    fn test_strip_thinking_tags_multiple() {
+        let input = "<thinking>first</thinking>Hello <thinking>second</thinking>world";
+        let result = strip_thinking_tags(input);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn test_strip_thinking_tags_multiline() {
+        let input = "<thinking>\nLine 1\nLine 2\nLine 3\n</thinking>\nKya hua jaan?";
+        let result = strip_thinking_tags(input);
+        assert_eq!(result, "Kya hua jaan?");
     }
 }

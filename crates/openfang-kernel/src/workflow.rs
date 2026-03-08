@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use openfang_types::agent::AgentId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -203,6 +204,8 @@ pub struct WorkflowEngine {
     workflows: Arc<RwLock<HashMap<WorkflowId, Workflow>>>,
     /// Active and completed workflow runs.
     runs: Arc<RwLock<HashMap<WorkflowRunId, WorkflowRun>>>,
+    /// Path to persist workflows (e.g. ~/.openfang/workflows.json).
+    persist_path: Option<PathBuf>,
 }
 
 impl WorkflowEngine {
@@ -211,13 +214,94 @@ impl WorkflowEngine {
         Self {
             workflows: Arc::new(RwLock::new(HashMap::new())),
             runs: Arc::new(RwLock::new(HashMap::new())),
+            persist_path: None,
+        }
+    }
+
+    /// Create a new workflow engine with persistence to the given path.
+    pub fn with_persistence(path: PathBuf) -> Self {
+        let mut engine = Self::new();
+        engine.persist_path = Some(path);
+        engine
+    }
+
+    /// Load persisted workflows from disk (async). Call once at startup.
+    pub async fn load_persisted(&self) {
+        let path = match &self.persist_path {
+            Some(p) => p,
+            None => return,
+        };
+        if !path.exists() {
+            return;
+        }
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                match serde_json::from_str::<Vec<Workflow>>(&content) {
+                    Ok(workflows) => {
+                        let mut map = self.workflows.write().await;
+                        let count = workflows.len();
+                        for w in workflows {
+                            map.insert(w.id, w);
+                        }
+                        info!("Loaded {count} persisted workflows from {:?}", path);
+                    }
+                    Err(e) => warn!("Failed to parse workflows file: {e}"),
+                }
+            }
+            Err(e) => warn!("Failed to read workflows file: {e}"),
+        }
+    }
+
+    /// Load persisted workflows from disk (sync). Safe to call at boot
+    /// before any concurrent access — uses `try_write()` on the RwLock.
+    pub fn load_persisted_sync(&self) {
+        let path = match &self.persist_path {
+            Some(p) => p,
+            None => return,
+        };
+        if !path.exists() {
+            return;
+        }
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                match serde_json::from_str::<Vec<Workflow>>(&content) {
+                    Ok(workflows) => {
+                        let mut map = self.workflows.try_write()
+                            .expect("workflow lock uncontested at boot");
+                        let count = workflows.len();
+                        for w in workflows {
+                            map.insert(w.id, w);
+                        }
+                        info!("Loaded {count} persisted workflows from {:?}", path);
+                    }
+                    Err(e) => warn!("Failed to parse workflows file: {e}"),
+                }
+            }
+            Err(e) => warn!("Failed to read workflows file: {e}"),
+        }
+    }
+
+    /// Persist workflows to disk.
+    fn persist_sync(workflows: &HashMap<WorkflowId, Workflow>, path: &std::path::Path) {
+        let items: Vec<&Workflow> = workflows.values().collect();
+        match serde_json::to_string_pretty(&items) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(path, json) {
+                    warn!("Failed to persist workflows: {e}");
+                }
+            }
+            Err(e) => warn!("Failed to serialize workflows: {e}"),
         }
     }
 
     /// Register a new workflow definition.
     pub async fn register(&self, workflow: Workflow) -> WorkflowId {
         let id = workflow.id;
-        self.workflows.write().await.insert(id, workflow);
+        let mut map = self.workflows.write().await;
+        map.insert(id, workflow);
+        if let Some(ref path) = self.persist_path {
+            Self::persist_sync(&map, path);
+        }
         info!(workflow_id = %id, "Workflow registered");
         id
     }
@@ -234,7 +318,14 @@ impl WorkflowEngine {
 
     /// Remove a workflow definition.
     pub async fn remove_workflow(&self, id: WorkflowId) -> bool {
-        self.workflows.write().await.remove(&id).is_some()
+        let mut map = self.workflows.write().await;
+        let removed = map.remove(&id).is_some();
+        if removed {
+            if let Some(ref path) = self.persist_path {
+                Self::persist_sync(&map, path);
+            }
+        }
+        removed
     }
 
     /// Maximum number of retained workflow runs. Oldest completed/failed

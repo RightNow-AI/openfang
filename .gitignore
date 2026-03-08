@@ -40,6 +40,12 @@ Thumbs.db
 .idea/
 .vscode/
 .claude/
+.nwave/
 *.swp
 *.swo
 *~
+
+# Temporary / generated
+PR_DESCRIPTION.md
+patches/
+crates/openfang-desktop/gen/

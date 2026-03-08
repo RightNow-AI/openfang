@@ -37,10 +37,20 @@ pub fn operation_cost(method: &str, path: &str) -> NonZeroU32 {
 
 pub type KeyedRateLimiter = RateLimiter<IpAddr, DashMapStateStore<IpAddr>, DefaultClock>;
 
+/// Per-agent rate limiter — prevents one agent from starving others.
+pub type AgentRateLimiter = RateLimiter<String, DashMapStateStore<String>, DefaultClock>;
+
 /// 500 tokens per minute per IP.
 pub fn create_rate_limiter() -> Arc<KeyedRateLimiter> {
     Arc::new(RateLimiter::keyed(Quota::per_minute(
         NonZeroU32::new(500).unwrap(),
+    )))
+}
+
+/// 200 tokens per minute per agent.
+pub fn create_agent_rate_limiter() -> Arc<AgentRateLimiter> {
+    Arc::new(RateLimiter::keyed(Quota::per_minute(
+        NonZeroU32::new(200).unwrap(),
     )))
 }
 

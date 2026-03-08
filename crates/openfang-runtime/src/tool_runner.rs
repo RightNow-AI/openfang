@@ -1332,16 +1332,29 @@ async fn tool_web_fetch_legacy(input: &serde_json::Value) -> Result<String, Stri
         .await
         .map_err(|e| format!("HTTP request failed: {e}"))?;
     let status = resp.status();
-    // Reject responses larger than 10MB to prevent memory exhaustion
+    let max_bytes: u64 = 10 * 1024 * 1024; // 10MB
+
+    // Check Content-Length header first (fast reject)
     if let Some(len) = resp.content_length() {
-        if len > 10 * 1024 * 1024 {
+        if len > max_bytes {
             return Err(format!("Response too large: {len} bytes (max 10MB)"));
         }
     }
-    let body = resp
-        .text()
+
+    // Read body with size guard — handles chunked responses without Content-Length
+    let resp_bytes = resp
+        .bytes()
         .await
         .map_err(|e| format!("Failed to read response body: {e}"))?;
+
+    if resp_bytes.len() as u64 > max_bytes {
+        return Err(format!(
+            "Response too large: {} bytes (max 10MB)",
+            resp_bytes.len()
+        ));
+    }
+
+    let body = String::from_utf8_lossy(&resp_bytes).to_string();
     let max_len = 50_000;
     let truncated = if body.len() > max_len {
         format!(
@@ -2307,7 +2320,7 @@ async fn tool_a2a_discover(input: &serde_json::Value) -> Result<String, String> 
         return Err("SSRF blocked: URL resolves to a private or metadata address".to_string());
     }
 
-    let client = crate::a2a::A2aClient::new();
+    let client = crate::a2a::A2aClient::default();
     let card = client.discover(url).await?;
 
     serde_json::to_string_pretty(&card).map_err(|e| format!("Serialization error: {e}"))
@@ -2338,7 +2351,7 @@ async fn tool_a2a_send(
     };
 
     let session_id = input["session_id"].as_str();
-    let client = crate::a2a::A2aClient::new();
+    let client = crate::a2a::A2aClient::default();
     let task = client.send_task(&url, message, session_id).await?;
 
     serde_json::to_string_pretty(&task).map_err(|e| format!("Serialization error: {e}"))
@@ -2702,7 +2715,8 @@ async fn tool_image_generate(
         count,
     };
 
-    let result = crate::image_gen::generate_image(&request).await?;
+    let client = reqwest::Client::new();
+    let result = crate::image_gen::generate_image(&request, &client).await?;
 
     // Save images to workspace if available
     let saved_paths = if let Some(workspace) = workspace_root {

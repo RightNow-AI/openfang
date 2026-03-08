@@ -4,6 +4,7 @@
 //! session store, and consolidation engine behind a single async API.
 
 use crate::consolidation::ConsolidationEngine;
+use crate::goals::GoalStore;
 use crate::knowledge::KnowledgeStore;
 use crate::migration::run_migrations;
 use crate::semantic::SemanticStore;
@@ -33,6 +34,7 @@ pub struct MemorySubstrate {
     sessions: SessionStore,
     consolidation: ConsolidationEngine,
     usage: UsageStore,
+    goals: GoalStore,
 }
 
 impl MemorySubstrate {
@@ -51,6 +53,7 @@ impl MemorySubstrate {
             knowledge: KnowledgeStore::new(Arc::clone(&shared)),
             sessions: SessionStore::new(Arc::clone(&shared)),
             usage: UsageStore::new(Arc::clone(&shared)),
+            goals: GoalStore::new(Arc::clone(&shared)),
             consolidation: ConsolidationEngine::new(shared, decay_rate),
         })
     }
@@ -69,6 +72,7 @@ impl MemorySubstrate {
             knowledge: KnowledgeStore::new(Arc::clone(&shared)),
             sessions: SessionStore::new(Arc::clone(&shared)),
             usage: UsageStore::new(Arc::clone(&shared)),
+            goals: GoalStore::new(Arc::clone(&shared)),
             consolidation: ConsolidationEngine::new(shared, decay_rate),
         })
     }
@@ -76,6 +80,11 @@ impl MemorySubstrate {
     /// Get a reference to the usage store.
     pub fn usage(&self) -> &UsageStore {
         &self.usage
+    }
+
+    /// Get a reference to the goal store.
+    pub fn goals(&self) -> &GoalStore {
+        &self.goals
     }
 
     /// Get the shared database connection (for constructing stores from outside).

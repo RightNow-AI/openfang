@@ -152,13 +152,25 @@ pub async fn agent_ws(
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
-            .map(|token| token == api_key)
+            .map(|token| {
+                use subtle::ConstantTimeEq;
+                if token.len() != api_key.len() {
+                    return false;
+                }
+                token.as_bytes().ct_eq(api_key.as_bytes()).into()
+            })
             .unwrap_or(false);
 
         let query_auth = uri
             .query()
             .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
-            .map(|token| token == api_key)
+            .map(|token| {
+                use subtle::ConstantTimeEq;
+                if token.len() != api_key.len() {
+                    return false;
+                }
+                token.as_bytes().ct_eq(api_key.as_bytes()).into()
+            })
             .unwrap_or(false);
 
         if !header_auth && !query_auth {
@@ -894,7 +906,7 @@ async fn handle_command(
             let msg = if !state.kernel.config.network_enabled {
                 "OFP network disabled.".to_string()
             } else {
-                match &state.kernel.peer_registry {
+                match state.kernel.peer_registry.get() {
                     Some(registry) => {
                         let peers = registry.all_peers();
                         if peers.is_empty() {

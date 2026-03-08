@@ -46,14 +46,14 @@ impl GotifyAdapter {
     /// * `server_url` - Base URL of the Gotify server.
     /// * `app_token` - Token for an application (used to send messages).
     /// * `client_token` - Token for a client (used to receive messages via WebSocket).
-    pub fn new(server_url: String, app_token: String, client_token: String) -> Self {
+    pub fn new(server_url: String, app_token: String, client_token: String, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let server_url = server_url.trim_end_matches('/').to_string();
         Self {
             server_url,
             app_token: Zeroizing::new(app_token),
             client_token: Zeroizing::new(client_token),
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -338,6 +338,7 @@ mod tests {
             "https://gotify.example.com".to_string(),
             "app-token".to_string(),
             "client-token".to_string(),
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "gotify");
         assert_eq!(
@@ -352,6 +353,7 @@ mod tests {
             "https://gotify.example.com/".to_string(),
             "app".to_string(),
             "client".to_string(),
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.server_url, "https://gotify.example.com");
     }
@@ -362,6 +364,7 @@ mod tests {
             "https://gotify.example.com".to_string(),
             "app".to_string(),
             "client-tok".to_string(),
+            reqwest::Client::new(),
         );
         let ws_url = adapter.build_ws_url();
         assert!(ws_url.starts_with("wss://"));
@@ -374,6 +377,7 @@ mod tests {
             "http://localhost:8080".to_string(),
             "app".to_string(),
             "client-tok".to_string(),
+            reqwest::Client::new(),
         );
         let ws_url = adapter.build_ws_url();
         assert!(ws_url.starts_with("ws://"));

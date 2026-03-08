@@ -235,18 +235,15 @@ impl ClawHubClient {
     /// Create a new ClawHub client with default settings.
     ///
     /// Uses the official ClawHub API at `https://clawhub.ai/api/v1`.
-    pub fn new(cache_dir: PathBuf) -> Self {
-        Self::with_url("https://clawhub.ai/api/v1", cache_dir)
+    pub fn new(cache_dir: PathBuf, client: reqwest::Client) -> Self {
+        Self::with_url("https://clawhub.ai/api/v1", cache_dir, client)
     }
 
     /// Create a ClawHub client with a custom API URL.
-    pub fn with_url(base_url: &str, cache_dir: PathBuf) -> Self {
+    pub fn with_url(base_url: &str, cache_dir: PathBuf, client: reqwest::Client) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
+            client,
             _cache_dir: cache_dir,
         }
     }
@@ -813,7 +810,7 @@ mod tests {
 
     #[test]
     fn test_clawhub_client_url() {
-        let client = ClawHubClient::new(PathBuf::from("/tmp/cache"));
+        let client = ClawHubClient::new(PathBuf::from("/tmp/cache"), reqwest::Client::new());
         assert_eq!(client.base_url, "https://clawhub.ai/api/v1");
     }
 

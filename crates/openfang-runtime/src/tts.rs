@@ -19,11 +19,12 @@ pub struct TtsResult {
 /// Text-to-speech engine.
 pub struct TtsEngine {
     config: TtsConfig,
+    client: reqwest::Client,
 }
 
 impl TtsEngine {
-    pub fn new(config: TtsConfig) -> Self {
-        Self { config }
+    pub fn new(config: TtsConfig, client: reqwest::Client) -> Self {
+        Self { config, client }
     }
 
     /// Detect which TTS provider is available based on environment variables.
@@ -100,8 +101,7 @@ impl TtsEngine {
             "speed": self.config.openai.speed,
         });
 
-        let client = reqwest::Client::new();
-        let response = client
+        let response = self.client
             .post("https://api.openai.com/v1/audio/speech")
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
@@ -172,8 +172,7 @@ impl TtsEngine {
             }
         });
 
-        let client = reqwest::Client::new();
-        let response = client
+        let response = self.client
             .post(&url)
             .header("xi-api-key", &api_key)
             .header("Content-Type", "application/json")
@@ -234,7 +233,7 @@ mod tests {
 
     #[test]
     fn test_engine_creation() {
-        let engine = TtsEngine::new(default_config());
+        let engine = TtsEngine::new(default_config(), reqwest::Client::new());
         assert!(!engine.config.enabled);
     }
 
@@ -254,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_synthesize_disabled() {
-        let engine = TtsEngine::new(default_config());
+        let engine = TtsEngine::new(default_config(), reqwest::Client::new());
         let result = engine.synthesize("Hello", None, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("disabled"));
@@ -264,7 +263,7 @@ mod tests {
     async fn test_synthesize_empty_text() {
         let mut config = default_config();
         config.enabled = true;
-        let engine = TtsEngine::new(config);
+        let engine = TtsEngine::new(config, reqwest::Client::new());
         let result = engine.synthesize("", None, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("empty"));
@@ -275,7 +274,7 @@ mod tests {
         let mut config = default_config();
         config.enabled = true;
         config.max_text_length = 10;
-        let engine = TtsEngine::new(config);
+        let engine = TtsEngine::new(config, reqwest::Client::new());
         let result = engine
             .synthesize("This text is definitely longer than ten chars", None, None)
             .await;
@@ -293,7 +292,7 @@ mod tests {
     async fn test_synthesize_no_provider() {
         let mut config = default_config();
         config.enabled = true;
-        let engine = TtsEngine::new(config);
+        let engine = TtsEngine::new(config, reqwest::Client::new());
         // This may or may not error depending on env vars
         let result = engine.synthesize("Hello world", None, None).await;
         // If no API keys are set, should error

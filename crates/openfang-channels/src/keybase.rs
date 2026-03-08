@@ -56,13 +56,13 @@ impl KeybaseAdapter {
     /// * `username` - Keybase username.
     /// * `paperkey` - Paper key for authentication.
     /// * `allowed_teams` - Team names to filter conversations (empty = all).
-    pub fn new(username: String, paperkey: String, allowed_teams: Vec<String>) -> Self {
+    pub fn new(username: String, paperkey: String, allowed_teams: Vec<String>, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             username,
             paperkey: Zeroizing::new(paperkey),
             allowed_teams,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             last_msg_ids: Arc::new(RwLock::new(HashMap::new())),
@@ -462,6 +462,7 @@ mod tests {
             "testuser".to_string(),
             "paper-key-phrase".to_string(),
             vec!["myteam".to_string()],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "keybase");
         assert_eq!(
@@ -476,12 +477,13 @@ mod tests {
             "user".to_string(),
             "paperkey".to_string(),
             vec!["team-a".to_string(), "team-b".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed_team("team-a"));
         assert!(adapter.is_allowed_team("team-b"));
         assert!(!adapter.is_allowed_team("team-c"));
 
-        let open = KeybaseAdapter::new("user".to_string(), "paperkey".to_string(), vec![]);
+        let open = KeybaseAdapter::new("user".to_string(), "paperkey".to_string(), vec![], reqwest::Client::new());
         assert!(open.is_allowed_team("any-team"));
     }
 
@@ -491,13 +493,14 @@ mod tests {
             "user".to_string(),
             "my secret paper key".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.paperkey.as_str(), "my secret paper key");
     }
 
     #[test]
     fn test_keybase_auth_payload() {
-        let adapter = KeybaseAdapter::new("myuser".to_string(), "my-paper-key".to_string(), vec![]);
+        let adapter = KeybaseAdapter::new("myuser".to_string(), "my-paper-key".to_string(), vec![], reqwest::Client::new());
         let payload = adapter.auth_payload();
         assert_eq!(payload["username"], "myuser");
         assert_eq!(payload["paperkey"], "my-paper-key");
@@ -505,7 +508,7 @@ mod tests {
 
     #[test]
     fn test_keybase_username_stored() {
-        let adapter = KeybaseAdapter::new("alice".to_string(), "key".to_string(), vec![]);
+        let adapter = KeybaseAdapter::new("alice".to_string(), "key".to_string(), vec![], reqwest::Client::new());
         assert_eq!(adapter.username, "alice");
     }
 }

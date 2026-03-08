@@ -33,13 +33,10 @@ pub struct MarketplaceClient {
 
 impl MarketplaceClient {
     /// Create a new marketplace client.
-    pub fn new(config: MarketplaceConfig) -> Self {
+    pub fn new(config: MarketplaceConfig, client: reqwest::Client) -> Self {
         Self {
             config,
-            http: reqwest::Client::builder()
-                .user_agent("openfang-skills/0.1")
-                .build()
-                .expect("Failed to build HTTP client"),
+            http: client,
         }
     }
 
@@ -194,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_client_creation() {
-        let client = MarketplaceClient::new(MarketplaceConfig::default());
+        let client = MarketplaceClient::new(MarketplaceConfig::default(), reqwest::Client::new());
         assert_eq!(client.config.github_org, "openfang-skills");
     }
 }

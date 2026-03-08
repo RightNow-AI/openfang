@@ -36,7 +36,14 @@ pub struct AppState {
     /// ClawHub response cache — prevents 429 rate limiting on rapid dashboard refreshes.
     /// Maps cache key → (fetched_at, response_json) with 120s TTL.
     pub clawhub_cache: DashMap<String, (Instant, serde_json::Value)>,
+    /// Budget overrides — safe mutable budget config (replaces unsafe ptr mutation).
+    pub budget_overrides: std::sync::RwLock<Option<openfang_types::config::BudgetConfig>>,
+    /// Per-agent GCRA rate limiter — prevents one agent from starving others.
+    pub agent_rate_limiter: Arc<crate::rate_limiter::AgentRateLimiter>,
 }
+
+/// Mutex to serialize `set_var` / `remove_var` calls (inherently unsafe in multi-threaded Rust 2024).
+static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// POST /api/agents — Spawn a new agent.
 pub async fn spawn_agent(
@@ -104,7 +111,7 @@ pub async fn spawn_agent(
             })),
         ),
         Err(e) => {
-            tracing::warn!("Spawn failed: {e}");
+            tracing::error!("spawn_agent failed: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Agent spawn failed"})),
@@ -304,6 +311,22 @@ pub async fn send_message(
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Agent not found"})),
         );
+    }
+
+    // Per-agent rate limiting — prevents one agent from starving others (200 tokens/min).
+    {
+        let cost = std::num::NonZeroU32::new(30).unwrap();
+        if state
+            .agent_rate_limiter
+            .check_key_n(&agent_id.to_string(), cost)
+            .is_err()
+        {
+            tracing::warn!(agent_id = %agent_id, "Per-agent rate limit exceeded");
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({"error": "Agent rate limit exceeded"})),
+            );
+        }
     }
 
     // Resolve file attachments into image content blocks
@@ -779,9 +802,37 @@ pub async fn run_workflow(
             tracing::warn!("Workflow run failed for {id}: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Workflow execution failed"})),
+                Json(serde_json::json!({"error": format!("Workflow execution failed: {e}")})),
             )
         }
+    }
+}
+
+/// DELETE /api/workflows/:id — Remove a workflow.
+pub async fn delete_workflow(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workflow_id = WorkflowId(match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid workflow ID"})),
+            );
+        }
+    });
+
+    if state.kernel.workflows.remove_workflow(workflow_id).await {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({"deleted": true, "id": id})),
+        )
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Workflow not found"})),
+        )
     }
 }
 
@@ -801,6 +852,7 @@ pub async fn list_workflow_runs(
                 "steps_completed": r.step_results.len(),
                 "started_at": r.started_at.to_rfc3339(),
                 "completed_at": r.completed_at.map(|t| t.to_rfc3339()),
+                "error": r.error,
             })
         })
         .collect();
@@ -2110,15 +2162,18 @@ pub async fn configure_channel(
 
         if let Some(env_var) = field_def.env_var {
             // Secret field — write to secrets.env and set in process
-            if let Err(e) = write_secret_env(&secrets_path, env_var, value) {
+            if let Err(e) = write_secret_env(&secrets_path, env_var, value, &state.kernel.vault) {
+                tracing::error!("configure_channel: failed to write secret for {env_var}: {e}");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": format!("Failed to write secret: {e}")})),
+                    Json(serde_json::json!({"error": "Failed to write channel secret"})),
                 );
             }
-            // SAFETY: We are the only writer; this is a single-threaded config operation
-            unsafe {
-                std::env::set_var(env_var, value);
+            // SAFETY: env var mutation is inherently unsafe in multi-threaded Rust 2024.
+            // The ENV_MUTEX serializes all set_var/remove_var calls.
+            {
+                let _guard = ENV_MUTEX.lock().unwrap();
+                unsafe { std::env::set_var(env_var, value); }
             }
             // Also write the env var NAME to config.toml so the channel section
             // is not empty and the kernel knows which env var to read.
@@ -2134,9 +2189,10 @@ pub async fn configure_channel(
 
     // Write config.toml section
     if let Err(e) = upsert_channel_config(&config_path, &name, &config_fields) {
+        tracing::error!("configure_channel: failed to write config for {name}: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to write config: {e}")})),
+            Json(serde_json::json!({"error": "Failed to write channel configuration"})),
         );
     }
 
@@ -2196,19 +2252,22 @@ pub async fn remove_channel(
     // Remove all secret env vars for this channel
     for field_def in meta.fields {
         if let Some(env_var) = field_def.env_var {
-            let _ = remove_secret_env(&secrets_path, env_var);
-            // SAFETY: Single-threaded config operation
-            unsafe {
-                std::env::remove_var(env_var);
+            let _ = remove_secret_env(&secrets_path, env_var, &state.kernel.vault);
+            // SAFETY: env var mutation is inherently unsafe in multi-threaded Rust 2024.
+            // The ENV_MUTEX serializes all set_var/remove_var calls.
+            {
+                let _guard = ENV_MUTEX.lock().unwrap();
+                unsafe { std::env::remove_var(env_var); }
             }
         }
     }
 
     // Remove config section
     if let Err(e) = remove_channel_config(&config_path, &name) {
+        tracing::error!("disconnect_channel: failed to remove config for {name}: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to remove config: {e}")})),
+            Json(serde_json::json!({"error": "Failed to remove channel configuration"})),
         );
     }
 
@@ -2454,11 +2513,14 @@ pub async fn whatsapp_qr_start() -> impl IntoResponse {
                 "connected": connected,
             }))
         }
-        Err(e) => Json(serde_json::json!({
-            "available": false,
-            "message": format!("Could not reach WhatsApp Web gateway: {e}"),
-            "help": "Make sure the gateway is running at the configured URL"
-        })),
+        Err(e) => {
+            tracing::warn!("whatsapp_qr_start: could not reach gateway: {e}");
+            Json(serde_json::json!({
+                "available": false,
+                "message": "Could not reach WhatsApp Web gateway",
+                "help": "Make sure the gateway is running at the configured URL"
+            }))
+        }
     }
 }
 
@@ -2841,6 +2903,13 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
     let config_warnings = state.kernel.config.validate();
     let status = if db_ok { "ok" } else { "degraded" };
 
+    let wa_health = state
+        .kernel
+        .whatsapp_gateway_health
+        .read()
+        .ok()
+        .and_then(|g| g.clone());
+
     Json(serde_json::json!({
         "status": status,
         "version": env!("CARGO_PKG_VERSION"),
@@ -2850,7 +2919,41 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
         "agent_count": state.kernel.registry.count(),
         "database": if db_ok { "connected" } else { "error" },
         "config_warnings": config_warnings,
+        "whatsapp_gateway": wa_health.map(|h| serde_json::json!({
+            "process_alive": h.process_alive,
+            "ws_connected": h.ws_connected,
+            "last_ok": h.last_ok,
+            "last_error": h.last_error,
+            "reconnect_attempts": h.reconnect_attempts,
+        })),
     }))
+}
+
+/// GET /api/channels/whatsapp/health — WhatsApp gateway health status.
+pub async fn whatsapp_gateway_health(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let health = state
+        .kernel
+        .whatsapp_gateway_health
+        .read()
+        .ok()
+        .and_then(|g| g.clone());
+
+    match health {
+        Some(h) => Json(serde_json::json!({
+            "available": true,
+            "process_alive": h.process_alive,
+            "ws_connected": h.ws_connected,
+            "last_ok": h.last_ok,
+            "last_error": h.last_error,
+            "reconnect_attempts": h.reconnect_attempts,
+        })),
+        None => Json(serde_json::json!({
+            "available": false,
+            "message": "WhatsApp gateway not configured or health monitor not started yet",
+        })),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2946,6 +3049,7 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
 pub async fn list_skills(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let skills_dir = state.kernel.config.home_dir.join("skills");
     let mut registry = openfang_skills::registry::SkillRegistry::new(skills_dir);
+    registry.load_bundled();
     let _ = registry.load_all();
 
     let skills: Vec<serde_json::Value> = registry
@@ -2991,7 +3095,7 @@ pub async fn install_skill(
 ) -> impl IntoResponse {
     let skills_dir = state.kernel.config.home_dir.join("skills");
     let config = openfang_skills::marketplace::MarketplaceConfig::default();
-    let client = openfang_skills::marketplace::MarketplaceClient::new(config);
+    let client = openfang_skills::marketplace::MarketplaceClient::new(config, state.kernel.http_clients.default.clone());
 
     match client.install(&req.name, &skills_dir).await {
         Ok(version) => {
@@ -3007,10 +3111,10 @@ pub async fn install_skill(
             )
         }
         Err(e) => {
-            tracing::warn!("Skill install failed: {e}");
+            tracing::error!("install_skill failed: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Install failed: {e}")})),
+                Json(serde_json::json!({"error": "Skill installation failed"})),
             )
         }
     }
@@ -3034,15 +3138,19 @@ pub async fn uninstall_skill(
                 Json(serde_json::json!({"status": "uninstalled", "name": req.name})),
             )
         }
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        ),
+        Err(e) => {
+            tracing::warn!("uninstall_skill failed for {}: {e}", req.name);
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Skill not found or could not be removed"})),
+            )
+        }
     }
 }
 
 /// GET /api/marketplace/search — Search the FangHub marketplace.
 pub async fn marketplace_search(
+    State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let query = params.get("q").cloned().unwrap_or_default();
@@ -3051,7 +3159,7 @@ pub async fn marketplace_search(
     }
 
     let config = openfang_skills::marketplace::MarketplaceConfig::default();
-    let client = openfang_skills::marketplace::MarketplaceClient::new(config);
+    let client = openfang_skills::marketplace::MarketplaceClient::new(config, state.kernel.http_clients.default.clone());
 
     match client.search(&query).await {
         Ok(results) => {
@@ -3069,8 +3177,8 @@ pub async fn marketplace_search(
             Json(serde_json::json!({"results": items, "total": items.len()}))
         }
         Err(e) => {
-            tracing::warn!("Marketplace search failed: {e}");
-            Json(serde_json::json!({"results": [], "total": 0, "error": format!("{e}")}))
+            tracing::warn!("marketplace_search failed: {e}");
+            Json(serde_json::json!({"results": [], "total": 0, "error": "Marketplace search failed"}))
         }
     }
 }
@@ -3110,7 +3218,7 @@ pub async fn clawhub_search(
     }
 
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir, state.kernel.http_clients.default.clone());
 
     match client.search(&query, limit).await {
         Ok(results) => {
@@ -3138,7 +3246,6 @@ pub async fn clawhub_search(
         Err(e) => {
             let msg = format!("{e}");
             tracing::warn!("ClawHub search failed: {msg}");
-            // Propagate 429 status instead of masking as 200
             let status = if msg.contains("429") || msg.contains("rate limit") {
                 StatusCode::TOO_MANY_REQUESTS
             } else {
@@ -3147,7 +3254,7 @@ pub async fn clawhub_search(
             (
                 status,
                 Json(
-                    serde_json::json!({"items": [], "next_cursor": null, "error": msg}),
+                    serde_json::json!({"items": [], "next_cursor": null, "error": "ClawHub search failed"}),
                 ),
             )
         }
@@ -3188,7 +3295,7 @@ pub async fn clawhub_browse(
     }
 
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir, state.kernel.http_clients.default.clone());
 
     match client.browse(sort, limit, cursor).await {
         Ok(results) => {
@@ -3215,7 +3322,7 @@ pub async fn clawhub_browse(
             (
                 status,
                 Json(
-                    serde_json::json!({"items": [], "next_cursor": null, "error": msg}),
+                    serde_json::json!({"items": [], "next_cursor": null, "error": "ClawHub browse failed"}),
                 ),
             )
         }
@@ -3228,7 +3335,7 @@ pub async fn clawhub_skill_detail(
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir, state.kernel.http_clients.default.clone());
 
     let skills_dir = state.kernel.config.home_dir.join("skills");
     let is_installed = client.is_installed(&slug, &skills_dir);
@@ -3275,10 +3382,13 @@ pub async fn clawhub_skill_detail(
                 })),
             )
         }
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        ),
+        Err(e) => {
+            tracing::warn!("clawhub_skill_detail failed for {slug}: {e}");
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Skill not found"})),
+            )
+        }
     }
 }
 
@@ -3288,7 +3398,7 @@ pub async fn clawhub_skill_code(
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir, state.kernel.http_clients.default.clone());
 
     // Try to fetch SKILL.md first, then fallback to package.json
     let mut code = String::new();
@@ -3332,7 +3442,7 @@ pub async fn clawhub_install(
 ) -> impl IntoResponse {
     let skills_dir = state.kernel.config.home_dir.join("skills");
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir, state.kernel.http_clients.default.clone());
 
     // Check if already installed
     if client.is_installed(&req.slug, &skills_dir) {
@@ -3378,17 +3488,12 @@ pub async fn clawhub_install(
             )
         }
         Err(e) => {
-            let msg = format!("{e}");
-            let status = if msg.contains("SecurityBlocked") {
-                StatusCode::FORBIDDEN
-            } else if msg.contains("429") || msg.contains("rate limit") {
-                StatusCode::TOO_MANY_REQUESTS
-            } else if msg.contains("Network error") || msg.contains("returned 4") || msg.contains("returned 5") {
-                StatusCode::BAD_GATEWAY
+            let (status, msg) = if e.to_string().contains("SecurityBlocked") {
+                (StatusCode::FORBIDDEN, "Skill blocked by security policy")
             } else {
-                StatusCode::INTERNAL_SERVER_ERROR
+                (StatusCode::INTERNAL_SERVER_ERROR, "Skill installation failed")
             };
-            tracing::warn!("ClawHub install failed: {msg}");
+            tracing::error!("clawhub_install failed for {}: {e}", req.slug);
             (status, Json(serde_json::json!({"error": msg})))
         }
     }
@@ -3798,7 +3903,10 @@ pub async fn install_hand_deps(
                 if !extra_paths.is_empty() {
                     let current_path = std::env::var("PATH").unwrap_or_default();
                     let new_path = format!("{};{}", extra_paths.join(";"), current_path);
-                    std::env::set_var("PATH", &new_path);
+                    {
+                        let _guard = ENV_MUTEX.lock().unwrap();
+                        unsafe { std::env::set_var("PATH", &new_path); }
+                    }
                     tracing::info!(
                         added = extra_paths.len(),
                         "Refreshed PATH with winget/pip directories"
@@ -4494,7 +4602,7 @@ pub async fn network_status(State(state): State<Arc<AppState>>) -> impl IntoResp
         && !state.kernel.config.network.shared_secret.is_empty();
 
     let (node_id, listen_address, connected_peers, total_peers) =
-        if let Some(ref peer_node) = state.kernel.peer_node {
+        if let Some(peer_node) = state.kernel.peer_node.get() {
             let registry = peer_node.registry();
             (
                 peer_node.node_id().to_string(),
@@ -4576,6 +4684,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> impl IntoResponse
 
 /// GET /api/usage — Get per-agent usage statistics.
 pub async fn usage_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let usage_store = openfang_memory::usage::UsageStore::new(state.kernel.memory.usage_conn());
     let agents: Vec<serde_json::Value> = state
         .kernel
         .registry
@@ -4583,11 +4692,13 @@ pub async fn usage_stats(State(state): State<Arc<AppState>>) -> impl IntoRespons
         .iter()
         .map(|e| {
             let (tokens, tool_calls) = state.kernel.scheduler.get_usage(e.id).unwrap_or((0, 0));
+            let cost_usd = usage_store.query_daily(e.id).unwrap_or(0.0);
             serde_json::json!({
                 "agent_id": e.id.to_string(),
                 "name": e.name,
                 "total_tokens": tokens,
                 "tool_calls": tool_calls,
+                "cost_usd": cost_usd,
             })
         })
         .collect();
@@ -4675,10 +4786,14 @@ pub async fn usage_daily(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
 /// GET /api/budget — Current budget status (limits, spend, % used).
 pub async fn budget_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let status = state
-        .kernel
-        .metering
-        .budget_status(&state.kernel.config.budget);
+    // Check for in-memory overrides first, fall back to kernel config.
+    let budget = state
+        .budget_overrides
+        .read()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| state.kernel.config.budget.clone());
+    let status = state.kernel.metering.budget_status(&budget);
     Json(serde_json::to_value(&status).unwrap_or_default())
 }
 
@@ -4687,31 +4802,31 @@ pub async fn update_budget(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    // SAFETY: Budget config is updated in-place. Since KernelConfig is behind
-    // an Arc and we only have &self, we use ptr mutation (same pattern as OFP).
-    let config_ptr = &state.kernel.config as *const openfang_types::config::KernelConfig
-        as *mut openfang_types::config::KernelConfig;
+    // Read current budget from overrides or kernel config, apply updates to a mutable copy,
+    // then store back into the RwLock. No unsafe pointer casts required.
+    let mut budget = state
+        .budget_overrides
+        .read()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| state.kernel.config.budget.clone());
 
-    // Apply updates
-    unsafe {
-        if let Some(v) = body["max_hourly_usd"].as_f64() {
-            (*config_ptr).budget.max_hourly_usd = v;
-        }
-        if let Some(v) = body["max_daily_usd"].as_f64() {
-            (*config_ptr).budget.max_daily_usd = v;
-        }
-        if let Some(v) = body["max_monthly_usd"].as_f64() {
-            (*config_ptr).budget.max_monthly_usd = v;
-        }
-        if let Some(v) = body["alert_threshold"].as_f64() {
-            (*config_ptr).budget.alert_threshold = v.clamp(0.0, 1.0);
-        }
+    if let Some(v) = body["max_hourly_usd"].as_f64() {
+        budget.max_hourly_usd = v;
+    }
+    if let Some(v) = body["max_daily_usd"].as_f64() {
+        budget.max_daily_usd = v;
+    }
+    if let Some(v) = body["max_monthly_usd"].as_f64() {
+        budget.max_monthly_usd = v;
+    }
+    if let Some(v) = body["alert_threshold"].as_f64() {
+        budget.alert_threshold = v.clamp(0.0, 1.0);
     }
 
-    let status = state
-        .kernel
-        .metering
-        .budget_status(&state.kernel.config.budget);
+    *state.budget_overrides.write().unwrap() = Some(budget.clone());
+
+    let status = state.kernel.metering.budget_status(&budget);
     Json(serde_json::to_value(&status).unwrap_or_default())
 }
 
@@ -5517,7 +5632,7 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
         // For local providers, add reachability info via health probe
         if !p.key_required {
             entry["is_local"] = serde_json::json!(true);
-            let probe = openfang_runtime::provider_health::probe_provider(&p.id, &p.base_url).await;
+            let probe = openfang_runtime::provider_health::probe_provider(&p.id, &p.base_url, &state.kernel.http_clients.default).await;
             entry["reachable"] = serde_json::json!(probe.reachable);
             entry["latency_ms"] = serde_json::json!(probe.latency_ms);
             if !probe.discovered_models.is_empty() {
@@ -5897,7 +6012,7 @@ pub async fn a2a_discover_external(
         }
     };
 
-    let client = openfang_runtime::a2a::A2aClient::new();
+    let client = openfang_runtime::a2a::A2aClient::new(state.kernel.http_clients.default.clone());
     match client.discover(&url).await {
         Ok(card) => {
             let card_json = serde_json::to_value(&card).unwrap_or_default();
@@ -5932,7 +6047,7 @@ pub async fn a2a_discover_external(
 
 /// POST /api/a2a/send — Send a task to an external A2A agent.
 pub async fn a2a_send_external(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let url = match body["url"].as_str() {
@@ -5955,7 +6070,7 @@ pub async fn a2a_send_external(
     };
     let session_id = body["session_id"].as_str();
 
-    let client = openfang_runtime::a2a::A2aClient::new();
+    let client = openfang_runtime::a2a::A2aClient::new(state.kernel.http_clients.default.clone());
     match client.send_task(&url, &message, session_id).await {
         Ok(task) => (
             StatusCode::OK,
@@ -5970,7 +6085,7 @@ pub async fn a2a_send_external(
 
 /// GET /api/a2a/tasks/{id}/status — Get task status from an external A2A agent.
 pub async fn a2a_external_task_status(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(task_id): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
@@ -5984,7 +6099,7 @@ pub async fn a2a_external_task_status(
         }
     };
 
-    let client = openfang_runtime::a2a::A2aClient::new();
+    let client = openfang_runtime::a2a::A2aClient::new(state.kernel.http_clients.default.clone());
     match client.get_task(&url, &task_id).await {
         Ok(task) => (
             StatusCode::OK,
@@ -6646,15 +6761,19 @@ pub async fn set_provider_key(
 
     // Write to secrets.env file
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
-    if let Err(e) = write_secret_env(&secrets_path, &env_var, &key) {
+    if let Err(e) = write_secret_env(&secrets_path, &env_var, &key, &state.kernel.vault) {
+        tracing::error!("set_api_key: failed to write secret for {env_var}: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to write secrets.env: {e}")})),
+            Json(serde_json::json!({"error": "Failed to write secret"})),
         );
     }
 
     // Set env var in current process so detect_auth picks it up
-    std::env::set_var(&env_var, &key);
+    {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe { std::env::set_var(&env_var, &key); }
+    }
 
     // Refresh auth detection
     state
@@ -6701,15 +6820,19 @@ pub async fn delete_provider_key(
 
     // Remove from secrets.env
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
-    if let Err(e) = remove_secret_env(&secrets_path, &env_var) {
+    if let Err(e) = remove_secret_env(&secrets_path, &env_var, &state.kernel.vault) {
+        tracing::error!("remove_api_key: failed to remove secret for {env_var}: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to update secrets.env: {e}")})),
+            Json(serde_json::json!({"error": "Failed to remove secret"})),
         );
     }
 
     // Remove from process environment
-    std::env::remove_var(&env_var);
+    {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe { std::env::remove_var(&env_var); }
+    }
 
     // Refresh auth detection
     state
@@ -6870,7 +6993,7 @@ pub async fn set_provider_url(
 
     // Probe reachability at the new URL
     let probe =
-        openfang_runtime::provider_health::probe_provider(&name, &base_url).await;
+        openfang_runtime::provider_health::probe_provider(&name, &base_url, &state.kernel.http_clients.default).await;
 
     // Merge discovered models into catalog
     if !probe.discovered_models.is_empty() {
@@ -7019,9 +7142,38 @@ pub async fn create_skill(
 
 // ── Helper functions for secrets.env management ────────────────────────
 
-/// Write or update a key in the secrets.env file.
-/// File format: one `KEY=value` per line. Existing keys are overwritten.
-fn write_secret_env(path: &std::path::Path, key: &str, value: &str) -> Result<(), std::io::Error> {
+/// Write or update a key in the credential vault (preferred) or secrets.env file (fallback).
+/// If the vault is available and unlocked, the secret is stored encrypted in the vault.
+/// Otherwise, falls back to the plaintext `KEY=value` file format (one per line, existing keys overwritten).
+fn write_secret_env(
+    path: &std::path::Path,
+    key: &str,
+    value: &str,
+    vault: &std::sync::RwLock<Option<openfang_extensions::vault::CredentialVault>>,
+) -> Result<(), std::io::Error> {
+    // Try vault first
+    if let Ok(mut guard) = vault.write() {
+        if let Some(ref mut v) = *guard {
+            if v.is_unlocked() {
+                match v.set(
+                    key.to_string(),
+                    zeroize::Zeroizing::new(value.to_string()),
+                ) {
+                    Ok(()) => {
+                        tracing::debug!("Secret {key} stored in encrypted vault");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Vault write failed for {key}: {e}, falling back to file"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: write to plaintext file (existing behavior)
     let mut lines: Vec<String> = if path.exists() {
         std::fs::read_to_string(path)?
             .lines()
@@ -7054,8 +7206,34 @@ fn write_secret_env(path: &std::path::Path, key: &str, value: &str) -> Result<()
     Ok(())
 }
 
-/// Remove a key from the secrets.env file.
-fn remove_secret_env(path: &std::path::Path, key: &str) -> Result<(), std::io::Error> {
+/// Remove a key from the credential vault (preferred) or secrets.env file (fallback).
+/// If the vault is available and unlocked, the secret is removed from the vault.
+/// Otherwise, falls back to removing from the plaintext file.
+fn remove_secret_env(
+    path: &std::path::Path,
+    key: &str,
+    vault: &std::sync::RwLock<Option<openfang_extensions::vault::CredentialVault>>,
+) -> Result<(), std::io::Error> {
+    // Try vault first
+    if let Ok(mut guard) = vault.write() {
+        if let Some(ref mut v) = *guard {
+            if v.is_unlocked() {
+                match v.remove(key) {
+                    Ok(_) => {
+                        tracing::debug!("Secret {key} removed from vault");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Vault remove failed for {key}: {e}, falling back to file"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: remove from plaintext file (existing behavior)
     if !path.exists() {
         return Ok(());
     }
@@ -8577,7 +8755,10 @@ pub async fn upload_file(
         .get("X-Filename")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("upload")
+        .replace(['/', '\\'], "")
+        .replace("..", "")
         .to_string();
+    let filename = if filename.is_empty() { "upload".to_string() } else { filename };
 
     // Validate size
     if body.len() > MAX_UPLOAD_SIZE {
@@ -9771,11 +9952,13 @@ static COPILOT_FLOWS: LazyLock<DashMap<String, CopilotFlowState>> = LazyLock::ne
 ///
 /// Initiates a GitHub device flow for Copilot authentication.
 /// Returns a user code and verification URI that the user visits in their browser.
-pub async fn copilot_oauth_start() -> impl IntoResponse {
+pub async fn copilot_oauth_start(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
     // Clean up expired flows first
-    COPILOT_FLOWS.retain(|_, state| state.expires_at > Instant::now());
+    COPILOT_FLOWS.retain(|_, s| s.expires_at > Instant::now());
 
-    match openfang_runtime::copilot_oauth::start_device_flow().await {
+    match openfang_runtime::copilot_oauth::start_device_flow(&state.kernel.http_clients.default).await {
         Ok(resp) => {
             let poll_id = uuid::Uuid::new_v4().to_string();
 
@@ -9838,7 +10021,7 @@ pub async fn copilot_oauth_poll(
     let device_code = flow.device_code.clone();
     drop(flow);
 
-    match openfang_runtime::copilot_oauth::poll_device_flow(&device_code).await {
+    match openfang_runtime::copilot_oauth::poll_device_flow(&device_code, &state.kernel.http_clients.default).await {
         openfang_runtime::copilot_oauth::DeviceFlowStatus::Pending => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "pending"})),
@@ -9846,15 +10029,19 @@ pub async fn copilot_oauth_poll(
         openfang_runtime::copilot_oauth::DeviceFlowStatus::Complete { access_token } => {
             // Save to secrets.env
             let secrets_path = state.kernel.config.home_dir.join("secrets.env");
-            if let Err(e) = write_secret_env(&secrets_path, "GITHUB_TOKEN", &access_token) {
+            if let Err(e) = write_secret_env(&secrets_path, "GITHUB_TOKEN", &access_token, &state.kernel.vault) {
+                tracing::error!("github_device_poll: failed to save GITHUB_TOKEN: {e}");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"status": "error", "error": format!("Failed to save token: {e}")})),
+                    Json(serde_json::json!({"status": "error", "error": "Failed to save token"})),
                 );
             }
 
             // Set in current process
-            std::env::set_var("GITHUB_TOKEN", access_token.as_str());
+            {
+                let _guard = ENV_MUTEX.lock().unwrap();
+                unsafe { std::env::set_var("GITHUB_TOKEN", access_token.as_str()); }
+            }
 
             // Refresh auth detection
             state
@@ -10284,6 +10471,119 @@ pub async fn comms_task(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("Failed to post task: {e}")})),
+        ),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Goals endpoints
+// ═══════════════════════════════════════════════════════════════════
+
+/// GET /api/goals — List all goals.
+pub async fn list_goals(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.kernel.memory.goals().list() {
+        Ok(goals) => Json(serde_json::json!({ "goals": goals, "total": goals.len() })),
+        Err(e) => Json(serde_json::json!({ "goals": [], "total": 0, "error": e })),
+    }
+}
+
+/// POST /api/goals — Create a new goal.
+pub async fn create_goal(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<openfang_memory::goals::CreateGoalRequest>,
+) -> impl IntoResponse {
+    let valid_levels = ["mission", "strategy", "objective", "task"];
+    if !valid_levels.contains(&req.level.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("Invalid level '{}'. Must be one of: {}", req.level, valid_levels.join(", "))})),
+        );
+    }
+    let valid_statuses = ["planned", "active", "completed", "paused"];
+    if !valid_statuses.contains(&req.status.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("Invalid status '{}'. Must be one of: {}", req.status, valid_statuses.join(", "))})),
+        );
+    }
+    match state.kernel.memory.goals().create(&req) {
+        Ok(goal) => (StatusCode::CREATED, Json(serde_json::json!(goal))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e})),
+        ),
+    }
+}
+
+/// GET /api/goals/{id} — Get a single goal.
+pub async fn get_goal(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.kernel.memory.goals().get(&id) {
+        Ok(Some(goal)) => (StatusCode::OK, Json(serde_json::json!(goal))),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Goal not found"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e})),
+        ),
+    }
+}
+
+/// PUT /api/goals/{id} — Update a goal.
+pub async fn update_goal(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<openfang_memory::goals::UpdateGoalRequest>,
+) -> impl IntoResponse {
+    if let Some(ref level) = req.level {
+        let valid_levels = ["mission", "strategy", "objective", "task"];
+        if !valid_levels.contains(&level.as_str()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid level '{level}'")})),
+            );
+        }
+    }
+    if let Some(ref status) = req.status {
+        let valid_statuses = ["planned", "active", "completed", "paused"];
+        if !valid_statuses.contains(&status.as_str()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid status '{status}'")})),
+            );
+        }
+    }
+    match state.kernel.memory.goals().update(&id, &req) {
+        Ok(Some(goal)) => (StatusCode::OK, Json(serde_json::json!(goal))),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Goal not found"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e})),
+        ),
+    }
+}
+
+/// DELETE /api/goals/{id} — Delete a goal (children become root goals).
+pub async fn delete_goal(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.kernel.memory.goals().delete(&id) {
+        Ok(true) => (StatusCode::OK, Json(serde_json::json!({"deleted": true}))),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Goal not found"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e})),
         ),
     }
 }

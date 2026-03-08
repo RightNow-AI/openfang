@@ -17,6 +17,20 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+/// Explicit set of allowed HTTP methods for CORS.
+/// SECURITY: Never use `tower_http::cors::Any` for methods — restrict to the
+/// methods the API actually handles.
+fn cors_allowed_methods() -> [axum::http::Method; 6] {
+    [
+        axum::http::Method::GET,
+        axum::http::Method::POST,
+        axum::http::Method::PUT,
+        axum::http::Method::DELETE,
+        axum::http::Method::PATCH,
+        axum::http::Method::OPTIONS,
+    ]
+}
+
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct DaemonInfo {
@@ -45,11 +59,13 @@ pub async fn build_router(
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
         started_at: Instant::now(),
-        peer_registry: kernel.peer_registry.as_ref().map(|r| Arc::new(r.clone())),
+        peer_registry: kernel.peer_registry.get().map(|r| Arc::new(r.clone())),
         bridge_manager: tokio::sync::Mutex::new(bridge),
         channels_config: tokio::sync::RwLock::new(channels_config),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
+        budget_overrides: std::sync::RwLock::new(None),
+        agent_rate_limiter: rate_limiter::create_agent_rate_limiter(),
     });
 
     // CORS: allow localhost origins by default. If API key is set, the API
@@ -74,7 +90,7 @@ pub async fn build_router(
         }
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods(tower_http::cors::Any)
+            .allow_methods(cors_allowed_methods())
             .allow_headers(tower_http::cors::Any)
     } else {
         // Auth enabled → restrict CORS to localhost + configured origins.
@@ -98,7 +114,7 @@ pub async fn build_router(
         }
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods(tower_http::cors::Any)
+            .allow_methods(cors_allowed_methods())
             .allow_headers(tower_http::cors::Any)
     };
 
@@ -117,6 +133,10 @@ pub async fn build_router(
         .route(
             "/api/health/detail",
             axum::routing::get(routes::health_detail),
+        )
+        .route(
+            "/api/channels/whatsapp/health",
+            axum::routing::get(routes::whatsapp_gateway_health),
         )
         .route("/api/status", axum::routing::get(routes::status))
         .route("/api/version", axum::routing::get(routes::version))
@@ -287,6 +307,10 @@ pub async fn build_router(
             axum::routing::get(routes::list_workflows).post(routes::create_workflow),
         )
         .route(
+            "/api/workflows/{id}",
+            axum::routing::delete(routes::delete_workflow),
+        )
+        .route(
             "/api/workflows/{id}/run",
             axum::routing::post(routes::run_workflow),
         )
@@ -376,6 +400,17 @@ pub async fn build_router(
         .route(
             "/api/hands/instances/{id}/browser",
             axum::routing::get(routes::hand_instance_browser),
+        )
+        // Goals endpoints
+        .route(
+            "/api/goals",
+            axum::routing::get(routes::list_goals).post(routes::create_goal),
+        )
+        .route(
+            "/api/goals/{id}",
+            axum::routing::get(routes::get_goal)
+                .put(routes::update_goal)
+                .delete(routes::delete_goal),
         )
         // MCP server endpoints
         .route(
@@ -789,6 +824,25 @@ pub async fn run_daemon(
     socket.listen(1024)?;
     let listener =
         tokio::net::TcpListener::from_std(std::net::TcpListener::from(socket))?;
+
+    // SECURITY(L5): Set TCP keep-alive timeout to defend against slowloris-style
+    // DoS attacks where a client opens a connection and sends data very slowly
+    // to exhaust server resources. A 75-second keep-alive timeout is a common
+    // default (matching nginx's default keepalive_timeout).
+    //
+    // TODO: Add `tower-http` "timeout" feature to Cargo.toml and apply
+    // `TimeoutLayer` / `RequestBodyTimeoutLayer` for HTTP-level request
+    // timeouts. The current `axum::serve` API does not expose TCP keep-alive
+    // or HTTP/2 keep-alive timeout configuration directly. To set TCP-level
+    // keepalive, add the `socket2` crate and configure the socket before
+    // converting to a `tokio::net::TcpListener`:
+    //
+    //   let socket = socket2::Socket::new(...)?;
+    //   socket.set_tcp_keepalive(&socket2::TcpKeepalive::new()
+    //       .with_time(Duration::from_secs(75)))?;
+    //   socket.bind(&addr.into())?;
+    //   socket.listen(1024)?;
+    //   let listener = TcpListener::from_std(socket.into())?;
 
     // Run server with graceful shutdown.
     // SECURITY: `into_make_service_with_connect_info` injects the peer

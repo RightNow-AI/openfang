@@ -48,15 +48,17 @@ pub struct PairingManager {
     pending: DashMap<String, PairingRequest>,
     devices: DashMap<String, PairedDevice>,
     persist: Option<PersistFn>,
+    client: reqwest::Client,
 }
 
 impl PairingManager {
-    pub fn new(config: PairingConfig) -> Self {
+    pub fn new(config: PairingConfig, client: reqwest::Client) -> Self {
         Self {
             config,
             pending: DashMap::new(),
             devices: DashMap::new(),
             persist: None,
+            client,
         }
     }
 
@@ -205,8 +207,7 @@ impl PairingManager {
 
                 let full_url = format!("{}/{}", url.trim_end_matches('/'), topic);
 
-                let client = reqwest::Client::new();
-                match client
+                match self.client
                     .post(&full_url)
                     .header("Title", title)
                     .body(body.to_string())
@@ -261,8 +262,7 @@ impl PairingManager {
                     "priority": 5,
                 });
 
-                let client = reqwest::Client::new();
-                match client
+                match self.client
                     .post(&url)
                     .header("X-Gotify-Key", &app_token)
                     .json(&body_json)
@@ -325,14 +325,14 @@ mod tests {
 
     #[test]
     fn test_manager_creation() {
-        let mgr = PairingManager::new(default_config());
+        let mgr = PairingManager::new(default_config(), reqwest::Client::new());
         assert!(mgr.devices.is_empty());
         assert!(mgr.pending.is_empty());
     }
 
     #[test]
     fn test_create_request_disabled() {
-        let mgr = PairingManager::new(default_config());
+        let mgr = PairingManager::new(default_config(), reqwest::Client::new());
         let result = mgr.create_pairing_request();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("disabled"));
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_create_request_success() {
-        let mgr = PairingManager::new(enabled_config());
+        let mgr = PairingManager::new(enabled_config(), reqwest::Client::new());
         let req = mgr.create_pairing_request().unwrap();
         assert_eq!(req.token.len(), 64); // 32 bytes = 64 hex chars
         assert!(req.expires_at > req.created_at);
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_max_pending_requests() {
-        let mgr = PairingManager::new(enabled_config());
+        let mgr = PairingManager::new(enabled_config(), reqwest::Client::new());
         for _ in 0..MAX_PENDING_REQUESTS {
             mgr.create_pairing_request().unwrap();
         }
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_complete_pairing_invalid_token() {
-        let mgr = PairingManager::new(enabled_config());
+        let mgr = PairingManager::new(enabled_config(), reqwest::Client::new());
         let device = PairedDevice {
             device_id: "dev-1".to_string(),
             display_name: "My Phone".to_string(),
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_complete_pairing_success() {
-        let mgr = PairingManager::new(enabled_config());
+        let mgr = PairingManager::new(enabled_config(), reqwest::Client::new());
         let req = mgr.create_pairing_request().unwrap();
 
         let device = PairedDevice {
@@ -400,7 +400,7 @@ mod tests {
             max_devices: 1,
             ..Default::default()
         };
-        let mgr = PairingManager::new(config);
+        let mgr = PairingManager::new(config, reqwest::Client::new());
 
         // Pair first device
         let req1 = mgr.create_pairing_request().unwrap();
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_list_devices() {
-        let mgr = PairingManager::new(enabled_config());
+        let mgr = PairingManager::new(enabled_config(), reqwest::Client::new());
         let req = mgr.create_pairing_request().unwrap();
         let device = PairedDevice {
             device_id: "dev-1".to_string(),
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn test_remove_device() {
-        let mgr = PairingManager::new(enabled_config());
+        let mgr = PairingManager::new(enabled_config(), reqwest::Client::new());
         let req = mgr.create_pairing_request().unwrap();
         let device = PairedDevice {
             device_id: "dev-1".to_string(),
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_remove_nonexistent_device() {
-        let mgr = PairingManager::new(enabled_config());
+        let mgr = PairingManager::new(enabled_config(), reqwest::Client::new());
         assert!(mgr.remove_device("nonexistent").is_err());
     }
 
@@ -479,7 +479,7 @@ mod tests {
             token_expiry_secs: 0, // Expire immediately
             ..Default::default()
         };
-        let mgr = PairingManager::new(config);
+        let mgr = PairingManager::new(config, reqwest::Client::new());
         mgr.create_pairing_request().unwrap();
         assert_eq!(mgr.pending.len(), 1);
 
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_token_length() {
-        let mgr = PairingManager::new(enabled_config());
+        let mgr = PairingManager::new(enabled_config(), reqwest::Client::new());
         let req = mgr.create_pairing_request().unwrap();
         // 32 random bytes = 64 hex chars
         assert_eq!(req.token.len(), 64);

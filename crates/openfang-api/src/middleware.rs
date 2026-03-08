@@ -80,18 +80,12 @@ pub async fn auth(
         || path == "/api/health/detail"
         || path == "/api/status"
         || path == "/api/version"
-        || path == "/api/agents"
-        || path == "/api/profiles"
-        || path == "/api/config"
         || path.starts_with("/api/uploads/")
         // Dashboard read endpoints — allow unauthenticated so the SPA can
         // render before the user enters their API key.
         || path == "/api/models"
         || path == "/api/models/aliases"
         || path == "/api/providers"
-        || path == "/api/budget"
-        || path == "/api/budget/agents"
-        || path.starts_with("/api/budget/agents/")
         || path == "/api/network/status"
         || path == "/api/a2a/agents"
         || path == "/api/approvals"
@@ -101,7 +95,6 @@ pub async fn auth(
         || path == "/api/hands/active"
         || path.starts_with("/api/hands/")
         || path == "/api/skills"
-        || path == "/api/sessions"
         || path == "/api/integrations"
         || path == "/api/integrations/available"
         || path == "/api/integrations/health"
@@ -181,7 +174,11 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Bo
     headers.insert("x-content-type-options", "nosniff".parse().unwrap());
     headers.insert("x-frame-options", "DENY".parse().unwrap());
     headers.insert("x-xss-protection", "1; mode=block".parse().unwrap());
-    // All JS/CSS is bundled inline — only external resource is Google Fonts.
+    // CSP: 'unsafe-eval' is required because the dashboard uses standard Alpine.js
+    // (static/vendor/alpine.min.js) with inline x-data expressions (e.g. x-data="{ collapsed: false }").
+    // Alpine's standard build uses new Function() to evaluate these expressions.
+    // To remove 'unsafe-eval', the project would need to migrate to Alpine's CSP build
+    // (@alpinejs/csp) and refactor all inline expressions into Alpine.data() registrations.
     headers.insert(
         "content-security-policy",
         "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; font-src 'self' https://fonts.gstatic.com; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'"

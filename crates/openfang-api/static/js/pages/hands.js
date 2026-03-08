@@ -39,6 +39,15 @@ function handsPage() {
         this.loadError = e.message || 'Could not load hands.';
       }
       this.loading = false;
+      // Also load active instances so Available tab can show active state
+      this.loadActive();
+    },
+
+    isHandActive(handId) {
+      for (var i = 0; i < this.instances.length; i++) {
+        if (this.instances[i].hand_id === handId) return true;
+      }
+      return false;
     },
 
     async loadActive() {

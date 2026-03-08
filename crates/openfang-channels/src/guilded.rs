@@ -50,12 +50,12 @@ impl GuildedAdapter {
     /// # Arguments
     /// * `bot_token` - Guilded bot authentication token.
     /// * `server_ids` - Server IDs to filter events for (empty = all).
-    pub fn new(bot_token: String, server_ids: Vec<String>) -> Self {
+    pub fn new(bot_token: String, server_ids: Vec<String>, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             bot_token: Zeroizing::new(bot_token),
             server_ids,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn test_guilded_adapter_creation() {
         let adapter =
-            GuildedAdapter::new("test-bot-token".to_string(), vec!["server1".to_string()]);
+            GuildedAdapter::new("test-bot-token".to_string(), vec!["server1".to_string()], reqwest::Client::new());
         assert_eq!(adapter.name(), "guilded");
         assert_eq!(
             adapter.channel_type(),
@@ -367,18 +367,19 @@ mod tests {
         let adapter = GuildedAdapter::new(
             "tok".to_string(),
             vec!["srv-1".to_string(), "srv-2".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed_server("srv-1"));
         assert!(adapter.is_allowed_server("srv-2"));
         assert!(!adapter.is_allowed_server("srv-3"));
 
-        let open = GuildedAdapter::new("tok".to_string(), vec![]);
+        let open = GuildedAdapter::new("tok".to_string(), vec![], reqwest::Client::new());
         assert!(open.is_allowed_server("any-server"));
     }
 
     #[test]
     fn test_guilded_token_zeroized() {
-        let adapter = GuildedAdapter::new("secret-bot-token".to_string(), vec![]);
+        let adapter = GuildedAdapter::new("secret-bot-token".to_string(), vec![], reqwest::Client::new());
         assert_eq!(adapter.bot_token.as_str(), "secret-bot-token");
     }
 

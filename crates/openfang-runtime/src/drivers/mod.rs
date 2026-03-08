@@ -13,7 +13,8 @@ pub mod openai;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
-    AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL,
+    AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, CLAUDE_CODE_PROXY_BASE_URL,
+    COHERE_BASE_URL, DEEPSEEK_BASE_URL,
     FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, LEMONADE_BASE_URL,
     LMSTUDIO_BASE_URL,
     MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
@@ -148,6 +149,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "claude-code" => Some(ProviderDefaults {
             base_url: "",
             api_key_env: "",
+            key_required: false,
+        }),
+        "claude-code-proxy" => Some(ProviderDefaults {
+            base_url: CLAUDE_CODE_PROXY_BASE_URL,
+            api_key_env: "ANTHROPIC_API_KEY",
             key_required: false,
         }),
         "moonshot" | "kimi" => Some(ProviderDefaults {
@@ -428,6 +434,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "venice",
         "codex",
         "claude-code",
+        "claude-code-proxy",
     ]
 }
 
@@ -524,7 +531,8 @@ mod tests {
         assert!(providers.contains(&"volcengine"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
-        assert_eq!(providers.len(), 31);
+        assert!(providers.contains(&"claude-code-proxy"));
+        assert_eq!(providers.len(), 32);
     }
 
     #[test]

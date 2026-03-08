@@ -56,6 +56,7 @@ impl DiscourseAdapter {
         api_key: String,
         api_username: String,
         categories: Vec<String>,
+        client: reqwest::Client,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let base_url = base_url.trim_end_matches('/').to_string();
@@ -64,7 +65,7 @@ impl DiscourseAdapter {
             api_key: Zeroizing::new(api_key),
             api_username,
             categories,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             last_post_id: Arc::new(RwLock::new(0)),
@@ -409,6 +410,7 @@ mod tests {
             "api-key-123".to_string(),
             "system".to_string(),
             vec!["general".to_string()],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "discourse");
         assert_eq!(
@@ -424,6 +426,7 @@ mod tests {
             "key".to_string(),
             "bot".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.base_url, "https://forum.example.com");
     }
@@ -435,6 +438,7 @@ mod tests {
             "key".to_string(),
             "bot".to_string(),
             vec!["dev".to_string(), "support".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.matches_category("dev"));
         assert!(adapter.matches_category("support"));
@@ -448,6 +452,7 @@ mod tests {
             "key".to_string(),
             "bot".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert!(adapter.matches_category("anything"));
     }
@@ -459,6 +464,7 @@ mod tests {
             "my-api-key".to_string(),
             "bot-user".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         let builder = adapter.client.get("https://example.com");
         let builder = adapter.auth_headers(builder);

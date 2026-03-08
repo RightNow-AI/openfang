@@ -122,6 +122,13 @@ pub enum CronAction {
         /// Timeout in seconds (10..=600).
         timeout_secs: Option<u64>,
     },
+    /// Trigger a workflow pipeline.
+    Workflow {
+        /// Workflow ID (UUID) to execute.
+        workflow_id: String,
+        /// Initial input to the workflow.
+        input: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +304,23 @@ impl CronJob {
                             "timeout_secs too large ({t}, max {MAX_TIMEOUT_SECS})"
                         ));
                     }
+                }
+            }
+            CronAction::Workflow {
+                workflow_id,
+                input,
+            } => {
+                if workflow_id.is_empty() {
+                    return Err("workflow_id must not be empty".into());
+                }
+                if uuid::Uuid::parse_str(workflow_id).is_err() {
+                    return Err("workflow_id must be a valid UUID".into());
+                }
+                if input.len() > MAX_TURN_MESSAGE_LEN {
+                    return Err(format!(
+                        "workflow input too long ({} chars, max {MAX_TURN_MESSAGE_LEN})",
+                        input.len()
+                    ));
                 }
             }
         }
@@ -817,6 +841,72 @@ mod tests {
         };
         let json = serde_json::to_string(&action).unwrap();
         assert!(json.contains("\"kind\":\"agent_turn\""));
+    }
+
+    #[test]
+    fn serde_workflow_action_roundtrip() {
+        let wf_id = Uuid::new_v4().to_string();
+        let action = CronAction::Workflow {
+            workflow_id: wf_id.clone(),
+            input: "daily research".into(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"kind\":\"workflow\""));
+        assert!(json.contains(&wf_id));
+        let back: CronAction = serde_json::from_str(&json).unwrap();
+        if let CronAction::Workflow {
+            workflow_id,
+            input,
+        } = back
+        {
+            assert_eq!(workflow_id, wf_id);
+            assert_eq!(input, "daily research");
+        } else {
+            panic!("expected Workflow variant");
+        }
+    }
+
+    #[test]
+    fn workflow_action_valid() {
+        let mut job = valid_job();
+        job.action = CronAction::Workflow {
+            workflow_id: Uuid::new_v4().to_string(),
+            input: "go".into(),
+        };
+        assert!(job.validate(0).is_ok());
+    }
+
+    #[test]
+    fn workflow_action_empty_id_rejected() {
+        let mut job = valid_job();
+        job.action = CronAction::Workflow {
+            workflow_id: String::new(),
+            input: "go".into(),
+        };
+        let err = job.validate(0).unwrap_err();
+        assert!(err.contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn workflow_action_invalid_uuid_rejected() {
+        let mut job = valid_job();
+        job.action = CronAction::Workflow {
+            workflow_id: "not-a-uuid".into(),
+            input: "go".into(),
+        };
+        let err = job.validate(0).unwrap_err();
+        assert!(err.contains("valid UUID"), "{err}");
+    }
+
+    #[test]
+    fn workflow_action_input_too_long() {
+        let mut job = valid_job();
+        job.action = CronAction::Workflow {
+            workflow_id: Uuid::new_v4().to_string(),
+            input: "x".repeat(16_385),
+        };
+        let err = job.validate(0).unwrap_err();
+        assert!(err.contains("too long"), "{err}");
     }
 
     #[test]

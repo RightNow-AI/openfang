@@ -33,12 +33,12 @@ pub struct SignalAdapter {
 
 impl SignalAdapter {
     /// Create a new Signal adapter.
-    pub fn new(api_url: String, phone_number: String, allowed_users: Vec<String>) -> Self {
+    pub fn new(api_url: String, phone_number: String, allowed_users: Vec<String>, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             api_url,
             phone_number,
-            client: reqwest::Client::new(),
+            client,
             allowed_users,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
@@ -248,6 +248,7 @@ mod tests {
             "http://localhost:8080".to_string(),
             "+1234567890".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "signal");
         assert_eq!(adapter.channel_type(), ChannelType::Signal);
@@ -259,6 +260,7 @@ mod tests {
             "http://localhost:8080".to_string(),
             "+1234567890".to_string(),
             vec!["+9876543210".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed("+9876543210"));
         assert!(!adapter.is_allowed("+1111111111"));

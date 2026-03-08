@@ -63,6 +63,7 @@ impl TeamsAdapter {
         app_password: String,
         webhook_port: u16,
         allowed_tenants: Vec<String>,
+        client: reqwest::Client,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
@@ -70,7 +71,7 @@ impl TeamsAdapter {
             app_password: Zeroizing::new(app_password),
             webhook_port,
             allowed_tenants,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             cached_token: Arc::new(RwLock::new(None)),
@@ -414,6 +415,7 @@ mod tests {
             "app-password".to_string(),
             3978,
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "teams");
         assert_eq!(adapter.channel_type(), ChannelType::Teams);
@@ -426,11 +428,12 @@ mod tests {
             "password".to_string(),
             3978,
             vec!["tenant-abc".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed_tenant("tenant-abc"));
         assert!(!adapter.is_allowed_tenant("tenant-xyz"));
 
-        let open = TeamsAdapter::new("app-id".to_string(), "password".to_string(), 3978, vec![]);
+        let open = TeamsAdapter::new("app-id".to_string(), "password".to_string(), 3978, vec![], reqwest::Client::new());
         assert!(open.is_allowed_tenant("any-tenant"));
     }
 

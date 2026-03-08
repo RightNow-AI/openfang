@@ -50,6 +50,7 @@ impl WhatsAppAdapter {
         verify_token: String,
         webhook_port: u16,
         allowed_users: Vec<String>,
+        client: reqwest::Client,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
@@ -57,7 +58,7 @@ impl WhatsAppAdapter {
             access_token: Zeroizing::new(access_token),
             verify_token: Zeroizing::new(verify_token),
             webhook_port,
-            client: reqwest::Client::new(),
+            client,
             allowed_users,
             gateway_url: None,
             shutdown_tx: Arc::new(shutdown_tx),
@@ -335,6 +336,7 @@ mod tests {
             "verify_token".to_string(),
             8443,
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "whatsapp");
         assert_eq!(adapter.channel_type(), ChannelType::WhatsApp);
@@ -348,6 +350,7 @@ mod tests {
             "verify".to_string(),
             8443,
             vec!["+1234567890".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed("+1234567890"));
         assert!(!adapter.is_allowed("+9999999999"));
@@ -358,6 +361,7 @@ mod tests {
             "verify".to_string(),
             8443,
             vec![],
+            reqwest::Client::new(),
         );
         assert!(open.is_allowed("+anything"));
     }

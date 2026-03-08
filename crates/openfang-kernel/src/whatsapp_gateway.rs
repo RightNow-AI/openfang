@@ -1,12 +1,15 @@
-//! WhatsApp Web gateway — embedded Node.js process management.
+//! WhatsApp Web gateway — embedded Node.js process management and health monitoring.
 //!
 //! Embeds the gateway JS at compile time, extracts it to `~/.openfang/whatsapp-gateway/`,
 //! runs `npm install` if needed, and spawns `node index.js` as a managed child process
-//! that auto-restarts on crash.
+//! that auto-restarts on crash. Includes a health monitor loop that polls the gateway
+//! and triggers reconnection if the Baileys WebSocket dies (e.g. after system sleep/wake).
 
 use crate::config::openfang_home;
+use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{info, warn};
 
 /// Gateway source files embedded at compile time.
@@ -19,10 +22,13 @@ const GATEWAY_PACKAGE_JSON: &str =
 const DEFAULT_GATEWAY_PORT: u16 = 3009;
 
 /// Maximum restart attempts before giving up.
-const MAX_RESTARTS: u32 = 3;
+const MAX_RESTARTS: u32 = 20;
 
-/// Restart backoff delays in seconds: 5s, 10s, 20s.
-const RESTART_DELAYS: [u64; 3] = [5, 10, 20];
+/// If the gateway ran for this long without crashing, reset the restart counter.
+const RESTART_RESET_WINDOW_SECS: u64 = 300;
+
+/// Restart backoff delays in seconds (wraps at last value).
+const RESTART_DELAYS: [u64; 5] = [5, 10, 20, 30, 60];
 
 /// Get the gateway installation directory.
 fn gateway_dir() -> PathBuf {
@@ -162,6 +168,7 @@ pub async fn start_whatsapp_gateway(kernel: &Arc<super::kernel::OpenFangKernel>)
         .as_deref()
         .unwrap_or("assistant")
         .to_string();
+    let allowed_users = wa_config.allowed_users.join(",");
 
     // Auto-set the env var so the rest of the system finds the gateway
     std::env::set_var("WHATSAPP_WEB_GATEWAY_URL", format!("http://127.0.0.1:{port}"));
@@ -173,6 +180,7 @@ pub async fn start_whatsapp_gateway(kernel: &Arc<super::kernel::OpenFangKernel>)
 
     tokio::spawn(async move {
         let mut restarts = 0u32;
+        let mut last_crash_at = std::time::Instant::now();
 
         loop {
             let node_cmd = if cfg!(windows) { "node.exe" } else { "node" };
@@ -185,6 +193,7 @@ pub async fn start_whatsapp_gateway(kernel: &Arc<super::kernel::OpenFangKernel>)
                 .env("WHATSAPP_GATEWAY_PORT", port.to_string())
                 .env("OPENFANG_URL", &openfang_url)
                 .env("OPENFANG_DEFAULT_AGENT", &default_agent)
+                .env("WHATSAPP_ALLOWED_USERS", &allowed_users)
                 .stdout(std::process::Stdio::inherit())
                 .stderr(std::process::Stdio::inherit())
                 .spawn();
@@ -245,6 +254,18 @@ pub async fn start_whatsapp_gateway(kernel: &Arc<super::kernel::OpenFangKernel>)
                 }
             }
 
+            // Reset restart budget if the gateway was stable for long enough
+            let elapsed = last_crash_at.elapsed().as_secs();
+            if elapsed >= RESTART_RESET_WINDOW_SECS && restarts > 0 {
+                info!(
+                    elapsed_secs = elapsed,
+                    old_count = restarts,
+                    "WhatsApp gateway restart counter reset (was stable)"
+                );
+                restarts = 0;
+            }
+            last_crash_at = std::time::Instant::now();
+
             restarts += 1;
             if restarts >= MAX_RESTARTS {
                 warn!(
@@ -262,6 +283,216 @@ pub async fn start_whatsapp_gateway(kernel: &Arc<super::kernel::OpenFangKernel>)
             tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Health monitoring — polls gateway /health and triggers reconnect on failure
+// ---------------------------------------------------------------------------
+
+/// Health status of the WhatsApp gateway (updated by the kernel health loop).
+#[derive(Debug, Clone, Serialize)]
+pub struct WhatsAppGatewayHealth {
+    /// Whether the gateway HTTP process is reachable.
+    pub process_alive: bool,
+    /// Whether the Baileys WebSocket is connected.
+    pub ws_connected: bool,
+    /// Last successful health check timestamp (RFC 3339).
+    pub last_ok: Option<String>,
+    /// Last error message from a failed health check.
+    pub last_error: Option<String>,
+    /// Number of auto-reconnect attempts triggered by the kernel.
+    pub reconnect_attempts: u32,
+}
+
+/// Health check interval for the gateway monitor loop.
+const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
+
+/// Number of consecutive disconnected checks before triggering a reconnect.
+const RECONNECT_AFTER_CHECKS: u32 = 2;
+
+/// Check the WhatsApp gateway health by hitting its `/health` endpoint.
+async fn check_gateway_health(port: u16) -> Result<serde_json::Value, String> {
+    let addr = format!("127.0.0.1:{port}");
+    let mut stream = tokio::net::TcpStream::connect(&addr)
+        .await
+        .map_err(|e| format!("Connect failed: {e}"))?;
+
+    let req = format!(
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(req.as_bytes())
+        .await
+        .map_err(|e| format!("Write: {e}"))?;
+
+    let mut buf = Vec::new();
+    stream
+        .read_to_end(&mut buf)
+        .await
+        .map_err(|e| format!("Read: {e}"))?;
+    let response = String::from_utf8_lossy(&buf);
+
+    if let Some(idx) = response.find("\r\n\r\n") {
+        let body_str = &response[idx + 4..];
+        serde_json::from_str(body_str.trim()).map_err(|e| format!("Parse: {e}"))
+    } else {
+        Err("No HTTP body in response".to_string())
+    }
+}
+
+/// Trigger a reconnect via the gateway's `POST /health/reconnect` endpoint.
+async fn trigger_gateway_reconnect(port: u16) -> Result<(), String> {
+    let addr = format!("127.0.0.1:{port}");
+    let mut stream = tokio::net::TcpStream::connect(&addr)
+        .await
+        .map_err(|e| format!("Connect failed: {e}"))?;
+
+    let req = format!(
+        "POST /health/reconnect HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(req.as_bytes())
+        .await
+        .map_err(|e| format!("Write: {e}"))?;
+
+    let mut buf = Vec::new();
+    stream
+        .read_to_end(&mut buf)
+        .await
+        .map_err(|e| format!("Read: {e}"))?;
+    Ok(())
+}
+
+/// Run a periodic health check loop for the WhatsApp gateway.
+///
+/// Polls `/health` every 30 seconds. If the Baileys WebSocket is disconnected
+/// for 2 consecutive checks (~60s), triggers `/health/reconnect` to auto-heal.
+/// This handles the case where system sleep/wake kills the WebSocket silently.
+pub async fn run_whatsapp_health_loop(kernel: &Arc<super::kernel::OpenFangKernel>) {
+    let port = DEFAULT_GATEWAY_PORT;
+    let health_state = Arc::clone(&kernel.whatsapp_gateway_health);
+
+    // Wait for gateway process to boot up
+    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+
+    let mut interval =
+        tokio::time::interval(std::time::Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval.tick().await; // skip first immediate tick
+
+    let mut consecutive_disconnects = 0u32;
+    let mut total_reconnects = 0u32;
+    let mut last_reconnect_trigger: Option<std::time::Instant> = None;
+
+    // Cooldown period after triggering a reconnect — don't trigger another one
+    // for at least 90 seconds to let the gateway finish its own reconnect cycle.
+    const RECONNECT_COOLDOWN_SECS: u64 = 90;
+
+    loop {
+        interval.tick().await;
+
+        if kernel.supervisor.is_shutting_down() {
+            break;
+        }
+
+        if kernel.config.channels.whatsapp.is_none() {
+            break;
+        }
+
+        match check_gateway_health(port).await {
+            Ok(body) => {
+                let connected = body
+                    .get("connected")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                // Check if gateway is already handling its own reconnect
+                let conn_status = body
+                    .get("conn_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let is_reconnecting = conn_status == "reconnecting";
+
+                if connected {
+                    consecutive_disconnects = 0;
+                    if let Ok(mut guard) = health_state.write() {
+                        *guard = Some(WhatsAppGatewayHealth {
+                            process_alive: true,
+                            ws_connected: true,
+                            last_ok: Some(chrono::Utc::now().to_rfc3339()),
+                            last_error: None,
+                            reconnect_attempts: total_reconnects,
+                        });
+                    }
+                } else if is_reconnecting {
+                    // Gateway is already reconnecting on its own — don't interfere
+                    if let Ok(mut guard) = health_state.write() {
+                        *guard = Some(WhatsAppGatewayHealth {
+                            process_alive: true,
+                            ws_connected: false,
+                            last_ok: guard.as_ref().and_then(|h| h.last_ok.clone()),
+                            last_error: Some("Gateway is reconnecting".to_string()),
+                            reconnect_attempts: total_reconnects,
+                        });
+                    }
+                } else {
+                    consecutive_disconnects += 1;
+                    warn!(
+                        "WhatsApp gateway: WebSocket disconnected ({consecutive_disconnects} consecutive checks)"
+                    );
+
+                    if let Ok(mut guard) = health_state.write() {
+                        *guard = Some(WhatsAppGatewayHealth {
+                            process_alive: true,
+                            ws_connected: false,
+                            last_ok: guard.as_ref().and_then(|h| h.last_ok.clone()),
+                            last_error: Some(format!(
+                                "Disconnected for {consecutive_disconnects} consecutive checks"
+                            )),
+                            reconnect_attempts: total_reconnects,
+                        });
+                    }
+
+                    // After N consecutive failures, trigger reconnect — but respect cooldown
+                    if consecutive_disconnects >= RECONNECT_AFTER_CHECKS {
+                        let in_cooldown = last_reconnect_trigger
+                            .map(|t| t.elapsed().as_secs() < RECONNECT_COOLDOWN_SECS)
+                            .unwrap_or(false);
+
+                        if in_cooldown {
+                            // Still in cooldown — don't pile on
+                            continue;
+                        }
+
+                        info!("WhatsApp gateway: triggering auto-reconnect");
+                        total_reconnects += 1;
+                        last_reconnect_trigger = Some(std::time::Instant::now());
+                        match trigger_gateway_reconnect(port).await {
+                            Ok(()) => {
+                                info!("WhatsApp gateway: reconnect triggered successfully");
+                                consecutive_disconnects = 0;
+                            }
+                            Err(e) => {
+                                warn!("WhatsApp gateway: reconnect trigger failed: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                // Process might be down or restarting
+                if let Ok(mut guard) = health_state.write() {
+                    *guard = Some(WhatsAppGatewayHealth {
+                        process_alive: false,
+                        ws_connected: false,
+                        last_ok: guard.as_ref().and_then(|h| h.last_ok.clone()),
+                        last_error: Some(e),
+                        reconnect_attempts: total_reconnects,
+                    });
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -339,7 +570,8 @@ mod tests {
 
     #[test]
     fn test_restart_backoff_delays() {
-        assert_eq!(RESTART_DELAYS, [5, 10, 20]);
-        assert_eq!(MAX_RESTARTS, 3);
+        assert_eq!(RESTART_DELAYS, [5, 10, 20, 30, 60]);
+        assert_eq!(MAX_RESTARTS, 20);
+        assert_eq!(RESTART_RESET_WINDOW_SECS, 300);
     }
 }

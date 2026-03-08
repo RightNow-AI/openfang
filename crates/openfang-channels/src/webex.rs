@@ -53,12 +53,12 @@ impl WebexAdapter {
     /// # Arguments
     /// * `bot_token` - Webex Bot access token.
     /// * `allowed_rooms` - Room IDs to filter events for (empty = all).
-    pub fn new(bot_token: String, allowed_rooms: Vec<String>) -> Self {
+    pub fn new(bot_token: String, allowed_rooms: Vec<String>, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             bot_token: Zeroizing::new(bot_token),
             allowed_rooms,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             bot_info: Arc::new(RwLock::new(None)),
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_webex_adapter_creation() {
-        let adapter = WebexAdapter::new("test-bot-token".to_string(), vec!["room1".to_string()]);
+        let adapter = WebexAdapter::new("test-bot-token".to_string(), vec!["room1".to_string()], reqwest::Client::new());
         assert_eq!(adapter.name(), "webex");
         assert_eq!(
             adapter.channel_type(),
@@ -494,18 +494,19 @@ mod tests {
         let adapter = WebexAdapter::new(
             "tok".to_string(),
             vec!["room-a".to_string(), "room-b".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed_room("room-a"));
         assert!(adapter.is_allowed_room("room-b"));
         assert!(!adapter.is_allowed_room("room-c"));
 
-        let open = WebexAdapter::new("tok".to_string(), vec![]);
+        let open = WebexAdapter::new("tok".to_string(), vec![], reqwest::Client::new());
         assert!(open.is_allowed_room("any-room"));
     }
 
     #[test]
     fn test_webex_token_zeroized() {
-        let adapter = WebexAdapter::new("my-secret-bot-token".to_string(), vec![]);
+        let adapter = WebexAdapter::new("my-secret-bot-token".to_string(), vec![], reqwest::Client::new());
         assert_eq!(adapter.bot_token.as_str(), "my-secret-bot-token");
     }
 

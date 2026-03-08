@@ -114,6 +114,8 @@ async fn test_full_daemon_lifecycle() {
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
+        budget_overrides: std::sync::RwLock::new(None),
+        agent_rate_limiter: openfang_api::rate_limiter::create_agent_rate_limiter(),
     });
 
     let app = Router::new()
@@ -238,6 +240,8 @@ async fn test_server_immediate_responsiveness() {
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
+        budget_overrides: std::sync::RwLock::new(None),
+        agent_rate_limiter: openfang_api::rate_limiter::create_agent_rate_limiter(),
     });
 
     let app = Router::new()

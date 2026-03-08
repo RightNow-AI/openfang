@@ -40,6 +40,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
 use tracing::{debug, info, warn};
 
+/// Shared HTTP clients — avoids creating 60+ independent connection pools.
+///
+/// `reqwest::Client` is `Arc`-wrapped internally, so `.clone()` is cheap.
+pub struct SharedHttpClients {
+    /// General-purpose client (30s timeout) — API calls, LLM drivers, channel adapters.
+    pub default: reqwest::Client,
+    /// Long-lived streaming client (no timeout) — SSE, WebSocket polling.
+    pub streaming: reqwest::Client,
+}
+
 /// The main OpenFang kernel — coordinates all subsystems.
 /// Stub LLM driver used when no providers are configured.
 /// Returns a helpful error so the dashboard still boots and users can configure providers.
@@ -140,17 +150,23 @@ pub struct OpenFangKernel {
     /// Persistent process manager for interactive sessions (REPLs, servers).
     pub process_manager: Arc<openfang_runtime::process_manager::ProcessManager>,
     /// OFP peer registry — tracks connected peers.
-    pub peer_registry: Option<openfang_wire::PeerRegistry>,
+    pub peer_registry: OnceLock<openfang_wire::PeerRegistry>,
     /// OFP peer node — the local networking node.
-    pub peer_node: Option<Arc<openfang_wire::PeerNode>>,
+    pub peer_node: OnceLock<Arc<openfang_wire::PeerNode>>,
     /// Boot timestamp for uptime calculation.
     pub booted_at: std::time::Instant,
     /// WhatsApp Web gateway child process PID (for shutdown cleanup).
     pub whatsapp_gateway_pid: Arc<std::sync::Mutex<Option<u32>>>,
+    /// WhatsApp gateway health state (updated by periodic health monitor loop).
+    pub whatsapp_gateway_health: Arc<std::sync::RwLock<Option<crate::whatsapp_gateway::WhatsAppGatewayHealth>>>,
     /// Channel adapters registered at bridge startup (for proactive `channel_send` tool).
     pub channel_adapters: dashmap::DashMap<String, Arc<dyn openfang_channels::types::ChannelAdapter>>,
     /// Hot-reloadable default model override (set via config hot-reload, read at agent spawn).
     pub default_model_override: std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
+    /// Encrypted credential vault (AES-256-GCM, OS keyring key management).
+    pub vault: Arc<std::sync::RwLock<Option<openfang_extensions::vault::CredentialVault>>>,
+    /// Shared HTTP clients (avoids 60+ independent connection pools).
+    pub http_clients: SharedHttpClients,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
 }
@@ -187,15 +203,20 @@ impl DeliveryTracker {
             let drain = entry.len() - Self::MAX_PER_AGENT;
             entry.drain(..drain);
         }
-        // Global cap: evict oldest agents' receipts if total exceeds limit
+        // Global cap: evict across buckets until total is within limit
         drop(entry);
         let total: usize = self.receipts.iter().map(|e| e.value().len()).sum();
         if total > Self::MAX_RECEIPTS {
-            // Simple eviction: remove oldest entries from first agent found
-            if let Some(mut oldest) = self.receipts.iter_mut().next() {
-                let to_remove = total - Self::MAX_RECEIPTS;
-                let drain = to_remove.min(oldest.value().len());
-                oldest.value_mut().drain(..drain);
+            let mut remaining = total - Self::MAX_RECEIPTS;
+            for mut bucket in self.receipts.iter_mut() {
+                if remaining == 0 {
+                    break;
+                }
+                let drain = remaining.min(bucket.value().len());
+                if drain > 0 {
+                    bucket.value_mut().drain(..drain);
+                    remaining -= drain;
+                }
             }
         }
     }
@@ -546,6 +567,25 @@ impl OpenFangKernel {
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
         );
 
+        // Build shared HTTP clients once — reused by all drivers, adapters, and tools.
+        // LLM calls can take 60-120s (especially via local proxies or complex tool-use),
+        // so the default timeout must accommodate slower providers.
+        let shared_http_clients = SharedHttpClients {
+            default: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .pool_max_idle_per_host(20)
+                .pool_idle_timeout(std::time::Duration::from_secs(90))
+                .tcp_keepalive(std::time::Duration::from_secs(30))
+                .build()
+                .expect("Failed to build default HTTP client"),
+            streaming: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(0))
+                .pool_idle_timeout(std::time::Duration::from_secs(90))
+                .tcp_keepalive(std::time::Duration::from_secs(30))
+                .build()
+                .expect("Failed to build streaming HTTP client"),
+        };
+
         // Create LLM driver
         let driver_config = DriverConfig {
             provider: config.default_model.provider.clone(),
@@ -775,10 +815,12 @@ impl OpenFangKernel {
             search: openfang_runtime::web_search::WebSearchEngine::new(
                 config.web.clone(),
                 web_cache.clone(),
+                shared_http_clients.default.clone(),
             ),
             fetch: openfang_runtime::web_fetch::WebFetchEngine::new(
                 config.web.fetch.clone(),
                 web_cache,
+                shared_http_clients.default.clone(),
             ),
         };
 
@@ -843,9 +885,9 @@ impl OpenFangKernel {
 
         // Initialize media understanding engine
         let media_engine =
-            openfang_runtime::media_understanding::MediaEngine::new(config.media.clone());
-        let tts_engine = openfang_runtime::tts::TtsEngine::new(config.tts.clone());
-        let mut pairing = crate::pairing::PairingManager::new(config.pairing.clone());
+            openfang_runtime::media_understanding::MediaEngine::new(config.media.clone(), shared_http_clients.default.clone());
+        let tts_engine = openfang_runtime::tts::TtsEngine::new(config.tts.clone(), shared_http_clients.default.clone());
+        let mut pairing = crate::pairing::PairingManager::new(config.pairing.clone(), shared_http_clients.default.clone());
 
         // Load paired devices from database and set up persistence callback
         if config.pairing.enabled {
@@ -915,13 +957,16 @@ impl OpenFangKernel {
             }
         }
 
-        // Initialize execution approval manager
-        let approval_manager = crate::approval::ApprovalManager::new(config.approval.clone());
+        // Initialize execution approval manager — apply shorthands (auto_approve clears list)
+        let mut approval_policy = config.approval.clone();
+        approval_policy.apply_shorthands();
+        let approval_manager = crate::approval::ApprovalManager::new(approval_policy);
 
         // Initialize binding/broadcast/auto-reply from config
         let initial_bindings = config.bindings.clone();
         let initial_broadcast = config.broadcast.clone();
         let auto_reply_engine = crate::auto_reply::AutoReplyEngine::new(config.auto_reply.clone());
+        let workflows_path = config.home_dir.join("workflows.json");
 
         let kernel = Self {
             config,
@@ -931,7 +976,7 @@ impl OpenFangKernel {
             scheduler: AgentScheduler::new(),
             memory: memory.clone(),
             supervisor,
-            workflows: WorkflowEngine::new(),
+            workflows: WorkflowEngine::with_persistence(workflows_path),
             triggers: TriggerEngine::new(),
             background,
             audit_log: Arc::new(AuditLog::new()),
@@ -964,14 +1009,23 @@ impl OpenFangKernel {
             auto_reply_engine,
             hooks: openfang_runtime::hooks::HookRegistry::new(),
             process_manager: Arc::new(openfang_runtime::process_manager::ProcessManager::new(5)),
-            peer_registry: None,
-            peer_node: None,
+            peer_registry: OnceLock::new(),
+            peer_node: OnceLock::new(),
             booted_at: std::time::Instant::now(),
             whatsapp_gateway_pid: Arc::new(std::sync::Mutex::new(None)),
+            whatsapp_gateway_health: Arc::new(std::sync::RwLock::new(None)),
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
+            vault: Arc::new(std::sync::RwLock::new(None)),
+            http_clients: shared_http_clients,
             self_handle: OnceLock::new(),
         };
+
+        // Initialize credential vault (decrypt secrets, migrate from secrets.env)
+        kernel.init_vault();
+
+        // Load persisted workflows from ~/.openfang/workflows.json
+        kernel.workflows.load_persisted_sync();
 
         // Restore persisted agents from SQLite
         match kernel.memory.load_all_agents() {
@@ -1106,6 +1160,29 @@ impl OpenFangKernel {
             }
         }
 
+        // Reconcile restored agents with hand registry — mark hands as active
+        // if their agent was restored from SQLite.
+        {
+            let hand_defs: Vec<(String, String)> = kernel
+                .hand_registry
+                .list_definitions()
+                .iter()
+                .map(|d| (d.id.clone(), d.agent.name.clone()))
+                .collect();
+
+            for entry in kernel.registry.list() {
+                for (hand_id, hand_agent_name) in &hand_defs {
+                    if entry.name == *hand_agent_name {
+                        kernel.hand_registry.register_restored(
+                            hand_id,
+                            entry.id,
+                            &entry.name,
+                        );
+                    }
+                }
+            }
+        }
+
         // If no agents exist (fresh install), spawn a default assistant
         if kernel.registry.list().is_empty() {
             info!("No agents found — spawning default assistant");
@@ -1150,6 +1227,86 @@ impl OpenFangKernel {
 
         info!("OpenFang kernel booted successfully");
         Ok(kernel)
+    }
+
+    /// Initialize the credential vault — auto-creates if needed, migrates from secrets.env.
+    ///
+    /// This is called once during boot, after dotenv loading but before agents start.
+    /// If the vault cannot be initialized or unlocked, the system continues working
+    /// with plaintext secrets in secrets.env (graceful degradation).
+    fn init_vault(&self) {
+        let vault_path = self.config.home_dir.join("vault.enc");
+        let secrets_env_path = self.config.home_dir.join("secrets.env");
+
+        let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path.clone());
+
+        // Initialize or unlock
+        if !vault.exists() {
+            // First time — create vault
+            if let Err(e) = vault.init() {
+                warn!("Could not initialize credential vault: {e}. Secrets will remain in plaintext.");
+                return;
+            }
+            info!("Credential vault created at {:?}", vault_path);
+        } else {
+            // Existing vault — try to unlock
+            if let Err(e) = vault.unlock() {
+                warn!("Could not unlock credential vault: {e}. Falling back to secrets.env.");
+                return;
+            }
+        }
+
+        // Migrate entries from secrets.env if it exists
+        if secrets_env_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&secrets_env_path) {
+                let mut migrated = 0u32;
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
+                    }
+                    if let Some(eq_pos) = trimmed.find('=') {
+                        let key = trimmed[..eq_pos].trim();
+                        let value = trimmed[eq_pos + 1..].trim();
+                        if !key.is_empty() && vault.get(key).is_none() {
+                            if let Err(e) = vault.set(
+                                key.to_string(),
+                                zeroize::Zeroizing::new(value.to_string()),
+                            ) {
+                                warn!("Failed to migrate secret {key} to vault: {e}");
+                            } else {
+                                migrated += 1;
+                            }
+                        }
+                    }
+                }
+                if migrated > 0 {
+                    info!("Migrated {migrated} secrets from secrets.env to encrypted vault");
+                    // Rename the old file so it's not used again
+                    let backup = secrets_env_path.with_extension("env.migrated");
+                    if let Err(e) = std::fs::rename(&secrets_env_path, &backup) {
+                        warn!("Could not rename secrets.env: {e}");
+                    }
+                }
+            }
+        }
+
+        // Load all vault secrets into process environment.
+        // SAFETY: env var mutation runs once at startup before any concurrent HTTP
+        // handlers are active, so there is no data race. We use `unsafe` to be
+        // explicit about the env mutation (mirrors routes.rs ENV_MUTEX pattern).
+        for key in vault.list_keys() {
+            if let Some(value) = vault.get(key) {
+                if std::env::var(key).is_err() {
+                    unsafe { std::env::set_var(key, value.as_str()); }
+                }
+            }
+        }
+
+        // Store in kernel
+        if let Ok(mut guard) = self.vault.write() {
+            *guard = Some(vault);
+        }
     }
 
     /// Spawn a new agent from a manifest, optionally linking to a parent agent.
@@ -1415,6 +1572,255 @@ impl OpenFangKernel {
                 Err(e)
             }
         }
+    }
+
+    /// Send a message to an agent using a fresh ephemeral session.
+    ///
+    /// Unlike `send_message`, this creates a brand-new empty session so the
+    /// agent starts with zero conversation history. Used by workflow steps to
+    /// prevent session bloat from accumulating across runs.
+    pub async fn send_message_ephemeral(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+    ) -> KernelResult<AgentLoopResult> {
+        let handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+
+        // Enforce quota before running the agent loop
+        self.scheduler
+            .check_quota(agent_id)
+            .map_err(KernelError::OpenFang)?;
+
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+
+        // Check metering quota
+        self.metering
+            .check_quota(agent_id, &entry.manifest.resources)
+            .map_err(KernelError::OpenFang)?;
+
+        // Create a fresh ephemeral session — no prior conversation history
+        let ephemeral_session_id = SessionId::new();
+        let mut session = openfang_memory::session::Session {
+            id: ephemeral_session_id,
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: Some("workflow-ephemeral".to_string()),
+        };
+
+        let tools = self.available_tools(agent_id);
+        let tools = entry.mode.filter_tools(tools);
+
+        // Apply model routing if configured
+        let mut manifest = entry.manifest.clone();
+
+        // Lazy backfill workspace
+        if manifest.workspace.is_none() {
+            let workspace_dir = self.config.effective_workspaces_dir().join(&manifest.name);
+            if let Err(e) = ensure_workspace(&workspace_dir) {
+                warn!(agent_id = %agent_id, "Failed to backfill workspace: {e}");
+            } else {
+                manifest.workspace = Some(workspace_dir);
+                let _ = self
+                    .registry
+                    .update_workspace(agent_id, manifest.workspace.clone());
+            }
+        }
+
+        // Build structured system prompt
+        {
+            let mcp_tool_count = self.mcp_tools.lock().map(|t| t.len()).unwrap_or(0);
+            let shared_id = shared_memory_agent_id();
+            let user_name = self
+                .memory
+                .structured_get(shared_id, "user_name")
+                .ok()
+                .flatten()
+                .and_then(|v| v.as_str().map(String::from));
+
+            let peer_agents: Vec<(String, String, String)> = self
+                .registry
+                .list()
+                .iter()
+                .map(|a| {
+                    (
+                        a.name.clone(),
+                        format!("{:?}", a.state),
+                        a.manifest.model.model.clone(),
+                    )
+                })
+                .collect();
+
+            let prompt_ctx = openfang_runtime::prompt_builder::PromptContext {
+                agent_name: manifest.name.clone(),
+                agent_description: manifest.description.clone(),
+                base_system_prompt: manifest.model.system_prompt.clone(),
+                granted_tools: tools.iter().map(|t| t.name.clone()).collect(),
+                recalled_memories: vec![],
+                skill_summary: self.build_skill_summary(&manifest.skills),
+                skill_prompt_context: self.collect_prompt_context(&manifest.skills),
+                mcp_summary: if mcp_tool_count > 0 {
+                    self.build_mcp_summary(&manifest.mcp_servers)
+                } else {
+                    String::new()
+                },
+                workspace_path: manifest.workspace.as_ref().map(|p| p.display().to_string()),
+                soul_md: manifest
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| read_identity_file(w, "SOUL.md")),
+                user_md: manifest
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| read_identity_file(w, "USER.md")),
+                memory_md: manifest
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| read_identity_file(w, "MEMORY.md")),
+                canonical_context: self
+                    .memory
+                    .canonical_context(agent_id, None)
+                    .ok()
+                    .and_then(|(s, _)| s),
+                user_name,
+                channel_type: None,
+                is_subagent: manifest
+                    .metadata
+                    .get("is_subagent")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                is_autonomous: manifest.autonomous.is_some(),
+                agents_md: manifest
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| read_identity_file(w, "AGENTS.md")),
+                bootstrap_md: manifest
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| read_identity_file(w, "BOOTSTRAP.md")),
+                workspace_context: manifest.workspace.as_ref().map(|w| {
+                    let mut ws_ctx =
+                        openfang_runtime::workspace_context::WorkspaceContext::detect(w);
+                    ws_ctx.build_context_section()
+                }),
+                identity_md: manifest
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| read_identity_file(w, "IDENTITY.md")),
+                heartbeat_md: if manifest.autonomous.is_some() {
+                    manifest
+                        .workspace
+                        .as_ref()
+                        .and_then(|w| read_identity_file(w, "HEARTBEAT.md"))
+                } else {
+                    None
+                },
+                peer_agents,
+                current_date: Some(chrono::Local::now().format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)").to_string()),
+            };
+            manifest.model.system_prompt =
+                openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
+            if let Some(cc_msg) =
+                openfang_runtime::prompt_builder::build_canonical_context_message(&prompt_ctx)
+            {
+                manifest.metadata.insert(
+                    "canonical_context_msg".to_string(),
+                    serde_json::Value::String(cc_msg),
+                );
+            }
+        }
+
+        let driver = self.resolve_driver(&manifest)?;
+
+        let ctx_window = self.model_catalog.read().ok().and_then(|cat| {
+            cat.find_model(&manifest.model.model)
+                .map(|m| m.context_window as usize)
+        });
+
+        let mut skill_snapshot = self
+            .skill_registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot();
+
+        if let Some(ref workspace) = manifest.workspace {
+            let ws_skills = workspace.join("skills");
+            if ws_skills.exists() {
+                if let Err(e) = skill_snapshot.load_workspace_skills(&ws_skills) {
+                    warn!(agent_id = %agent_id, "Failed to load workspace skills: {e}");
+                }
+            }
+        }
+
+        let message_with_links = if let Some(link_ctx) =
+            openfang_runtime::link_understanding::build_link_context(message, &self.config.links)
+        {
+            format!("{message}{link_ctx}")
+        } else {
+            message.to_string()
+        };
+
+        info!(
+            agent = %entry.name,
+            agent_id = %agent_id,
+            session_id = %ephemeral_session_id,
+            "Workflow ephemeral session — fresh context, zero prior messages"
+        );
+
+        let result = run_agent_loop(
+            &manifest,
+            &message_with_links,
+            &mut session,
+            &self.memory,
+            driver,
+            &tools,
+            handle,
+            Some(&skill_snapshot),
+            Some(&self.mcp_connections),
+            Some(&self.web_ctx),
+            Some(&self.browser_ctx),
+            self.embedding_driver.as_deref(),
+            manifest.workspace.as_deref(),
+            None,
+            Some(&self.media_engine),
+            if self.config.tts.enabled {
+                Some(&self.tts_engine)
+            } else {
+                None
+            },
+            if self.config.docker.enabled {
+                Some(&self.config.docker)
+            } else {
+                None
+            },
+            Some(&self.hooks),
+            ctx_window,
+            Some(&self.process_manager),
+        )
+        .await
+        .map_err(KernelError::OpenFang)?;
+
+        // Record token usage for quota tracking
+        self.scheduler.record_usage(agent_id, &result.total_usage);
+
+        // Audit trail
+        self.audit_log.record(
+            agent_id.to_string(),
+            openfang_runtime::audit::AuditAction::AgentMessage,
+            format!(
+                "workflow_ephemeral tokens_in={}, tokens_out={}",
+                result.total_usage.input_tokens, result.total_usage.output_tokens
+            ),
+            "ok",
+        );
+
+        Ok(result)
     }
 
     /// Send a message to an agent with streaming responses.
@@ -3319,9 +3725,10 @@ impl OpenFangKernel {
             }
         };
 
-        // Message sender: sends to agent and returns (output, in_tokens, out_tokens)
+        // Message sender: uses ephemeral sessions so each workflow step starts
+        // with a clean conversation context (prevents session bloat across runs).
         let send_message = |agent_id: AgentId, message: String| async move {
-            self.send_message(agent_id, &message)
+            self.send_message_ephemeral(agent_id, &message)
                 .await
                 .map(|r| {
                     (
@@ -3429,7 +3836,7 @@ impl OpenFangKernel {
 
                 for (provider_id, base_url) in &local_providers {
                     let result =
-                        openfang_runtime::provider_health::probe_provider(provider_id, base_url)
+                        openfang_runtime::provider_health::probe_provider(provider_id, base_url, &kernel.http_clients.default)
                             .await;
                     if result.reachable {
                         info!(
@@ -3620,6 +4027,44 @@ impl OpenFangKernel {
                                     }
                                 }
                             }
+                            openfang_types::scheduler::CronAction::Workflow {
+                                ref workflow_id,
+                                ref input,
+                            } => {
+                                tracing::debug!(job = %job_name, workflow = %workflow_id, "Cron: firing workflow");
+                                let wf_input = input.clone();
+                                let wf_id = match uuid::Uuid::parse_str(workflow_id) {
+                                    Ok(uid) => WorkflowId(uid),
+                                    Err(_) => {
+                                        tracing::error!(job = %job_name, "Cron: invalid workflow_id");
+                                        kernel.cron_scheduler.record_failure(
+                                            job_id,
+                                            "invalid workflow_id",
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let k = Arc::clone(&kernel);
+                                let delivery = job.delivery.clone();
+                                let jn = job_name.clone();
+                                tokio::spawn(async move {
+                                    match k.run_workflow(wf_id, wf_input).await {
+                                        Ok((_run_id, output)) => {
+                                            tracing::info!(job = %jn, "Cron workflow completed successfully");
+                                            cron_deliver_response(
+                                                &k, agent_id, &output, &delivery,
+                                            )
+                                            .await;
+                                            k.cron_scheduler.record_success(job_id);
+                                        }
+                                        Err(e) => {
+                                            let err_msg = format!("{e}");
+                                            tracing::warn!(job = %jn, error = %err_msg, "Cron workflow failed");
+                                            k.cron_scheduler.record_failure(job_id, &err_msg);
+                                        }
+                                    }
+                                });
+                            }
                         }
                     }
 
@@ -3652,7 +4097,7 @@ impl OpenFangKernel {
                 let kernel = Arc::clone(self);
                 let agents = a2a_config.external_agents.clone();
                 tokio::spawn(async move {
-                    let discovered = openfang_runtime::a2a::discover_external_agents(&agents).await;
+                    let discovered = openfang_runtime::a2a::discover_external_agents(&agents, kernel.http_clients.default.clone()).await;
                     if let Ok(mut store) = kernel.a2a_external_agents.lock() {
                         *store = discovered;
                     }
@@ -3665,6 +4110,12 @@ impl OpenFangKernel {
             let kernel = Arc::clone(self);
             tokio::spawn(async move {
                 crate::whatsapp_gateway::start_whatsapp_gateway(&kernel).await;
+            });
+
+            // Start WhatsApp gateway health monitor (polls /health, triggers reconnect)
+            let kernel2 = Arc::clone(self);
+            tokio::spawn(async move {
+                crate::whatsapp_gateway::run_whatsapp_health_loop(&kernel2).await;
             });
         }
     }
@@ -3723,14 +4174,8 @@ impl OpenFangKernel {
                     "OFP peer node started"
                 );
 
-                // SAFETY: These fields are only written once during startup.
-                // We use unsafe to set them because start_background_agents runs
-                // after the Arc is created and the kernel is otherwise immutable.
-                let self_ptr = Arc::as_ptr(self) as *mut OpenFangKernel;
-                unsafe {
-                    (*self_ptr).peer_registry = Some(registry.clone());
-                    (*self_ptr).peer_node = Some(node.clone());
-                }
+                let _ = self.peer_registry.set(registry.clone());
+                let _ = self.peer_node.set(node.clone());
 
                 // Connect to bootstrap peers
                 for peer_addr_str in &self.config.network.bootstrap_peers {
@@ -4040,7 +4485,7 @@ impl OpenFangKernel {
                 env: server_config.env.clone(),
             };
 
-            match McpConnection::connect(mcp_config).await {
+            match McpConnection::connect(mcp_config, self.http_clients.default.clone()).await {
                 Ok(conn) => {
                     let tool_count = conn.tools().len();
                     // Cache tool definitions
@@ -4150,7 +4595,7 @@ impl OpenFangKernel {
 
             self.extension_health.register(&server_config.name);
 
-            match McpConnection::connect(mcp_config).await {
+            match McpConnection::connect(mcp_config, self.http_clients.default.clone()).await {
                 Ok(conn) => {
                     let tool_count = conn.tools().len();
                     if let Ok(mut tools) = self.mcp_tools.lock() {
@@ -4266,7 +4711,7 @@ impl OpenFangKernel {
             env: server_config.env.clone(),
         };
 
-        match McpConnection::connect(mcp_config).await {
+        match McpConnection::connect(mcp_config, self.http_clients.default.clone()).await {
             Ok(conn) => {
                 let tool_count = conn.tools().len();
                 if let Ok(mut tools) = self.mcp_tools.lock() {
@@ -4746,8 +5191,9 @@ fn infer_provider_from_model(model: &str) -> Option<String> {
             "minimax" | "gemini" | "anthropic" | "openai" | "groq" | "deepseek" | "mistral"
             | "cohere" | "xai" | "ollama" | "together" | "fireworks" | "perplexity"
             | "cerebras" | "sambanova" | "replicate" | "huggingface" | "ai21" | "codex"
-            | "claude-code" | "copilot" | "github-copilot" | "qwen" | "zhipu" | "zai" | "moonshot"
-            | "openrouter" | "volcengine" | "doubao" | "dashscope" => {
+            | "claude-code" | "claude-code-proxy" | "copilot" | "github-copilot" | "qwen"
+            | "zhipu" | "zai" | "moonshot" | "openrouter" | "volcengine" | "doubao"
+            | "dashscope" => {
                 return Some(prefix.to_string());
             }
             _ => {}
@@ -5708,5 +6154,36 @@ mod tests {
         assert!(!caps
             .iter()
             .any(|c| matches!(c, Capability::ToolInvoke(name) if name == "shell_exec")));
+    }
+
+    #[test]
+    fn test_receipt_eviction_respects_global_cap() {
+        let tracker = DeliveryTracker::new();
+        let max = DeliveryTracker::MAX_RECEIPTS;
+        let per_agent = 50;
+        let num_agents = (max / per_agent) + 20;
+
+        for i in 0..num_agents {
+            let agent_id = AgentId(uuid::Uuid::new_v4());
+            for _ in 0..per_agent {
+                tracker.record(
+                    agent_id,
+                    openfang_channels::types::DeliveryReceipt {
+                        message_id: String::new(),
+                        channel: "test".to_string(),
+                        recipient: format!("agent-{i}"),
+                        status: openfang_channels::types::DeliveryStatus::Sent,
+                        timestamp: chrono::Utc::now(),
+                        error: None,
+                    },
+                );
+            }
+        }
+
+        let total: usize = tracker.receipts.iter().map(|e| e.value().len()).sum();
+        assert!(
+            total <= max,
+            "Total receipts ({total}) should be <= MAX_RECEIPTS ({max})"
+        );
     }
 }

@@ -28,8 +28,6 @@ pub fn is_local_provider(provider: &str) -> bool {
     )
 }
 
-/// Probe timeout for local provider health checks.
-const PROBE_TIMEOUT_SECS: u64 = 5;
 
 /// Probe a provider's health by hitting its model listing endpoint.
 ///
@@ -38,21 +36,8 @@ const PROBE_TIMEOUT_SECS: u64 = 5;
 ///
 /// `base_url` should be the provider's base URL from the catalog (e.g.,
 /// `http://localhost:11434/v1` for Ollama, `http://localhost:8000/v1` for vLLM).
-pub async fn probe_provider(provider: &str, base_url: &str) -> ProbeResult {
+pub async fn probe_provider(provider: &str, base_url: &str, client: &reqwest::Client) -> ProbeResult {
     let start = Instant::now();
-
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(PROBE_TIMEOUT_SECS))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return ProbeResult {
-                error: Some(format!("Failed to build HTTP client: {e}")),
-                ..Default::default()
-            };
-        }
-    };
 
     let lower = provider.to_lowercase();
 
@@ -150,13 +135,9 @@ pub async fn probe_model(
     base_url: &str,
     model: &str,
     api_key: Option<&str>,
+    client: &reqwest::Client,
 ) -> Result<u64, String> {
     let start = Instant::now();
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
@@ -223,14 +204,9 @@ mod tests {
     #[tokio::test]
     async fn test_probe_unreachable_returns_error() {
         // Probe a port that's almost certainly not running a server
-        let result = probe_provider("ollama", "http://127.0.0.1:19999").await;
+        let result = probe_provider("ollama", "http://127.0.0.1:19999", &reqwest::Client::new()).await;
         assert!(!result.reachable);
         assert!(result.error.is_some());
-    }
-
-    #[test]
-    fn test_probe_timeout_value() {
-        assert_eq!(PROBE_TIMEOUT_SECS, 5);
     }
 
     #[test]
@@ -251,7 +227,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_probe_model_unreachable() {
-        let result = probe_model("test", "http://127.0.0.1:19998/v1", "test-model", None).await;
+        let result = probe_model("test", "http://127.0.0.1:19998/v1", "test-model", None, &reqwest::Client::new()).await;
         assert!(result.is_err());
     }
 }

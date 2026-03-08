@@ -53,6 +53,7 @@ impl RocketChatAdapter {
         token: String,
         user_id: String,
         allowed_channels: Vec<String>,
+        client: reqwest::Client,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let server_url = server_url.trim_end_matches('/').to_string();
@@ -61,7 +62,7 @@ impl RocketChatAdapter {
             token: Zeroizing::new(token),
             user_id,
             allowed_channels,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             last_timestamps: Arc::new(RwLock::new(HashMap::new())),
@@ -393,6 +394,7 @@ mod tests {
             "test-token".to_string(),
             "user123".to_string(),
             vec!["room1".to_string()],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.name(), "rocketchat");
         assert_eq!(
@@ -408,6 +410,7 @@ mod tests {
             "tok".to_string(),
             "uid".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.server_url, "https://chat.example.com");
     }
@@ -419,6 +422,7 @@ mod tests {
             "tok".to_string(),
             "uid".to_string(),
             vec!["room1".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed_channel("room1"));
         assert!(!adapter.is_allowed_channel("room2"));
@@ -428,6 +432,7 @@ mod tests {
             "tok".to_string(),
             "uid".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         assert!(open.is_allowed_channel("any-room"));
     }
@@ -439,6 +444,7 @@ mod tests {
             "my-token".to_string(),
             "user-42".to_string(),
             vec![],
+            reqwest::Client::new(),
         );
         // Verify the builder can be constructed (headers are added internally)
         let builder = adapter.client.get("https://example.com");

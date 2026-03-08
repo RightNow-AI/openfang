@@ -46,13 +46,13 @@ impl DingTalkAdapter {
     /// * `access_token` - Robot access token from DingTalk.
     /// * `secret` - Signing secret for request verification.
     /// * `webhook_port` - Local port to listen for DingTalk callbacks.
-    pub fn new(access_token: String, secret: String, webhook_port: u16) -> Self {
+    pub fn new(access_token: String, secret: String, webhook_port: u16, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             access_token: Zeroizing::new(access_token),
             secret: Zeroizing::new(secret),
             webhook_port,
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn test_dingtalk_adapter_creation() {
         let adapter =
-            DingTalkAdapter::new("test-token".to_string(), "test-secret".to_string(), 8080);
+            DingTalkAdapter::new("test-token".to_string(), "test-secret".to_string(), 8080, reqwest::Client::new());
         assert_eq!(adapter.name(), "dingtalk");
         assert_eq!(
             adapter.channel_type(),
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_dingtalk_send_url_contains_token_and_sign() {
-        let adapter = DingTalkAdapter::new("my-token".to_string(), "my-secret".to_string(), 8080);
+        let adapter = DingTalkAdapter::new("my-token".to_string(), "my-secret".to_string(), 8080, reqwest::Client::new());
         let url = adapter.build_send_url();
         assert!(url.contains("access_token=my-token"));
         assert!(url.contains("timestamp="));

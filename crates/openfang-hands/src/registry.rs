@@ -334,6 +334,35 @@ impl HandRegistry {
         Ok(())
     }
 
+    /// Register a hand instance for an agent that was restored from persistent
+    /// storage (e.g. SQLite). This reconciles the in-memory hand registry with
+    /// agents that were activated in a previous daemon session.
+    pub fn register_restored(
+        &self,
+        hand_id: &str,
+        agent_id: AgentId,
+        agent_name: &str,
+    ) -> Option<Uuid> {
+        // Only register if the hand definition exists
+        if !self.definitions.contains_key(hand_id) {
+            return None;
+        }
+
+        // Skip if already registered for this hand
+        for entry in self.instances.iter() {
+            if entry.hand_id == hand_id && entry.status == HandStatus::Active {
+                return Some(entry.instance_id);
+            }
+        }
+
+        let mut instance = HandInstance::new(hand_id, agent_name, HashMap::new());
+        instance.agent_id = Some(agent_id);
+        let id = instance.instance_id;
+        self.instances.insert(id, instance);
+        info!(hand = %hand_id, instance = %id, agent = %agent_name, "Reconciled restored hand instance");
+        Some(id)
+    }
+
     /// Mark an instance as errored.
     pub fn set_error(&self, instance_id: Uuid, message: String) -> HandResult<()> {
         let mut entry = self
@@ -442,7 +471,7 @@ mod tests {
     fn load_bundled_hands() {
         let reg = HandRegistry::new();
         let count = reg.load_bundled();
-        assert_eq!(count, 7);
+        assert_eq!(count, 13);
         assert!(!reg.list_definitions().is_empty());
 
         // Clip hand should be loaded
@@ -460,6 +489,14 @@ mod tests {
 
         // Browser hand should be loaded
         assert!(reg.get_definition("browser").is_some());
+
+        // New hands should be loaded
+        assert!(reg.get_definition("reddit").is_some());
+        assert!(reg.get_definition("linkedin").is_some());
+        assert!(reg.get_definition("strategist").is_some());
+        assert!(reg.get_definition("apitester").is_some());
+        assert!(reg.get_definition("devops").is_some());
+        assert!(reg.get_definition("analytics").is_some());
     }
 
     #[test]

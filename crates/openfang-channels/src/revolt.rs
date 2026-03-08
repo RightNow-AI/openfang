@@ -62,16 +62,17 @@ impl RevoltAdapter {
     ///
     /// # Arguments
     /// * `bot_token` - Revolt bot token for authentication.
-    pub fn new(bot_token: String) -> Self {
+    pub fn new(bot_token: String, client: reqwest::Client) -> Self {
         Self::with_urls(
             bot_token,
             DEFAULT_API_URL.to_string(),
             DEFAULT_WS_URL.to_string(),
+            client,
         )
     }
 
     /// Create a new Revolt adapter with custom API and WebSocket URLs.
-    pub fn with_urls(bot_token: String, api_url: String, ws_url: String) -> Self {
+    pub fn with_urls(bot_token: String, api_url: String, ws_url: String, client: reqwest::Client) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let api_url = api_url.trim_end_matches('/').to_string();
         let ws_url = ws_url.trim_end_matches('/').to_string();
@@ -80,7 +81,7 @@ impl RevoltAdapter {
             api_url,
             ws_url,
             allowed_channels: Vec::new(),
-            client: reqwest::Client::new(),
+            client,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             bot_user_id: Arc::new(RwLock::new(None)),
@@ -88,8 +89,8 @@ impl RevoltAdapter {
     }
 
     /// Create a new Revolt adapter with channel restrictions.
-    pub fn with_channels(bot_token: String, allowed_channels: Vec<String>) -> Self {
-        let mut adapter = Self::new(bot_token);
+    pub fn with_channels(bot_token: String, allowed_channels: Vec<String>, client: reqwest::Client) -> Self {
+        let mut adapter = Self::new(bot_token, client);
         adapter.allowed_channels = allowed_channels;
         adapter
     }
@@ -513,7 +514,7 @@ mod tests {
 
     #[test]
     fn test_revolt_adapter_creation() {
-        let adapter = RevoltAdapter::new("bot-token-123".to_string());
+        let adapter = RevoltAdapter::new("bot-token-123".to_string(), reqwest::Client::new());
         assert_eq!(adapter.name(), "revolt");
         assert_eq!(
             adapter.channel_type(),
@@ -523,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_revolt_default_urls() {
-        let adapter = RevoltAdapter::new("tok".to_string());
+        let adapter = RevoltAdapter::new("tok".to_string(), reqwest::Client::new());
         assert_eq!(adapter.api_url, "https://api.revolt.chat");
         assert_eq!(adapter.ws_url, "wss://ws.revolt.chat");
     }
@@ -534,6 +535,7 @@ mod tests {
             "tok".to_string(),
             "https://api.revolt.example.com/".to_string(),
             "wss://ws.revolt.example.com/".to_string(),
+            reqwest::Client::new(),
         );
         assert_eq!(adapter.api_url, "https://api.revolt.example.com");
         assert_eq!(adapter.ws_url, "wss://ws.revolt.example.com");
@@ -544,6 +546,7 @@ mod tests {
         let adapter = RevoltAdapter::with_channels(
             "tok".to_string(),
             vec!["ch1".to_string(), "ch2".to_string()],
+            reqwest::Client::new(),
         );
         assert!(adapter.is_allowed_channel("ch1"));
         assert!(adapter.is_allowed_channel("ch2"));
@@ -552,13 +555,13 @@ mod tests {
 
     #[test]
     fn test_revolt_empty_channels_allows_all() {
-        let adapter = RevoltAdapter::new("tok".to_string());
+        let adapter = RevoltAdapter::new("tok".to_string(), reqwest::Client::new());
         assert!(adapter.is_allowed_channel("any-channel"));
     }
 
     #[test]
     fn test_revolt_auth_header() {
-        let adapter = RevoltAdapter::new("my-revolt-token".to_string());
+        let adapter = RevoltAdapter::new("my-revolt-token".to_string(), reqwest::Client::new());
         let builder = adapter.client.get("https://example.com");
         let builder = adapter.auth_header(builder);
         let request = builder.build().unwrap();

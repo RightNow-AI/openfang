@@ -47,6 +47,9 @@ pub const QIANFAN_BASE_URL: &str = "https://qianfan.baidubce.com/v2";
 pub const VOLCENGINE_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/v3";
 pub const VOLCENGINE_CODING_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/coding/v3";
 
+// ── Claude Code Proxy ────────────────────────────────────────────
+pub const CLAUDE_CODE_PROXY_BASE_URL: &str = "http://localhost:3456";
+
 // ── AWS Bedrock ───────────────────────────────────────────────────
 pub const BEDROCK_BASE_URL: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";
 
