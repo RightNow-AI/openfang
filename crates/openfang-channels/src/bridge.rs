@@ -5,7 +5,10 @@
 
 use crate::formatter;
 use crate::router::AgentRouter;
-use crate::types::{ChannelAdapter, ChannelContent, ChannelMessage, ChannelUser};
+use crate::types::{
+    AgentPhase, ChannelAdapter, ChannelContent, ChannelMessage, ChannelUser, LifecycleReaction,
+    default_phase_emoji,
+};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
@@ -653,15 +656,53 @@ async fn dispatch_message(
     // Send typing indicator (best-effort)
     let _ = adapter.send_typing(&message.sender).await;
 
+    // Send "queued" reaction so user knows we received the message (best-effort)
+    let msg_id = &message.platform_message_id;
+    let _ = adapter
+        .send_reaction(
+            &message.sender,
+            msg_id,
+            &LifecycleReaction {
+                phase: AgentPhase::Queued,
+                emoji: default_phase_emoji(&AgentPhase::Queued).to_string(),
+                remove_previous: false,
+            },
+        )
+        .await;
+
     // Send to agent and relay response
     match handle.send_message(agent_id, &text).await {
         Ok(response) => {
+            // Update reaction to "done" ✅
+            let _ = adapter
+                .send_reaction(
+                    &message.sender,
+                    msg_id,
+                    &LifecycleReaction {
+                        phase: AgentPhase::Done,
+                        emoji: default_phase_emoji(&AgentPhase::Done).to_string(),
+                        remove_previous: true,
+                    },
+                )
+                .await;
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
             handle
                 .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None)
                 .await;
         }
         Err(e) => {
+            // Update reaction to "error" ❌
+            let _ = adapter
+                .send_reaction(
+                    &message.sender,
+                    msg_id,
+                    &LifecycleReaction {
+                        phase: AgentPhase::Error,
+                        emoji: default_phase_emoji(&AgentPhase::Error).to_string(),
+                        remove_previous: true,
+                    },
+                )
+                .await;
             warn!("Agent error for {agent_id}: {e}");
             let err_msg = format!("Agent error: {e}");
             send_response(
