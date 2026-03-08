@@ -43,6 +43,7 @@ Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operati
 | Guide | Description |
 |-------|-------------|
 | [Production Checklist](production-checklist.md) | Every step before tagging v0.1.0 -- signing keys, secrets, verification |
+| [PR Quality Gates](pr-quality-gates.md) | Mandatory review-first PR workflow, slice rules, and branch protection baseline |
 
 ## Additional Resources
 
