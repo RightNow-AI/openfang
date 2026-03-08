@@ -242,20 +242,21 @@ pub fn resolve_attachments(
 pub fn inject_attachments_into_session(
     kernel: &OpenFangKernel,
     agent_id: AgentId,
-    session_id: Option<SessionId>,
+    resolved_session_id: SessionId,
     image_blocks: Vec<openfang_types::message::ContentBlock>,
-) {
+) -> Result<(), String> {
     use openfang_types::message::{Message, MessageContent, Role};
 
-    let entry = match kernel.registry.get(agent_id) {
-        Some(e) => e,
-        None => return,
-    };
-
-    let resolved_session_id = session_id.unwrap_or(entry.session_id);
-
     let mut session = match kernel.memory.get_session(resolved_session_id) {
-        Ok(Some(s)) => s,
+        Ok(Some(s)) => {
+            if s.agent_id != agent_id {
+                return Err(format!(
+                    "Session {} does not belong to agent {}",
+                    resolved_session_id, agent_id
+                ));
+            }
+            s
+        }
         _ => openfang_memory::session::Session {
             id: resolved_session_id,
             agent_id,
@@ -270,12 +271,13 @@ pub fn inject_attachments_into_session(
         content: MessageContent::Blocks(image_blocks),
     });
 
-    if let Err(e) = kernel.memory.save_session(&session) {
-        tracing::warn!(error = %e, "Failed to save session with image attachments");
-    }
+    kernel
+        .memory
+        .save_session(&session)
+        .map_err(|e| format!("Failed to save session with image attachments: {e}"))
 }
 
-fn parse_requested_session_id(
+pub(crate) fn parse_requested_session_id(
     session_id: Option<&str>,
 ) -> Result<Option<SessionId>, (StatusCode, Json<serde_json::Value>)> {
     match session_id {
@@ -287,6 +289,47 @@ fn parse_requested_session_id(
             )),
         },
         None => Ok(None),
+    }
+}
+
+pub(crate) fn resolve_session_for_attachments(
+    kernel: &OpenFangKernel,
+    agent_id: AgentId,
+    requested_session_id: Option<SessionId>,
+) -> Result<SessionId, (StatusCode, Json<serde_json::Value>)> {
+    let entry = match kernel.registry.get(agent_id) {
+        Some(entry) => entry,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            ));
+        }
+    };
+
+    let resolved_session_id = requested_session_id.unwrap_or(entry.session_id);
+    if requested_session_id.is_none() {
+        return Ok(resolved_session_id);
+    }
+
+    match kernel.memory.get_session(resolved_session_id) {
+        Ok(Some(session)) => {
+            if session.agent_id != agent_id {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "Session belongs to a different agent"})),
+                ));
+            }
+            Ok(resolved_session_id)
+        }
+        Ok(None) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Session not found"})),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Session lookup failed: {e}")})),
+        )),
     }
 }
 
@@ -332,12 +375,27 @@ pub async fn send_message(
     if !req.attachments.is_empty() {
         let image_blocks = resolve_attachments(&req.attachments);
         if !image_blocks.is_empty() {
-            inject_attachments_into_session(
+            let resolved_session_id = match resolve_session_for_attachments(
                 &state.kernel,
                 agent_id,
                 requested_session_id,
+            ) {
+                Ok(session_id) => session_id,
+                Err(response) => return response,
+            };
+
+            if let Err(e) = inject_attachments_into_session(
+                &state.kernel,
+                agent_id,
+                resolved_session_id,
                 image_blocks,
-            );
+            ) {
+                tracing::warn!(agent_id = %agent_id, error = %e, "Failed to inject attachments into session");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "Failed to inject attachments"})),
+                );
+            }
         }
     }
 
@@ -10528,5 +10586,88 @@ pub async fn comms_task(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("Failed to post task: {e}")})),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openfang_types::agent::AgentManifest;
+    use openfang_types::config::{DefaultModelConfig, KernelConfig};
+
+    const TEST_MANIFEST_TEMPLATE: &str = r#"
+name = "{name}"
+version = "0.1.0"
+description = "routes unit test agent"
+author = "test"
+module = "builtin:chat"
+
+[model]
+provider = "ollama"
+model = "test-model"
+system_prompt = "You are a test agent."
+"#;
+
+    fn boot_kernel() -> (OpenFangKernel, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "OLLAMA_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).unwrap();
+        (kernel, tmp)
+    }
+
+    fn spawn_agent(kernel: &OpenFangKernel, name: &str) -> AgentId {
+        let manifest_toml = TEST_MANIFEST_TEMPLATE.replace("{name}", name);
+        let manifest: AgentManifest = toml::from_str(&manifest_toml).unwrap();
+        kernel.spawn_agent(manifest).unwrap()
+    }
+
+    #[test]
+    fn test_resolve_session_for_attachments_rejects_cross_agent_session() {
+        let (kernel, _tmp) = boot_kernel();
+        let agent_a = spawn_agent(&kernel, "agent-a");
+        let agent_b = spawn_agent(&kernel, "agent-b");
+        let session_b = kernel.registry.get(agent_b).unwrap().session_id;
+
+        let err = resolve_session_for_attachments(&kernel, agent_a, Some(session_b)).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1 .0["error"], "Session belongs to a different agent");
+    }
+
+    #[test]
+    fn test_resolve_session_for_attachments_rejects_unknown_explicit_session() {
+        let (kernel, _tmp) = boot_kernel();
+        let agent_a = spawn_agent(&kernel, "agent-a");
+        let unknown = SessionId::new();
+
+        let err = resolve_session_for_attachments(&kernel, agent_a, Some(unknown)).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1 .0["error"], "Session not found");
+    }
+
+    #[test]
+    fn test_inject_attachments_into_session_rejects_cross_agent_session() {
+        let (kernel, _tmp) = boot_kernel();
+        let agent_a = spawn_agent(&kernel, "agent-a");
+        let agent_b = spawn_agent(&kernel, "agent-b");
+        let session_b = kernel.registry.get(agent_b).unwrap().session_id;
+
+        let image = openfang_types::message::ContentBlock::Image {
+            media_type: "image/png".to_string(),
+            data: "dGVzdA==".to_string(),
+        };
+
+        let err =
+            inject_attachments_into_session(&kernel, agent_a, session_b, vec![image]).unwrap_err();
+        assert!(err.contains("does not belong to agent"));
     }
 }

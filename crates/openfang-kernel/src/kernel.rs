@@ -13,7 +13,7 @@ use crate::supervisor::Supervisor;
 use crate::triggers::{TriggerEngine, TriggerId, TriggerPattern};
 use crate::workflow::{
     StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowRouteRequest, WorkflowRunId,
-    WorkflowShadowComparison,
+    WorkflowShadowComparison, WorkflowTrafficPath,
 };
 
 use openfang_memory::MemorySubstrate;
@@ -1778,7 +1778,10 @@ impl OpenFangKernel {
             // Auto-compact if the session is large before running the loop
             if needs_compact {
                 info!(agent_id = %agent_id, messages = session.messages.len(), "Auto-compacting session");
-                match kernel_clone.compact_agent_session(agent_id).await {
+                match kernel_clone
+                    .compact_agent_session_in_session(agent_id, resolved_session_id)
+                    .await
+                {
                     Ok(msg) => {
                         info!(agent_id = %agent_id, "{msg}");
                         // Reload the session after compaction
@@ -1903,7 +1906,10 @@ impl OpenFangKernel {
                             let kc = kernel_clone.clone();
                             tokio::spawn(async move {
                                 info!(agent_id = %agent_id, estimated_tokens = estimated, "Post-loop compaction triggered");
-                                if let Err(e) = kc.compact_agent_session(agent_id).await {
+                                if let Err(e) = kc
+                                    .compact_agent_session_in_session(agent_id, resolved_session_id)
+                                    .await
+                                {
                                     warn!(agent_id = %agent_id, "Post-loop compaction failed: {e}");
                                 }
                             });
@@ -2868,6 +2874,19 @@ impl OpenFangKernel {
     /// Replaces the existing text-truncation compaction with an intelligent
     /// LLM-generated summary of older messages, keeping only recent messages.
     pub async fn compact_agent_session(&self, agent_id: AgentId) -> KernelResult<String> {
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+        self.compact_agent_session_in_session(agent_id, entry.session_id)
+            .await
+    }
+
+    /// Compact a specific agent session by session id.
+    pub async fn compact_agent_session_in_session(
+        &self,
+        agent_id: AgentId,
+        session_id: SessionId,
+    ) -> KernelResult<String> {
         use openfang_runtime::compactor::{compact_session, needs_compaction, CompactionConfig};
 
         let entry = self.registry.get(agent_id).ok_or_else(|| {
@@ -2876,10 +2895,19 @@ impl OpenFangKernel {
 
         let session = self
             .memory
-            .get_session(entry.session_id)
+            .get_session(session_id)
             .map_err(KernelError::OpenFang)?
+            .map(|session| {
+                if session.agent_id != agent_id {
+                    return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                        "Session {session_id} belongs to a different agent"
+                    ))));
+                }
+                Ok(session)
+            })
+            .transpose()?
             .unwrap_or_else(|| openfang_memory::session::Session {
-                id: entry.session_id,
+                id: session_id,
                 agent_id,
                 messages: Vec::new(),
                 context_window_tokens: 0,
@@ -3503,11 +3531,29 @@ impl OpenFangKernel {
         request: WorkflowRouteRequest,
         input: String,
     ) -> KernelResult<(WorkflowRunId, String)> {
-        let workflow_id = self.route_workflow(&request).await.ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::Internal(
-                "No matching workflow route rule".to_string(),
-            ))
-        })?;
+        let workflow_id = self
+            .workflows
+            .route_workflow_for_primary_path(&request, WorkflowTrafficPath::Openfang)
+            .await
+            .ok_or_else(|| {
+                KernelError::OpenFang(OpenFangError::Internal(
+                    "No matching OpenFang-primary workflow route rule".to_string(),
+                ))
+            })?;
+        let rollout = self
+            .workflows
+            .get_rollout_state(workflow_id)
+            .await
+            .ok_or_else(|| {
+                KernelError::OpenFang(OpenFangError::Internal(
+                    "Workflow rollout state not found".to_string(),
+                ))
+            })?;
+        if rollout.primary_path != WorkflowTrafficPath::Openfang {
+            return Err(KernelError::OpenFang(OpenFangError::Internal(
+                "Workflow route is not promoted to OpenFang primary path".to_string(),
+            )));
+        }
         self.run_workflow(workflow_id, input).await
     }
 
@@ -5622,6 +5668,7 @@ impl openfang_wire::peer::PeerHandle for OpenFangKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openfang_types::config::DefaultModelConfig;
     use std::collections::HashMap;
 
     #[test]
@@ -5690,6 +5737,50 @@ mod tests {
             tool_allowlist: vec![],
             tool_blocklist: vec![],
         }
+    }
+
+    fn boot_test_kernel() -> (OpenFangKernel, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "OLLAMA_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).unwrap();
+        (kernel, tmp)
+    }
+
+    #[tokio::test]
+    async fn test_compact_agent_session_in_session_rejects_cross_agent_session() {
+        let (kernel, _tmp) = boot_test_kernel();
+        let agent_a = kernel
+            .spawn_agent(test_manifest(
+                "agent-a",
+                "A routes test agent",
+                vec!["test".to_string()],
+            ))
+            .unwrap();
+        let agent_b = kernel
+            .spawn_agent(test_manifest(
+                "agent-b",
+                "B routes test agent",
+                vec!["test".to_string()],
+            ))
+            .unwrap();
+        let session_b = kernel.registry.get(agent_b).unwrap().session_id;
+
+        let err = kernel
+            .compact_agent_session_in_session(agent_a, session_b)
+            .await
+            .unwrap_err();
+        let err_text = err.to_string();
+        assert!(err_text.contains("belongs to a different agent"));
     }
 
     #[test]

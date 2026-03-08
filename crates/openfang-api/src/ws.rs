@@ -427,10 +427,21 @@ async fn handle_text_message(
             }
 
             // Resolve file attachments into image content blocks
-            let requested_session_id = parsed["session_id"]
-                .as_str()
-                .and_then(|sid| sid.parse::<uuid::Uuid>().ok())
-                .map(openfang_types::agent::SessionId);
+            let requested_session_id =
+                match crate::routes::parse_requested_session_id(parsed["session_id"].as_str()) {
+                    Ok(session_id) => session_id,
+                    Err((_status, body)) => {
+                        let _ = send_json(
+                            sender,
+                            &serde_json::json!({
+                                "type": "error",
+                                "content": body.0["error"].as_str().unwrap_or("Invalid session ID"),
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                };
 
             let mut has_images = false;
             if let Some(attachments) = parsed["attachments"].as_array() {
@@ -441,13 +452,46 @@ async fn handle_text_message(
                 if !refs.is_empty() {
                     let image_blocks = crate::routes::resolve_attachments(&refs);
                     if !image_blocks.is_empty() {
+                        let resolved_session_id =
+                            match crate::routes::resolve_session_for_attachments(
+                                &state.kernel,
+                                agent_id,
+                                requested_session_id,
+                            ) {
+                                Ok(session_id) => session_id,
+                                Err((_status, body)) => {
+                                    let _ = send_json(
+                                        sender,
+                                        &serde_json::json!({
+                                            "type": "error",
+                                            "content": body.0["error"]
+                                                .as_str()
+                                                .unwrap_or("Invalid session for attachments"),
+                                        }),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            };
+
                         has_images = true;
-                        crate::routes::inject_attachments_into_session(
+                        if let Err(e) = crate::routes::inject_attachments_into_session(
                             &state.kernel,
                             agent_id,
-                            requested_session_id,
+                            resolved_session_id,
                             image_blocks,
-                        );
+                        ) {
+                            tracing::warn!(agent_id = %agent_id, error = %e, "Failed to inject websocket attachments");
+                            let _ = send_json(
+                                sender,
+                                &serde_json::json!({
+                                    "type": "error",
+                                    "content": "Failed to inject attachments",
+                                }),
+                            )
+                            .await;
+                            return;
+                        }
                     }
                 }
             }

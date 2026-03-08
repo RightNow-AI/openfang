@@ -912,8 +912,9 @@ fn tools_for_profile(profile: &str) -> Vec<String> {
 
 /// Map OpenClaw provider name to OpenFang provider name.
 fn map_provider(openclaw_provider: &str) -> String {
-    let normalized = openclaw_provider.trim().to_lowercase().replace('-', "_");
-    match normalized.as_str() {
+    let normalized = openclaw_provider.trim().to_lowercase();
+    let alias_key = normalized.replace('-', "_");
+    match alias_key.as_str() {
         "anthropic" | "claude" => "anthropic".to_string(),
         "openai" | "gpt" | "codex" | "openai_codex" => "openai".to_string(),
         "groq" => "groq".to_string(),
@@ -937,7 +938,8 @@ fn map_provider(openclaw_provider: &str) -> String {
         "qianfan" | "baidu" => "qianfan".to_string(),
         "volcengine" | "doubao" => "volcengine".to_string(),
         "github_copilot" | "copilot" => "github-copilot".to_string(),
-        other => other.to_string(),
+        "claude_code" => "claude-code".to_string(),
+        _ => normalized,
     }
 }
 
@@ -963,7 +965,8 @@ fn default_api_key_env(provider: &str) -> String {
         "qianfan" => "QIANFAN_API_KEY".to_string(),
         "volcengine" => "VOLCENGINE_API_KEY".to_string(),
         "github-copilot" => "GITHUB_TOKEN".to_string(),
-        "ollama" => String::new(), // Ollama doesn't need an API key
+        "claude-code" => String::new(), // Claude Code provider doesn't need API key env
+        "ollama" => String::new(),      // Ollama doesn't need an API key
         other => format!("{}_API_KEY", other.to_uppercase()),
     }
 }
@@ -4187,6 +4190,7 @@ mod tests {
         assert_eq!(default_api_key_env("copilot"), "GITHUB_TOKEN");
         assert_eq!(default_api_key_env("github-copilot"), "GITHUB_TOKEN");
         assert_eq!(default_api_key_env("github_copilot"), "GITHUB_TOKEN");
+        assert_eq!(default_api_key_env("claude-code"), "");
     }
 
     #[test]
@@ -4385,10 +4389,13 @@ mod tests {
         assert_eq!(map_provider("gpt"), "openai");
         assert_eq!(map_provider("groq"), "groq");
         assert_eq!(map_provider("custom"), "custom");
+        assert_eq!(map_provider("custom-provider"), "custom-provider");
         assert_eq!(map_provider("google"), "google");
         assert_eq!(map_provider("gemini"), "google");
         assert_eq!(map_provider("xai"), "xai");
         assert_eq!(map_provider("grok"), "xai");
+        assert_eq!(map_provider("claude-code"), "claude-code");
+        assert_eq!(map_provider("claude_code"), "claude-code");
     }
 
     #[test]
