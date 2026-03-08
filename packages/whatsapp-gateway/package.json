@@ -11,7 +11,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "qrcode": "^1.5",
     "pino": "^9"
   },

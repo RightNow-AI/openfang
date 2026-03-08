@@ -3,6 +3,25 @@
 
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+
+// File logger — writes to gateway.log next to index.js
+const LOG_FILE = path.join(__dirname, 'gateway.log');
+const _origLog = console.log.bind(console);
+const _origErr = console.error.bind(console);
+function log(...args) {
+  const line = `[${new Date().toISOString()}] ${args.join(' ')}\n`;
+  _origLog(...args);
+  fs.appendFileSync(LOG_FILE, line);
+}
+function logErr(...args) {
+  const line = `[${new Date().toISOString()}] ERROR ${args.join(' ')}\n`;
+  _origErr(...args);
+  fs.appendFileSync(LOG_FILE, line);
+}
+console.log = log;
+console.error = logErr;
 
 // ---------------------------------------------------------------------------
 // Config from environment
@@ -20,6 +39,37 @@ let qrDataUrl = '';       // latest QR code as data:image/png;base64,...
 let connStatus = 'disconnected'; // disconnected | qr_ready | connected
 let qrExpired = false;
 let statusMessage = 'Not started';
+let resolvedAgentId = DEFAULT_AGENT; // will be replaced with UUID if lookup succeeds
+
+// ---------------------------------------------------------------------------
+// Resolve agent name → UUID at startup
+// ---------------------------------------------------------------------------
+function resolveAgentId() {
+  return new Promise((resolve) => {
+    const req = http.request(
+      { hostname: new URL(OPENFANG_URL).hostname, port: new URL(OPENFANG_URL).port || 4200, path: '/api/agents', method: 'GET' },
+      (res) => {
+        let body = '';
+        res.on('data', (c) => (body += c));
+        res.on('end', () => {
+          try {
+            const agents = JSON.parse(body);
+            const match = agents.find((a) => a.name === DEFAULT_AGENT || a.id === DEFAULT_AGENT);
+            if (match) {
+              resolvedAgentId = match.id;
+              console.log(`[gateway] Resolved agent "${DEFAULT_AGENT}" → ${resolvedAgentId}`);
+            } else {
+              console.warn(`[gateway] Agent "${DEFAULT_AGENT}" not found, using as-is`);
+            }
+          } catch { /* ignore, keep default */ }
+          resolve();
+        });
+      },
+    );
+    req.on('error', () => resolve()); // non-fatal
+    req.end();
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Baileys connection
@@ -45,12 +95,20 @@ async function startConnection() {
   connStatus = 'disconnected';
   statusMessage = 'Connecting...';
 
+  // In-memory message store for getMessage callback (needed for self-chat E2EE)
+  const msgStore = {};
+
   sock = makeWASocket({
     version,
     auth: state,
     logger,
     printQRInTerminal: true,
     browser: ['OpenFang', 'Desktop', '1.0.0'],
+    syncFullHistory: false,
+    getMessage: async (key) => {
+      const id = key.id || '';
+      return msgStore[id] || { conversation: '' };
+    },
   });
 
   // Save credentials whenever they update
@@ -120,11 +178,21 @@ async function startConnection() {
     if (type !== 'notify') return;
 
     for (const msg of messages) {
-      // Skip messages from self and status broadcasts
-      if (msg.key.fromMe) continue;
+      // Cache message content for getMessage callback (E2EE self-chat support)
+      if (msg.key?.id && msg.message) {
+        msgStore[msg.key.id] = msg.message;
+      }
+      // Skip status broadcasts
+      // if (msg.key.fromMe) continue;
       if (msg.key.remoteJid === 'status@broadcast') continue;
 
-      const sender = msg.key.remoteJid || '';
+      const rawJid = msg.key.remoteJid || '';
+      // If fromMe=true, the message is Erick's own outgoing message — reply back to him
+      // If fromMe=false, reply to the sender
+      const ownerJid = sock.user?.id?.replace(/:\d+@/, '@') || '';
+      const sender = msg.key.fromMe
+        ? ownerJid
+        : (rawJid.endsWith('@lid') ? rawJid.replace('@lid', '@s.whatsapp.net') : rawJid);
       const text = msg.message?.conversation
         || msg.message?.extendedTextMessage?.text
         || msg.message?.imageMessage?.caption
@@ -136,18 +204,19 @@ async function startConnection() {
       const phone = '+' + sender.replace(/@.*$/, '');
       const pushName = msg.pushName || phone;
 
-      console.log(`[gateway] Incoming from ${pushName} (${phone}): ${text.substring(0, 80)}`);
+      console.log(`[gateway] Incoming from ${pushName} (${phone}) sender_jid=${sender} fromMe=${msg.key.fromMe}: ${text.substring(0, 80)}`);
 
       // Forward to OpenFang agent
       try {
         const response = await forwardToOpenFang(text, phone, pushName);
         if (response && sock) {
-          // Send agent response back to WhatsApp
-          await sock.sendMessage(sender, { text: response });
+          // Send agent response back to WhatsApp (quote original for E2EE context)
+          console.log(`[gateway] Sending reply to JID: ${sender}`);
+          await sock.sendMessage(sender, { text: response }, { quoted: msg });
           console.log(`[gateway] Replied to ${pushName}`);
         }
       } catch (err) {
-        console.error(`[gateway] Forward/reply failed:`, err.message);
+        console.error(`[gateway] Forward/reply failed:`, err.message, err.stack);
       }
     }
   });
@@ -167,7 +236,7 @@ function forwardToOpenFang(text, phone, pushName) {
       },
     });
 
-    const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(DEFAULT_AGENT)}/message`);
+    const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(resolvedAgentId)}/message`);
 
     const req = http.request(
       {
@@ -336,7 +405,19 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`[gateway] WhatsApp Web gateway listening on http://127.0.0.1:${PORT}`);
   console.log(`[gateway] OpenFang URL: ${OPENFANG_URL}`);
   console.log(`[gateway] Default agent: ${DEFAULT_AGENT}`);
-  console.log('[gateway] Waiting for POST /login/start to begin QR flow...');
+
+  // Resolve agent name → UUID, then auto-connect if session exists
+  resolveAgentId().then(() => {
+    const credsPath = path.join(__dirname, 'auth_store', 'creds.json');
+    if (fs.existsSync(credsPath)) {
+      console.log('[gateway] Saved session found — auto-connecting...');
+      startConnection().catch((err) => {
+        console.error('[gateway] Auto-connect failed:', err.message);
+      });
+    } else {
+      console.log('[gateway] Waiting for POST /login/start to begin QR flow...');
+    }
+  });
 });
 
 // Graceful shutdown
