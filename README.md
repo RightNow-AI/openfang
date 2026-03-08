@@ -19,8 +19,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-0.1.0-green?style=flat-square" alt="v0.1.0" />
-  <img src="https://img.shields.io/badge/phase-4%20✅%20complete-blue?style=flat-square" alt="Phase 4 Complete" />
+  <img src="https://img.shields.io/badge/version-v0.3.29-green?style=flat-square" alt="v0.3.29" />
+  <img src="https://img.shields.io/badge/phase-5%20✅%20complete-blue?style=flat-square" alt="Phase 5 Complete" />
   <img src="https://img.shields.io/badge/tests-1,767%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
   <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
@@ -28,9 +28,9 @@
 
 ---
 
-> **v0.1.0 — First Release (February 2026)** - **Phase 4: SurrealDB Memory Substrate ✅ COMPLETE**
+> **v0.3.29 — Phase 5 Complete (March 2026)**
 >
-> OpenFang is feature-complete but this is the first public release. Phase 4 introduced SurrealDB as the new memory substrate, replacing SQLite with advanced graph database capabilities for knowledge management and session persistence. You may encounter minor integration issues or breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
+> Phase 4 (SurrealDB) and Phase 5 (Caching Layer) are complete. The system now runs on a production-grade, 3-tier data backend (Moka L1 + Redis L2 + SurrealDB L3). See [ROADMAP.md](ROADMAP.md) for full details.
 
 ---
 

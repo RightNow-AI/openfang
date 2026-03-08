@@ -5,6 +5,51 @@ All notable changes to OpenFang will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.3.29] - 2026-03-08
+### Added
+- **Phase 5.1: L1/L2 Caching Layer**
+  - New `maestro-cache` crate providing a transparent 3-tier caching layer (L1 Moka → L2 Redis → L3 SurrealDB).
+  - `CachingMemory` struct wraps `SurrealMemorySubstrate` and implements the `Memory` trait plus all 30+ substrate-specific methods.
+  - Implements cache-aside pattern for reads and write-invalidate for writes.
+  - L1 Moka cache is in-process with separate partitions for KV, sessions, and agents, each with configurable TTL and capacity.
+  - L2 Redis cache is optional (feature-gated `redis-cache`), distributed, and designed for graceful degradation if Redis is unavailable.
+  - `CacheConfig` struct allows for full configuration of all tiers.
+  - Integrated into the kernel as a drop-in replacement for `Arc<SurrealMemorySubstrate>`.
+  - 8 tests passing for L1 and L2 cache logic.
+
+## [0.3.28] - 2026-03-08
+### Added
+- **Phase 4.3: SurrealDB v3 Upgrade**
+  - Upgraded SurrealDB dependency from v2.x to v3.0.2.
+  - Replaced `RocksDb` engine with `SurrealKv` engine (`kv-surrealkv` feature).
+- **Phase 4.4: Full Workspace Async Propagation**
+  - Removed all `block_on` calls from library code, making the entire workspace natively async.
+  - Propagated `async`/`.await` through all 7 core crates: `kernel`, `api`, `cli`, `runtime`, `desktop`, `types`, and `surreal-memory`.
+  - Established 7 distinct sync/async boundaries for entry points like `main.rs`, TUI, and WASM host functions.
+  - 18 files changed, 339 insertions, 330 deletions.
+
+## [0.3.27] - 2026-03-08
+### Added
+- **Phase 4.2: SurrealDB Query Implementation**
+  - Implemented all 24 `SurrealMemorySubstrate` methods with real SurrealQL queries.
+  - Implemented all 12 `SurrealUsageStore` methods.
+  - Defined and initialized 8 SurrealDB tables: `memories`, `sessions`, `kv_store`, `agents`, `paired_devices`, `tasks`, `usage_records`, `llm_summaries`.
+
+## [0.3.26] - 2026-03-08
+### Added
+- **Phase 4.1: Type Unification & Memory Trait Extension**
+  - Unified `Session`, `UsageRecord`, and `Message` types in `openfang-types`.
+  - Extended the `Memory` trait with `save_session` and other methods to make the runtime backend-agnostic.
+  - Refactored the kernel to use a standalone SQLite connection for the `MeteringEngine`.
+
+[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.29...HEAD
+[0.3.29]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.29
+[0.3.28]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.28
+[0.3.27]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.27
+[0.3.26]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.26
+
 ## [Unreleased] - Phase 4 Complete ✅
 
 ### Added
