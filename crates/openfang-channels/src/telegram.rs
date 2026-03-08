@@ -678,8 +678,8 @@ fn telegram_reaction_emoji(phase: &AgentPhase) -> &'static str {
         AgentPhase::Thinking => "\u{1F914}",         // 🤔
         AgentPhase::ToolUse { .. } => "\u{1F525}",   // 🔥
         AgentPhase::Streaming => "\u{270D}",         // ✍
-        AgentPhase::Done => "\u{1F44D}",             // 👍
-        AgentPhase::Error => "\u{1F44E}",            // 👎
+        AgentPhase::Done => "\u{1F389}",             // 🎉
+        AgentPhase::Error => "\u{1F631}",            // 😱
     }
 }
 
@@ -944,8 +944,8 @@ mod tests {
             "\u{1F525}" // 🔥
         );
         assert_eq!(telegram_reaction_emoji(&AgentPhase::Streaming), "\u{270D}"); // ✍
-        assert_eq!(telegram_reaction_emoji(&AgentPhase::Done), "\u{1F44D}"); // 👍
-        assert_eq!(telegram_reaction_emoji(&AgentPhase::Error), "\u{1F44E}"); // 👎
+        assert_eq!(telegram_reaction_emoji(&AgentPhase::Done), "\u{1F389}"); // 🎉
+        assert_eq!(telegram_reaction_emoji(&AgentPhase::Error), "\u{1F631}"); // 😱
     }
 
     #[tokio::test]
