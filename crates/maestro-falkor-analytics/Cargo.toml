@@ -1,0 +1,29 @@
+[package]
+name = "maestro-falkor-analytics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Path dependency for shared project types
+openfang-types = { path = "../openfang-types" }
+
+# FalkorDB official client
+falkordb = { version = "0.2.1", features = ["tokio"] }
+
+# Workspace dependencies
+tokio = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+dotenv = "0.15"
+
+[dev-dependencies]
+# For integration tests - using testcontainers with redis/falkordb
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["redis"] }
+
+[features]
+default = []
