@@ -88,10 +88,11 @@ function schedulerPage() {
     },
 
     async loadTriggers() {
+      var data;
       this.trigLoading = true;
       this.trigLoadError = '';
       try {
-        var data = await OpenFangAPI.get('/api/triggers');
+        data = await OpenFangAPI.get('/api/triggers');
         this.triggers = Array.isArray(data) ? data : [];
       } catch(e) {
         this.triggers = [];
@@ -101,12 +102,19 @@ function schedulerPage() {
     },
 
     async loadHistory() {
+      var historyItems;
+      var jobs;
+      var i;
+      var job;
+      var triggers;
+      var j;
+      var t;
       this.historyLoading = true;
       try {
-        var historyItems = [];
-        var jobs = this.jobs || [];
-        for (var i = 0; i < jobs.length; i++) {
-          var job = jobs[i];
+        historyItems = [];
+        jobs = this.jobs || [];
+        for (i = 0; i < jobs.length; i++) {
+          job = jobs[i];
           if (job.last_run) {
             historyItems.push({
               timestamp: job.last_run,
@@ -117,9 +125,9 @@ function schedulerPage() {
             });
           }
         }
-        var triggers = this.triggers || [];
-        for (var j = 0; j < triggers.length; j++) {
-          var t = triggers[j];
+        triggers = this.triggers || [];
+        for (j = 0; j < triggers.length; j++) {
+          t = triggers[j];
           if (t.fire_count > 0) {
             historyItems.push({
               timestamp: t.created_at,
@@ -143,6 +151,8 @@ function schedulerPage() {
     // ── Job CRUD ──
 
     async createJob() {
+      var jobName;
+      var body;
       if (!this.newJob.name.trim()) {
         OpenFangToast.warn('Please enter a job name');
         return;
@@ -153,8 +163,8 @@ function schedulerPage() {
       }
       this.creating = true;
       try {
-        var jobName = this.newJob.name;
-        var body = {
+        jobName = this.newJob.name;
+        body = {
           agent_id: this.newJob.agent_id,
           name: this.newJob.name,
           schedule: { kind: 'cron', expr: this.newJob.cron },
@@ -174,8 +184,9 @@ function schedulerPage() {
     },
 
     async toggleJob(job) {
+      var newState;
       try {
-        var newState = !job.enabled;
+        newState = !job.enabled;
         await OpenFangAPI.put('/api/cron/jobs/' + job.id + '/enable', { enabled: newState });
         job.enabled = newState;
         OpenFangToast.success('Schedule ' + (newState ? 'enabled' : 'paused'));
@@ -199,9 +210,10 @@ function schedulerPage() {
     },
 
     async runNow(job) {
+      var result;
       this.runningJobId = job.id;
       try {
-        var result = await OpenFangAPI.post('/api/schedules/' + job.id + '/run', {});
+        result = await OpenFangAPI.post('/api/schedules/' + job.id + '/run', {});
         if (result.status === 'completed') {
           OpenFangToast.success('Schedule "' + (job.name || 'job') + '" executed successfully');
           job.last_run = new Date().toISOString();
@@ -217,12 +229,15 @@ function schedulerPage() {
     // ── Trigger helpers ──
 
     triggerType(pattern) {
+      var keys;
+      var key;
+      var names;
       if (!pattern) return 'unknown';
       if (typeof pattern === 'string') return pattern;
-      var keys = Object.keys(pattern);
+      keys = Object.keys(pattern);
       if (keys.length === 0) return 'unknown';
-      var key = keys[0];
-      var names = {
+      key = keys[0];
+      names = {
         lifecycle: 'Lifecycle',
         agent_spawned: 'Agent Spawned',
         agent_terminated: 'Agent Terminated',
@@ -237,8 +252,9 @@ function schedulerPage() {
     },
 
     async toggleTrigger(trigger) {
+      var newState;
       try {
-        var newState = !trigger.enabled;
+        newState = !trigger.enabled;
         await OpenFangAPI.put('/api/triggers/' + trigger.id, { enabled: newState });
         trigger.enabled = newState;
         OpenFangToast.success('Trigger ' + (newState ? 'enabled' : 'disabled'));
@@ -267,9 +283,11 @@ function schedulerPage() {
     },
 
     agentName(agentId) {
+      var agents;
+      var i;
       if (!agentId) return '(any)';
-      var agents = this.availableAgents;
-      for (var i = 0; i < agents.length; i++) {
+      agents = this.availableAgents;
+      for (i = 0; i < agents.length; i++) {
         if (agents[i].id === agentId) return agents[i].name;
       }
       if (agentId.length > 12) return agentId.substring(0, 8) + '...';
@@ -277,12 +295,27 @@ function schedulerPage() {
     },
 
     describeCron(expr) {
+      var map;
+      var parts;
+      var min;
+      var hour;
+      var dom;
+      var mon;
+      var dow;
+      var dowNames;
+      var h;
+      var m;
+      var ampm;
+      var h12;
+      var mStr;
+      var timeStr;
+      var dowLabel;
       if (!expr) return '';
       // Handle non-cron schedule descriptions
       if (expr.indexOf('every ') === 0) return expr;
       if (expr.indexOf('at ') === 0) return 'One-time: ' + expr.substring(3);
 
-      var map = {
+      map = {
         '* * * * *': 'Every minute',
         '*/2 * * * *': 'Every 2 minutes',
         '*/5 * * * *': 'Every 5 minutes',
@@ -307,14 +340,14 @@ function schedulerPage() {
       };
       if (map[expr]) return map[expr];
 
-      var parts = expr.split(' ');
+      parts = expr.split(' ');
       if (parts.length !== 5) return expr;
 
-      var min = parts[0];
-      var hour = parts[1];
-      var dom = parts[2];
-      var mon = parts[3];
-      var dow = parts[4];
+      min = parts[0];
+      hour = parts[1];
+      dom = parts[2];
+      mon = parts[3];
+      dow = parts[4];
 
       if (min.indexOf('*/') === 0 && hour === '*' && dom === '*' && mon === '*' && dow === '*') {
         return 'Every ' + min.substring(2) + ' minutes';
@@ -323,18 +356,18 @@ function schedulerPage() {
         return 'Every ' + hour.substring(2) + ' hours';
       }
 
-      var dowNames = { '0': 'Sun', '1': 'Mon', '2': 'Tue', '3': 'Wed', '4': 'Thu', '5': 'Fri', '6': 'Sat', '7': 'Sun',
+      dowNames = { '0': 'Sun', '1': 'Mon', '2': 'Tue', '3': 'Wed', '4': 'Thu', '5': 'Fri', '6': 'Sat', '7': 'Sun',
                        '1-5': 'Weekdays', '0,6': 'Weekends', '6,0': 'Weekends' };
 
       if (dom === '*' && mon === '*' && min.match(/^\d+$/) && hour.match(/^\d+$/)) {
-        var h = parseInt(hour, 10);
-        var m = parseInt(min, 10);
-        var ampm = h >= 12 ? 'PM' : 'AM';
-        var h12 = h === 0 ? 12 : (h > 12 ? h - 12 : h);
-        var mStr = m < 10 ? '0' + m : '' + m;
-        var timeStr = h12 + ':' + mStr + ' ' + ampm;
+        h = parseInt(hour, 10);
+        m = parseInt(min, 10);
+        ampm = h >= 12 ? 'PM' : 'AM';
+        h12 = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+        mStr = m < 10 ? '0' + m : '' + m;
+        timeStr = h12 + ':' + mStr + ' ' + ampm;
         if (dow === '*') return 'Daily at ' + timeStr;
-        var dowLabel = dowNames[dow] || ('DoW ' + dow);
+        dowLabel = dowNames[dow] || ('DoW ' + dow);
         return dowLabel + ' at ' + timeStr;
       }
 
@@ -346,22 +379,27 @@ function schedulerPage() {
     },
 
     formatTime(ts) {
+      var loc;
+      var d;
       if (!ts) return '-';
       try {
-        var d = new Date(ts);
+        d = new Date(ts);
         if (isNaN(d.getTime())) return '-';
-        return d.toLocaleString();
+        loc = (window.OpenFangI18n && typeof window.OpenFangI18n.intlLocale === 'function') ? window.OpenFangI18n.intlLocale() : null;
+        return loc ? d.toLocaleString(loc) : d.toLocaleString();
       } catch(e) { return '-'; }
     },
 
     relativeTime(ts) {
+      var diff;
+      var absDiff;
       if (!ts) return 'never';
       try {
-        var diff = Date.now() - new Date(ts).getTime();
+        diff = Date.now() - new Date(ts).getTime();
         if (isNaN(diff)) return 'never';
         if (diff < 0) {
           // Future time
-          var absDiff = Math.abs(diff);
+          absDiff = Math.abs(diff);
           if (absDiff < 60000) return 'in <1m';
           if (absDiff < 3600000) return 'in ' + Math.floor(absDiff / 60000) + 'm';
           if (absDiff < 86400000) return 'in ' + Math.floor(absDiff / 3600000) + 'h';
@@ -376,7 +414,8 @@ function schedulerPage() {
 
     jobCount() {
       var enabled = 0;
-      for (var i = 0; i < this.jobs.length; i++) {
+      var i;
+      for (i = 0; i < this.jobs.length; i++) {
         if (this.jobs[i].enabled) enabled++;
       }
       return enabled;
@@ -384,7 +423,8 @@ function schedulerPage() {
 
     triggerCount() {
       var enabled = 0;
-      for (var i = 0; i < this.triggers.length; i++) {
+      var i;
+      for (i = 0; i < this.triggers.length; i++) {
         if (this.triggers[i].enabled) enabled++;
       }
       return enabled;

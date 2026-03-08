@@ -14,6 +14,7 @@
 
 use axum::http::header;
 use axum::response::IntoResponse;
+use std::sync::LazyLock;
 
 /// Compile-time ETag based on the crate version.
 const ETAG: &str = concat!("\"openfang-", env!("CARGO_PKG_VERSION"), "\"");
@@ -59,7 +60,7 @@ pub async fn webchat_page() -> impl IntoResponse {
                 "public, max-age=3600, must-revalidate",
             ),
         ],
-        WEBCHAT_HTML,
+        WEBCHAT_HTML.as_str(),
     )
 }
 
@@ -69,7 +70,7 @@ pub async fn webchat_page() -> impl IntoResponse {
 /// All vendor libraries (Alpine.js, marked.js, highlight.js) are bundled
 /// locally — no CDN dependency. Alpine.js is included LAST because it
 /// immediately processes x-data directives and fires alpine:init on load.
-const WEBCHAT_HTML: &str = concat!(
+const WEBCHAT_HTML_BASE: &str = concat!(
     include_str!("../static/index_head.html"),
     "<style>\n",
     include_str!("../static/css/theme.css"),
@@ -80,7 +81,10 @@ const WEBCHAT_HTML: &str = concat!(
     "\n",
     include_str!("../static/vendor/github-dark.min.css"),
     "\n</style>\n",
-    include_str!("../static/index_body.html"),
+    include_str!("../static/index_body.html")
+);
+
+const WEBCHAT_SCRIPTS: &str = concat!(
     // Vendor libs: marked + highlight first (used by app.js)
     "<script>\n",
     include_str!("../static/vendor/marked.min.js"),
@@ -90,6 +94,8 @@ const WEBCHAT_HTML: &str = concat!(
     "\n</script>\n",
     // App code
     "<script>\n",
+    include_str!("../static/js/i18n.js"),
+    "\n",
     include_str!("../static/js/api.js"),
     "\n",
     include_str!("../static/js/app.js"),
@@ -131,6 +137,20 @@ const WEBCHAT_HTML: &str = concat!(
     // Alpine.js MUST be last — it processes x-data and fires alpine:init
     "<script>\n",
     include_str!("../static/vendor/alpine.min.js"),
-    "\n</script>\n",
-    "</body></html>"
+    "\n</script>\n"
 );
+
+static WEBCHAT_HTML: LazyLock<String> = LazyLock::new(|| {
+    if let Some(body_close_idx) = WEBCHAT_HTML_BASE.rfind("</body>") {
+        let mut assembled = String::with_capacity(WEBCHAT_HTML_BASE.len() + WEBCHAT_SCRIPTS.len());
+        assembled.push_str(&WEBCHAT_HTML_BASE[..body_close_idx]);
+        assembled.push_str(WEBCHAT_SCRIPTS);
+        assembled.push_str(&WEBCHAT_HTML_BASE[body_close_idx..]);
+        assembled
+    } else {
+        let mut assembled = String::with_capacity(WEBCHAT_HTML_BASE.len() + WEBCHAT_SCRIPTS.len());
+        assembled.push_str(WEBCHAT_HTML_BASE);
+        assembled.push_str(WEBCHAT_SCRIPTS);
+        assembled
+    }
+});

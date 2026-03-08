@@ -29,10 +29,11 @@ function handsPage() {
     installPlatforms: {},
 
     async loadData() {
+      var data;
       this.loading = true;
       this.loadError = '';
       try {
-        var data = await OpenFangAPI.get('/api/hands');
+        data = await OpenFangAPI.get('/api/hands');
         this.hands = data.hands || [];
       } catch(e) {
         this.hands = [];
@@ -42,9 +43,10 @@ function handsPage() {
     },
 
     async loadActive() {
+      var data;
       this.activeLoading = true;
       try {
-        var data = await OpenFangAPI.get('/api/hands/active');
+        data = await OpenFangAPI.get('/api/hands/active');
         this.instances = (data.instances || []).map(function(i) {
           i._stats = null;
           return i;
@@ -56,18 +58,21 @@ function handsPage() {
     },
 
     getHandIcon(handId) {
-      for (var i = 0; i < this.hands.length; i++) {
+      var i;
+      for (i = 0; i < this.hands.length; i++) {
         if (this.hands[i].id === handId) return this.hands[i].icon;
       }
-      return '\u{1F91A}';
+      return '\uD83E\uDD1A';
     },
 
     async showDetail(handId) {
+      var data;
+      var i;
       try {
-        var data = await OpenFangAPI.get('/api/hands/' + handId);
+        data = await OpenFangAPI.get('/api/hands/' + handId);
         this.detailHand = data;
       } catch(e) {
-        for (var i = 0; i < this.hands.length; i++) {
+        for (i = 0; i < this.hands.length; i++) {
           if (this.hands[i].id === handId) {
             this.detailHand = this.hands[i];
             break;
@@ -83,15 +88,20 @@ function handsPage() {
     },
 
     async openSetupWizard(handId) {
+      var data;
+      var i;
+      var s;
+      var j;
+      var hasReqs;
       this.setupLoading = true;
       this.setupWizard = null;
       try {
-        var data = await OpenFangAPI.get('/api/hands/' + handId);
+        data = await OpenFangAPI.get('/api/hands/' + handId);
         // Pre-populate settings defaults
         this.settingsValues = {};
         if (data.settings && data.settings.length > 0) {
-          for (var i = 0; i < data.settings.length; i++) {
-            var s = data.settings[i];
+          for (i = 0; i < data.settings.length; i++) {
+            s = data.settings[i];
             this.settingsValues[s.key] = s.default || '';
           }
         }
@@ -104,13 +114,13 @@ function handsPage() {
         // Initialize per-requirement platform selections
         this.installPlatforms = {};
         if (data.requirements) {
-          for (var j = 0; j < data.requirements.length; j++) {
+          for (j = 0; j < data.requirements.length; j++) {
             this.installPlatforms[data.requirements[j].key] = this.detectedPlatform;
           }
         }
         this.setupWizard = data;
         // Skip deps step if no requirements
-        var hasReqs = data.requirements && data.requirements.length > 0;
+        hasReqs = data.requirements && data.requirements.length > 0;
         this.setupStep = hasReqs ? 1 : 2;
       } catch(e) {
         this.showToast('Could not load hand details: ' + (e.message || 'unknown error'));
@@ -133,6 +143,14 @@ function handsPage() {
     installProgress: null,   // null = idle, object = { status, current, total, results, error }
 
     async installDeps() {
+      var data;
+      var results;
+      var i;
+      var existing;
+      var j;
+      var installed;
+      var failed;
+      var self;
       if (!this.setupWizard) return;
       var handId = this.setupWizard.id;
       var missing = (this.setupWizard.requirements || []).filter(function(r) { return !r.satisfied; });
@@ -151,17 +169,17 @@ function handsPage() {
       };
 
       try {
-        var data = await OpenFangAPI.post('/api/hands/' + handId + '/install-deps', {});
-        var results = data.results || [];
+        data = await OpenFangAPI.post('/api/hands/' + handId + '/install-deps', {});
+        results = data.results || [];
         this.installProgress.results = results;
         this.installProgress.current = results.length;
         this.installProgress.status = 'done';
 
         // Update requirements from server response
         if (data.requirements && this.setupWizard.requirements) {
-          for (var i = 0; i < this.setupWizard.requirements.length; i++) {
-            var existing = this.setupWizard.requirements[i];
-            for (var j = 0; j < data.requirements.length; j++) {
+          for (i = 0; i < this.setupWizard.requirements.length; i++) {
+            existing = this.setupWizard.requirements[i];
+            for (j = 0; j < data.requirements.length; j++) {
               if (data.requirements[j].key === existing.key) {
                 existing.satisfied = data.requirements[j].satisfied;
                 break;
@@ -171,13 +189,13 @@ function handsPage() {
           this.setupWizard.requirements_met = data.requirements_met;
         }
 
-        var installed = results.filter(function(r) { return r.status === 'installed' || r.status === 'already_installed'; }).length;
-        var failed = results.filter(function(r) { return r.status === 'error' || r.status === 'timeout'; }).length;
+        installed = results.filter(function(r) { return r.status === 'installed' || r.status === 'already_installed'; }).length;
+        failed = results.filter(function(r) { return r.status === 'error' || r.status === 'timeout'; }).length;
 
         if (data.requirements_met) {
           this.showToast('All dependencies installed successfully!');
           // Auto-advance to step 2 after a short delay
-          var self = this;
+          self = this;
           setTimeout(function() {
             self.installProgress = null;
             self.setupNextStep();
@@ -210,14 +228,18 @@ function handsPage() {
     },
 
     async recheckDeps() {
+      var data;
+      var i;
+      var existing;
+      var j;
       if (!this.setupWizard) return;
       this.setupChecking = true;
       try {
-        var data = await OpenFangAPI.post('/api/hands/' + this.setupWizard.id + '/check-deps', {});
+        data = await OpenFangAPI.post('/api/hands/' + this.setupWizard.id + '/check-deps', {});
         if (data.requirements && this.setupWizard.requirements) {
-          for (var i = 0; i < this.setupWizard.requirements.length; i++) {
-            var existing = this.setupWizard.requirements[i];
-            for (var j = 0; j < data.requirements.length; j++) {
+          for (i = 0; i < this.setupWizard.requirements.length; i++) {
+            existing = this.setupWizard.requirements[i];
+            for (j = 0; j < data.requirements.length; j++) {
               if (data.requirements[j].key === existing.key) {
                 existing.satisfied = data.requirements[j].satisfied;
                 break;
@@ -236,9 +258,11 @@ function handsPage() {
     },
 
     getInstallCmd(req) {
+      var inst;
+      var plat;
       if (!req || !req.install) return null;
-      var inst = req.install;
-      var plat = this.installPlatforms[req.key] || this.detectedPlatform;
+      inst = req.install;
+      plat = this.installPlatforms[req.key] || this.detectedPlatform;
       if (plat === 'macos' && inst.macos) return inst.macos;
       if (plat === 'windows' && inst.windows) return inst.windows;
       if (plat === 'linux') {
@@ -248,12 +272,15 @@ function handsPage() {
     },
 
     getLinuxVariant(req) {
+      var inst;
+      var plat;
+      var variants;
       if (!req || !req.install) return null;
-      var inst = req.install;
-      var plat = this.installPlatforms[req.key] || this.detectedPlatform;
+      inst = req.install;
+      plat = this.installPlatforms[req.key] || this.detectedPlatform;
       if (plat !== 'linux') return null;
       // Return all available Linux variants
-      var variants = [];
+      variants = [];
       if (inst.linux_apt) variants.push({ label: 'apt', cmd: inst.linux_apt });
       if (inst.linux_dnf) variants.push({ label: 'dnf', cmd: inst.linux_dnf });
       if (inst.linux_pacman) variants.push({ label: 'pacman', cmd: inst.linux_pacman });
@@ -273,7 +300,8 @@ function handsPage() {
     get setupReqsMet() {
       if (!this.setupWizard || !this.setupWizard.requirements) return 0;
       var count = 0;
-      for (var i = 0; i < this.setupWizard.requirements.length; i++) {
+      var i;
+      for (i = 0; i < this.setupWizard.requirements.length; i++) {
         if (this.setupWizard.requirements[i].satisfied) count++;
       }
       return count;
@@ -327,14 +355,18 @@ function handsPage() {
 
     async launchHand() {
       if (!this.setupWizard) return;
-      var handId = this.setupWizard.id;
-      var config = {};
-      for (var key in this.settingsValues) {
+      var handId;
+      var config;
+      var key;
+      var data;
+      handId = this.setupWizard.id;
+      config = {};
+      for (key in this.settingsValues) {
         config[key] = this.settingsValues[key];
       }
       this.activatingId = handId;
       try {
-        var data = await OpenFangAPI.post('/api/hands/' + handId + '/activate', { config: config });
+        data = await OpenFangAPI.post('/api/hands/' + handId + '/activate', { config: config });
         this.showToast('Hand "' + handId + '" activated as ' + (data.agent_name || data.instance_id));
         this.closeSetupWizard();
         await this.loadActive();
@@ -350,12 +382,14 @@ function handsPage() {
     },
 
     getSettingDisplayValue(setting) {
-      var val = this.settingsValues[setting.key] || setting.default || '';
+      var val;
+      var i;
+      val = this.settingsValues[setting.key] || setting.default || '';
       if (setting.setting_type === 'toggle') {
         return val === 'true' ? 'Enabled' : 'Disabled';
       }
       if (setting.setting_type === 'select' && setting.options) {
-        for (var i = 0; i < setting.options.length; i++) {
+        for (i = 0; i < setting.options.length; i++) {
           if (setting.options[i].value === val) return setting.options[i].label;
         }
       }
@@ -397,8 +431,9 @@ function handsPage() {
     },
 
     async loadStats(inst) {
+      var data;
       try {
-        var data = await OpenFangAPI.get('/api/hands/instances/' + inst.instance_id + '/stats');
+        data = await OpenFangAPI.get('/api/hands/instances/' + inst.instance_id + '/stats');
         inst._stats = data.metrics || {};
       } catch(e) {
         inst._stats = { 'Error': { value: e.message || 'Could not load stats', format: 'text' } };
@@ -406,21 +441,28 @@ function handsPage() {
     },
 
     formatMetric(m) {
+      var secs;
+      var h;
+      var min;
+      var s;
+      var n;
+      var loc;
       if (!m || m.value === null || m.value === undefined) return '-';
       if (m.format === 'duration') {
-        var secs = parseInt(m.value, 10);
+        secs = parseInt(m.value, 10);
         if (isNaN(secs)) return String(m.value);
-        var h = Math.floor(secs / 3600);
-        var min = Math.floor((secs % 3600) / 60);
-        var s = secs % 60;
+        h = Math.floor(secs / 3600);
+        min = Math.floor((secs % 3600) / 60);
+        s = secs % 60;
         if (h > 0) return h + 'h ' + min + 'm';
         if (min > 0) return min + 'm ' + s + 's';
         return s + 's';
       }
       if (m.format === 'number') {
-        var n = parseFloat(m.value);
+        n = parseFloat(m.value);
         if (isNaN(n)) return String(m.value);
-        return n.toLocaleString();
+        loc = (window.OpenFangI18n && typeof window.OpenFangI18n.intlLocale === 'function') ? window.OpenFangI18n.intlLocale() : null;
+        return loc ? n.toLocaleString(loc) : n.toLocaleString();
       }
       return String(m.value);
     },
@@ -456,10 +498,12 @@ function handsPage() {
     },
 
     async refreshBrowserView() {
+      var id;
+      var data;
       if (!this.browserViewer) return;
-      var id = this.browserViewer.instance_id;
+      id = this.browserViewer.instance_id;
       try {
-        var data = await OpenFangAPI.get('/api/hands/instances/' + id + '/browser');
+        data = await OpenFangAPI.get('/api/hands/instances/' + id + '/browser');
         if (data.active) {
           this.browserViewer.url = data.url || '';
           this.browserViewer.title = data.title || '';

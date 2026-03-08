@@ -1,6 +1,15 @@
 // OpenFang API Client — Fetch wrapper, WebSocket manager, auth injection, toast notifications
 'use strict';
 
+function __of_tr(text) {
+  try {
+    if (window.OpenFangI18n && typeof window.OpenFangI18n.translateText === 'function') {
+      return window.OpenFangI18n.translateText(text);
+    }
+  } catch (e) {}
+  return text;
+}
+
 // ── Toast Notification System ──
 var OpenFangToast = (function() {
   var _container = null;
@@ -20,6 +29,7 @@ var OpenFangToast = (function() {
   }
 
   function toast(message, type, duration) {
+    message = __of_tr(message);
     type = type || 'info';
     duration = duration || 4000;
     var id = ++_toastId;
@@ -61,6 +71,8 @@ var OpenFangToast = (function() {
 
   // Styled confirmation modal — replaces native confirm()
   function confirm(title, message, onConfirm) {
+    title = __of_tr(title);
+    message = __of_tr(message);
     var overlay = document.createElement('div');
     overlay.className = 'confirm-overlay';
 
@@ -82,12 +94,12 @@ var OpenFangToast = (function() {
 
     var cancelBtn = document.createElement('button');
     cancelBtn.className = 'btn btn-ghost confirm-cancel';
-    cancelBtn.textContent = 'Cancel';
+    cancelBtn.textContent = __of_tr('Cancel');
     actions.appendChild(cancelBtn);
 
     var okBtn = document.createElement('button');
     okBtn.className = 'btn btn-danger confirm-ok';
-    okBtn.textContent = 'Confirm';
+    okBtn.textContent = __of_tr('Confirm');
     actions.appendChild(okBtn);
 
     modal.appendChild(actions);
@@ -117,15 +129,17 @@ var OpenFangToast = (function() {
 
 // ── Friendly Error Messages ──
 function friendlyError(status, serverMsg) {
-  if (status === 0 || !status) return 'Cannot reach daemon — is openfang running?';
-  if (status === 401) return 'Not authorized — check your API key';
-  if (status === 403) return 'Permission denied';
-  if (status === 404) return serverMsg || 'Resource not found';
-  if (status === 429) return 'Rate limited — slow down and try again';
-  if (status === 413) return 'Request too large';
-  if (status === 500) return 'Server error — check daemon logs';
-  if (status === 502 || status === 503) return 'Daemon unavailable — is it running?';
-  return serverMsg || 'Unexpected error (' + status + ')';
+  var msg;
+  if (status === 0 || !status) msg = 'Cannot reach daemon — is openfang running?';
+  else if (status === 401) msg = 'Not authorized — check your API key';
+  else if (status === 403) msg = 'Permission denied';
+  else if (status === 404) msg = serverMsg || 'Resource not found';
+  else if (status === 429) msg = 'Rate limited — slow down and try again';
+  else if (status === 413) msg = 'Request too large';
+  else if (status === 500) msg = 'Server error — check daemon logs';
+  else if (status === 502 || status === 503) msg = 'Daemon unavailable — is it running?';
+  else msg = serverMsg || 'Unexpected error (' + status + ')';
+  return __of_tr(msg);
 }
 
 // ── API Client ──
@@ -163,8 +177,9 @@ var OpenFangAPI = (function() {
       if (!r.ok) {
         return r.text().then(function(text) {
           var msg = '';
+          var json;
           try {
-            var json = JSON.parse(text);
+            json = JSON.parse(text);
             msg = json.error || r.statusText;
           } catch(e) {
             msg = r.statusText;
@@ -210,8 +225,9 @@ var OpenFangAPI = (function() {
   }
 
   function _doConnect(agentId) {
+    var url;
     try {
-      var url = WS_BASE + '/api/agents/' + agentId + '/ws';
+      url = WS_BASE + '/api/agents/' + agentId + '/ws';
       if (_authToken) url += '?token=' + encodeURIComponent(_authToken);
       _ws = new WebSocket(url);
 
@@ -227,13 +243,15 @@ var OpenFangAPI = (function() {
       };
 
       _ws.onmessage = function(e) {
+        var data;
         try {
-          var data = JSON.parse(e.data);
+          data = JSON.parse(e.data);
           if (_wsCallbacks.onMessage) _wsCallbacks.onMessage(data);
         } catch(err) { /* ignore parse errors */ }
       };
 
       _ws.onclose = function(e) {
+        var delay;
         _wsConnected = false;
         _ws = null;
         if (_wsAgentId && _reconnectAttempts < MAX_RECONNECT && e.code !== 1000) {
@@ -243,7 +261,7 @@ var OpenFangAPI = (function() {
           if (_reconnectAttempts === 1) {
             OpenFangToast.warn('Connection lost, reconnecting...');
           }
-          var delay = Math.min(1000 * Math.pow(2, _reconnectAttempts - 1), 10000);
+          delay = Math.min(1000 * Math.pow(2, _reconnectAttempts - 1), 10000);
           _reconnectTimer = setTimeout(function() { _doConnect(_wsAgentId); }, delay);
           return;
         }
