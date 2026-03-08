@@ -735,7 +735,7 @@
                   <span class="text-xs" style="color:var(--danger)" x-text="formatRecordingTime()"></span>
                 </div>
                 <textarea id="msg-input" rows="1" :placeholder="recording ? 'Recording... release to send' : 'Message OpenFang... (/ for commands)'"
-                          @keydown.enter.prevent="if(!$event.shiftKey){if(showModelPicker && filteredModelPicker.length){pickModel(filteredModelPicker[modelPickerIdx].id)}else if(showSlashMenu && filteredSlashCommands.length){executeSlashCommand(filteredSlashCommands[slashIdx].cmd)}else{sendMessage()}}"
+                          @keydown.enter.prevent="if(!$event.isComposing && !$event.shiftKey){if(showModelPicker && filteredModelPicker.length){pickModel(filteredModelPicker[modelPickerIdx].id)}else if(showSlashMenu && filteredSlashCommands.length){executeSlashCommand(filteredSlashCommands[slashIdx].cmd)}else{sendMessage()}}"
                           @keydown.escape="showSlashMenu = false; showModelPicker = false"
                           @keydown.arrow-up.prevent="if(showModelPicker){modelPickerIdx = Math.max(0, modelPickerIdx - 1)}else if(showSlashMenu){slashIdx = Math.max(0, slashIdx - 1)}"
                           @keydown.arrow-down.prevent="if(showModelPicker){modelPickerIdx = Math.min(filteredModelPicker.length - 1, modelPickerIdx + 1)}else if(showSlashMenu){slashIdx = Math.min(filteredSlashCommands.length - 1, slashIdx + 1)}"

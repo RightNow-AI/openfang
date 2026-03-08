@@ -164,8 +164,29 @@ struct GeminiErrorResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct GeminiErrorDetail {
     message: String,
+    #[serde(default)]
+    code: Option<u16>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+/// Parse a Gemini error response body, handling multiple Google API error formats.
+fn parse_gemini_error(body: &str) -> String {
+    if let Ok(e) = serde_json::from_str::<GeminiErrorResponse>(body) {
+        let mut msg = e.error.message;
+        if let Some(status) = e.error.status {
+            msg = format!("{status}: {msg}");
+        }
+        return msg;
+    }
+    // Google sometimes returns bare JSON arrays or HTML error pages
+    if body.starts_with('<') {
+        return "Google API returned an HTML error page — check your API key and model name".to_string();
+    }
+    body.to_string()
 }
 
 // ── Message conversion ─────────────────────────────────────────────────
@@ -397,8 +418,8 @@ impl LlmDriver for GeminiDriver {
         let max_retries = 3;
         for attempt in 0..=max_retries {
             let url = format!(
-                "{}/v1beta/models/{}:generateContent",
-                self.base_url, request.model
+                "{}/v1beta/models/{}:generateContent?key={}",
+                self.base_url, request.model, self.api_key.as_str()
             );
             debug!(url = %url, attempt, "Sending Gemini API request");
 
@@ -434,9 +455,13 @@ impl LlmDriver for GeminiDriver {
 
             if !resp.status().is_success() {
                 let body = resp.text().await.unwrap_or_default();
-                let message = serde_json::from_str::<GeminiErrorResponse>(&body)
-                    .map(|e| e.error.message)
-                    .unwrap_or(body);
+                let message = parse_gemini_error(&body);
+                if status == 401 || status == 403 {
+                    return Err(LlmError::AuthenticationFailed(message));
+                }
+                if status == 404 {
+                    return Err(LlmError::ModelNotFound(message));
+                }
                 return Err(LlmError::Api { status, message });
             }
 
@@ -477,8 +502,8 @@ impl LlmDriver for GeminiDriver {
         let max_retries = 3;
         for attempt in 0..=max_retries {
             let url = format!(
-                "{}/v1beta/models/{}:streamGenerateContent?alt=sse",
-                self.base_url, request.model
+                "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
+                self.base_url, request.model, self.api_key.as_str()
             );
             debug!(url = %url, attempt, "Sending Gemini streaming request");
 
@@ -517,9 +542,13 @@ impl LlmDriver for GeminiDriver {
 
             if !resp.status().is_success() {
                 let body = resp.text().await.unwrap_or_default();
-                let message = serde_json::from_str::<GeminiErrorResponse>(&body)
-                    .map(|e| e.error.message)
-                    .unwrap_or(body);
+                let message = parse_gemini_error(&body);
+                if status == 401 || status == 403 {
+                    return Err(LlmError::AuthenticationFailed(message));
+                }
+                if status == 404 {
+                    return Err(LlmError::ModelNotFound(message));
+                }
                 return Err(LlmError::Api { status, message });
             }
 

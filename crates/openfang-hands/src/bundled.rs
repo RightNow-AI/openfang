@@ -187,8 +187,8 @@ mod tests {
         assert_eq!(def.name, "Browser Hand");
         assert_eq!(def.category, crate::HandCategory::Productivity);
         assert!(def.skill_content.is_some());
-        assert!(!def.requires.is_empty()); // requires python3, playwright
-        assert_eq!(def.requires.len(), 2);
+        assert!(!def.requires.is_empty()); // requires chromium
+        assert_eq!(def.requires.len(), 1);
         assert!(def.tools.contains(&"browser_navigate".to_string()));
         assert!(def.tools.contains(&"browser_click".to_string()));
         assert!(def.tools.contains(&"browser_type".to_string()));

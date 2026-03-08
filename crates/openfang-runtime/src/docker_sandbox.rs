@@ -61,19 +61,15 @@ fn validate_image_name(image: &str) -> Result<(), String> {
 }
 
 /// SECURITY: Sanitize command — reject dangerous shell metacharacters.
+/// Delegates to the comprehensive subprocess_sandbox check.
 fn validate_command(command: &str) -> Result<(), String> {
     if command.is_empty() {
         return Err("Command cannot be empty".into());
     }
-    // Reject backticks and $() which could enable command injection
-    let dangerous = ["`", "$(", "${"];
-    for pattern in &dangerous {
-        if command.contains(pattern) {
-            return Err(format!(
-                "Command contains disallowed pattern '{}' — potential injection",
-                pattern
-            ));
-        }
+    if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
+        return Err(format!(
+            "Command blocked: contains {reason} — potential injection"
+        ));
     }
     Ok(())
 }
@@ -489,7 +485,12 @@ mod tests {
     fn test_validate_command_valid() {
         assert!(validate_command("python script.py").is_ok());
         assert!(validate_command("ls -la /workspace").is_ok());
-        assert!(validate_command("echo hello | grep h").is_ok());
+    }
+
+    #[test]
+    fn test_validate_command_pipe_blocked() {
+        // SECURITY: Pipes now blocked by comprehensive metacharacter check
+        assert!(validate_command("echo hello | grep h").is_err());
     }
 
     #[test]

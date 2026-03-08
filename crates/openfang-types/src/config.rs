@@ -1186,6 +1186,10 @@ fn default_language() -> String {
     "en".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for KernelConfig {
     fn default() -> Self {
         let home_dir = openfang_home_dir();
@@ -1591,6 +1595,10 @@ pub struct DiscordConfig {
     pub default_agent: Option<String>,
     /// Gateway intents bitmask (default: 37376 = GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT).
     pub intents: u64,
+    /// Ignore messages from other bots (default: true).
+    /// Set to false to allow bot-to-bot interactions in multi-agent setups.
+    #[serde(default = "default_true")]
+    pub ignore_bots: bool,
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
@@ -1604,6 +1612,7 @@ impl Default for DiscordConfig {
             allowed_users: vec![],
             default_agent: None,
             intents: 37376,
+            ignore_bots: true,
             overrides: ChannelOverrides::default(),
         }
     }

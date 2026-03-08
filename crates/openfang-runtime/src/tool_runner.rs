@@ -19,20 +19,26 @@ const MAX_AGENT_CALL_DEPTH: u32 = 5;
 
 /// Check if a shell command should be blocked by taint tracking.
 ///
-/// Commands containing patterns that look like injected external data
-/// (e.g., piped curl commands, base64-encoded payloads) are flagged.
+/// Layer 1: Shell metacharacter injection (backticks, `$(`, `${`, etc.)
+/// Layer 2: Heuristic patterns for injected external data (piped curl, base64, eval)
+///
 /// This implements the TaintSink::shell_exec() policy from SOTA 2.
 fn check_taint_shell_exec(command: &str) -> Option<String> {
-    // Heuristic: flag commands that look like they contain embedded external URLs
-    // or base64 payloads (common injection patterns)
+    // Layer 1: Block shell metacharacters that enable command injection.
+    // Uses the same validator as subprocess_sandbox and docker_sandbox.
+    if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
+        return Some(format!(
+            "Shell metacharacter injection blocked: {reason}"
+        ));
+    }
+
+    // Layer 2: Heuristic patterns for injected external URLs / base64 payloads
     let suspicious_patterns = [
         "curl ",
         "wget ",
         "| sh",
         "| bash",
         "base64 -d",
-        "$(curl",
-        "`curl",
         "eval ",
     ];
     for pattern in &suspicious_patterns {
@@ -206,10 +212,24 @@ pub async fn execute_tool(
             }
         }
 
-        // Shell tool — exec policy + taint check
+        // Shell tool — metacharacter check + exec policy + taint check
         "shell_exec" => {
             let command = input["command"].as_str().unwrap_or("");
-            // Exec policy enforcement
+
+            // SECURITY: Always check for shell metacharacters, even in Full mode.
+            // These enable command injection regardless of exec policy.
+            if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
+                return ToolResult {
+                    tool_use_id: tool_use_id.to_string(),
+                    content: format!(
+                        "shell_exec blocked: command contains {reason}. \
+                         Shell metacharacters are never allowed."
+                    ),
+                    is_error: true,
+                };
+            }
+
+            // Exec policy enforcement (allowlist / deny / full)
             if let Some(policy) = exec_policy {
                 if let Err(reason) =
                     crate::subprocess_sandbox::validate_command_allowlist(command, policy)
@@ -225,7 +245,7 @@ pub async fn execute_tool(
                     };
                 }
             }
-            // Skip taint check for Full exec policy (e.g. hand agents that need curl for APIs)
+            // Skip heuristic taint patterns for Full exec policy (e.g. hand agents that need curl)
             let is_full_exec = exec_policy
                 .is_some_and(|p| p.mode == openfang_types::config::ExecSecurityMode::Full);
             if !is_full_exec {

@@ -14,39 +14,20 @@ tools = [
 ]
 
 [[requires]]
-key = "python3"
-label = "Python 3 must be installed"
+key = "chromium"
+label = "Chromium or Google Chrome must be installed"
 requirement_type = "binary"
-check_value = "python3"
-description = "Python 3 is required to run Playwright, the browser automation library that powers this hand."
+check_value = "chromium"
+description = "A Chromium-based browser is required. Google Chrome, Chromium, or any Chromium derivative will work. You can also set the CHROME_PATH environment variable to point to your browser binary."
 
 [requires.install]
-macos = "brew install python3"
-windows = "winget install Python.Python.3.12"
-linux_apt = "sudo apt install python3"
-linux_dnf = "sudo dnf install python3"
-linux_pacman = "sudo pacman -S python"
-manual_url = "https://www.python.org/downloads/"
-estimated_time = "2-5 min"
-
-[[requires]]
-key = "playwright"
-label = "Playwright must be installed"
-requirement_type = "binary"
-check_value = "playwright"
-description = "Playwright is a browser automation framework. After installing via pip, you also need to install browser binaries."
-
-[requires.install]
-macos = "pip3 install playwright && playwright install chromium"
-windows = "pip install playwright && playwright install chromium"
-linux_apt = "pip3 install playwright && playwright install chromium"
-pip = "pip install playwright && playwright install chromium"
-manual_url = "https://playwright.dev/python/docs/intro"
-estimated_time = "3-5 min"
-steps = [
-    "Install Playwright: pip install playwright",
-    "Install browser binaries: playwright install chromium",
-]
+macos = "brew install --cask google-chrome"
+windows = "winget install Google.Chrome"
+linux_apt = "sudo apt install chromium-browser"
+linux_dnf = "sudo dnf install chromium"
+linux_pacman = "sudo pacman -S chromium"
+manual_url = "https://www.google.com/chrome/"
+estimated_time = "1-3 min"
 
 # ─── Configurable settings ───────────────────────────────────────────────────
 
