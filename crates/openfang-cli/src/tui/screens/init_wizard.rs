@@ -156,6 +156,114 @@ const PROVIDERS: &[ProviderInfo] = &[
         needs_key: true,
         hint: "",
     },
+    // Local providers
+    ProviderInfo {
+        name: "lemonade",
+        display: "Lemonade",
+        env_var: "LEMONADE_API_KEY",
+        default_model: "lemonade-7b",
+        needs_key: false,
+        hint: "local",
+    },
+    // Chinese providers
+    ProviderInfo {
+        name: "minimax",
+        display: "MiniMax",
+        env_var: "MINIMAX_API_KEY",
+        default_model: "minimax-text-01",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "zhipu",
+        display: "Zhipu AI (GLM)",
+        env_var: "ZHIPU_API_KEY",
+        default_model: "glm-4-plus",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "zhipu_coding",
+        display: "Zhipu Coding (CodeGeeX)",
+        env_var: "ZHIPU_API_KEY",
+        default_model: "glm-4.7",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "zai",
+        display: "Z.AI",
+        env_var: "ZHIPU_API_KEY",
+        default_model: "zai-7b",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "zai_coding",
+        display: "Z.AI Coding",
+        env_var: "ZHIPU_API_KEY",
+        default_model: "zai-coding-7b",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "moonshot",
+        display: "Moonshot (Kimi)",
+        env_var: "MOONSHOT_API_KEY",
+        default_model: "kimi-k2.5",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "qianfan",
+        display: "Baidu Qianfan",
+        env_var: "QIANFAN_API_KEY",
+        default_model: "ERNIE-Bot-4",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "volcengine",
+        display: "Volcano Engine (Doubao)",
+        env_var: "VOLCENGINE_API_KEY",
+        default_model: "doubao-pro-256k",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "volcengine_coding",
+        display: "Volcano Engine Coding",
+        env_var: "VOLCENGINE_API_KEY",
+        default_model: "doubao-coding-32k",
+        needs_key: true,
+        hint: "",
+    },
+    // Cloud providers
+    ProviderInfo {
+        name: "bedrock",
+        display: "AWS Bedrock",
+        env_var: "AWS_ACCESS_KEY_ID",
+        default_model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        needs_key: true,
+        hint: "",
+    },
+    // CLI providers
+    ProviderInfo {
+        name: "codex",
+        display: "OpenAI Codex",
+        env_var: "OPENAI_API_KEY",
+        default_model: "codex/gpt-4.1",
+        needs_key: true,
+        hint: "via CODEX_HOME",
+    },
+    ProviderInfo {
+        name: "claude-code",
+        display: "Claude Code",
+        env_var: "",
+        default_model: "claude-code/sonnet",
+        needs_key: false,
+        hint: "via CLAUDE_CODE",
+    },
     ProviderInfo {
         name: "github-copilot",
         display: "GitHub Copilot",
@@ -241,6 +349,7 @@ enum Step {
     Welcome,
     Migration,
     Provider,
+    CustomUrl,
     ApiKey,
     Model,
     Routing,
@@ -312,6 +421,11 @@ struct State {
     key_test: KeyTestState,
     key_test_started: Option<Instant>,
 
+    // Custom URL configuration
+    custom_url_input: String,
+    custom_url_error: Option<String>,
+    custom_url_provider_selected: Option<String>,
+
     // Model selection
     model_input: String,
     model_catalog: ModelCatalog,
@@ -355,6 +469,9 @@ impl State {
             api_key_from_env: false,
             key_test: KeyTestState::Idle,
             key_test_started: None,
+            custom_url_input: String::new(),
+            custom_url_error: None,
+            custom_url_provider_selected: None,
             model_input: String::new(),
             model_catalog: ModelCatalog::new(),
             model_entries: Vec::new(),
@@ -404,13 +521,14 @@ impl State {
 
     fn step_label(&self) -> &'static str {
         match self.step {
-            Step::Welcome => "1 of 7",
-            Step::Migration => "2 of 7",
-            Step::Provider => "3 of 7",
-            Step::ApiKey => "4 of 7",
-            Step::Model => "5 of 7",
-            Step::Routing => "6 of 7",
-            Step::Complete => "7 of 7",
+            Step::Welcome => "1 of 8",
+            Step::Migration => "2 of 8",
+            Step::Provider => "3 of 8",
+            Step::CustomUrl => "4 of 8",
+            Step::ApiKey => "5 of 8",
+            Step::Model => "6 of 8",
+            Step::Routing => "7 of 8",
+            Step::Complete => "8 of 8",
         }
     }
 
@@ -716,7 +834,46 @@ pub fn run() -> InitResult {
                                 state.selected_provider = Some(prov_idx);
                                 let p = &PROVIDERS[prov_idx];
 
-                                if !p.needs_key {
+                                // Store provider name for custom URL step
+                                state.custom_url_provider_selected = Some(p.name.to_string());
+                                state.custom_url_input.clear();
+                                state.custom_url_error = None;
+
+                                // Check if provider supports custom URL
+                                let supports_custom_url = matches!(
+                                    p.name,
+                                    "openai"
+                                        | "openrouter"
+                                        | "together"
+                                        | "mistral"
+                                        | "fireworks"
+                                        | "perplexity"
+                                        | "cohere"
+                                        | "cerebras"
+                                        | "sambanova"
+                                        | "ai21"
+                                        | "huggingface"
+                                        | "replicate"
+                                        | "venice"
+                                        | "ollama"
+                                        | "lmstudio"
+                                        | "vllm"
+                                        | "minimax"
+                                        | "zhipu"
+                                        | "zhipu_coding"
+                                        | "zai"
+                                        | "zai_coding"
+                                        | "moonshot"
+                                        | "qianfan"
+                                        | "volcengine"
+                                        | "volcengine_coding"
+                                        | "lemonade"
+                                        | "bedrock"
+                                );
+
+                                if supports_custom_url {
+                                    state.step = Step::CustomUrl;
+                                } else if !p.needs_key {
                                     state.api_key_from_env = false;
                                     state.load_models_for_provider();
                                     state.step = Step::Model;
@@ -731,6 +888,79 @@ pub fn run() -> InitResult {
                                     state.step = Step::ApiKey;
                                 }
                             }
+                        }
+                        _ => {}
+                    },
+
+                    Step::CustomUrl => match key.code {
+                        KeyCode::Esc => {
+                            state.custom_url_input.clear();
+                            state.custom_url_error = None;
+                            state.step = Step::Provider;
+                        }
+                        KeyCode::Enter => {
+                            // Validate URL
+                            if state.custom_url_input.is_empty() {
+                                // User pressed Enter without typing - skip custom URL
+                                state.custom_url_input.clear();
+                                state.custom_url_error = None;
+
+                                let prov_idx = state.selected_provider.unwrap();
+                                let p = &PROVIDERS[prov_idx];
+
+                                if !p.needs_key {
+                                    state.api_key_from_env = false;
+                                    state.load_models_for_provider();
+                                    state.step = Step::Model;
+                                } else if state.is_provider_detected(prov_idx) {
+                                    state.api_key_from_env = true;
+                                    state.load_models_for_provider();
+                                    state.step = Step::Model;
+                                } else {
+                                    state.api_key_from_env = false;
+                                    state.api_key_input.clear();
+                                    state.key_test = KeyTestState::Idle;
+                                    state.step = Step::ApiKey;
+                                }
+                            } else {
+                                // Validate URL format
+                                match reqwest::Url::parse(&state.custom_url_input) {
+                                    Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => {
+                                        state.custom_url_error = None;
+
+                                        // Proceed to API key step (or model if no key needed)
+                                        let prov_idx = state.selected_provider.unwrap();
+                                        let p = &PROVIDERS[prov_idx];
+
+                                        if !p.needs_key {
+                                            state.load_models_for_provider();
+                                            state.step = Step::Model;
+                                        } else if state.is_provider_detected(prov_idx) {
+                                            state.api_key_from_env = true;
+                                            state.load_models_for_provider();
+                                            state.step = Step::Model;
+                                        } else {
+                                            state.api_key_from_env = false;
+                                            state.api_key_input.clear();
+                                            state.key_test = KeyTestState::Idle;
+                                            state.step = Step::ApiKey;
+                                        }
+                                    }
+                                    _ => {
+                                        state.custom_url_error = Some(
+                                            "Invalid URL (use http:// or https://)".to_string(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            state.custom_url_input.push(c);
+                            state.custom_url_error = None;
+                        }
+                        KeyCode::Backspace => {
+                            state.custom_url_input.pop();
+                            state.custom_url_error = None;
                         }
                         _ => {}
                     },
@@ -924,7 +1154,9 @@ fn handle_migration_key(
                     let target_dir = if let Ok(h) = std::env::var("OPENFANG_HOME") {
                         PathBuf::from(h)
                     } else {
-                        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".openfang")
+                        dirs::home_dir()
+                            .unwrap_or_else(|| PathBuf::from("."))
+                            .join(".openfang")
                     };
                     let tx = migrate_tx.clone();
                     std::thread::spawn(move || {
@@ -1083,6 +1315,19 @@ complex_threshold = 500
         String::new()
     };
 
+    // Custom URL section
+    let custom_url_section = if !state.custom_url_input.is_empty() {
+        format!(
+            r#"
+[provider_urls]
+{} = "{}"
+"#,
+            p.name, state.custom_url_input
+        )
+    } else {
+        String::new()
+    };
+
     let config_path = openfang_dir.join("config.toml");
     let config = format!(
         r#"# OpenFang Agent OS configuration
@@ -1094,12 +1339,13 @@ api_listen = "127.0.0.1:4200"
 provider = "{provider}"
 model = "{model}"
 api_key_env = "{env_var}"
-
+{custom_url_section}
 [memory]
 decay_rate = 0.05
 {routing_section}"#,
         provider = p.name,
         env_var = p.env_var,
+        custom_url_section = custom_url_section,
     );
 
     match std::fs::write(&config_path, &config) {
@@ -1201,6 +1447,7 @@ fn draw(f: &mut Frame, area: Rect, state: &mut State) {
         Step::Welcome => draw_welcome(f, chunks[3]),
         Step::Migration => draw_migration(f, chunks[3], state),
         Step::Provider => draw_provider(f, chunks[3], state),
+        Step::CustomUrl => draw_custom_url(f, chunks[3], state),
         Step::ApiKey => draw_api_key(f, chunks[3], state),
         Step::Model => draw_model(f, chunks[3], state),
         Step::Routing => draw_routing(f, chunks[3], state),
@@ -1723,6 +1970,75 @@ fn draw_provider(f: &mut Frame, area: Rect, state: &mut State) {
         theme::hint_style(),
     )]));
     f.render_widget(hints, chunks[2]);
+}
+
+fn draw_custom_url(f: &mut Frame, area: Rect, state: &mut State) {
+    let chunks = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .split(area);
+
+    let provider_name = state
+        .custom_url_provider_selected
+        .as_deref()
+        .unwrap_or("Unknown");
+
+    // Prompt
+    let prompt = Paragraph::new(Line::from(vec![
+        Span::raw(format!("  Custom base URL for {}? ", provider_name)),
+        Span::styled("[Enter to skip]", theme::dim_style()),
+    ]));
+    f.render_widget(prompt, chunks[0]);
+
+    // Explanation
+    let help = Paragraph::new(vec![
+        Line::from("  Optional: Enter a custom base URL for this provider."),
+        Line::from("  Example: http://192.168.1.100:11434/v1"),
+        Line::from(vec![
+            Span::raw("  Press "),
+            Span::styled("Enter", Style::default().fg(theme::ACCENT)),
+            Span::raw(" without typing to use the default URL."),
+        ]),
+    ])
+    .style(theme::dim_style());
+    f.render_widget(help, chunks[1]);
+
+    // URL input field
+    let input_prompt = Line::from(vec![
+        Span::styled("  URL: ", Style::default().fg(theme::ACCENT)),
+        Span::raw(&state.custom_url_input),
+        Span::styled(" ", Style::default().fg(theme::TEXT_PRIMARY)), // cursor
+    ]);
+
+    let input_style = if state.custom_url_error.is_some() {
+        Style::default().fg(theme::RED)
+    } else {
+        Style::default().fg(theme::TEXT_PRIMARY)
+    };
+
+    let input_paragraph = Paragraph::new(input_prompt).style(input_style);
+    f.render_widget(input_paragraph, chunks[2]);
+
+    // Error message (if any)
+    if let Some(ref error) = state.custom_url_error {
+        let error_msg = Paragraph::new(Line::from(vec![Span::styled(
+            format!("  \u{2717} {}", error),
+            Style::default().fg(theme::RED),
+        )]));
+        f.render_widget(error_msg, chunks[3]);
+    }
+
+    // Keyboard hints
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled("  [Enter] Confirm  ", theme::hint_style()),
+        Span::styled("[Esc] Back", theme::hint_style()),
+    ]));
+    f.render_widget(hints, chunks[5]);
 }
 
 fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
