@@ -65,6 +65,14 @@ For a different repository:
 scripts/ci/configure_branch_protection.sh <owner>/<repo> main
 ```
 
+Default required checks applied by the script:
+
+- `pre-pr-review-gate / pre-pr-review-gate`
+- `CI / Check / ubuntu-latest`
+- `CI / Test / ubuntu-latest`
+- `CI / Clippy`
+- `CI / Format`
+
 Optional: customize required checks:
 
 ```bash

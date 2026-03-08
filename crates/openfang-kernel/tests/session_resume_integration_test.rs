@@ -9,7 +9,7 @@ use openfang_kernel::workflow::{
 };
 use openfang_kernel::OpenFangKernel;
 use openfang_memory::session::Session;
-use openfang_types::agent::{AgentId, AgentManifest, SessionId};
+use openfang_types::agent::{AgentId, AgentManifest, ManifestCapabilities, ModelConfig, SessionId};
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
 use openfang_types::message::Message;
 use std::path::{Path, PathBuf};
@@ -31,19 +31,26 @@ fn test_config(tmp: &tempfile::TempDir) -> KernelConfig {
 }
 
 fn session_test_manifest(workspace: PathBuf) -> AgentManifest {
-    let mut manifest = AgentManifest::default();
-    manifest.name = "session-e2e-agent".to_string();
-    manifest.description = "Session isolation e2e test agent".to_string();
-    manifest.author = "test".to_string();
-    manifest.module = "builtin:chat".to_string();
-    manifest.model.provider = "ollama".to_string();
-    manifest.model.model = "test-model".to_string();
-    manifest.model.api_key_env = Some("OLLAMA_API_KEY".to_string());
-    manifest.model.system_prompt = "Test agent".to_string();
-    manifest.capabilities.memory_read = vec!["*".to_string()];
-    manifest.capabilities.memory_write = vec!["self.*".to_string()];
-    manifest.workspace = Some(workspace);
-    manifest
+    AgentManifest {
+        name: "session-e2e-agent".to_string(),
+        description: "Session isolation e2e test agent".to_string(),
+        author: "test".to_string(),
+        module: "builtin:chat".to_string(),
+        model: ModelConfig {
+            provider: "ollama".to_string(),
+            model: "test-model".to_string(),
+            system_prompt: "Test agent".to_string(),
+            api_key_env: Some("OLLAMA_API_KEY".to_string()),
+            ..ModelConfig::default()
+        },
+        capabilities: ManifestCapabilities {
+            memory_read: vec!["*".to_string()],
+            memory_write: vec!["self.*".to_string()],
+            ..ManifestCapabilities::default()
+        },
+        workspace: Some(workspace),
+        ..AgentManifest::default()
+    }
 }
 
 fn write_session_messages(

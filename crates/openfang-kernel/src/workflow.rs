@@ -964,6 +964,8 @@ impl WorkflowEngine {
         run.recovery.variables = variables.clone();
     }
 
+    // Keep call sites explicit while centralizing the mutation logic.
+    #[allow(clippy::too_many_arguments)]
     async fn persist_recovery_state(
         &self,
         run_id: WorkflowRunId,

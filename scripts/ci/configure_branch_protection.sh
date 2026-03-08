@@ -15,6 +15,13 @@ Configure GitHub branch protection with:
 Environment overrides:
 - REQUIRED_CHECKS_JSON='["check-name-1","check-name-2"]'
 - REQUIRED_APPROVALS=1
+
+Default REQUIRED_CHECKS_JSON:
+- pre-pr-review-gate / pre-pr-review-gate
+- CI / Check / ubuntu-latest
+- CI / Test / ubuntu-latest
+- CI / Clippy
+- CI / Format
 USAGE
 }
 
@@ -30,7 +37,13 @@ REQUIRED_APPROVALS="${REQUIRED_APPROVALS:-1}"
 command -v gh >/dev/null 2>&1 || { echo "gh is required" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 2; }
 
-DEFAULT_REQUIRED_CHECKS='["pre-pr-review-gate / pre-pr-review-gate"]'
+DEFAULT_REQUIRED_CHECKS='[
+  "pre-pr-review-gate / pre-pr-review-gate",
+  "CI / Check / ubuntu-latest",
+  "CI / Test / ubuntu-latest",
+  "CI / Clippy",
+  "CI / Format"
+]'
 CHECKS_JSON="${REQUIRED_CHECKS_JSON:-$DEFAULT_REQUIRED_CHECKS}"
 
 PAYLOAD="$(CHECKS_JSON="$CHECKS_JSON" REQUIRED_APPROVALS="$REQUIRED_APPROVALS" python3 - <<'PY'
@@ -64,7 +77,9 @@ if approvals < 1:
 payload = {
     "required_status_checks": {
         "strict": True,
-        "checks": [{"context": c} for c in checks],
+        # Use legacy `contexts` for portability across repos/forks where
+        # check-runs may not yet exist at configuration time.
+        "contexts": checks,
     },
     "enforce_admins": False,
     "required_pull_request_reviews": {

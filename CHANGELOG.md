@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Operational Quality Gates
 - Added CI workflow `.github/workflows/pre-pr-review-gate.yml` to enforce comprehensive pre-PR checklist structure on `pull_request -> main`.
 - Added PR template `.github/pull_request_template.md` with mandatory sections: summary, scope, validation evidence, findings, risks, and rollback.
-- Added branch-protection automation script `scripts/ci/configure_branch_protection.sh` to apply required checks/review rules for `main`.
+- Added branch-protection automation script `scripts/ci/configure_branch_protection.sh` to apply required checks/review rules for `main` (default checks include pre-PR gate plus CI check/test/clippy/format).
 - Added operator docs: `docs/pr-quality-gates.md`; linked from `docs/README.md` and `CONTRIBUTING.md`.
 
 ## [0.1.0] - 2026-02-24
