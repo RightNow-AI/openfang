@@ -3036,6 +3036,9 @@ impl OpenFangKernel {
             "Hand activated with agent"
         );
 
+        // Persist hand state so it survives restarts
+        self.persist_hand_state();
+
         // Return instance with agent set
         Ok(self
             .hand_registry
@@ -3067,7 +3070,17 @@ impl OpenFangKernel {
                 }
             }
         }
+        // Persist hand state so it survives restarts
+        self.persist_hand_state();
         Ok(())
+    }
+
+    /// Persist active hand state to disk.
+    fn persist_hand_state(&self) {
+        let state_path = self.config.home_dir.join("hand_state.json");
+        if let Err(e) = self.hand_registry.persist_state(&state_path) {
+            warn!(error = %e, "Failed to persist hand state");
+        }
     }
 
     /// Pause a hand (marks it paused; agent stays alive but won't receive new work).
@@ -3346,6 +3359,19 @@ impl OpenFangKernel {
     /// Iterates the agent registry and starts background tasks for agents with
     /// `Continuous`, `Periodic`, or `Proactive` schedules.
     pub fn start_background_agents(self: &Arc<Self>) {
+        // Restore previously active hands from persisted state
+        let state_path = self.config.home_dir.join("hand_state.json");
+        let saved_hands = openfang_hands::registry::HandRegistry::load_state(&state_path);
+        if !saved_hands.is_empty() {
+            info!("Restoring {} persisted hand(s)", saved_hands.len());
+            for (hand_id, config) in saved_hands {
+                match self.activate_hand(&hand_id, config) {
+                    Ok(inst) => info!(hand = %hand_id, instance = %inst.instance_id, "Hand restored"),
+                    Err(e) => warn!(hand = %hand_id, error = %e, "Failed to restore hand"),
+                }
+            }
+        }
+
         let agents = self.registry.list();
         let mut bg_agents: Vec<(openfang_types::agent::AgentId, String, ScheduleMode)> =
             Vec::new();
