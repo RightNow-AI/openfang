@@ -4414,7 +4414,7 @@ impl OpenFangKernel {
                 base_url,
             };
 
-            drivers::create_driver(&driver_config, self.http_clients.default.clone()).map_err(|e| {
+            drivers::create_driver(&driver_config).map_err(|e| {
                 KernelError::BootFailed(format!("Agent LLM driver init failed: {e}"))
             })?
         };
@@ -4436,7 +4436,7 @@ impl OpenFangKernel {
                         .clone()
                         .or_else(|| self.config.provider_urls.get(&fb.provider).cloned()),
                 };
-                match drivers::create_driver(&config, self.http_clients.default.clone()) {
+                match drivers::create_driver(&config) {
                     Ok(d) => chain.push((d, fb.model.clone())),
                     Err(e) => {
                         warn!("Fallback driver '{}' failed to init: {e}", fb.provider);

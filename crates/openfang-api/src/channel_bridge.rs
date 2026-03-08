@@ -1036,7 +1036,6 @@ pub async fn start_channel_bridge_with_config(
                 token,
                 tg_config.allowed_users.clone(),
                 poll_interval,
-                http_client.clone(),
             ));
             adapters.push((adapter, tg_config.default_agent.clone()));
         }
@@ -1050,7 +1049,6 @@ pub async fn start_channel_bridge_with_config(
                 dc_config.allowed_guilds.clone(),
                 dc_config.allowed_users.clone(),
                 dc_config.intents,
-                http_client.clone(),
             ));
             adapters.push((adapter, dc_config.default_agent.clone()));
         }

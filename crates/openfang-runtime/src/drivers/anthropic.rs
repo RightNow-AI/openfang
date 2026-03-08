@@ -23,11 +23,11 @@ pub struct AnthropicDriver {
 
 impl AnthropicDriver {
     /// Create a new Anthropic driver.
-    pub fn new(api_key: String, base_url: String, client: reqwest::Client) -> Self {
+    pub fn new(api_key: String, base_url: String) -> Self {
         Self {
             api_key: Zeroizing::new(api_key),
             base_url,
-            client,
+            client: reqwest::Client::new(),
         }
     }
 }

@@ -6893,7 +6893,7 @@ pub async fn test_provider(
         },
     };
 
-    match openfang_runtime::drivers::create_driver(&driver_config, state.kernel.http_clients.default.clone()) {
+    match openfang_runtime::drivers::create_driver(&driver_config) {
         Ok(driver) => {
             // Send a minimal completion request to test connectivity
             let test_req = openfang_runtime::llm_driver::CompletionRequest {
