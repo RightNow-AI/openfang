@@ -4,7 +4,8 @@
 <div x-show="$store.app.showAuthPrompt" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px)" x-data="{ apiKeyInput: '' }">
   <div style="background:var(--bg-card,#1e1e2e);border:1px solid var(--border,#333);border-radius:12px;padding:2rem;max-width:400px;width:90%">
     <h3 style="margin:0 0 0.5rem;font-size:1.1rem">API Key Required</h3>
-    <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 1rem">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
+    <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 0.5rem">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
+    <p style="color:var(--text-dim,#666);font-size:0.75rem;margin:0 0 1rem">Add <code style="color:var(--accent-light,#a78bfa);background:var(--bg,#111);padding:1px 4px;border-radius:2px">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.openfang/config.toml</code> (not under any [section]).</p>
     <input type="password" x-model="apiKeyInput" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
     <button @click="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
   </div>

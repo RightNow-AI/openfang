@@ -8,7 +8,7 @@ tags = ["cloud", "google", "infrastructure", "gce", "gcs", "bigquery", "devops"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-gcp"]
+args = ["-y", "@google-cloud/gcloud-mcp"]
 
 [[required_env]]
 name = "GOOGLE_APPLICATION_CREDENTIALS"

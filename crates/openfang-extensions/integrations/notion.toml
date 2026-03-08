@@ -8,7 +8,7 @@ tags = ["notes", "wiki", "knowledge-base", "documentation", "databases"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-notion"]
+args = ["-y", "@notionhq/notion-mcp-server"]
 
 [[required_env]]
 name = "NOTION_API_KEY"

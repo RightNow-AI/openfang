@@ -564,6 +564,13 @@ fn tier_label(tier: ModelTier) -> &'static str {
 // ── Entry point ────────────────────────────────────────────────────────────
 
 pub fn run() -> InitResult {
+    // Guard against non-TTY environments (Docker, piped, CI/CD)
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin())
+        || !std::io::IsTerminal::is_terminal(&std::io::stdout())
+    {
+        return InitResult::Cancelled;
+    }
+
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         ratatui::restore();

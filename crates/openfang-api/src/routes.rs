@@ -43,9 +43,49 @@ pub async fn spawn_agent(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SpawnRequest>,
 ) -> impl IntoResponse {
+    // Resolve template name → manifest_toml if template is provided and manifest_toml is empty
+    let manifest_toml = if req.manifest_toml.trim().is_empty() {
+        if let Some(ref tmpl_name) = req.template {
+            // Sanitize template name to prevent path traversal
+            let safe_name = tmpl_name
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect::<String>();
+            if safe_name.is_empty() || safe_name != *tmpl_name {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "Invalid template name"})),
+                );
+            }
+            let tmpl_path = state
+                .kernel
+                .config
+                .home_dir
+                .join("agents")
+                .join(&safe_name)
+                .join("agent.toml");
+            match std::fs::read_to_string(&tmpl_path) {
+                Ok(content) => content,
+                Err(_) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({"error": format!("Template '{}' not found", safe_name)})),
+                    );
+                }
+            }
+        } else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Either 'manifest_toml' or 'template' is required"})),
+            );
+        }
+    } else {
+        req.manifest_toml.clone()
+    };
+
     // SECURITY: Reject oversized manifests to prevent parser memory exhaustion.
     const MAX_MANIFEST_SIZE: usize = 1024 * 1024; // 1MB
-    if req.manifest_toml.len() > MAX_MANIFEST_SIZE {
+    if manifest_toml.len() > MAX_MANIFEST_SIZE {
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(serde_json::json!({"error": "Manifest too large (max 1MB)"})),
@@ -57,7 +97,7 @@ pub async fn spawn_agent(
         match state.kernel.verify_signed_manifest(signed_json) {
             Ok(verified_toml) => {
                 // Ensure the signed manifest matches the provided manifest_toml
-                if verified_toml.trim() != req.manifest_toml.trim() {
+                if verified_toml.trim() != manifest_toml.trim() {
                     tracing::warn!("Signed manifest content does not match manifest_toml");
                     return (
                         StatusCode::BAD_REQUEST,
@@ -83,7 +123,7 @@ pub async fn spawn_agent(
         }
     }
 
-    let manifest: AgentManifest = match toml::from_str(&req.manifest_toml) {
+    let manifest: AgentManifest = match toml::from_str(&manifest_toml) {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!("Invalid manifest TOML: {e}");
@@ -8941,7 +8981,8 @@ pub async fn config_schema(
 
     Json(serde_json::json!({
         "sections": {
-            "api": {
+            "general": {
+                "root_level": true,
                 "fields": {
                     "api_listen": "string",
                     "api_key": "string",

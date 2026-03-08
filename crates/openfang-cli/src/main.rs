@@ -1163,7 +1163,9 @@ fn cmd_init(quick: bool) {
 
     if quick {
         cmd_init_quick(&openfang_dir);
-    } else if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+    } else if !std::io::IsTerminal::is_terminal(&std::io::stdin())
+        || !std::io::IsTerminal::is_terminal(&std::io::stdout())
+    {
         ui::hint("Non-interactive terminal detected — running in quick mode");
         ui::hint("For the interactive wizard, run: openfang init (in a terminal)");
         cmd_init_quick(&openfang_dir);
@@ -2707,12 +2709,18 @@ decay_rate = 0.05
         match client.get(format!("{base}/api/integrations/health")).send() {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(body) = resp.json::<serde_json::Value>() {
-                    if let Some(obj) = body.as_object() {
-                        let healthy = obj
-                            .values()
-                            .filter(|v| v.get("healthy").and_then(|h| h.as_bool()).unwrap_or(false))
+                    let entries = body.get("health").and_then(|h| h.as_array());
+                    if let Some(arr) = entries {
+                        let healthy = arr
+                            .iter()
+                            .filter(|v| {
+                                v.get("status")
+                                    .and_then(|s| s.as_str())
+                                    .map(|s| s.eq_ignore_ascii_case("ready"))
+                                    .unwrap_or(false)
+                            })
                             .count();
-                        let total = obj.len();
+                        let total = arr.len();
                         if healthy == total {
                             if !json {
                                 ui::check_ok(&format!(

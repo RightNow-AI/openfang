@@ -8,7 +8,7 @@ tags = ["chat", "messaging", "microsoft", "enterprise", "collaboration"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-teams"]
+args = ["-y", "teams-mcp"]
 
 [oauth]
 provider = "microsoft"

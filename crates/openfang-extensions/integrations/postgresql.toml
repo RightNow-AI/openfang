@@ -8,7 +8,7 @@ tags = ["database", "sql", "relational", "postgres", "queries"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-postgres"]
+args = ["-y", "@modelcontextprotocol/server-postgres"]
 
 [[required_env]]
 name = "POSTGRES_CONNECTION_STRING"
