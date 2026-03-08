@@ -5,6 +5,7 @@
 //! graph queries, and analytics operations.
 
 pub mod config;
+pub mod etl;
 
 use falkordb::{AsyncGraph, FalkorClientBuilder, FalkorConnectionInfo};
 use openfang_types::error::{OpenFangError, OpenFangResult};

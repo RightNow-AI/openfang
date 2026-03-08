@@ -4453,14 +4453,19 @@ name = "maestro-falkor-analytics"
 version = "0.3.25"
 dependencies = [
  "anyhow",
+ "chrono",
  "dotenv",
  "falkordb",
+ "futures",
+ "maestro-surreal-memory",
  "openfang-types",
  "serde",
+ "serde_json",
  "testcontainers",
  "testcontainers-modules",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -10,15 +10,22 @@ rust-version.workspace = true
 # Path dependency for shared project types
 openfang-types = { path = "../openfang-types" }
 
+# For ETL - importing from SurrealDB memory
+maestro-surreal-memory = { path = "../maestro-surreal-memory" }
+
 # FalkorDB official client
 falkordb = { version = "0.2.1", features = ["tokio"] }
 
 # Workspace dependencies
 tokio = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-tracing = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
 anyhow = { workspace = true }
+tracing = { workspace = true }
 dotenv = "0.15"
+futures = "0.3"
 
 [dev-dependencies]
 # For integration tests - using testcontainers with redis/falkordb
