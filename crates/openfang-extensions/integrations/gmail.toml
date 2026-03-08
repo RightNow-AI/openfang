@@ -8,7 +8,7 @@ tags = ["email", "google", "messaging", "inbox", "communication"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@anthropic/server-gmail"]
+args = ["-y", "@gongrzhe/server-gmail-autoauth-mcp"]
 
 [oauth]
 provider = "google"

@@ -549,7 +549,11 @@ impl OpenFangKernel {
         // Create LLM driver
         let driver_config = DriverConfig {
             provider: config.default_model.provider.clone(),
-            api_key: std::env::var(&config.default_model.api_key_env).ok(),
+            api_key: if config.default_model.api_key_env.is_empty() {
+                None
+            } else {
+                std::env::var(&config.default_model.api_key_env).ok()
+            },
             base_url: config
                 .default_model
                 .base_url
@@ -4713,8 +4717,8 @@ fn apply_budget_defaults(
     budget: &openfang_types::config::BudgetConfig,
     resources: &mut ResourceQuota,
 ) {
-    // Only override hourly if agent has the built-in default (1.0) and global is set
-    if budget.max_hourly_usd > 0.0 && resources.max_cost_per_hour_usd == 1.0 {
+    // Only override hourly if agent has unlimited (0.0) and global is set
+    if budget.max_hourly_usd > 0.0 && resources.max_cost_per_hour_usd == 0.0 {
         resources.max_cost_per_hour_usd = budget.max_hourly_usd;
     }
     // Only override daily/monthly if agent has unlimited (0.0) and global is set

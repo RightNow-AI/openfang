@@ -8,7 +8,7 @@ tags = ["monitoring", "errors", "debugging", "observability", "apm"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-sentry"]
+args = ["-y", "@sentry/mcp-server"]
 
 [[required_env]]
 name = "SENTRY_AUTH_TOKEN"

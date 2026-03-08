@@ -43,9 +43,49 @@ pub async fn spawn_agent(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SpawnRequest>,
 ) -> impl IntoResponse {
+    // Resolve template name → manifest_toml if template is provided and manifest_toml is empty
+    let manifest_toml = if req.manifest_toml.trim().is_empty() {
+        if let Some(ref tmpl_name) = req.template {
+            // Sanitize template name to prevent path traversal
+            let safe_name = tmpl_name
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect::<String>();
+            if safe_name.is_empty() || safe_name != *tmpl_name {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "Invalid template name"})),
+                );
+            }
+            let tmpl_path = state
+                .kernel
+                .config
+                .home_dir
+                .join("agents")
+                .join(&safe_name)
+                .join("agent.toml");
+            match std::fs::read_to_string(&tmpl_path) {
+                Ok(content) => content,
+                Err(_) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({"error": format!("Template '{}' not found", safe_name)})),
+                    );
+                }
+            }
+        } else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Either 'manifest_toml' or 'template' is required"})),
+            );
+        }
+    } else {
+        req.manifest_toml.clone()
+    };
+
     // SECURITY: Reject oversized manifests to prevent parser memory exhaustion.
     const MAX_MANIFEST_SIZE: usize = 1024 * 1024; // 1MB
-    if req.manifest_toml.len() > MAX_MANIFEST_SIZE {
+    if manifest_toml.len() > MAX_MANIFEST_SIZE {
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(serde_json::json!({"error": "Manifest too large (max 1MB)"})),
@@ -57,7 +97,7 @@ pub async fn spawn_agent(
         match state.kernel.verify_signed_manifest(signed_json) {
             Ok(verified_toml) => {
                 // Ensure the signed manifest matches the provided manifest_toml
-                if verified_toml.trim() != req.manifest_toml.trim() {
+                if verified_toml.trim() != manifest_toml.trim() {
                     tracing::warn!("Signed manifest content does not match manifest_toml");
                     return (
                         StatusCode::BAD_REQUEST,
@@ -83,7 +123,7 @@ pub async fn spawn_agent(
         }
     }
 
-    let manifest: AgentManifest = match toml::from_str(&req.manifest_toml) {
+    let manifest: AgentManifest = match toml::from_str(&manifest_toml) {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!("Invalid manifest TOML: {e}");
@@ -6664,10 +6704,53 @@ pub async fn set_provider_key(
         .unwrap_or_else(|e| e.into_inner())
         .detect_auth();
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"status": "saved", "provider": name})),
-    )
+    // Auto-switch default provider if current default has no working key.
+    // This fixes the common case where a user adds e.g. a Gemini key via dashboard
+    // but their agent still tries to use the previous provider (which has no key).
+    let current_provider = &state.kernel.config.default_model.provider;
+    let current_key_env = &state.kernel.config.default_model.api_key_env;
+    let current_has_key = if current_key_env.is_empty() {
+        false
+    } else {
+        std::env::var(current_key_env).is_ok()
+    };
+    let switched = if !current_has_key && *current_provider != name {
+        // Find a default model for the newly-keyed provider
+        let default_model = {
+            let catalog = state.kernel.model_catalog.read().unwrap_or_else(|e| e.into_inner());
+            catalog.default_model_for_provider(&name)
+        };
+        if let Some(model_id) = default_model {
+            // Update config.toml to persist the switch
+            let config_path = state.kernel.config.home_dir.join("config.toml");
+            let update_toml = format!(
+                "\n[default_model]\nprovider = \"{}\"\nmodel = \"{}\"\napi_key_env = \"{}\"\n",
+                name, model_id, env_var
+            );
+            if let Ok(existing) = std::fs::read_to_string(&config_path) {
+                // Remove existing [default_model] section if present, then append
+                let cleaned = remove_toml_section(&existing, "default_model");
+                let _ = std::fs::write(&config_path, format!("{}\n{}", cleaned.trim(), update_toml));
+            } else {
+                let _ = std::fs::write(&config_path, update_toml);
+            }
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    let mut resp = serde_json::json!({"status": "saved", "provider": name});
+    if switched {
+        resp["switched_default"] = serde_json::json!(true);
+        resp["message"] = serde_json::json!(
+            format!("API key saved. Default provider switched to '{}'. Restart the daemon to apply.", name)
+        );
+    }
+
+    (StatusCode::OK, Json(resp))
 }
 
 /// DELETE /api/providers/{name}/key — Remove an API key for a provider.
@@ -8941,7 +9024,8 @@ pub async fn config_schema(
 
     Json(serde_json::json!({
         "sections": {
-            "api": {
+            "general": {
+                "root_level": true,
                 "fields": {
                     "api_listen": "string",
                     "api_key": "string",
@@ -10286,4 +10370,26 @@ pub async fn comms_task(
             Json(serde_json::json!({"error": format!("Failed to post task: {e}")})),
         ),
     }
+}
+
+/// Remove a `[section]` and its contents from a TOML string.
+fn remove_toml_section(content: &str, section: &str) -> String {
+    let header = format!("[{}]", section);
+    let mut result = String::new();
+    let mut skipping = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == header {
+            skipping = true;
+            continue;
+        }
+        if skipping && trimmed.starts_with('[') {
+            skipping = false;
+        }
+        if !skipping {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    result
 }

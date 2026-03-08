@@ -50,6 +50,25 @@ pub fn load_config(path: Option<&Path>) -> KernelConfig {
                         tbl.remove("include");
                     }
 
+                    // Migrate misplaced api_key/api_listen from [api] section to root level.
+                    // The old config schema incorrectly grouped these under [api], so many
+                    // users have them in the wrong place. Move them up if not already at root.
+                    if let toml::Value::Table(ref mut tbl) = root_value {
+                        if let Some(toml::Value::Table(api_section)) = tbl.get("api").cloned() {
+                            for key in &["api_key", "api_listen", "log_level"] {
+                                if !tbl.contains_key(*key) {
+                                    if let Some(val) = api_section.get(*key) {
+                                        tracing::info!(
+                                            key,
+                                            "Migrating misplaced config field from [api] to root level"
+                                        );
+                                        tbl.insert(key.to_string(), val.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     match root_value.try_into::<KernelConfig>() {
                         Ok(config) => {
                             info!(path = %config_path.display(), "Loaded configuration");

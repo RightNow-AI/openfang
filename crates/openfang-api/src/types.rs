@@ -2,11 +2,16 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Request to spawn an agent from a TOML manifest string.
+/// Request to spawn an agent from a TOML manifest string or a template name.
 #[derive(Debug, Deserialize)]
 pub struct SpawnRequest {
-    /// Agent manifest as TOML string.
+    /// Agent manifest as TOML string (optional if `template` is provided).
+    #[serde(default)]
     pub manifest_toml: String,
+    /// Template name from `~/.openfang/agents/{template}/agent.toml`.
+    /// When provided and `manifest_toml` is empty, the template is loaded automatically.
+    #[serde(default)]
+    pub template: Option<String>,
     /// Optional Ed25519 signed manifest envelope (JSON).
     /// When present, the signature is verified before spawning.
     #[serde(default)]
