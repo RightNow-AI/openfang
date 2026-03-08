@@ -222,7 +222,9 @@ impl LlmDriver for OpenAIDriver {
                                 has_tool_results = true;
                                 oai_messages.push(OaiMessage {
                                     role: "tool".to_string(),
-                                    content: Some(OaiMessageContent::Text(content.clone())),
+                                    content: Some(OaiMessageContent::Text(
+                                        if content.is_empty() { "(empty)".to_string() } else { content.clone() }
+                                    )),
                                     tool_calls: None,
                                     tool_call_id: Some(tool_use_id.clone()),
                                 });
@@ -580,7 +582,9 @@ impl LlmDriver for OpenAIDriver {
                         {
                             oai_messages.push(OaiMessage {
                                 role: "tool".to_string(),
-                                content: Some(OaiMessageContent::Text(content.clone())),
+                                content: Some(OaiMessageContent::Text(
+                                    if content.is_empty() { "(empty)".to_string() } else { content.clone() }
+                                )),
                                 tool_calls: None,
                                 tool_call_id: Some(tool_use_id.clone()),
                             });

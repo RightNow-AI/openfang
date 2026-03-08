@@ -20,6 +20,21 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroizing;
 
+/// SASL PLAIN authenticator for IMAP servers that reject LOGIN
+/// (e.g., Lark/Larksuite which only advertise AUTH=PLAIN).
+struct PlainAuthenticator {
+    username: String,
+    password: String,
+}
+
+impl imap::Authenticator for PlainAuthenticator {
+    type Response = String;
+    fn process(&self, _data: &[u8]) -> Self::Response {
+        // SASL PLAIN: \0<username>\0<password>
+        format!("\x00{}\x00{}", self.username, self.password)
+    }
+}
+
 /// Reply context for email threading (In-Reply-To / Subject continuity).
 #[derive(Debug, Clone)]
 struct ReplyCtx {
@@ -203,9 +218,22 @@ fn fetch_unseen_emails(
     let client = imap::connect((host, port), host, &tls)
         .map_err(|e| format!("IMAP connect failed: {e}"))?;
 
-    let mut session = client
-        .login(username, password)
-        .map_err(|(e, _)| format!("IMAP login failed: {e}"))?;
+    // Try LOGIN first; fall back to AUTHENTICATE PLAIN for servers like Lark
+    // that reject LOGIN and only support AUTH=PLAIN (SASL).
+    let mut session = match client.login(username, password) {
+        Ok(s) => s,
+        Err((login_err, client)) => {
+            let authenticator = PlainAuthenticator {
+                username: username.to_string(),
+                password: password.to_string(),
+            };
+            client
+                .authenticate("PLAIN", &authenticator)
+                .map_err(|(e, _)| {
+                    format!("IMAP login failed: {login_err}; AUTH=PLAIN also failed: {e}")
+                })?
+        }
+    };
 
     let mut results = Vec::new();
 

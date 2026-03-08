@@ -52,6 +52,51 @@ impl HandRegistry {
         }
     }
 
+    /// Persist active hand state to disk so it survives restarts.
+    pub fn persist_state(&self, path: &std::path::Path) -> HandResult<()> {
+        let entries: Vec<serde_json::Value> = self
+            .instances
+            .iter()
+            .filter(|e| e.status == HandStatus::Active)
+            .map(|e| {
+                serde_json::json!({
+                    "hand_id": e.hand_id,
+                    "config": e.config,
+                })
+            })
+            .collect();
+        let json = serde_json::to_string_pretty(&entries)
+            .map_err(|e| HandError::Config(format!("serialize hand state: {e}")))?;
+        std::fs::write(path, json)
+            .map_err(|e| HandError::Config(format!("write hand state: {e}")))?;
+        Ok(())
+    }
+
+    /// Load persisted hand state and re-activate hands.
+    /// Returns list of (hand_id, config) that should be activated.
+    pub fn load_state(path: &std::path::Path) -> Vec<(String, HashMap<String, serde_json::Value>)> {
+        let data = match std::fs::read_to_string(path) {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        };
+        let entries: Vec<serde_json::Value> = match serde_json::from_str(&data) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("Failed to parse hand state file: {e}");
+                return Vec::new();
+            }
+        };
+        entries
+            .into_iter()
+            .filter_map(|e| {
+                let hand_id = e["hand_id"].as_str()?.to_string();
+                let config: HashMap<String, serde_json::Value> =
+                    serde_json::from_value(e["config"].clone()).unwrap_or_default();
+                Some((hand_id, config))
+            })
+            .collect()
+    }
+
     /// Load all bundled hand definitions. Returns count of definitions loaded.
     pub fn load_bundled(&self) -> usize {
         let bundled = bundled::bundled_hands();
