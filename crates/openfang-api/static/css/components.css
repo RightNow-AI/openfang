@@ -69,6 +69,32 @@
   gap: 16px;
 }
 
+/* Card-based flex containers for agent chips and similar inline layouts */
+.card-flex {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Nested list indentation inside cards, detail panels, and modals */
+.card ul, .card ol,
+.detail-grid ul, .detail-grid ol,
+.modal ul, .modal ol,
+.info-card ul, .info-card ol {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+.card ul ul, .card ol ol,
+.modal ul ul, .modal ol ol {
+  padding-left: 16px;
+  margin: 2px 0;
+}
+.card li, .modal li, .info-card li {
+  margin-bottom: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 /* Glow effect on card hover */
 .card-glow {
   overflow: hidden;
@@ -90,13 +116,17 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
+  padding: 3px 8px;
   border-radius: 20px;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.5px;
   text-transform: uppercase;
+  white-space: nowrap;
+  line-height: 1.2;
+  vertical-align: middle;
 }
+.badge + .badge { margin-left: 4px; }
 
 .badge-running { background: rgba(74,222,128,0.12); color: var(--success); }
 .badge-suspended { background: rgba(245,158,11,0.12); color: var(--warning); }
@@ -110,7 +140,7 @@
 .badge-error { background: rgba(239,68,68,0.12); color: var(--error); }
 .badge-muted { background: rgba(148,163,184,0.12); color: var(--text-dim); }
 .badge-info { background: rgba(59,130,246,0.12); color: var(--info); }
-.badge-dim { background: rgba(148,163,184,0.08); color: var(--text-dim); font-size: 0.65rem; }
+.badge-dim { background: rgba(148,163,184,0.08); color: var(--text-dim); font-size: 0.65rem; padding: 2px 6px; }
 .text-danger { color: var(--error); }
 
 /* Tables */
@@ -948,6 +978,14 @@ mark.search-highlight {
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
+}
+.model-switcher-search select {
+  max-width: 100px;
+  flex-shrink: 0;
+}
+.model-switcher-search select:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 .model-switcher-search input {
   flex: 1;

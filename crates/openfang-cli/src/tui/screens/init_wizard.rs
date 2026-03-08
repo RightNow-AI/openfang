@@ -72,7 +72,7 @@ const PROVIDERS: &[ProviderInfo] = &[
         name: "openrouter",
         display: "OpenRouter",
         env_var: "OPENROUTER_API_KEY",
-        default_model: "openrouter/auto",
+        default_model: "openrouter/anthropic/claude-sonnet-4",
         needs_key: true,
         hint: "",
     },
@@ -171,6 +171,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         default_model: "meta/meta-llama-3-70b-instruct",
         needs_key: true,
         hint: "",
+    },
+    ProviderInfo {
+        name: "venice",
+        display: "Venice.ai",
+        env_var: "VENICE_API_KEY",
+        default_model: "venice-uncensored",
+        needs_key: true,
+        hint: "uncensored",
     },
     ProviderInfo {
         name: "ai21",
@@ -2006,11 +2014,7 @@ fn draw_routing_pick(f: &mut Frame, area: Rect, state: &mut State, tier: usize) 
                 .split('/')
                 .next_back()
                 .unwrap_or(&state.routing_models[t]);
-            let display = if short.len() > 14 {
-                &short[..14]
-            } else {
-                short
-            };
+            let display = openfang_types::truncate_str(short, 14);
             summary_spans.push(Span::styled(
                 format!("{name}:{display}"),
                 Style::default().fg(*c),

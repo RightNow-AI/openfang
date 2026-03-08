@@ -181,6 +181,9 @@ jobs:
       - name: Build CLI
         if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: cargo build --release --target ${{ matrix.target }} --bin openfang
+      - name: Ad-hoc codesign CLI binary (macOS)
+        if: runner.os == 'macOS'
+        run: codesign --force --sign - target/${{ matrix.target }}/release/openfang
       - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
         run: |

@@ -296,6 +296,9 @@ pub async fn execute_tool(
         // Location tool
         "location_get" => tool_location_get().await,
 
+        // System time tool
+        "system_time" => Ok(tool_system_time()),
+
         // Cron scheduling tools
         "cron_create" => tool_cron_create(input, kernel, caller_agent_id).await,
         "cron_list" => tool_cron_list(kernel, caller_agent_id).await,
@@ -1175,6 +1178,16 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {}
+            }),
+        },
+        // --- System time tool ---
+        ToolDefinition {
+            name: "system_time".to_string(),
+            description: "Get the current date, time, and timezone. Returns ISO 8601 timestamp, Unix epoch seconds, and timezone info.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
             }),
         },
         // --- Canvas / A2UI tool ---
@@ -2538,6 +2551,27 @@ async fn tool_location_get() -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// System time tool
+// ---------------------------------------------------------------------------
+
+/// Return current date, time, timezone, and Unix epoch.
+fn tool_system_time() -> String {
+    let now_utc = chrono::Utc::now();
+    let now_local = chrono::Local::now();
+    let result = serde_json::json!({
+        "utc": now_utc.to_rfc3339(),
+        "local": now_local.to_rfc3339(),
+        "unix_epoch": now_utc.timestamp(),
+        "timezone": now_local.format("%Z").to_string(),
+        "utc_offset": now_local.format("%:z").to_string(),
+        "date": now_local.format("%Y-%m-%d").to_string(),
+        "time": now_local.format("%H:%M:%S").to_string(),
+        "day_of_week": now_local.format("%A").to_string(),
+    });
+    serde_json::to_string_pretty(&result).unwrap_or_else(|_| now_utc.to_rfc3339())
+}
+
+// ---------------------------------------------------------------------------
 // Media understanding tools
 // ---------------------------------------------------------------------------
 
@@ -3114,6 +3148,7 @@ mod tests {
         assert!(names.contains(&"schedule_delete"));
         assert!(names.contains(&"image_analyze"));
         assert!(names.contains(&"location_get"));
+        assert!(names.contains(&"system_time"));
         // 6 browser tools
         assert!(names.contains(&"browser_navigate"));
         assert!(names.contains(&"browser_click"));

@@ -157,6 +157,70 @@ where
     deserializer.deserialize_any(MapLenientVisitor(PhantomData))
 }
 
+/// Deserialize an `Option<ExecPolicy>` leniently: accepts either a string
+/// shorthand (e.g., `"allow"`, `"deny"`, `"full"`, `"allowlist"`) which maps
+/// to `ExecPolicy { mode: <parsed>, ..Default::default() }`, or the full
+/// struct/table form. Returns `None` for null/missing.
+pub fn exec_policy_lenient<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::config::ExecPolicy>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct ExecPolicyVisitor;
+
+    impl<'de> Visitor<'de> for ExecPolicyVisitor {
+        type Value = Option<crate::config::ExecPolicy>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str(
+                "a string shorthand (\"allow\", \"deny\", \"full\", \"allowlist\") or an ExecPolicy table",
+            )
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let mode = match v.to_lowercase().as_str() {
+                "deny" | "none" | "disabled" => crate::config::ExecSecurityMode::Deny,
+                "allowlist" | "restricted" => crate::config::ExecSecurityMode::Allowlist,
+                "full" | "allow" | "all" | "unrestricted" => crate::config::ExecSecurityMode::Full,
+                other => {
+                    return Err(de::Error::unknown_variant(
+                        other,
+                        &[
+                            "deny", "none", "disabled", "allowlist", "restricted", "full",
+                            "allow", "all", "unrestricted",
+                        ],
+                    ));
+                }
+            };
+            Ok(Some(crate::config::ExecPolicy {
+                mode,
+                ..Default::default()
+            }))
+        }
+
+        fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let policy = crate::config::ExecPolicy::deserialize(
+                de::value::MapAccessDeserializer::new(map),
+            )?;
+            Ok(Some(policy))
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(ExecPolicyVisitor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +366,84 @@ mod tests {
         assert_eq!(new.name, "test-agent");
         assert!(new.fallback_models.is_empty());
         assert!(new.skills.is_empty());
+    }
+
+    // --- exec_policy_lenient tests ---
+
+    #[derive(Debug, Deserialize)]
+    struct TestExecPolicy {
+        #[serde(default, deserialize_with = "exec_policy_lenient")]
+        exec_policy: Option<crate::config::ExecPolicy>,
+    }
+
+    #[test]
+    fn exec_policy_string_allow() {
+        let toml_str = r#"exec_policy = "allow""#;
+        let parsed: TestExecPolicy = toml::from_str(toml_str).unwrap();
+        let policy = parsed.exec_policy.unwrap();
+        assert_eq!(policy.mode, crate::config::ExecSecurityMode::Full);
+        // Should have default safe_bins, timeout, etc.
+        assert!(!policy.safe_bins.is_empty());
+        assert_eq!(policy.timeout_secs, 30);
+    }
+
+    #[test]
+    fn exec_policy_string_deny() {
+        let toml_str = r#"exec_policy = "deny""#;
+        let parsed: TestExecPolicy = toml::from_str(toml_str).unwrap();
+        let policy = parsed.exec_policy.unwrap();
+        assert_eq!(policy.mode, crate::config::ExecSecurityMode::Deny);
+    }
+
+    #[test]
+    fn exec_policy_string_full() {
+        let toml_str = r#"exec_policy = "full""#;
+        let parsed: TestExecPolicy = toml::from_str(toml_str).unwrap();
+        let policy = parsed.exec_policy.unwrap();
+        assert_eq!(policy.mode, crate::config::ExecSecurityMode::Full);
+    }
+
+    #[test]
+    fn exec_policy_string_allowlist() {
+        let toml_str = r#"exec_policy = "allowlist""#;
+        let parsed: TestExecPolicy = toml::from_str(toml_str).unwrap();
+        let policy = parsed.exec_policy.unwrap();
+        assert_eq!(policy.mode, crate::config::ExecSecurityMode::Allowlist);
+    }
+
+    #[test]
+    fn exec_policy_table_form() {
+        let toml_str = r#"
+[exec_policy]
+mode = "full"
+timeout_secs = 60
+"#;
+        let parsed: TestExecPolicy = toml::from_str(toml_str).unwrap();
+        let policy = parsed.exec_policy.unwrap();
+        assert_eq!(policy.mode, crate::config::ExecSecurityMode::Full);
+        assert_eq!(policy.timeout_secs, 60);
+    }
+
+    #[test]
+    fn exec_policy_missing_is_none() {
+        let toml_str = r#"other_field = true"#;
+        // Use a struct with an extra ignored field
+        #[derive(Debug, Deserialize)]
+        struct Wrapper {
+            #[serde(default, deserialize_with = "exec_policy_lenient")]
+            exec_policy: Option<crate::config::ExecPolicy>,
+            #[allow(dead_code)]
+            #[serde(default)]
+            other_field: bool,
+        }
+        let parsed: Wrapper = toml::from_str(toml_str).unwrap();
+        assert!(parsed.exec_policy.is_none());
+    }
+
+    #[test]
+    fn exec_policy_string_invalid_errors() {
+        let toml_str = r#"exec_policy = "banana""#;
+        let result = toml::from_str::<TestExecPolicy>(toml_str);
+        assert!(result.is_err());
     }
 }

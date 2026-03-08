@@ -1163,6 +1163,10 @@ fn cmd_init(quick: bool) {
 
     if quick {
         cmd_init_quick(&openfang_dir);
+    } else if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        ui::hint("Non-interactive terminal detected — running in quick mode");
+        ui::hint("For the interactive wizard, run: openfang init (in a terminal)");
+        cmd_init_quick(&openfang_dir);
     } else {
         cmd_init_interactive(&openfang_dir);
     }
@@ -1283,9 +1287,10 @@ fn launch_desktop_app(_openfang_dir: &std::path::Path) {
             ui::blank();
             if let Some(base) = find_daemon() {
                 let url = format!("{base}/");
-                if !open_in_browser(&url) {
-                    ui::hint(&format!("Visit: {url}"));
-                }
+                let _ = open_in_browser(&url);
+                // Always print the URL — browser launch may silently fail
+                // (e.g., Chromium sandbox EPERM in containers)
+                ui::hint(&format!("Dashboard: {url}"));
             }
         }
     }
@@ -1333,7 +1338,7 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
         (
             "openrouter",
             "OPENROUTER_API_KEY",
-            "openrouter/auto",
+            "openrouter/anthropic/claude-sonnet-4",
             "OpenRouter",
         ),
     ]
@@ -2628,7 +2633,7 @@ decay_rate = 0.05
                         checks.push(serde_json::json!({"check": "daemon_uptime", "status": "ok", "secs": uptime}));
                     }
                     if let Some(db_status) = body.get("database").and_then(|v| v.as_str()) {
-                        if db_status == "ok" {
+                        if db_status == "connected" || db_status == "ok" {
                             if !json {
                                 ui::check_ok("Database connectivity: OK");
                             }
@@ -2950,8 +2955,14 @@ pub(crate) fn open_in_browser(url: &str) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
+        // Detach from parent to avoid inheriting sandbox restrictions.
+        // Some Chromium-based browsers fail with EPERM when launched from
+        // restricted environments (containers, snaps, flatpaks).
         std::process::Command::new("xdg-open")
             .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .is_ok()
     }

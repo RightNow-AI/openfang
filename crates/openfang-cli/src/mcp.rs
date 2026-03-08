@@ -216,8 +216,13 @@ fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
 /// Write a Content-Length framed JSON-RPC response to the writer.
 fn write_message(writer: &mut impl Write, msg: &Value) {
     let body = serde_json::to_string(msg).unwrap_or_default();
-    let _ = write!(writer, "Content-Length: {}\r\n\r\n{}", body.len(), body);
-    let _ = writer.flush();
+    if let Err(e) = write!(writer, "Content-Length: {}\r\n\r\n{}", body.len(), body) {
+        eprintln!("MCP write error: {e}");
+        return;
+    }
+    if let Err(e) = writer.flush() {
+        eprintln!("MCP flush error: {e}");
+    }
 }
 
 /// Handle a JSON-RPC message and return an optional response.
@@ -234,7 +239,7 @@ fn handle_message(backend: &McpBackend, msg: &Value) -> Option<Value> {
                 },
                 "serverInfo": {
                     "name": "openfang",
-                    "version": "0.1.0"
+                    "version": env!("CARGO_PKG_VERSION")
                 }
             });
             Some(jsonrpc_response(id?, result))
