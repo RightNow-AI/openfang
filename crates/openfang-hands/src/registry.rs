@@ -364,6 +364,14 @@ fn check_requirement(req: &HandRequirement) -> bool {
             if req.check_value == "python3" {
                 return which_binary("python");
             }
+            if req.check_value == "chromium" {
+                // Try common Chromium/Chrome binary names across platforms
+                return which_binary("chromium-browser")
+                    || which_binary("google-chrome")
+                    || which_binary("google-chrome-stable")
+                    || which_binary("chrome")
+                    || std::env::var("CHROME_PATH").map(|v| !v.is_empty()).unwrap_or(false);
+            }
             false
         }
         RequirementType::EnvVar | RequirementType::ApiKey => {

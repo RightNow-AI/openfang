@@ -40,6 +40,12 @@ pub enum LlmError {
         /// How long to wait before retrying.
         retry_after_ms: u64,
     },
+    /// Authentication failed (invalid/missing API key).
+    #[error("Authentication failed: {0}")]
+    AuthenticationFailed(String),
+    /// Model not found.
+    #[error("Model not found: {0}")]
+    ModelNotFound(String),
 }
 
 /// A request to an LLM for completion.

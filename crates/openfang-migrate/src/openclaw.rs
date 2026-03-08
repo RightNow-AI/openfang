@@ -64,11 +64,11 @@ struct OpenClawModels {
 #[serde(default, rename_all = "camelCase")]
 struct OpenClawRootTools {
     #[allow(dead_code)]
-    profile: Option<String>,
+    profile: Option<serde_json::Value>,
     #[allow(dead_code)]
-    allow: Option<Vec<String>>,
+    allow: Option<serde_json::Value>,
     #[allow(dead_code)]
-    deny: Option<Vec<String>>,
+    deny: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -117,10 +117,28 @@ struct OpenClawAgentEntry {
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct OpenClawAgentTools {
-    profile: Option<String>,
-    allow: Option<Vec<String>>,
-    deny: Option<Vec<String>>,
-    also_allow: Option<Vec<String>>,
+    profile: Option<serde_json::Value>,
+    allow: Option<serde_json::Value>,
+    deny: Option<serde_json::Value>,
+    also_allow: Option<serde_json::Value>,
+}
+
+/// Extract a profile name from a Value (string or {name: "..."}  object).
+fn extract_profile(val: &serde_json::Value) -> Option<String> {
+    val.as_str()
+        .map(|s| s.to_string())
+        .or_else(|| val.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+}
+
+/// Extract a list of strings from a Value (array of strings, or single string).
+fn extract_string_list(val: &serde_json::Value) -> Vec<String> {
+    match val {
+        serde_json::Value::Array(arr) => {
+            arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect()
+        }
+        serde_json::Value::String(s) => vec![s.clone()],
+        _ => vec![],
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -811,13 +829,14 @@ fn scan_from_json5(base: &Path, config_path: &Path, result: &mut ScanResult) {
                 .tools
                 .as_ref()
                 .and_then(|t| t.allow.as_ref())
-                .map(|a| a.len())
+                .map(|a| extract_string_list(a).len())
                 .or_else(|| {
                     entry
                         .tools
                         .as_ref()
                         .and_then(|t| t.profile.as_ref())
-                        .map(|p| tools_for_profile(p).len())
+                        .and_then(extract_profile)
+                        .map(|p| tools_for_profile(&p).len())
                 })
                 .unwrap_or(3);
 
@@ -1770,9 +1789,10 @@ fn convert_agent_from_json(
     // Resolve tools
     let mut unmapped_tools = Vec::new();
     let tools: Vec<String> = if let Some(ref agent_tools) = entry.tools {
-        if let Some(ref allow) = agent_tools.allow {
+        if let Some(ref allow_val) = agent_tools.allow {
+            let allow = extract_string_list(allow_val);
             let mut mapped = Vec::new();
-            for t in allow {
+            for t in &allow {
                 if is_known_openfang_tool(t) {
                     mapped.push(t.clone());
                 } else if let Some(of_name) = map_tool_name(t) {
@@ -1782,8 +1802,9 @@ fn convert_agent_from_json(
                 }
             }
             // also_allow
-            if let Some(ref also) = agent_tools.also_allow {
-                for t in also {
+            if let Some(ref also_val) = agent_tools.also_allow {
+                let also = extract_string_list(also_val);
+                for t in &also {
                     if is_known_openfang_tool(t) {
                         mapped.push(t.clone());
                     } else if let Some(of_name) = map_tool_name(t) {
@@ -1794,8 +1815,9 @@ fn convert_agent_from_json(
                 }
             }
             mapped
-        } else if let Some(ref profile) = agent_tools.profile {
-            tools_for_profile(profile)
+        } else if let Some(ref profile_val) = agent_tools.profile {
+            let profile_name = extract_profile(profile_val).unwrap_or_default();
+            tools_for_profile(&profile_name)
         } else {
             resolve_default_tools(defaults)
         }
@@ -1894,8 +1916,10 @@ fn convert_agent_from_json(
 
     // Tool profile hint
     if let Some(ref agent_tools) = entry.tools {
-        if let Some(ref profile) = agent_tools.profile {
-            toml_str.push_str(&format!("\nprofile = \"{profile}\"\n"));
+        if let Some(ref profile_val) = agent_tools.profile {
+            if let Some(profile) = extract_profile(profile_val) {
+                toml_str.push_str(&format!("\nprofile = \"{profile}\"\n"));
+            }
         }
     }
 
@@ -1905,12 +1929,15 @@ fn convert_agent_from_json(
 fn resolve_default_tools(defaults: Option<&OpenClawAgentDefaults>) -> Vec<String> {
     if let Some(defs) = defaults {
         if let Some(ref tools) = defs.tools {
-            if let Some(ref profile) = tools.profile {
-                return tools_for_profile(profile);
+            if let Some(ref profile_val) = tools.profile {
+                if let Some(profile) = extract_profile(profile_val) {
+                    return tools_for_profile(&profile);
+                }
             }
-            if let Some(ref allow) = tools.allow {
+            if let Some(ref allow_val) = tools.allow {
+                let allow = extract_string_list(allow_val);
                 let mut mapped = Vec::new();
-                for t in allow {
+                for t in &allow {
                     if is_known_openfang_tool(t) {
                         mapped.push(t.clone());
                     } else if let Some(of_name) = map_tool_name(t) {

@@ -934,7 +934,7 @@ impl OpenFangKernel {
             workflows: WorkflowEngine::new(),
             triggers: TriggerEngine::new(),
             background,
-            audit_log: Arc::new(AuditLog::new()),
+            audit_log: Arc::new(AuditLog::with_db(memory.usage_conn())),
             metering,
             default_driver: driver,
             wasm_sandbox,

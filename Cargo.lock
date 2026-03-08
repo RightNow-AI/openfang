@@ -4131,6 +4131,7 @@ dependencies = [
  "openfang-types",
  "regex-lite",
  "reqwest 0.12.28",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
@@ -4194,6 +4195,7 @@ version = "0.3.29"
 dependencies = [
  "async-trait",
  "chrono",
+ "dashmap",
  "hex",
  "hmac",
  "openfang-types",

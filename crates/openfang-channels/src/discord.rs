@@ -40,6 +40,7 @@ pub struct DiscordAdapter {
     client: reqwest::Client,
     allowed_guilds: Vec<String>,
     allowed_users: Vec<String>,
+    ignore_bots: bool,
     intents: u64,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
@@ -56,6 +57,7 @@ impl DiscordAdapter {
         token: String,
         allowed_guilds: Vec<String>,
         allowed_users: Vec<String>,
+        ignore_bots: bool,
         intents: u64,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -64,6 +66,7 @@ impl DiscordAdapter {
             client: reqwest::Client::new(),
             allowed_guilds,
             allowed_users,
+            ignore_bots,
             intents,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
@@ -155,6 +158,7 @@ impl ChannelAdapter for DiscordAdapter {
         let intents = self.intents;
         let allowed_guilds = self.allowed_guilds.clone();
         let allowed_users = self.allowed_users.clone();
+        let ignore_bots = self.ignore_bots;
         let bot_user_id = self.bot_user_id.clone();
         let session_id_store = self.session_id.clone();
         let resume_url_store = self.resume_gateway_url.clone();
@@ -315,7 +319,7 @@ impl ChannelAdapter for DiscordAdapter {
 
                                 "MESSAGE_CREATE" | "MESSAGE_UPDATE" => {
                                     if let Some(msg) =
-                                        parse_discord_message(d, &bot_user_id, &allowed_guilds, &allowed_users)
+                                        parse_discord_message(d, &bot_user_id, &allowed_guilds, &allowed_users, ignore_bots)
                                             .await
                                     {
                                         debug!(
@@ -432,6 +436,7 @@ async fn parse_discord_message(
     bot_user_id: &Arc<RwLock<Option<String>>>,
     allowed_guilds: &[String],
     allowed_users: &[String],
+    ignore_bots: bool,
 ) -> Option<ChannelMessage> {
     let author = d.get("author")?;
     let author_id = author["id"].as_str()?;
@@ -443,8 +448,8 @@ async fn parse_discord_message(
         }
     }
 
-    // Filter out other bots
-    if author["bot"].as_bool() == Some(true) {
+    // Filter out other bots (configurable via ignore_bots)
+    if ignore_bots && author["bot"].as_bool() == Some(true) {
         return None;
     }
 
@@ -561,7 +566,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Discord);
         assert_eq!(msg.sender.display_name, "alice");
         assert_eq!(msg.sender.platform_id, "ch1");
@@ -583,7 +588,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await;
         assert!(msg.is_none());
     }
 
@@ -603,7 +608,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await;
         assert!(msg.is_none());
     }
 
@@ -624,11 +629,11 @@ mod tests {
         });
 
         // Not in allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &["111".into(), "222".into()], &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &["111".into(), "222".into()], &[], true).await;
         assert!(msg.is_none());
 
         // In allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &["999".into()], &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &["999".into()], &[], true).await;
         assert!(msg.is_some());
     }
 
@@ -647,7 +652,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await.unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -672,7 +677,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await;
         assert!(msg.is_none());
     }
 
@@ -691,7 +696,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await.unwrap();
         assert_eq!(msg.sender.display_name, "alice#1234");
     }
 
@@ -713,7 +718,7 @@ mod tests {
         });
 
         // MESSAGE_UPDATE uses the same parse function as MESSAGE_CREATE
-        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Discord);
         assert!(
             matches!(msg.content, ChannelContent::Text(ref t) if t == "Edited message content")
@@ -736,15 +741,15 @@ mod tests {
         });
 
         // Not in allowed users
-        let msg = parse_discord_message(&d, &bot_id, &[], &["user111".into(), "user222".into()]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &["user111".into(), "user222".into()], true).await;
         assert!(msg.is_none());
 
         // In allowed users
-        let msg = parse_discord_message(&d, &bot_id, &[], &["user999".into()]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &["user999".into()], true).await;
         assert!(msg.is_some());
 
         // Empty allowed_users = allow all
-        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await;
         assert!(msg.is_some());
     }
 
@@ -767,7 +772,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await.unwrap();
         assert!(msg.is_group);
         assert_eq!(msg.metadata.get("was_mentioned").and_then(|v| v.as_bool()), Some(true));
 
@@ -785,7 +790,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg2 = parse_discord_message(&d2, &bot_id, &[], &[]).await.unwrap();
+        let msg2 = parse_discord_message(&d2, &bot_id, &[], &[], true).await.unwrap();
         assert!(msg2.is_group);
         assert!(!msg2.metadata.contains_key("was_mentioned"));
     }
@@ -805,13 +810,13 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[]).await.unwrap();
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await.unwrap();
         assert!(!msg.is_group);
     }
 
     #[test]
     fn test_discord_adapter_creation() {
-        let adapter = DiscordAdapter::new("test-token".to_string(), vec!["123".to_string(), "456".to_string()], vec![], 37376);
+        let adapter = DiscordAdapter::new("test-token".to_string(), vec!["123".to_string(), "456".to_string()], vec![], true, 37376);
         assert_eq!(adapter.name(), "discord");
         assert_eq!(adapter.channel_type(), ChannelType::Discord);
     }
