@@ -3798,7 +3798,10 @@ pub async fn install_hand_deps(
                 if !extra_paths.is_empty() {
                     let current_path = std::env::var("PATH").unwrap_or_default();
                     let new_path = format!("{};{}", extra_paths.join(";"), current_path);
-                    std::env::set_var("PATH", &new_path);
+                    {
+                        let _guard = ENV_MUTEX.lock().unwrap();
+                        unsafe { std::env::set_var("PATH", &new_path); }
+                    }
                     tracing::info!(
                         added = extra_paths.len(),
                         "Refreshed PATH with winget/pip directories"
@@ -6654,7 +6657,10 @@ pub async fn set_provider_key(
     }
 
     // Set env var in current process so detect_auth picks it up
-    std::env::set_var(&env_var, &key);
+    {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe { std::env::set_var(&env_var, &key); }
+    }
 
     // Refresh auth detection
     state
@@ -6709,7 +6715,10 @@ pub async fn delete_provider_key(
     }
 
     // Remove from process environment
-    std::env::remove_var(&env_var);
+    {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe { std::env::remove_var(&env_var); }
+    }
 
     // Refresh auth detection
     state
@@ -9854,7 +9863,10 @@ pub async fn copilot_oauth_poll(
             }
 
             // Set in current process
-            std::env::set_var("GITHUB_TOKEN", access_token.as_str());
+            {
+                let _guard = ENV_MUTEX.lock().unwrap();
+                unsafe { std::env::set_var("GITHUB_TOKEN", access_token.as_str()); }
+            }
 
             // Refresh auth detection
             state

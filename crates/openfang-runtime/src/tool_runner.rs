@@ -1332,16 +1332,29 @@ async fn tool_web_fetch_legacy(input: &serde_json::Value) -> Result<String, Stri
         .await
         .map_err(|e| format!("HTTP request failed: {e}"))?;
     let status = resp.status();
-    // Reject responses larger than 10MB to prevent memory exhaustion
+    let max_bytes: u64 = 10 * 1024 * 1024; // 10MB
+
+    // Check Content-Length header first (fast reject)
     if let Some(len) = resp.content_length() {
-        if len > 10 * 1024 * 1024 {
+        if len > max_bytes {
             return Err(format!("Response too large: {len} bytes (max 10MB)"));
         }
     }
-    let body = resp
-        .text()
+
+    // Read body with size guard — handles chunked responses without Content-Length
+    let resp_bytes = resp
+        .bytes()
         .await
         .map_err(|e| format!("Failed to read response body: {e}"))?;
+
+    if resp_bytes.len() as u64 > max_bytes {
+        return Err(format!(
+            "Response too large: {} bytes (max 10MB)",
+            resp_bytes.len()
+        ));
+    }
+
+    let body = String::from_utf8_lossy(&resp_bytes).to_string();
     let max_len = 50_000;
     let truncated = if body.len() > max_len {
         format!(

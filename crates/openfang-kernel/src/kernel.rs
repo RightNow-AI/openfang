@@ -187,15 +187,20 @@ impl DeliveryTracker {
             let drain = entry.len() - Self::MAX_PER_AGENT;
             entry.drain(..drain);
         }
-        // Global cap: evict oldest agents' receipts if total exceeds limit
+        // Global cap: evict across buckets until total is within limit
         drop(entry);
         let total: usize = self.receipts.iter().map(|e| e.value().len()).sum();
         if total > Self::MAX_RECEIPTS {
-            // Simple eviction: remove oldest entries from first agent found
-            if let Some(mut oldest) = self.receipts.iter_mut().next() {
-                let to_remove = total - Self::MAX_RECEIPTS;
-                let drain = to_remove.min(oldest.value().len());
-                oldest.value_mut().drain(..drain);
+            let mut remaining = total - Self::MAX_RECEIPTS;
+            for mut bucket in self.receipts.iter_mut() {
+                if remaining == 0 {
+                    break;
+                }
+                let drain = remaining.min(bucket.value().len());
+                if drain > 0 {
+                    bucket.value_mut().drain(..drain);
+                    remaining -= drain;
+                }
             }
         }
     }
@@ -5708,5 +5713,36 @@ mod tests {
         assert!(!caps
             .iter()
             .any(|c| matches!(c, Capability::ToolInvoke(name) if name == "shell_exec")));
+    }
+
+    #[test]
+    fn test_receipt_eviction_respects_global_cap() {
+        let tracker = DeliveryTracker::new();
+        let max = DeliveryTracker::MAX_RECEIPTS;
+        let per_agent = 50;
+        let num_agents = (max / per_agent) + 20;
+
+        for i in 0..num_agents {
+            let agent_id = AgentId(uuid::Uuid::new_v4());
+            for _ in 0..per_agent {
+                tracker.record(
+                    agent_id,
+                    openfang_channels::types::DeliveryReceipt {
+                        message_id: String::new(),
+                        channel: "test".to_string(),
+                        recipient: format!("agent-{i}"),
+                        status: openfang_channels::types::DeliveryStatus::Sent,
+                        timestamp: chrono::Utc::now(),
+                        error: None,
+                    },
+                );
+            }
+        }
+
+        let total: usize = tracker.receipts.iter().map(|e| e.value().len()).sum();
+        assert!(
+            total <= max,
+            "Total receipts ({total}) should be <= MAX_RECEIPTS ({max})"
+        );
     }
 }
