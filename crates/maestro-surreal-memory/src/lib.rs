@@ -68,21 +68,13 @@ impl SurrealMemorySubstrate {
         Ok(substrate)
     }
 
-    /// Blocking connect for contexts where an async runtime is already running.
-    pub fn connect_sync<P: AsRef<Path>>(db_path: P) -> OpenFangResult<Self> {
-        tokio::runtime::Handle::current().block_on(async move {
-            Self::connect(db_path).await
-        })
-    }
+    // connect_sync removed — use connect().await instead
 
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
 
-    /// Helper: run an async block on the current tokio runtime (blocking).
-    fn block_on<F: std::future::Future<Output = OpenFangResult<T>>, T>(&self, f: F) -> OpenFangResult<T> {
-        tokio::runtime::Handle::current().block_on(f)
-    }
+    // block_on removed — all methods are now native async
 
     /// Deserialize a `MemoryFragment` from a SurrealDB JSON value.
     fn deserialize_memory_fragment(value: &serde_json::Value) -> Result<MemoryFragment, OpenFangError> {
@@ -428,8 +420,7 @@ impl SurrealMemorySubstrate {
     // -----------------------------------------------------------------------
 
     /// Save an agent entry to SurrealDB.
-    pub fn save_agent(&self, entry: &AgentEntry) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn save_agent(&self, entry: &AgentEntry) -> OpenFangResult<()> {
             // Upsert: delete then create to handle re-registration
             let _: Vec<serde_json::Value> = self.db
                 .query("DELETE agents WHERE id = $id")
@@ -439,23 +430,22 @@ impl SurrealMemorySubstrate {
                 .take(0)
                 .unwrap_or_default();
 
-            let _: Option<serde_json::Value> = self.db
-                .create(("agents", entry.id.0.to_string()))
-                .content(serde_json::json!({
+            self.db
+                .query("CREATE type::record('agents', $id) CONTENT $data")
+                .bind(("id", entry.id.0.to_string()))
+                .bind(("data", serde_json::json!({
                     "id": entry.id.0.to_string(),
                     "name": entry.name,
                     "manifest": entry.manifest,
                     "created_at": chrono::Utc::now().to_rfc3339(),
-                }))
+                })))
                 .await
                 .map_err(|e| OpenFangError::Memory(e.to_string()))?;
             Ok(())
-        })
     }
 
     /// Load all registered agents.
-    pub fn load_all_agents(&self) -> OpenFangResult<Vec<AgentEntry>> {
-        self.block_on(async {
+    pub async fn load_all_agents(&self) -> OpenFangResult<Vec<AgentEntry>> {
             let results: Vec<serde_json::Value> = self.db
                 .query("SELECT * FROM agents")
                 .await
@@ -490,12 +480,10 @@ impl SurrealMemorySubstrate {
                 });
             }
             Ok(agents)
-        })
     }
 
     /// Remove an agent and all its data.
-    pub fn remove_agent(&self, agent_id: AgentId) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn remove_agent(&self, agent_id: AgentId) -> OpenFangResult<()> {
             let aid = agent_id.0.to_string();
             self.db.query("DELETE agents WHERE id = $id")
                 .bind(("id", aid.clone()))
@@ -512,7 +500,6 @@ impl SurrealMemorySubstrate {
                 .await
                 .map_err(|e| OpenFangError::Memory(format!("Agent memory cleanup failed: {}", e)))?;
             Ok(())
-        })
     }
 
     // -----------------------------------------------------------------------
@@ -520,8 +507,7 @@ impl SurrealMemorySubstrate {
     // -----------------------------------------------------------------------
 
     /// Fetch a session by ID.
-    pub fn get_session(&self, session_id: SessionId) -> OpenFangResult<Option<Session>> {
-        self.block_on(async {
+    pub async fn get_session(&self, session_id: SessionId) -> OpenFangResult<Option<Session>> {
             let result: Option<serde_json::Value> = self.db
                 .select(("sessions", session_id.to_string()))
                 .await
@@ -531,26 +517,24 @@ impl SurrealMemorySubstrate {
                 Some(value) => Ok(Some(Self::deserialize_session(&value)?)),
                 None => Ok(None),
             }
-        })
     }
 
     /// Create a new session for an agent.
-    pub fn create_session(&self, agent_id: AgentId) -> OpenFangResult<Session> {
+    pub async fn create_session(&self, agent_id: AgentId) -> OpenFangResult<Session> {
         let session = Session::new(agent_id);
-        self.save_session(&session)?;
+        self.save_session(&session).await?;
         Ok(session)
     }
 
     /// Create a new session with an optional label.
-    pub fn create_session_with_label(&self, agent_id: AgentId, label: Option<&str>) -> OpenFangResult<Session> {
+    pub async fn create_session_with_label(&self, agent_id: AgentId, label: Option<&str>) -> OpenFangResult<Session> {
         let session = Session::with_label(agent_id, label.unwrap_or_default().to_string());
-        self.save_session(&session)?;
+        self.save_session(&session).await?;
         Ok(session)
     }
 
     /// Persist a session to SurrealDB (upsert semantics).
-    pub fn save_session(&self, session: &Session) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn save_session(&self, session: &Session) -> OpenFangResult<()> {
             let sid = session.id.to_string();
             // Delete existing then create (upsert)
             let _ = self.db
@@ -558,9 +542,10 @@ impl SurrealMemorySubstrate {
                 .bind(("id", sid.clone()))
                 .await;
 
-            let _: Option<serde_json::Value> = self.db
-                .create(("sessions", sid))
-                .content(serde_json::json!({
+            self.db
+                .query("CREATE type::record('sessions', $sid) CONTENT $data")
+                .bind(("sid", sid))
+                .bind(("data", serde_json::json!({
                     "id": session.id.0.to_string(),
                     "agent_id": session.agent_id.0.to_string(),
                     "messages": session.messages,
@@ -568,38 +553,32 @@ impl SurrealMemorySubstrate {
                     "label": session.label,
                     "created_at": chrono::Utc::now().to_rfc3339(),
                     "updated_at": chrono::Utc::now().to_rfc3339(),
-                }))
+                })))
                 .await
                 .map_err(|e| OpenFangError::Memory(format!("Session save failed: {}", e)))?;
             Ok(())
-        })
     }
 
     /// Delete a session by ID.
-    pub fn delete_session(&self, session_id: SessionId) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn delete_session(&self, session_id: SessionId) -> OpenFangResult<()> {
             let _: Option<serde_json::Value> = self.db
                 .delete(("sessions", session_id.to_string()))
                 .await
                 .map_err(|e| OpenFangError::Memory(format!("Session delete failed: {}", e)))?;
             Ok(())
-        })
     }
 
     /// Delete all sessions for a given agent.
-    pub fn delete_agent_sessions(&self, agent_id: AgentId) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn delete_agent_sessions(&self, agent_id: AgentId) -> OpenFangResult<()> {
             self.db.query("DELETE sessions WHERE agent_id = $agent_id")
                 .bind(("agent_id", agent_id.0.to_string()))
                 .await
                 .map_err(|e| OpenFangError::Memory(format!("Delete agent sessions failed: {}", e)))?;
             Ok(())
-        })
     }
 
     /// Delete the canonical (most recent) session for an agent.
-    pub fn delete_canonical_session(&self, agent_id: AgentId) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn delete_canonical_session(&self, agent_id: AgentId) -> OpenFangResult<()> {
             // Find the most recent session for the agent and delete it
             let results: Vec<serde_json::Value> = self.db
                 .query("SELECT id FROM sessions WHERE agent_id = $agent_id ORDER BY updated_at DESC LIMIT 1")
@@ -618,12 +597,10 @@ impl SurrealMemorySubstrate {
                 }
             }
             Ok(())
-        })
     }
 
     /// List all sessions for a specific agent, returned as JSON values.
-    pub fn list_agent_sessions(&self, agent_id: AgentId) -> OpenFangResult<Vec<serde_json::Value>> {
-        self.block_on(async {
+    pub async fn list_agent_sessions(&self, agent_id: AgentId) -> OpenFangResult<Vec<serde_json::Value>> {
             let results: Vec<serde_json::Value> = self.db
                 .query("SELECT * FROM sessions WHERE agent_id = $agent_id ORDER BY updated_at DESC")
                 .bind(("agent_id", agent_id.0.to_string()))
@@ -632,12 +609,10 @@ impl SurrealMemorySubstrate {
                 .take(0)
                 .map_err(|e| OpenFangError::Memory(format!("List agent sessions parse failed: {}", e)))?;
             Ok(results)
-        })
     }
 
     /// List all sessions across all agents.
-    pub fn list_sessions(&self) -> OpenFangResult<Vec<serde_json::Value>> {
-        self.block_on(async {
+    pub async fn list_sessions(&self) -> OpenFangResult<Vec<serde_json::Value>> {
             let results: Vec<serde_json::Value> = self.db
                 .query("SELECT * FROM sessions ORDER BY updated_at DESC")
                 .await
@@ -645,12 +620,10 @@ impl SurrealMemorySubstrate {
                 .take(0)
                 .map_err(|e| OpenFangError::Memory(format!("List sessions parse failed: {}", e)))?;
             Ok(results)
-        })
     }
 
     /// Set or clear a label on a session.
-    pub fn set_session_label(&self, session_id: SessionId, label: Option<String>) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn set_session_label(&self, session_id: SessionId, label: Option<String>) -> OpenFangResult<()> {
             self.db
                 .query("UPDATE sessions SET label = $label, updated_at = $now WHERE id = $id")
                 .bind(("id", session_id.0.to_string()))
@@ -659,12 +632,10 @@ impl SurrealMemorySubstrate {
                 .await
                 .map_err(|e| OpenFangError::Memory(format!("Set session label failed: {}", e)))?;
             Ok(())
-        })
     }
 
     /// Find a session by label for a given agent.
-    pub fn find_session_by_label(&self, agent_id: AgentId, label: &str) -> OpenFangResult<Option<Session>> {
-        self.block_on(async {
+    pub async fn find_session_by_label(&self, agent_id: AgentId, label: &str) -> OpenFangResult<Option<Session>> {
             let results: Vec<serde_json::Value> = self.db
                 .query("SELECT * FROM sessions WHERE agent_id = $agent_id AND label = $label LIMIT 1")
                 .bind(("agent_id", agent_id.0.to_string()))
@@ -678,7 +649,6 @@ impl SurrealMemorySubstrate {
                 Some(value) => Ok(Some(Self::deserialize_session(&value)?)),
                 None => Ok(None),
             }
-        })
     }
 
     // -----------------------------------------------------------------------
@@ -686,30 +656,23 @@ impl SurrealMemorySubstrate {
     // -----------------------------------------------------------------------
 
     /// Blocking wrapper for `Memory::get`.
-    pub fn structured_get(&self, agent_id: AgentId, key: &str) -> OpenFangResult<Option<serde_json::Value>> {
-        self.block_on(async {
+    pub async fn structured_get(&self, agent_id: AgentId, key: &str) -> OpenFangResult<Option<serde_json::Value>> {
             self.get(agent_id, key).await
-        })
     }
 
     /// Blocking wrapper for `Memory::set`.
-    pub fn structured_set(&self, agent_id: AgentId, key: &str, value: serde_json::Value) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn structured_set(&self, agent_id: AgentId, key: &str, value: serde_json::Value) -> OpenFangResult<()> {
             self.set(agent_id, key, value).await
-        })
     }
 
     /// Blocking wrapper for `Memory::delete`.
-    pub fn structured_delete(&self, agent_id: AgentId, key: &str) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn structured_delete(&self, agent_id: AgentId, key: &str) -> OpenFangResult<()> {
             self.delete(agent_id, key).await
-        })
     }
 
     /// List all KV pairs for an agent.
-    pub fn list_kv(&self, agent_id: AgentId) -> OpenFangResult<Vec<(String, serde_json::Value)>> {
-        self.block_on(async {
-            let table = format!("kv_{}", agent_id.0);
+    pub async fn list_kv(&self, agent_id: AgentId) -> OpenFangResult<Vec<(String, serde_json::Value)>> {
+            let table = format!("`kv_{}`", agent_id.0.to_string().replace('-', "_"));
             let sql = format!("SELECT key, value FROM {}", table);
             let results: Vec<serde_json::Value> = self.db
                 .query(&sql)
@@ -724,7 +687,6 @@ impl SurrealMemorySubstrate {
                 Some((key, value))
             }).collect();
             Ok(pairs)
-        })
     }
 
     // -----------------------------------------------------------------------
@@ -732,8 +694,7 @@ impl SurrealMemorySubstrate {
     // -----------------------------------------------------------------------
 
     /// Get the canonical (most recent) context messages for an agent.
-    pub fn canonical_context(&self, agent_id: AgentId, limit: Option<usize>) -> OpenFangResult<Vec<Message>> {
-        self.block_on(async {
+    pub async fn canonical_context(&self, agent_id: AgentId, limit: Option<usize>) -> OpenFangResult<Vec<Message>> {
             let _limit_val = limit.unwrap_or(50);
             let results: Vec<serde_json::Value> = self.db
                 .query("SELECT messages FROM sessions WHERE agent_id = $agent_id ORDER BY updated_at DESC LIMIT 1")
@@ -750,12 +711,10 @@ impl SurrealMemorySubstrate {
                 }
             }
             Ok(Vec::new())
-        })
     }
 
     /// Append messages to the canonical session for an agent.
-    pub fn append_canonical(&self, agent_id: AgentId, messages: &[Message], _limit: Option<usize>) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn append_canonical(&self, agent_id: AgentId, messages: &[Message], _limit: Option<usize>) -> OpenFangResult<()> {
             // Find the most recent session for this agent
             let results: Vec<serde_json::Value> = self.db
                 .query("SELECT id FROM sessions WHERE agent_id = $agent_id ORDER BY updated_at DESC LIMIT 1")
@@ -768,14 +727,13 @@ impl SurrealMemorySubstrate {
             if let Some(row) = results.first() {
                 if let Some(sid_str) = row.get("id").and_then(|v| v.as_str()) {
                     let sid = SessionId(uuid::Uuid::parse_str(sid_str).unwrap_or_else(|_| SessionId::new().0));
-                    if let Some(mut session) = self.get_session(sid)? {
+                    if let Some(mut session) = self.get_session(sid).await? {
                         session.messages.extend_from_slice(messages);
-                        self.save_session(&session)?;
+                        self.save_session(&session).await?;
                     }
                 }
             }
             Ok(())
-        })
     }
 
     // -----------------------------------------------------------------------
@@ -814,21 +772,20 @@ impl SurrealMemorySubstrate {
     // -----------------------------------------------------------------------
 
     /// Store an LLM-generated summary after session compaction.
-    pub fn store_llm_summary(&self, agent_id: AgentId, summary: &str, kept_messages: Vec<Message>) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn store_llm_summary(&self, agent_id: AgentId, summary: &str, kept_messages: Vec<Message>) -> OpenFangResult<()> {
             let id = uuid::Uuid::new_v4().to_string();
-            let _: Option<serde_json::Value> = self.db
-                .create(("llm_summaries", id.clone()))
-                .content(serde_json::json!({
+            self.db
+                .query("CREATE type::record('llm_summaries', $id) CONTENT $data")
+                .bind(("id", id.clone()))
+                .bind(("data", serde_json::json!({
                     "agent_id": agent_id.0.to_string(),
                     "summary": summary,
                     "kept_messages": kept_messages,
                     "created_at": chrono::Utc::now().to_rfc3339(),
-                }))
+                })))
                 .await
                 .map_err(|e| OpenFangError::Memory(format!("Store LLM summary failed: {}", e)))?;
             Ok(())
-        })
     }
 
     /// `usage_conn` is a legacy SQLite method. In the SurrealDB substrate, usage
@@ -844,8 +801,7 @@ impl SurrealMemorySubstrate {
     // -----------------------------------------------------------------------
 
     /// Load all paired devices from SurrealDB.
-    pub fn load_paired_devices(&self) -> OpenFangResult<Vec<serde_json::Value>> {
-        self.block_on(async {
+    pub async fn load_paired_devices(&self) -> OpenFangResult<Vec<serde_json::Value>> {
             let results: Vec<serde_json::Value> = self.db
                 .query("SELECT * FROM paired_devices")
                 .await
@@ -853,12 +809,10 @@ impl SurrealMemorySubstrate {
                 .take(0)
                 .map_err(|e| OpenFangError::Memory(format!("Load paired devices parse failed: {}", e)))?;
             Ok(results)
-        })
     }
 
     /// Save (upsert) a paired device.
-    pub fn save_paired_device(&self, device: serde_json::Value) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn save_paired_device(&self, device: serde_json::Value) -> OpenFangResult<()> {
             let device_id = device.get("device_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| OpenFangError::Memory("Missing device_id in paired device".to_string()))?
@@ -870,24 +824,22 @@ impl SurrealMemorySubstrate {
                 .await
                 .map_err(|e| OpenFangError::Memory(format!("Paired device delete failed: {}", e)))?;
 
-            let _: Option<serde_json::Value> = self.db
-                .create(("paired_devices", device_id))
-                .content(device)
+            self.db
+                .query("CREATE type::record('paired_devices', $device_id) CONTENT $data")
+                .bind(("device_id", device_id))
+                .bind(("data", device))
                 .await
                 .map_err(|e| OpenFangError::Memory(format!("Save paired device failed: {}", e)))?;
             Ok(())
-        })
     }
 
     /// Remove a paired device by device ID.
-    pub fn remove_paired_device(&self, device_id: &str) -> OpenFangResult<()> {
-        self.block_on(async {
+    pub async fn remove_paired_device(&self, device_id: &str) -> OpenFangResult<()> {
             self.db.query("DELETE paired_devices WHERE device_id = $device_id")
                 .bind(("device_id", device_id.to_string()))
                 .await
                 .map_err(|e| OpenFangError::Memory(format!("Remove paired device failed: {}", e)))?;
             Ok(())
-        })
     }
 
     // -----------------------------------------------------------------------
@@ -899,9 +851,10 @@ impl SurrealMemorySubstrate {
         let task_id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
 
-        let _: Option<serde_json::Value> = self.db
-            .create(("tasks", task_id.clone()))
-            .content(serde_json::json!({
+        self.db
+            .query("CREATE type::record('tasks', $task_id) CONTENT $data")
+            .bind(("task_id", task_id.clone()))
+            .bind(("data", serde_json::json!({
                 "task_id": task_id,
                 "title": title,
                 "description": description,
@@ -912,7 +865,7 @@ impl SurrealMemorySubstrate {
                 "result": null,
                 "created_at": now,
                 "updated_at": now,
-            }))
+            })))
             .await
             .map_err(|e| OpenFangError::Memory(format!("Task post failed: {}", e)))?;
 
@@ -1003,7 +956,7 @@ impl SurrealMemorySubstrate {
 #[async_trait]
 impl Memory for SurrealMemorySubstrate {
     async fn get(&self, agent_id: AgentId, key: &str) -> OpenFangResult<Option<serde_json::Value>> {
-        let table = format!("kv_{}", agent_id.0);
+        let table = format!("`kv_{}`", agent_id.0.to_string().replace('-', "_"));
         let sql = format!("SELECT value FROM {} WHERE key = $key LIMIT 1", table);
         let key_owned = key.to_string();
 
@@ -1019,7 +972,7 @@ impl Memory for SurrealMemorySubstrate {
     }
 
     async fn set(&self, agent_id: AgentId, key: &str, value: serde_json::Value) -> OpenFangResult<()> {
-        let table = format!("kv_{}", agent_id.0);
+        let table = format!("`kv_{}`", agent_id.0.to_string().replace('-', "_"));
         let sql = format!("DELETE {} WHERE key = $key", table);
         let key_owned = key.to_string();
 
@@ -1044,7 +997,7 @@ impl Memory for SurrealMemorySubstrate {
     }
 
     async fn delete(&self, agent_id: AgentId, key: &str) -> OpenFangResult<()> {
-        let table = format!("kv_{}", agent_id.0);
+        let table = format!("`kv_{}`", agent_id.0.to_string().replace('-', "_"));
         let sql = format!("DELETE {} WHERE key = $key", table);
         let key_owned = key.to_string();
 
@@ -1061,9 +1014,10 @@ impl Memory for SurrealMemorySubstrate {
         let id = MemoryId::new();
         let now = chrono::Utc::now();
 
-        let _: Option<serde_json::Value> = self.db
-            .create(("memory_fragments", id.0.to_string()))
-            .content(serde_json::json!({
+        self.db
+            .query("CREATE type::record('memory_fragments', $id) CONTENT $data")
+            .bind(("id", id.0.to_string()))
+            .bind(("data", serde_json::json!({
                 "id": id.0.to_string(),
                 "agent_id": agent_id.0.to_string(),
                 "content": content,
@@ -1076,7 +1030,7 @@ impl Memory for SurrealMemorySubstrate {
                 "access_count": 0,
                 "scope": scope,
                 "deleted": false
-            }))
+            })))
             .await
             .map_err(|e| OpenFangError::Memory(format!("Memory remember failed: {}", e)))?;
 
@@ -1111,7 +1065,7 @@ impl Memory for SurrealMemorySubstrate {
 
         let results: Vec<serde_json::Value> = self.db
             .query(&sql)
-            .bind(bindings)
+            .bind(serde_json::Value::Object(bindings))
             .await
             .map_err(|e| OpenFangError::Memory(format!("Memory recall failed: {}", e)))?
             .take(0)
@@ -1143,16 +1097,17 @@ impl Memory for SurrealMemorySubstrate {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now();
 
-        let _: Option<serde_json::Value> = self.db
-            .create(("entities", id.clone()))
-            .content(serde_json::json!({
+        self.db
+            .query("CREATE type::record('entities', $id) CONTENT $data")
+            .bind(("id", id.clone()))
+            .bind(("data", serde_json::json!({
                 "id": id,
                 "entity_type": serde_json::to_string(&entity.entity_type).map_err(|e| OpenFangError::Memory(format!("Entity type serialization failed: {}", e)))?,
                 "name": entity.name,
                 "properties": entity.properties,
                 "created_at": now.to_rfc3339(),
                 "updated_at": now.to_rfc3339()
-            }))
+            })))
             .await
             .map_err(|e| OpenFangError::Memory(format!("Entity add failed: {}", e)))?;
 
@@ -1163,9 +1118,10 @@ impl Memory for SurrealMemorySubstrate {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now();
 
-        let _: Option<serde_json::Value> = self.db
-            .create(("relations", id.clone()))
-            .content(serde_json::json!({
+        self.db
+            .query("CREATE type::record('relations', $id) CONTENT $data")
+            .bind(("id", id.clone()))
+            .bind(("data", serde_json::json!({
                 "id": id,
                 "source": relation.source,
                 "relation": serde_json::to_string(&relation.relation).map_err(|e| OpenFangError::Memory(format!("Relation type serialization failed: {}", e)))?,
@@ -1173,7 +1129,7 @@ impl Memory for SurrealMemorySubstrate {
                 "properties": relation.properties,
                 "confidence": relation.confidence,
                 "created_at": now.to_rfc3339()
-            }))
+            })))
             .await
             .map_err(|e| OpenFangError::Memory(format!("Relation add failed: {}", e)))?;
 
@@ -1205,7 +1161,7 @@ impl Memory for SurrealMemorySubstrate {
 
         let results: Vec<serde_json::Value> = self.db
             .query(&sql)
-            .bind(bindings)
+            .bind(serde_json::Value::Object(bindings))
             .await
             .map_err(|e| OpenFangError::Memory(format!("Graph query failed: {}", e)))?
             .take(0)
@@ -1321,9 +1277,10 @@ impl Memory for SurrealMemorySubstrate {
                 let entity_id = entity.get("id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown_entity");
-                let _: Option<serde_json::Value> = self.db
-                    .create(("entities", entity_id))
-                    .content(entity.clone())
+                self.db
+                    .query("CREATE type::record('entities', $id) CONTENT $data")
+                    .bind(("id", entity_id))
+                    .bind(("data", entity.clone()))
                     .await
                     .map_err(|e| OpenFangError::Memory(format!("Entity import failed: {}", e)))?;
                 entities_imported += 1;
@@ -1335,9 +1292,10 @@ impl Memory for SurrealMemorySubstrate {
                 let relation_id = relation.get("id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown_relation");
-                let _: Option<serde_json::Value> = self.db
-                    .create(("relations", relation_id))
-                    .content(relation.clone())
+                self.db
+                    .query("CREATE type::record('relations', $id) CONTENT $data")
+                    .bind(("id", relation_id))
+                    .bind(("data", relation.clone()))
                     .await
                     .map_err(|e| OpenFangError::Memory(format!("Relation import failed: {}", e)))?;
                 relations_imported += 1;
@@ -1349,9 +1307,10 @@ impl Memory for SurrealMemorySubstrate {
                 let memory_id = memory.get("id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown_memory");
-                let _: Option<serde_json::Value> = self.db
-                    .create(("memory_fragments", memory_id))
-                    .content(memory.clone())
+                self.db
+                    .query("CREATE type::record('memory_fragments', $id) CONTENT $data")
+                    .bind(("id", memory_id))
+                    .bind(("data", memory.clone()))
                     .await
                     .map_err(|e| OpenFangError::Memory(format!("Memory import failed: {}", e)))?;
                 memories_imported += 1;
@@ -1370,8 +1329,8 @@ impl Memory for SurrealMemorySubstrate {
         &self,
         session: &openfang_types::session::Session,
     ) -> OpenFangResult<()> {
-        // Delegate to the inherent blocking method
-        SurrealMemorySubstrate::save_session(self, session)
+        // Delegate to the inherent async method
+        SurrealMemorySubstrate::save_session(self, session).await
     }
 }
 
@@ -1381,7 +1340,9 @@ impl Memory for SurrealMemorySubstrate {
 
 impl openfang_types::session::SessionPersistence for SurrealMemorySubstrate {
     fn save_session(&self, session: &Session) -> OpenFangResult<()> {
-        SurrealMemorySubstrate::save_session(self, session)
+        tokio::runtime::Handle::current().block_on(
+            SurrealMemorySubstrate::save_session(self, session)
+        )
     }
 }
 
@@ -1396,7 +1357,7 @@ mod tests {
     #[tokio::test]
     async fn test_connect_in_memory() {
         let substrate = SurrealMemorySubstrate::connect_in_memory().await.unwrap();
-        assert!(substrate.load_all_agents().unwrap().is_empty());
+        assert!(substrate.load_all_agents().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1438,21 +1399,21 @@ mod tests {
         let agent_id = AgentId::new();
 
         // Create session
-        let session = substrate.create_session(agent_id).unwrap();
+        let session = substrate.create_session(agent_id).await.unwrap();
         assert_eq!(session.agent_id, agent_id);
 
         // Get session
-        let fetched = substrate.get_session(session.id).unwrap();
+        let fetched = substrate.get_session(session.id).await.unwrap();
         assert!(fetched.is_some());
         assert_eq!(fetched.unwrap().id, session.id);
 
         // List agent sessions
-        let sessions = substrate.list_agent_sessions(agent_id).unwrap();
+        let sessions = substrate.list_agent_sessions(agent_id).await.unwrap();
         assert_eq!(sessions.len(), 1);
 
         // Delete session
-        substrate.delete_session(session.id).unwrap();
-        let gone = substrate.get_session(session.id).unwrap();
+        substrate.delete_session(session.id).await.unwrap();
+        let gone = substrate.get_session(session.id).await.unwrap();
         assert!(gone.is_none());
     }
 
@@ -1462,17 +1423,17 @@ mod tests {
         let agent_id = AgentId::new();
 
         // Create with label
-        let session = substrate.create_session_with_label(agent_id, Some("my-label")).unwrap();
+        let session = substrate.create_session_with_label(agent_id, Some("my-label")).await.unwrap();
         assert_eq!(session.label.as_deref(), Some("my-label"));
 
         // Find by label
-        let found = substrate.find_session_by_label(agent_id, "my-label").unwrap();
+        let found = substrate.find_session_by_label(agent_id, "my-label").await.unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().id, session.id);
 
         // Set label
-        substrate.set_session_label(session.id, Some("new-label".to_string())).unwrap();
-        let found2 = substrate.find_session_by_label(agent_id, "new-label").unwrap();
+        substrate.set_session_label(session.id, Some("new-label".to_string())).await.unwrap();
+        let found2 = substrate.find_session_by_label(agent_id, "new-label").await.unwrap();
         assert!(found2.is_some());
     }
 
@@ -1490,16 +1451,16 @@ mod tests {
         });
 
         // Save
-        substrate.save_paired_device(device).unwrap();
+        substrate.save_paired_device(device).await.unwrap();
 
         // Load
-        let devices = substrate.load_paired_devices().unwrap();
+        let devices = substrate.load_paired_devices().await.unwrap();
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].get("device_id").unwrap().as_str().unwrap(), "dev-001");
 
         // Remove
-        substrate.remove_paired_device("dev-001").unwrap();
-        let devices_after = substrate.load_paired_devices().unwrap();
+        substrate.remove_paired_device("dev-001").await.unwrap();
+        let devices_after = substrate.load_paired_devices().await.unwrap();
         assert_eq!(devices_after.len(), 0);
     }
 
@@ -1531,14 +1492,14 @@ mod tests {
         let agent_id = AgentId::new();
 
         // Should not panic
-        substrate.store_llm_summary(agent_id, "Summary text", vec![]).unwrap();
+        substrate.store_llm_summary(agent_id, "Summary text", vec![]).await.unwrap();
     }
 
     #[tokio::test]
     async fn test_write_jsonl_mirror() {
         let substrate = SurrealMemorySubstrate::connect_in_memory().await.unwrap();
         let agent_id = AgentId::new();
-        let session = substrate.create_session(agent_id).unwrap();
+        let session = substrate.create_session(agent_id).await.unwrap();
 
         let tmp = tempfile::tempdir().unwrap();
         substrate.write_jsonl_mirror(&session, tmp.path()).unwrap();

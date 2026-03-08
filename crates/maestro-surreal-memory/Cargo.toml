@@ -7,7 +7,7 @@ description = "SurrealDB-based memory substrate for OpenFang"
 
 [dependencies]
 openfang-types = { path = "../openfang-types" }
-surrealdb = { version = "2", features = ["kv-mem", "kv-rocksdb"] }
+surrealdb = { version = "3", features = ["kv-mem", "kv-rocksdb"] }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

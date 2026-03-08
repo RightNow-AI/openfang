@@ -33,10 +33,7 @@ impl SurrealUsageStore {
         Self { db: None }
     }
 
-    /// Helper: run an async block on the current tokio runtime.
-    fn block_on<F: std::future::Future<Output = OpenFangResult<T>>, T>(&self, f: F) -> OpenFangResult<T> {
-        tokio::runtime::Handle::current().block_on(f)
-    }
+    // block_on removed — all methods are now native async
 
     /// Get a reference to the database, returning an error if not initialized.
     fn db(&self) -> OpenFangResult<&Surreal<Db>> {
@@ -86,7 +83,7 @@ impl SurrealUsageStore {
     // -----------------------------------------------------------------------
 
     /// Record a usage event.
-    pub fn record(&self, record: &UsageRecord) -> OpenFangResult<()> {
+    pub async fn record(&self, record: &UsageRecord) -> OpenFangResult<()> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(()),
@@ -98,11 +95,12 @@ impl SurrealUsageStore {
         let cost_usd = record.cost_usd;
         let tool_calls = record.tool_calls;
 
-        self.block_on(async {
+        {
             let id = uuid::Uuid::new_v4().to_string();
-            let _: Option<serde_json::Value> = db
-                .create(("usage_records", id.clone()))
-                .content(serde_json::json!({
+            db
+                .query("CREATE type::record('usage_records', $id) CONTENT $data")
+                .bind(("id", id.clone()))
+                .bind(("data", serde_json::json!({
                     "agent_id": agent_id,
                     "model": model,
                     "input_tokens": input_tokens,
@@ -110,7 +108,7 @@ impl SurrealUsageStore {
                     "cost_usd": cost_usd,
                     "tool_calls": tool_calls,
                     "created_at": chrono::Utc::now().to_rfc3339(),
-                }))
+                })))
                 .await
                 .map_err(|e| OpenFangError::Memory(format!("Usage record insert failed: {}", e)))?;
             Ok(())
@@ -122,7 +120,7 @@ impl SurrealUsageStore {
     // -----------------------------------------------------------------------
 
     /// Query hourly cost for an agent (last 1 hour).
-    pub fn query_hourly(&self, agent_id: AgentId) -> OpenFangResult<f64> {
+    pub async fn query_hourly(&self, agent_id: AgentId) -> OpenFangResult<f64> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(0.0),
@@ -130,7 +128,7 @@ impl SurrealUsageStore {
         let aid = agent_id.0.to_string();
         let cutoff = Self::hours_ago(1);
 
-        self.block_on(async {
+        {
             let results: Vec<serde_json::Value> = db
                 .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE agent_id = $aid AND created_at >= $cutoff GROUP ALL")
                 .bind(("aid", aid))
@@ -148,7 +146,7 @@ impl SurrealUsageStore {
     }
 
     /// Query daily cost for an agent (since start of today UTC).
-    pub fn query_daily(&self, agent_id: AgentId) -> OpenFangResult<f64> {
+    pub async fn query_daily(&self, agent_id: AgentId) -> OpenFangResult<f64> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(0.0),
@@ -156,7 +154,7 @@ impl SurrealUsageStore {
         let aid = agent_id.0.to_string();
         let cutoff = Self::start_of_today();
 
-        self.block_on(async {
+        {
             let results: Vec<serde_json::Value> = db
                 .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE agent_id = $aid AND created_at >= $cutoff GROUP ALL")
                 .bind(("aid", aid))
@@ -174,7 +172,7 @@ impl SurrealUsageStore {
     }
 
     /// Query monthly cost for an agent (since start of this month UTC).
-    pub fn query_monthly(&self, agent_id: AgentId) -> OpenFangResult<f64> {
+    pub async fn query_monthly(&self, agent_id: AgentId) -> OpenFangResult<f64> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(0.0),
@@ -182,7 +180,7 @@ impl SurrealUsageStore {
         let aid = agent_id.0.to_string();
         let cutoff = Self::start_of_month();
 
-        self.block_on(async {
+        {
             let results: Vec<serde_json::Value> = db
                 .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE agent_id = $aid AND created_at >= $cutoff GROUP ALL")
                 .bind(("aid", aid))
@@ -204,14 +202,14 @@ impl SurrealUsageStore {
     // -----------------------------------------------------------------------
 
     /// Query global hourly cost (last 1 hour, all agents).
-    pub fn query_global_hourly(&self) -> OpenFangResult<f64> {
+    pub async fn query_global_hourly(&self) -> OpenFangResult<f64> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(0.0),
         };
         let cutoff = Self::hours_ago(1);
 
-        self.block_on(async {
+        {
             let results: Vec<serde_json::Value> = db
                 .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE created_at >= $cutoff GROUP ALL")
                 .bind(("cutoff", cutoff))
@@ -228,14 +226,14 @@ impl SurrealUsageStore {
     }
 
     /// Query global monthly cost (since start of this month, all agents).
-    pub fn query_global_monthly(&self) -> OpenFangResult<f64> {
+    pub async fn query_global_monthly(&self) -> OpenFangResult<f64> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(0.0),
         };
         let cutoff = Self::start_of_month();
 
-        self.block_on(async {
+        {
             let results: Vec<serde_json::Value> = db
                 .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE created_at >= $cutoff GROUP ALL")
                 .bind(("cutoff", cutoff))
@@ -256,13 +254,13 @@ impl SurrealUsageStore {
     // -----------------------------------------------------------------------
 
     /// Get a usage summary, optionally filtered by agent.
-    pub fn query_summary(&self, agent_id: Option<AgentId>) -> OpenFangResult<UsageSummary> {
+    pub async fn query_summary(&self, agent_id: Option<AgentId>) -> OpenFangResult<UsageSummary> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(UsageSummary::default()),
         };
 
-        self.block_on(async {
+        {
             let (sql, bindings) = if let Some(aid) = agent_id {
                 (
                     "SELECT math::sum(input_tokens) AS ti, math::sum(output_tokens) AS to_val, math::sum(cost_usd) AS tc, count() AS cc, math::sum(tool_calls) AS tt FROM usage_records WHERE agent_id = $aid GROUP ALL".to_string(),
@@ -305,13 +303,13 @@ impl SurrealUsageStore {
     }
 
     /// Get usage grouped by model.
-    pub fn query_by_model(&self) -> OpenFangResult<Vec<ModelUsage>> {
+    pub async fn query_by_model(&self) -> OpenFangResult<Vec<ModelUsage>> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(Vec::new()),
         };
 
-        self.block_on(async {
+        {
             let results: Vec<serde_json::Value> = db
                 .query(r#"
                     SELECT
@@ -341,14 +339,14 @@ impl SurrealUsageStore {
     }
 
     /// Get daily usage breakdown for the last N days.
-    pub fn query_daily_breakdown(&self, days: u32) -> OpenFangResult<Vec<DailyBreakdown>> {
+    pub async fn query_daily_breakdown(&self, days: u32) -> OpenFangResult<Vec<DailyBreakdown>> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(Vec::new()),
         };
         let cutoff = Self::days_ago(days as i64);
 
-        self.block_on(async {
+        {
             let results: Vec<serde_json::Value> = db
                 .query(r#"
                     SELECT
@@ -379,13 +377,13 @@ impl SurrealUsageStore {
     }
 
     /// Get the date of the first usage event.
-    pub fn query_first_event_date(&self) -> OpenFangResult<Option<String>> {
+    pub async fn query_first_event_date(&self) -> OpenFangResult<Option<String>> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(None),
         };
 
-        self.block_on(async {
+        {
             let results: Vec<serde_json::Value> = db
                 .query("SELECT created_at FROM usage_records ORDER BY created_at ASC LIMIT 1")
                 .await
@@ -401,14 +399,14 @@ impl SurrealUsageStore {
     }
 
     /// Get today's total cost across all agents.
-    pub fn query_today_cost(&self) -> OpenFangResult<f64> {
+    pub async fn query_today_cost(&self) -> OpenFangResult<f64> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(0.0),
         };
         let cutoff = Self::start_of_today();
 
-        self.block_on(async {
+        {
             let results: Vec<serde_json::Value> = db
                 .query("SELECT math::sum(cost_usd) AS total FROM usage_records WHERE created_at >= $cutoff GROUP ALL")
                 .bind(("cutoff", cutoff))
@@ -425,14 +423,14 @@ impl SurrealUsageStore {
     }
 
     /// Clean up usage records older than N days.
-    pub fn cleanup_old(&self, days: u32) -> OpenFangResult<usize> {
+    pub async fn cleanup_old(&self, days: u32) -> OpenFangResult<usize> {
         let db = match &self.db {
             Some(db) => db.clone(),
             None => return Ok(0),
         };
         let cutoff = Self::days_ago(days as i64);
 
-        self.block_on(async {
+        {
             // Count before delete
             let count_result: Vec<serde_json::Value> = db
                 .query("SELECT count() AS cnt FROM usage_records WHERE created_at < $cutoff GROUP ALL")
