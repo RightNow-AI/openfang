@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use openfang_types::model_catalog::{
     FIREWORKS_BASE_URL, GROQ_BASE_URL, LMSTUDIO_BASE_URL, MISTRAL_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL,
+    OPENAI_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL, QWEN_BASE_URL
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -205,6 +205,7 @@ pub fn create_embedding_driver(
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| VLLM_BASE_URL.to_string()),
             "lmstudio" => LMSTUDIO_BASE_URL.to_string(),
+            "qwen" => QWEN_BASE_URL.to_string(),
             other => {
                 warn!("Unknown embedding provider '{other}', using OpenAI-compatible format");
                 format!("https://{other}/v1")
