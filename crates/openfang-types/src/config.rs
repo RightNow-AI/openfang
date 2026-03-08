@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Serde helper: returns `true` for `#[serde(default = "default_true")]`.
+fn default_true() -> bool {
+    true
+}
+
 /// Deserialize a `Vec<String>` that tolerates both string and integer elements.
 ///
 /// When channel configs are saved from the web dashboard, numeric IDs (e.g. Discord
@@ -1557,6 +1562,9 @@ pub struct TelegramConfig {
     pub default_agent: Option<String>,
     /// Polling interval in seconds.
     pub poll_interval_secs: u64,
+    /// Show emoji reactions on messages to indicate agent lifecycle status.
+    #[serde(default = "default_true")]
+    pub status_reactions: bool,
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
@@ -1569,6 +1577,7 @@ impl Default for TelegramConfig {
             allowed_users: vec![],
             default_agent: None,
             poll_interval_secs: 1,
+            status_reactions: true,
             overrides: ChannelOverrides::default(),
         }
     }

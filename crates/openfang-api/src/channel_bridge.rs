@@ -1026,10 +1026,11 @@ pub async fn start_channel_bridge_with_config(
     if let Some(ref tg_config) = config.telegram {
         if let Some(token) = read_token(&tg_config.bot_token_env, "Telegram") {
             let poll_interval = Duration::from_secs(tg_config.poll_interval_secs);
-            let adapter = Arc::new(TelegramAdapter::new(
+            let adapter = Arc::new(TelegramAdapter::with_reactions(
                 token,
                 tg_config.allowed_users.clone(),
                 poll_interval,
+                tg_config.status_reactions,
             ));
             adapters.push((adapter, tg_config.default_agent.clone()));
         }
