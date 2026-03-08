@@ -905,4 +905,19 @@ mod tests {
         let msg = parse_telegram_update(&update, &[], "fake:token", &client).await.unwrap();
         assert!(matches!(msg.content, ChannelContent::Location { .. }));
     }
+
+    #[test]
+    fn test_telegram_reaction_emoji_mapping() {
+        assert_eq!(telegram_reaction_emoji(&AgentPhase::Queued), "\u{1F440}"); // 👀
+        assert_eq!(telegram_reaction_emoji(&AgentPhase::Thinking), "\u{1F914}"); // 🤔
+        assert_eq!(
+            telegram_reaction_emoji(&AgentPhase::ToolUse {
+                tool_name: "shell_exec".to_string()
+            }),
+            "\u{1F525}" // 🔥
+        );
+        assert_eq!(telegram_reaction_emoji(&AgentPhase::Streaming), "\u{270D}"); // ✍
+        assert_eq!(telegram_reaction_emoji(&AgentPhase::Done), "\u{1F44D}"); // 👍
+        assert_eq!(telegram_reaction_emoji(&AgentPhase::Error), "\u{1F44E}"); // 👎
+    }
 }
