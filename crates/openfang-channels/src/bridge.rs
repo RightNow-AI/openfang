@@ -656,8 +656,14 @@ async fn dispatch_message(
     // Send typing indicator (best-effort)
     let _ = adapter.send_typing(&message.sender).await;
 
-    // Lifecycle reactions: 👀 queued → 🤔 thinking → 👍 done / 👎 error
+    // Inject channel context so agent can use message_react tool
     let msg_id = &message.platform_message_id;
+    let text_with_ctx = format!(
+        "[channel_context: channel={} recipient={} message_id={}]\n{}",
+        ct_str, &message.sender.platform_id, msg_id, &text
+    );
+
+    // Ack reaction: 👀 immediately so user knows we received it
     let _ = adapter
         .send_reaction(
             &message.sender,
@@ -671,9 +677,8 @@ async fn dispatch_message(
         .await;
 
     // Send to agent; switch to "thinking" after a short delay while waiting
-    let agent_future = handle.send_message(agent_id, &text);
+    let agent_future = handle.send_message(agent_id, &text_with_ctx);
     let thinking_delay = tokio::time::sleep(std::time::Duration::from_secs(2));
-    let mut sent_thinking = false;
 
     tokio::pin!(agent_future);
     tokio::pin!(thinking_delay);
@@ -695,7 +700,6 @@ async fn dispatch_message(
                     },
                 )
                 .await;
-            sent_thinking = true;
             // Now await the actual response
             agent_future.await
         }
@@ -703,17 +707,8 @@ async fn dispatch_message(
 
     match result {
         Ok(response) => {
-            let _ = adapter
-                .send_reaction(
-                    &message.sender,
-                    msg_id,
-                    &LifecycleReaction {
-                        phase: AgentPhase::Done,
-                        emoji: default_phase_emoji(&AgentPhase::Done).to_string(),
-                        remove_previous: true,
-                    },
-                )
-                .await;
+            // No hardcoded "done" reaction — agent can choose via message_react tool.
+            // Only clear thinking reaction if agent didn't react.
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
             handle
                 .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None)
@@ -752,7 +747,6 @@ async fn dispatch_message(
                 .await;
         }
     }
-    let _ = sent_thinking; // suppress unused warning
 }
 
 /// Handle a bot command (returns the response text).

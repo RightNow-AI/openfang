@@ -306,6 +306,8 @@ pub async fn execute_tool(
 
         // Channel send tool (proactive outbound messaging)
         "channel_send" => tool_channel_send(input, kernel).await,
+        // Channel reaction tool (emoji reaction on incoming message)
+        "message_react" => tool_message_react(input, kernel).await,
 
         // Persistent process tools
         "process_start" => tool_process_start(input, process_manager, caller_agent_id).await,
@@ -1012,6 +1014,21 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "filename": { "type": "string", "description": "Filename for file attachments (defaults to 'file')" }
                 },
                 "required": ["channel", "recipient"]
+            }),
+        },
+        // --- Channel reaction tool ---
+        ToolDefinition {
+            name: "message_react".to_string(),
+            description: "Add an emoji reaction to the incoming message on the current channel (Telegram, Discord, etc). Use this to react to user messages with a contextually appropriate emoji. The channel, recipient, and message_id are provided in the [channel_context] header of the incoming message.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "channel": { "type": "string", "description": "Channel name (e.g. 'telegram')" },
+                    "recipient": { "type": "string", "description": "User/chat ID on the platform" },
+                    "message_id": { "type": "string", "description": "Platform message ID to react to" },
+                    "emoji": { "type": "string", "description": "Single emoji to react with (e.g. '❤️', '🎉', '👀'). For Telegram, must be from the supported set." }
+                },
+                "required": ["channel", "recipient", "message_id", "emoji"]
             }),
         },
         // --- Hand tools (curated autonomous capability packages) ---
@@ -2191,6 +2208,42 @@ async fn tool_channel_send(
 }
 
 // ---------------------------------------------------------------------------
+// Channel reaction tool
+// ---------------------------------------------------------------------------
+
+async fn tool_message_react(
+    input: &serde_json::Value,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+) -> Result<String, String> {
+    let kh = require_kernel(kernel)?;
+
+    let channel = input["channel"]
+        .as_str()
+        .ok_or("Missing 'channel' parameter")?
+        .trim()
+        .to_lowercase();
+    let recipient = input["recipient"]
+        .as_str()
+        .ok_or("Missing 'recipient' parameter")?
+        .trim();
+    let message_id = input["message_id"]
+        .as_str()
+        .ok_or("Missing 'message_id' parameter")?
+        .trim();
+    let emoji = input["emoji"]
+        .as_str()
+        .ok_or("Missing 'emoji' parameter")?
+        .trim();
+
+    if emoji.is_empty() {
+        return Err("Emoji cannot be empty".to_string());
+    }
+
+    kh.send_channel_reaction(&channel, recipient, message_id, emoji)
+        .await
+}
+
+// ---------------------------------------------------------------------------
 // Hand tools (delegated to kernel via KernelHandle trait)
 // ---------------------------------------------------------------------------
 
@@ -3121,8 +3174,8 @@ mod tests {
     fn test_builtin_tool_definitions() {
         let tools = builtin_tool_definitions();
         assert!(
-            tools.len() >= 39,
-            "Expected at least 39 tools, got {}",
+            tools.len() >= 40,
+            "Expected at least 40 tools, got {}",
             tools.len()
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
@@ -3168,8 +3221,9 @@ mod tests {
         assert!(names.contains(&"cron_create"));
         assert!(names.contains(&"cron_list"));
         assert!(names.contains(&"cron_cancel"));
-        // 1 channel send tool
+        // channel tools
         assert!(names.contains(&"channel_send"));
+        assert!(names.contains(&"message_react"));
         // 4 hand tools
         assert!(names.contains(&"hand_list"));
         assert!(names.contains(&"hand_activate"));

@@ -5397,6 +5397,41 @@ impl KernelHandle for OpenFangKernel {
         Ok(format!("{} sent to {} via {}", media_type, recipient, channel))
     }
 
+    async fn send_channel_reaction(
+        &self,
+        channel: &str,
+        recipient: &str,
+        message_id: &str,
+        emoji: &str,
+    ) -> Result<String, String> {
+        let adapter = self
+            .channel_adapters
+            .get(channel)
+            .ok_or_else(|| {
+                format!("Channel '{}' not found for reaction", channel)
+            })?
+            .clone();
+
+        let user = openfang_channels::types::ChannelUser {
+            platform_id: recipient.to_string(),
+            display_name: recipient.to_string(),
+            openfang_user: None,
+        };
+
+        let reaction = openfang_channels::types::LifecycleReaction {
+            phase: openfang_channels::types::AgentPhase::Done,
+            emoji: emoji.to_string(),
+            remove_previous: true,
+        };
+
+        adapter
+            .send_reaction(&user, message_id, &reaction)
+            .await
+            .map_err(|e| format!("Reaction failed: {e}"))?;
+
+        Ok(format!("Reacted with {} on {} via {}", emoji, message_id, channel))
+    }
+
     async fn spawn_agent_checked(
         &self,
         manifest_toml: &str,

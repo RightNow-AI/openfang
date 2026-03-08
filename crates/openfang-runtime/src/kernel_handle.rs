@@ -209,6 +209,20 @@ pub trait KernelHandle: Send + Sync {
         Err("Channel media send not available".to_string())
     }
 
+    /// Send an emoji reaction to a message on a channel.
+    /// `channel` is the adapter name (e.g. "telegram"), `recipient` is the user/chat ID,
+    /// `message_id` is the platform message ID, `emoji` is the emoji character.
+    async fn send_channel_reaction(
+        &self,
+        channel: &str,
+        recipient: &str,
+        message_id: &str,
+        emoji: &str,
+    ) -> Result<String, String> {
+        let _ = (channel, recipient, message_id, emoji);
+        Err("Channel reactions not available".to_string())
+    }
+
     /// Spawn an agent with capability inheritance enforcement.
     /// `parent_caps` are the parent's granted capabilities. The kernel MUST verify
     /// that every capability in the child manifest is covered by `parent_caps`.

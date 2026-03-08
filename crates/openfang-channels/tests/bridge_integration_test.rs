@@ -225,18 +225,31 @@ async fn test_bridge_dispatch_text_message() {
     // Give the async dispatch loop time to process
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    // Verify: adapter received the echo response
+    // Verify: adapter received the echo response (now includes channel_context prefix)
     let sent = adapter_ref.get_sent();
     assert_eq!(sent.len(), 1, "Expected 1 response, got {}", sent.len());
     assert_eq!(sent[0].0, "user1");
-    assert_eq!(sent[0].1, "Echo: Hello agent!");
+    assert!(
+        sent[0].1.contains("Hello agent!"),
+        "Response should contain original message, got: {}",
+        sent[0].1
+    );
 
-    // Verify: handle received the message
+    // Verify: handle received the message with channel_context header
     {
         let received = handle.received.lock().unwrap();
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].0, agent_id);
-        assert_eq!(received[0].1, "Hello agent!");
+        assert!(
+            received[0].1.contains("Hello agent!"),
+            "Handle should receive original message, got: {}",
+            received[0].1
+        );
+        assert!(
+            received[0].1.contains("[channel_context:"),
+            "Handle should receive channel_context header, got: {}",
+            received[0].1
+        );
     }
 
     manager.stop().await;
@@ -486,7 +499,10 @@ async fn test_bridge_manager_lifecycle() {
     assert_eq!(sent.len(), 5, "Expected 5 responses, got {}", sent.len());
 
     for (i, (_, text)) in sent.iter().enumerate() {
-        assert_eq!(*text, format!("Echo: message {i}"));
+        assert!(
+            text.contains(&format!("message {i}")),
+            "Response {i} should contain 'message {i}', got: {text}"
+        );
     }
 
     // Stop — should complete without hanging
@@ -535,11 +551,19 @@ async fn test_bridge_multiple_adapters() {
 
     let tg_sent = tg_ref.get_sent();
     assert_eq!(tg_sent.len(), 1);
-    assert_eq!(tg_sent[0].1, "Echo: from telegram");
+    assert!(
+        tg_sent[0].1.contains("from telegram"),
+        "Telegram response should contain original message, got: {}",
+        tg_sent[0].1
+    );
 
     let dc_sent = dc_ref.get_sent();
     assert_eq!(dc_sent.len(), 1);
-    assert_eq!(dc_sent[0].1, "Echo: from discord");
+    assert!(
+        dc_sent[0].1.contains("from discord"),
+        "Discord response should contain original message, got: {}",
+        dc_sent[0].1
+    );
 
     manager.stop().await;
 }
