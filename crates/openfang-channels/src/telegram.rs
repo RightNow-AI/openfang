@@ -31,6 +31,8 @@ pub struct TelegramAdapter {
     client: reqwest::Client,
     allowed_users: Vec<String>,
     poll_interval: Duration,
+    /// Whether to show emoji reactions on messages for agent lifecycle status.
+    status_reactions: bool,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
 }
@@ -41,12 +43,23 @@ impl TelegramAdapter {
     /// `token` is the raw bot token (read from env by the caller).
     /// `allowed_users` is the list of Telegram user IDs allowed to interact (empty = allow all).
     pub fn new(token: String, allowed_users: Vec<String>, poll_interval: Duration) -> Self {
+        Self::with_reactions(token, allowed_users, poll_interval, true)
+    }
+
+    /// Create a new Telegram adapter with explicit status_reactions flag.
+    pub fn with_reactions(
+        token: String,
+        allowed_users: Vec<String>,
+        poll_interval: Duration,
+        status_reactions: bool,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             token: Zeroizing::new(token),
             client: reqwest::Client::new(),
             allowed_users,
             poll_interval,
+            status_reactions,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -216,25 +229,36 @@ impl TelegramAdapter {
     }
 
     /// Call `setMessageReaction` to add an emoji reaction to a message.
+    /// Pass an empty `emoji` to remove all reactions.
     async fn api_set_reaction(
         &self,
         chat_id: i64,
         message_id: i64,
         emoji: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if message_id <= 0 {
+            return Ok(());
+        }
         let url = format!(
             "https://api.telegram.org/bot{}/setMessageReaction",
             self.token.as_str()
         );
+        let reaction = if emoji.is_empty() {
+            serde_json::json!([])
+        } else {
+            serde_json::json!([{"type": "emoji", "emoji": emoji}])
+        };
         let body = serde_json::json!({
             "chat_id": chat_id,
             "message_id": message_id,
-            "reaction": [{"type": "emoji", "emoji": emoji}],
+            "reaction": reaction,
         });
         let resp = self.client.post(&url).json(&body).send().await?;
         if !resp.status().is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            warn!("Telegram setMessageReaction failed: {body_text}");
+            // Truncate to avoid leaking large error bodies into logs
+            let truncated = if body_text.len() > 200 { &body_text[..200] } else { &body_text };
+            warn!("Telegram setMessageReaction failed: {truncated}");
         }
         Ok(())
     }
@@ -472,6 +496,9 @@ impl ChannelAdapter for TelegramAdapter {
         message_id: &str,
         reaction: &LifecycleReaction,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.status_reactions {
+            return Ok(());
+        }
         let chat_id: i64 = user
             .platform_id
             .parse()
@@ -919,5 +946,54 @@ mod tests {
         assert_eq!(telegram_reaction_emoji(&AgentPhase::Streaming), "\u{270D}"); // ✍
         assert_eq!(telegram_reaction_emoji(&AgentPhase::Done), "\u{1F44D}"); // 👍
         assert_eq!(telegram_reaction_emoji(&AgentPhase::Error), "\u{1F44E}"); // 👎
+    }
+
+    #[tokio::test]
+    async fn test_send_reaction_disabled() {
+        let adapter = TelegramAdapter::with_reactions(
+            "fake:token".to_string(),
+            vec![],
+            Duration::from_secs(1),
+            false,
+        );
+        let user = ChannelUser {
+            platform_id: "123".to_string(),
+            display_name: "Test".to_string(),
+            openfang_user: None,
+        };
+        let reaction = LifecycleReaction {
+            phase: AgentPhase::Queued,
+            emoji: "\u{1F440}".to_string(),
+            remove_previous: false,
+        };
+        // Should return Ok without making any API call
+        let result = adapter.send_reaction(&user, "42", &reaction).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_reaction_invalid_message_id() {
+        let adapter = TelegramAdapter::with_reactions(
+            "fake:token".to_string(),
+            vec![],
+            Duration::from_secs(1),
+            true,
+        );
+        let user = ChannelUser {
+            platform_id: "123".to_string(),
+            display_name: "Test".to_string(),
+            openfang_user: None,
+        };
+        let reaction = LifecycleReaction {
+            phase: AgentPhase::Done,
+            emoji: "\u{1F44D}".to_string(),
+            remove_previous: true,
+        };
+        // Non-numeric message_id should error
+        let result = adapter.send_reaction(&user, "not-a-number", &reaction).await;
+        assert!(result.is_err());
+        // Empty message_id should error
+        let result = adapter.send_reaction(&user, "", &reaction).await;
+        assert!(result.is_err());
     }
 }
