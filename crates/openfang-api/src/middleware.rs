@@ -119,25 +119,11 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    // SECURITY: If no API key configured, allow localhost access but reject remote.
-    // Many users skip the wizard or create config.toml manually without setting api_key.
-    // Blocking localhost access makes the dashboard unusable for them.
+    // If no API key configured, skip auth entirely.
+    // Users who don't set api_key accept that all endpoints are open.
+    // To secure the dashboard, set api_key in config.toml.
     if api_key.is_empty() {
-        let is_loopback = request
-            .extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|ci| ci.0.ip().is_loopback())
-            .unwrap_or(false);
-        if is_loopback {
-            return next.run(request).await;
-        }
-        return Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("www-authenticate", "Bearer")
-            .body(Body::from(
-                serde_json::json!({"error": "No API key configured. Set api_key in config.toml or pass --api-key on startup."}).to_string(),
-            ))
-            .unwrap_or_default();
+        return next.run(request).await;
     }
 
     // Check Authorization: Bearer <token> header, then fallback to X-API-Key
