@@ -441,7 +441,7 @@ async fn handle_text_message(
                             &state.kernel,
                             agent_id,
                             image_blocks,
-                        );
+                        ).await;
                     }
                 }
             }
@@ -872,7 +872,7 @@ async fn handle_command(
         }
         "budget" => {
             let budget = &state.kernel.config.budget;
-            let status = state.kernel.metering.budget_status(budget);
+            let status = state.kernel.metering.budget_status(budget).await;
             let fmt = |v: f64| -> String {
                 if v > 0.0 {
                     format!("${v:.2}")

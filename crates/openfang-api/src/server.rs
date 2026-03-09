@@ -812,7 +812,7 @@ pub async fn run_daemon(
     }
 
     // Shutdown kernel
-    kernel.shutdown();
+    kernel.shutdown().await;
 
     info!("OpenFang daemon stopped");
     Ok(())

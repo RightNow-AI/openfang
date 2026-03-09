@@ -19,7 +19,7 @@ moka = { version = "0.12", features = ["future"] }
 redis = { version = "1.0", features = ["tokio-comp", "aio"], optional = true }
 
 # L3: SurrealDB backend (the source of truth)
-maestro-surreal-memory = { path = "../maestro-surreal-memory" }
+openfang-memory = { path = "../openfang-memory" }
 
 # Types (Memory trait, AgentId, etc.)
 openfang-types = { path = "../openfang-types" }

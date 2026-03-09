@@ -11,7 +11,7 @@ rust-version.workspace = true
 openfang-types = { path = "../openfang-types" }
 
 # For ETL - importing from SurrealDB memory
-maestro-surreal-memory = { path = "../maestro-surreal-memory" }
+openfang-memory = { path = "../openfang-memory" }
 
 # FalkorDB official client
 falkordb = { version = "0.2.1", features = ["tokio"] }

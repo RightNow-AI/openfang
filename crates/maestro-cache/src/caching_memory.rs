@@ -1,15 +1,15 @@
-//! CachingMemory: A transparent wrapper around `SurrealMemorySubstrate` that
+//! CachingMemory: A transparent wrapper around `MemorySubstrate` that
 //! adds L1 (Moka) and L2 (Redis) caching tiers.
 //!
 //! This struct implements the `Memory` trait and also exposes all
-//! `SurrealMemorySubstrate`-specific methods via delegation, so it can be
+//! `MemorySubstrate`-specific methods via delegation, so it can be
 //! used as a drop-in replacement in the kernel.
 
 use crate::l1::{L1Cache, L1Config};
 use crate::l2::{L2Cache, L2Config};
 
 use async_trait::async_trait;
-use maestro_surreal_memory::SurrealMemorySubstrate;
+use openfang_memory::MemorySubstrate;
 use openfang_types::agent::{AgentEntry, AgentId, SessionId};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::*;
@@ -60,13 +60,13 @@ impl Default for CacheConfig {
     }
 }
 
-/// The main caching wrapper around `SurrealMemorySubstrate`.
+/// The main caching wrapper around `MemorySubstrate`.
 ///
 /// Provides transparent L1/L2 caching for read-heavy operations while
 /// delegating all writes to the L3 backend and invalidating caches.
 pub struct CachingMemory {
     /// L3 backend: the source of truth.
-    l3: Arc<SurrealMemorySubstrate>,
+    l3: Arc<MemorySubstrate>,
     /// L1 cache for KV store operations (get/set/delete).
     l1_kv: L1Cache,
     /// L1 cache for session data.
@@ -81,7 +81,7 @@ pub struct CachingMemory {
 
 impl CachingMemory {
     /// Create a new CachingMemory wrapping the given SurrealDB backend.
-    pub async fn new(l3: Arc<SurrealMemorySubstrate>, config: CacheConfig) -> Self {
+    pub async fn new(l3: Arc<MemorySubstrate>, config: CacheConfig) -> Self {
         let l2 = if let Some(l2_config) = &config.l2 {
             L2Cache::new(l2_config.clone()).await
         } else {
@@ -112,7 +112,7 @@ impl CachingMemory {
     }
 
     /// Create a CachingMemory with caching disabled (pure passthrough to L3).
-    pub fn passthrough(l3: Arc<SurrealMemorySubstrate>) -> Self {
+    pub fn passthrough(l3: Arc<MemorySubstrate>) -> Self {
         Self {
             l3,
             l1_kv: L1Cache::new("kv_disabled", &L1Config { max_capacity: 0, ..Default::default() }),
@@ -124,7 +124,7 @@ impl CachingMemory {
     }
 
     /// Get a reference to the underlying L3 backend.
-    pub fn l3(&self) -> &Arc<SurrealMemorySubstrate> {
+    pub fn l3(&self) -> &Arc<MemorySubstrate> {
         &self.l3
     }
 
@@ -164,7 +164,7 @@ impl CachingMemory {
         format!("{}", agent_id)
     }
 
-    // ── Delegated SurrealMemorySubstrate-specific methods ────────────
+    // ── Delegated MemorySubstrate-specific methods ────────────
     // These methods are NOT on the Memory trait but are used by the kernel.
     // They delegate directly to L3, with caching where appropriate.
 
@@ -481,7 +481,7 @@ impl CachingMemory {
     }
 
     /// Get the usage store reference.
-    pub fn usage(&self) -> &maestro_surreal_memory::SurrealUsageStore {
+    pub fn usage(&self) -> &openfang_memory::SurrealUsageStore {
         self.l3.usage()
     }
 }

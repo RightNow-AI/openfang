@@ -4645,7 +4645,8 @@ pub async fn budget_status(State(state): State<Arc<AppState>>) -> impl IntoRespo
     let status = state
         .kernel
         .metering
-        .budget_status(&state.kernel.config.budget);
+        .budget_status(&state.kernel.config.budget)
+        .await;
     Json(serde_json::to_value(&status).unwrap_or_default())
 }
 
@@ -4678,7 +4679,8 @@ pub async fn update_budget(
     let status = state
         .kernel
         .metering
-        .budget_status(&state.kernel.config.budget);
+        .budget_status(&state.kernel.config.budget)
+        .await;
     Json(serde_json::to_value(&status).unwrap_or_default())
 }
 

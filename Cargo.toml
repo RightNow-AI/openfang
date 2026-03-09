@@ -25,7 +25,6 @@ members = [
     "crates/maestro-marketplace",
     "crates/maestro-eval",
     "crates/maestro-sdk",
-    "crates/maestro-surreal-memory",
     "crates/maestro-cache",
     "crates/maestro-falkor-analytics",
 ]

@@ -29,7 +29,10 @@ impl ServerHandle {
         if let Some(handle) = self.server_thread.take() {
             let _ = handle.join();
         }
-        self.kernel.shutdown();
+        // kernel.shutdown() is async — use a temporary runtime to drive it.
+        if let Ok(rt) = tokio::runtime::Runtime::new() {
+            rt.block_on(self.kernel.shutdown());
+        }
         info!("OpenFang embedded server stopped");
     }
 }

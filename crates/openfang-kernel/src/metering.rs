@@ -1,34 +1,39 @@
 //! Metering engine — tracks LLM cost and enforces spending quotas.
+//!
+//! All storage methods are async (SurrealDB-backed via `openfang_memory::SurrealUsageStore`).
 
 use openfang_types::usage::{ModelUsage, UsageRecord, UsageSummary};
-use openfang_memory::usage::UsageStore;
+use openfang_memory::SurrealUsageStore;
 use openfang_types::agent::{AgentId, ResourceQuota};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use std::sync::Arc;
 
 /// The metering engine tracks usage cost and enforces quota limits.
+///
+/// Wraps a `SurrealUsageStore` (SurrealDB-backed) and provides quota
+/// enforcement, budget tracking, and cost estimation.
 pub struct MeteringEngine {
-    /// Persistent usage store (SQLite-backed).
-    store: Arc<UsageStore>,
+    /// Persistent usage store (SurrealDB-backed).
+    store: Arc<SurrealUsageStore>,
 }
 
 impl MeteringEngine {
     /// Create a new metering engine with the given usage store.
-    pub fn new(store: Arc<UsageStore>) -> Self {
+    pub fn new(store: Arc<SurrealUsageStore>) -> Self {
         Self { store }
     }
 
-    /// Record a usage event (persists to SQLite).
-    pub fn record(&self, record: &UsageRecord) -> OpenFangResult<()> {
-        self.store.record(record)
+    /// Record a usage event (persists to SurrealDB).
+    pub async fn record(&self, record: &UsageRecord) -> OpenFangResult<()> {
+        self.store.record(record).await
     }
 
     /// Check if an agent is within its spending quotas (hourly, daily, monthly).
     /// Returns Ok(()) if under all quotas, or QuotaExceeded error if over any.
-    pub fn check_quota(&self, agent_id: AgentId, quota: &ResourceQuota) -> OpenFangResult<()> {
+    pub async fn check_quota(&self, agent_id: AgentId, quota: &ResourceQuota) -> OpenFangResult<()> {
         // Hourly check
         if quota.max_cost_per_hour_usd > 0.0 {
-            let hourly_cost = self.store.query_hourly(agent_id)?;
+            let hourly_cost = self.store.query_hourly(agent_id).await?;
             if hourly_cost >= quota.max_cost_per_hour_usd {
                 return Err(OpenFangError::QuotaExceeded(format!(
                     "Agent {} exceeded hourly cost quota: ${:.4} / ${:.4}",
@@ -39,7 +44,7 @@ impl MeteringEngine {
 
         // Daily check
         if quota.max_cost_per_day_usd > 0.0 {
-            let daily_cost = self.store.query_daily(agent_id)?;
+            let daily_cost = self.store.query_daily(agent_id).await?;
             if daily_cost >= quota.max_cost_per_day_usd {
                 return Err(OpenFangError::QuotaExceeded(format!(
                     "Agent {} exceeded daily cost quota: ${:.4} / ${:.4}",
@@ -50,7 +55,7 @@ impl MeteringEngine {
 
         // Monthly check
         if quota.max_cost_per_month_usd > 0.0 {
-            let monthly_cost = self.store.query_monthly(agent_id)?;
+            let monthly_cost = self.store.query_monthly(agent_id).await?;
             if monthly_cost >= quota.max_cost_per_month_usd {
                 return Err(OpenFangError::QuotaExceeded(format!(
                     "Agent {} exceeded monthly cost quota: ${:.4} / ${:.4}",
@@ -63,12 +68,12 @@ impl MeteringEngine {
     }
 
     /// Check global budget limits (across all agents).
-    pub fn check_global_budget(
+    pub async fn check_global_budget(
         &self,
         budget: &openfang_types::config::BudgetConfig,
     ) -> OpenFangResult<()> {
         if budget.max_hourly_usd > 0.0 {
-            let cost = self.store.query_global_hourly()?;
+            let cost = self.store.query_global_hourly().await?;
             if cost >= budget.max_hourly_usd {
                 return Err(OpenFangError::QuotaExceeded(format!(
                     "Global hourly budget exceeded: ${:.4} / ${:.4}",
@@ -78,7 +83,7 @@ impl MeteringEngine {
         }
 
         if budget.max_daily_usd > 0.0 {
-            let cost = self.store.query_today_cost()?;
+            let cost = self.store.query_today_cost().await?;
             if cost >= budget.max_daily_usd {
                 return Err(OpenFangError::QuotaExceeded(format!(
                     "Global daily budget exceeded: ${:.4} / ${:.4}",
@@ -88,7 +93,7 @@ impl MeteringEngine {
         }
 
         if budget.max_monthly_usd > 0.0 {
-            let cost = self.store.query_global_monthly()?;
+            let cost = self.store.query_global_monthly().await?;
             if cost >= budget.max_monthly_usd {
                 return Err(OpenFangError::QuotaExceeded(format!(
                     "Global monthly budget exceeded: ${:.4} / ${:.4}",
@@ -101,10 +106,10 @@ impl MeteringEngine {
     }
 
     /// Get budget status — current spend vs limits for all time windows.
-    pub fn budget_status(&self, budget: &openfang_types::config::BudgetConfig) -> BudgetStatus {
-        let hourly = self.store.query_global_hourly().unwrap_or(0.0);
-        let daily = self.store.query_today_cost().unwrap_or(0.0);
-        let monthly = self.store.query_global_monthly().unwrap_or(0.0);
+    pub async fn budget_status(&self, budget: &openfang_types::config::BudgetConfig) -> BudgetStatus {
+        let hourly = self.store.query_global_hourly().await.unwrap_or(0.0);
+        let daily = self.store.query_today_cost().await.unwrap_or(0.0);
+        let monthly = self.store.query_global_monthly().await.unwrap_or(0.0);
 
         BudgetStatus {
             hourly_spend: hourly,
@@ -133,13 +138,13 @@ impl MeteringEngine {
     }
 
     /// Get a usage summary, optionally filtered by agent.
-    pub fn get_summary(&self, agent_id: Option<AgentId>) -> OpenFangResult<UsageSummary> {
-        self.store.query_summary(agent_id)
+    pub async fn get_summary(&self, agent_id: Option<AgentId>) -> OpenFangResult<UsageSummary> {
+        self.store.query_summary(agent_id).await
     }
 
     /// Get usage grouped by model.
-    pub fn get_by_model(&self) -> OpenFangResult<Vec<ModelUsage>> {
-        self.store.query_by_model()
+    pub async fn get_by_model(&self) -> OpenFangResult<Vec<ModelUsage>> {
+        self.store.query_by_model().await
     }
 
     /// Estimate the cost of an LLM call based on model and token counts.
@@ -207,8 +212,8 @@ impl MeteringEngine {
     }
 
     /// Clean up old usage records.
-    pub fn cleanup(&self, days: u32) -> OpenFangResult<usize> {
-        self.store.cleanup_old(days)
+    pub async fn cleanup(&self, days: u32) -> OpenFangResult<usize> {
+        self.store.cleanup_old(days).await
     }
 }
 
@@ -484,17 +489,18 @@ fn estimate_cost_rates(model: &str) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openfang_memory::MemorySubstrate;
 
-    fn setup() -> MeteringEngine {
-        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
-        let store = Arc::new(UsageStore::new(substrate.usage_conn()));
+    async fn setup() -> MeteringEngine {
+        let substrate = openfang_memory::MemorySubstrate::connect_in_memory()
+            .await
+            .expect("in-memory SurrealDB substrate");
+        let store = Arc::new(substrate.usage().clone());
         MeteringEngine::new(store)
     }
 
-    #[test]
-    fn test_record_and_check_quota_under() {
-        let engine = setup();
+    #[tokio::test]
+    async fn test_record_and_check_quota_under() {
+        let engine = setup().await;
         let agent_id = AgentId::new();
         let quota = ResourceQuota {
             max_cost_per_hour_usd: 1.0,
@@ -510,14 +516,15 @@ mod tests {
                 cost_usd: 0.001,
                 tool_calls: 0,
             })
+            .await
             .unwrap();
 
-        assert!(engine.check_quota(agent_id, &quota).is_ok());
+        assert!(engine.check_quota(agent_id, &quota).await.is_ok());
     }
 
-    #[test]
-    fn test_check_quota_exceeded() {
-        let engine = setup();
+    #[tokio::test]
+    async fn test_check_quota_exceeded() {
+        let engine = setup().await;
         let agent_id = AgentId::new();
         let quota = ResourceQuota {
             max_cost_per_hour_usd: 0.01,
@@ -533,17 +540,18 @@ mod tests {
                 cost_usd: 0.05,
                 tool_calls: 0,
             })
+            .await
             .unwrap();
 
-        let result = engine.check_quota(agent_id, &quota);
+        let result = engine.check_quota(agent_id, &quota).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("exceeded hourly cost quota"));
     }
 
-    #[test]
-    fn test_check_quota_zero_limit_skipped() {
-        let engine = setup();
+    #[tokio::test]
+    async fn test_check_quota_zero_limit_skipped() {
+        let engine = setup().await;
         let agent_id = AgentId::new();
         let quota = ResourceQuota {
             max_cost_per_hour_usd: 0.0,
@@ -560,9 +568,10 @@ mod tests {
                 cost_usd: 100.0,
                 tool_calls: 0,
             })
+            .await
             .unwrap();
 
-        assert!(engine.check_quota(agent_id, &quota).is_ok());
+        assert!(engine.check_quota(agent_id, &quota).await.is_ok());
     }
 
     #[test]
@@ -756,9 +765,9 @@ mod tests {
         assert!((cost - 4.0).abs() < 0.01);
     }
 
-    #[test]
-    fn test_get_summary() {
-        let engine = setup();
+    #[tokio::test]
+    async fn test_get_summary() {
+        let engine = setup().await;
         let agent_id = AgentId::new();
 
         engine
@@ -770,9 +779,10 @@ mod tests {
                 cost_usd: 0.005,
                 tool_calls: 3,
             })
+            .await
             .unwrap();
 
-        let summary = engine.get_summary(Some(agent_id)).unwrap();
+        let summary = engine.get_summary(Some(agent_id)).await.unwrap();
         assert_eq!(summary.call_count, 1);
         assert_eq!(summary.total_input_tokens, 500);
     }

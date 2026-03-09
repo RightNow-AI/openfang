@@ -1,19 +1,20 @@
 //! Memory substrate for the OpenFang Agent Operating System.
 //!
-//! Provides a unified memory API over three storage backends:
-//! - **Structured store** (SQLite): Key-value pairs, sessions, agent state
-//! - **Semantic store**: Text-based search (Phase 1: LIKE matching, Phase 2: Qdrant vectors)
-//! - **Knowledge graph** (SQLite): Entities and relations
+//! Provides a unified memory API backed by SurrealDB v3.
+//! All memory fragments, entities, relations, sessions, usage records,
+//! and agent state are stored in a single SurrealDB instance.
 //!
-//! Agents interact with a single `Memory` trait that abstracts over all three stores.
+//! Agents interact with a single `Memory` trait (defined in `openfang-types`)
+//! that abstracts over the storage backend.
 
-pub mod consolidation;
-pub mod knowledge;
-pub mod migration;
-pub mod semantic;
 pub mod session;
-pub mod structured;
+pub mod substrate;
 pub mod usage;
 
-mod substrate;
+pub use session::Session;
 pub use substrate::MemorySubstrate;
+pub use usage::SurrealUsageStore;
+
+/// Backward-compatible alias — legacy code that referenced `UsageStore`
+/// (the former SQLite implementation) now resolves to `SurrealUsageStore`.
+pub type UsageStore = SurrealUsageStore;

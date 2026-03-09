@@ -6,7 +6,7 @@
 use maestro_falkor_analytics::config::FalkorConfig;
 use maestro_falkor_analytics::etl::run_etl;
 use maestro_falkor_analytics::FalkorAnalytics;
-use maestro_surreal_memory::SurrealMemorySubstrate;
+use openfang_memory::MemorySubstrate;
 use openfang_types::memory::{Entity, EntityType, Memory, MemorySource, Relation, RelationType};
 use std::sync::Arc;
 use testcontainers::core::IntoContainerPort;
@@ -90,7 +90,7 @@ async fn test_etl_from_surreal_to_falkor() {
     let (_container, host, port) = start_falkordb().await;
 
     // Set up SurrealDB in-memory with test data
-    let surreal = SurrealMemorySubstrate::connect_in_memory()
+    let surreal = MemorySubstrate::connect_in_memory()
         .await
         .expect("Failed to connect to SurrealDB in-memory");
 
@@ -180,7 +180,7 @@ async fn test_etl_from_surreal_to_falkor() {
 async fn test_etl_background_scheduling() {
     let (_container, host, port) = start_falkordb().await;
 
-    let surreal = SurrealMemorySubstrate::connect_in_memory()
+    let surreal = MemorySubstrate::connect_in_memory()
         .await
         .expect("Failed to connect to SurrealDB in-memory");
 

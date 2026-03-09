@@ -3,7 +3,7 @@
 //! Multi-tier caching layer for the Maestro agent platform.
 //!
 //! This crate provides a transparent caching wrapper (`CachingMemory`) around
-//! the `SurrealMemorySubstrate` (L3), adding:
+//! the `MemorySubstrate` (L3), adding:
 //!
 //! - **L1 (Moka):** Sub-millisecond in-process cache using the TinyLFU eviction
 //!   policy. Ideal for hot data on a single instance.
@@ -21,14 +21,14 @@
 //!
 //! ```rust,no_run
 //! use maestro_cache::{CachingMemory, CacheConfig};
-//! use maestro_surreal_memory::SurrealMemorySubstrate;
+//! use openfang_memory::MemorySubstrate;
 //! use std::sync::Arc;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let l3 = Arc::new(SurrealMemorySubstrate::connect_in_memory().await?);
+//! let l3 = Arc::new(MemorySubstrate::connect_in_memory().await?);
 //! let config = CacheConfig::default();
 //! let memory = CachingMemory::new(l3, config).await;
-//! // Use `memory` wherever you'd use `SurrealMemorySubstrate`
+//! // Use `memory` wherever you'd use `MemorySubstrate`
 //! # Ok(())
 //! # }
 //! ```

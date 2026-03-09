@@ -7,18 +7,15 @@ use crate::config::load_config;
 use crate::error::{KernelError, KernelResult};
 use crate::event_bus::EventBus;
 use crate::metering::MeteringEngine;
-use openfang_types::usage::UsageRecord;
 use crate::registry::AgentRegistry;
 use crate::scheduler::AgentScheduler;
 use crate::supervisor::Supervisor;
 use crate::triggers::{TriggerEngine, TriggerId, TriggerPattern};
 use crate::workflow::{StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowRunId};
 
-use maestro_surreal_memory::SurrealMemorySubstrate;
+use openfang_memory::MemorySubstrate;
 use maestro_cache::{CachingMemory, CacheConfig};
-use openfang_types::session::Session;
 use openfang_types::agent::{AgentEntry, AgentId, SessionId};
-use openfang_types::message::Message;
 use openfang_runtime::agent_loop::{
     run_agent_loop, run_agent_loop_streaming, strip_provider_prefix, AgentLoopResult,
 };
@@ -547,7 +544,7 @@ impl OpenFangKernel {
             .clone()
             .unwrap_or_else(|| config.data_dir.join("openfang.db"));
         let l3 = Arc::new(
-            SurrealMemorySubstrate::connect(&db_path).await
+            MemorySubstrate::connect(&db_path).await
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
         );
         let memory = Arc::new(
@@ -633,25 +630,9 @@ impl OpenFangKernel {
             Arc::new(StubDriver) as Arc<dyn LlmDriver>
         };
 
-        // Initialize metering engine with a standalone SQLite connection for usage tracking
-        let usage_db_path = config.data_dir.join("usage.db");
-        let usage_conn = rusqlite::Connection::open(&usage_db_path)
-            .map_err(|e| KernelError::BootFailed(format!("Usage DB init failed: {e}")))?;
-        usage_conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS usage_events (
-                id TEXT PRIMARY KEY,
-                agent_id TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                model TEXT NOT NULL,
-                input_tokens INTEGER NOT NULL DEFAULT 0,
-                output_tokens INTEGER NOT NULL DEFAULT 0,
-                cost_usd REAL NOT NULL DEFAULT 0.0,
-                tool_calls INTEGER NOT NULL DEFAULT 0
-            )"
-        ).map_err(|e| KernelError::BootFailed(format!("Usage table init failed: {e}")))?;
-        let usage_store = Arc::new(openfang_memory::usage::UsageStore::new(
-            std::sync::Arc::new(std::sync::Mutex::new(usage_conn)),
-        ));
+        // Initialize metering engine using the SurrealDB usage store from the memory substrate.
+        // The usage table is created automatically by MemorySubstrate::connect().
+        let usage_store = Arc::new(memory.usage().clone());
         let metering = Arc::new(MeteringEngine::new(usage_store));
 
         let supervisor = Supervisor::new();
@@ -1997,6 +1978,7 @@ impl OpenFangKernel {
         // Check metering quota before starting
         self.metering
             .check_quota(agent_id, &entry.manifest.resources)
+            .await
             .map_err(KernelError::OpenFang)?;
 
         let mut session = self
@@ -2307,7 +2289,7 @@ impl OpenFangKernel {
             output_tokens: result.total_usage.output_tokens,
             cost_usd: cost,
             tool_calls: result.iterations.saturating_sub(1),
-        });
+        }).await;
 
         // Populate cost on the result based on usage_footer mode
         let mut result = result;
@@ -3464,7 +3446,7 @@ impl OpenFangKernel {
                     if kernel.supervisor.is_shutting_down() {
                         break;
                     }
-                    match kernel.metering.cleanup(90) {
+                    match kernel.metering.cleanup(90).await {
                         Ok(removed) if removed > 0 => {
                             info!("Metering cleanup: removed {removed} old usage records");
                         }
