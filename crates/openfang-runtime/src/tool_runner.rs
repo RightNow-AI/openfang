@@ -3144,7 +3144,8 @@ async fn tool_canvas_present(
     let _ = tokio::fs::create_dir_all(&output_dir).await;
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let filename = format!("canvas_{timestamp}_{}.html", &canvas_id[..8]);
+    let id_short = if canvas_id.len() > 8 { &canvas_id[..8] } else { &canvas_id };
+    let filename = format!("canvas_{timestamp}_{}.html", id_short);
     let filepath = output_dir.join(&filename);
 
     // Write the full HTML document
