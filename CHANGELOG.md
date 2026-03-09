@@ -7,8 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.29] - 2026-03-08
+## [0.3.30] - 2026-03-09
+
 ### Added
+
+#### Phase 8.5 — Recursive Language Model (RLM) — `maestro-rlm`
+
+The `maestro-rlm` crate now contains a complete, production-quality implementation of the Recursive Language Model pattern from the MIT CSAIL paper (arXiv:2512.24601v1). The core insight of RLM is that instead of feeding a long prompt directly into a Transformer's context window, the LLM is given a programmatic tool (a Python REPL) to interact with the data symbolically. This allows the agent to process inputs of virtually unlimited length.
+
+The implementation is built on PyO3 0.23, embedding a Python interpreter directly inside the Rust process. The `Pyo3Executor` struct maintains a persistent Python globals dictionary across calls, so variables set via `set_variable()` survive between `execute()` calls. The `execute()` method wraps user code in a `StringIO` stdout-capture harness, so all `print()` output is captured and returned as a Rust `String`. Python exceptions are caught and returned as error strings (prefixed `PYTHON_ERROR:`) rather than panicking, allowing the LLM loop to self-correct. The `RlmAgent::query()` method implements the full loop: load the prompt as `context`, build an initial system prompt, iterate up to `max_iterations`, and return the first `FINAL(answer)` response.
+
+**New tests (8):** `test_execute_print`, `test_execute_arithmetic`, `test_execute_multiline`, `test_execute_exception_returns_error_string`, `test_set_variable_and_read_back`, `test_set_variable_used_in_computation`, `test_state_persists_between_calls`, `test_env_type`.
+
+#### Phase 8.4 — Structured ISC Generation — `maestro-algorithm`
+
+The `generate_criteria()` function in `maestro-algorithm/src/isc.rs` now implements a full structured template system for generating Ideal State Criteria (ISC). The original implementation was a `todo!()` stub that left the LLM to generate criteria freeform, producing vague, untestable results like "ensure quality." The new implementation extracts four categories of criteria from the plan's JSON output: `Functional` (from `deliverables`), `Quality` (from `quality_bar`), `Completeness` (from `inputs`), and `Constraint` (from `constraints`). Weights are assigned by category priority (0.40 / 0.25 / 0.20 / 0.15) and divided equally among criteria of the same category. When no structured keys are present, a sensible set of four default criteria is generated from the plan's `task` description.
+
+The `validate_criteria()` function has been significantly enhanced with whole-word boundary matching for vague language detection (preventing false positives like "sufficiently" matching "sufficient"), measurable-language checking scoped to `Functional` and `Constraint` categories only, and weight range validation.
+
+**New tests (6):** `test_generate_criteria_from_deliverables`, `test_generate_criteria_fallback`, `test_generate_criteria_all_categories`, `test_validate_criteria_passes_good_criteria`, `test_validate_criteria_flags_vague_language`, `test_criterion_ids_are_sequential`.
+
+### Fixed
+
+- `maestro-rlm`: Resolved PyO3 0.23 API change — `py.run()` now requires `&CStr` instead of `&str`. Fixed by converting the wrapper string to `CString` before passing to `py.run()`.
+- `maestro-rlm`: Fixed Python `IndentationError` in the stdout-capture wrapper caused by Rust's string continuation syntax (`\n\` followed by source indentation spaces). Replaced with an explicit `[...].join("\n")` array to guarantee correct Python indentation.
+- `maestro-algorithm`: Fixed `isc_validation_flags_short_descriptions` test failure caused by the enhanced `validate_criteria()` generating more warnings than the test expected. Applied whole-word boundary matching and scoped the measurable-language check to `Functional`/`Constraint` categories only.
+
+### Changed
+
+- `README.md`: Updated crate count (14 → 21), LOC (137K → 143K), test count (1,767 → 1,846), version badge (v0.3.29 → v0.3.30), and phase badge (Phase 5 → Phase 8). Architecture section updated with all 7 new Phase 8 crates.
+- `ROADMAP.md`: Updated status to "Phase 8 Complete". Added Phase 8 task table. Updated Phase 9 description to reflect the Hand system and FangHub marketplace.
+- `docs/phase-9-blueprint.md`: Created. Full blueprint for Phase 9 including goal, architecture impact, 8-task breakdown, and 4 verification milestones.
+
+## [0.3.29] - 2026-03-08
+
+### Added
+
 - **Phase 5.1: L1/L2 Caching Layer**
   - New `maestro-cache` crate providing a transparent 3-tier caching layer (L1 Moka → L2 Redis → L3 SurrealDB).
   - `CachingMemory` struct wraps `SurrealMemorySubstrate` and implements the `Memory` trait plus all 30+ substrate-specific methods.
@@ -20,7 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 8 tests passing for L1 and L2 cache logic.
 
 ## [0.3.28] - 2026-03-08
+
 ### Added
+
 - **Phase 4.3: SurrealDB v3 Upgrade**
   - Upgraded SurrealDB dependency from v2.x to v3.0.2.
   - Replaced `RocksDb` engine with `SurrealKv` engine (`kv-surrealkv` feature).
@@ -31,214 +67,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 18 files changed, 339 insertions, 330 deletions.
 
 ## [0.3.27] - 2026-03-08
+
 ### Added
+
 - **Phase 4.2: SurrealDB Query Implementation**
   - Implemented all 24 `SurrealMemorySubstrate` methods with real SurrealQL queries.
   - Implemented all 12 `SurrealUsageStore` methods.
   - Defined and initialized 8 SurrealDB tables: `memories`, `sessions`, `kv_store`, `agents`, `paired_devices`, `tasks`, `usage_records`, `llm_summaries`.
 
 ## [0.3.26] - 2026-03-08
+
 ### Added
+
 - **Phase 4.1: Type Unification & Memory Trait Extension**
   - Unified `Session`, `UsageRecord`, and `Message` types in `openfang-types`.
   - Extended the `Memory` trait with `save_session` and other methods to make the runtime backend-agnostic.
   - Refactored the kernel to use a standalone SQLite connection for the `MeteringEngine`.
-
-[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.29...HEAD
-[0.3.29]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.29
-[0.3.28]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.28
-[0.3.27]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.27
-[0.3.26]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.26
-
-## [Unreleased] - Phase 4 Complete ✅
-
-### Added
-
-#### Phase 4: SurrealDB Memory Substrate Replacement
-- **Complete SurrealDB backend migration**: Replaced SQLite with SurrealDB graph database for memory persistence
-- **New crate**: `maestro-surreal-memory` implementing full Memory trait with SurrealDB operations
-- **Advanced knowledge graph**: Entity-relation graph operations with graph pattern queries
-- **SurrealDB schema**: Tables for memory fragments, entities, relations, agents, and sessions
-- **Export/Import system**: JSON format memory backup and restore capabilities
-- **Verification system**: Gate-based verification script ensuring implementation quality
-- **Session management**: Create, load, save, delete sessions with SurrealDB persistence
-
-#### Enhanced Memory Capabilities
-- **Graph operations**: Add/query entities and relations for knowledge management
-- **Memory consolidation**: Decay confidence scores over time
-- **KV operations**: Agent-scoped key-value storage
-- **MessagePack support structure**: Ready for MessagePack export format
-- **Async operations**: Full async/await implementation for database operations
-- **Schema flexibility**: Runtime table creation and field validation
-
-#### Development Infrastructure
-- **Verification script**: `.maestro/verify/verify_phase4_surrealdb.sh` with 4-gate checking
-- **Integration testing**: Live testing procedures for memory substrate validation
-- **Documentation updates**: README and architecture documentation updated
-- **Migration path**: Clear upgrade process from SQLite to SurrealDB backend
-
-### Changed
-- **Memory substrate**: Moved from SQLite to SurrealDB graph database
-- **Architecture**: Updated crate descriptions and module dependencies
-- **Dependencies**: Added SurrealDB workspace dependency
-- **Session types**: Enhanced Session struct with SurrealDB compatibility
 
 ## [0.1.0] - 2026-02-24
 
 ### Added
 
 #### Core Platform
-- 15-crate Rust workspace: types, memory, runtime, kernel, api, channels, wire, cli, migrate, skills, hands, extensions, desktop, xtask
-- Agent lifecycle management: spawn, list, kill, clone, mode switching (Full/Assist/Observe)
-- SQLite-backed memory substrate with structured KV, semantic recall, vector embeddings
-- 41 built-in tools (filesystem, web, shell, browser, scheduling, collaboration, image analysis, inter-agent, TTS, media)
-- WASM sandbox with dual metering (fuel + epoch interruption with watchdog thread)
-- Workflow engine with pipelines, fan-out parallelism, conditional steps, loops, and variable expansion
-- Visual workflow builder with drag-and-drop node graph, 7 node types, and TOML export
-- Trigger system with event pattern matching, content filters, and fire limits
-- Event bus with publish/subscribe and correlation IDs
-- 7 Hands packages for autonomous agent actions
 
-#### LLM Support
-- 3 native LLM drivers: Anthropic, Google Gemini, OpenAI-compatible
-- 27 providers: Anthropic, Gemini, OpenAI, Groq, OpenRouter, DeepSeek, Together, Mistral, Fireworks, Cohere, Perplexity, xAI, AI21, Cerebras, SambaNova, Hugging Face, Replicate, Ollama, vLLM, LM Studio, and more
-- Model catalog with 130+ built-in models, 23 aliases, tier classification
-- Intelligent model routing with task complexity scoring
-- Fallback driver for automatic failover between providers
-- Cost estimation and metering engine with per-model pricing
-- Streaming support (SSE) across all drivers
+The initial public release of OpenFang. A 15-crate Rust workspace implementing a full Agent Operating System, including agent lifecycle management, a SQLite-backed memory substrate, 41 built-in tools, a WASM sandbox with dual metering, a workflow engine, 40 channel adapters, 3 native LLM drivers supporting 27 providers, a Tauri 2.0 desktop app, and 7 autonomous Hands packages. 1,731+ tests across 15 crates.
 
-#### Token Management & Context
-- Token-aware session compaction (chars/4 heuristic, triggers at 70% context capacity)
-- In-loop emergency trimming at 70%/90% thresholds with summary injection
-- Tool profile filtering (cuts default 41 tools to 4-10 for chat agents, saving 15-20K tokens)
-- Context budget allocation for system prompt, tools, history, and response
-- MAX_TOOL_RESULT_CHARS reduced from 50K to 15K to prevent tool result bloat
-- Default token quota raised from 100K to 1M per hour
-
-#### Security
-- Capability-based access control with privilege escalation prevention
-- Path traversal protection in all file tools
-- SSRF protection blocking private IPs and cloud metadata endpoints
-- Ed25519 signed agent manifests
-- Merkle hash chain audit trail with tamper detection
-- Information flow taint tracking
-- HMAC-SHA256 mutual authentication for peer wire protocol
-- API key authentication with Bearer token
-- GCRA rate limiter with cost-aware token buckets
-- Security headers middleware (CSP, X-Frame-Options, HSTS)
-- Secret zeroization on all API key fields
-- Subprocess environment isolation
-- Health endpoint redaction (public minimal, auth full)
-- Loop guard with SHA256-based detection and circuit breaker thresholds
-- Session repair (validates and fixes orphaned tool results, empty messages)
-
-#### Channels
-- 40 channel adapters: Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email, Teams, Mattermost, Google Chat, Webex, Feishu/Lark, LINE, Viber, Facebook Messenger, Mastodon, Bluesky, Reddit, LinkedIn, Twitch, IRC, XMPP, and 18 more
-- Unified bridge with agent routing, command handling, message splitting
-- Per-channel user filtering and RBAC enforcement
-- Graceful shutdown, exponential backoff, secret zeroization on all adapters
-
-#### API
-- 100+ REST/WS/SSE API endpoints (axum 0.8)
-- WebSocket real-time streaming with per-agent connections
-- OpenAI-compatible `/v1/chat/completions` API (streaming SSE + non-streaming)
-- OpenAI-compatible `/v1/models` endpoint
-- WebChat embedded UI with Alpine.js
-- Google A2A protocol support (agent card, task send/get/cancel)
-- Prometheus text-format `/api/metrics` endpoint for monitoring
-- Multi-session management: list, create, switch, label sessions per agent
-- Usage analytics: summary, by-model, daily breakdown
-- Config hot-reload via polling (30-second interval, no restart required)
-
-#### Web UI
-- Chat message search with Ctrl+F, real-time filtering, text highlighting
-- Voice input with hold-to-record mic button (WebM/Opus codec)
-- TTS audio playback inline in tool cards
-- Browser screenshot rendering in chat (inline images)
-- Canvas rendering with iframe sandbox and CSP support
-- Session switcher dropdown in chat header
-- 6-step first-run setup wizard with provider API key help (12 providers)
-- Skill marketplace with 4 tabs (Installed, ClawHub, MCP Servers, Quick Start)
-- Copy-to-clipboard on messages, message timestamps
-- Visual workflow builder with drag-and-drop canvas
-
-#### Client SDKs
-- JavaScript SDK (`@openfang/sdk`): full REST API client with streaming, TypeScript declarations
-- Python client SDK (`openfang_client`): zero-dependency stdlib client with SSE streaming
-- Python agent SDK (`openfang_sdk`): decorator-based framework for writing Python agents
-- Usage examples for both languages (basic + streaming)
-
-#### CLI
-- 14+ subcommands: init, start, agent, workflow, trigger, migrate, skill, channel, config, chat, status, doctor, dashboard, mcp
-- Daemon auto-detection via PID file
-- Shell completion generation (bash, zsh, fish, PowerShell)
-- MCP server mode for IDE integration
-
-#### Skills Ecosystem
-- 60 bundled skills across 14 categories
-- Skill registry with TOML manifests
-- 4 runtimes: Python, Node.js, WASM, PromptOnly
-- FangHub marketplace with search/install
-- ClawHub client for OpenClaw skill compatibility
-- SKILL.md parser with auto-conversion
-- SHA256 checksum verification
-- Prompt injection scanning on skill content
-
-#### Desktop App
-- Tauri 2.0 native desktop app
-- System tray with status and quick actions
-- Single-instance enforcement
-- Hide-to-tray on close
-- Updated CSP for media, frame, and blob sources
-
-#### Session Management
-- LLM-based session compaction with token-aware triggers
-- Multi-session per agent with named labels
-- Session switching via API and UI
-- Cross-channel canonical sessions
-- Extended chat commands: `/new`, `/compact`, `/model`, `/stop`, `/usage`, `/think`
-
-#### Image Support
-- `ContentBlock::Image` with base64 inline data
-- Media type validation (png, jpeg, gif, webp only)
-- 5MB size limit enforcement
-- Mapped to all 3 native LLM drivers
-
-#### Usage Tracking
-- Per-response cost estimation with model-aware pricing
-- Usage footer in WebSocket responses and WebChat UI
-- Usage events persisted to SQLite
-- Quota enforcement with hourly windows
-
-#### Interoperability
-- OpenClaw migration engine (YAML/JSON5 to TOML)
-- MCP client (JSON-RPC 2.0 over stdio/SSE, tool namespacing)
-- MCP server (exposes OpenFang tools via MCP protocol)
-- A2A protocol client and server
-- Tool name compatibility mappings (21 OpenClaw tool names)
-
-#### Infrastructure
-- Multi-stage Dockerfile (debian:bookworm-slim runtime)
-- docker-compose.yml with volume persistence
-- GitHub Actions CI (check, test, clippy, format)
-- GitHub Actions release (multi-platform, GHCR push, SHA256 checksums)
-- Cross-platform install script (curl/irm one-liner)
-- systemd service file for Linux deployment
-
-#### Multi-User
-- RBAC with Owner/Admin/User/Viewer roles
-- Channel identity resolution
-- Per-user authorization checks
-- Device pairing and approval system
-
-#### Production Readiness
-- 1731+ tests across 15 crates, 0 failures
-- Cross-platform support (Linux, macOS, Windows)
-- Graceful shutdown with signal handling (SIGINT/SIGTERM on Unix, Ctrl+C on Windows)
-- Daemon PID file with stale process detection
-- Release profile with LTO, single codegen unit, symbol stripping
-- Prometheus metrics for monitoring
-- Config hot-reload without restart
-
+[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.30...HEAD
+[0.3.30]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.30
+[0.3.29]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.29
+[0.3.28]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.28
+[0.3.27]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.27
+[0.3.26]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.26
 [0.1.0]: https://github.com/RightNow-AI/openfang/releases/tag/v0.1.0

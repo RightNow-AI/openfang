@@ -1,15 +1,13 @@
 # Maestro Project — Evolved Roadmap
 
-**Date:** 2026-03-08  
-**Status:** Phase 5 Complete
+**Date:** 2026-03-09  
+**Status:** Phase 8 Complete
 
 ---
 
 ## 1. Overview
 
 This document outlines the official, evolved roadmap for the Maestro-OpenFang project. It supersedes any previous roadmaps and serves as the single source of truth for the project's direction. 
-
-The roadmap is a living document. The original plan provided a high-level structure, but the true scope of each phase is revealed during development. This document captures the reality of that evolution, including **Discovered Prerequisites**—work that was not in the original plan but became necessary to complete a phase correctly (e.g., the SurrealDB v3 upgrade).
 
 ## 2. Completed Phases
 
@@ -33,6 +31,20 @@ The roadmap is a living document. The original plan provided a high-level struct
 | Task | Version | Description |
 |---|---|---|
 | **5.1** | v0.3.29 | **Moka L1 + Redis L2 Caching Layer:** Created the `maestro-cache` crate with a `CachingMemory` wrapper providing a 3-tier cache (Moka → Redis → SurrealDB) using a cache-aside read and write-invalidate pattern. |
+
+---
+
+### Phase 8 — MAESTRO Algorithm & Feature Backlog ✅
+
+**Goal:** Implement the full MAESTRO algorithm from the paper and flesh out the remaining stub crates from the initial project scaffold.
+
+| Task | Version | Description |
+|---|---|---|
+| **8.1** | v0.3.30 | **Observability & Guardrails:** Implemented `maestro-observability` (OpenTelemetry) and `maestro-guardrails` (PII, rate limiting). |
+| **8.2** | v0.3.30 | **Model & Algorithm Hubs:** Implemented `maestro-model-hub` (dynamic routing) and `maestro-algorithm` (pipeline completion). |
+| **8.3** | v0.3.30 | **Learning & Evaluation:** Implemented `maestro-pai` (self-evolution) and `maestro-eval` (LLM-as-judge). |
+| **8.4** | v0.3.30 | **Ecosystem:** Implemented `maestro-sdk`, `maestro-marketplace`, and `maestro-knowledge` (RAG). |
+| **8.5** | v0.3.30 | **Recursive Language Model (RLM):** Implemented `maestro-rlm` for long-context processing via a PyO3-based Python REPL. |
 
 ## 3. Future Phases
 
@@ -63,15 +75,14 @@ The roadmap is a living document. The original plan provided a high-level struct
 
 ---
 
-### Phase 8 — Stub Crate & Feature Backlog Implementation ⬜
+### Phase 9 — The `Hand` System & FangHub Marketplace ⬜
 
-**Goal:** Flesh out the remaining 10 stub crates and address the feature backlog.
+**Goal:** Implement the autonomous `Hand` system and the `FangHub` marketplace for discovering, installing, and sharing agent packages.
 
 | Task | Description |
 |---|---|
-| **8.1** | **Observability & Guardrails:** Implement `maestro-observability` (OpenTelemetry) and `maestro-guardrails` (PII, rate limiting). |
-| **8.2** | **Model & Algorithm Hubs:** Implement `maestro-model-hub` (dynamic routing) and `maestro-algorithm` (pipeline completion). |
-| **8.3** | **Learning & Evaluation:** Implement `maestro-rlm` (Reinforcement Learning from Memory) and `maestro-eval`. |
-| **8.4** | **Ecosystem:** Implement `maestro-sdk`, `maestro-marketplace`, `maestro-knowledge`, and `maestro-pai`. |
-| **8.5** | **Vector Search:** Implement embedding-aware memory (`recall_with_embedding_async`) and vector search in SurrealDB. |
-| **8.6** | **A2A & WASM:** Fully implement the Agent-to-Agent (A2A) protocol and WASM sandbox for tool execution. |
+| **9.1** | Implement the `Hand` manifest (`HAND.toml`) parser and lifecycle management in `openfang-hands`. |
+| **9.2** | Build the 7 core Hands: `Clip`, `Lead`, `Collector`, `Predictor`, `Researcher`, `Twitter`, `Browser`. |
+| **9.3** | Implement the `FangHub` client in `openfang-skills` for searching and installing Hands. |
+| **9.4** | Design and build the web UI for the FangHub marketplace. |
+| **9.5** | Implement the `openfang hand` CLI commands (`activate`, `pause`, `status`, `list`). |

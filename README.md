@@ -6,7 +6,7 @@
 <h3 align="center">The Agent Operating System</h3>
 
 <p align="center">
-  Open-source Agent OS built in Rust. 137K LOC. 14 crates. 1,767+ tests. Zero clippy warnings.<br/>
+  Open-source Agent OS built in Rust. 143K LOC. 21 crates. 1,846+ tests. Zero clippy warnings.<br/>
   <strong>One binary. Battle-tested. Agents that actually work for you.</strong>
 </p>
 
@@ -19,18 +19,18 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-v0.3.29-green?style=flat-square" alt="v0.3.29" />
-  <img src="https://img.shields.io/badge/phase-5%20✅%20complete-blue?style=flat-square" alt="Phase 5 Complete" />
-  <img src="https://img.shields.io/badge/tests-1,767%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/version-v0.3.30-green?style=flat-square" alt="v0.3.30" />
+  <img src="https://img.shields.io/badge/phase-8%20✅%20complete-blue?style=flat-square" alt="Phase 8 Complete" />
+  <img src="https://img.shields.io/badge/tests-1,846%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
   <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
 </p>
 
 ---
 
-> **v0.3.29 — Phase 5 Complete (March 2026)**
+> **v0.3.30 — Phase 8 Complete (March 2026)**
 >
-> Phase 4 (SurrealDB) and Phase 5 (Caching Layer) are complete. The system now runs on a production-grade, 3-tier data backend (Moka L1 + Redis L2 + SurrealDB L3). See [ROADMAP.md](ROADMAP.md) for full details.
+> Phase 8 (MAESTRO Algorithm) is complete. The system now includes a full implementation of the MAESTRO paper, including observability, guardrails, a model hub, RAG, evaluation, and a recursive language model (RLM) for long-context processing. See [ROADMAP.md](ROADMAP.md) for full details.
 
 ---
 
@@ -40,7 +40,7 @@ OpenFang is an **open-source Agent Operating System** — not a chatbot framewor
 
 Traditional agent frameworks wait for you to type something. OpenFang runs **autonomous agents that work for you** — on schedules, 24/7, building knowledge graphs, monitoring targets, generating leads, managing your social media, and reporting results to your dashboard.
 
-The entire system compiles to a **single ~32MB binary**. One install, one command, your agents are live.
+The entire system compiles to a **single ~38MB binary**. One install, one command, your agents are live.
 
 ```bash
 curl -fsSL https://openfang.sh/install | sh
@@ -117,15 +117,15 @@ openfang hand list
 
 ### Benchmarks: Measured, Not Marketed
 
-All data from official documentation and public repositories — February 2026.
+All data from official documentation and public repositories — March 2026.
 
 #### Cold Start Time (lower is better)
 
 ```
 ZeroClaw   ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10 ms
-OpenFang   ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  180 ms    ★
-LangGraph  █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  2.5 sec
-CrewAI     ████████████████████░░░░░░░░░░░░░░░░░░░░░░  3.0 sec
+OpenFang   ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  180 ms    ★
+LangGraph  █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░  2.5 sec
+CrewAI     ████████████████████░░░░░░░░░░░░░░░░░░░░░░░  3.0 sec
 AutoGen    ██████████████████████████░░░░░░░░░░░░░░░░░  4.0 sec
 OpenClaw   █████████████████████████████████████████░░  5.98 sec
 ```
@@ -144,45 +144,12 @@ OpenClaw   ███████████████████████
 #### Install Size (lower is better)
 
 ```
-ZeroClaw   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  8.8 MB
-OpenFang   ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   32 MB    ★
+ZeroClaw   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  8.8 MB
+OpenFang   ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   38 MB    ★
 CrewAI     ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  100 MB
 LangGraph  ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  150 MB
 AutoGen    ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  200 MB
 OpenClaw   ████████████████████████████████████████░░░░  500 MB
-```
-
-#### Security Systems (higher is better)
-
-```
-OpenFang   ████████████████████████████████████████████   16      ★
-ZeroClaw   ███████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░    6
-OpenClaw   ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    3
-AutoGen    █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    2
-LangGraph  █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    2
-CrewAI     ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    1
-```
-
-#### Channel Adapters (higher is better)
-
-```
-OpenFang   ████████████████████████████████████████████   40      ★
-ZeroClaw   ███████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░   15
-OpenClaw   █████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   13
-CrewAI     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    0
-AutoGen    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    0
-LangGraph  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    0
-```
-
-#### LLM Providers (higher is better)
-
-```
-ZeroClaw   ████████████████████████████████████████████   28
-OpenFang   ██████████████████████████████████████████░░   27      ★
-LangGraph  ██████████████████████░░░░░░░░░░░░░░░░░░░░░   15
-CrewAI     ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
-OpenClaw   ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
-AutoGen    ███████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    8
 ```
 
 ### Feature-by-Feature Comparison
@@ -195,43 +162,18 @@ AutoGen    ███████████░░░░░░░░░░░░
 | **Agent Sandbox** | **WASM dual-metered** | None | Allowlists | None | Docker | None |
 | **Channel Adapters** | **40** | 13 | 15 | 0 | 0 | 0 |
 | **Built-in Tools** | **53 + MCP + A2A** | 50+ | 12 | Plugins | MCP | LC tools |
-| **Memory** | **SQLite + vector** | File-based | SQLite FTS5 | 4-layer | External | Checkpoints |
+| **Memory** | **SurrealDB v3** | File-based | SQLite FTS5 | 4-layer | External | Checkpoints |
 | **Desktop App** | **Tauri 2.0** | None | None | None | Studio | None |
 | **Audit Trail** | **Merkle hash-chain** | Logs | Logs | Tracing | Logs | Checkpoints |
 | **Cold Start** | **<200ms** | ~6s | ~10ms | ~3s | ~4s | ~2.5s |
-| **Install Size** | **~32 MB** | ~500 MB | ~8.8 MB | ~100 MB | ~200 MB | ~150 MB |
+| **Install Size** | **~38 MB** | ~500 MB | ~8.8 MB | ~100 MB | ~200 MB | ~150 MB |
 | **License** | MIT | MIT | MIT | MIT | Apache 2.0 | MIT |
-
----
-
-## 16 Security Systems — Defense in Depth
-
-OpenFang doesn't bolt security on after the fact. Every layer is independently testable and operates without a single point of failure.
-
-| # | System | What It Does |
-|---|--------|-------------|
-| 1 | **WASM Dual-Metered Sandbox** | Tool code runs in WebAssembly with fuel metering + epoch interruption. A watchdog thread kills runaway code. |
-| 2 | **Merkle Hash-Chain Audit Trail** | Every action is cryptographically linked to the previous one. Tamper with one entry and the entire chain breaks. |
-| 3 | **Information Flow Taint Tracking** | Labels propagate through execution — secrets are tracked from source to sink. |
-| 4 | **Ed25519 Signed Agent Manifests** | Every agent identity and capability set is cryptographically signed. |
-| 5 | **SSRF Protection** | Blocks private IPs, cloud metadata endpoints, and DNS rebinding attacks. |
-| 6 | **Secret Zeroization** | `Zeroizing<String>` auto-wipes API keys from memory the instant they're no longer needed. |
-| 7 | **OFP Mutual Authentication** | HMAC-SHA256 nonce-based, constant-time verification for P2P networking. |
-| 8 | **Capability Gates** | Role-based access control — agents declare required tools, the kernel enforces it. |
-| 9 | **Security Headers** | CSP, X-Frame-Options, HSTS, X-Content-Type-Options on every response. |
-| 10 | **Health Endpoint Redaction** | Public health check returns minimal info. Full diagnostics require authentication. |
-| 11 | **Subprocess Sandbox** | `env_clear()` + selective variable passthrough. Process tree isolation with cross-platform kill. |
-| 12 | **Prompt Injection Scanner** | Detects override attempts, data exfiltration patterns, and shell reference injection in skills. |
-| 13 | **Loop Guard** | SHA256-based tool call loop detection with circuit breaker. Handles ping-pong patterns. |
-| 14 | **Session Repair** | 7-phase message history validation and automatic recovery from corruption. |
-| 15 | **Path Traversal Prevention** | Canonicalization with symlink escape prevention. `../` doesn't work here. |
-| 16 | **GCRA Rate Limiter** | Cost-aware token bucket rate limiting with per-IP tracking and stale cleanup. |
 
 ---
 
 ## Architecture
 
-14 Rust crates. 137,728 lines of code. Modular kernel design.
+21 Rust crates. 143,528 lines of code. Modular kernel design.
 
 ```
 openfang-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget tracking
@@ -239,60 +181,23 @@ openfang-runtime     Agent loop, 3 LLM drivers, 53 tools, WASM sandbox, MCP, A2A
 openfang-api         140+ REST/WS/SSE endpoints, OpenAI-compatible API, dashboard
 openfang-channels    40 messaging adapters with rate limiting, DM/group policies
 maestro-surreal-memory  SurrealDB graph persistence, vector embeddings, knowledge graph, canonical sessions
+maestro-cache        L1 (Moka) + L2 (Redis) caching layer for memory, models, and skills
+maestro-algorithm    The core MAESTRO algorithm: PLAN, EXECUTE, LEARN, EVALUATE
+maestro-observability OpenTelemetry traces, metrics, cost tracking, alerts, audit log
+maestro-guardrails   PII scanner, prompt injection detector, topic control, custom regex
+maestro-model-hub    Capability-aware model router, 11 pre-configured models, circuit breakers
+maestro-knowledge    SurrealDB-backed RAG pipeline, HNSW vector search, chunking strategies
+maestro-eval         ScoringEngine, SuiteRunner, RegressionTracker, BenchmarkRunner, ABTester
+maestro-sdk          Rust embedding SDK for OpenFang agents (AgentHandle, SessionHandle)
+maestro-marketplace  Local agent marketplace (install, search, publish, update_all)
+maestro-pai          Self-evolution engine (hooks, patterns, telos, wisdom)
+maestro-rlm          Recursive Language Model (RLM) for long-context processing via PyO3
 openfang-types       Core types, taint tracking, Ed25519 manifest signing, model catalog
 openfang-skills      60 bundled skills, SKILL.md parser, FangHub marketplace
-openfang-hands       7 autonomous Hands, HAND.toml parser, lifecycle management
-openfang-extensions  25 MCP templates, AES-256-GCM credential vault, OAuth2 PKCE
-openfang-wire        OFP P2P protocol with HMAC-SHA256 mutual authentication
 openfang-cli         CLI with daemon management, TUI dashboard, MCP server mode
 openfang-desktop     Tauri 2.0 native app (system tray, notifications, global shortcuts)
-openfang-migrate     OpenClaw, LangChain, AutoGPT migration engine
 xtask                Build automation
 ```
-
----
-
-## 40 Channel Adapters
-
-Connect your agents to every platform your users are on.
-
-**Core:** Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email (IMAP/SMTP)
-**Enterprise:** Microsoft Teams, Mattermost, Google Chat, Webex, Feishu/Lark, Zulip
-**Social:** LINE, Viber, Facebook Messenger, Mastodon, Bluesky, Reddit, LinkedIn, Twitch
-**Community:** IRC, XMPP, Guilded, Revolt, Keybase, Discourse, Gitter
-**Privacy:** Threema, Nostr, Mumble, Nextcloud Talk, Rocket.Chat, Ntfy, Gotify
-**Workplace:** Pumble, Flock, Twist, DingTalk, Zalo, Webhooks
-
-Each adapter supports per-channel model overrides, DM/group policies, rate limiting, and output formatting.
-
----
-
-## 27 LLM Providers — 123+ Models
-
-3 native drivers (Anthropic, Gemini, OpenAI-compatible) route to 27 providers:
-
-Anthropic, Gemini, OpenAI, Groq, DeepSeek, OpenRouter, Together, Mistral, Fireworks, Cohere, Perplexity, xAI, AI21, Cerebras, SambaNova, HuggingFace, Replicate, Ollama, vLLM, LM Studio, Qwen, MiniMax, Zhipu, Moonshot, Qianfan, Bedrock, and more.
-
-Intelligent routing with task complexity scoring, automatic fallback, cost tracking, and per-model pricing.
-
----
-
-## Migrate from OpenClaw
-
-Already running OpenClaw? One command:
-
-```bash
-# Migrate everything — agents, memory, skills, configs
-openfang migrate --from openclaw
-
-# Migrate from a specific path
-openfang migrate --from openclaw --path ~/.openclaw
-
-# Dry run first to see what would change
-openfang migrate --from openclaw --dry-run
-```
-
-The migration engine imports your agents, conversation history, skills, and configuration. OpenFang reads SKILL.md natively and is compatible with the ClawHub marketplace.
 
 ---
 
@@ -314,51 +219,13 @@ curl -X POST localhost:4200/v1/chat/completions \
 
 ---
 
-## Quick Start
-
-```bash
-# 1. Install (macOS/Linux)
-curl -fsSL https://openfang.sh/install | sh
-
-# 2. Initialize — walks you through provider setup
-openfang init
-
-# 3. Start the daemon
-openfang start
-
-# 4. Dashboard is live at http://localhost:4200
-
-# 5. Activate a Hand — it starts working for you
-openfang hand activate researcher
-
-# 6. Chat with an agent
-openfang chat researcher
-> "What are the emerging trends in AI agent frameworks?"
-
-# 7. Spawn a pre-built agent
-openfang agent spawn coder
-```
-
-<details>
-<summary><strong>Windows (PowerShell)</strong></summary>
-
-```powershell
-irm https://openfang.sh/install.ps1 | iex
-openfang init
-openfang start
-```
-
-</details>
-
----
-
 ## Development
 
 ```bash
 # Build the workspace
 cargo build --workspace --lib
 
-# Run all tests (1,767+)
+# Run all tests (1,846+)
 cargo test --workspace
 
 # Lint (must be 0 warnings)
@@ -372,7 +239,7 @@ cargo fmt --all -- --check
 
 ## Stability Notice
 
-OpenFang v0.1.0 is the first public release. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
+OpenFang v0.3.30 is a significant update. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
 
 - **Breaking changes** may occur between minor versions until v1.0
 - **Some Hands** are more mature than others (Browser and Researcher are the most battle-tested)
