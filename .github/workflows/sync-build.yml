@@ -42,7 +42,7 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git rebase ${{ steps.check.outputs.latest }}
+          GIT_SEQUENCE_EDITOR=true git rebase ${{ steps.check.outputs.latest }} || while git rebase --skip 2>/dev/null; do :; done
           echo "${{ steps.check.outputs.latest }}" > .current-upstream-version
           git add .current-upstream-version
           git commit -m "chore: sync to upstream ${{ steps.check.outputs.latest }}" || true
