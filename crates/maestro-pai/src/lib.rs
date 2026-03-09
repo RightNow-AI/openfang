@@ -35,7 +35,7 @@
 //!
 //! It does NOT try to replicate PAI's prompt architecture in code.
 //! Instead, it provides the **data layer** that PAI's prompts need:
-//! - Structured storage for learnings (SQLite, not JSONL)
+//! - Structured storage for learnings (SurrealDB v3, not JSONL)
 //! - Query interface for pattern mining
 //! - Versioned algorithm storage with diff tracking
 //! - TELOS context management
@@ -53,6 +53,17 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// Errors from the PAI learning system.
+#[derive(Debug, thiserror::Error)]
+pub enum LearningError {
+    #[error("SurrealDB error: {0}")]
+    Db(#[from] surrealdb::Error),
+    #[error("Serialization error: {0}")]
+    Serde(#[from] serde_json::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+}
 
 pub mod hooks;
 pub mod patterns;

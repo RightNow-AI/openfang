@@ -66,8 +66,9 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Database
-rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
-surrealdb = "2"
+# NOTE: rusqlite has been fully removed — all persistence uses SurrealDB v3.
+# Do NOT add rusqlite back. Use `surrealdb.workspace = true` in crate Cargo.tomls.
+surrealdb = { version = "3", features = ["kv-mem", "kv-surrealkv"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

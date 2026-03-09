@@ -15,5 +15,5 @@ tracing.workspace = true
 async-trait.workspace = true
 rig-core.workspace = true
 sha2.workspace = true
-surrealdb = { version = "3", features = ["kv-mem", "kv-surrealkv"] }
+surrealdb = { workspace = true }
 chrono.workspace = true

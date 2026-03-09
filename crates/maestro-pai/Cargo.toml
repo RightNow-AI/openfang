@@ -15,4 +15,4 @@ tracing.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 uuid.workspace = true
-rusqlite.workspace = true
+surrealdb = { workspace = true }
