@@ -55,6 +55,9 @@ struct OaiRequest {
     tool_choice: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+    /// Request usage stats in streaming responses (OpenAI extension, supported by Groq et al).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<serde_json::Value>,
 }
 
 /// Returns true if a model uses `max_completion_tokens` instead of `max_tokens`.
@@ -327,6 +330,7 @@ impl LlmDriver for OpenAIDriver {
             tools: oai_tools,
             tool_choice,
             stream: false,
+            stream_options: None,
         };
 
         let max_retries = 3;
@@ -666,6 +670,7 @@ impl LlmDriver for OpenAIDriver {
             tools: oai_tools,
             tool_choice,
             stream: true,
+            stream_options: Some(serde_json::json!({"include_usage": true})),
         };
 
         // Retry loop for the initial HTTP request
@@ -766,6 +771,19 @@ impl LlmDriver for OpenAIDriver {
                     continue;
                 }
 
+                // Provider doesn't support stream_options — retry without it
+                if status == 400
+                    && oai_request.stream_options.is_some()
+                    && attempt < max_retries
+                    && (body.contains("stream_options")
+                        || body.contains("stream_option")
+                        || body.contains("Unrecognized request argument"))
+                {
+                    warn!(model = %oai_request.model, "Stripping stream_options (unsupported by provider)");
+                    oai_request.stream_options = None;
+                    continue;
+                }
+
                 // Model doesn't support function calling — retry without tools
                 let body_lower = body.to_lowercase();
                 if !oai_request.tools.is_empty()
@@ -800,10 +818,13 @@ impl LlmDriver for OpenAIDriver {
             let mut tool_accum: Vec<(String, String, String)> = Vec::new();
             let mut finish_reason: Option<String> = None;
             let mut usage = TokenUsage::default();
+            let mut chunk_count: u32 = 0;
+            let mut sse_line_count: u32 = 0;
 
             let mut byte_stream = resp.bytes_stream();
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
+                chunk_count += 1;
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
                 // Process complete lines
@@ -815,6 +836,7 @@ impl LlmDriver for OpenAIDriver {
                         continue;
                     }
 
+                    sse_line_count += 1;
                     let data = match line.strip_prefix("data:") {
                         Some(d) => d.trim_start(),
                         None => continue,
@@ -908,6 +930,19 @@ impl LlmDriver for OpenAIDriver {
                     }
                 }
             }
+
+            // Log stream summary for diagnostics
+            debug!(
+                chunks = chunk_count,
+                sse_lines = sse_line_count,
+                text_len = text_content.len(),
+                tool_count = tool_accum.len(),
+                finish = ?finish_reason,
+                input_tokens = usage.input_tokens,
+                output_tokens = usage.output_tokens,
+                buffer_remaining = buffer.len(),
+                "SSE stream completed"
+            );
 
             // Build the final response
             let mut content = Vec::new();
