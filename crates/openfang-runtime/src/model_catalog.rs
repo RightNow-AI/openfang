@@ -7,12 +7,11 @@ use openfang_types::model_catalog::{
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
     BEDROCK_BASE_URL, CEREBRAS_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL,
     GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
-    LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL,
-    LEMONADE_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL,
-    QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
-    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL,
+    MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL,
+    QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL,
+    VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL,
+    ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -68,8 +67,7 @@ impl ModelCatalog {
             let has_fallback = match provider.id.as_str() {
                 "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
                 "codex" => {
-                    std::env::var("OPENAI_API_KEY").is_ok()
-                        || read_codex_credential().is_some()
+                    std::env::var("OPENAI_API_KEY").is_ok() || read_codex_credential().is_some()
                 }
                 "claude-code" => crate::drivers::claude_code::claude_code_available(),
                 _ => false,
@@ -662,6 +660,15 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             display_name: "Moonshot (Kimi)".into(),
             api_key_env: "MOONSHOT_API_KEY".into(),
             base_url: MOONSHOT_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
+            id: "kimi_coding".into(),
+            display_name: "Kimi for Code".into(),
+            api_key_env: "KIMI_API_KEY".into(),
+            base_url: KIMI_CODING_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -2926,6 +2933,23 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["kimi-k2.5".into()],
         },
         // ══════════════════════════════════════════════════════════════
+        // Kimi for Code (1)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "kimi-for-coding".into(),
+            display_name: "Kimi For Coding".into(),
+            provider: "kimi_coding".into(),
+            tier: ModelTier::Frontier,
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,  // Subscription-based (Coding Plan)
+            output_cost_per_m: 0.0, // Subscription-based (Coding Plan)
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ══════════════════════════════════════════════════════════════
         // Baidu Qianfan / ERNIE (3)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
@@ -3281,7 +3305,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 36);
+        assert_eq!(catalog.list_providers().len(), 37);
     }
 
     #[test]
@@ -3316,10 +3340,7 @@ mod tests {
     #[test]
     fn test_resolve_alias() {
         let catalog = ModelCatalog::new();
-        assert_eq!(
-            catalog.resolve_alias("sonnet"),
-            Some("claude-sonnet-4-6")
-        );
+        assert_eq!(catalog.resolve_alias("sonnet"), Some("claude-sonnet-4-6"));
         assert_eq!(
             catalog.resolve_alias("haiku"),
             Some("claude-haiku-4-5-20251001")
