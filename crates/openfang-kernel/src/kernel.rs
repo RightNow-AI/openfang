@@ -155,6 +155,8 @@ pub struct OpenFangKernel {
     pub default_model_override: std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
     /// FalkorDB graph analytics engine (None when analytics is not configured).
     pub analytics: Option<Arc<maestro_falkor_analytics::FalkorAnalytics>>,
+    /// MAESTRO supervisor engine for multi-agent orchestration.
+    pub supervisor_engine: Option<Arc<crate::supervisor_engine::SupervisorEngine>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
 }
@@ -981,6 +983,7 @@ impl OpenFangKernel {
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
             analytics,
+            supervisor_engine: None, // Initialized post-boot when self_handle is available
             self_handle: OnceLock::new(),
         };
 

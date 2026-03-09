@@ -120,6 +120,10 @@
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span>
               <span class="nav-label">Scheduler</span>
             </a>
+            <a class="nav-item" :class="{ active: page === 'supervisor' }" @click="navigate('supervisor')" :aria-current="page === 'supervisor' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></span>
+              <span class="nav-label">Supervisor</span>
+            </a>
           </div>
         </template>
       </div>
@@ -1822,6 +1826,181 @@
                 <h4>No run history yet</h4>
                 <p class="hint">Run history will appear here after scheduled jobs or triggers execute.</p>
               </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </template>
+
+    <!-- Page: Supervisor -->
+    <template x-if="page === 'supervisor'">
+      <div x-data="supervisorPage()">
+        <div class="page-header">
+          <h2>MAESTRO Supervisor</h2>
+          <div class="flex gap-2">
+            <button class="btn btn-primary btn-sm" @click="showOrchForm = true">+ New Orchestration</button>
+            <button class="btn btn-sm" @click="loadStatus()">Refresh</button>
+          </div>
+        </div>
+        <div class="tabs" role="tablist">
+          <div class="tab" :class="{ active: tab === 'status' }" @click="tab = 'status'">Status</div>
+          <div class="tab" :class="{ active: tab === 'history' }" @click="tab = 'history'; loadHistory()">History</div>
+          <div class="tab" :class="{ active: tab === 'learnings' }" @click="tab = 'learnings'; loadLearnings()">Learnings</div>
+          <div class="tab" :class="{ active: tab === 'config' }" @click="tab = 'config'; loadConfig()">Config</div>
+        </div>
+        <div class="page-body" x-init="loadStatus()">
+
+          <!-- Status Tab -->
+          <div x-show="tab === 'status'">
+            <div x-show="loading" class="text-dim" style="padding:2rem;text-align:center">Loading...</div>
+            <div x-show="error" class="text-danger" style="padding:1rem" x-text="error"></div>
+            <div x-show="!loading && !error && status">
+              <div class="grid grid-3" style="gap:1rem;margin-bottom:1.5rem">
+                <div class="card" style="padding:1rem">
+                  <div class="text-dim text-xs" style="margin-bottom:4px">Active</div>
+                  <div class="text-xl font-bold" :class="status?.active ? 'text-success' : ''" x-text="status?.active ? 'Running' : 'Idle'"></div>
+                  <div class="text-dim text-xs" x-show="status?.current_phase" x-text="'Phase: ' + (status?.current_phase || '')"></div>
+                </div>
+                <div class="card" style="padding:1rem">
+                  <div class="text-dim text-xs" style="margin-bottom:4px">Total Runs</div>
+                  <div class="text-xl font-bold" x-text="status?.total_runs || 0"></div>
+                  <div class="text-dim text-xs" x-text="(status?.successful_runs || 0) + ' successful'"></div>
+                </div>
+                <div class="card" style="padding:1rem">
+                  <div class="text-dim text-xs" style="margin-bottom:4px">Avg Satisfaction</div>
+                  <div class="text-xl font-bold" x-text="((status?.avg_satisfaction || 0) * 100).toFixed(1) + '%'"></div>
+                  <div class="text-dim text-xs" x-text="(status?.total_learnings || 0) + ' learnings captured'"></div>
+                </div>
+              </div>
+              <h3 style="margin:1rem 0 0.5rem">Recent Runs</h3>
+              <div x-show="!status?.recent_runs?.length" class="text-dim" style="padding:1rem">No orchestrations yet. Submit a task to get started.</div>
+              <table class="table" x-show="status?.recent_runs?.length">
+                <thead><tr><th>Task</th><th>Complexity</th><th>Satisfaction</th><th>Agents</th><th>Duration</th><th>Completed</th></tr></thead>
+                <tbody>
+                  <template x-for="run in (status?.recent_runs || [])" :key="run.id">
+                    <tr style="cursor:pointer" @click="viewRun(run.id)">
+                      <td x-text="run.task.substring(0, 60) + (run.task.length > 60 ? '...' : '')"></td>
+                      <td><span class="badge" :class="run.complexity <= 3 ? 'badge-success' : run.complexity <= 6 ? 'badge-warning' : 'badge-danger'" x-text="run.complexity + '/10'"></span></td>
+                      <td x-text="(run.satisfaction * 100).toFixed(0) + '%'"></td>
+                      <td x-text="run.agents_spawned"></td>
+                      <td x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></td>
+                      <td class="text-dim text-xs" x-text="new Date(run.completed_at).toLocaleString()"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- History Tab -->
+          <div x-show="tab === 'history'">
+            <div x-show="histLoading" class="text-dim" style="padding:2rem;text-align:center">Loading history...</div>
+            <div x-show="!histLoading && !historyList.length" class="text-dim" style="padding:2rem;text-align:center">No orchestration history.</div>
+            <table class="table" x-show="historyList.length">
+              <thead><tr><th>ID</th><th>Task</th><th>Orchestrated</th><th>Complexity</th><th>Satisfaction</th><th>Tokens</th><th>Duration</th></tr></thead>
+              <tbody>
+                <template x-for="run in historyList" :key="run.id">
+                  <tr style="cursor:pointer" @click="viewRun(run.id)">
+                    <td class="text-dim text-xs" x-text="run.id.substring(0, 8)"></td>
+                    <td x-text="run.task.substring(0, 50) + (run.task.length > 50 ? '...' : '')"></td>
+                    <td x-text="run.orchestrated ? 'Yes' : 'Passthrough'"></td>
+                    <td x-text="run.complexity + '/10'"></td>
+                    <td x-text="(run.satisfaction * 100).toFixed(0) + '%'"></td>
+                    <td x-text="run.total_tokens?.toLocaleString() || '0'"></td>
+                    <td x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Learnings Tab -->
+          <div x-show="tab === 'learnings'">
+            <div x-show="learnLoading" class="text-dim" style="padding:2rem;text-align:center">Loading learnings...</div>
+            <div x-show="!learnLoading && !learningsList.length" class="text-dim" style="padding:2rem;text-align:center">No learnings captured yet.</div>
+            <div x-show="learningsList.length">
+              <template x-for="(l, i) in learningsList" :key="i">
+                <div class="card" style="padding:1rem;margin-bottom:0.75rem">
+                  <div class="flex" style="justify-content:space-between;margin-bottom:0.5rem">
+                    <span class="badge badge-dim" x-text="l.category"></span>
+                    <span class="text-dim text-xs" x-text="new Date(l.timestamp).toLocaleString()"></span>
+                  </div>
+                  <p style="margin:0 0 0.5rem" x-text="l.insight"></p>
+                  <p class="text-dim text-xs" style="margin:0" x-show="l.actionable" x-text="'Action: ' + l.actionable"></p>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Config Tab -->
+          <div x-show="tab === 'config'">
+            <div x-show="cfgLoading" class="text-dim" style="padding:2rem;text-align:center">Loading config...</div>
+            <div x-show="!cfgLoading && configData" class="card" style="padding:1.5rem">
+              <h3 style="margin:0 0 1rem">Algorithm Configuration</h3>
+              <pre style="background:var(--bg-input);padding:1rem;border-radius:8px;overflow:auto;font-size:13px" x-text="JSON.stringify(configData, null, 2)"></pre>
+            </div>
+          </div>
+
+          <!-- Orchestration Form Modal -->
+          <div x-show="showOrchForm" style="position:fixed;inset:0;z-index:999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5)" @click.self="showOrchForm = false">
+            <div class="card" style="padding:1.5rem;max-width:500px;width:90%">
+              <h3 style="margin:0 0 1rem">New Orchestration</h3>
+              <label class="text-dim text-xs" style="display:block;margin-bottom:4px">Task Description</label>
+              <textarea x-model="orchTask" placeholder="Describe the task to orchestrate..." style="width:100%;min-height:100px;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);font-size:14px;resize:vertical;box-sizing:border-box;margin-bottom:1rem"></textarea>
+              <label class="text-dim text-xs" style="display:block;margin-bottom:4px">Capabilities (comma-separated, optional)</label>
+              <input x-model="orchCaps" placeholder="web_search, file_write, code_exec" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);font-size:14px;box-sizing:border-box;margin-bottom:1rem">
+              <div class="flex gap-2" style="justify-content:flex-end">
+                <button class="btn btn-sm" @click="showOrchForm = false">Cancel</button>
+                <button class="btn btn-primary btn-sm" :disabled="orchSubmitting || !orchTask.trim()" @click="submitOrchestration()" x-text="orchSubmitting ? 'Running...' : 'Start Orchestration'"></button>
+              </div>
+              <div x-show="orchError" class="text-danger text-xs" style="margin-top:0.5rem" x-text="orchError"></div>
+            </div>
+          </div>
+
+          <!-- Run Detail Modal -->
+          <div x-show="selectedRun" style="position:fixed;inset:0;z-index:999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5)" @click.self="selectedRun = null">
+            <div class="card" style="padding:1.5rem;max-width:700px;width:95%;max-height:80vh;overflow:auto">
+              <div class="flex" style="justify-content:space-between;margin-bottom:1rem">
+                <h3 style="margin:0">Orchestration Detail</h3>
+                <button class="btn btn-sm" @click="selectedRun = null">Close</button>
+              </div>
+              <template x-if="selectedRun">
+                <div>
+                  <div class="grid grid-3" style="gap:0.75rem;margin-bottom:1rem">
+                    <div><span class="text-dim text-xs">Complexity</span><br><strong x-text="selectedRun.complexity + '/10'"></strong></div>
+                    <div><span class="text-dim text-xs">Satisfaction</span><br><strong x-text="(selectedRun.satisfaction * 100).toFixed(1) + '%'"></strong></div>
+                    <div><span class="text-dim text-xs">Agents Spawned</span><br><strong x-text="selectedRun.agents_spawned"></strong></div>
+                  </div>
+                  <div style="margin-bottom:1rem">
+                    <span class="text-dim text-xs">Task</span>
+                    <p style="margin:4px 0" x-text="selectedRun.task"></p>
+                  </div>
+                  <div style="margin-bottom:1rem">
+                    <span class="text-dim text-xs">Output</span>
+                    <pre style="background:var(--bg-input);padding:0.75rem;border-radius:8px;white-space:pre-wrap;font-size:13px;max-height:200px;overflow:auto" x-text="selectedRun.output"></pre>
+                  </div>
+                  <div x-show="selectedRun.phase_timings?.length" style="margin-bottom:1rem">
+                    <span class="text-dim text-xs">Phase Timings</span>
+                    <table class="table" style="margin-top:4px">
+                      <thead><tr><th>Phase</th><th>Duration</th><th>Tokens</th></tr></thead>
+                      <tbody>
+                        <template x-for="pt in (selectedRun.phase_timings || [])" :key="pt.phase">
+                          <tr><td x-text="pt.phase"></td><td x-text="(pt.duration_ms / 1000).toFixed(2) + 's'"></td><td x-text="pt.tokens_used?.toLocaleString() || '0'"></td></tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div x-show="selectedRun.learnings?.length">
+                    <span class="text-dim text-xs">Learnings</span>
+                    <ul style="margin:4px 0;padding-left:1.5rem">
+                      <template x-for="l in (selectedRun.learnings || [])" :key="l">
+                        <li class="text-xs" x-text="l"></li>
+                      </template>
+                    </ul>
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
 

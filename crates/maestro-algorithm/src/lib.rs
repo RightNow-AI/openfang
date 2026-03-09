@@ -175,3 +175,6 @@ pub struct PhaseOutput {
     pub duration_ms: u64,
     pub model_used: String,
 }
+
+#[cfg(test)]
+mod tests;

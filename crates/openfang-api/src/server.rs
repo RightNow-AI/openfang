@@ -711,6 +711,32 @@ pub async fn build_router(
             "/api/analytics/etl/run",
             axum::routing::post(crate::analytics_routes::trigger_etl),
         )
+        // ── Supervisor orchestration routes ──
+        .route(
+            "/api/supervisor/status",
+            axum::routing::get(crate::supervisor_routes::supervisor_status),
+        )
+        .route(
+            "/api/supervisor/orchestrate",
+            axum::routing::post(crate::supervisor_routes::orchestrate),
+        )
+        .route(
+            "/api/supervisor/runs/{run_id}",
+            axum::routing::get(crate::supervisor_routes::get_run),
+        )
+        .route(
+            "/api/supervisor/history",
+            axum::routing::get(crate::supervisor_routes::history),
+        )
+        .route(
+            "/api/supervisor/learnings",
+            axum::routing::get(crate::supervisor_routes::learnings),
+        )
+        .route(
+            "/api/supervisor/config",
+            axum::routing::get(crate::supervisor_routes::get_config)
+                .put(crate::supervisor_routes::update_config),
+        )
         // MCP HTTP endpoint (exposes MCP protocol over HTTP)
         .route("/mcp", axum::routing::post(routes::mcp_http))
         // OpenAI-compatible API

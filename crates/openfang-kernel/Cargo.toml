@@ -16,6 +16,7 @@ openfang-extensions = { path = "../openfang-extensions" }
 openfang-wire = { path = "../openfang-wire" }
 openfang-channels = { path = "../openfang-channels" }
 maestro-falkor-analytics = { path = "../maestro-falkor-analytics" }
+maestro-algorithm = { path = "../maestro-algorithm" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

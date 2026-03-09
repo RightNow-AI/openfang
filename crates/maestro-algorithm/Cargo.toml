@@ -16,3 +16,4 @@ async-trait.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 rig-core.workspace = true
+schemars = "1.0"

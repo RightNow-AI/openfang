@@ -17,6 +17,7 @@ openfang-hands = { path = "../openfang-hands" }
 openfang-extensions = { path = "../openfang-extensions" }
 openfang-migrate = { path = "../openfang-migrate" }
 maestro-falkor-analytics = { path = "../maestro-falkor-analytics" }
+maestro-algorithm = { path = "../maestro-algorithm" }
 dashmap = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

@@ -1,43 +1,29 @@
 //! The Algorithm Executor — runs the 7-phase pipeline.
 //!
-//! ## HONEST ASSESSMENT OF THIS DESIGN
+//! ## Design
 //!
-//! This executor is modeled on Maestro's `maestro_algorithm::executor` (2,294 LOC)
-//! but redesigned to use Rig.rs for model calls instead of raw HTTP.
+//! This executor orchestrates the full OBSERVE → ORIENT → PLAN → EXECUTE →
+//! VERIFY → LEARN → ADAPT pipeline. Each phase is implemented in the `phases`
+//! module; this module handles sequencing, the EXECUTE → VERIFY retry loop,
+//! and integration with OpenFang via `ExecutionHooks`.
 //!
-//! ### What works from Maestro's original:
-//! - The 7-phase structure itself is sound and battle-tested
-//! - ISC-based verification is a genuinely good pattern
-//! - The LEARN phase captures useful structured feedback
+//! ## Integration with OpenFang
 //!
-//! ### What was broken in Maestro's original:
-//! - Used raw reqwest HTTP calls instead of a proper model abstraction
-//! - JSON parsing was fragile (regex-based extraction from markdown)
-//! - No integration with any agent framework (ran in isolation)
-//! - The ADAPT phase was a no-op stub
-//! - No cost tracking despite having fields for it
-//! - Retry logic was a simple counter, not exponential backoff
-//!
-//! ### What this redesign fixes:
-//! - Uses Rig.rs `CompletionModel` trait for all LLM calls
-//! - Uses Rig.rs `Extractor` for structured JSON output (no regex parsing)
-//! - Defines clear integration points with OpenFang's kernel and supervisor
-//! - Adds proper error types and backoff
-//!
-//! ### What this redesign does NOT fix yet:
-//! - ADAPT phase is still conceptual (needs a feedback loop mechanism)
-//! - No streaming support (Rig supports it, but the pipeline doesn't use it)
-//! - No parallel EXECUTE (each step runs sequentially)
-//! - Learning storage is in-memory only
+//! - `ModelProvider` abstracts over Rig.rs `CompletionModel` / `Agent`
+//! - `ExecutionHooks` bridges to the kernel's agent infrastructure
+//! - The executor is generic over both traits for testability
 
 use async_trait::async_trait;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{info, warn, instrument};
 
 use crate::{
-    AlgorithmResult, Learning, Phase, PhaseOutput, RunId,
+    AlgorithmResult, Learning, LearningCategory, Phase, PhaseOutput, RunId,
     error::AlgorithmError,
+    phases,
+    types::{LearnOutput, AdaptOutput},
 };
 
 /// Trait for the model provider — abstracts over Rig.rs CompletionModel.
@@ -75,6 +61,12 @@ pub struct AlgorithmConfig {
     pub learn_on_failure: bool,
     /// Whether to run the ADAPT phase (experimental).
     pub enable_adapt: bool,
+    /// Default timeout for execution steps (seconds).
+    pub default_timeout_seconds: u64,
+    /// Complexity threshold below which orchestration is skipped (single agent).
+    pub complexity_threshold_sequential: u8,
+    /// Complexity threshold above which parallel orchestration is used.
+    pub complexity_threshold_parallel: u8,
 }
 
 impl Default for AlgorithmConfig {
@@ -85,7 +77,10 @@ impl Default for AlgorithmConfig {
             satisfaction_threshold: 0.7,
             max_iterations: 3,
             learn_on_failure: true,
-            enable_adapt: false, // Disabled by default — it's not ready
+            enable_adapt: false,
+            default_timeout_seconds: 120,
+            complexity_threshold_sequential: 3,
+            complexity_threshold_parallel: 7,
         }
     }
 }
@@ -94,10 +89,6 @@ impl Default for AlgorithmConfig {
 ///
 /// The executor calls these hooks at key points so OpenFang's kernel
 /// can update its state, emit events, and coordinate with other agents.
-///
-/// HONEST NOTE: This trait is the critical integration surface. If these
-/// hooks are not implemented properly, the algorithm runs in isolation
-/// and provides no value over a simple prompt chain.
 #[async_trait]
 pub trait ExecutionHooks: Send + Sync {
     /// Called when a phase begins. OpenFang should update the task board.
@@ -120,12 +111,15 @@ pub trait ExecutionHooks: Send + Sync {
     /// to its memory/knowledge system.
     async fn store_learning(&self, learning: &Learning);
 
+    /// Retrieve past learnings relevant to a task description.
+    /// OpenFang should query its memory system for similar tasks.
+    async fn retrieve_learnings(&self, task: &str) -> Vec<String>;
+
     /// Called when the run completes (success or failure).
     async fn on_run_complete(&self, result: &AlgorithmResult);
 }
 
 /// The main algorithm executor.
-#[allow(dead_code)]
 pub struct AlgorithmExecutor<M: ModelProvider, H: ExecutionHooks> {
     model: Arc<M>,
     hooks: Arc<H>,
@@ -137,57 +131,188 @@ impl<M: ModelProvider, H: ExecutionHooks> AlgorithmExecutor<M, H> {
         Self { model, hooks, config }
     }
 
+    /// Get the current configuration (for ADAPT phase to serialize).
+    pub fn config(&self) -> &AlgorithmConfig {
+        &self.config
+    }
+
+    /// Apply parameter adjustments from the ADAPT phase.
+    pub fn apply_adaptations(&mut self, adapt_output: &serde_json::Value) {
+        if let Ok(adapt) = serde_json::from_value::<AdaptOutput>(adapt_output.clone()) {
+            for adj in &adapt.adjustments {
+                match adj.parameter.as_str() {
+                    "satisfaction_threshold" => {
+                        if let Ok(v) = adj.proposed_value.parse::<f64>() {
+                            if (0.1..=1.0).contains(&v) {
+                                info!(
+                                    old = self.config.satisfaction_threshold,
+                                    new = v,
+                                    "ADAPT: Updating satisfaction_threshold"
+                                );
+                                self.config.satisfaction_threshold = v;
+                            }
+                        }
+                    }
+                    "max_iterations" => {
+                        if let Ok(v) = adj.proposed_value.parse::<u32>() {
+                            if (1..=10).contains(&v) {
+                                info!(old = self.config.max_iterations, new = v, "ADAPT: Updating max_iterations");
+                                self.config.max_iterations = v;
+                            }
+                        }
+                    }
+                    "max_retries" => {
+                        if let Ok(v) = adj.proposed_value.parse::<u32>() {
+                            if (1..=10).contains(&v) {
+                                info!(old = self.config.max_retries, new = v, "ADAPT: Updating max_retries");
+                                self.config.max_retries = v;
+                            }
+                        }
+                    }
+                    "backoff_base_ms" => {
+                        if let Ok(v) = adj.proposed_value.parse::<u64>() {
+                            if (100..=30000).contains(&v) {
+                                info!(old = self.config.backoff_base_ms, new = v, "ADAPT: Updating backoff_base_ms");
+                                self.config.backoff_base_ms = v;
+                            }
+                        }
+                    }
+                    "default_timeout_seconds" => {
+                        if let Ok(v) = adj.proposed_value.parse::<u64>() {
+                            if (10..=600).contains(&v) {
+                                info!(old = self.config.default_timeout_seconds, new = v, "ADAPT: Updating default_timeout_seconds");
+                                self.config.default_timeout_seconds = v;
+                            }
+                        }
+                    }
+                    other => {
+                        warn!(parameter = other, "ADAPT: Unknown parameter, skipping");
+                    }
+                }
+            }
+        }
+    }
+
     /// Run the full 7-phase algorithm on a task.
     #[instrument(skip(self), fields(run_id))]
     pub async fn run(&self, task: &str) -> Result<AlgorithmResult, AlgorithmError> {
+        self.run_with_capabilities(task, &[]).await
+    }
+
+    /// Run the full 7-phase algorithm with explicit capability list.
+    #[instrument(skip(self, capabilities), fields(run_id))]
+    pub async fn run_with_capabilities(
+        &self,
+        task: &str,
+        capabilities: &[String],
+    ) -> Result<AlgorithmResult, AlgorithmError> {
         let run_id = RunId::new();
-        let started_at = chrono::Utc::now();
+        let started_at = Utc::now();
         let mut phase_outputs = Vec::new();
         let mut total_tokens: u64 = 0;
 
         info!(run_id = %run_id.0, "Starting 7-phase algorithm for task");
 
-        // Phase 1: OBSERVE
+        // Retrieve past learnings for this task
+        let prior_learnings = self.hooks.retrieve_learnings(task).await;
+
+        // ── Phase 1: OBSERVE ────────────────────────────────────────────
         self.hooks.on_phase_start(run_id, Phase::Observe).await;
-        let observe_output = self.run_observe(run_id, task).await?;
+        let observe_output = phases::run_observe(
+            self.model.as_ref(),
+            run_id,
+            task,
+            capabilities,
+            &prior_learnings,
+        )
+        .await?;
         total_tokens += observe_output.tokens_used;
-        self.hooks.on_phase_complete(run_id, Phase::Observe, &observe_output).await;
+        self.hooks
+            .on_phase_complete(run_id, Phase::Observe, &observe_output)
+            .await;
         phase_outputs.push(observe_output);
 
-        // Phase 2: ORIENT
+        // ── Phase 2: ORIENT ─────────────────────────────────────────────
         self.hooks.on_phase_start(run_id, Phase::Orient).await;
-        let orient_output = self.run_orient(run_id, task, &phase_outputs).await?;
+        let observe_data = phase_outputs[0].output.clone();
+        let orient_output =
+            phases::run_orient(self.model.as_ref(), run_id, task, &observe_data).await?;
         total_tokens += orient_output.tokens_used;
-        self.hooks.on_phase_complete(run_id, Phase::Orient, &orient_output).await;
+        self.hooks
+            .on_phase_complete(run_id, Phase::Orient, &orient_output)
+            .await;
+
+        // Check complexity for dynamic scaling decision
+        let complexity = orient_output
+            .output
+            .get("complexity")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5) as u8;
+
+        info!(
+            complexity,
+            threshold_seq = self.config.complexity_threshold_sequential,
+            threshold_par = self.config.complexity_threshold_parallel,
+            "Complexity assessment complete"
+        );
+
+        let orient_data = orient_output.output.clone();
         phase_outputs.push(orient_output);
 
-        // Phase 3: PLAN (generates ISC criteria)
+        // ── Phase 3: PLAN ───────────────────────────────────────────────
         self.hooks.on_phase_start(run_id, Phase::Plan).await;
-        let plan_output = self.run_plan(run_id, task, &phase_outputs).await?;
+        let plan_output = phases::run_plan(
+            self.model.as_ref(),
+            run_id,
+            task,
+            &observe_data,
+            &orient_data,
+        )
+        .await?;
         total_tokens += plan_output.tokens_used;
-        self.hooks.on_phase_complete(run_id, Phase::Plan, &plan_output).await;
+        self.hooks
+            .on_phase_complete(run_id, Phase::Plan, &plan_output)
+            .await;
         phase_outputs.push(plan_output);
 
-        // Phase 4-5: EXECUTE → VERIFY loop
+        // ── Phase 4-5: EXECUTE → VERIFY loop ────────────────────────────
         let mut satisfaction = 0.0_f64;
         let mut iteration = 0;
+        let plan_data = &phase_outputs[2].output.clone();
 
         while iteration < self.config.max_iterations
             && satisfaction < self.config.satisfaction_threshold
         {
             iteration += 1;
-            info!(iteration, "EXECUTE → VERIFY iteration");
+            info!(iteration, max = self.config.max_iterations, "EXECUTE → VERIFY iteration");
 
             // EXECUTE
             self.hooks.on_phase_start(run_id, Phase::Execute).await;
-            let exec_output = self.run_execute(run_id, task, &phase_outputs).await?;
+            let exec_output = phases::run_execute(
+                self.model.as_ref(),
+                self.hooks.as_ref(),
+                run_id,
+                task,
+                plan_data,
+            )
+            .await?;
             total_tokens += exec_output.tokens_used;
-            self.hooks.on_phase_complete(run_id, Phase::Execute, &exec_output).await;
+            self.hooks
+                .on_phase_complete(run_id, Phase::Execute, &exec_output)
+                .await;
             phase_outputs.push(exec_output);
 
             // VERIFY
             self.hooks.on_phase_start(run_id, Phase::Verify).await;
-            let verify_output = self.run_verify(run_id, &phase_outputs).await?;
+            let exec_data = &phase_outputs.last().unwrap().output;
+            let verify_output = phases::run_verify(
+                self.model.as_ref(),
+                run_id,
+                plan_data,
+                exec_data,
+                self.config.satisfaction_threshold,
+            )
+            .await?;
             total_tokens += verify_output.tokens_used;
 
             // Extract satisfaction score from verify output
@@ -196,28 +321,50 @@ impl<M: ModelProvider, H: ExecutionHooks> AlgorithmExecutor<M, H> {
                 .get("overall_satisfaction")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0)
-                / 100.0; // Normalize from percentage
+                / 100.0; // Normalize from percentage to 0.0-1.0
 
-            self.hooks.on_phase_complete(run_id, Phase::Verify, &verify_output).await;
+            self.hooks
+                .on_phase_complete(run_id, Phase::Verify, &verify_output)
+                .await;
             phase_outputs.push(verify_output);
 
             if satisfaction >= self.config.satisfaction_threshold {
-                info!(satisfaction, "ISC threshold met, proceeding to LEARN");
+                info!(satisfaction = format!("{:.1}%", satisfaction * 100.0), "ISC threshold met");
                 break;
             } else {
-                warn!(satisfaction, threshold = self.config.satisfaction_threshold,
-                    "ISC threshold not met, retrying EXECUTE");
+                warn!(
+                    satisfaction = format!("{:.1}%", satisfaction * 100.0),
+                    threshold = format!("{:.1}%", self.config.satisfaction_threshold * 100.0),
+                    "ISC threshold not met, retrying EXECUTE"
+                );
+
+                // Exponential backoff before retry
+                if iteration < self.config.max_iterations {
+                    let delay = self.config.backoff_base_ms * 2u64.pow(iteration - 1);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+                }
             }
         }
 
-        // Phase 6: LEARN
-        let learnings = if self.config.learn_on_failure || satisfaction >= self.config.satisfaction_threshold {
+        // ── Phase 6: LEARN ──────────────────────────────────────────────
+        let learnings = if self.config.learn_on_failure
+            || satisfaction >= self.config.satisfaction_threshold
+        {
             self.hooks.on_phase_start(run_id, Phase::Learn).await;
-            let learn_output = self.run_learn(run_id, task, &phase_outputs).await?;
+            let learn_output = phases::run_learn(
+                self.model.as_ref(),
+                run_id,
+                task,
+                satisfaction,
+                &phase_outputs,
+            )
+            .await?;
             total_tokens += learn_output.tokens_used;
-            self.hooks.on_phase_complete(run_id, Phase::Learn, &learn_output).await;
+            self.hooks
+                .on_phase_complete(run_id, Phase::Learn, &learn_output)
+                .await;
 
-            let learnings = self.extract_learnings(&learn_output);
+            let learnings = extract_learnings(&learn_output);
             for learning in &learnings {
                 self.hooks.store_learning(learning).await;
             }
@@ -227,13 +374,36 @@ impl<M: ModelProvider, H: ExecutionHooks> AlgorithmExecutor<M, H> {
             vec![]
         };
 
-        // Phase 7: ADAPT (experimental, disabled by default)
+        // ── Phase 7: ADAPT (experimental) ───────────────────────────────
         if self.config.enable_adapt {
             self.hooks.on_phase_start(run_id, Phase::Adapt).await;
-            let adapt_output = self.run_adapt(run_id, &learnings).await?;
+
+            let learn_data = phase_outputs
+                .iter()
+                .rev()
+                .find(|p| p.phase == Phase::Learn)
+                .map(|p| &p.output)
+                .unwrap_or(&serde_json::Value::Null);
+
+            let config_json = serde_json::to_value(&self.config).unwrap_or_default();
+            let past_learning_strings: Vec<String> = prior_learnings;
+
+            let adapt_output = phases::run_adapt(
+                self.model.as_ref(),
+                run_id,
+                learn_data,
+                &config_json,
+                &past_learning_strings,
+            )
+            .await?;
             total_tokens += adapt_output.tokens_used;
-            self.hooks.on_phase_complete(run_id, Phase::Adapt, &adapt_output).await;
+            self.hooks
+                .on_phase_complete(run_id, Phase::Adapt, &adapt_output)
+                .await;
             phase_outputs.push(adapt_output);
+
+            // Note: apply_adaptations requires &mut self, so the caller
+            // should call it after run() returns if they want to apply changes.
         }
 
         let result = AlgorithmResult {
@@ -243,7 +413,7 @@ impl<M: ModelProvider, H: ExecutionHooks> AlgorithmExecutor<M, H> {
             overall_satisfaction: satisfaction,
             learnings,
             started_at,
-            completed_at: chrono::Utc::now(),
+            completed_at: Utc::now(),
             total_tokens_used: total_tokens,
             total_cost_usd: 0.0, // TODO: Implement cost tracking via model provider
         };
@@ -251,57 +421,31 @@ impl<M: ModelProvider, H: ExecutionHooks> AlgorithmExecutor<M, H> {
         self.hooks.on_run_complete(&result).await;
         Ok(result)
     }
+}
 
-    // ── Phase implementations (stubs — each needs full prompt engineering) ──
+/// Extract structured `Learning` objects from a LEARN phase output.
+fn extract_learnings(learn_phase: &PhaseOutput) -> Vec<Learning> {
+    let Ok(learn_output) = serde_json::from_value::<LearnOutput>(learn_phase.output.clone())
+    else {
+        warn!("Failed to parse LEARN phase output into LearnOutput");
+        return vec![];
+    };
 
-    async fn run_observe(&self, _run_id: RunId, _task: &str) -> Result<PhaseOutput, AlgorithmError> {
-        // TODO: Implement OBSERVE phase
-        // Should gather: environment state, available tools, relevant context,
-        // prior learnings from similar tasks
-        todo!("OBSERVE phase implementation")
-    }
-
-    async fn run_orient(&self, _run_id: RunId, _task: &str, _prior: &[PhaseOutput]) -> Result<PhaseOutput, AlgorithmError> {
-        // TODO: Implement ORIENT phase
-        // Should produce: task decomposition, complexity assessment,
-        // constraint identification, capability requirements
-        todo!("ORIENT phase implementation")
-    }
-
-    async fn run_plan(&self, _run_id: RunId, _task: &str, _prior: &[PhaseOutput]) -> Result<PhaseOutput, AlgorithmError> {
-        // TODO: Implement PLAN phase
-        // Should produce: execution steps, ISC criteria, capability-to-agent mapping
-        todo!("PLAN phase implementation")
-    }
-
-    async fn run_execute(&self, _run_id: RunId, _task: &str, _prior: &[PhaseOutput]) -> Result<PhaseOutput, AlgorithmError> {
-        // TODO: Implement EXECUTE phase
-        // Should: delegate steps to OpenFang agents via hooks.delegate_to_agent()
-        todo!("EXECUTE phase implementation")
-    }
-
-    async fn run_verify(&self, _run_id: RunId, _prior: &[PhaseOutput]) -> Result<PhaseOutput, AlgorithmError> {
-        // TODO: Implement VERIFY phase
-        // Should: mechanically check each ISC criterion against EXECUTE output
-        todo!("VERIFY phase implementation")
-    }
-
-    async fn run_learn(&self, _run_id: RunId, _task: &str, _prior: &[PhaseOutput]) -> Result<PhaseOutput, AlgorithmError> {
-        // TODO: Implement LEARN phase
-        // Should: extract structured learnings from the full execution
-        todo!("LEARN phase implementation")
-    }
-
-    async fn run_adapt(&self, _run_id: RunId, _learnings: &[Learning]) -> Result<PhaseOutput, AlgorithmError> {
-        // TODO: Implement ADAPT phase (experimental)
-        // Should: propose parameter adjustments based on accumulated learnings
-        // HONEST NOTE: This is the hardest phase. Maestro never implemented it.
-        // Kore.ai doesn't have it either. It requires a meta-learning loop.
-        todo!("ADAPT phase implementation")
-    }
-
-    fn extract_learnings(&self, _output: &PhaseOutput) -> Vec<Learning> {
-        // TODO: Parse LEARN phase output into structured Learning objects
-        vec![]
-    }
+    learn_output
+        .learnings
+        .into_iter()
+        .map(|entry| Learning {
+            category: match entry.category {
+                crate::types::LearningCategory::System => LearningCategory::System,
+                crate::types::LearningCategory::Algorithm => LearningCategory::Algorithm,
+                crate::types::LearningCategory::Failure => LearningCategory::Failure,
+                crate::types::LearningCategory::Synthesis => LearningCategory::Synthesis,
+                crate::types::LearningCategory::Reflection => LearningCategory::Reflection,
+            },
+            insight: entry.insight,
+            context: entry.context,
+            actionable: entry.actionable,
+            timestamp: Utc::now(),
+        })
+        .collect()
 }
