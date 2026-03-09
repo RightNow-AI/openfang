@@ -8,7 +8,7 @@ Thank you for your interest in contributing to OpenFang. This guide covers every
 - [Building and Testing](#building-and-testing)
 - [Code Style](#code-style)
 - [Architecture Overview](#architecture-overview)
-- [How to Add a New Agent Template](#how-to-add-a-new-agent-template)
+- [How to Add a New Hand](#how-to-add-a-new-hand)
 - [How to Add a New Channel Adapter](#how-to-add-a-new-channel-adapter)
 - [How to Add a New Tool](#how-to-add-a-new-tool)
 - [Pull Request Process](#pull-request-process)
@@ -20,20 +20,20 @@ Thank you for your interest in contributing to OpenFang. This guide covers every
 
 ### Prerequisites
 
-- **Rust 1.75+** (install via [rustup](https://rustup.rs/))
+- **Rust 1.77+** (install via [rustup](https://rustup.rs/))
 - **Git**
-- **Python 3.8+** (optional, for Python runtime and skills)
+- **Python 3.11+** and `libpython3.11-dev` (for the `maestro-rlm` crate)
 - A supported LLM API key (Anthropic, OpenAI, Groq, etc.) for end-to-end testing
 
 ### Clone and Build
 
 ```bash
-git clone https://github.com/RightNow-AI/openfang.git
-cd openfang
+git clone https://github.com/ParadiseAI/maestro-legacy.git
+cd maestro-legacy
 cargo build
 ```
 
-The first build takes a few minutes because it compiles SQLite (bundled) and Wasmtime. Subsequent builds are incremental.
+The first build takes several minutes because it compiles SurrealDB v3, PyO3, and Wasmtime. Subsequent builds are incremental.
 
 ### Environment Variables
 
@@ -62,14 +62,14 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-The test suite is currently 1,744+ tests. All must pass before merging.
+The test suite is currently **1,862+ tests**. All must pass before merging.
 
 ### Run Tests for a Single Crate
 
 ```bash
 cargo test -p openfang-kernel
-cargo test -p openfang-runtime
-cargo test -p openfang-memory
+cargo test -p maestro-rlm
+cargo test -p openfang-hands
 ```
 
 ### Check for Clippy Warnings
@@ -88,14 +88,6 @@ cargo fmt --all
 
 Always run `cargo fmt` before committing. CI will reject unformatted code.
 
-### Run the Doctor Check
-
-After building, verify your local setup:
-
-```bash
-cargo run -- doctor
-```
-
 ---
 
 ## Code Style
@@ -105,10 +97,10 @@ cargo run -- doctor
 - **Documentation**: All public types and functions must have doc comments (`///`).
 - **Error Handling**: Use `thiserror` for error types. Avoid `unwrap()` in library code; prefer `?` propagation.
 - **Naming**:
-  - Types: `PascalCase` (e.g., `OpenFangKernel`, `AgentManifest`)
+  - Types: `PascalCase` (e.g., `OpenFangKernel`, `HandDefinition`)
   - Functions/methods: `snake_case`
   - Constants: `SCREAMING_SNAKE_CASE`
-  - Crate names: `openfang-{name}` (kebab-case)
+  - Crate names: `openfang-{name}` or `maestro-{name}` (kebab-case)
 - **Dependencies**: Workspace dependencies are declared in the root `Cargo.toml`. Prefer reusing workspace deps over adding new ones. If you need a new dependency, justify it in the PR.
 - **Testing**: Every new feature must include tests. Use `tempfile::TempDir` for filesystem isolation and random port binding for network tests.
 - **Serde**: All config structs use `#[serde(default)]` for forward compatibility with partial TOML.
@@ -117,14 +109,16 @@ cargo run -- doctor
 
 ## Architecture Overview
 
-OpenFang is organized as a Cargo workspace with 14 crates:
+OpenFang is organized as a Cargo workspace with 21 crates:
 
 | Crate | Role |
 |-------|------|
 | `openfang-types` | Shared type definitions, taint tracking, manifest signing (Ed25519), model catalog, MCP/A2A config types |
-| `openfang-memory` | SQLite-backed memory substrate with vector embeddings, usage tracking, canonical sessions, JSONL mirroring |
+| `maestro-surreal-memory` | SurrealDB v3 memory substrate with vector embeddings, usage tracking, canonical sessions, JSONL mirroring |
+| `maestro-cache` | L1/L2 caching layer (Moka + Redis) on top of the memory substrate. |
 | `openfang-runtime` | Agent loop, 3 LLM drivers (Anthropic/Gemini/OpenAI-compat), 38 built-in tools, WASM sandbox, MCP client/server, A2A protocol |
-| `openfang-hands` | Hands system (curated autonomous capability packages), 7 bundled hands |
+| `openfang-hands` | Hands system: `HAND.toml` parser, lifecycle engine, scheduler, and 7 bundled autonomous agents. |
+| `openfang-skills` | Skill system: 60 bundled skills, FangHub marketplace client, OpenClaw compatibility, prompt injection scanning |
 | `openfang-extensions` | Integration registry (25 bundled MCP templates), AES-256-GCM credential vault, OAuth2 PKCE |
 | `openfang-kernel` | Assembles all subsystems: workflow engine, RBAC auth, heartbeat monitor, cron scheduler, config hot-reload |
 | `openfang-api` | REST/WS/SSE API (Axum 0.8), 76 endpoints, 14-page SPA dashboard, OpenAI-compatible `/v1/chat/completions` |
@@ -132,73 +126,69 @@ OpenFang is organized as a Cargo workspace with 14 crates:
 | `openfang-wire` | OFP (OpenFang Protocol): TCP P2P networking with HMAC-SHA256 mutual authentication |
 | `openfang-cli` | Clap CLI with daemon auto-detect (HTTP mode vs. in-process fallback), MCP server |
 | `openfang-migrate` | Migration engine for importing from OpenClaw (and future frameworks) |
-| `openfang-skills` | Skill system: 60 bundled skills, FangHub marketplace, OpenClaw compatibility, prompt injection scanning |
 | `openfang-desktop` | Tauri 2.0 native desktop app (WebView + system tray + single-instance + notifications) |
+| `maestro-observability` | OpenTelemetry integration for traces, metrics, and logging. |
+| `maestro-guardrails` | PII scanning, prompt injection detection, and topic control. |
+| `maestro-model-hub` | Capability-aware model routing and circuit breakers. |
+| `maestro-knowledge` | RAG pipeline with SurrealDB vector search. |
+| `maestro-eval` | LLM-as-judge evaluation engine and regression tracker. |
+| `maestro-pai` | Self-evolution learning hooks and pattern synthesis (SurrealDB-backed). |
+| `maestro-rlm` | Recursive Language Model for long-context processing (PyO3-based). |
 | `xtask` | Build automation tasks |
 
 ### Key Architectural Patterns
 
 - **`KernelHandle` trait**: Defined in `openfang-runtime`, implemented on `OpenFangKernel` in `openfang-kernel`. This avoids circular crate dependencies while enabling inter-agent tools.
-- **Shared memory**: A fixed UUID (`AgentId(Uuid::from_bytes([0..0, 0x01]))`) provides a cross-agent KV namespace.
 - **Daemon detection**: The CLI checks `~/.openfang/daemon.json` and pings the health endpoint. If a daemon is running, commands use HTTP; otherwise, they boot an in-process kernel.
 - **Capability-based security**: Every agent operation is checked against the agent's granted capabilities before execution.
 
 ---
 
-## How to Add a New Agent Template
+## How to Add a New Hand
 
-Agent templates live in the `agents/` directory. Each template is a folder containing an `agent.toml` manifest.
+Hands are autonomous agent packages that live in the `openfang/hands/` directory. Each Hand is a folder containing a `HAND.toml` manifest, a `system_prompt.md`, and a `SKILL.md`.
 
 ### Steps
 
-1. Create a new directory under `agents/`:
+1. Create a new directory under `openfang/hands/`:
 
 ```
-agents/my-agent/agent.toml
+openfang/hands/my-hand/
+├── HAND.toml
+├── system_prompt.md
+└── SKILL.md
 ```
 
-2. Write the manifest:
+2. Write the manifest (`HAND.toml`):
 
 ```toml
-name = "my-agent"
+[hand]
+name = "My Hand"
 version = "0.1.0"
-description = "A brief description of what this agent does."
-author = "openfang"
-module = "builtin:chat"
-tags = ["category"]
+description = "A brief description of what this Hand does."
+author = "Your Name"
 
-[model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+[requirements]
+min_openfang_version = "0.3.31"
+required_tools = ["file_read", "web_fetch"]
 
-[resources]
-max_llm_tokens_per_hour = 100000
+[schedule]
+cron = "0 0 * * *" # Run once a day at midnight
 
-[capabilities]
-tools = ["file_read", "file_list", "web_fetch"]
-memory_read = ["*"]
-memory_write = ["self.*"]
-agent_spawn = false
+[prompts]
+system_prompt_path = "system_prompt.md"
+skill_prompt_path = "SKILL.md"
 ```
 
-3. Include a system prompt if needed by adding it to the `[model]` section:
+3. Write the system prompt and skill documentation.
 
-```toml
-[model]
-provider = "anthropic"
-model = "claude-sonnet-4-20250514"
-system_prompt = """
-You are a specialized agent that...
-"""
-```
-
-4. Test by spawning:
+4. Test by activating:
 
 ```bash
-openfang agent spawn agents/my-agent/agent.toml
+openfang hand activate my-hand
 ```
 
-5. Submit a PR with the new template.
+5. Submit a PR with the new Hand package.
 
 ---
 
@@ -322,7 +312,7 @@ tools = ["my_tool"]
 2. **Make your changes**: Follow the code style guidelines above.
 
 3. **Test thoroughly**:
-   - `cargo test --workspace` must pass (all 1,744+ tests).
+   - `cargo test --workspace` must pass (all 1,862+ tests).
    - `cargo clippy --workspace --all-targets -- -D warnings` must produce zero warnings.
    - `cargo fmt --all --check` must produce no diff.
 
@@ -356,6 +346,6 @@ Please report unacceptable behavior to the maintainers.
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/RightNow-AI/openfang/discussions) for questions.
-- Open a [GitHub Issue](https://github.com/RightNow-AI/openfang/issues) for bugs or feature requests.
+- Open a [GitHub Discussion](https://github.com/ParadiseAI/maestro-legacy/discussions) for questions.
+- Open a [GitHub Issue](https://github.com/ParadiseAI/maestro-legacy/issues) for bugs or feature requests.
 - Check the [docs/](docs/) directory for detailed guides on specific topics.

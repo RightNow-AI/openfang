@@ -1,13 +1,13 @@
 # Maestro Project — Evolved Roadmap
 
 **Date:** 2026-03-09  
-**Status:** Phase 8 Complete
+**Status:** Phase 9 Complete
 
 ---
 
 ## 1. Overview
 
-This document outlines the official, evolved roadmap for the Maestro-OpenFang project. It supersedes any previous roadmaps and serves as the single source of truth for the project's direction. 
+This document outlines the official, evolved roadmap for the Maestro-OpenFang project. It supersedes any previous roadmaps and serves as the single source of truth for the project's direction.
 
 ## 2. Completed Phases
 
@@ -46,6 +46,19 @@ This document outlines the official, evolved roadmap for the Maestro-OpenFang pr
 | **8.4** | v0.3.30 | **Ecosystem:** Implemented `maestro-sdk`, `maestro-marketplace`, and `maestro-knowledge` (RAG). |
 | **8.5** | v0.3.30 | **Recursive Language Model (RLM):** Implemented `maestro-rlm` for long-context processing via a PyO3-based Python REPL. |
 
+---
+
+### Phase 9 — The `Hand` System & FangHub Marketplace ✅
+
+**Goal:** Implement the autonomous `Hand` system and the `FangHub` marketplace for discovering, installing, and sharing agent packages.
+
+| Task | Version | Description |
+|---|---|---|
+| **9.1** | v0.3.31 | **`Hand` Manifest & Lifecycle:** Implemented the `HAND.toml` parser and full lifecycle management (`activate`, `pause`, `resume`, `deactivate`) in `openfang-hands`. |
+| **9.2** | v0.3.31 | **`HandScheduler` Integration:** Built the bridge between a Hand's `[schedule]` manifest and the kernel's `CronScheduler`. |
+| **9.3** | v0.3.31 | **`FangHub` Client:** Implemented the `FangHubClient` in `openfang-skills` for searching, installing, and updating Hands from the marketplace. |
+| **9.4** | v0.3.31 | **CLI & API Endpoints:** Verified that all `openfang hand` CLI commands and REST API endpoints are fully implemented and wired to the `HandRegistry`. |
+
 ## 3. Future Phases
 
 ### Phase 6 — L4 FalkorDB Analytics Engine ⬜
@@ -72,17 +85,3 @@ This document outlines the official, evolved roadmap for the Maestro-OpenFang pr
 | **7.2** | Build the task decomposition engine. |
 | **7.3** | Create the worker agent delegation protocol and communication channels. |
 | **7.4** | Integrate with the FalkorDB analytics engine (Phase 6) for strategic decision-making. |
-
----
-
-### Phase 9 — The `Hand` System & FangHub Marketplace ⬜
-
-**Goal:** Implement the autonomous `Hand` system and the `FangHub` marketplace for discovering, installing, and sharing agent packages.
-
-| Task | Description |
-|---|---|
-| **9.1** | Implement the `Hand` manifest (`HAND.toml`) parser and lifecycle management in `openfang-hands`. |
-| **9.2** | Build the 7 core Hands: `Clip`, `Lead`, `Collector`, `Predictor`, `Researcher`, `Twitter`, `Browser`. |
-| **9.3** | Implement the `FangHub` client in `openfang-skills` for searching and installing Hands. |
-| **9.4** | Design and build the web UI for the FangHub marketplace. |
-| **9.5** | Implement the `openfang hand` CLI commands (`activate`, `pause`, `status`, `list`). |

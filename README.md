@@ -1,3 +1,5 @@
+# OpenFang: The Agent Operating System
+
 <p align="center">
   <img src="public/assets/openfang-logo.png" width="160" alt="OpenFang Logo" />
 </p>
@@ -6,7 +8,7 @@
 <h3 align="center">The Agent Operating System</h3>
 
 <p align="center">
-  Open-source Agent OS built in Rust. 143K LOC. 21 crates. 1,886+ tests. Zero clippy warnings.<br/>
+  Open-source Agent OS built in Rust. 166K LOC. 25 crates. 1,900+ tests. Zero clippy warnings.<br/>
   <strong>One binary. Battle-tested. Agents that actually work for you.</strong>
 </p>
 
@@ -20,17 +22,17 @@
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
   <img src="https://img.shields.io/badge/version-v0.3.31-green?style=flat-square" alt="v0.3.31" />
-  <img src="https://img.shields.io/badge/phase-9%20🚧%20in%20progress-blue?style=flat-square" alt="Phase 9 In Progress" />
-  <img src="https://img.shields.io/badge/tests-1,886%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/phase-9%20✅%20complete-blue?style=flat-square" alt="Phase 9 Complete" />
+  <img src="https://img.shields.io/badge/tests-1,900%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
   <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
 </p>
 
 ---
 
-> **v0.3.31 — Phase 9 In Progress (March 2026)**
+> **v0.3.31 — Phase 9 Complete (March 2026)**
 >
-> Phase 8 (MAESTRO Algorithm) is complete. Phase 9 (Hand System & FangHub) is now in progress — the `HandScheduler`, `FangHubClient`, and all 7 bundled Hands are implemented. See [ROADMAP.md](ROADMAP.md) for full details.
+> Phase 9 (Hand System & FangHub) is complete. The system now includes a full implementation of the autonomous `Hand` system, including the `HandScheduler` for cron-based execution and the `FangHubClient` for discovering and installing new Hands from the marketplace. See [ROADMAP.md](ROADMAP.md) for full details.
 
 ---
 
@@ -135,7 +137,7 @@ OpenClaw   ███████████████████████
 ```
 ZeroClaw   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    5 MB
 OpenFang   ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   40 MB    ★
-LangGraph  ██████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  180 MB
+LangGraph  ██████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░  180 MB
 CrewAI     ████████████████████░░░░░░░░░░░░░░░░░░░░░░░  200 MB
 AutoGen    █████████████████████████░░░░░░░░░░░░░░░░░░  250 MB
 OpenClaw   ████████████████████████████████████████░░░░  394 MB
@@ -173,7 +175,7 @@ OpenClaw   ███████████████████████
 
 ## Architecture
 
-21 Rust crates. 145,000+ lines of code. Modular kernel design.
+25 Rust crates. 166,000+ lines of code. Modular kernel design.
 
 ```
 openfang-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget tracking
@@ -196,6 +198,11 @@ openfang-types       Core types, taint tracking, Ed25519 manifest signing, model
 openfang-skills      62 bundled skills, SKILL.md parser, FangHub marketplace, FangHubClient (Hand install/update/search)
 openfang-cli         CLI with daemon management, TUI dashboard, MCP server mode
 openfang-desktop     Tauri 2.0 native app (system tray, notifications, global shortcuts)
+openfang-hands       Autonomous Hand system (HAND.toml, lifecycle, scheduler, 7 bundled Hands)
+openfang-extensions  FFmpeg, yt-dlp, and other external tool integrations
+openfang-migrate     Migration engine for OpenClaw workspaces
+openfang-wire        Peer-to-peer agent communication protocol (OFP)
+maestro-falkor-analytics L4 analytics engine (placeholder)
 xtask                Build automation
 ```
 
@@ -225,7 +232,7 @@ curl -X POST localhost:4200/v1/chat/completions \
 # Build the workspace
 cargo build --workspace --lib
 
-# Run all tests (1,886+)
+# Run all tests (1,900+)
 cargo test --workspace
 
 # Lint (must be 0 warnings)

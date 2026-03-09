@@ -113,7 +113,8 @@ The `validate_criteria()` function has been significantly enhanced with whole-wo
 
 The initial public release of OpenFang. A 15-crate Rust workspace implementing a full Agent Operating System, including agent lifecycle management, a SQLite-backed memory substrate, 41 built-in tools, a WASM sandbox with dual metering, a workflow engine, 40 channel adapters, 3 native LLM drivers supporting 27 providers, a Tauri 2.0 desktop app, and 7 autonomous Hands packages. 1,731+ tests across 15 crates.
 
-[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.30...HEAD
+[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.31...HEAD
+[0.3.31]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.31
 [0.3.30]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.30
 [0.3.29]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.29
 [0.3.28]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.28
