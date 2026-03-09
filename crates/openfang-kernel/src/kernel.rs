@@ -1365,12 +1365,47 @@ impl OpenFangKernel {
             .await
     }
 
+    /// Send a multimodal message (text + images) to an agent and get a response.
+    ///
+    /// Used by channel bridges when a user sends a photo — the image is downloaded,
+    /// base64 encoded, and passed as `ContentBlock::Image` alongside any caption text.
+    pub async fn send_message_with_blocks(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        blocks: Vec<openfang_types::message::ContentBlock>,
+    ) -> KernelResult<AgentLoopResult> {
+        let handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+        self.send_message_with_handle_and_blocks(agent_id, message, handle, Some(blocks))
+            .await
+    }
+
     /// Send a message with an optional kernel handle for inter-agent tools.
     pub async fn send_message_with_handle(
         &self,
         agent_id: AgentId,
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
+    ) -> KernelResult<AgentLoopResult> {
+        self.send_message_with_handle_and_blocks(agent_id, message, kernel_handle, None)
+            .await
+    }
+
+    /// Send a message with optional content blocks and an optional kernel handle.
+    ///
+    /// When `content_blocks` is `Some`, the LLM agent loop receives structured
+    /// multimodal content (text + images) instead of just a text string. This
+    /// enables vision models to process images sent from channels like Telegram.
+    pub async fn send_message_with_handle_and_blocks(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
     ) -> KernelResult<AgentLoopResult> {
         // Enforce quota before running the agent loop
         self.scheduler
@@ -1389,7 +1424,7 @@ impl OpenFangKernel {
             self.execute_python_agent(&entry, agent_id, message).await
         } else {
             // Default: LLM agent loop (builtin:chat or any unrecognized module)
-            self.execute_llm_agent(&entry, agent_id, message, kernel_handle)
+            self.execute_llm_agent(&entry, agent_id, message, kernel_handle, content_blocks)
                 .await
         };
 
@@ -1777,6 +1812,7 @@ impl OpenFangKernel {
                 Some(&kernel_clone.hooks),
                 ctx_window,
                 Some(&kernel_clone.process_manager),
+                None, // content_blocks (streaming path uses text only for now)
             )
             .await;
 
@@ -1996,6 +2032,7 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
+        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2257,6 +2294,7 @@ impl OpenFangKernel {
             Some(&self.hooks),
             ctx_window,
             Some(&self.process_manager),
+            content_blocks,
         )
         .await
         .map_err(KernelError::OpenFang)?;
@@ -3391,9 +3429,34 @@ impl OpenFangKernel {
         let saved_hands = openfang_hands::registry::HandRegistry::load_state(&state_path);
         if !saved_hands.is_empty() {
             info!("Restoring {} persisted hand(s)", saved_hands.len());
-            for (hand_id, config) in saved_hands {
+            for (hand_id, config, old_agent_id) in saved_hands {
                 match self.activate_hand(&hand_id, config) {
-                    Ok(inst) => info!(hand = %hand_id, instance = %inst.instance_id, "Hand restored"),
+                    Ok(inst) => {
+                        info!(hand = %hand_id, instance = %inst.instance_id, "Hand restored");
+                        // Reassign cron jobs from the pre-restart agent ID to the
+                        // newly spawned agent so scheduled tasks survive daemon
+                        // restarts (issue #402). activate_hand only handles
+                        // reassignment when an existing agent is found in the live
+                        // registry, which is empty on a fresh boot.
+                        if let (Some(old_id), Some(new_id)) = (old_agent_id, inst.agent_id) {
+                            if old_id != new_id {
+                                let migrated =
+                                    self.cron_scheduler.reassign_agent_jobs(old_id, new_id);
+                                if migrated > 0 {
+                                    info!(
+                                        hand = %hand_id,
+                                        old_agent = %old_id,
+                                        new_agent = %new_id,
+                                        migrated,
+                                        "Reassigned cron jobs after restart"
+                                    );
+                                    if let Err(e) = self.cron_scheduler.persist() {
+                                        warn!("Failed to persist cron jobs after hand restore: {e}");
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Err(e) => warn!(hand = %hand_id, error = %e, "Failed to restore hand"),
                 }
             }
@@ -4386,6 +4449,10 @@ impl OpenFangKernel {
             _ => all_builtins,
         };
 
+        // Track tool names added by skills/MCP — these already passed their own
+        // allowlist filters and should bypass the per-agent capability check.
+        let mut extension_tool_names = std::collections::HashSet::new();
+
         // Add skill-provided tools (filtered by agent's skill allowlist)
         let skill_tools = {
             let registry = self
@@ -4399,6 +4466,7 @@ impl OpenFangKernel {
             }
         };
         for skill_tool in skill_tools {
+            extension_tool_names.insert(skill_tool.name.clone());
             all_tools.push(ToolDefinition {
                 name: skill_tool.name.clone(),
                 description: skill_tool.description.clone(),
@@ -4409,6 +4477,9 @@ impl OpenFangKernel {
         // Add MCP tools (filtered by agent's MCP server allowlist)
         if let Ok(mcp_tools) = self.mcp_tools.lock() {
             if mcp_allowlist.is_empty() {
+                for t in mcp_tools.iter() {
+                    extension_tool_names.insert(t.name.clone());
+                }
                 all_tools.extend(mcp_tools.iter().cloned());
             } else {
                 // Normalize allowlist names for matching
@@ -4416,16 +4487,19 @@ impl OpenFangKernel {
                     .iter()
                     .map(|s| openfang_runtime::mcp::normalize_name(s))
                     .collect();
-                all_tools.extend(
-                    mcp_tools
-                        .iter()
-                        .filter(|t| {
-                            openfang_runtime::mcp::extract_mcp_server(&t.name)
-                                .map(|s| normalized.iter().any(|n| n == s))
-                                .unwrap_or(false)
-                        })
-                        .cloned(),
-                );
+                let filtered: Vec<_> = mcp_tools
+                    .iter()
+                    .filter(|t| {
+                        openfang_runtime::mcp::extract_mcp_server(&t.name)
+                            .map(|s| normalized.iter().any(|n| n == s))
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect();
+                for t in &filtered {
+                    extension_tool_names.insert(t.name.clone());
+                }
+                all_tools.extend(filtered);
             }
         }
 
@@ -4461,14 +4535,17 @@ impl OpenFangKernel {
             return all_tools;
         }
 
-        // Filter to tools the agent has capability for
+        // Filter to tools the agent has capability for.
+        // MCP and skill tools bypass this check — they already passed their
+        // own allowlist filters above (mcp_servers / skills on the manifest).
         all_tools
             .into_iter()
             .filter(|tool| {
-                caps.iter().any(|c| match c {
-                    Capability::ToolInvoke(name) => name == &tool.name || name == "*",
-                    _ => false,
-                })
+                extension_tool_names.contains(&tool.name)
+                    || caps.iter().any(|c| match c {
+                        Capability::ToolInvoke(name) => name == &tool.name || name == "*",
+                        _ => false,
+                    })
             })
             .collect()
     }

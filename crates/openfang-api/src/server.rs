@@ -55,7 +55,7 @@ pub async fn build_router(
 
     // CORS: allow localhost origins by default. If API key is set, the API
     // is protected anyway. For development, permissive CORS is convenient.
-    let cors = if state.kernel.config.api_key.is_empty() {
+    let cors = if state.kernel.config.api_key.trim().is_empty() {
         // No auth → restrict CORS to localhost origins (include both 127.0.0.1 and localhost)
         let port = listen_addr.port();
         let mut origins: Vec<axum::http::HeaderValue> = vec![
@@ -103,7 +103,8 @@ pub async fn build_router(
             .allow_headers(tower_http::cors::Any)
     };
 
-    let api_key = state.kernel.config.api_key.clone();
+    // Trim whitespace so `api_key = ""` or `api_key = "  "` both disable auth.
+    let api_key = state.kernel.config.api_key.trim().to_string();
     let gcra_limiter = rate_limiter::create_rate_limiter();
 
     let app = Router::new()

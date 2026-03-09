@@ -133,6 +133,7 @@ pub async fn run_agent_loop(
     hooks: Option<&crate::hooks::HookRegistry>,
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
+    user_content_blocks: Option<Vec<ContentBlock>>,
 ) -> OpenFangResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting agent loop");
 
@@ -217,8 +218,14 @@ pub async fn run_agent_loop(
         system_prompt.push_str(&crate::prompt_builder::build_memory_section(&mem_pairs));
     }
 
-    // Add the user message to session history
-    session.messages.push(Message::user(user_message));
+    // Add the user message to session history.
+    // When content blocks are provided (e.g. text + image from a channel),
+    // use multimodal message format so the LLM receives the image for vision.
+    if let Some(blocks) = user_content_blocks {
+        session.messages.push(Message::user_with_blocks(blocks));
+    } else {
+        session.messages.push(Message::user(user_message));
+    }
 
     // Build the messages for the LLM, filtering system messages
     // System prompt goes into the separate `system` field
@@ -259,6 +266,10 @@ pub async fn run_agent_loop(
             "Trimming old messages to prevent context overflow"
         );
         messages.drain(..trim_count);
+        // Re-validate after trimming: the drain may have split a ToolUse/ToolResult
+        // pair across the cut boundary, leaving orphaned blocks that cause the LLM
+        // to return empty responses (input_tokens=0).
+        messages = crate::session_repair::validate_and_repair(&messages);
     }
 
     // Use autonomous config max_iterations if set, else default
@@ -389,14 +400,30 @@ pub async fn run_agent_loop(
                     });
                 }
 
-                // One-shot retry: if the very first LLM call returns empty text
-                // with no tool use, try once more before accepting the empty result.
-                // This catches transient LLM hiccups (overload, empty stream, etc.).
-                if text.trim().is_empty() && iteration == 0 && response.tool_calls.is_empty() {
-                    warn!(agent = %manifest.name, "Empty response on first call, retrying once");
-                    messages.push(Message::assistant("[no response]".to_string()));
-                    messages.push(Message::user("Please provide your response.".to_string()));
-                    continue;
+                // One-shot retry: if the LLM returns empty text with no tool use,
+                // try once more before accepting the empty result.
+                // Triggers on first call OR when input_tokens=0 (silently failed request).
+                if text.trim().is_empty() && response.tool_calls.is_empty() {
+                    let is_silent_failure = response.usage.input_tokens == 0
+                        && response.usage.output_tokens == 0;
+                    if iteration == 0 || is_silent_failure {
+                        warn!(
+                            agent = %manifest.name,
+                            iteration,
+                            input_tokens = response.usage.input_tokens,
+                            output_tokens = response.usage.output_tokens,
+                            silent_failure = is_silent_failure,
+                            "Empty response, retrying once"
+                        );
+                        // Re-validate messages before retry — the history may have
+                        // broken tool_use/tool_result pairs that caused the failure.
+                        if is_silent_failure {
+                            messages = crate::session_repair::validate_and_repair(&messages);
+                        }
+                        messages.push(Message::assistant("[no response]".to_string()));
+                        messages.push(Message::user("Please provide your response.".to_string()));
+                        continue;
+                    }
                 }
 
                 // Guard against empty response — covers both iteration 0 and post-tool cycles
@@ -1055,6 +1082,7 @@ pub async fn run_agent_loop_streaming(
     hooks: Option<&crate::hooks::HookRegistry>,
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
+    user_content_blocks: Option<Vec<ContentBlock>>,
 ) -> OpenFangResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting streaming agent loop");
 
@@ -1139,8 +1167,14 @@ pub async fn run_agent_loop_streaming(
         system_prompt.push_str(&crate::prompt_builder::build_memory_section(&mem_pairs));
     }
 
-    // Add the user message to session history
-    session.messages.push(Message::user(user_message));
+    // Add the user message to session history.
+    // When content blocks are provided (e.g. text + image from a channel),
+    // use multimodal message format so the LLM receives the image for vision.
+    if let Some(blocks) = user_content_blocks {
+        session.messages.push(Message::user_with_blocks(blocks));
+    } else {
+        session.messages.push(Message::user(user_message));
+    }
 
     let llm_messages: Vec<Message> = session
         .messages
@@ -1177,6 +1211,10 @@ pub async fn run_agent_loop_streaming(
             "Trimming old messages to prevent context overflow (streaming)"
         );
         messages.drain(..trim_count);
+        // Re-validate after trimming: the drain may have split a ToolUse/ToolResult
+        // pair across the cut boundary, leaving orphaned blocks that cause the LLM
+        // to return empty responses (input_tokens=0).
+        messages = crate::session_repair::validate_and_repair(&messages);
     }
 
     // Use autonomous config max_iterations if set, else default
@@ -1321,13 +1359,30 @@ pub async fn run_agent_loop_streaming(
                     });
                 }
 
-                // One-shot retry: if the very first LLM call returns empty text
-                // with no tool use, try once more before accepting the empty result.
-                if text.trim().is_empty() && iteration == 0 && response.tool_calls.is_empty() {
-                    warn!(agent = %manifest.name, "Empty response on first call (streaming), retrying once");
-                    messages.push(Message::assistant("[no response]".to_string()));
-                    messages.push(Message::user("Please provide your response.".to_string()));
-                    continue;
+                // One-shot retry: if the LLM returns empty text with no tool use,
+                // try once more before accepting the empty result.
+                // Triggers on first call OR when input_tokens=0 (silently failed request).
+                if text.trim().is_empty() && response.tool_calls.is_empty() {
+                    let is_silent_failure = response.usage.input_tokens == 0
+                        && response.usage.output_tokens == 0;
+                    if iteration == 0 || is_silent_failure {
+                        warn!(
+                            agent = %manifest.name,
+                            iteration,
+                            input_tokens = response.usage.input_tokens,
+                            output_tokens = response.usage.output_tokens,
+                            silent_failure = is_silent_failure,
+                            "Empty response (streaming), retrying once"
+                        );
+                        // Re-validate messages before retry — the history may have
+                        // broken tool_use/tool_result pairs that caused the failure.
+                        if is_silent_failure {
+                            messages = crate::session_repair::validate_and_repair(&messages);
+                        }
+                        messages.push(Message::assistant("[no response]".to_string()));
+                        messages.push(Message::user("Please provide your response.".to_string()));
+                        continue;
+                    }
                 }
 
                 // Guard against empty response — covers both iteration 0 and post-tool cycles
@@ -2218,6 +2273,7 @@ mod tests {
             None, // hooks
             None, // context_window_tokens
             None, // process_manager
+            None, // user_content_blocks
         )
         .await
         .expect("Loop should complete without error");
@@ -2270,6 +2326,7 @@ mod tests {
             None, // hooks
             None, // context_window_tokens
             None, // process_manager
+            None, // user_content_blocks
         )
         .await
         .expect("Loop should complete without error");
@@ -2322,6 +2379,7 @@ mod tests {
             None, // hooks
             None, // context_window_tokens
             None, // process_manager
+            None, // user_content_blocks
         )
         .await
         .expect("Loop should complete without error");
@@ -2367,6 +2425,7 @@ mod tests {
             None, // hooks
             None, // context_window_tokens
             None, // process_manager
+            None, // user_content_blocks
         )
         .await
         .expect("Streaming loop should complete without error");
@@ -2489,6 +2548,7 @@ mod tests {
             None,
             None, // context_window_tokens
             None, // process_manager
+            None, // user_content_blocks
         )
         .await
         .expect("Loop should recover via retry");
@@ -2535,6 +2595,7 @@ mod tests {
             None,
             None, // context_window_tokens
             None, // process_manager
+            None, // user_content_blocks
         )
         .await
         .expect("Loop should complete with fallback");
@@ -2589,6 +2650,7 @@ mod tests {
             None, // hooks
             None, // context_window_tokens
             None, // process_manager
+            None, // user_content_blocks
         )
         .await
         .expect("Streaming loop should complete without error");
@@ -3039,6 +3101,7 @@ mod tests {
             None, // hooks
             None, // context_window_tokens
             None, // process_manager
+            None, // user_content_blocks
         )
         .await
         .expect("Agent loop should complete");
@@ -3105,6 +3168,7 @@ mod tests {
             None,
             None,
             None,
+            None, // user_content_blocks
         )
         .await
         .expect("Normal loop should complete");
@@ -3167,6 +3231,7 @@ mod tests {
             None, // hooks
             None, // context_window_tokens
             None, // process_manager
+            None, // user_content_blocks
         )
         .await
         .expect("Streaming loop should complete");

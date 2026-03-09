@@ -45,9 +45,10 @@ pub async fn request_logging(request: Request<Body>, next: Next) -> Response<Bod
 
 /// Bearer token authentication middleware.
 ///
-/// When `api_key` is non-empty, requests to non-public endpoints must include
-/// `Authorization: Bearer <api_key>`. If the key is empty, only whitelisted
-/// public endpoints are accessible — all others return 401.
+/// When `api_key` is non-empty (after trimming), requests to non-public
+/// endpoints must include `Authorization: Bearer <api_key>`.
+/// If the key is empty or whitespace-only, auth is disabled entirely
+/// (public/local development mode).
 pub async fn auth(
     axum::extract::State(api_key): axum::extract::State<String>,
     request: Request<Body>,
@@ -119,9 +120,10 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    // If no API key configured, skip auth entirely.
-    // Users who don't set api_key accept that all endpoints are open.
-    // To secure the dashboard, set api_key in config.toml.
+    // If no API key configured (empty, whitespace-only, or missing), skip auth
+    // entirely. Users who don't set api_key accept that all endpoints are open.
+    // To secure the dashboard, set a non-empty api_key in config.toml.
+    let api_key = api_key.trim();
     if api_key.is_empty() {
         return next.run(request).await;
     }

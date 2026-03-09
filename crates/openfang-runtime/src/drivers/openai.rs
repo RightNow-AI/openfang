@@ -946,17 +946,31 @@ impl LlmDriver for OpenAIDriver {
             }
 
             // Log stream summary for diagnostics
-            debug!(
-                chunks = chunk_count,
-                sse_lines = sse_line_count,
-                text_len = text_content.len(),
-                tool_count = tool_accum.len(),
-                finish = ?finish_reason,
-                input_tokens = usage.input_tokens,
-                output_tokens = usage.output_tokens,
-                buffer_remaining = buffer.len(),
-                "SSE stream completed"
-            );
+            let is_empty_stream = text_content.is_empty()
+                && tool_accum.is_empty()
+                && usage.input_tokens == 0
+                && usage.output_tokens == 0;
+            if is_empty_stream {
+                warn!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    finish = ?finish_reason,
+                    buffer_remaining = buffer.len(),
+                    "SSE stream returned empty: 0 content, 0 tokens — likely a silently failed request"
+                );
+            } else {
+                debug!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    text_len = text_content.len(),
+                    tool_count = tool_accum.len(),
+                    finish = ?finish_reason,
+                    input_tokens = usage.input_tokens,
+                    output_tokens = usage.output_tokens,
+                    buffer_remaining = buffer.len(),
+                    "SSE stream completed"
+                );
+            }
 
             // Build the final response
             let mut content = Vec::new();

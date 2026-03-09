@@ -1468,7 +1468,7 @@
                 <div>
                   <div class="form-group">
                     <label class="text-xs">Label</label>
-                    <input class="form-input" x-model="selectedNode.label" style="font-size:11px">
+                    <input class="form-input" x-model="selectedNode.label" @input="applyNodeEdit()" style="font-size:11px">
                   </div>
 
                   <!-- Agent config -->
@@ -1476,7 +1476,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Agent</label>
-                        <select class="form-select" x-model="selectedNode.config.agent_name" style="font-size:11px">
+                        <select class="form-select" x-model="selectedNode.config.agent_name" @change="applyNodeEdit()" style="font-size:11px">
                           <option value="">Select agent...</option>
                           <template x-for="a in agents" :key="a.id || a.name">
                             <option :value="a.name" x-text="a.name"></option>
@@ -1485,11 +1485,11 @@
                       </div>
                       <div class="form-group">
                         <label class="text-xs">Prompt Template</label>
-                        <textarea class="form-textarea" x-model="selectedNode.config.prompt" style="font-size:11px;min-height:60px" placeholder="{{input}}"></textarea>
+                        <textarea class="form-textarea" x-model="selectedNode.config.prompt" @input="applyNodeEdit()" style="font-size:11px;min-height:60px" placeholder="{{input}}"></textarea>
                       </div>
                       <div class="form-group">
                         <label class="text-xs">Model (optional)</label>
-                        <input class="form-input" x-model="selectedNode.config.model" style="font-size:11px" placeholder="Default model">
+                        <input class="form-input" x-model="selectedNode.config.model" @input="applyNodeEdit()" style="font-size:11px" placeholder="Default model">
                       </div>
                     </div>
                   </template>
@@ -1499,7 +1499,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Expression</label>
-                        <input class="form-input" x-model="selectedNode.config.expression" style="font-size:11px" placeholder="output.contains('yes')">
+                        <input class="form-input" x-model="selectedNode.config.expression" @input="applyNodeEdit()" style="font-size:11px" placeholder="output.contains('yes')">
                       </div>
                       <div class="text-xs text-dim">Top port = true, bottom port = false</div>
                     </div>
@@ -1510,11 +1510,11 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Max Iterations</label>
-                        <input type="number" class="form-input" x-model.number="selectedNode.config.max_iterations" style="font-size:11px" min="1" max="100">
+                        <input type="number" class="form-input" x-model.number="selectedNode.config.max_iterations" @input="applyNodeEdit()" style="font-size:11px" min="1" max="100">
                       </div>
                       <div class="form-group">
                         <label class="text-xs">Until (stop condition)</label>
-                        <input class="form-input" x-model="selectedNode.config.until" style="font-size:11px" placeholder="output === 'done'">
+                        <input class="form-input" x-model="selectedNode.config.until" @input="applyNodeEdit()" style="font-size:11px" placeholder="output === 'done'">
                       </div>
                     </div>
                   </template>
@@ -1524,7 +1524,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Fan-out Count</label>
-                        <input type="number" class="form-input" x-model.number="selectedNode.config.fan_count" style="font-size:11px" min="2" max="10">
+                        <input type="number" class="form-input" x-model.number="selectedNode.config.fan_count" @input="applyNodeEdit()" style="font-size:11px" min="2" max="10">
                       </div>
                     </div>
                   </template>
@@ -1534,7 +1534,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Strategy</label>
-                        <select class="form-select" x-model="selectedNode.config.strategy" style="font-size:11px">
+                        <select class="form-select" x-model="selectedNode.config.strategy" @change="applyNodeEdit()" style="font-size:11px">
                           <option value="all">Wait for all</option>
                           <option value="first">First to finish</option>
                           <option value="majority">Majority vote</option>

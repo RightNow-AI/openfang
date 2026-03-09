@@ -1073,11 +1073,23 @@ pub(crate) fn find_daemon() -> Option<String> {
 }
 
 /// Build an HTTP client for daemon calls.
+///
+/// When api_key is configured in config.toml, the client automatically
+/// includes a `Authorization: Bearer <key>` header on every request.
+/// When api_key is empty or missing, no auth header is sent.
 pub(crate) fn daemon_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .expect("Failed to build HTTP client")
+    let mut builder = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120));
+
+    if let Some(key) = read_api_key() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {key}")) {
+            headers.insert(reqwest::header::AUTHORIZATION, val);
+        }
+        builder = builder.default_headers(headers);
+    }
+
+    builder.build().expect("Failed to build HTTP client")
 }
 
 /// Helper: send a request to the daemon and parse the JSON body.
@@ -1456,11 +1468,14 @@ fn cmd_start(config: Option<PathBuf>) {
 }
 
 /// Read the api_key from ~/.openfang/config.toml (if any).
+///
+/// Returns `None` when the key is missing, empty, or whitespace-only —
+/// meaning the daemon is running in public (unauthenticated) mode.
 fn read_api_key() -> Option<String> {
     let config_path = cli_openfang_home().join("config.toml");
     let text = std::fs::read_to_string(config_path).ok()?;
     let table: toml::Value = text.parse().ok()?;
-    let key = table.get("api_key")?.as_str()?;
+    let key = table.get("api_key")?.as_str()?.trim();
     if key.is_empty() {
         None
     } else {
@@ -1472,11 +1487,7 @@ fn cmd_stop() {
     match find_daemon() {
         Some(base) => {
             let client = daemon_client();
-            let mut req = client.post(format!("{base}/api/shutdown"));
-            if let Some(key) = read_api_key() {
-                req = req.bearer_auth(key);
-            }
-            match req.send() {
+            match client.post(format!("{base}/api/shutdown")).send() {
                 Ok(r) if r.status().is_success() => {
                     // Wait for daemon to actually stop (up to 5 seconds)
                     for _ in 0..10 {

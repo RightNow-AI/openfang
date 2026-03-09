@@ -848,4 +848,103 @@ mod tests {
         let msg = parse_telegram_update(&update, &[], "fake:token", &client).await.unwrap();
         assert!(matches!(msg.content, ChannelContent::Location { .. }));
     }
+
+    #[tokio::test]
+    async fn test_parse_telegram_photo_fallback() {
+        // When getFile fails (fake token), photo messages should fall back to
+        // a text description rather than being silently dropped.
+        let update = serde_json::json!({
+            "update_id": 300,
+            "message": {
+                "message_id": 60,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "photo": [
+                    { "file_id": "small_id", "file_unique_id": "a", "width": 90, "height": 90, "file_size": 1234 },
+                    { "file_id": "large_id", "file_unique_id": "b", "width": 800, "height": 600, "file_size": 45678 }
+                ],
+                "caption": "Check this out"
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client).await.unwrap();
+        // With a fake token, getFile will fail, so we get a text fallback
+        match &msg.content {
+            ChannelContent::Text(t) => {
+                assert!(t.contains("Photo received"));
+                assert!(t.contains("Check this out"));
+            }
+            ChannelContent::Image { caption, .. } => {
+                // If somehow the HTTP call succeeded (unlikely with fake token),
+                // verify caption was extracted
+                assert_eq!(caption.as_deref(), Some("Check this out"));
+            }
+            other => panic!("Expected Text or Image fallback for photo, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_telegram_document_fallback() {
+        let update = serde_json::json!({
+            "update_id": 301,
+            "message": {
+                "message_id": 61,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "document": {
+                    "file_id": "doc_id",
+                    "file_unique_id": "c",
+                    "file_name": "report.pdf",
+                    "file_size": 102400
+                }
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client).await.unwrap();
+        match &msg.content {
+            ChannelContent::Text(t) => {
+                assert!(t.contains("Document received"));
+                assert!(t.contains("report.pdf"));
+            }
+            ChannelContent::File { filename, .. } => {
+                assert_eq!(filename, "report.pdf");
+            }
+            other => panic!("Expected Text or File for document, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_telegram_voice_fallback() {
+        let update = serde_json::json!({
+            "update_id": 302,
+            "message": {
+                "message_id": 62,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "voice": {
+                    "file_id": "voice_id",
+                    "file_unique_id": "d",
+                    "duration": 15
+                }
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client).await.unwrap();
+        match &msg.content {
+            ChannelContent::Text(t) => {
+                assert!(t.contains("Voice message"));
+                assert!(t.contains("15s"));
+            }
+            ChannelContent::Voice { duration_seconds, .. } => {
+                assert_eq!(*duration_seconds, 15);
+            }
+            other => panic!("Expected Text or Voice for voice message, got {other:?}"),
+        }
+    }
 }

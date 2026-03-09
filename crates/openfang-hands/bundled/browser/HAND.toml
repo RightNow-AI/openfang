@@ -14,6 +14,23 @@ tools = [
 ]
 
 [[requires]]
+key = "python3"
+label = "Python 3 must be installed"
+requirement_type = "binary"
+check_value = "python3"
+description = "Python 3 is required for installing and running the Playwright browser automation library. Python 3.8 or newer is recommended."
+
+[requires.install]
+macos = "brew install python3"
+windows = "winget install Python.Python.3.12"
+linux_apt = "sudo apt install python3"
+linux_dnf = "sudo dnf install python3"
+linux_pacman = "sudo pacman -S python"
+pip = "python3 --version"
+manual_url = "https://www.python.org/downloads/"
+estimated_time = "1-3 min"
+
+[[requires]]
 key = "chromium"
 label = "Chromium or Google Chrome must be installed"
 requirement_type = "binary"

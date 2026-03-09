@@ -62,6 +62,7 @@ impl HandRegistry {
                 serde_json::json!({
                     "hand_id": e.hand_id,
                     "config": e.config,
+                    "agent_id": e.agent_id,
                 })
             })
             .collect();
@@ -73,8 +74,12 @@ impl HandRegistry {
     }
 
     /// Load persisted hand state and re-activate hands.
-    /// Returns list of (hand_id, config) that should be activated.
-    pub fn load_state(path: &std::path::Path) -> Vec<(String, HashMap<String, serde_json::Value>)> {
+    /// Returns list of (hand_id, config, old_agent_id) that should be activated.
+    /// The `old_agent_id` is the agent UUID from before the restart, used to
+    /// reassign cron jobs to the newly spawned agent (issue #402).
+    pub fn load_state(
+        path: &std::path::Path,
+    ) -> Vec<(String, HashMap<String, serde_json::Value>, Option<AgentId>)> {
         let data = match std::fs::read_to_string(path) {
             Ok(d) => d,
             Err(_) => return Vec::new(),
@@ -92,7 +97,10 @@ impl HandRegistry {
                 let hand_id = e["hand_id"].as_str()?.to_string();
                 let config: HashMap<String, serde_json::Value> =
                     serde_json::from_value(e["config"].clone()).unwrap_or_default();
-                Some((hand_id, config))
+                let old_agent_id: Option<AgentId> = e
+                    .get("agent_id")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                Some((hand_id, config, old_agent_id))
             })
             .collect()
     }
@@ -356,13 +364,15 @@ impl Default for HandRegistry {
 fn check_requirement(req: &HandRequirement) -> bool {
     match req.requirement_type {
         RequirementType::Binary => {
+            // Special handling for python3: must actually run the command and verify
+            // the output contains "Python 3", because Windows ships a python3.exe
+            // Store shim that exists on PATH but doesn't actually work.
+            if req.check_value == "python3" {
+                return check_python3_available();
+            }
             // Check if binary exists on PATH.
-            // For python3, also try "python" (Windows ships python not python3).
             if which_binary(&req.check_value) {
                 return true;
-            }
-            if req.check_value == "python3" {
-                return which_binary("python");
             }
             if req.check_value == "chromium" {
                 // Try common Chromium/Chrome binary names across platforms
@@ -380,6 +390,44 @@ fn check_requirement(req: &HandRequirement) -> bool {
                 .map(|v| !v.is_empty())
                 .unwrap_or(false)
         }
+    }
+}
+
+/// Check if Python 3 is actually available by running the command and checking
+/// the version output. This avoids false negatives from Windows Store shims
+/// (python3.exe that just opens the Microsoft Store) and false positives from
+/// Python 2 installations where `python` exists but is Python 2.
+fn check_python3_available() -> bool {
+    // Try "python3 --version" first (Linux/macOS, some Windows installs)
+    if run_returns_python3("python3") {
+        return true;
+    }
+    // Try "python --version" (Windows commonly uses this, Docker containers too)
+    if run_returns_python3("python") {
+        return true;
+    }
+    false
+}
+
+/// Run `{cmd} --version` and return true if the output contains "Python 3".
+fn run_returns_python3(cmd: &str) -> bool {
+    match std::process::Command::new(cmd)
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .output()
+    {
+        Ok(output) => {
+            if !output.status.success() {
+                return false;
+            }
+            // Python --version may print to stdout or stderr depending on version
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            stdout.contains("Python 3") || stderr.contains("Python 3")
+        }
+        Err(_) => false,
     }
 }
 
