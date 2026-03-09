@@ -420,7 +420,7 @@ function agentsPage() {
       lines.push('', '[model]');
       lines.push('provider = "' + f.provider + '"');
       lines.push('model = "' + f.model + '"');
-      lines.push('system_prompt = "' + f.systemPrompt.replace(/"/g, '\\"') + '"');
+      lines.push('system_prompt = """\n' + f.systemPrompt.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"') + '\n"""');
       if (f.profile === 'custom') {
         lines.push('', '[capabilities]');
         if (f.caps.memory_read) lines.push('memory_read = ["*"]');
