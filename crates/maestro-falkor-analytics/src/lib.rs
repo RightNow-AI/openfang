@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod etl;
+pub mod queries;
 
 use etl::EtlReport;
 use falkordb::{AsyncGraph, FalkorClientBuilder, FalkorConnectionInfo};
