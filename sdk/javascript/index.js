@@ -317,6 +317,23 @@ class AgentResource {
   async getConfig(id) {
     return this._c._request("GET", "/api/agents/" + id);
   }
+
+  /**get agent files */
+  async getFiles(id) {
+    return this._c._request("GET", "/api/agents/" + id + "/files");
+  }
+
+  /**set agent file */
+  async setFile(id, filename, content) {
+    return this._c._request("PUT", "/api/agents/" + id + "/files/" + filename, {
+      content: content,
+    });
+  }
+
+  /**get agent file */
+  async getFile(id, filename) {
+    return this._c._request("GET", "/api/agents/" + id + "/files/" + filename);
+  }
 }
 
 // ── Session Resource ────────────────────────────────────────────
@@ -481,6 +498,18 @@ class ModelResource {
   async aliases() {
     return this._c._request("GET", "/api/models/aliases");
   }
+
+  /**
+   * Sync UniGPT custom models into the model catalog.
+   * Models present in the array are added/updated; models previously added
+   * via this endpoint but absent from the array are removed.
+   *
+   * @param {Array<{id: string, name?: string, context_window?: number, max_output_tokens?: number}>} models
+   * @returns {{ status: string, added_count: number, updated_count: number, removed_count: number }}
+   */
+  async updateUnigptModels(models) {
+    return this._c._request("POST", "/unigpt/models", models);
+  }
 }
 
 // ── Provider Resource ───────────────────────────────────────────
@@ -506,6 +535,12 @@ class ProviderResource {
 
   async test(name) {
     return this._c._request("POST", "/api/providers/" + name + "/test");
+  }
+
+  setUrl(name, url) {
+    return this._c._request("PUT", "/api/providers/" + name + "/url", {
+      url: url,
+    });
   }
 }
 
