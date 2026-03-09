@@ -9,6 +9,7 @@
 
 pub mod bundled;
 pub mod clawhub;
+pub mod fanghub;
 pub mod loader;
 pub mod marketplace;
 pub mod openclaw_compat;

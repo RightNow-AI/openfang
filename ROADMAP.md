@@ -42,7 +42,7 @@ This document outlines the official, evolved roadmap for the Maestro-OpenFang pr
 |---|---|---|
 | **8.1** | v0.3.30 | **Observability & Guardrails:** Implemented `maestro-observability` (OpenTelemetry) and `maestro-guardrails` (PII, rate limiting). |
 | **8.2** | v0.3.30 | **Model & Algorithm Hubs:** Implemented `maestro-model-hub` (dynamic routing) and `maestro-algorithm` (pipeline completion). |
-| **8.3** | v0.3.30 | **Learning & Evaluation:** Implemented `maestro-pai` (self-evolution) and `maestro-eval` (LLM-as-judge). |
+| **8.3** | v0.3.31 | **Learning & Evaluation:** Implemented `maestro-pai` (self-evolution) and `maestro-eval` (LLM-as-judge). Migrated `maestro-pai` from SQLite to SurrealDB v3. |
 | **8.4** | v0.3.30 | **Ecosystem:** Implemented `maestro-sdk`, `maestro-marketplace`, and `maestro-knowledge` (RAG). |
 | **8.5** | v0.3.30 | **Recursive Language Model (RLM):** Implemented `maestro-rlm` for long-context processing via a PyO3-based Python REPL. |
 

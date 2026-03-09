@@ -30,7 +30,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.30"
+version = "0.3.31"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"

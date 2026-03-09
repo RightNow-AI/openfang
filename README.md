@@ -6,7 +6,7 @@
 <h3 align="center">The Agent Operating System</h3>
 
 <p align="center">
-  Open-source Agent OS built in Rust. 143K LOC. 21 crates. 1,846+ tests. Zero clippy warnings.<br/>
+  Open-source Agent OS built in Rust. 143K LOC. 21 crates. 1,886+ tests. Zero clippy warnings.<br/>
   <strong>One binary. Battle-tested. Agents that actually work for you.</strong>
 </p>
 
@@ -19,18 +19,18 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-v0.3.30-green?style=flat-square" alt="v0.3.30" />
-  <img src="https://img.shields.io/badge/phase-8%20✅%20complete-blue?style=flat-square" alt="Phase 8 Complete" />
-  <img src="https://img.shields.io/badge/tests-1,846%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/version-v0.3.31-green?style=flat-square" alt="v0.3.31" />
+  <img src="https://img.shields.io/badge/phase-9%20🚧%20in%20progress-blue?style=flat-square" alt="Phase 9 In Progress" />
+  <img src="https://img.shields.io/badge/tests-1,886%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
   <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
 </p>
 
 ---
 
-> **v0.3.30 — Phase 8 Complete (March 2026)**
+> **v0.3.31 — Phase 9 In Progress (March 2026)**
 >
-> Phase 8 (MAESTRO Algorithm) is complete. The system now includes a full implementation of the MAESTRO paper, including observability, guardrails, a model hub, RAG, evaluation, and a recursive language model (RLM) for long-context processing. See [ROADMAP.md](ROADMAP.md) for full details.
+> Phase 8 (MAESTRO Algorithm) is complete. Phase 9 (Hand System & FangHub) is now in progress — the `HandScheduler`, `FangHubClient`, and all 7 bundled Hands are implemented. See [ROADMAP.md](ROADMAP.md) for full details.
 
 ---
 
@@ -173,14 +173,14 @@ OpenClaw   ███████████████████████
 
 ## Architecture
 
-21 Rust crates. 143,528 lines of code. Modular kernel design.
+21 Rust crates. 145,000+ lines of code. Modular kernel design.
 
 ```
 openfang-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget tracking
 openfang-runtime     Agent loop, 3 LLM drivers, 53 tools, WASM sandbox, MCP, A2A
 openfang-api         140+ REST/WS/SSE endpoints, OpenAI-compatible API, dashboard
 openfang-channels    40 messaging adapters with rate limiting, DM/group policies
-maestro-surreal-memory  SurrealDB graph persistence, vector embeddings, knowledge graph, canonical sessions
+openfang-memory       SurrealDB v3 persistence, vector embeddings, knowledge graph, canonical sessions
 maestro-cache        L1 (Moka) + L2 (Redis) caching layer for memory, models, and skills
 maestro-algorithm    The core MAESTRO algorithm: PLAN, EXECUTE, LEARN, EVALUATE
 maestro-observability OpenTelemetry traces, metrics, cost tracking, alerts, audit log
@@ -193,7 +193,7 @@ maestro-marketplace  Local agent marketplace (install, search, publish, update_a
 maestro-pai          Self-evolution engine (hooks, patterns, telos, wisdom)
 maestro-rlm          Recursive Language Model (RLM) for long-context processing via PyO3
 openfang-types       Core types, taint tracking, Ed25519 manifest signing, model catalog
-openfang-skills      60 bundled skills, SKILL.md parser, FangHub marketplace
+openfang-skills      62 bundled skills, SKILL.md parser, FangHub marketplace, FangHubClient (Hand install/update/search)
 openfang-cli         CLI with daemon management, TUI dashboard, MCP server mode
 openfang-desktop     Tauri 2.0 native app (system tray, notifications, global shortcuts)
 xtask                Build automation
@@ -225,7 +225,7 @@ curl -X POST localhost:4200/v1/chat/completions \
 # Build the workspace
 cargo build --workspace --lib
 
-# Run all tests (1,846+)
+# Run all tests (1,886+)
 cargo test --workspace
 
 # Lint (must be 0 warnings)
@@ -239,7 +239,7 @@ cargo fmt --all -- --check
 
 ## Stability Notice
 
-OpenFang v0.3.30 is a significant update. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
+OpenFang v0.3.31 is a significant update. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
 
 - **Breaking changes** may occur between minor versions until v1.0
 - **Some Hands** are more mature than others (Browser and Researcher are the most battle-tested)

@@ -6,6 +6,7 @@
 
 pub mod bundled;
 pub mod registry;
+pub mod scheduler;
 
 use chrono::{DateTime, Utc};
 use openfang_types::agent::AgentId;
@@ -297,6 +298,19 @@ fn default_temperature() -> f32 {
     0.7
 }
 
+/// Default schedule declared in a HAND.toml manifest.
+///
+/// When present, the kernel pre-registers this job with `CronScheduler` at
+/// activation time so the Hand fires even before its first agent run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandScheduleSpec {
+    /// Fire on a fixed interval (seconds, 60..=86400).
+    Every { every_secs: u64 },
+    /// Fire on a standard 5-field cron expression.
+    Cron { expr: String, tz: Option<String> },
+}
+
 /// Complete Hand definition — parsed from HAND.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandDefinition {
@@ -334,6 +348,13 @@ pub struct HandDefinition {
     /// Bundled skill content (populated at load time, not in TOML).
     #[serde(skip)]
     pub skill_content: Option<String>,
+    /// Optional default schedule declared in the manifest.
+    ///
+    /// When set, the kernel pre-registers a cron job at activation time so
+    /// the Hand fires on schedule without waiting for the agent to call
+    /// `schedule_create` itself.
+    #[serde(default)]
+    pub default_schedule: Option<HandScheduleSpec>,
 }
 
 /// Runtime status of a Hand instance.
