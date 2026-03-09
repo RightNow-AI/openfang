@@ -17,3 +17,6 @@ opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+dashmap.workspace = true
+reqwest.workspace = true
+once_cell = "1"

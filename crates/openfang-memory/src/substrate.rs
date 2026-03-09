@@ -293,6 +293,7 @@ impl MemorySubstrate {
             DEFINE FIELD IF NOT EXISTS deleted ON memory_fragments TYPE bool DEFAULT false;
             DEFINE INDEX IF NOT EXISTS idx_mf_agent ON memory_fragments FIELDS agent_id;
             DEFINE INDEX IF NOT EXISTS idx_mf_scope ON memory_fragments FIELDS scope;
+            DEFINE INDEX IF NOT EXISTS idx_mf_embedding ON memory_fragments FIELDS embedding HNSW DIMENSION 1536 DIST COSINE;
         "#)
         .await
         .map_err(|e| OpenFangError::Memory(format!("Table initialization failed: {}", e)))?;
@@ -1334,6 +1335,114 @@ impl Memory for MemorySubstrate {
     ) -> OpenFangResult<()> {
         // Delegate to the inherent async method
         MemorySubstrate::save_session(self, session).await
+    }
+
+    /// Semantic vector search using SurrealDB HNSW index.
+    ///
+    /// When `query_embedding` is provided, uses the `<|k,ef|>` KNN operator
+    /// against the `idx_mf_embedding` HNSW index. Falls back to text recall
+    /// if no embedding is provided.
+    async fn recall_with_embedding_async(
+        &self,
+        query: &str,
+        limit: usize,
+        filter: Option<MemoryFilter>,
+        query_embedding: Option<&[f32]>,
+    ) -> OpenFangResult<Vec<MemoryFragment>> {
+        let embedding = match query_embedding {
+            Some(e) if !e.is_empty() => e,
+            _ => return self.recall(query, limit, filter).await,
+        };
+
+        // Build filter clause
+        let mut where_clauses = vec!["deleted = false", "embedding != NONE"];
+        let mut bindings = serde_json::Map::new();
+
+        if let Some(ref f) = filter {
+            if let Some(ref agent_id) = f.agent_id {
+                where_clauses.push("agent_id = $agent_id");
+                bindings.insert("agent_id".to_string(), serde_json::json!(agent_id.0.to_string()));
+            }
+            if let Some(ref scope) = f.scope {
+                where_clauses.push("scope = $scope");
+                bindings.insert("scope".to_string(), serde_json::json!(scope));
+            }
+            if let Some(min_conf) = f.min_confidence {
+                where_clauses.push("confidence >= $min_confidence");
+                bindings.insert("min_confidence".to_string(), serde_json::json!(min_conf));
+            }
+        }
+
+        let where_str = where_clauses.join(" AND ");
+        // SurrealDB KNN syntax: embedding <|k,ef|> $vec
+        // ef=64 is a good default for recall quality
+        let sql = format!(
+            "SELECT *, vector::similarity::cosine(embedding, $vec) AS score \
+             FROM memory_fragments \
+             WHERE {} \
+             ORDER BY embedding <|{},64|> $vec \
+             LIMIT $limit",
+            where_str, limit
+        );
+        bindings.insert("vec".to_string(), serde_json::json!(embedding));
+        bindings.insert("limit".to_string(), serde_json::json!(limit));
+
+        let results: Vec<serde_json::Value> = self.db
+            .query(&sql)
+            .bind(serde_json::Value::Object(bindings))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Vector recall failed: {}", e)))?
+            .take(0)
+            .map_err(|e| OpenFangError::Memory(format!("Vector recall result parsing failed: {}", e)))?;
+
+        let mut fragments = Vec::new();
+        for result in results {
+            if let Ok(fragment) = Self::deserialize_memory_fragment(&result) {
+                fragments.push(fragment);
+            }
+        }
+
+        Ok(fragments)
+    }
+
+    /// Store a memory fragment with a pre-computed embedding vector.
+    ///
+    /// The embedding is stored in the `embedding` field and indexed by the
+    /// HNSW index `idx_mf_embedding` for fast ANN search.
+    async fn remember_with_embedding_async(
+        &self,
+        agent_id: AgentId,
+        content: &str,
+        source: MemorySource,
+        scope: &str,
+        metadata: HashMap<String, serde_json::Value>,
+        embedding: Option<&[f32]>,
+    ) -> OpenFangResult<MemoryId> {
+        let id = MemoryId::new();
+        let now = chrono::Utc::now();
+        let embedding_json = embedding.map(|e| serde_json::json!(e));
+
+        self.db
+            .query("CREATE type::record('memory_fragments', $id) CONTENT $data")
+            .bind(("id", id.0.to_string()))
+            .bind(("data", serde_json::json!({
+                "id": id.0.to_string(),
+                "agent_id": agent_id.0.to_string(),
+                "content": content,
+                "embedding": embedding_json,
+                "metadata": metadata,
+                "source": serde_json::to_string(&source).map_err(|e| OpenFangError::Memory(format!("Source serialization failed: {}", e)))?,
+                "confidence": 1.0,
+                "created_at": now.to_rfc3339(),
+                "accessed_at": now.to_rfc3339(),
+                "access_count": 0,
+                "scope": scope,
+                "deleted": false
+            })))
+            .await
+            .map_err(|e| OpenFangError::Memory(format!("Memory remember_with_embedding failed: {}", e)))?;
+
+        Ok(id)
     }
 }
 

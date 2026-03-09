@@ -12,3 +12,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 reqwest.workspace = true
+chrono.workspace = true
+uuid.workspace = true

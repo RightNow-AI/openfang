@@ -14,3 +14,4 @@ anyhow.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 regex.workspace = true
+once_cell.workspace = true

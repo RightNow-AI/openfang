@@ -16,3 +16,5 @@ async-trait.workspace = true
 semver.workspace = true
 sha2.workspace = true
 reqwest.workspace = true
+chrono.workspace = true
+uuid.workspace = true

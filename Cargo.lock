@@ -2826,23 +2826,6 @@ dependencies = [
 
 [[package]]
 name = "geo"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f811f663912a69249fa620dcd2a005db7254529da2d8a0b23942e81f47084501"
-dependencies = [
- "earcutr",
- "float_next_after",
- "geo-types",
- "geographiclib-rs",
- "log",
- "num-traits",
- "robust",
- "rstar 0.12.2",
- "spade",
-]
-
-[[package]]
-name = "geo"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fc1a1678e54befc9b4bcab6cd43b8e7f834ae8ea121118b0fd8c42747675b4a"
@@ -2866,6 +2849,7 @@ version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f3901269ec6d4f6068d3f09e5f02f995bd076398dcd1dfec407cd230b02d11b"
 dependencies = [
+ "earcutr",
  "float_next_after",
  "geo-types",
  "geographiclib-rs",
@@ -2877,6 +2861,7 @@ dependencies = [
  "rstar 0.12.2",
  "serde",
  "sif-itree",
+ "spade",
 ]
 
 [[package]]
@@ -4471,6 +4456,7 @@ version = "0.3.27"
 dependencies = [
  "anyhow",
  "async-trait",
+ "once_cell",
  "regex",
  "serde",
  "serde_json",
@@ -4485,10 +4471,12 @@ version = "0.3.27"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "rig-core",
  "serde",
  "serde_json",
  "sha2",
+ "surrealdb",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4500,6 +4488,7 @@ version = "0.3.27"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "reqwest 0.12.28",
  "semver",
  "serde",
@@ -4508,6 +4497,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4530,9 +4520,12 @@ name = "maestro-observability"
 version = "0.3.27"
 dependencies = [
  "chrono",
+ "dashmap",
+ "once_cell",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4579,11 +4572,13 @@ name = "maestro-sdk"
 version = "0.3.27"
 dependencies = [
  "anyhow",
+ "chrono",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -8825,7 +8820,7 @@ dependencies = [
  "chrono",
  "flatbuffers",
  "futures",
- "geo 0.28.0",
+ "geo 0.32.0",
  "prost 0.14.3",
  "prost-types",
  "rust_decimal",

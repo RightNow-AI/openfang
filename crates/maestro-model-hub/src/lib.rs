@@ -186,6 +186,16 @@ impl ModelHub {
 
         best_model.map(|(id, _)| id)
     }
+
+    /// Get a model's capabilities by ID.
+    pub fn get_model(&self, model_id: &str) -> Option<ModelCapabilities> {
+        self.models.get(model_id).map(|e| e.value().clone())
+    }
+
+    /// List all registered model IDs.
+    pub fn list_models(&self) -> Vec<String> {
+        self.models.iter().map(|e| e.key().clone()).collect()
+    }
 }
 
 impl Default for ModelHub {
@@ -193,3 +203,6 @@ impl Default for ModelHub {
         Self::new()
     }
 }
+
+pub mod registry;
+pub mod router;
