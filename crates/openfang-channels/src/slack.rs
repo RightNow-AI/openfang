@@ -370,8 +370,11 @@ async fn parse_slack_event(
 
     let channel = event["channel"].as_str()?;
 
-    // Filter by allowed channels
-    if !allowed_channels.is_empty() && !allowed_channels.contains(&channel.to_string()) {
+    // Filter by allowed channels (DMs are exempt — dm_policy handles those)
+    if !channel.starts_with('D')
+        && !allowed_channels.is_empty()
+        && !allowed_channels.contains(&channel.to_string())
+    {
         return None;
     }
 
