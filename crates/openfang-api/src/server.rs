@@ -658,6 +658,59 @@ pub async fn build_router(
             "/api/pairing/notify",
             axum::routing::post(routes::pairing_notify),
         )
+        // Analytics dashboard endpoints
+        .route(
+            "/api/analytics/health",
+            axum::routing::get(crate::analytics_routes::analytics_health),
+        )
+        .route(
+            "/api/analytics/stats",
+            axum::routing::get(crate::analytics_routes::graph_stats),
+        )
+        .route(
+            "/api/analytics/entities/search",
+            axum::routing::get(crate::analytics_routes::search_entities),
+        )
+        .route(
+            "/api/analytics/entities/{id}",
+            axum::routing::get(crate::analytics_routes::get_entity),
+        )
+        .route(
+            "/api/analytics/entities/{id}/neighbors",
+            axum::routing::get(crate::analytics_routes::entity_neighbors),
+        )
+        .route(
+            "/api/analytics/path",
+            axum::routing::get(crate::analytics_routes::shortest_path),
+        )
+        .route(
+            "/api/analytics/distribution/entities",
+            axum::routing::get(crate::analytics_routes::entity_type_distribution),
+        )
+        .route(
+            "/api/analytics/distribution/relations",
+            axum::routing::get(crate::analytics_routes::relation_type_distribution),
+        )
+        .route(
+            "/api/analytics/hubs",
+            axum::routing::get(crate::analytics_routes::top_hubs),
+        )
+        .route(
+            "/api/analytics/memories",
+            axum::routing::get(crate::analytics_routes::agent_memories),
+        )
+        .route(
+            "/api/analytics/memories/stats",
+            axum::routing::get(crate::analytics_routes::agent_memory_stats),
+        )
+        .route(
+            "/api/analytics/relations/high-confidence",
+            axum::routing::get(crate::analytics_routes::high_confidence_relations),
+        )
+        .route(
+            "/api/analytics/etl/run",
+            axum::routing::post(crate::analytics_routes::trigger_etl),
+        )
         // MCP HTTP endpoint (exposes MCP protocol over HTTP)
         .route("/mcp", axum::routing::post(routes::mcp_http))
         // OpenAI-compatible API

@@ -153,6 +153,8 @@ pub struct OpenFangKernel {
     pub channel_adapters: dashmap::DashMap<String, Arc<dyn openfang_channels::types::ChannelAdapter>>,
     /// Hot-reloadable default model override (set via config hot-reload, read at agent spawn).
     pub default_model_override: std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
+    /// FalkorDB graph analytics engine (None when analytics is not configured).
+    pub analytics: Option<Arc<maestro_falkor_analytics::FalkorAnalytics>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
 }
@@ -635,6 +637,36 @@ impl OpenFangKernel {
         let usage_store = Arc::new(memory.usage().clone());
         let metering = Arc::new(MeteringEngine::new(usage_store));
 
+        // Initialize FalkorDB analytics engine (optional — non-fatal if connection fails)
+        let analytics: Option<Arc<maestro_falkor_analytics::FalkorAnalytics>> =
+            if let Some(ref analytics_cfg) = config.analytics {
+                let falkor_cfg = maestro_falkor_analytics::config::FalkorConfig {
+                    database_url: analytics_cfg.database_url.clone(),
+                    graph_name: analytics_cfg.graph_name.clone(),
+                };
+                match maestro_falkor_analytics::FalkorAnalytics::new(falkor_cfg).await {
+                    Ok(fa) => {
+                        info!("FalkorDB analytics connected (graph: {})", analytics_cfg.graph_name);
+                        let fa = Arc::new(fa);
+                        // Spawn initial ETL run
+                        let mem_clone: Arc<dyn openfang_types::memory::Memory> = memory.clone();
+                        let fa_ref = fa.as_ref().clone();
+                        maestro_falkor_analytics::spawn_etl(mem_clone, fa_ref);
+                        Some(fa)
+                    }
+                    Err(e) => {
+                        warn!(
+                            url = %analytics_cfg.database_url,
+                            error = %e,
+                            "FalkorDB analytics init failed — analytics endpoints will be unavailable"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
         let supervisor = Supervisor::new();
         let background = BackgroundExecutor::new(supervisor.subscribe());
 
@@ -948,6 +980,7 @@ impl OpenFangKernel {
             whatsapp_gateway_pid: Arc::new(std::sync::Mutex::new(None)),
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
+            analytics,
             self_handle: OnceLock::new(),
         };
 

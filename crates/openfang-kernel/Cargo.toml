@@ -15,6 +15,7 @@ openfang-hands = { path = "../openfang-hands" }
 openfang-extensions = { path = "../openfang-extensions" }
 openfang-wire = { path = "../openfang-wire" }
 openfang-channels = { path = "../openfang-channels" }
+maestro-falkor-analytics = { path = "../maestro-falkor-analytics" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

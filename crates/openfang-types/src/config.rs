@@ -1065,6 +1065,39 @@ pub struct KernelConfig {
     /// OAuth client ID overrides for PKCE flows.
     #[serde(default)]
     pub oauth: OAuthConfig,
+    /// FalkorDB graph analytics configuration.
+    /// When set, the kernel connects to FalkorDB and enables analytics endpoints.
+    #[serde(default)]
+    pub analytics: Option<AnalyticsConfig>,
+}
+
+/// FalkorDB graph analytics configuration.
+///
+/// Configure in config.toml:
+/// ```toml
+/// [analytics]
+/// database_url = "falkor://localhost:6379"
+/// graph_name = "openfang"
+/// etl_interval_secs = 300
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalyticsConfig {
+    /// FalkorDB connection URL (e.g. `falkor://localhost:6379`).
+    pub database_url: String,
+    /// Graph name inside FalkorDB (default: `openfang`).
+    #[serde(default = "default_analytics_graph_name")]
+    pub graph_name: String,
+    /// Background ETL interval in seconds (0 = one-shot, no repeat). Default: 300.
+    #[serde(default = "default_etl_interval")]
+    pub etl_interval_secs: u64,
+}
+
+fn default_analytics_graph_name() -> String {
+    "openfang".to_string()
+}
+
+fn default_etl_interval() -> u64 {
+    300
 }
 
 /// OAuth client ID overrides for PKCE flows.
@@ -1232,6 +1265,7 @@ impl Default for KernelConfig {
             budget: BudgetConfig::default(),
             provider_urls: HashMap::new(),
             oauth: OAuthConfig::default(),
+            analytics: None,
         }
     }
 }
