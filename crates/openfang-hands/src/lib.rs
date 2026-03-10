@@ -322,6 +322,7 @@ pub struct HandDefinition {
     pub description: String,
     /// Category for marketplace browsing.
     pub category: HandCategory,
+    pub version: String,
     /// Icon (emoji).
     #[serde(default)]
     pub icon: String,
