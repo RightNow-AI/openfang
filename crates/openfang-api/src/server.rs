@@ -118,6 +118,7 @@ pub async fn build_router(
             "/api/health/detail",
             axum::routing::get(routes::health_detail),
         )
+        .route("/api/ready", axum::routing::get(routes::ready))
         .route("/api/status", axum::routing::get(routes::status))
         .route("/api/version", axum::routing::get(routes::version))
         .route(

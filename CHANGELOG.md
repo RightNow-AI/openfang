@@ -12,7 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Phase 10: Production Hardening**
   - **Comprehensive Integration Test Suite:** Added a new `maestro-integration-tests` crate with 44 tests covering the full kernel lifecycle, API endpoints, and core features. The suite treats the system as a black box, validating everything from boot to Hand activation.
   - **Hand Scheduler:** Implemented `HandScheduler` in `openfang-hands` for scheduling autonomous Hands via cron expressions, fixed intervals, or one-shot activation. Includes pause/resume and next-fire-time calculation. Wired into the kernel.
-  - **`/api/ready` Endpoint:** Added a new readiness probe endpoint to the API to confirm when the kernel is fully booted and ready to accept traffic.
+  - **`/api/ready` Endpoint:** Added a Kubernetes-compatible readiness probe (`GET /api/ready`) that returns HTTP 200 only when the kernel has fully booted and SurrealDB is reachable. Returns HTTP 503 with a structured reason during startup or degraded states.
+  - **Production Dockerfile:** Upgraded to a 3-stage multi-stage build (`deps` → `builder` → `runtime`) with dependency layer caching, binary stripping, a non-root `openfang` user, and a built-in `HEALTHCHECK` directive.
+  - **docker-compose.yml:** Added `healthcheck` using `/api/ready` and `deploy.resources` limits for production deployments.
+  - **CI Integration Tests Job:** Added a dedicated `integration` job to `.github/workflows/ci.yml` that runs `maestro-integration-tests` on every push to `main` or `feature/*` branches with `RUST_BACKTRACE=1`.
 
 ### Fixed
 - **Full Workspace Async Propagation (Continuation):** Eliminated all remaining blocking calls (`.expect`/`.unwrap` on `Future`s) across the workspace, primarily in test suites. Replaced `open_in_memory()` with the new async `connect_in_memory().await` in `openfang-runtime` tests. Fixed missing `.await` calls on `boot_with_config()` in 10+ test files across `openfang-api` and `openfang-kernel`.

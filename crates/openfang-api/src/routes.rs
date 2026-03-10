@@ -2820,6 +2820,62 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
     }))
 }
 
+/// GET /api/ready — Kubernetes readiness probe.
+///
+/// Returns HTTP 200 with `{"ready": true}` only when the kernel has fully
+/// booted and all critical dependencies are reachable.  Returns HTTP 503 with
+/// `{"ready": false, "reason": "..."}` otherwise.
+///
+/// Unlike `/api/health` (liveness), this endpoint is intended to gate traffic:
+/// a load balancer should only route requests here once this returns 200.
+pub async fn ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // 1. Check that the kernel has completed its boot sequence.
+    //    We use booted_at being set (always set after boot_with_config completes)
+    //    combined with a minimum uptime of 500ms as a proxy for "fully initialised".
+    let uptime = state.kernel.booted_at.elapsed();
+    if uptime.as_millis() < 500 {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "ready": false,
+                "reason": "kernel still initialising",
+                "uptime_ms": uptime.as_millis() as u64,
+            })),
+        );
+    }
+
+    // 2. Verify the primary persistence layer (SurrealDB) is reachable.
+    let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    ]));
+    let db_ok = state
+        .kernel
+        .memory
+        .structured_get(shared_id, "__ready_check__")
+        .await
+        .is_ok();
+    if !db_ok {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "ready": false,
+                "reason": "database unreachable",
+                "uptime_ms": uptime.as_millis() as u64,
+            })),
+        );
+    }
+
+    // 3. All checks passed — the server is ready to serve traffic.
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ready": true,
+            "uptime_ms": uptime.as_millis() as u64,
+            "version": env!("CARGO_PKG_VERSION"),
+        })),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Prometheus metrics endpoint
 // ---------------------------------------------------------------------------

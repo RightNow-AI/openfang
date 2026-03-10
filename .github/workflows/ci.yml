@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feature/*"]
   pull_request:
     branches: [main]
 
@@ -62,6 +62,32 @@ jobs:
             patchelf
       # Tests that need a display (Tauri) are skipped in headless CI via cfg
       - run: cargo test --workspace
+
+  # ── Integration tests (Linux only — requires SurrealDB kv-mem) ─────────────
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: integration-ubuntu
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+      - name: Run integration tests
+        run: |
+          cargo test -p maestro-integration-tests --all-features -- --test-threads=1
+        env:
+          RUST_LOG: warn
+          RUST_BACKTRACE: 1
 
   clippy:
     name: Clippy
