@@ -2151,7 +2151,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_response_after_tool_use_returns_fallback() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let memory = openfang_memory::MemorySubstrate::connect_in_memory().await.unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
@@ -2203,7 +2203,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_response_max_tokens_returns_fallback() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let memory = openfang_memory::MemorySubstrate::connect_in_memory().await.unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
@@ -2255,7 +2255,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_normal_response_not_replaced_by_fallback() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let memory = openfang_memory::MemorySubstrate::connect_in_memory().await.unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
@@ -2298,7 +2298,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_streaming_empty_response_after_tool_use_returns_fallback() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let memory = openfang_memory::MemorySubstrate::connect_in_memory().await.unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
@@ -2422,7 +2422,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_first_response_retries_and_recovers() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let memory = openfang_memory::MemorySubstrate::connect_in_memory().await.unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
@@ -2468,7 +2468,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_first_response_fallback_when_retry_also_empty() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let memory = openfang_memory::MemorySubstrate::connect_in_memory().await.unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
@@ -2520,7 +2520,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_streaming_empty_response_max_tokens_returns_fallback() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let memory = openfang_memory::MemorySubstrate::connect_in_memory().await.unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
@@ -2960,7 +2960,7 @@ mod tests {
         // This is THE critical test: a model outputs a tool call as text,
         // the recovery code detects it, promotes it to ToolUse, executes the tool,
         // and the agent loop continues to produce a final response.
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let memory = openfang_memory::MemorySubstrate::connect_in_memory().await.unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
@@ -3032,7 +3032,7 @@ mod tests {
     /// Verifies recovery does NOT interfere with normal flow.
     #[tokio::test]
     async fn test_normal_flow_unaffected_by_recovery() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let memory = openfang_memory::MemorySubstrate::connect_in_memory().await.unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
@@ -3086,7 +3086,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_text_tool_call_recovery_streaming_e2e() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let memory = openfang_memory::MemorySubstrate::connect_in_memory().await.unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),

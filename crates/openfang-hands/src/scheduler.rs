@@ -1,261 +1,245 @@
-//! Hand scheduler integration.
-//!
-//! Converts a [`HandScheduleSpec`] declared in a `HAND.toml` manifest into a
-//! [`CronJob`] and manages the lifecycle of those jobs independently of the
-//! kernel's general-purpose `CronScheduler`.
-//!
-//! # Design
-//!
-//! The `HandScheduler` is intentionally **self-contained** — it does not hold
-//! a reference to the kernel's `CronScheduler` directly.  Instead it produces
-//! `CronJob` values that the kernel can insert into its own scheduler.  This
-//! keeps `openfang-hands` free of a circular dependency on `openfang-kernel`.
-//!
-//! ```text
-//! HandRegistry::activate()
-//!     └─► HandScheduler::build_job()   → CronJob
-//!             └─► kernel.cron.add_job(job)   (done by the kernel, not here)
-//! ```
+//! Hand scheduler — bridges `HandScheduleSpec` to the kernel's cron engine.
 
-use crate::{HandDefinition, HandScheduleSpec};
-use chrono::Utc;
-use openfang_types::agent::AgentId;
-use openfang_types::scheduler::{CronAction, CronDelivery, CronJob, CronJobId, CronSchedule};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-// ---------------------------------------------------------------------------
-// HandScheduler
-// ---------------------------------------------------------------------------
+/// A schedule specification parsed from a `HAND.toml` manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandScheduleSpec {
+    /// A standard 5-field cron expression (minute hour dom month dow).
+    Cron(String),
+    /// A fixed interval in seconds.
+    Interval { seconds: u64 },
+    /// Run once on activation, then stop.
+    Once,
+}
 
-/// Tracks which cron job IDs belong to which hand instances.
-///
-/// The kernel is responsible for actually inserting/removing jobs from its
-/// `CronScheduler`; this struct just keeps the mapping so jobs can be
-/// removed when a Hand is deactivated.
+/// Error type for scheduler operations.
+#[derive(Debug, thiserror::Error)]
+pub enum SchedulerError {
+    #[error("Invalid cron expression '{expr}': {reason}")]
+    InvalidCron { expr: String, reason: String },
+    #[error("Invalid interval: {0}")]
+    InvalidInterval(String),
+    #[error("Job not found: {0}")]
+    JobNotFound(Uuid),
+}
+
+/// A registered scheduler job.
+#[derive(Debug, Clone)]
+pub struct ScheduledJob {
+    pub job_id: Uuid,
+    pub hand_id: String,
+    pub spec: HandScheduleSpec,
+    pub next_run_description: String,
+}
+
+/// Bridges `HandScheduleSpec` to the kernel's cron engine.
 #[derive(Debug, Default)]
 pub struct HandScheduler {
-    /// `instance_id` → `CronJobId` for every scheduled hand instance.
-    jobs: HashMap<Uuid, CronJobId>,
+    jobs: std::sync::RwLock<HashMap<Uuid, ScheduledJob>>,
 }
 
 impl HandScheduler {
-    /// Create a new, empty hand scheduler.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Build a [`CronJob`] for a hand instance, if the manifest declares a
-    /// default schedule.
-    ///
-    /// Returns `None` when the hand has no `default_schedule` field.
-    ///
-    /// The caller (the kernel) is responsible for inserting the returned job
-    /// into its `CronScheduler`.
-    pub fn build_job(
-        &mut self,
+    pub fn validate_spec(&self, spec: &HandScheduleSpec) -> Result<(), SchedulerError> {
+        match spec {
+            HandScheduleSpec::Cron(expr) => self.validate_cron(expr),
+            HandScheduleSpec::Interval { seconds } => {
+                if *seconds == 0 {
+                    Err(SchedulerError::InvalidInterval(
+                        "Interval must be greater than 0 seconds".to_string(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            HandScheduleSpec::Once => Ok(()),
+        }
+    }
+
+    pub fn register(
+        &self,
         instance_id: Uuid,
-        agent_id: AgentId,
-        def: &HandDefinition,
-    ) -> Option<CronJob> {
-        let spec = def.default_schedule.as_ref()?;
-
-        let schedule = match spec {
-            HandScheduleSpec::Every { every_secs } => CronSchedule::Every {
-                every_secs: *every_secs,
-            },
-            HandScheduleSpec::Cron { expr, tz } => CronSchedule::Cron {
-                expr: expr.clone(),
-                tz: tz.clone(),
-            },
+        hand_id: &str,
+        spec: HandScheduleSpec,
+    ) -> Result<ScheduledJob, SchedulerError> {
+        self.validate_spec(&spec)?;
+        let next_run_description = match &spec {
+            HandScheduleSpec::Cron(expr) => format!("cron: {expr}"),
+            HandScheduleSpec::Interval { seconds } => format!("every {}s", seconds),
+            HandScheduleSpec::Once => "once (on activation)".to_string(),
         };
+        let job = ScheduledJob {
+            job_id: instance_id,
+            hand_id: hand_id.to_string(),
+            spec,
+            next_run_description,
+        };
+        self.jobs
+            .write()
+            .expect("scheduler jobs lock")
+            .insert(instance_id, job.clone());
+        Ok(job)
+    }
 
-        let job_id = CronJobId(Uuid::new_v4());
-        let now = Utc::now();
+    pub fn cancel(&self, instance_id: Uuid) -> Result<ScheduledJob, SchedulerError> {
+        self.jobs
+            .write()
+            .expect("scheduler jobs lock")
+            .remove(&instance_id)
+            .ok_or(SchedulerError::JobNotFound(instance_id))
+    }
 
-        let job = CronJob {
-            id: job_id.clone(),
-            agent_id,
-            name: format!("hand:{}", def.id),
-            enabled: true,
-            schedule,
-            action: CronAction::AgentTurn {
-                message: format!(
-                    "You are the {} Hand. This is your scheduled run. \
-                     Execute your primary task as defined in your system prompt.",
-                    def.name
+    pub fn list_jobs(&self) -> Vec<ScheduledJob> {
+        self.jobs
+            .read()
+            .expect("scheduler jobs lock")
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn job_count(&self) -> usize {
+        self.jobs.read().expect("scheduler jobs lock").len()
+    }
+
+    fn validate_cron(&self, expr: &str) -> Result<(), SchedulerError> {
+        let fields: Vec<&str> = expr.split_whitespace().collect();
+        if fields.len() != 5 {
+            return Err(SchedulerError::InvalidCron {
+                expr: expr.to_string(),
+                reason: format!(
+                    "expected 5 fields (minute hour dom month dow), got {}",
+                    fields.len()
                 ),
-                model_override: None,
-                timeout_secs: Some(300),
-            },
-            delivery: CronDelivery::None,
-            created_at: now,
-            last_run: None,
-            next_run: None,
-        };
-
-        self.jobs.insert(instance_id, job_id);
-        Some(job)
+            });
+        }
+        let limits = [(0u32, 59u32), (0, 23), (1, 31), (1, 12), (0, 7)];
+        let names = ["minute", "hour", "day-of-month", "month", "day-of-week"];
+        for (i, (field, (min, max))) in fields.iter().zip(limits.iter()).enumerate() {
+            self.validate_cron_field(field, *min, *max, names[i], expr)?;
+        }
+        Ok(())
     }
 
-    /// Remove the cron job mapping for a hand instance.
-    ///
-    /// Returns the `CronJobId` that was registered, if any, so the caller can
-    /// remove it from the kernel's `CronScheduler`.
-    pub fn remove_job(&mut self, instance_id: &Uuid) -> Option<CronJobId> {
-        self.jobs.remove(instance_id)
-    }
-
-    /// Return the `CronJobId` for a hand instance, if one was registered.
-    pub fn get_job_id(&self, instance_id: &Uuid) -> Option<&CronJobId> {
-        self.jobs.get(instance_id)
-    }
-
-    /// Return all registered (instance_id, job_id) pairs.
-    pub fn all_jobs(&self) -> impl Iterator<Item = (&Uuid, &CronJobId)> {
-        self.jobs.iter()
-    }
-
-    /// Number of scheduled hand instances.
-    pub fn len(&self) -> usize {
-        self.jobs.len()
-    }
-
-    /// Whether there are no scheduled hand instances.
-    pub fn is_empty(&self) -> bool {
-        self.jobs.is_empty()
+    fn validate_cron_field(
+        &self,
+        field: &str,
+        min: u32,
+        max: u32,
+        name: &str,
+        expr: &str,
+    ) -> Result<(), SchedulerError> {
+        if field == "*" {
+            return Ok(());
+        }
+        if let Some(step_str) = field.strip_prefix("*/") {
+            let step: u32 = step_str.parse().map_err(|_| SchedulerError::InvalidCron {
+                expr: expr.to_string(),
+                reason: format!("{name} step '{step_str}' is not a valid integer"),
+            })?;
+            if step == 0 {
+                return Err(SchedulerError::InvalidCron {
+                    expr: expr.to_string(),
+                    reason: format!("{name} step must be > 0"),
+                });
+            }
+            return Ok(());
+        }
+        if field.contains('-') {
+            let parts: Vec<&str> = field.splitn(2, '-').collect();
+            let a: u32 = parts[0].parse().map_err(|_| SchedulerError::InvalidCron {
+                expr: expr.to_string(),
+                reason: format!("{name} range start '{}' is not a valid integer", parts[0]),
+            })?;
+            let b: u32 = parts[1].parse().map_err(|_| SchedulerError::InvalidCron {
+                expr: expr.to_string(),
+                reason: format!("{name} range end '{}' is not a valid integer", parts[1]),
+            })?;
+            if a > b || a < min || b > max {
+                return Err(SchedulerError::InvalidCron {
+                    expr: expr.to_string(),
+                    reason: format!("{name} range {a}-{b} is out of bounds ({min}-{max})"),
+                });
+            }
+            return Ok(());
+        }
+        for part in field.split(',') {
+            let v: u32 = part.parse().map_err(|_| SchedulerError::InvalidCron {
+                expr: expr.to_string(),
+                reason: format!("{name} value '{part}' is not a valid integer"),
+            })?;
+            if v < min || v > max {
+                return Err(SchedulerError::InvalidCron {
+                    expr: expr.to_string(),
+                    reason: format!("{name} value {v} is out of bounds ({min}-{max})"),
+                });
+            }
+        }
+        Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        HandAgentConfig, HandCategory, HandDashboard, HandDefinition, HandScheduleSpec,
-    };
 
-    fn make_def(schedule: Option<HandScheduleSpec>) -> HandDefinition {
-        HandDefinition {
-            id: "test-hand".to_string(),
-            name: "Test Hand".to_string(),
-            description: "A hand for testing".to_string(),
-            category: HandCategory::Productivity,
-            icon: "🤖".to_string(),
-            tools: vec!["shell_exec".to_string()],
-            skills: vec![],
-            mcp_servers: vec![],
-            requires: vec![],
-            settings: vec![],
-            agent: HandAgentConfig {
-                name: "test-agent".to_string(),
-                description: "test".to_string(),
-                module: "builtin:chat".to_string(),
-                provider: "anthropic".to_string(),
-                model: "claude-sonnet-4-20250514".to_string(),
-                api_key_env: None,
-                base_url: None,
-                max_tokens: 4096,
-                temperature: 0.7,
-                system_prompt: "You are a test hand.".to_string(),
-                max_iterations: None,
-            },
-            dashboard: HandDashboard::default(),
-            skill_content: None,
-            default_schedule: schedule,
-        }
-    }
-
-    fn make_agent_id() -> AgentId {
-        AgentId(Uuid::new_v4())
+    #[test]
+    fn test_validate_valid_cron() {
+        let s = HandScheduler::new();
+        assert!(s.validate_spec(&HandScheduleSpec::Cron("0 */6 * * *".to_string())).is_ok());
+        assert!(s.validate_spec(&HandScheduleSpec::Cron("30 9 * * 1-5".to_string())).is_ok());
+        assert!(s.validate_spec(&HandScheduleSpec::Cron("*/15 * * * *".to_string())).is_ok());
     }
 
     #[test]
-    fn no_schedule_returns_none() {
-        let mut sched = HandScheduler::new();
-        let instance_id = Uuid::new_v4();
-        let def = make_def(None);
-        let job = sched.build_job(instance_id, make_agent_id(), &def);
-        assert!(job.is_none());
-        assert!(sched.is_empty());
+    fn test_validate_invalid_cron() {
+        let s = HandScheduler::new();
+        assert!(s.validate_spec(&HandScheduleSpec::Cron("not-a-cron".to_string())).is_err());
+        assert!(s.validate_spec(&HandScheduleSpec::Cron("0 25 * * *".to_string())).is_err());
+        assert!(s.validate_spec(&HandScheduleSpec::Cron("0 * *".to_string())).is_err());
     }
 
     #[test]
-    fn every_schedule_builds_job() {
-        let mut sched = HandScheduler::new();
-        let instance_id = Uuid::new_v4();
-        let def = make_def(Some(HandScheduleSpec::Every { every_secs: 3600 }));
-        let job = sched.build_job(instance_id, make_agent_id(), &def).unwrap();
-
-        assert_eq!(job.name, "hand:test-hand");
-        assert!(job.enabled);
-        assert_eq!(sched.len(), 1);
-
-        match &job.schedule {
-            CronSchedule::Every { every_secs } => assert_eq!(*every_secs, 3600),
-            other => panic!("Expected Every schedule, got {other:?}"),
-        }
+    fn test_validate_interval() {
+        let s = HandScheduler::new();
+        assert!(s.validate_spec(&HandScheduleSpec::Interval { seconds: 3600 }).is_ok());
+        assert!(s.validate_spec(&HandScheduleSpec::Interval { seconds: 0 }).is_err());
     }
 
     #[test]
-    fn cron_schedule_builds_job() {
-        let mut sched = HandScheduler::new();
-        let instance_id = Uuid::new_v4();
-        let def = make_def(Some(HandScheduleSpec::Cron {
-            expr: "0 9 * * 1-5".to_string(),
-            tz: Some("America/New_York".to_string()),
-        }));
-        let job = sched.build_job(instance_id, make_agent_id(), &def).unwrap();
-
-        match &job.schedule {
-            CronSchedule::Cron { expr, tz } => {
-                assert_eq!(expr, "0 9 * * 1-5");
-                assert_eq!(tz.as_deref(), Some("America/New_York"));
-            }
-            other => panic!("Expected Cron schedule, got {other:?}"),
-        }
+    fn test_register_and_cancel_job() {
+        let s = HandScheduler::new();
+        let id = Uuid::new_v4();
+        let job = s
+            .register(id, "researcher", HandScheduleSpec::Interval { seconds: 3600 })
+            .expect("register");
+        assert_eq!(job.job_id, id);
+        assert_eq!(s.job_count(), 1);
+        s.cancel(id).expect("cancel");
+        assert_eq!(s.job_count(), 0);
     }
 
     #[test]
-    fn remove_job_returns_id() {
-        let mut sched = HandScheduler::new();
-        let instance_id = Uuid::new_v4();
-        let def = make_def(Some(HandScheduleSpec::Every { every_secs: 300 }));
-        let job = sched.build_job(instance_id, make_agent_id(), &def).unwrap();
-        let job_id = job.id.clone();
-
-        let removed = sched.remove_job(&instance_id).unwrap();
-        assert_eq!(removed.0, job_id.0);
-        assert!(sched.is_empty());
+    fn test_cancel_nonexistent_job_returns_error() {
+        let s = HandScheduler::new();
+        let result = s.cancel(Uuid::new_v4());
+        assert!(result.is_err());
     }
 
     #[test]
-    fn remove_nonexistent_returns_none() {
-        let mut sched = HandScheduler::new();
-        let result = sched.remove_job(&Uuid::new_v4());
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn multiple_instances_tracked_independently() {
-        let mut sched = HandScheduler::new();
-        let def = make_def(Some(HandScheduleSpec::Every { every_secs: 600 }));
-
+    fn test_list_jobs() {
+        let s = HandScheduler::new();
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
-        sched.build_job(id1, make_agent_id(), &def);
-        sched.build_job(id2, make_agent_id(), &def);
-
-        assert_eq!(sched.len(), 2);
-        assert!(sched.get_job_id(&id1).is_some());
-        assert!(sched.get_job_id(&id2).is_some());
-
-        sched.remove_job(&id1);
-        assert_eq!(sched.len(), 1);
-        assert!(sched.get_job_id(&id1).is_none());
-        assert!(sched.get_job_id(&id2).is_some());
+        s.register(id1, "clip", HandScheduleSpec::Once).expect("register clip");
+        s.register(id2, "lead", HandScheduleSpec::Cron("0 9 * * 1-5".to_string()))
+            .expect("register lead");
+        let jobs = s.list_jobs();
+        assert_eq!(jobs.len(), 2);
     }
 }

@@ -9,16 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.31] - 2026-03-09
 
-### Added
-
-#### Phase 9 — Hand System & FangHub — `openfang-hands`, `openfang-skills`
-
-**`HandScheduler` (`openfang-hands/src/scheduler.rs`):** A new module that bridges the `HandScheduleSpec` declared in a `HAND.toml` manifest to the kernel's existing `CronScheduler`. When a Hand is activated, the kernel can call `HandScheduler::build_job()` to produce a `CronJob` pre-configured with the Hand's default schedule. The scheduler tracks the mapping from `instance_id` to `CronJobId` so that jobs can be removed when a Hand is deactivated. The `HandScheduleSpec` enum supports both `Every { every_secs }` (interval) and `Cron { expr, tz }` (5-field cron expression) schedules. The `HandDefinition` struct has been extended with an optional `default_schedule: Option<HandScheduleSpec>` field that is parsed from the manifest's `[schedule]` section.
-
-**`FangHubClient` (`openfang-skills/src/fanghub.rs`):** A new, complete HTTP client for the FangHub Hand marketplace. The client supports `search(query)` (GitHub repository search within the `openfang-hands` org), `latest_release(hand_id)` and `get_release(hand_id, version)` (GitHub Releases API), `install(hand_id, version, install_dir)` (downloads `hand.zip` asset and extracts to `install_dir/<hand_id>/`), `update(hand_id, install_dir)` (removes and reinstalls from latest), `uninstall(hand_id, install_dir)` (removes the directory), and `list_installed(install_dir)` (scans for directories containing `HAND.toml`). The client is configurable via `FangHubConfig` (API base URL, GitHub org, optional auth token) and uses `reqwest` for async HTTP. Version tag normalization strips the leading `v` from GitHub release tags.
-
-**New tests (16):** `HandScheduler` — `no_schedule_returns_none`, `every_schedule_builds_job`, `cron_schedule_builds_job`, `remove_job_returns_id`, `remove_nonexistent_returns_none`, `multiple_instances_tracked_independently`. `FangHubClient` — `client_creates_with_default_config`, `client_creates_with_custom_config`, `list_installed_empty_dir`, `list_installed_finds_hand_dirs`, `list_installed_nonexistent_dir`, `uninstall_removes_directory`, `uninstall_not_installed_returns_error`, `parse_release_missing_asset_returns_error`, `parse_release_with_asset_succeeds`, `version_tag_normalization`.
-
 ### Changed
 
 - **Migrated `maestro-pai` from SQLite to SurrealDB v3.** The `LearningStore` in `maestro-pai/src/hooks.rs` has been completely rewritten to use async SurrealDB v3 queries instead of `rusqlite`. This aligns the PAI learning system with the workspace-wide persistence strategy and eliminates the last remaining SQLite dependency.
@@ -113,8 +103,7 @@ The `validate_criteria()` function has been significantly enhanced with whole-wo
 
 The initial public release of OpenFang. A 15-crate Rust workspace implementing a full Agent Operating System, including agent lifecycle management, a SQLite-backed memory substrate, 41 built-in tools, a WASM sandbox with dual metering, a workflow engine, 40 channel adapters, 3 native LLM drivers supporting 27 providers, a Tauri 2.0 desktop app, and 7 autonomous Hands packages. 1,731+ tests across 15 crates.
 
-[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.31...HEAD
-[0.3.31]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.31
+[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.30...HEAD
 [0.3.30]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.30
 [0.3.29]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.29
 [0.3.28]: https://github.com/ParadiseAI/maestro-legacy/releases/tag/v0.3.28

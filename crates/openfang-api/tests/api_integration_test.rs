@@ -65,7 +65,7 @@ async fn start_test_server_with_provider(
         ..KernelConfig::default()
     };
 
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OpenFangKernel::boot_with_config(config).await.expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
@@ -693,7 +693,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         ..KernelConfig::default()
     };
 
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OpenFangKernel::boot_with_config(config).await.expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 

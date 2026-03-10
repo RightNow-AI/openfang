@@ -27,6 +27,7 @@ members = [
     "crates/maestro-sdk",
     "crates/maestro-cache",
     "crates/maestro-falkor-analytics",
+    "crates/maestro-integration-tests",
 ]
 
 [workspace.package]

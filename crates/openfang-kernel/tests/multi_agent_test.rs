@@ -35,7 +35,7 @@ async fn test_six_agent_fleet() {
         return;
     }
 
-    let kernel = OpenFangKernel::boot_with_config(test_config()).expect("Kernel should boot");
+    let kernel = OpenFangKernel::boot_with_config(test_config()).await.expect("Kernel should boot");
 
     // Define all 6 agents with different roles and models
     let agents = vec![

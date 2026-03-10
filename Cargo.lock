@@ -4440,6 +4440,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "maestro-integration-tests"
+version = "0.3.30"
+dependencies = [
+ "chrono",
+ "maestro-algorithm",
+ "maestro-eval",
+ "maestro-guardrails",
+ "maestro-observability",
+ "openfang-hands",
+ "openfang-kernel",
+ "openfang-memory",
+ "openfang-skills",
+ "openfang-types",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "maestro-knowledge"
 version = "0.3.30"
 dependencies = [
@@ -5563,6 +5585,8 @@ dependencies = [
  "maestro-algorithm",
  "maestro-cache",
  "maestro-falkor-analytics",
+ "maestro-guardrails",
+ "maestro-observability",
  "openfang-channels",
  "openfang-extensions",
  "openfang-hands",

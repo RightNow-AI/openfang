@@ -157,6 +157,12 @@ pub struct OpenFangKernel {
     pub analytics: Option<Arc<maestro_falkor_analytics::FalkorAnalytics>>,
     /// MAESTRO supervisor engine for multi-agent orchestration.
     pub supervisor_engine: Option<Arc<crate::supervisor_engine::SupervisorEngine>>,
+    /// Guardrails pipeline — PII scanning, prompt injection detection, topic control.
+    /// None when guardrails are disabled in config (default: enabled with standard scanners).
+    pub guardrails: Option<Arc<maestro_guardrails::GuardrailsPipeline>>,
+    /// Observability trace store — records per-request traces, token usage, and cost.
+    /// None when observability is disabled in config (default: enabled, in-memory).
+    pub trace_store: Option<Arc<maestro_observability::traces::TraceStore>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
 }
@@ -984,6 +990,25 @@ impl OpenFangKernel {
             default_model_override: std::sync::RwLock::new(None),
             analytics,
             supervisor_engine: None, // Initialized post-boot when self_handle is available
+            guardrails: Some(Arc::new({
+                use maestro_guardrails::{GuardrailsPipeline, GuardrailsConfig, GuardrailAction};
+                use maestro_guardrails::scanners::{
+                    pii::PiiScanner,
+                    prompt_injection::PromptInjectionScanner,
+                    topic_control::TopicControlScanner,
+                };
+                let cfg = GuardrailsConfig {
+                    enabled: true,
+                    scanners: std::collections::HashMap::new(),
+                    default_action: GuardrailAction::Redact,
+                };
+                let mut pipeline = GuardrailsPipeline::new(cfg);
+                pipeline.add_scanner(Box::new(PiiScanner::default()));
+                pipeline.add_scanner(Box::new(PromptInjectionScanner::default()));
+                pipeline.add_scanner(Box::new(TopicControlScanner::default()));
+                pipeline
+            })),
+            trace_store: Some(Arc::new(maestro_observability::traces::TraceStore::new())),
             self_handle: OnceLock::new(),
         };
 
@@ -2257,6 +2282,31 @@ impl OpenFangKernel {
             message.to_string()
         };
 
+        // --- GUARDRAILS: scan inbound message before it reaches the LLM ---
+        let message_with_links = if let Some(ref guardrails) = self.guardrails {
+            let (scanned, scan_results) = guardrails
+                .scan(&message_with_links, maestro_guardrails::ScanDirection::Input)
+                .await;
+            let blocked = scan_results
+                .iter()
+                .any(|r| matches!(r.action, maestro_guardrails::GuardrailAction::Block));
+            if blocked {
+                warn!(
+                    agent_id = %agent_id,
+                    "Guardrails blocked inbound message"
+                );
+                return Err(KernelError::OpenFang(OpenFangError::InvalidInput(
+                    "Message blocked by guardrails policy".to_string(),
+                )));
+            }
+            scanned
+        } else {
+            message_with_links
+        };
+
+        // --- OBSERVABILITY: start trace span ---
+        let trace_start = std::time::Instant::now();
+
         let result = run_agent_loop(
             &manifest,
             &message_with_links,
@@ -2287,8 +2337,37 @@ impl OpenFangKernel {
             ctx_window,
             Some(&self.process_manager),
         )
-        .await
+         .await
         .map_err(KernelError::OpenFang)?;
+
+        // --- OBSERVABILITY: record completed trace ---
+        if let Some(ref trace_store) = self.trace_store {
+            let latency_ms = trace_start.elapsed().as_millis() as u64;
+            let obs_cost = MeteringEngine::estimate_cost_with_catalog(
+                &self.model_catalog.read().unwrap_or_else(|e| e.into_inner()),
+                &manifest.model.model,
+                result.total_usage.input_tokens,
+                result.total_usage.output_tokens,
+            );
+            let trace = maestro_observability::Trace {
+                trace_id: uuid::Uuid::new_v4(),
+                parent_trace_id: None,
+                session_id: entry.session_id.0,
+                agent_id: agent_id.to_string(),
+                model_used: manifest.model.model.clone(),
+                input_tokens: result.total_usage.input_tokens,
+                output_tokens: result.total_usage.output_tokens,
+                latency_ms,
+                cost_usd: obs_cost,
+                status: maestro_observability::TraceStatus::Success,
+                metadata: serde_json::json!({
+                    "iterations": result.iterations,
+                }),
+                started_at: chrono::Utc::now() - chrono::Duration::milliseconds(latency_ms as i64),
+                completed_at: chrono::Utc::now(),
+            };
+            trace_store.record(trace).await;
+        }
 
         // Append new messages to canonical session for cross-channel memory
         if session.messages.len() > messages_before {

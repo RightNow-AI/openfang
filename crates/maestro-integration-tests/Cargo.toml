@@ -1,0 +1,50 @@
+[package]
+name = "maestro-integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-crate integration tests for the OpenFang Agent OS"
+# This crate is test-only — no library target, only integration test binaries.
+publish = false
+
+[dev-dependencies]
+openfang-types = { path = "../openfang-types" }
+openfang-memory = { path = "../openfang-memory" }
+openfang-kernel = { path = "../openfang-kernel" }
+openfang-hands = { path = "../openfang-hands" }
+openfang-skills = { path = "../openfang-skills" }
+maestro-guardrails = { path = "../maestro-guardrails" }
+maestro-observability = { path = "../maestro-observability" }
+maestro-eval = { path = "../maestro-eval" }
+maestro-algorithm = { path = "../maestro-algorithm" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[test]]
+name = "kernel_boot"
+path = "tests/kernel_boot.rs"
+
+[[test]]
+name = "guardrails_pipeline"
+path = "tests/guardrails_pipeline.rs"
+
+[[test]]
+name = "observability_traces"
+path = "tests/observability_traces.rs"
+
+[[test]]
+name = "hand_lifecycle"
+path = "tests/hand_lifecycle.rs"
+
+[[test]]
+name = "eval_suite"
+path = "tests/eval_suite.rs"
+
+[[test]]
+name = "algorithm_maestro"
+path = "tests/algorithm_maestro.rs"

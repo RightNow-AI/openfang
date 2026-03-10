@@ -64,7 +64,7 @@ memory_write = ["self.*"]
 #[tokio::test]
 async fn test_workflow_register_and_resolve() {
     let config = test_config("ollama", "test-model", "OLLAMA_API_KEY");
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OpenFangKernel::boot_with_config(config).await.expect("Kernel should boot");
     let kernel = Arc::new(kernel);
 
     // Spawn agents
@@ -175,7 +175,7 @@ memory_write = ["self.*"]
 #[tokio::test]
 async fn test_workflow_agent_by_id() {
     let config = test_config("ollama", "test-model", "OLLAMA_API_KEY");
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OpenFangKernel::boot_with_config(config).await.expect("Kernel should boot");
 
     let manifest: AgentManifest = toml::from_str(
         r#"
@@ -234,7 +234,7 @@ async fn test_trigger_registration_with_kernel() {
     use openfang_kernel::triggers::TriggerPattern;
 
     let config = test_config("ollama", "test-model", "OLLAMA_API_KEY");
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OpenFangKernel::boot_with_config(config).await.expect("Kernel should boot");
 
     let manifest: AgentManifest = toml::from_str(
         r#"
@@ -309,7 +309,7 @@ async fn test_workflow_e2e_with_groq() {
     }
 
     let config = test_config("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY");
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OpenFangKernel::boot_with_config(config).await.expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
