@@ -91,3 +91,61 @@ impl Evaluator for MockEvaluator {
         })
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestReport {
+    pub suite_id: Uuid,
+    pub suite_name: String,
+    pub results: Vec<TestResult>,
+    pub total_tests: usize,
+    pub passed_tests: usize,
+    pub failed_tests: usize,
+    pub pass_rate: f64,
+    pub average_score: f64,
+    pub run_at: DateTime<Utc>,
+}
+
+pub struct TestSuiteRunner<E: Evaluator> {
+    evaluator: E,
+}
+
+impl<E: Evaluator> TestSuiteRunner<E> {
+    pub fn new(evaluator: E) -> Self {
+        Self { evaluator }
+    }
+
+    pub async fn run_suite(&self, suite: &TestSuite) -> TestReport {
+        let mut results = Vec::new();
+        for test_case in &suite.test_cases {
+            if let Ok(result) = self.evaluator.evaluate(test_case).await {
+                results.push(result);
+            }
+        }
+
+        let total_tests = results.len();
+        let passed_tests = results.iter().filter(|r| r.passed).count();
+        let failed_tests = total_tests - passed_tests;
+        let pass_rate = if total_tests > 0 {
+            (passed_tests as f64 / total_tests as f64) * 100.0
+        } else {
+            0.0
+        };
+        let average_score = if total_tests > 0 {
+            results.iter().map(|r| r.score).sum::<f64>() / total_tests as f64
+        } else {
+            0.0
+        };
+
+        TestReport {
+            suite_id: suite.id,
+            suite_name: suite.name.clone(),
+            results,
+            total_tests,
+            passed_tests,
+            failed_tests,
+            pass_rate,
+            average_score,
+            run_at: Utc::now(),
+        }
+    }
+}
