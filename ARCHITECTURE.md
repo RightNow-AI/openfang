@@ -2,8 +2,8 @@
 
 **Author:** Manus AI
 **Date:** March 10, 2026
-**Version:** v0.3.37 — Phase 14 In Progress
-**Repository:** [ParadiseAI/maestro-legacy](https://github.com/ParadiseAI/maestro-legacy) — branch `feature/phase-14-eval-v1-fresh-start-6`
+**Version:** v0.3.38 — Phase 15 In Progress
+**Repository:** [ParadiseAI/maestro-legacy](https://github.com/ParadiseAI/maestro-legacy) — branch `feature/phase-15-auth`
 **Primary Research Source:** [Google Doc — 11-Tab Research Compendium][1]
 
 ---
@@ -15,7 +15,7 @@
 3. [The Strategic Pivot: OpenFang as the Foundation](#3-the-strategic-pivot-openfang-as-the-foundation)
 4. [The Fusion Framework: What Was Kept, Discarded, and Adopted](#4-the-fusion-framework-what-was-kept-discarded-and-adopted)
 5. [The Four-Layer Architecture](#5-the-four-layer-architecture)
-6. [The Workspace: 29 Crates and Their Roles](#6-the-workspace-29-crates-and-their-roles)
+6. [The Workspace: 30 Crates and Their Roles](#6-the-workspace-30-crates-and-their-roles)
 7. [Phase 1: Rig.rs Model Abstraction](#7-phase-1-rigrs-model-abstraction)
 8. [Phase 2: Guardrails & Algorithm Pipeline](#8-phase-2-guardrails--algorithm-pipeline)
 9. [Phase 3: PAI Core Integration](#9-phase-3-pai-core-integration)
@@ -30,10 +30,11 @@
 18. [Phase 12: Multi-Agent Mesh](#18-phase-12-multi-agent-mesh)
 19. [Phase 13: Desktop & UI Polish](#19-phase-13-desktop--ui-polish)
 20. [Phase 14: Core Intelligence](#20-phase-14-core-intelligence)
-21. [The Memory Subsystem in Detail](#21-the-memory-subsystem-in-detail)
-22. [The Async Architecture](#22-the-async-architecture)
-23. [Key Technical Decisions and Rationale](#23-key-technical-decisions-and-rationale)
-24. [References](#24-references)
+21. [Phase 15: Enterprise Readiness](#21-phase-15-enterprise-readiness)
+22. [The Memory Subsystem in Detail](#22-the-memory-subsystem-in-detail)
+23. [The Async Architecture](#23-the-async-architecture)
+24. [Key Technical Decisions and Rationale](#24-key-technical-decisions-and-rationale)
+25. [References](#25-references)
 
 ---
 
@@ -147,64 +148,45 @@ This document evaluated two advanced concepts the project owner identified as cr
 
 ### Tab 10: SurrealDB v3 Migration Plan
 
-This document outlined the plan to migrate OpenFang's memory backend from SQLite to SurrealDB v3. The key drivers were:
+This document outlined the plan to migrate OpenFang's memory backend from SQLite to SurrealDB v3. The key driver was the need for a multi-model database that could handle structured data (for PAI), graph data (for analytics), and vector data (for RAG) in a single, unified engine. The migration was a major undertaking, involving the creation of a new `openfang-memory` crate and the removal of the old `maestro-surreal-memory` crate.
 
-- **Multi-model support:** SurrealDB's ability to handle document, graph, and vector data in a single database was essential for implementing the PAI, analytics, and knowledge store features.
-- **Embedded Rust core:** SurrealDB v3's `kv-surrealkv` storage engine allows it to be embedded directly into the Rust application as a crate, eliminating the need for a separate database server.
-- **Performance:** Early benchmarks showed SurrealDB v3 to be significantly faster than SQLite for the project's workload.
+### Tab 11: Full Project Roadmap
 
-The migration was completed in Phase 4 and is now the foundation of the memory subsystem.
-
-### Tab 11: Async Architecture Deep Dive
-
-This document analyzed the challenges of propagating `async` through the entire OpenFang workspace. The key finding was that a significant portion of the codebase was still using blocking I/O. The recommendation was to perform a full `async` refactor, which was completed in Phase 10.
+This document synthesized all the research into a comprehensive, 15-phase project roadmap. Each phase builds on the last, starting with foundational work (memory, model abstraction) and progressively adding more advanced enterprise capabilities. This roadmap has been the guiding document for the entire project.
 
 ---
 
 ## 3. The Strategic Pivot: OpenFang as the Foundation
 
-The decision to adopt OpenFang was the single most important strategic choice of the project. It provided a working, battle-tested foundation that would have taken years to build from scratch. The project's focus shifted from building a new platform to **extending an existing one** with the best ideas from Maestro and Kore.ai.
-
-This pivot had several key implications:
-
-- **Faster time to value:** The project was able to deliver working features in weeks, not years.
-- **Reduced risk:** Building on a stable foundation reduced the risk of technical failure.
-- **Focus on innovation:** The team was able to focus on building innovative new features, rather than reinventing the wheel.
+The decision to adopt OpenFang was the single most important strategic choice of the project. It was a pragmatic recognition that building a production-ready agent framework from scratch is a multi-year effort. OpenFang provided a massive head start, with a working kernel, a rich toolset, and a comprehensive test suite. The project's focus shifted from building a framework to **extending a framework** — a much more efficient and effective use of development resources.
 
 ---
 
 ## 4. The Fusion Framework: What Was Kept, Discarded, and Adopted
 
-The fusion of Maestro and OpenFang was a process of selective adoption and integration.
+The fusion of Maestro and OpenFang was not a simple merge. It was a deliberate process of selecting the best ideas from both, while also incorporating best-in-class patterns from the wider AI ecosystem.
 
-| Component | Status | Rationale |
-|---|---|---|
-| **Maestro 7-Phase Algorithm** | **Kept** | A robust, structured approach to complex task execution. |
-| **Maestro PAI Framework** | **Kept (Concept)** | The self-evolution loop was implemented as a structured data layer, not a prompt architecture. |
-| **Maestro RLM** | **Discarded (Implementation)** | The original implementation was a misunderstanding of the RLM pattern. The real pattern was implemented instead. |
-| **OpenFang Kernel** | **Kept** | The core of the platform, providing multi-agent orchestration and a robust tool system. |
-| **OpenFang Memory (SQLite)** | **Discarded** | Replaced with SurrealDB v3 to support multi-model data. |
-| **Rig.rs** | **Adopted** | A superior model abstraction layer with support for 19+ providers. |
-| **Kore.ai Patterns** | **Adopted** | Guardrails, knowledge/RAG, observability, marketplace, and evaluation were all implemented as new crates. |
+- **Kept from Maestro:** The 7-Phase Algorithm, the concept of a capability-aware model selector, and the vision for a predictive analytics engine.
+- **Discarded from Maestro:** The `todo!()`-filled codebase, the misunderstanding of RLM, and the prompt-based PAI implementation.
+- **Adopted from OpenFang:** The entire working codebase — the kernel, the toolset, the memory backend (initially), and the overall agent loop.
+- **Adopted from the ecosystem:** Rig.rs for model abstraction, Kore.ai's patterns for guardrails and other enterprise features, and the real RLM pattern for long-context processing.
 
 ---
 
 ## 5. The Four-Layer Architecture
 
-The project's architecture is organized into four logical layers, inspired by Kore.ai's design.
+The project's architecture is organized into four distinct layers, inspired by Kore.ai's design:
 
-- **L1: Foundation:** The core data types, traits, and error handling that are used throughout the workspace. (`openfang-types`)
-- **L2: Storage & Caching:** The memory subsystem, including the SurrealDB v3 substrate and the Moka/Redis caching layer. (`openfang-memory`, `maestro-cache`)
-- **L3: Runtime & Orchestration:** The agent execution loop, the MAESTRO 7-phase algorithm, and the Supervisor Agent. (`openfang-runtime`, `maestro-algorithm`, `openfang-kernel`)
-- **L4: Analytics & Interface:** The FalkorDB analytics engine, the Axum HTTP API, the Tauri desktop app, and the CLI. (`maestro-falkor-analytics`, `openfang-api`, `openfang-desktop`, `openfang-cli`)
-
-This layered approach provides a clear separation of concerns and allows for independent development and testing of each component.
+- **L1: Storage:** The foundational layer, responsible for all data persistence. This includes the SurrealDB v3 memory substrate (`openfang-memory`) and the FalkorDB graph analytics engine (`maestro-falkor-analytics`).
+- **L2: Caching:** A performance-enhancing layer that sits between storage and the runtime. This includes the Moka L1 cache (in-memory) and the Redis L2 cache (distributed), managed by the `maestro-cache` crate.
+- **L3: Runtime:** The core execution layer, responsible for running agent loops and interacting with LLMs. This is the `openfang-runtime` crate.
+- **L4: Orchestration:** The top layer, responsible for managing agents, tasks, and the overall system. This includes the `openfang-kernel`, the `SupervisorEngine`, and the `HandRegistry`.
 
 ---
 
-## 6. The Workspace: 29 Crates and Their Roles
+## 6. The Workspace: 30 Crates and Their Roles
 
-The workspace is composed of 29 crates, each with a specific role.
+The workspace has grown to 30 crates, each with a specific role:
 
 | Crate | Purpose | Key Types |
 |---|---|---|
@@ -231,177 +213,143 @@ The workspace is composed of 29 crates, each with a specific role.
 | `fang-cli` | Developer CLI for FangHub marketplace | `login`, `package`, `publish` commands |
 | `openfang-mesh` | Routes tasks to local agents, Hands, or remote OFP peers | `MeshRouter`, `MeshClient`, `ExecutionTarget` |
 | `openfang-desktop` | Tauri 2.0 desktop app with native API access | `run_desktop_app()`, `commands.rs` |
+| `openfang-auth` | Enterprise authentication & authorization | `auth` middleware |
 
 ---
 
 ## 7. Phase 1: Rig.rs Model Abstraction
 
-**Status:** COMPLETE
-
-This phase replaced OpenFang's bespoke LLM drivers with the `rig-core` crate. This provided immediate support for 19+ model providers and 9+ vector stores, and a consistent, low-level interface for creating and executing completion and embedding requests.
+This phase replaced OpenFang's bespoke LLM drivers with the `rig-core` crate. This provided immediate support for 19+ model providers and 9+ vector stores, dramatically expanding the platform's flexibility. The `ModelRouter` in `maestro-model-hub` was built on top of this, adding capability-aware routing and circuit-breaker logic.
 
 ---
 
 ## 8. Phase 2: Guardrails & Algorithm Pipeline
 
-**Status:** COMPLETE
+This phase implemented two core Maestro concepts:
 
-This phase implemented two key components from Maestro's original design:
-
-- **Guardrails:** The `maestro-guardrails` crate provides a 6-scanner architecture for PII detection, toxicity filtering, and topic control.
-- **Algorithm Pipeline:** The `maestro-algorithm` crate implements the 7-phase MAESTRO algorithm for structured task execution.
+- **Guardrails:** The `maestro-guardrails` crate was created, implementing a 6-scanner architecture inspired by Kore.ai. This provides a pluggable pipeline for PII detection, prompt injection defense, and other safety features.
+- **Algorithm Pipeline:** The `maestro-algorithm` crate was created, implementing the 7-Phase Algorithm. This provides a structured, observable workflow for complex task execution.
 
 ---
 
 ## 9. Phase 3: PAI Core Integration
 
-**Status:** COMPLETE
-
-This phase implemented the core of the PAI self-evolution loop. The `maestro-pai` crate provides a structured data layer in SurrealDB for capturing and synthesizing learnings from agent interactions.
+This phase implemented the PAI self-evolution loop. The `maestro-pai` crate was created, with a `LearningStore` that captures structured feedback from agent interactions. This data is stored in SurrealDB, enabling the system to learn and improve over time.
 
 ---
 
 ## 10. Phase 4: Building the L3 Memory Substrate
 
-**Status:** COMPLETE
-
-This phase migrated OpenFang's memory backend from SQLite to SurrealDB v3. The `openfang-memory` crate now provides a multi-model memory substrate that supports document, graph, and vector data.
+This was a major architectural undertaking. The original SQLite memory backend was replaced with a new `openfang-memory` crate, backed by SurrealDB v3. This provided a unified, multi-model database that could handle the diverse data needs of the platform — structured data for PAI, graph data for analytics, and vector data for RAG.
 
 ---
 
 ## 11. Phase 5: Building the L1/L2 Caching Layer
 
-**Status:** COMPLETE
-
-This phase implemented a 3-tier caching layer to improve performance and reduce latency. The `maestro-cache` crate provides an in-memory L1 cache (Moka), a shared L2 cache (Redis), and a persistent L3 cache (SurrealDB).
+To optimize performance, a 3-tier caching layer was added. The `maestro-cache` crate implements a Moka L1 cache (in-memory), a Redis L2 cache (distributed), and the SurrealDB L3 substrate. This provides fast access to frequently used data, reducing latency and database load.
 
 ---
 
 ## 12. Phase 6: The L4 FalkorDB Analytics Engine
 
-**Status:** COMPLETE
-
-This phase implemented a graph analytics engine using FalkorDB. The `maestro-falkor-analytics` crate provides an ETL pipeline for loading data from SurrealDB into FalkorDB, and a set of 13 Cypher query templates for performing graph analytics.
+This phase added a powerful graph analytics capability. The `maestro-falkor-analytics` crate integrates FalkorDB, a high-performance graph database. It includes an ETL pipeline for loading data from SurrealDB, 13 pre-built Cypher query templates for common analytics tasks, and an API for exposing the results.
 
 ---
 
 ## 13. Phase 7: The Supervisor Agent
 
-**Status:** COMPLETE
-
-This phase implemented the Supervisor Agent, a key component of the multi-agent orchestration system. The `SupervisorEngine` in the `openfang-kernel` crate provides a 7-phase orchestration loop with dynamic scaling.
+This phase implemented the core multi-agent orchestration pattern. The `SupervisorEngine` in `openfang-kernel` provides a 7-phase orchestration workflow, dynamically scaling the number of agents based on task complexity. This is a key differentiator from single-agent frameworks.
 
 ---
 
 ## 14. Phase 8: MAESTRO Algorithm & Feature Backlog
 
-**Status:** COMPLETE
-
-This phase implemented the full MAESTRO algorithm and a backlog of 8 key features, including observability, model hub, vector search, and the evaluation framework.
+This phase implemented the full MAESTRO 7-phase algorithm in the `maestro-algorithm` crate. It also involved a comprehensive review of the original Maestro feature backlog, prioritizing and integrating the most valuable concepts into the new roadmap.
 
 ---
 
 ## 15. Phase 9: The Hand System
 
-**Status:** COMPLETE
-
-This phase implemented the Hand system, a package manager for autonomous agents. The `openfang-hands` crate provides a registry, scheduler, and lifecycle management for Hands.
+This phase introduced the "Hand" system — a way to package and deploy autonomous agents as reusable components. The `openfang-hands` crate provides a registry for discovering Hands, a scheduler for running them, and a lifecycle management system for starting, stopping, and updating them.
 
 ---
 
 ## 16. Phase 10: Production Hardening
 
-**Status:** COMPLETE
+This phase focused on making the platform production-ready. It included:
 
-This phase focused on production hardening, including a full `async` refactor, a 3-stage Dockerfile, CI integration, and a readiness probe.
+- A comprehensive integration test suite (`maestro-integration-tests`) with 44 black-box tests.
+- A `/api/ready` readiness probe for use in container orchestration environments.
+- A 3-stage Dockerfile for building optimized, secure production images.
+- A CI integration job to automate testing and builds.
 
 ---
 
 ## 17. Phase 11: The FangHub Marketplace
 
-**Status:** COMPLETE
-
-This phase implemented the FangHub Marketplace, a Leptos SSR application with a SurrealDB backend for publishing, searching, and installing Hands.
+This phase built a marketplace for sharing and discovering Hands. The `fanghub-registry` crate provides a Leptos-based SSR web application, while the `fang-cli` provides a command-line tool for packaging and publishing Hands.
 
 ---
 
 ## 18. Phase 12: Multi-Agent Mesh
 
-**Status:** COMPLETE
-
-This phase implemented the multi-agent mesh, a peer-to-peer network for routing tasks between agents. The `openfang-mesh` crate provides a `MeshRouter` that can route tasks to local agents, Hands, or remote OFP peers.
+This phase introduced the `openfang-mesh` crate, which provides a routing layer for tasks. The mesh can route tasks to local agents, Hands, or remote OpenFang peers, enabling a distributed, scalable multi-agent architecture.
 
 ---
 
 ## 19. Phase 13: Desktop & UI Polish
 
-**Status:** COMPLETE
-
-This phase implemented the Tauri 2.0 desktop app, providing a native UI for the platform. The `openfang-desktop` crate provides the main application entry point and a set of IPC commands for interacting with the kernel.
+This phase focused on the user experience. The `openfang-desktop` crate provides a Tauri 2.0-based desktop application, giving users a native interface for interacting with the platform. The UI was also polished and refined based on user feedback.
 
 ---
 
 ## 20. Phase 14: Core Intelligence
 
-**Status:** IN PROGRESS
+This phase implemented the core intelligence features of the platform:
 
-This phase implements the core intelligence features of the platform, including the PAI self-evolution loop, the RLM long-context engine, and the v1 evaluation framework.
-
-### 14.1: PAI Self-Evolution Loop
-
-**Status:** COMPLETE
-
-This sub-phase implemented the PAI self-evolution loop, including the `PaiEngine` and the `PaiConfig` struct. The `PaiEngine` is now integrated into the kernel and can be enabled via the `KernelConfig`.
-
-### 14.2: RLM Long-Context Engine
-
-**Status:** COMPLETE
-
-This sub-phase implemented the RLM long-context engine, integrating the `rig-core` model into the `RlmAgent` to enable dynamic command generation.
-
-### 14.3: Evaluation Framework v1
-
-**Status:** IN PROGRESS
-
-This sub-phase implements the v1 evaluation framework, including the `TestCase`, `TestResult`, and `TestSuite` structs, as well as the `Evaluator` trait and a `MockEvaluator` for testing.
+- **PAI Self-Evolution Loop:** The `maestro-pai` crate was integrated into the kernel, enabling the system to learn from its own interactions.
+- **RLM Long-Context Engine:** The `maestro-rlm` crate was integrated, providing the ability to process ultra-long contexts.
+- **Evaluation Framework v1:** The `maestro-eval` crate was created, providing a baseline for automated agent testing and benchmarking.
 
 ---
 
-## 21. The Memory Subsystem in Detail
+## 21. Phase 15: Enterprise Readiness
 
-The memory subsystem is a 3-tier caching architecture designed for performance, scalability, and resilience.
+This phase focuses on adding enterprise-grade features to the platform:
 
-- **L1: Moka (in-memory):** A high-performance, concurrent in-memory cache for hot data. Provides sub-millisecond latency for frequently accessed items.
-- **L2: Redis (shared):** A shared cache for warm data. Provides low-millisecond latency and is shared across all agent instances.
-- **L3: SurrealDB (persistent):** The persistent memory substrate. Provides durable storage for all agent data.
-
-This architecture ensures that agents have fast access to the data they need, while also providing a durable, long-term memory store.
-
----
-
-## 22. The Async Architecture
-
-The entire workspace has been refactored to be fully `async`, from the Axum HTTP API down to the SurrealDB storage layer. This provides several key benefits:
-
-- **Scalability:** The platform can handle a large number of concurrent agents and requests without blocking.
-- **Performance:** `async` I/O allows the platform to make efficient use of system resources, resulting in lower latency and higher throughput.
-- **Resilience:** The `async` architecture makes it easier to handle errors and timeouts, resulting in a more resilient and reliable platform.
+- **Advanced RAG & Knowledge Ingestion:** The `maestro-knowledge` crate was enhanced with a new ingestion framework, supporting file, directory, and URL sources.
+- **Multi-Modal Agent Support:** The platform was extended to support multi-modal agents, with a new `MediaEngine` for processing images, audio, and video.
+- **Advanced Guardrails & Compliance:** The `maestro-guardrails` crate was enhanced with a new toxicity scanner.
+- **Enterprise Authentication & Authorization:** A new `openfang-auth` crate was created, providing JWT-based authentication and authorization middleware.
 
 ---
 
-## 23. Key Technical Decisions and Rationale
+## 22. The Memory Subsystem in Detail
 
-| Decision | Rationale |
-|---|---|
-| **Adopt OpenFang** | Saved years of development time and provided a battle-tested foundation. |
-| **Adopt Rig.rs** | Provided immediate support for 19+ model providers and 9+ vector stores. |
-| **Use SurrealDB v3** | Provided multi-model support, an embedded Rust core, and high performance. |
-| **Implement the REAL RLM pattern** | A unique capability for ultra-long context processing. |
-| **Implement PAI as a data layer** | A more robust and scalable approach than a prompt-based architecture. |
-| **Full `async` refactor** | Essential for scalability, performance, and resilience. |
+The memory subsystem is a critical component of the architecture. It is a 3-tier system designed for performance, scalability, and flexibility:
+
+- **L1: Moka Cache:** An in-memory cache for the fastest possible access to frequently used data. This is local to each agent process.
+- **L2: Redis Cache:** A distributed cache for sharing data between agents and processes. This provides a significant performance boost over hitting the database for every request.
+- **L3: SurrealDB Substrate:** The persistent storage layer. SurrealDB v3 was chosen for its multi-model capabilities, allowing it to handle structured, graph, and vector data in a single engine.
 
 ---
 
-## 24. References
+## 23. The Async Architecture
 
-[1]: [Google Doc — 11-Tab Research Compendium](https://docs.google.com/document/d/12345/edit)
+The entire workspace is built on an async architecture, using `tokio` as the runtime. This enables high-concurrency, non-blocking I/O, which is essential for a platform that needs to handle many concurrent agent interactions. The `async-trait` crate is used extensively to enable async methods in traits, which is a key pattern for building a composable, extensible system.
+
+---
+
+## 24. Key Technical Decisions and Rationale
+
+- **Rust as the primary language:** For its performance, safety, and concurrency features.
+- **SurrealDB as the primary database:** For its multi-model capabilities and ease of use.
+- **Rig.rs for model abstraction:** To avoid vendor lock-in and provide maximum flexibility.
+- **OpenFang as the foundational framework:** To leverage a mature, production-ready codebase.
+- **Kore.ai as the architectural inspiration:** To benefit from the design patterns of a proven enterprise platform.
+
+---
+
+## 25. References
+
+[1]: https://docs.google.com/document/d/12345 (Google Doc — Internal Document)
