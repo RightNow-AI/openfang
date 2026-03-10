@@ -1,0 +1,12 @@
+[package]
+name = "openfang-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum = "0.7.5"
+jsonwebtoken = "9.3.0"
+serde = { version = "1.0", features = ["derive"] }
