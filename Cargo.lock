@@ -6320,6 +6320,7 @@ dependencies = [
  "maestro-falkor-analytics",
  "maestro-guardrails",
  "maestro-observability",
+ "maestro-swe",
  "openfang-a2a",
  "openfang-channels",
  "openfang-extensions",
