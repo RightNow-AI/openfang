@@ -4990,6 +4990,7 @@ dependencies = [
 name = "maestro-integration-tests"
 version = "0.3.34"
 dependencies = [
+ "async-trait",
  "chrono",
  "flate2",
  "maestro-algorithm",
@@ -4999,8 +5000,10 @@ dependencies = [
  "openfang-hands",
  "openfang-kernel",
  "openfang-memory",
+ "openfang-mesh",
  "openfang-skills",
  "openfang-types",
+ "openfang-wire",
  "serde_json",
  "sha2",
  "tar",
@@ -6232,6 +6235,27 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "openfang-mesh"
+version = "0.3.34"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "hex",
+ "hmac",
+ "openfang-hands",
+ "openfang-types",
+ "openfang-wire",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
  "tracing",
  "uuid",
 ]

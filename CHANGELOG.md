@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.35] - 2026-03-10
+### Added
+- **Multi-Agent Mesh** (Phase 12)
+  - **Parallel EXECUTE phase:** `maestro-algorithm` now runs parallelizable steps concurrently via `tokio::task::JoinSet`, respecting `step.parallelizable` and `max_parallel_workers`.
+  - **`openfang-mesh` crate:** New crate providing `MeshRouter` (routes tasks to local agents, Hands, or remote OFP peers) and `MeshClient` (sends tasks to remote peers via OFP wire protocol).
+  - **A2A per-agent routing:** `a2a_send_task` now reads an optional `agentId` from `params` to route to a specific agent.
+  - **A2A SSE streaming:** New `POST /a2a/tasks/sendSubscribe` endpoint returns a Server-Sent Events stream of task progress.
+  - **Per-agent A2A cards:** New `GET /a2a/agents/{id}` endpoint for per-agent card discovery.
+  - **8 new integration tests** in `multi_agent_mesh.rs` covering parallel execution, A2A routing, and SSE streaming.
+
+### Changed
+- `maestro-algorithm` `ExecutionHooks` trait now uses `Arc<dyn ExecutionHooks>` to support `Send + Sync + 'static` for parallel dispatch.
+- `AlgorithmExecutor` now has a `'static` bound on its `H` generic parameter.
+- `openfang-api` `a2a_send_subscribe` handler rewritten to use `Arc<OpenFangKernel>` and `futures::StreamExt` to fix compilation errors.
+- Workspace version bumped from `0.3.34` to `0.3.35`.
+
+
 ## [0.3.34] - 2026-03-10
 
 ### Added
@@ -145,7 +162,8 @@ The `validate_criteria()` function has been significantly enhanced with whole-wo
 
 The initial public release of OpenFang. A 15-crate Rust workspace implementing a full Agent Operating System, including agent lifecycle management, a SQLite-backed memory substrate, 41 built-in tools, a WASM sandbox with dual metering, a workflow engine, 40 channel adapters, 3 native LLM drivers supporting 27 providers, a Tauri 2.0 desktop app, and 7 autonomous Hands packages. 1,731+ tests across 15 crates.
 
-[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.34...HEAD
+[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.35...HEAD
+[0.3.35]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.34...v0.3.35
 [0.3.34]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.33...v0.3.34
 [0.3.33]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.32...v0.3.33
 [0.3.32]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.31...v0.3.32

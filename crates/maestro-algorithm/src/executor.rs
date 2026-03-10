@@ -67,6 +67,10 @@ pub struct AlgorithmConfig {
     pub complexity_threshold_sequential: u8,
     /// Complexity threshold above which parallel orchestration is used.
     pub complexity_threshold_parallel: u8,
+    /// Maximum number of steps to execute concurrently in the EXECUTE phase.
+    /// Steps marked `parallelizable: true` in the plan will be batched up to
+    /// this limit. Non-parallelizable steps always run sequentially.
+    pub max_parallel_workers: usize,
 }
 
 impl Default for AlgorithmConfig {
@@ -81,6 +85,7 @@ impl Default for AlgorithmConfig {
             default_timeout_seconds: 120,
             complexity_threshold_sequential: 3,
             complexity_threshold_parallel: 7,
+            max_parallel_workers: 4,
         }
     }
 }
@@ -120,13 +125,12 @@ pub trait ExecutionHooks: Send + Sync {
 }
 
 /// The main algorithm executor.
-pub struct AlgorithmExecutor<M: ModelProvider, H: ExecutionHooks> {
+pub struct AlgorithmExecutor<M: ModelProvider, H: ExecutionHooks + 'static> {
     model: Arc<M>,
     hooks: Arc<H>,
     config: AlgorithmConfig,
 }
-
-impl<M: ModelProvider, H: ExecutionHooks> AlgorithmExecutor<M, H> {
+impl<M: ModelProvider, H: ExecutionHooks + 'static> AlgorithmExecutor<M, H> {
     pub fn new(model: Arc<M>, hooks: Arc<H>, config: AlgorithmConfig) -> Self {
         Self { model, hooks, config }
     }
@@ -290,10 +294,11 @@ impl<M: ModelProvider, H: ExecutionHooks> AlgorithmExecutor<M, H> {
             self.hooks.on_phase_start(run_id, Phase::Execute).await;
             let exec_output = phases::run_execute(
                 self.model.as_ref(),
-                self.hooks.as_ref(),
+                Arc::clone(&self.hooks) as Arc<dyn ExecutionHooks + Send + Sync>,
                 run_id,
                 task,
                 plan_data,
+                self.config.max_parallel_workers,
             )
             .await?;
             total_tokens += exec_output.tokens_used;

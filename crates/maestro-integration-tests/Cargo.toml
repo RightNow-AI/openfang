@@ -13,6 +13,8 @@ openfang-memory = { path = "../openfang-memory" }
 openfang-kernel = { path = "../openfang-kernel" }
 openfang-hands = { path = "../openfang-hands" }
 openfang-skills = { path = "../openfang-skills" }
+openfang-mesh = { path = "../openfang-mesh" }
+openfang-wire = { path = "../openfang-wire" }
 maestro-guardrails = { path = "../maestro-guardrails" }
 maestro-observability = { path = "../maestro-observability" }
 maestro-eval = { path = "../maestro-eval" }
@@ -27,6 +29,7 @@ tracing-subscriber = { workspace = true }
 sha2 = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
+async-trait = { workspace = true }
 
 [[test]]
 name = "kernel_boot"
@@ -55,3 +58,7 @@ path = "tests/algorithm_maestro.rs"
 [[test]]
 name = "fanghub_marketplace"
 path = "tests/fanghub_marketplace.rs"
+
+[[test]]
+name = "multi_agent_mesh"
+path = "tests/multi_agent_mesh.rs"

@@ -740,3 +740,32 @@ The SurrealDB v3 upgrade and async propagation were not in the original plan. Th
 ---
 
 *This document was last updated on March 9, 2026. For the latest state of the project, refer to `HANDOFF.md`, `ROADMAP.md`, and `CHANGELOG.md` in the repository root, and the `maestro-development` skill in the Manus skills directory.*
+
+
+## Phase 12: Multi-Agent Mesh
+
+Phase 12 implements the core multi-agent mesh networking capabilities, enabling parallel task execution and peer-to-peer agent communication.
+
+### Parallel EXECUTE Phase
+
+The `maestro-algorithm` EXECUTE phase was upgraded from a sequential loop to a parallel dispatcher using `tokio::task::JoinSet`. It now respects the `step.parallelizable` flag and a new `max_parallel_workers` configuration in `AlgorithmConfig`. The `ExecutionHooks` trait now uses `Arc<dyn ExecutionHooks>` to support `Send + Sync + 'static` for safe dispatch across threads.
+
+### `openfang-mesh` Crate
+
+A new `openfang-mesh` crate provides the core mesh routing logic:
+
+- **`MeshRouter`**: A capability-aware router that can dispatch tasks to local agents, activated Hands, or remote OFP peers based on tool and capability matching.
+- **`MeshClient`**: A client for sending tasks to remote peers via the OFP wire protocol.
+- **`ExecutionTarget`**: An enum representing the three possible targets for a task: `LocalAgent`, `LocalHand`, or `RemotePeer`.
+
+### A2A Protocol Upgrades
+
+The Agent-to-Agent (A2A) protocol implementation in `openfang-api` was upgraded to be fully compliant with the specification:
+
+- **Per-agent routing**: The `a2a_send_task` handler now reads an optional `agentId` from the request parameters, allowing tasks to be routed to a specific agent instead of always the default.
+- **SSE streaming**: A new `POST /a2a/tasks/sendSubscribe` endpoint provides a Server-Sent Events stream of task progress, including `working`, `chunk`, `tool_use`, `tool_result`, and `completed` events.
+- **Per-agent cards**: A new `GET /a2a/agents/{id}` endpoint allows for the discovery of individual agent capabilities.
+
+### Integration Tests
+
+8 new integration tests were added in `maestro-integration-tests/tests/multi_agent_mesh.rs` to cover the new functionality, including parallel step execution, A2A per-agent routing, and SSE streaming task submission.

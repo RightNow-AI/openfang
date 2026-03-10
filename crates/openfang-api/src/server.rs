@@ -583,9 +583,19 @@ pub async fn build_router(
             axum::routing::get(routes::a2a_agent_card),
         )
         .route("/a2a/agents", axum::routing::get(routes::a2a_list_agents))
+        // Per-agent card: GET /a2a/agents/{id}
+        .route(
+            "/a2a/agents/{id}",
+            axum::routing::get(routes::a2a_agent_card_by_id),
+        )
         .route(
             "/a2a/tasks/send",
             axum::routing::post(routes::a2a_send_task),
+        )
+        // SSE streaming task submission: POST /a2a/tasks/sendSubscribe
+        .route(
+            "/a2a/tasks/sendSubscribe",
+            axum::routing::post(routes::a2a_send_subscribe),
         )
         .route("/a2a/tasks/{id}", axum::routing::get(routes::a2a_get_task))
         .route(

@@ -4,9 +4,11 @@
 //! They accept a `ModelProvider`, build the appropriate prompt, call the model,
 //! and return a typed `PhaseOutput`.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::json;
+use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::{
@@ -147,12 +149,24 @@ pub async fn run_plan<M: ModelProvider>(
 /// This is the only phase that interacts with the external world via
 /// `ExecutionHooks::delegate_to_agent()`. The model is used only to
 /// synthesize the final ExecuteOutput from raw agent results.
-pub async fn run_execute<M: ModelProvider, H: ExecutionHooks>(
+///
+/// Steps marked `parallelizable: true` in the plan are executed concurrently
+/// using a `tokio::task::JoinSet`, bounded by `max_parallel_workers`.
+/// Non-parallelizable steps always run sequentially in step order.
+///
+/// # Parallel execution design
+///
+/// The `hooks` parameter is `Arc<dyn ExecutionHooks + Send + Sync>` so that
+/// it can be cheaply cloned into each spawned task without lifetime issues.
+/// The caller (AlgorithmExecutor) already stores hooks as `Arc<H>`, so it
+/// passes `Arc::clone(&self.hooks) as Arc<dyn ExecutionHooks + Send + Sync>`.
+pub async fn run_execute<M: ModelProvider>(
     model: &M,
-    hooks: &H,
+    hooks: Arc<dyn ExecutionHooks + Send + Sync>,
     _run_id: RunId,
     task: &str,
     plan_output: &serde_json::Value,
+    max_parallel_workers: usize,
 ) -> Result<PhaseOutput, AlgorithmError> {
     let start = Instant::now();
     info!("EXECUTE: Delegating steps to agents");
@@ -166,56 +180,134 @@ pub async fn run_execute<M: ModelProvider, H: ExecutionHooks>(
         }
     })?;
 
-    // Execute each step by delegating to agents
-    let mut raw_results = Vec::new();
+    // Allocate result slots indexed by step_number (1-indexed, slot 0 unused).
+    let max_step = plan.steps.iter().map(|s| s.step_number).max().unwrap_or(0) as usize;
+    let mut raw_results: Vec<Option<serde_json::Value>> = vec![None; max_step + 1];
 
-    // Group steps by parallelizability
-    // For now, execute sequentially (parallel execution is a future enhancement)
-    for step in &plan.steps {
+    // ── Sequential steps ────────────────────────────────────────────────────
+    let sequential_steps: Vec<&ExecutionStep> =
+        plan.steps.iter().filter(|s| !s.parallelizable).collect();
+
+    for step in sequential_steps {
         let step_start = Instant::now();
-
-        // Find the agent assignment for this step
         let assignment = plan
             .agent_assignments
             .iter()
             .find(|a| a.step_numbers.contains(&step.step_number));
-
         let capabilities: Vec<String> = assignment
             .map(|a| a.capabilities.clone())
             .unwrap_or_default();
 
         info!(
             step = step.step_number,
+            parallelizable = false,
             instruction = %step.instruction.chars().take(80).collect::<String>(),
-            "Delegating step to agent"
+            "Delegating sequential step to agent"
         );
 
-        let result = hooks
-            .delegate_to_agent(&step.instruction, &capabilities)
-            .await;
-
+        let result = hooks.delegate_to_agent(&step.instruction, &capabilities).await;
         let step_duration = step_start.elapsed().as_millis() as u64;
-
-        match result {
-            Ok(output) => {
-                raw_results.push(json!({
+        let idx = step.step_number as usize;
+        if idx < raw_results.len() {
+            raw_results[idx] = Some(match result {
+                Ok(output) => json!({
                     "step_number": step.step_number,
                     "output": output,
                     "success": true,
                     "duration_ms": step_duration,
-                }));
+                }),
+                Err(e) => {
+                    warn!(step = step.step_number, error = %e, "Sequential step delegation failed");
+                    json!({
+                        "step_number": step.step_number,
+                        "error": e.to_string(),
+                        "success": false,
+                        "duration_ms": step_duration,
+                    })
+                }
+            });
+        }
+    }
+
+    // ── Parallel steps ──────────────────────────────────────────────────────
+    let parallel_steps: Vec<&ExecutionStep> =
+        plan.steps.iter().filter(|s| s.parallelizable).collect();
+
+    if !parallel_steps.is_empty() {
+        let workers = max_parallel_workers.max(1);
+        info!(
+            count = parallel_steps.len(),
+            max_workers = workers,
+            "Executing parallelizable steps concurrently"
+        );
+
+        // Process in chunks bounded by max_parallel_workers
+        for chunk in parallel_steps.chunks(workers) {
+            let mut join_set: JoinSet<(u32, Result<String, AlgorithmError>)> = JoinSet::new();
+
+            for step in chunk {
+                let instruction = step.instruction.clone();
+                let step_number = step.step_number;
+                let assignment = plan
+                    .agent_assignments
+                    .iter()
+                    .find(|a| a.step_numbers.contains(&step.step_number));
+                let capabilities: Vec<String> = assignment
+                    .map(|a| a.capabilities.clone())
+                    .unwrap_or_default();
+                let hooks_ref = Arc::clone(&hooks);
+
+                info!(
+                    step = step_number,
+                    parallelizable = true,
+                    instruction = %instruction.chars().take(80).collect::<String>(),
+                    "Spawning parallel step"
+                );
+
+                join_set.spawn(async move {
+                    let result = hooks_ref
+                        .delegate_to_agent(&instruction, &capabilities)
+                        .await;
+                    (step_number, result)
+                });
             }
-            Err(e) => {
-                warn!(step = step.step_number, error = %e, "Step delegation failed");
-                raw_results.push(json!({
-                    "step_number": step.step_number,
-                    "error": e.to_string(),
-                    "success": false,
-                    "duration_ms": step_duration,
-                }));
+
+            // Collect results from this chunk
+            while let Some(join_result) = join_set.join_next().await {
+                match join_result {
+                    Ok((step_number, Ok(output))) => {
+                        let idx = step_number as usize;
+                        if idx < raw_results.len() {
+                            raw_results[idx] = Some(json!({
+                                "step_number": step_number,
+                                "output": output,
+                                "success": true,
+                                "duration_ms": 0u64,
+                            }));
+                        }
+                    }
+                    Ok((step_number, Err(e))) => {
+                        warn!(step = step_number, error = %e, "Parallel step delegation failed");
+                        let idx = step_number as usize;
+                        if idx < raw_results.len() {
+                            raw_results[idx] = Some(json!({
+                                "step_number": step_number,
+                                "error": e.to_string(),
+                                "success": false,
+                                "duration_ms": 0u64,
+                            }));
+                        }
+                    }
+                    Err(join_err) => {
+                        warn!(error = %join_err, "Parallel step task panicked");
+                    }
+                }
             }
         }
     }
+
+    // Flatten results (skip None slots — steps with no result are treated as failed)
+    let raw_results: Vec<serde_json::Value> = raw_results.into_iter().flatten().collect();
 
     // Use the model to synthesize raw results into a structured ExecuteOutput
     let plan_json = serde_json::to_string_pretty(plan_output).unwrap_or_default();

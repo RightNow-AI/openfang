@@ -13,6 +13,7 @@ members = [
     "crates/openfang-skills",
     "crates/openfang-desktop",
     "crates/openfang-hands",
+    "crates/openfang-mesh",
     "crates/openfang-extensions",
     "xtask",
     "crates/maestro-algorithm",

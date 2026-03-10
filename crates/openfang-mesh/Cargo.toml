@@ -1,0 +1,25 @@
+[package]
+name = "openfang-mesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Multi-agent mesh routing — routes tasks to local agents, Hands, or remote OFP peers"
+
+[dependencies]
+openfang-types = { path = "../openfang-types" }
+openfang-wire   = { path = "../openfang-wire" }
+openfang-hands  = { path = "../openfang-hands" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

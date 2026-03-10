@@ -5763,7 +5763,8 @@ pub async fn a2a_send_task(
         })
         .unwrap_or_else(|| "No message provided".to_string());
 
-    // Find target agent (use first available or specified)
+    // Find target agent — prefer agentId from params, fall back to first available.
+    // A2A spec: params.agentId may specify a target agent by UUID or name.
     let agents = state.kernel.registry.list();
     if agents.is_empty() {
         return (
@@ -5771,8 +5772,16 @@ pub async fn a2a_send_task(
             Json(serde_json::json!({"error": "No agents available"})),
         );
     }
-
-    let agent = &agents[0];
+    let requested_agent_id = request["params"]["agentId"].as_str();
+    let agent_idx = if let Some(target) = requested_agent_id {
+        agents
+            .iter()
+            .position(|a| a.id.to_string() == target || a.name == target)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let agent = &agents[agent_idx];
     let task_id = uuid::Uuid::new_v4().to_string();
     let session_id = request["params"]["sessionId"].as_str().map(String::from);
 
@@ -5876,6 +5885,228 @@ pub async fn a2a_cancel_task(
             Json(serde_json::json!({"error": format!("Task '{}' not found", task_id)})),
         )
     }
+}
+
+// ── A2A Per-Agent & Streaming Endpoints ────────────────────────────────
+
+/// GET /a2a/agents/{id} — Get the A2A agent card for a specific agent.
+///
+/// This endpoint allows A2A clients to discover the capabilities of a
+/// specific agent by its UUID or name, rather than listing all agents.
+pub async fn a2a_agent_card_by_id(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+) -> impl IntoResponse {
+    let agents = state.kernel.registry.list();
+    let entry = agents
+        .iter()
+        .find(|a| a.id.to_string() == agent_id || a.name == agent_id);
+    match entry {
+        Some(entry) => {
+            let base_url = format!("http://{}", state.kernel.config.api_listen);
+            let card = openfang_runtime::a2a::build_agent_card(&entry.manifest, &base_url);
+            (StatusCode::OK, Json(serde_json::to_value(&card).unwrap_or_default()))
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("Agent '{}' not found", agent_id)})),
+        ),
+    }
+}
+
+/// POST /a2a/tasks/sendSubscribe — Submit a task and stream progress via SSE.
+///
+/// This implements the A2A streaming task submission endpoint. The client
+/// receives a stream of Server-Sent Events as the agent processes the task:
+///
+/// - `working` — task accepted and agent is processing
+/// - `chunk` — incremental text output from the agent
+/// - `tool_use` — agent is calling a tool
+/// - `tool_result` — tool call completed
+/// - `completed` — task finished with full A2A task object
+/// - `failed` — task failed with error details
+pub async fn a2a_send_subscribe(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<serde_json::Value>,
+) -> axum::response::Response {
+    use axum::response::sse::{Event, Sse};
+    use futures::{stream, StreamExt};
+    use openfang_runtime::llm_driver::StreamEvent;
+    // Extract message text from A2A formatt
+    let message_text = request["params"]["message"]["parts"]
+        .as_array()
+        .and_then(|parts| {
+            parts.iter().find_map(|p| {
+                if p["type"].as_str() == Some("text") {
+                    p["text"].as_str().map(String::from)
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| "No message provided".to_string());
+
+    // Find target agent (same agentId routing as a2a_send_task)
+    let agents = state.kernel.registry.list();
+    if agents.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "No agents available"})),
+        )
+            .into_response();
+    }
+    let requested_agent_id = request["params"]["agentId"].as_str();
+    let agent_idx = if let Some(target) = requested_agent_id {
+        agents
+            .iter()
+            .position(|a| a.id.to_string() == target || a.name == target)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let agent_id = agents[agent_idx].id;
+    let task_id = uuid::Uuid::new_v4().to_string();
+    let session_id = request["params"]["sessionId"].as_str().map(String::from);
+
+    // Create the task in the store as Working
+    let task = openfang_runtime::a2a::A2aTask {
+        id: task_id.clone(),
+        session_id,
+        status: openfang_runtime::a2a::A2aTaskStatus::Working.into(),
+        messages: vec![openfang_runtime::a2a::A2aMessage {
+            role: "user".to_string(),
+            parts: vec![openfang_runtime::a2a::A2aPart::Text {
+                text: message_text.clone(),
+            }],
+        }],
+        artifacts: vec![],
+    };
+    state.kernel.a2a_task_store.insert(task);
+
+    // Emit initial "working" event
+    let task_id_clone = task_id.clone();
+    let working_event = Event::default()
+        .event("working")
+        .json_data(serde_json::json!({
+            "id": task_id_clone,
+            "status": "working",
+        }))
+        .unwrap_or_else(|_| Event::default().data("working"));
+
+    // Start streaming the agent response
+    let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
+    let (rx, _handle) = match state
+        .kernel
+        .send_message_streaming(agent_id, &message_text, Some(kernel_handle))
+        .await
+    {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::warn!("A2A streaming failed for agent: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Streaming failed"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Use Arc<OpenFangKernel> to share the task store across the async boundary
+    // without requiring A2aTaskStore to implement Clone.
+    let kernel_arc: Arc<OpenFangKernel> = Arc::clone(&state.kernel);
+    let task_id_for_stream = task_id.clone();
+    // Accumulate the full response text in a shared mutex so ContentComplete
+    // can read it without borrowing from the closure state.
+    let full_response: Arc<std::sync::Mutex<String>> =
+        Arc::new(std::sync::Mutex::new(String::new()));
+    let full_response_clone = Arc::clone(&full_response);
+
+    let sse_stream = stream::unfold(
+        (rx, kernel_arc, task_id_for_stream, full_response_clone),
+        |(mut rx,
+          kernel,
+          task_id,
+          full_response): (
+            _,
+            Arc<OpenFangKernel>,
+            String,
+            Arc<std::sync::Mutex<String>>,
+        )| async move {
+            match rx.recv().await {
+                Some(event) => {
+                    let sse_event: Result<Event, std::convert::Infallible> = Ok(match event {
+                        StreamEvent::TextDelta { ref text } => {
+                            if let Ok(mut buf) = full_response.lock() {
+                                buf.push_str(text);
+                            }
+                            Event::default()
+                                .event("chunk")
+                                .json_data(serde_json::json!({
+                                    "id": task_id,
+                                    "delta": { "type": "text", "text": text },
+                                }))
+                                .unwrap_or_else(|_| Event::default().data("chunk"))
+                        }
+                        StreamEvent::ToolUseStart { ref name, .. } => Event::default()
+                            .event("tool_use")
+                            .json_data(serde_json::json!({"id": task_id, "tool": name}))
+                            .unwrap_or_else(|_| Event::default().data("tool_use")),
+                        StreamEvent::ToolUseEnd { ref name, ref input, .. } => Event::default()
+                            .event("tool_result")
+                            .json_data(serde_json::json!({
+                                "id": task_id,
+                                "tool": name,
+                                "input": input,
+                            }))
+                            .unwrap_or_else(|_| Event::default().data("tool_result")),
+                        StreamEvent::ContentComplete { .. } => {
+                            let text = full_response
+                                .lock()
+                                .map(|b| b.clone())
+                                .unwrap_or_default();
+                            let response_msg = openfang_runtime::a2a::A2aMessage {
+                                role: "agent".to_string(),
+                                parts: vec![openfang_runtime::a2a::A2aPart::Text { text }],
+                            };
+                            kernel.a2a_task_store.complete(&task_id, response_msg, vec![]);
+                            let completed_task = kernel.a2a_task_store.get(&task_id);
+                            Event::default()
+                                .event("completed")
+                                .json_data(serde_json::json!({
+                                    "id": task_id,
+                                    "status": "completed",
+                                    "task": completed_task,
+                                }))
+                                .unwrap_or_else(|_| Event::default().data("completed"))
+                        }
+                        StreamEvent::PhaseChange { ref phase, ref detail } => Event::default()
+                            .event("phase")
+                            .json_data(serde_json::json!({
+                                "id": task_id,
+                                "phase": phase,
+                                "detail": detail,
+                            }))
+                            .unwrap_or_else(|_| Event::default().data("phase")),
+                        _ => Event::default().event("ping").data(""),
+                    });
+                    Some((sse_event, (rx, kernel, task_id, full_response)))
+                }
+                None => None,
+            }
+        },
+    );
+
+    // Prepend the initial working event using stream::iter (avoids Once::chain bounds issue).
+    let initial_event = std::iter::once(Ok::<Event, std::convert::Infallible>(working_event));
+    let full_stream = stream::iter(initial_event).chain(sse_stream);
+
+    Sse::new(full_stream)
+        .keep_alive(
+            axum::response::sse::KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response()
 }
 
 // ── A2A Management Endpoints (outbound) ─────────────────────────────────
