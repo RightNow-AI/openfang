@@ -30,7 +30,7 @@ members = [
     "crates/maestro-falkor-analytics",
     "crates/maestro-integration-tests",
     "crates/fanghub-registry",
-    "crates/fang-cli",
+    "crates/fang-cli", "crates/media-test",
 ]
 
 [workspace.package]
