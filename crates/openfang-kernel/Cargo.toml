@@ -6,6 +6,7 @@ license.workspace = true
 description = "Core kernel for the OpenFang Agent OS"
 
 [dependencies]
+openfang-a2a = { path = "../openfang-a2a" }
 openfang-types = { path = "../openfang-types" }
 maestro-cache = { path = "../maestro-cache" }
 openfang-memory = { path = "../openfang-memory" }
@@ -49,4 +50,4 @@ libc = "0.2"
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
 
-openfang-a2a = { path = "../openfang-a2a" }
+
