@@ -2527,7 +2527,7 @@ checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
 
 [[package]]
 name = "fang-cli"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2554,7 +2554,7 @@ dependencies = [
 
 [[package]]
 name = "fanghub-registry"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4902,7 +4902,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-algorithm"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4919,7 +4919,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-cache"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4940,7 +4940,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-eval"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4955,7 +4955,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-falkor-analytics"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4973,7 +4973,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-guardrails"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4988,7 +4988,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-integration-tests"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "chrono",
  "flate2",
@@ -5013,7 +5013,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-knowledge"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5030,7 +5030,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-marketplace"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5048,7 +5048,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-model-hub"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5063,7 +5063,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-observability"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "chrono",
  "dashmap",
@@ -5083,7 +5083,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-pai"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5099,7 +5099,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-rlm"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5115,7 +5115,7 @@ dependencies = [
 
 [[package]]
 name = "maestro-sdk"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6008,7 +6008,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-api"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "async-trait",
  "axum",
@@ -6047,7 +6047,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-channels"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "async-trait",
  "axum",
@@ -6079,7 +6079,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-cli"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "clap",
  "clap_complete",
@@ -6106,7 +6106,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-desktop"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "axum",
  "open",
@@ -6132,7 +6132,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-extensions"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -6160,7 +6160,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-hands"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "chrono",
  "dashmap",
@@ -6177,7 +6177,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-kernel"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6221,7 +6221,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-memory"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6238,7 +6238,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-migrate"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -6257,7 +6257,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-runtime"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6289,7 +6289,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-skills"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "chrono",
  "hex",
@@ -6312,7 +6312,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-types"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6331,7 +6331,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-wire"
-version = "0.3.32"
+version = "0.3.34"
 dependencies = [
  "async-trait",
  "chrono",
@@ -12864,7 +12864,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.3.32"
+version = "0.3.34"
 
 [[package]]
 name = "xxhash-rust"

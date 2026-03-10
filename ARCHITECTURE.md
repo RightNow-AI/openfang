@@ -16,18 +16,21 @@
 4. [The Fusion Framework: What Was Kept, Discarded, and Adopted](#4-the-fusion-framework-what-was-kept-discarded-and-adopted)
 5. [The Four-Layer Architecture](#5-the-four-layer-architecture)
 6. [The Workspace: 28 Crates and Their Roles](#6-the-workspace-28-crates-and-their-roles)
-7. [Phase 4: Building the L3 Memory Substrate](#7-phase-4-building-the-l3-memory-substrate)
-8. [Phase 5: Building the L1/L2 Caching Layer](#8-phase-5-building-the-l1l2-caching-layer)
-9. [Phase 6: The L4 FalkorDB Analytics Engine](#9-phase-6-the-l4-falkordb-analytics-engine)
-10. [Phase 7: The Supervisor Agent](#10-phase-7-the-supervisor-agent)
-11. [Phase 8: MAESTRO Algorithm & Feature Backlog](#11-phase-8-maestro-algorithm--feature-backlog)
-12. [Phase 9: The Hand System](#12-phase-9-the-hand-system)
-13. [Phase 10: Production Hardening](#13-phase-10-production-hardening)
-14. [Phase 11: The FangHub Marketplace](#14-phase-11-the-fanghub-marketplace)
-15. [The Memory Subsystem in Detail](#15-the-memory-subsystem-in-detail)
-16. [The Async Architecture](#16-the-async-architecture)
-17. [Key Technical Decisions and Rationale](#17-key-technical-decisions-and-rationale)
-18. [References](#18-references)
+7. [Phase 1: Rig.rs Model Abstraction](#7-phase-1-rigrs-model-abstraction)
+8. [Phase 2: Guardrails & Algorithm Pipeline](#8-phase-2-guardrails--algorithm-pipeline)
+9. [Phase 3: PAI Core Integration](#9-phase-3-pai-core-integration)
+10. [Phase 4: Building the L3 Memory Substrate](#10-phase-4-building-the-l3-memory-substrate)
+11. [Phase 5: Building the L1/L2 Caching Layer](#11-phase-5-building-the-l1l2-caching-layer)
+12. [Phase 6: The L4 FalkorDB Analytics Engine](#12-phase-6-the-l4-falkordb-analytics-engine)
+13. [Phase 7: The Supervisor Agent](#13-phase-7-the-supervisor-agent)
+14. [Phase 8: MAESTRO Algorithm & Feature Backlog](#14-phase-8-maestro-algorithm--feature-backlog)
+15. [Phase 9: The Hand System](#15-phase-9-the-hand-system)
+16. [Phase 10: Production Hardening](#16-phase-10-production-hardening)
+17. [Phase 11: The FangHub Marketplace](#17-phase-11-the-fanghub-marketplace)
+18. [The Memory Subsystem in Detail](#18-the-memory-subsystem-in-detail)
+19. [The Async Architecture](#19-the-async-architecture)
+20. [Key Technical Decisions and Rationale](#20-key-technical-decisions-and-rationale)
+21. [References](#21-references)
 
 ---
 
@@ -300,7 +303,40 @@ The dependency graph flows strictly downward: `openfang-types` → storage crate
 
 ---
 
-## 7. Phase 4: Building the L3 Memory Substrate
+## 7. Phase 1: Rig.rs Model Abstraction
+
+Phase 1 integrated the Rig.rs framework as the core model abstraction layer, replacing OpenFang's bespoke LLM drivers. This provided unified APIs for 19+ LLM providers and 9+ vector stores.
+
+| Task | Description | Commit |
+|---|---|---|
+| 1.1 | Integrate Rig.rs and openai-rig driver | 46ca425 |
+| 1.2 | Rewrite Rig driver with full history and tool calls | 02b0160 |
+
+---
+
+## 8. Phase 2: Guardrails & Algorithm Pipeline
+
+Phase 2 implemented the first two Maestro extension crates: `maestro-guardrails` and `maestro-algorithm`.
+
+| Task | Description | Commit |
+|---|---|---|
+| 2.1 | Implement `maestro-guardrails` middleware | 91be825 |
+| 2.2 | Implement `maestro-algorithm` pipeline with kernel hooks | 086a55c |
+
+---
+
+## 9. Phase 3: PAI Core Integration
+
+Phase 3 integrated the `maestro-pai` crate, which implements Daniel Miessler's PAI framework as a structured data layer. This included the Fabric PatternManager and the TELOS user context manager.
+
+| Task | Description | Commit |
+|---|---|---|
+| 3.1 | Implement PatternManager and TelosManager | 126d18d |
+| 3.2 | Wire into kernel and agent loop | 126d18d |
+
+---
+
+## 10. Phase 4: Building the L3 Memory Substrate
 
 Phase 4 was the most complex phase to date, requiring four distinct tasks and introducing two discovered prerequisites that were not in the original plan.
 
@@ -346,8 +382,7 @@ Seven sync/async boundaries were established at the entry points where the async
 
 ---
 
-## 8. Phase 5: Building the L1/L2 Caching Layer
-
+## 11. Phase 5: Building the L1/L2 Caching Layer
 ### Task 5.1 — Moka L1 + Redis L2 + CachingMemory Wrapper (v0.3.29)
 
 Phase 5 introduced the `maestro-cache` crate, which implements a transparent 3-tier caching system. The key design decisions were:
@@ -363,8 +398,7 @@ Phase 5 introduced the `maestro-cache` crate, which implements a transparent 3-t
 **L2 — Redis (Distributed):** Feature-gated behind the `redis-cache` Cargo feature. When enabled, Redis provides a shared cache across multiple instances of the application, enabling horizontal scaling. When Redis is unavailable (connection refused, timeout), the system gracefully degrades to L1 + L3 without errors.
 
 ---
-
-## 9. Phase 6: The L4 FalkorDB Analytics Engine
+## 12. Phase 6: The L4 FalkorDB Analytics Engine
 
 Phase 6 built the `maestro-falkor-analytics` crate, providing the L4 analytics layer for deep graph analytics and agent trace capabilities. FalkorDB was chosen over SurrealDB for this layer because it is a specialized graph database built on GraphBLAS, offering significantly better performance for graph-specific queries like PageRank and community detection.
 
@@ -401,7 +435,7 @@ The analytics engine is exposed via the `openfang-api` crate under the `/api/ana
 
 ---
 
-## 10. Phase 7: The Supervisor Agent
+## 13. Phase 7: The Supervisor Agent
 
 Phase 7 delivered the first true multi-agent orchestrator in Maestro, the **Supervisor Agent**. It implements the full 7-phase MAESTRO algorithm for complex task decomposition and delegation.
 
@@ -449,7 +483,7 @@ Both `analytics` and `supervisor_engine` are `Option` — non-fatal if not confi
 
 ---
 
-## 11. Phase 8: MAESTRO Algorithm & Feature Backlog
+## 14. Phase 8: MAESTRO Algorithm & Feature Backlog
 
 Phase 8 was a massive effort to implement the full MAESTRO algorithm and flesh out the remaining stub crates from the initial project scaffold. It was broken into seven sub-tasks across two versions.
 
@@ -487,7 +521,7 @@ The `LearningStore` in `maestro-pai` was initially implemented with SQLite (the 
 
 ---
 
-## 12. Phase 9: The Hand System
+## 15. Phase 9: The Hand System
 
 Phase 9 implemented the autonomous `Hand` system — the core user-facing value proposition of OpenFang. A Hand is a self-contained, autonomous agent package that can be activated, scheduled, and managed independently.
 
@@ -533,7 +567,7 @@ The `HandInstance` struct tracks the lifecycle of each Hand through four states:
 
 ---
 
-## 13. Phase 10: Production Hardening
+## 16. Phase 10: Production Hardening
 
 Phase 10 made the entire platform production-ready by adding a comprehensive integration test suite, health checks, graceful shutdown, and a multi-stage Docker build.
 
@@ -576,7 +610,7 @@ A `SIGTERM` handler was wired into the kernel's main loop. On receiving `SIGTERM
 
 ---
 
-## 14. Phase 11: The FangHub Marketplace
+## 17. Phase 11: The FangHub Marketplace
 
 Phase 11 built the **FangHub Marketplace**, a public registry for discovering, installing, and sharing `Hand` packages. This phase represented a significant architectural decision to pivot from a JavaScript-based frontend to a pure-Rust, full-stack solution.
 
@@ -620,7 +654,7 @@ The `openfang-kernel` was enhanced with an `install_from_fanghub(hand_id: &str)`
 
 ---
 
-## 15. The Memory Subsystem in Detail
+## 18. The Memory Subsystem in Detail
 
 The complete memory subsystem is a three-tier hierarchy:
 
@@ -649,7 +683,7 @@ The `MeteringEngine` uses a separate standalone SQLite connection for cost track
 
 ---
 
-## 16. The Async Architecture
+## 19. The Async Architecture
 
 The entire workspace is natively async as of v0.3.28. The async runtime (Tokio) is initialized once at each of seven well-defined entry points, and all code below those entry points uses `async fn` and `.await` natively.
 
@@ -667,7 +701,7 @@ No `block_on` calls exist anywhere in library code. This is a strict invariant t
 
 ---
 
-## 17. Key Technical Decisions and Rationale
+## 20. Key Technical Decisions and Rationale
 
 ### Decision 1: OpenFang as the Foundation (Not Maestro)
 
@@ -699,7 +733,7 @@ The SurrealDB v3 upgrade and async propagation were not in the original plan. Th
 
 ---
 
-## 18. References
+## 21. References
 
 [1]: https://docs.google.com/document/d/19XcoTCDGNw7E2XzasyjHQ9jHP5OCRDzYfKRG7Rp80kc/edit?usp=sharing "Google Doc — 11-Tab Research Compendium"
 

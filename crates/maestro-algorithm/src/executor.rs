@@ -415,12 +415,96 @@ impl<M: ModelProvider, H: ExecutionHooks> AlgorithmExecutor<M, H> {
             started_at,
             completed_at: Utc::now(),
             total_tokens_used: total_tokens,
-            total_cost_usd: 0.0, // TODO: Implement cost tracking via model provider
+            total_cost_usd: estimate_cost(self.model.model_id(), total_tokens),
         };
 
         self.hooks.on_run_complete(&result).await;
         Ok(result)
     }
+}
+
+/// Estimate the USD cost for a completed algorithm run.
+///
+/// Uses the same pricing table as `openfang-kernel::metering::estimate_cost_rates`
+/// but is self-contained so that `maestro-algorithm` does not need to depend on
+/// the kernel crates. The formula is:
+///
+/// ```text
+/// cost = (tokens / 1_000_000) * blended_rate
+/// ```
+///
+/// Because `PhaseOutput::tokens_used` is a combined total (not split into input
+/// vs. output), we use a conservative blended rate that weights input tokens
+/// at 70% and output tokens at 30% of the model's published per-million rates.
+/// This is a reasonable approximation for multi-turn reasoning workloads where
+/// prompts are typically longer than completions.
+fn estimate_cost(model_id: &str, total_tokens: u64) -> f64 {
+    let model = model_id.to_lowercase();
+    // Returns (input_per_m, output_per_m) for the model.
+    // Ordered from most-specific to least-specific to avoid prefix collisions.
+    let (input_per_m, output_per_m) = if model.contains("haiku") {
+        (0.25, 1.25)
+    } else if model.contains("opus") {
+        (15.0, 75.0)
+    } else if model.contains("sonnet") {
+        (3.0, 15.0)
+    } else if model.contains("gpt-4o-mini") {
+        (0.15, 0.60)
+    } else if model.contains("gpt-4o") {
+        (2.50, 10.0)
+    } else if model.contains("gpt-4.1-nano") {
+        (0.10, 0.40)
+    } else if model.contains("gpt-4.1-mini") {
+        (0.40, 1.60)
+    } else if model.contains("gpt-4.1") {
+        (2.00, 8.00)
+    } else if model.contains("o4-mini") || model.contains("o3-mini") {
+        (1.10, 4.40)
+    } else if model.contains("o3") {
+        (2.00, 8.00)
+    } else if model.contains("gpt-4") {
+        (2.50, 10.0)
+    } else if model.contains("gemini-2.5-pro") {
+        (1.25, 10.0)
+    } else if model.contains("gemini-2.5-flash") {
+        (0.15, 0.60)
+    } else if model.contains("gemini-2.0-flash") || model.contains("gemini-flash") {
+        (0.10, 0.40)
+    } else if model.contains("gemini") {
+        (0.15, 0.60)
+    } else if model.contains("deepseek-r1") || model.contains("deepseek-reasoner") {
+        (0.55, 2.19)
+    } else if model.contains("deepseek") {
+        (0.27, 1.10)
+    } else if model.contains("llama-4-maverick") {
+        (0.50, 0.77)
+    } else if model.contains("llama-4-scout") {
+        (0.11, 0.34)
+    } else if model.contains("llama") || model.contains("mixtral") {
+        (0.05, 0.10)
+    } else if model.contains("mistral-large") {
+        (2.00, 6.00)
+    } else if model.contains("mistral") {
+        (0.10, 0.30)
+    } else if model.contains("grok-3-mini") || model.contains("grok-mini") {
+        (0.30, 0.50)
+    } else if model.contains("grok-3") || model.contains("grok-4") {
+        (3.0, 15.0)
+    } else if model.contains("grok") {
+        (2.0, 10.0)
+    } else {
+        // Conservative default: $1/$3 per million tokens
+        (1.0, 3.0)
+    };
+    // Blended rate: 70% input weight, 30% output weight
+    let blended_per_m = input_per_m * 0.70 + output_per_m * 0.30;
+    (total_tokens as f64 / 1_000_000.0) * blended_per_m
+}
+
+/// Test shim: exposes `estimate_cost` for unit tests in `tests.rs`.
+#[cfg(test)]
+pub(crate) fn estimate_cost_for_test(model_id: &str, total_tokens: u64) -> f64 {
+    estimate_cost(model_id, total_tokens)
 }
 
 /// Extract structured `Learning` objects from a LEARN phase output.

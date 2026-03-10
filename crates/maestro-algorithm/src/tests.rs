@@ -429,4 +429,52 @@ mod tests {
             assert!(!json.is_empty());
         }
     }
+
+    // ── Cost Estimation ────────────────────────────────────────────────────
+
+    #[test]
+    fn estimate_cost_zero_tokens_is_zero() {
+        let cost = crate::executor::estimate_cost_for_test("gpt-4o", 0);
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn estimate_cost_gpt4o_one_million_tokens() {
+        // gpt-4o: $2.50/$10.00 per million; blended = 2.50*0.70 + 10.00*0.30 = 1.75 + 3.00 = $4.75
+        let cost = crate::executor::estimate_cost_for_test("gpt-4o", 1_000_000);
+        assert!(
+            (cost - 4.75).abs() < 0.001,
+            "Expected ~$4.75 for 1M gpt-4o tokens, got {cost:.6}"
+        );
+    }
+
+    #[test]
+    fn estimate_cost_haiku_is_cheap() {
+        // claude-3-5-haiku: $0.25/$1.25 per million; blended = 0.25*0.70 + 1.25*0.30 = 0.175 + 0.375 = $0.55
+        let cost = crate::executor::estimate_cost_for_test("claude-3-5-haiku-20241022", 1_000_000);
+        assert!(
+            (cost - 0.55).abs() < 0.001,
+            "Expected ~$0.55 for 1M haiku tokens, got {cost:.6}"
+        );
+    }
+
+    #[test]
+    fn estimate_cost_unknown_model_uses_default() {
+        // Unknown model: $1.00/$3.00 per million; blended = 1.00*0.70 + 3.00*0.30 = 0.70 + 0.90 = $1.60
+        let cost = crate::executor::estimate_cost_for_test("unknown-model-xyz", 1_000_000);
+        assert!(
+            (cost - 1.60).abs() < 0.001,
+            "Expected ~$1.60 for 1M unknown-model tokens, got {cost:.6}"
+        );
+    }
+
+    #[test]
+    fn estimate_cost_scales_linearly() {
+        let cost_1m = crate::executor::estimate_cost_for_test("gpt-4o-mini", 1_000_000);
+        let cost_2m = crate::executor::estimate_cost_for_test("gpt-4o-mini", 2_000_000);
+        assert!(
+            (cost_2m - cost_1m * 2.0).abs() < 0.001,
+            "Cost should scale linearly with token count"
+        );
+    }
 }

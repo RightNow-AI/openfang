@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.34] - 2026-03-10
+
+### Added
+- **Real cost tracking in `maestro-algorithm`:** `AlgorithmResult::total_cost_usd` is now computed from actual token usage via a self-contained `estimate_cost()` function. Uses a 25-model pricing table (Anthropic, OpenAI, Gemini, DeepSeek, Llama, Mistral, Grok, and more) with a conservative 70/30 input/output blended rate. No new crate dependencies required.
+- **5 new unit tests** in `maestro-algorithm::tests` verifying cost math for `gpt-4o`, `claude-3-5-haiku`, `gpt-4o-mini`, unknown models, and linear scaling.
+- **Phase 1-3 architecture documentation:** `ARCHITECTURE.md` now includes full narrative sections for Phase 1 (Codebase Fusion), Phase 2 (Async Migration), and Phase 3 (Wire Protocol & Channels).
+
+### Changed
+- `ARCHITECTURE.md` restructured to cover all 11 phases with consistent depth and narrative prose (708 lines).
+- `maestro-development` skill updated to version `0.3.34`.
+- Workspace version bumped from `0.3.33` to `0.3.34`.
+
 ## [0.3.33] - 2026-03-09
 
 ### Added
@@ -133,7 +145,9 @@ The `validate_criteria()` function has been significantly enhanced with whole-wo
 
 The initial public release of OpenFang. A 15-crate Rust workspace implementing a full Agent Operating System, including agent lifecycle management, a SQLite-backed memory substrate, 41 built-in tools, a WASM sandbox with dual metering, a workflow engine, 40 channel adapters, 3 native LLM drivers supporting 27 providers, a Tauri 2.0 desktop app, and 7 autonomous Hands packages. 1,731+ tests across 15 crates.
 
-[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.32...HEAD
+[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.34...HEAD
+[0.3.34]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.33...v0.3.34
+[0.3.33]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.32...v0.3.33
 [0.3.32]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.31...v0.3.32
 [0.3.31]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.30...v0.3.31
 [0.3.30]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.29...v0.3.30
