@@ -339,7 +339,7 @@ impl ChannelAdapter for NostrAdapter {
                                 platform_id: sender_pubkey.clone(),
                                 display_name: format!(
                                     "{}...",
-                                    &sender_pubkey[..8.min(sender_pubkey.len())]
+                                    openfang_types::truncate_str(&sender_pubkey, 8)
                                 ),
                                 openfang_user: None,
                             },

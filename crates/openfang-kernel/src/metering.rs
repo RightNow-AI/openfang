@@ -128,6 +128,7 @@ impl MeteringEngine {
                 0.0
             },
             alert_threshold: budget.alert_threshold,
+            default_max_llm_tokens_per_hour: budget.default_max_llm_tokens_per_hour,
         }
     }
 
@@ -224,6 +225,8 @@ pub struct BudgetStatus {
     pub monthly_limit: f64,
     pub monthly_pct: f64,
     pub alert_threshold: f64,
+    /// Global default token limit per agent per hour (0 = use per-agent values).
+    pub default_max_llm_tokens_per_hour: u64,
 }
 
 /// Returns (input_per_million, output_per_million) pricing for a model.

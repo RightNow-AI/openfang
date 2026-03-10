@@ -83,20 +83,73 @@ fn normalize_schema_recursive(schema: &serde_json::Value) -> serde_json::Value {
         // Strip fields unsupported by Gemini and most non-Anthropic providers
         if matches!(
             key.as_str(),
-            "$schema" | "$defs" | "$ref" | "additionalProperties" | "default"
-                | "$id" | "$comment" | "examples" | "title"
+            "$schema"
+                | "$defs"
+                | "$ref"
+                | "additionalProperties"
+                | "default"
+                | "$id"
+                | "$comment"
+                | "examples"
+                | "title"
+                | "const"
+                | "format"
         ) {
             continue;
         }
 
-        // Convert anyOf to flat type + enum when possible
-        if key == "anyOf" {
+        // Convert anyOf/oneOf to flat type + enum when possible
+        if key == "anyOf" || key == "oneOf" {
             if let Some(converted) = try_flatten_any_of(value) {
                 for (k, v) in converted {
                     result.insert(k, v);
                 }
                 continue;
             }
+            // Can't flatten — strip entirely rather than leave unsupported keyword
+            continue;
+        }
+
+        // Flatten type arrays like ["string", "null"] to single type + nullable
+        if key == "type" {
+            if let Some(arr) = value.as_array() {
+                let types: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                let has_null = types.contains(&"null");
+                let non_null: Vec<&&str> =
+                    types.iter().filter(|&&t| t != "null").collect();
+                if has_null && non_null.len() == 1 {
+                    // ["string", "null"] → type: "string", nullable: true
+                    result.insert(
+                        "type".to_string(),
+                        serde_json::Value::String(non_null[0].to_string()),
+                    );
+                    result.insert("nullable".to_string(), serde_json::Value::Bool(true));
+                    continue;
+                } else if non_null.len() == 1 {
+                    // ["string"] → type: "string"
+                    result.insert(
+                        "type".to_string(),
+                        serde_json::Value::String(non_null[0].to_string()),
+                    );
+                    continue;
+                } else if !non_null.is_empty() {
+                    // Multiple non-null types — pick first (best effort)
+                    result.insert(
+                        "type".to_string(),
+                        serde_json::Value::String(non_null[0].to_string()),
+                    );
+                    if has_null {
+                        result.insert(
+                            "nullable".to_string(),
+                            serde_json::Value::Bool(true),
+                        );
+                    }
+                    continue;
+                }
+            }
+            // Scalar type string — pass through
+            result.insert(key.clone(), value.clone());
+            continue;
         }
 
         // Recurse into properties
@@ -215,17 +268,20 @@ fn try_flatten_any_of(any_of: &serde_json::Value) -> Option<Vec<(String, serde_j
         return Some(result);
     }
 
-    // If all items are simple types, create a type array
+    // If all items are simple types, pick the first non-null type (best effort).
+    // Gemini rejects type arrays, so we can't emit ["string", "number"].
     if types.len() == items.len() && types.len() > 1 {
-        let type_array: Vec<serde_json::Value> =
-            types.into_iter().map(serde_json::Value::String).collect();
-        return Some(vec![(
+        let mut result = vec![(
             "type".to_string(),
-            serde_json::Value::Array(type_array),
-        )]);
+            serde_json::Value::String(types[0].clone()),
+        )];
+        if has_null {
+            result.push(("nullable".to_string(), serde_json::Value::Bool(true)));
+        }
+        return Some(result);
     }
 
-    // Can't flatten — leave as-is
+    // Can't flatten — caller will strip the key entirely
     None
 }
 
@@ -299,7 +355,9 @@ mod tests {
         });
         let result = normalize_schema_for_provider(&schema, "groq");
         let value_prop = &result["properties"]["value"];
-        assert!(value_prop["type"].is_array());
+        // Gemini rejects type arrays — should flatten to first type
+        assert_eq!(value_prop["type"], "string");
+        assert!(value_prop.get("anyOf").is_none());
     }
 
     #[test]
@@ -431,5 +489,168 @@ mod tests {
         let result = normalize_schema_for_provider(&schema, "gemini");
         assert!(result.get("$defs").is_none());
         assert_eq!(result["properties"]["x"]["type"], "string");
+    }
+
+    // --- Issue #488 tests ---
+
+    #[test]
+    fn test_normalize_strips_const() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "version": { "type": "string", "const": "v1" }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        assert!(result["properties"]["version"].get("const").is_none());
+        assert_eq!(result["properties"]["version"]["type"], "string");
+    }
+
+    #[test]
+    fn test_normalize_strips_format() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "created_at": { "type": "string", "format": "date-time" },
+                "email": { "type": "string", "format": "email" }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        assert!(result["properties"]["created_at"].get("format").is_none());
+        assert!(result["properties"]["email"].get("format").is_none());
+        assert_eq!(result["properties"]["created_at"]["type"], "string");
+        assert_eq!(result["properties"]["email"]["type"], "string");
+    }
+
+    #[test]
+    fn test_normalize_flattens_oneof_nullable() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "oneOf": [
+                        { "type": "string" },
+                        { "type": "null" }
+                    ]
+                }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        let value_prop = &result["properties"]["value"];
+        assert_eq!(value_prop["type"], "string");
+        assert_eq!(value_prop["nullable"], true);
+        assert!(value_prop.get("oneOf").is_none());
+    }
+
+    #[test]
+    fn test_normalize_strips_oneof_complex() {
+        // Complex oneOf that can't be flattened — should be stripped entirely
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "data": {
+                    "oneOf": [
+                        { "type": "object", "properties": { "a": { "type": "string" } } },
+                        { "type": "object", "properties": { "b": { "type": "number" } } }
+                    ]
+                }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        let data_prop = &result["properties"]["data"];
+        assert!(data_prop.get("oneOf").is_none());
+    }
+
+    #[test]
+    fn test_normalize_flattens_type_array_nullable() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": ["string", "null"] }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        let name_prop = &result["properties"]["name"];
+        assert_eq!(name_prop["type"], "string");
+        assert_eq!(name_prop["nullable"], true);
+    }
+
+    #[test]
+    fn test_normalize_flattens_type_array_multi() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": ["string", "number", "null"] }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        let value_prop = &result["properties"]["value"];
+        // Should pick first non-null type
+        assert_eq!(value_prop["type"], "string");
+        assert_eq!(value_prop["nullable"], true);
+    }
+
+    #[test]
+    fn test_normalize_flattens_type_array_single() {
+        // Single-element type array
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "x": { "type": ["integer"] }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        assert_eq!(result["properties"]["x"]["type"], "integer");
+        assert!(result["properties"]["x"].get("nullable").is_none());
+    }
+
+    #[test]
+    fn test_normalize_strips_anyof_complex() {
+        // Complex anyOf that can't be flattened — should be stripped entirely
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "anyOf": [
+                        { "type": "object", "properties": { "url": { "type": "string" } } },
+                        { "type": "array", "items": { "type": "string" } }
+                    ]
+                }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        let payload_prop = &result["properties"]["payload"];
+        assert!(payload_prop.get("anyOf").is_none());
+    }
+
+    #[test]
+    fn test_normalize_combined_issue_488() {
+        // Real-world schema combining multiple #488 issues
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "api_version": { "type": "string", "const": "v2", "format": "semver" },
+                "timestamp": { "type": "string", "format": "date-time" },
+                "label": {
+                    "oneOf": [
+                        { "type": "string" },
+                        { "type": "null" }
+                    ]
+                },
+                "tags": { "type": ["string", "null"] }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        // const and format stripped
+        assert!(result["properties"]["api_version"].get("const").is_none());
+        assert!(result["properties"]["api_version"].get("format").is_none());
+        assert!(result["properties"]["timestamp"].get("format").is_none());
+        // oneOf flattened
+        assert_eq!(result["properties"]["label"]["type"], "string");
+        assert_eq!(result["properties"]["label"]["nullable"], true);
+        assert!(result["properties"]["label"].get("oneOf").is_none());
+        // type array flattened
+        assert_eq!(result["properties"]["tags"]["type"], "string");
+        assert_eq!(result["properties"]["tags"]["nullable"], true);
     }
 }

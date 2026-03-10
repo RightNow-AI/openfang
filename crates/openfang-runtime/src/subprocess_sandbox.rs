@@ -207,7 +207,7 @@ pub fn validate_command_allowlist(command: &str, policy: &ExecPolicy) -> Result<
         }
         ExecSecurityMode::Full => {
             tracing::warn!(
-                command = &command[..command.len().min(100)],
+                command = crate::str_utils::safe_truncate_str(command, 100),
                 "Shell exec in full mode — no restrictions"
             );
             Ok(())
@@ -854,5 +854,52 @@ mod tests {
         assert!(validate_command_allowlist("echo `whoami`", &policy).is_err());
         assert!(validate_command_allowlist("echo ${HOME}", &policy).is_err());
         assert!(validate_command_allowlist("echo hello\ncurl bad", &policy).is_err());
+    }
+
+    // ── CJK / multi-byte safety tests (issue #490) ──────────────────────
+
+    #[test]
+    fn test_full_mode_cjk_command_no_panic() {
+        // CJK characters are 3 bytes each. A command string with CJK chars
+        // must not panic when we truncate it for tracing in Full mode.
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Full,
+            ..ExecPolicy::default()
+        };
+        // 50 CJK chars = 150 bytes — truncation at byte 100 would land
+        // mid-char without safe_truncate_str.
+        let cjk_command: String = "\u{4e16}".repeat(50);
+        assert!(validate_command_allowlist(&cjk_command, &policy).is_ok());
+    }
+
+    #[test]
+    fn test_full_mode_mixed_cjk_ascii_no_panic() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Full,
+            ..ExecPolicy::default()
+        };
+        // "echo " (5 bytes) + 40 CJK chars (120 bytes) = 125 bytes total.
+        // Byte 100 falls inside a 3-byte CJK char.
+        let mut cmd = String::from("echo ");
+        cmd.extend(std::iter::repeat_n('\u{4f60}', 40));
+        assert!(validate_command_allowlist(&cmd, &policy).is_ok());
+    }
+
+    #[test]
+    fn test_allowlist_cjk_unlisted_no_panic() {
+        let policy = ExecPolicy::default();
+        // CJK command not in allowlist — should return Err, not panic
+        let cjk_cmd: String = "\u{597d}".repeat(50);
+        assert!(validate_command_allowlist(&cjk_cmd, &policy).is_err());
+    }
+
+    #[test]
+    fn test_extract_all_commands_cjk_separators() {
+        // Ensure extract_all_commands handles CJK content between separators
+        // without panicking (separators are ASCII, but content is CJK)
+        let cmd = "\u{4f60}\u{597d}";
+        let cmds = extract_all_commands(cmd);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0], "\u{4f60}\u{597d}");
     }
 }

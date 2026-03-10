@@ -1227,7 +1227,7 @@ mod tests {
         assert!(
             text.contains("truncated from"),
             "Oversized message should be truncated, got: {}",
-            &text[..text.len().min(200)]
+            crate::str_utils::safe_truncate_str(&text, 200)
         );
     }
 
