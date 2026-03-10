@@ -693,3 +693,5 @@ mod tests {
         assert!(ctx.contains("Rust is fast."));
     }
 }
+
+pub mod ingestion;
