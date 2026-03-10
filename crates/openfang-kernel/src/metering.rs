@@ -382,16 +382,19 @@ fn estimate_cost_rates(model: &str) -> (f64, f64) {
 
     // ── Zhipu / GLM ─────────────────────────────────────────────
     if model.contains("glm-5") {
-        return (2.00, 8.00);
+        return (1.00, 3.20);
     }
     if model.contains("glm-4.7") {
-        return (1.50, 5.00);
+        return (0.60, 2.20);
     }
-    if model.contains("glm-4-flash") {
-        return (0.10, 0.10);
+    if model.contains("glm-4-flash") || model.contains("glm-4.5-flash") {
+        return (0.0, 0.0); // free tier
+    }
+    if model.contains("glm-4.5") {
+        return (0.60, 2.20);
     }
     if model.contains("glm") {
-        return (1.50, 5.00);
+        return (0.60, 2.20);
     }
     if model.contains("codegeex") {
         return (0.10, 0.10);

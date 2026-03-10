@@ -73,6 +73,33 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         Ok(result.response)
     }
 
+    async fn send_message_with_blocks(
+        &self,
+        agent_id: AgentId,
+        blocks: Vec<openfang_types::message::ContentBlock>,
+    ) -> Result<String, String> {
+        // Extract text for the message parameter (used for memory recall / logging)
+        let text: String = blocks
+            .iter()
+            .filter_map(|b| match b {
+                openfang_types::message::ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = if text.is_empty() {
+            "[Image]".to_string()
+        } else {
+            text
+        };
+        let result = self
+            .kernel
+            .send_message_with_blocks(agent_id, &text, blocks)
+            .await
+            .map_err(|e| format!("{e}"))?;
+        Ok(result.response)
+    }
+
     async fn find_agent_by_name(&self, name: &str) -> Result<Option<AgentId>, String> {
         Ok(self.kernel.registry.find_by_name(name).map(|e| e.id))
     }
@@ -648,7 +675,16 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         self.kernel
             .set_agent_model(agent_id, model)
             .map_err(|e| format!("{e}"))?;
-        Ok(format!("Model switched to: {model}"))
+        // Read back resolved model+provider from registry
+        let entry = self
+            .kernel
+            .registry
+            .get(agent_id)
+            .ok_or_else(|| "Agent not found after model switch".to_string())?;
+        Ok(format!(
+            "Model switched to: {} (provider: {})",
+            entry.manifest.model.model, entry.manifest.model.provider
+        ))
     }
 
     async fn stop_run(&self, agent_id: AgentId) -> Result<String, String> {
@@ -1030,6 +1066,7 @@ pub async fn start_channel_bridge_with_config(
                 token,
                 tg_config.allowed_users.clone(),
                 poll_interval,
+                tg_config.api_url.clone(),
             ));
             adapters.push((adapter, tg_config.default_agent.clone()));
         }

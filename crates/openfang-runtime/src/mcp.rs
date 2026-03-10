@@ -200,6 +200,19 @@ impl McpConnection {
                     let input_schema = tool
                         .get("inputSchema")
                         .cloned()
+                        .and_then(|v| {
+                            // Ensure input_schema is a JSON object. MCP servers may
+                            // return it as a string, null, or omit it entirely.
+                            match &v {
+                                serde_json::Value::Object(_) => Some(v),
+                                serde_json::Value::String(s) => {
+                                    serde_json::from_str::<serde_json::Value>(s)
+                                        .ok()
+                                        .filter(|p| p.is_object())
+                                }
+                                _ => None,
+                            }
+                        })
                         .unwrap_or(serde_json::json!({"type": "object"}));
 
                     // Namespace: mcp_{server}_{tool}

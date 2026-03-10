@@ -613,6 +613,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_parse_discord_ignore_bots_false_allows_other_bots() {
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        let d = serde_json::json!({
+            "id": "msg1",
+            "channel_id": "ch1",
+            "content": "Bot message",
+            "author": {
+                "id": "other_bot",
+                "username": "somebot",
+                "discriminator": "0",
+                "bot": true
+            },
+            "timestamp": "2024-01-01T00:00:00+00:00"
+        });
+
+        // With ignore_bots=false, other bots' messages should be allowed
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], false).await;
+        assert!(msg.is_some());
+        let msg = msg.unwrap();
+        assert_eq!(msg.sender.display_name, "somebot");
+        assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Bot message"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_discord_ignore_bots_false_still_filters_self() {
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        let d = serde_json::json!({
+            "id": "msg1",
+            "channel_id": "ch1",
+            "content": "My own message",
+            "author": {
+                "id": "bot123",
+                "username": "openfang",
+                "discriminator": "0",
+                "bot": true
+            },
+            "timestamp": "2024-01-01T00:00:00+00:00"
+        });
+
+        // Even with ignore_bots=false, the bot's own messages must still be filtered
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], false).await;
+        assert!(msg.is_none());
+    }
+
+    #[tokio::test]
     async fn test_parse_discord_message_guild_filter() {
         let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
         let d = serde_json::json!({

@@ -173,6 +173,14 @@ impl Message {
         }
     }
 
+    /// Create a user message with structured content blocks (e.g. text + images).
+    pub fn user_with_blocks(blocks: Vec<ContentBlock>) -> Self {
+        Self {
+            role: Role::User,
+            content: MessageContent::Blocks(blocks),
+        }
+    }
+
     /// Create an assistant message.
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
@@ -290,5 +298,28 @@ mod tests {
         let json = serde_json::json!({"type": "future_block_type"});
         let block: ContentBlock = serde_json::from_value(json).unwrap();
         assert!(matches!(block, ContentBlock::Unknown));
+    }
+
+    #[test]
+    fn test_user_with_blocks() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "What is in this image?".to_string(),
+            },
+            ContentBlock::Image {
+                media_type: "image/jpeg".to_string(),
+                data: "base64data".to_string(),
+            },
+        ];
+        let msg = Message::user_with_blocks(blocks);
+        assert_eq!(msg.role, Role::User);
+        match msg.content {
+            MessageContent::Blocks(ref b) => {
+                assert_eq!(b.len(), 2);
+                assert!(matches!(&b[0], ContentBlock::Text { text } if text == "What is in this image?"));
+                assert!(matches!(&b[1], ContentBlock::Image { media_type, .. } if media_type == "image/jpeg"));
+            }
+            _ => panic!("Expected blocks content"),
+        }
     }
 }

@@ -1343,7 +1343,7 @@ The following providers are recognized by `openfang config set-key` and `openfan
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 | Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
 | OpenAI | `OPENAI_API_KEY` | `gpt-4o` |
-| OpenRouter | `OPENROUTER_API_KEY` | `openrouter/auto` |
+| OpenRouter | `OPENROUTER_API_KEY` | `openrouter/google/gemini-2.5-flash` |
 | Together | `TOGETHER_API_KEY` | -- |
 | Mistral | `MISTRAL_API_KEY` | -- |
 | Fireworks | `FIREWORKS_API_KEY` | -- |

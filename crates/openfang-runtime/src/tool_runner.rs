@@ -9,6 +9,7 @@ use crate::web_search::{parse_ddg_results, WebToolsContext};
 use openfang_skills::registry::SkillRegistry;
 use openfang_types::taint::{TaintLabel, TaintSink, TaintedValue};
 use openfang_types::tool::{ToolDefinition, ToolResult};
+use openfang_types::tool_compat::normalize_tool_name;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -123,6 +124,10 @@ pub async fn execute_tool(
     docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
 ) -> ToolResult {
+    // Normalize the tool name through compat mappings so LLM-hallucinated aliases
+    // (e.g. "fs-write" → "file_write") resolve to the canonical OpenFang name.
+    let tool_name = normalize_tool_name(tool_name);
+
     // Capability enforcement: reject tools not in the allowed list
     if let Some(allowed) = allowed_tools {
         if !allowed.iter().any(|t| t == tool_name) {
@@ -3262,10 +3267,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_read_missing() {
+        let bad_path = std::env::temp_dir()
+            .join("openfang_test_nonexistent_99999")
+            .join("file.txt");
         let result = execute_tool(
             "test-id",
             "file_read",
-            &serde_json::json!({"path": "/nonexistent/file.txt"}),
+            &serde_json::json!({"path": bad_path.to_str().unwrap()}),
             None,
             None,
             None,
@@ -3282,7 +3290,7 @@ mod tests {
             None, // process_manager
         )
         .await;
-        assert!(result.is_error);
+        assert!(result.is_error, "Expected error but got: {}", result.content);
     }
 
     #[tokio::test]
@@ -3471,10 +3479,14 @@ mod tests {
     #[tokio::test]
     async fn test_capability_enforcement_allowed() {
         let allowed = vec!["file_read".to_string()];
+        // Use a cross-platform nonexistent path
+        let bad_path = std::env::temp_dir()
+            .join("openfang_test_nonexistent_12345")
+            .join("file.txt");
         let result = execute_tool(
             "test-id",
             "file_read",
-            &serde_json::json!({"path": "/nonexistent/file.txt"}),
+            &serde_json::json!({"path": bad_path.to_str().unwrap()}),
             None,
             Some(&allowed),
             None,
@@ -3492,8 +3504,81 @@ mod tests {
         )
         .await;
         // Should fail for file-not-found, NOT for permission denied
+        assert!(result.is_error, "Expected error but got: {}", result.content);
+        assert!(
+            result.content.contains("Failed to read") || result.content.contains("not found") || result.content.contains("No such file"),
+            "Unexpected error: {}", result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn test_capability_enforcement_aliased_tool_name() {
+        // Agent has "file_write" in allowed tools, but LLM calls "fs-write".
+        // After normalization, this should pass the capability check.
+        let allowed = vec![
+            "file_read".to_string(),
+            "file_write".to_string(),
+            "file_list".to_string(),
+            "shell_exec".to_string(),
+        ];
+        let result = execute_tool(
+            "test-id",
+            "fs-write", // LLM-hallucinated alias
+            &serde_json::json!({"path": "/nonexistent/file.txt", "content": "hello"}),
+            None,
+            Some(&allowed),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // media_engine
+            None, // exec_policy
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
+        // Should NOT be "Permission denied" — it should normalize to file_write
+        // and pass the capability check. It will fail for other reasons (path validation).
+        assert!(
+            !result.content.contains("Permission denied"),
+            "fs-write should normalize to file_write and pass capability check, got: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn test_capability_enforcement_aliased_denied() {
+        // Agent does NOT have file_write, and LLM calls "fs-write" — should be denied.
+        let allowed = vec!["file_read".to_string()];
+        let result = execute_tool(
+            "test-id",
+            "fs-write",
+            &serde_json::json!({"path": "/tmp/test.txt", "content": "hello"}),
+            None,
+            Some(&allowed),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // media_engine
+            None, // exec_policy
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
         assert!(result.is_error);
-        assert!(result.content.contains("Failed to read"));
+        assert!(
+            result.content.contains("Permission denied"),
+            "fs-write should normalize to file_write which is not in allowed list"
+        );
     }
 
     // --- Schedule parser tests ---
