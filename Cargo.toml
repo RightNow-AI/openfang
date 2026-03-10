@@ -28,10 +28,12 @@ members = [
     "crates/maestro-cache",
     "crates/maestro-falkor-analytics",
     "crates/maestro-integration-tests",
+    "crates/fanghub-registry",
+    "crates/fang-cli",
 ]
 
 [workspace.package]
-version = "0.3.32"
+version = "0.3.33"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
@@ -98,7 +100,7 @@ url = "2"
 wasmtime = "41"
 
 # HTTP server (for API daemon)
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "compression-br"] }
 
@@ -143,6 +145,9 @@ regex = "1"
 # Semver
 semver = { version = "1", features = ["serde"] }
 
+# JWT authentication
+jsonwebtoken = "9"
+
 # Rate limiting
 governor = "0.8"
 
@@ -166,6 +171,13 @@ socket2 = "0.5"
 # Zip archive extraction
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# Tar/gzip archive creation (for fang-cli packager)
+flate2 = "1"
+tar = "0.4"
+
+# URL encoding
+urlencoding = "2"
+
 # Email (SMTP + IMAP)
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
 imap = "2"
@@ -176,8 +188,16 @@ mailparse = "0.15"
 tokio-test = "0.4"
 tempfile = "3"
 
+# Leptos full-stack UI framework
+leptos = { version = "0.8", features = ["nonce", "ssr"] }
+leptos_axum = { version = "0.8" }
+leptos_meta = { version = "0.8" }
+leptos_router = { version = "0.8" }
+leptos_config = { version = "0.8" }
+
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
 opt-level = 3
+

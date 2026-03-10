@@ -1,0 +1,45 @@
+[package]
+name = "fanghub-registry"
+description = "FangHub — the public marketplace registry for OpenFang Hand packages. Provides a REST API for publishing, searching, and retrieving Hand packages."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "fanghub-registry"
+path = "src/main.rs"
+
+[lib]
+name = "fanghub_registry"
+path = "src/lib.rs"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+surrealdb.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+base64.workspace = true
+reqwest.workspace = true
+bytes.workspace = true
+toml.workspace = true
+semver.workspace = true
+jsonwebtoken.workspace = true
+leptos.workspace = true
+leptos_axum.workspace = true
+leptos_meta.workspace = true
+leptos_router.workspace = true
+leptos_config.workspace = true
+urlencoding.workspace = true
+hex.workspace = true

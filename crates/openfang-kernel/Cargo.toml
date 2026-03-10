@@ -37,6 +37,9 @@ subtle = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 reqwest = { workspace = true }
+sha2 = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
 cron = "0.15"
 
 [target.'cfg(unix)'.dependencies]

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.33] - 2026-03-09
+
+### Added
+- **FangHub Marketplace** (Phase 11)
+  - `fanghub-registry` crate: SurrealDB backend with Axum REST API (`/publish`, `/search`, `/versions`).
+  - `fang-cli` crate: Developer CLI for `login`, `package`, and `publish` commands.
+  - `fanghub-ui`: Leptos SSR frontend for package discovery, integrated into `fanghub-registry` binary.
+  - `openfang-kernel` now has `install_from_fanghub()` method to install Hands from the marketplace.
+  - `maestro-integration-tests` now includes `fanghub_marketplace` test suite.
+- `docs/fanghub-publishing-guide.md`.
+
 ## [0.3.32] - 2026-03-09
 ### Added
 - **Phase 10: Production Hardening**

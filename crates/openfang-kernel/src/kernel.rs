@@ -3203,7 +3203,138 @@ impl OpenFangKernel {
             .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(e.to_string())))
     }
 
-    /// Set the weak self-reference for trigger dispatch.
+    // FangHub Marketplace Integration
+
+    /// Install a Hand from the FangHub marketplace.
+    ///
+    /// Fetches the latest published version of `hand_id` from the FangHub registry,
+    /// downloads the package archive, extracts HAND.toml and SKILL.md, verifies
+    /// the SHA-256 checksum, and registers the Hand in the local registry.
+    pub async fn install_from_fanghub(
+        &self,
+        hand_id: &str,
+        registry_url: &str,
+    ) -> KernelResult<openfang_hands::HandDefinition> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .user_agent("openfang-kernel/0.3.33")
+            .build()
+            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(e.to_string())))?;
+
+        let versions_url = format!(
+            "{}/api/packages/{}/versions",
+            registry_url.trim_end_matches('/'),
+            hand_id
+        );
+        let versions_resp = client
+            .get(&versions_url)
+            .send()
+            .await
+            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(
+                format!("FangHub fetch failed for {}: {}", hand_id, e),
+            )))?;
+
+        if versions_resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(KernelError::OpenFang(OpenFangError::Internal(
+                format!("Hand {} not found in FangHub registry at {}", hand_id, registry_url),
+            )));
+        }
+        if !versions_resp.status().is_success() {
+            return Err(KernelError::OpenFang(OpenFangError::Internal(
+                format!("FangHub returned HTTP {} for {}", versions_resp.status(), hand_id),
+            )));
+        }
+
+        let versions: Vec<serde_json::Value> = versions_resp
+            .json()
+            .await
+            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(
+                format!("Failed to parse FangHub version list: {}", e),
+            )))?;
+
+        let latest = versions.first().ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::Internal(
+                format!("Hand {} has no published versions in FangHub", hand_id),
+            ))
+        })?;
+
+        let manifest = latest["manifest"].as_str().ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::Internal("FangHub version missing manifest".to_string()))
+        })?;
+        let download_url = latest["download_url"].as_str().ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::Internal("FangHub version missing download_url".to_string()))
+        })?;
+        let expected_checksum = latest["checksum"].as_str().ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::Internal("FangHub version missing checksum".to_string()))
+        })?;
+        let version_str = latest["version"].as_str().unwrap_or("unknown");
+
+        info!(hand = %hand_id, version = %version_str, "Downloading Hand from FangHub");
+
+        let archive_bytes = client
+            .get(download_url)
+            .send()
+            .await
+            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(
+                format!("FangHub download failed: {}", e),
+            )))?
+            .bytes()
+            .await
+            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(
+                format!("FangHub download read failed: {}", e),
+            )))?;
+
+        let actual_checksum = {
+            let mut hasher = Sha256::new();
+            hasher.update(&archive_bytes);
+            format!("{:x}", hasher.finalize())
+        };
+        if actual_checksum != expected_checksum {
+            return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                "FangHub checksum mismatch for {} v{}: expected {}, got {}",
+                hand_id, version_str, expected_checksum, actual_checksum
+            ))));
+        }
+
+        let skill_content = {
+            let cursor = std::io::Cursor::new(&archive_bytes[..]);
+            let gz_decoder = flate2::read::GzDecoder::new(cursor);
+            let mut tar_archive = tar::Archive::new(gz_decoder);
+            let mut skill_md = String::new();
+            for entry in tar_archive.entries().map_err(|e| KernelError::OpenFang(OpenFangError::Internal(
+                format!("Failed to read FangHub archive: {}", e),
+            )))? {
+                let mut entry = entry.map_err(|e| KernelError::OpenFang(OpenFangError::Internal(
+                    format!("Failed to read archive entry: {}", e),
+                )))?;
+                let path = entry.path().map_err(|e| KernelError::OpenFang(OpenFangError::Internal(
+                    format!("Failed to read entry path: {}", e),
+                )))?;
+                if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
+                    entry.read_to_string(&mut skill_md).map_err(|e| KernelError::OpenFang(OpenFangError::Internal(
+                        format!("Failed to read SKILL.md from archive: {}", e),
+                    )))?;
+                    break;
+                }
+            }
+            skill_md
+        };
+
+        let def = self
+            .hand_registry
+            .install_from_content(manifest, &skill_content)
+            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(
+                format!("Failed to install Hand {} from FangHub: {}", hand_id, e),
+            )))?;
+
+        info!(hand = %def.id, name = %def.name, version = %version_str, "Hand installed from FangHub");
+        Ok(def)
+    }
+
+        /// Set the weak self-reference for trigger dispatch.
     ///
     /// Must be called once after the kernel is wrapped in `Arc`.
     pub fn set_self_handle(self: &Arc<Self>) {

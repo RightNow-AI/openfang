@@ -19,7 +19,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-v0.3.32-green?style=flat-square" alt="v0.3.32" />
+  <img src="https://img.shields.io/badge/version-v0.3.33-green?style=flat-square" alt="v0.3.33" />
   <img src="https://img.shields.io/badge/phase-10%20🟡%20in%20progress-blue?style=flat-square" alt="Phase 10 In Progress" />
   <img src="https://img.shields.io/badge/tests-2,010%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
@@ -28,7 +28,7 @@
 
 ---
 
-> **v0.3.32 — Phase 10 In Progress (March 2026)**
+> **v0.3.33 — Phase 10 In Progress (March 2026)**
 >
 > Phase 10 (Production Hardening) is underway. The system now has a comprehensive integration test suite (44 tests), a new Hand scheduler, and is fully async. See [ROADMAP.md](ROADMAP.md) for full details.
 
@@ -178,7 +178,7 @@ cargo fmt --all -- --check
 
 ## Stability Notice
 
-OpenFang v0.3.32 is a significant update. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
+OpenFang v0.3.33 is a significant update. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
 
 - **Breaking changes** may occur between minor versions until v1.0
 - **Some Hands** are more mature than others (Browser and Researcher are the most battle-tested)
