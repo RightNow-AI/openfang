@@ -23,6 +23,7 @@ crossbeam = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }

@@ -65,22 +65,23 @@ pub fn truncate_tool_result_dynamic(content: &str, budget: &ContextBudget) -> St
     }
 
     // Find last newline before the cap to break cleanly (char-boundary safe)
-    let safe_cap = if content.is_char_boundary(cap) {
-        cap
-    } else {
-        content[..cap].char_indices().next_back().map(|(i, _)| i).unwrap_or(0)
-    };
-    let search_start = safe_cap.saturating_sub(200);
-    let break_point = content[search_start..safe_cap]
+    let mut safe_cap = cap.min(content.len());
+    while safe_cap > 0 && !content.is_char_boundary(safe_cap) {
+        safe_cap -= 1;
+    }
+    let mut search_start = safe_cap.saturating_sub(200);
+    // Ensure search_start is a valid char boundary
+    while search_start > 0 && !content.is_char_boundary(search_start) {
+        search_start -= 1;
+    }
+    let mut break_point = content[search_start..safe_cap]
         .rfind('\n')
         .map(|pos| search_start + pos)
         .unwrap_or(safe_cap.saturating_sub(100));
     // Ensure break_point is also a char boundary
-    let break_point = if content.is_char_boundary(break_point) {
-        break_point
-    } else {
-        content[..break_point].char_indices().next_back().map(|(i, _)| i).unwrap_or(0)
-    };
+    while break_point > 0 && !content.is_char_boundary(break_point) {
+        break_point -= 1;
+    }
 
     format!(
         "{}\n\n[TRUNCATED: result was {} chars, showing first {} (budget: {}% of {}K context window)]",
@@ -201,28 +202,16 @@ fn truncate_to(content: &str, max_chars: usize) -> String {
     if content.len() <= max_chars {
         return content.to_string();
     }
-    let keep = max_chars.saturating_sub(80).min(content.len());
-    // Ensure keep is a valid char boundary
-    let keep = if content.is_char_boundary(keep) {
-        keep
-    } else {
-        content[..keep]
-            .char_indices()
-            .next_back()
-            .map(|(i, _)| i)
-            .unwrap_or(0)
-    };
-    let search_start = keep.saturating_sub(100);
-    // Ensure search_start is a valid char boundary
-    let search_start = if content.is_char_boundary(search_start) {
-        search_start
-    } else {
-        content[..search_start]
-            .char_indices()
-            .next_back()
-            .map(|(i, _)| i)
-            .unwrap_or(0)
-    };
+    let mut keep = max_chars.saturating_sub(80).min(content.len());
+    // Walk back to a valid char boundary
+    while keep > 0 && !content.is_char_boundary(keep) {
+        keep -= 1;
+    }
+    let mut search_start = keep.saturating_sub(100);
+    // Walk back to a valid char boundary
+    while search_start > 0 && !content.is_char_boundary(search_start) {
+        search_start -= 1;
+    }
     // Try to break at newline
     let break_point = content[search_start..keep]
         .rfind('\n')
@@ -318,5 +307,48 @@ mod tests {
                 assert!(content.len() < 500);
             }
         }
+    }
+
+    #[test]
+    fn test_truncate_tool_result_multibyte_chinese() {
+        // Tiny budget: cap = 30% of 100 * 2.0 = 60 bytes
+        let budget = ContextBudget::new(100);
+        // Each Chinese char is 3 bytes in UTF-8; 100 chars = 300 bytes
+        let content: String = "\u{4f60}\u{597d}\u{4e16}\u{754c}".repeat(25);
+        assert_eq!(content.len(), 300);
+        // Must not panic on multi-byte content
+        let result = truncate_tool_result_dynamic(&content, &budget);
+        assert!(result.contains("[TRUNCATED:"));
+        // The visible portion must be valid UTF-8 (implicit: no panic)
+        assert!(result.is_char_boundary(0));
+    }
+
+    #[test]
+    fn test_truncate_to_multibyte_emoji() {
+        // Each emoji is 4 bytes; 200 emojis = 800 bytes
+        let content: String = "\u{1f600}".repeat(200);
+        let result = truncate_to(&content, 100);
+        assert!(result.contains("[COMPACTED:"));
+        // Must not panic and must produce valid UTF-8
+        assert!(result.is_char_boundary(0));
+    }
+
+    #[test]
+    fn test_context_guard_multibyte_tool_results() {
+        let budget = ContextBudget::new(100);
+        // Chinese text: 500 chars * 3 bytes = 1500 bytes
+        let big_chinese: String = "\u{4e2d}\u{6587}\u{6d4b}\u{8bd5}\u{6570}\u{636e}".repeat(83);
+        let mut messages = vec![Message {
+            role: openfang_types::message::Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".to_string(),
+                tool_name: String::new(),
+                content: big_chinese,
+                is_error: false,
+            }]),
+        }];
+        // Must not panic on multi-byte content
+        let compacted = apply_context_guard(&mut messages, &budget, &[]);
+        assert!(compacted > 0);
     }
 }

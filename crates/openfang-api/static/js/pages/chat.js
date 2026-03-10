@@ -264,9 +264,10 @@ function chatPage() {
       if (model.id === this.currentAgent.model_name) { this.showModelSwitcher = false; return; }
       var self = this;
       this.modelSwitching = true;
-      OpenFangAPI.put('/api/agents/' + this.currentAgent.id + '/model', { model: model.id }).then(function() {
-        self.currentAgent.model_name = model.id;
-        self.currentAgent.model_provider = model.provider;
+      OpenFangAPI.put('/api/agents/' + this.currentAgent.id + '/model', { model: model.id }).then(function(resp) {
+        // Use server-resolved model/provider to stay in sync (fixes #387/#466)
+        self.currentAgent.model_name = (resp && resp.model) || model.id;
+        self.currentAgent.model_provider = (resp && resp.provider) || model.provider;
         OpenFangToast.success('Switched to ' + (model.display_name || model.id));
         self.showModelSwitcher = false;
         self.modelSwitching = false;
@@ -421,9 +422,12 @@ function chatPage() {
           if (self.currentAgent) {
             if (cmdArgs) {
               OpenFangAPI.put('/api/agents/' + self.currentAgent.id + '/model', { model: cmdArgs }).then(function(resp) {
-                self.currentAgent.model_name = cmdArgs;
-                if (resp && resp.provider) { self.currentAgent.model_provider = resp.provider; }
-                self.messages.push({ id: ++msgId, role: 'system', text: 'Model switched to: `' + cmdArgs + '`' + (resp && resp.provider ? ' (provider: `' + resp.provider + '`)' : ''), meta: '', tools: [] });
+                // Use server-resolved model/provider (fixes #387/#466)
+                var resolvedModel = (resp && resp.model) || cmdArgs;
+                var resolvedProvider = (resp && resp.provider) || '';
+                self.currentAgent.model_name = resolvedModel;
+                if (resolvedProvider) { self.currentAgent.model_provider = resolvedProvider; }
+                self.messages.push({ id: ++msgId, role: 'system', text: 'Model switched to: `' + resolvedModel + '`' + (resolvedProvider ? ' (provider: `' + resolvedProvider + '`)' : ''), meta: '', tools: [] });
                 self.scrollToBottom();
               }).catch(function(e) { OpenFangToast.error('Model switch failed: ' + e.message); });
             } else {

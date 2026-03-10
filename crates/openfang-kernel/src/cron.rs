@@ -216,6 +216,46 @@ impl CronScheduler {
         self.jobs.iter().map(|r| r.value().job.clone()).collect()
     }
 
+    /// Reassign all cron jobs from `old_agent_id` to `new_agent_id`.
+    ///
+    /// Used when a hand agent is respawned (e.g. after daemon restart) and
+    /// gets a new UUID. Without this, persisted cron jobs would reference
+    /// the stale old agent ID and fail silently.
+    ///
+    /// Returns the number of jobs reassigned.
+    pub fn reassign_agent_jobs(&self, old_agent_id: AgentId, new_agent_id: AgentId) -> usize {
+        let mut count = 0;
+        for mut entry in self.jobs.iter_mut() {
+            if entry.value().job.agent_id == old_agent_id {
+                entry.value_mut().job.agent_id = new_agent_id;
+                // Reset consecutive errors so the job gets a fresh start
+                // with the new agent.
+                entry.value_mut().consecutive_errors = 0;
+                if !entry.value().job.enabled {
+                    // Re-enable jobs that were auto-disabled due to the stale
+                    // agent ID causing repeated failures.
+                    if entry.value().last_status.as_deref().is_some_and(|s| {
+                        s.contains("not found") || s.contains("No such agent")
+                    }) {
+                        entry.value_mut().job.enabled = true;
+                        entry.value_mut().job.next_run =
+                            Some(compute_next_run(&entry.value().job.schedule));
+                    }
+                }
+                count += 1;
+            }
+        }
+        if count > 0 {
+            info!(
+                old_agent = %old_agent_id,
+                new_agent = %new_agent_id,
+                count,
+                "Reassigned cron jobs to new agent"
+            );
+        }
+        count
+    }
+
     /// Total number of tracked jobs.
     pub fn total_jobs(&self) -> usize {
         self.jobs.len()
@@ -324,7 +364,7 @@ pub fn compute_next_run_after(
     match schedule {
         CronSchedule::At { at } => *at,
         CronSchedule::Every { every_secs } => after + Duration::seconds(*every_secs as i64),
-        CronSchedule::Cron { expr, tz: _ } => {
+        CronSchedule::Cron { expr, tz } => {
             // Convert standard 5/6-field cron to 7-field for the `cron` crate.
             // Standard 5-field: min hour dom month dow
             // 6-field:          sec min hour dom month dow
@@ -341,10 +381,33 @@ pub fn compute_next_run_after(
             let base = after + Duration::seconds(1);
 
             match seven_field.parse::<cron::Schedule>() {
-                Ok(sched) => sched
-                    .after(&base)
-                    .next()
-                    .unwrap_or_else(|| after + Duration::hours(1)),
+                Ok(sched) => {
+                    // If a timezone is specified, compute the next fire time in
+                    // that timezone so DST and local offsets are respected, then
+                    // convert back to UTC for storage.
+                    let next_utc = match tz.as_deref() {
+                        Some(tz_str) if !tz_str.is_empty() && tz_str != "UTC" => {
+                            match tz_str.parse::<chrono_tz::Tz>() {
+                                Ok(timezone) => {
+                                    let base_local = base.with_timezone(&timezone);
+                                    sched
+                                        .after(&base_local)
+                                        .next()
+                                        .map(|dt| dt.with_timezone(&Utc))
+                                }
+                                Err(_) => {
+                                    warn!(
+                                        "Invalid timezone '{}' in cron job, falling back to UTC",
+                                        tz_str
+                                    );
+                                    sched.after(&base).next()
+                                }
+                            }
+                        }
+                        _ => sched.after(&base).next(),
+                    };
+                    next_utc.unwrap_or_else(|| after + Duration::hours(1))
+                }
                 Err(e) => {
                     warn!("Failed to parse cron expression '{}': {}", expr, e);
                     after + Duration::hours(1)
@@ -361,7 +424,7 @@ pub fn compute_next_run_after(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
+    use chrono::{Duration, Timelike};
     use openfang_types::scheduler::{CronAction, CronDelivery};
 
     /// Build a minimal valid `CronJob` with an `Every` schedule.
@@ -786,5 +849,260 @@ mod tests {
             "Status should be truncated, got {} chars",
             status.len()
         );
+    }
+
+    // -- timezone-aware cron (#473) -----------------------------------------
+
+    #[test]
+    fn test_cron_tz_shifts_next_run() {
+        // "0 9 * * *" in America/New_York (UTC-5 or UTC-4 depending on DST).
+        // The next fire time in UTC should differ from a plain UTC "0 9 * * *".
+        let schedule_utc = CronSchedule::Cron {
+            expr: "0 9 * * *".into(),
+            tz: None,
+        };
+        let schedule_ny = CronSchedule::Cron {
+            expr: "0 9 * * *".into(),
+            tz: Some("America/New_York".into()),
+        };
+        let now = Utc::now();
+        let next_utc = compute_next_run_after(&schedule_utc, now);
+        let next_ny = compute_next_run_after(&schedule_ny, now);
+
+        // The New York schedule should fire at 09:00 Eastern, which is 13:00
+        // or 14:00 UTC (depending on DST). In either case, it should NOT
+        // equal the plain UTC 09:00 result.
+        assert_ne!(
+            next_utc, next_ny,
+            "Timezone-aware schedule should produce a different UTC time"
+        );
+
+        // Verify the New York result, when converted to ET, shows hour 09.
+        let ny_tz: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let next_ny_local = next_ny.with_timezone(&ny_tz);
+        assert_eq!(
+            next_ny_local.hour(),
+            9,
+            "Expected 09:00 in America/New_York, got {:02}:{:02}",
+            next_ny_local.hour(),
+            next_ny_local.minute()
+        );
+    }
+
+    #[test]
+    fn test_cron_tz_none_defaults_to_utc() {
+        // tz: None should behave identically to tz: Some("UTC").
+        let schedule_none = CronSchedule::Cron {
+            expr: "30 12 * * *".into(),
+            tz: None,
+        };
+        let schedule_utc = CronSchedule::Cron {
+            expr: "30 12 * * *".into(),
+            tz: Some("UTC".into()),
+        };
+        let now = Utc::now();
+        let next_none = compute_next_run_after(&schedule_none, now);
+        let next_utc = compute_next_run_after(&schedule_utc, now);
+        assert_eq!(next_none, next_utc);
+    }
+
+    #[test]
+    fn test_cron_tz_empty_string_defaults_to_utc() {
+        let schedule_empty = CronSchedule::Cron {
+            expr: "30 12 * * *".into(),
+            tz: Some(String::new()),
+        };
+        let schedule_none = CronSchedule::Cron {
+            expr: "30 12 * * *".into(),
+            tz: None,
+        };
+        let now = Utc::now();
+        assert_eq!(
+            compute_next_run_after(&schedule_empty, now),
+            compute_next_run_after(&schedule_none, now)
+        );
+    }
+
+    #[test]
+    fn test_cron_tz_invalid_falls_back_to_utc() {
+        // An invalid timezone string should fall back to UTC, not panic.
+        let schedule_bad = CronSchedule::Cron {
+            expr: "0 9 * * *".into(),
+            tz: Some("Not/A_Timezone".into()),
+        };
+        let schedule_utc = CronSchedule::Cron {
+            expr: "0 9 * * *".into(),
+            tz: None,
+        };
+        let now = Utc::now();
+        let next_bad = compute_next_run_after(&schedule_bad, now);
+        let next_utc = compute_next_run_after(&schedule_utc, now);
+        // Invalid tz falls back to UTC computation — same result.
+        assert_eq!(next_bad, next_utc);
+    }
+
+    #[test]
+    fn test_cron_tz_asia_shanghai() {
+        // "0 8 * * *" in Asia/Shanghai (UTC+8) should fire at 00:00 UTC.
+        let schedule = CronSchedule::Cron {
+            expr: "0 8 * * *".into(),
+            tz: Some("Asia/Shanghai".into()),
+        };
+        let now = Utc::now();
+        let next = compute_next_run_after(&schedule, now);
+
+        let shanghai_tz: chrono_tz::Tz = "Asia/Shanghai".parse().unwrap();
+        let local = next.with_timezone(&shanghai_tz);
+        assert_eq!(local.hour(), 8);
+        assert_eq!(local.minute(), 0);
+
+        // In UTC, 08:00 Shanghai = 00:00 UTC.
+        assert_eq!(next.hour(), 0, "08:00 CST should be 00:00 UTC");
+    }
+
+    // -- reassign_agent_jobs (#461) -----------------------------------------
+
+    #[test]
+    fn test_reassign_agent_jobs_basic() {
+        let (sched, _tmp) = make_scheduler(100);
+        let old_agent = AgentId::new();
+        let new_agent = AgentId::new();
+
+        let mut j1 = make_job(old_agent);
+        j1.name = "cron-a".into();
+        let mut j2 = make_job(old_agent);
+        j2.name = "cron-b".into();
+
+        let id1 = sched.add_job(j1, false).unwrap();
+        let id2 = sched.add_job(j2, false).unwrap();
+
+        let count = sched.reassign_agent_jobs(old_agent, new_agent);
+        assert_eq!(count, 2);
+
+        // Both jobs should now belong to the new agent
+        let job1 = sched.get_job(id1).unwrap();
+        assert_eq!(job1.agent_id, new_agent);
+        let job2 = sched.get_job(id2).unwrap();
+        assert_eq!(job2.agent_id, new_agent);
+
+        // Old agent should have zero jobs
+        assert!(sched.list_jobs(old_agent).is_empty());
+        // New agent should have both
+        assert_eq!(sched.list_jobs(new_agent).len(), 2);
+    }
+
+    #[test]
+    fn test_reassign_agent_jobs_does_not_touch_other_agents() {
+        let (sched, _tmp) = make_scheduler(100);
+        let agent_a = AgentId::new();
+        let agent_b = AgentId::new();
+        let agent_c = AgentId::new();
+
+        let mut ja = make_job(agent_a);
+        ja.name = "job-a".into();
+        let mut jb = make_job(agent_b);
+        jb.name = "job-b".into();
+
+        let _id_a = sched.add_job(ja, false).unwrap();
+        let id_b = sched.add_job(jb, false).unwrap();
+
+        // Reassign agent_a -> agent_c
+        let count = sched.reassign_agent_jobs(agent_a, agent_c);
+        assert_eq!(count, 1);
+
+        // agent_b's job should be untouched
+        let job_b = sched.get_job(id_b).unwrap();
+        assert_eq!(job_b.agent_id, agent_b);
+    }
+
+    #[test]
+    fn test_reassign_agent_jobs_no_match_returns_zero() {
+        let (sched, _tmp) = make_scheduler(100);
+        let agent = AgentId::new();
+        let other = AgentId::new();
+
+        let job = make_job(agent);
+        sched.add_job(job, false).unwrap();
+
+        // Reassign a non-existent agent
+        let count = sched.reassign_agent_jobs(AgentId::new(), other);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_reassign_agent_jobs_resets_consecutive_errors() {
+        let (sched, _tmp) = make_scheduler(100);
+        let old_agent = AgentId::new();
+        let new_agent = AgentId::new();
+
+        let job = make_job(old_agent);
+        let id = sched.add_job(job, false).unwrap();
+
+        // Simulate some failures
+        sched.record_failure(id, "agent not found");
+        sched.record_failure(id, "agent not found");
+        let meta = sched.get_meta(id).unwrap();
+        assert_eq!(meta.consecutive_errors, 2);
+
+        // Reassign
+        sched.reassign_agent_jobs(old_agent, new_agent);
+
+        // Errors should be reset
+        let meta = sched.get_meta(id).unwrap();
+        assert_eq!(meta.consecutive_errors, 0);
+        assert_eq!(meta.job.agent_id, new_agent);
+    }
+
+    #[test]
+    fn test_reassign_agent_jobs_reenables_disabled_stale_jobs() {
+        let (sched, _tmp) = make_scheduler(100);
+        let old_agent = AgentId::new();
+        let new_agent = AgentId::new();
+
+        let job = make_job(old_agent);
+        let id = sched.add_job(job, false).unwrap();
+
+        // Simulate enough failures to auto-disable (with "not found" message)
+        for _ in 0..MAX_CONSECUTIVE_ERRORS {
+            sched.record_failure(id, "No such agent");
+        }
+        let meta = sched.get_meta(id).unwrap();
+        assert!(!meta.job.enabled, "Job should be auto-disabled");
+
+        // Reassign should re-enable it
+        sched.reassign_agent_jobs(old_agent, new_agent);
+
+        let meta = sched.get_meta(id).unwrap();
+        assert!(meta.job.enabled, "Job should be re-enabled after reassignment");
+        assert_eq!(meta.consecutive_errors, 0);
+        assert_eq!(meta.job.agent_id, new_agent);
+    }
+
+    #[test]
+    fn test_reassign_agent_jobs_persists_after_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old_agent = AgentId::new();
+        let new_agent = AgentId::new();
+
+        // Create scheduler, add job, reassign, persist
+        let id = {
+            let sched = CronScheduler::new(tmp.path(), 100);
+            let job = make_job(old_agent);
+            let id = sched.add_job(job, false).unwrap();
+
+            sched.reassign_agent_jobs(old_agent, new_agent);
+            sched.persist().unwrap();
+            id
+        };
+
+        // Load from disk and verify the agent_id was persisted
+        {
+            let sched = CronScheduler::new(tmp.path(), 100);
+            sched.load().unwrap();
+
+            let job = sched.get_job(id).unwrap();
+            assert_eq!(job.agent_id, new_agent);
+            assert!(sched.list_jobs(old_agent).is_empty());
+        }
     }
 }

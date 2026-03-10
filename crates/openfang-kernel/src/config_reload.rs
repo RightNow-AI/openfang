@@ -241,6 +241,10 @@ pub fn build_reload_plan(old: &KernelConfig, new: &KernelConfig) -> ReloadPlan {
         plan.hot_actions.push(HotAction::ReloadProviderUrls);
     }
 
+    if field_changed(&old.provider_api_keys, &new.provider_api_keys) {
+        plan.noop_changes.push("provider_api_keys changed (takes effect on next driver init)".to_string());
+    }
+
     // ----- No-op fields -----
 
     if old.log_level != new.log_level {

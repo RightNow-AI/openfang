@@ -2,8 +2,13 @@
 //!
 //! Probes local providers (Ollama, vLLM, LM Studio) for reachability and
 //! dynamically discovers which models they currently serve.
+//!
+//! Includes a [`ProbeCache`] with configurable TTL so that the `/api/providers`
+//! endpoint returns instantly on repeated dashboard loads instead of blocking
+//! on TCP connect timeouts to unreachable local services.
 
-use std::time::Instant;
+use dashmap::DashMap;
+use std::time::{Duration, Instant};
 
 /// Result of probing a provider endpoint.
 #[derive(Debug, Clone, Default)]
@@ -28,8 +33,61 @@ pub fn is_local_provider(provider: &str) -> bool {
     )
 }
 
-/// Probe timeout for local provider health checks.
-const PROBE_TIMEOUT_SECS: u64 = 5;
+/// Overall request timeout for local provider health probes (connect + response).
+const PROBE_TIMEOUT_SECS: u64 = 2;
+
+/// TCP connect timeout — fail fast when the local port is not listening.
+const PROBE_CONNECT_TIMEOUT_SECS: u64 = 1;
+
+/// Default TTL for cached probe results (seconds).
+const PROBE_CACHE_TTL_SECS: u64 = 60;
+
+// ── Probe cache ──────────────────────────────────────────────────────────
+
+/// Thread-safe cache for provider probe results.
+///
+/// Entries expire after [`PROBE_CACHE_TTL_SECS`] seconds. The cache is
+/// designed to be stored once in `AppState` and shared across requests.
+pub struct ProbeCache {
+    inner: DashMap<String, (Instant, ProbeResult)>,
+    ttl: Duration,
+}
+
+impl ProbeCache {
+    /// Create a new cache with the default 60-second TTL.
+    pub fn new() -> Self {
+        Self {
+            inner: DashMap::new(),
+            ttl: Duration::from_secs(PROBE_CACHE_TTL_SECS),
+        }
+    }
+
+    /// Look up a cached probe result. Returns `None` if missing or expired.
+    pub fn get(&self, provider_id: &str) -> Option<ProbeResult> {
+        if let Some(entry) = self.inner.get(provider_id) {
+            let (ts, ref result) = *entry;
+            if ts.elapsed() < self.ttl {
+                return Some(result.clone());
+            }
+            // Expired — drop the read guard before removing
+            drop(entry);
+            self.inner.remove(provider_id);
+        }
+        None
+    }
+
+    /// Store a probe result.
+    pub fn insert(&self, provider_id: &str, result: ProbeResult) {
+        self.inner
+            .insert(provider_id.to_string(), (Instant::now(), result));
+    }
+}
+
+impl Default for ProbeCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Probe a provider's health by hitting its model listing endpoint.
 ///
@@ -42,7 +100,8 @@ pub async fn probe_provider(provider: &str, base_url: &str) -> ProbeResult {
     let start = Instant::now();
 
     let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(PROBE_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(PROBE_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(PROBE_TIMEOUT_SECS))
         .build()
     {
         Ok(c) => c,
@@ -138,6 +197,23 @@ pub async fn probe_provider(provider: &str, base_url: &str) -> ProbeResult {
     }
 }
 
+/// Probe a provider, returning a cached result when available.
+///
+/// If the cache contains a non-expired entry the HTTP request is skipped
+/// entirely, making repeated `/api/providers` calls instantaneous.
+pub async fn probe_provider_cached(
+    provider: &str,
+    base_url: &str,
+    cache: &ProbeCache,
+) -> ProbeResult {
+    if let Some(cached) = cache.get(provider) {
+        return cached;
+    }
+    let result = probe_provider(provider, base_url).await;
+    cache.insert(provider, result.clone());
+    result
+}
+
 /// Lightweight model probe -- sends a minimal completion request to verify a model is responsive.
 ///
 /// Unlike `probe_provider` which checks the listing endpoint, this actually sends
@@ -230,7 +306,8 @@ mod tests {
 
     #[test]
     fn test_probe_timeout_value() {
-        assert_eq!(PROBE_TIMEOUT_SECS, 5);
+        assert_eq!(PROBE_TIMEOUT_SECS, 2);
+        assert_eq!(PROBE_CONNECT_TIMEOUT_SECS, 1);
     }
 
     #[test]
@@ -253,5 +330,34 @@ mod tests {
     async fn test_probe_model_unreachable() {
         let result = probe_model("test", "http://127.0.0.1:19998/v1", "test-model", None).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_probe_cache_miss_returns_none() {
+        let cache = ProbeCache::new();
+        assert!(cache.get("ollama").is_none());
+    }
+
+    #[test]
+    fn test_probe_cache_hit_returns_result() {
+        let cache = ProbeCache::new();
+        let result = ProbeResult {
+            reachable: true,
+            latency_ms: 42,
+            discovered_models: vec!["llama3".into()],
+            error: None,
+        };
+        cache.insert("ollama", result.clone());
+        let cached = cache.get("ollama").expect("should be cached");
+        assert!(cached.reachable);
+        assert_eq!(cached.latency_ms, 42);
+        assert_eq!(cached.discovered_models, vec!["llama3".to_string()]);
+    }
+
+    #[test]
+    fn test_probe_cache_default() {
+        let cache = ProbeCache::default();
+        assert!(cache.get("anything").is_none());
+        assert_eq!(cache.ttl, Duration::from_secs(PROBE_CACHE_TTL_SECS));
     }
 }
