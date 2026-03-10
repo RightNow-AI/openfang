@@ -5,6 +5,7 @@
 
 mod bundled_agents;
 mod dotenv;
+pub mod i18n;
 mod launcher;
 mod mcp;
 pub mod progress;
@@ -823,9 +824,21 @@ fn init_tracing_file() {
     }
 }
 
+/// Load language setting from config file
+fn load_language_from_config() -> Option<String> {
+    let config_path = dirs::home_dir()?.join(".openfang").join("config.toml");
+    let content = std::fs::read_to_string(&config_path).ok()?;
+    let config: toml::Value = toml::from_str(&content).ok()?;
+    config.get("language")?.as_str().map(|s| s.to_string())
+}
+
 fn main() {
     // Load ~/.openfang/.env into process environment (system env takes priority).
     dotenv::load_dotenv();
+
+    // Initialize i18n with language from config or system default
+    let language = load_language_from_config().unwrap_or_else(|| "en".to_string());
+    i18n::init(&language);
 
     let cli = Cli::parse();
 
@@ -2330,6 +2343,7 @@ decay_rate = 0.05
         ("TOGETHER_API_KEY", "Together", "together"),
         ("MISTRAL_API_KEY", "Mistral", "mistral"),
         ("FIREWORKS_API_KEY", "Fireworks", "fireworks"),
+        ("SUB2API_API_KEY", "Sub2API", "sub2api"),
     ];
 
     let mut any_key_set = false;
@@ -4292,6 +4306,10 @@ pub(crate) fn test_api_key(provider: &str, env_var: &str) -> bool {
             .send(),
         "deepseek" => client
             .get("https://api.deepseek.com/models")
+            .bearer_auth(&key)
+            .send(),
+        "sub2api" => client
+            .get("https://code.respyun.com/v1/models")
             .bearer_auth(&key)
             .send(),
         "openrouter" => client

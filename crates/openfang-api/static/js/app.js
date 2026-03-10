@@ -1,6 +1,13 @@
 // OpenFang App — Alpine.js init, hash router, global store
 'use strict';
 
+// Initialize i18n (will auto-detect language from browser/localStorage)
+if (typeof i18n !== 'undefined') {
+  i18n.init().then(function(lang) {
+    console.log('OpenFang i18n initialized:', lang);
+  });
+}
+
 // Marked.js configuration
 if (typeof marked !== 'undefined') {
   marked.setOptions({

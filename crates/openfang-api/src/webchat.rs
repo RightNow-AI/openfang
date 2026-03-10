@@ -88,6 +88,10 @@ const WEBCHAT_HTML: &str = concat!(
     "<script>\n",
     include_str!("../static/vendor/highlight.min.js"),
     "\n</script>\n",
+    // i18n module (must load before app.js)
+    "<script>\n",
+    include_str!("../static/js/i18n.js"),
+    "\n</script>\n",
     // App code
     "<script>\n",
     include_str!("../static/js/api.js"),
