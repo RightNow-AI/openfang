@@ -306,13 +306,23 @@ impl BridgeManager {
                     msg = stream.next() => {
                         match msg {
                             Some(message) => {
-                                dispatch_message(
-                                    &message,
-                                    &handle,
-                                    &router,
-                                    adapter_clone.as_ref(),
-                                    &rate_limiter,
-                                ).await;
+                                // Spawn each dispatch concurrently so that slow LLM calls
+                                // don't block subsequent messages in the stream.
+                                // Fixes: multiple messages sent in quick succession being
+                                // effectively lost because dispatch was sequential.
+                                let h = handle.clone();
+                                let r = router.clone();
+                                let a = adapter_clone.clone();
+                                let rl = rate_limiter.clone();
+                                tokio::spawn(async move {
+                                    dispatch_message(
+                                        &message,
+                                        &h,
+                                        &r,
+                                        a.as_ref(),
+                                        &rl,
+                                    ).await;
+                                });
                             }
                             None => {
                                 info!("Channel adapter {} stream ended", adapter_clone.name());
