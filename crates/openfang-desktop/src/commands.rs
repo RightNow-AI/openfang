@@ -169,3 +169,93 @@ pub fn open_logs_dir() -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create logs dir: {e}"))?;
     open::that(&dir).map_err(|e| format!("Failed to open directory: {e}"))
 }
+
+// ---------------------------------------------------------------------------
+// Phase 13: Multi-Agent Mesh & FangHub desktop commands
+// ---------------------------------------------------------------------------
+
+/// List all connected OFP mesh peers.
+///
+/// Returns a JSON array of peer summaries including node ID, name, address, and state.
+/// Returns an empty array when the OFP network is disabled.
+#[tauri::command]
+pub async fn list_mesh_peers(
+    kernel_state: tauri::State<'_, KernelState>,
+) -> Result<serde_json::Value, String> {
+    if let Some(ref peer_registry) = kernel_state.kernel.peer_registry {
+        let peers: Vec<serde_json::Value> = peer_registry
+            .all_peers()
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.node_id,
+                    "name": p.node_name,
+                    "address": p.address.to_string(),
+                    "state": format!("{:?}", p.state),
+                    "connected_at": p.connected_at.to_rfc3339(),
+                })
+            })
+            .collect();
+        let total = peers.len();
+        Ok(serde_json::json!({"peers": peers, "total": total}))
+    } else {
+        Ok(serde_json::json!({"peers": [], "total": 0, "network_enabled": false}))
+    }
+}
+
+/// Connect to a remote OFP mesh peer by socket address.
+///
+/// The address should be in `host:port` or `ofp://host:port` format.
+/// Returns immediately — the connection is established asynchronously.
+#[tauri::command]
+pub async fn connect_mesh_peer(
+    kernel_state: tauri::State<'_, KernelState>,
+    address: String,
+) -> Result<serde_json::Value, String> {
+    // Check that the network is enabled before spawning.
+    if kernel_state.kernel.peer_node.is_none() {
+        return Err("OFP network is not enabled. Set network_enabled = true in config.".to_string());
+    }
+    let addr_str = address.trim_start_matches("ofp://");
+    let socket_addr: std::net::SocketAddr = addr_str
+        .parse()
+        .map_err(|_| format!("Invalid address: {address}"))?;
+    // Clone the Arc<OpenFangKernel> so the spawned task owns it.
+    let kernel = kernel_state.kernel.clone();
+    tokio::spawn(async move {
+        if let Err(e) = kernel.connect_peer(socket_addr).await {
+            tracing::warn!("Mesh peer connection failed: {e}");
+        }
+    });
+    Ok(serde_json::json!({"ok": true, "message": format!("Connecting to {address}")}))
+}
+
+/// Install a Hand package from the FangHub marketplace.
+///
+/// Looks up the package in the FangHub registry, downloads the HAND.toml,
+/// and registers it with the local Hand registry.
+#[tauri::command]
+pub async fn install_from_fanghub(
+    kernel_state: tauri::State<'_, KernelState>,
+    hand_id: String,
+    registry_url: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let registry = registry_url.unwrap_or_else(|| {
+        std::env::var("FANGHUB_REGISTRY_URL")
+            .unwrap_or_else(|_| "https://fanghub.paradiseai.io".to_string())
+    });
+    match kernel_state
+        .kernel
+        .install_from_fanghub(&hand_id, &registry)
+        .await
+    {
+        Ok(hand_def) => Ok(serde_json::json!({
+            "ok": true,
+            "hand_id": hand_id,
+            "name": hand_def.name,
+            "version": hand_def.version,
+            "message": format!("Hand '{}' installed successfully", hand_def.name),
+        })),
+        Err(e) => Err(format!("Install failed: {e}")),
+    }
+}

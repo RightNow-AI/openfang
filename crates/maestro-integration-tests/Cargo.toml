@@ -30,6 +30,7 @@ sha2 = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 async-trait = { workspace = true }
+urlencoding = { workspace = true }
 
 [[test]]
 name = "kernel_boot"
@@ -62,3 +63,7 @@ path = "tests/fanghub_marketplace.rs"
 [[test]]
 name = "multi_agent_mesh"
 path = "tests/multi_agent_mesh.rs"
+
+[[test]]
+name = "desktop_ui"
+path = "tests/desktop_ui.rs"

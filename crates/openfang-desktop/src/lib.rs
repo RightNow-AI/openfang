@@ -103,6 +103,10 @@ pub fn run() {
             commands::install_update,
             commands::open_config_dir,
             commands::open_logs_dir,
+            // Phase 13: Mesh & FangHub commands
+            commands::list_mesh_peers,
+            commands::connect_mesh_peer,
+            commands::install_from_fanghub,
         ])
         .setup(move |app| {
             // Create the main window pointing directly at the embedded HTTP server.

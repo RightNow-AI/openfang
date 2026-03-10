@@ -124,6 +124,10 @@
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></span>
               <span class="nav-label">Supervisor</span>
             </a>
+            <a class="nav-item" :class="{ active: page === 'mesh' }" @click="navigate('mesh')" :aria-current="page === 'mesh' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v4M7 17l4-4M17 17l-4-4"/></svg></span>
+              <span class="nav-label">Mesh</span>
+            </a>
           </div>
         </template>
       </div>
@@ -147,6 +151,10 @@
             <a class="nav-item" :class="{ active: page === 'hands' }" @click="navigate('hands')" :aria-current="page === 'hands' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v6"/><path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-5.7-2.4L3.4 16a2 2 0 0 1 3.2-2.4L8 15"/></svg></span>
               <span class="nav-label">Hands</span>
+            </a>
+            <a class="nav-item" :class="{ active: page === 'fanghub' }" @click="navigate('fanghub')" :aria-current="page === 'fanghub' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg></span>
+              <span class="nav-label">FangHub</span>
             </a>
           </div>
         </template>
@@ -4924,8 +4932,159 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
       </div>
     </template>
 
+     <!-- ─── FangHub page ─── -->
+    <template x-if="page === 'fanghub'">
+      <div x-data="fanghubPage()">
+        <div class="page-header">
+          <h2>FangHub Marketplace</h2>
+          <div class="page-header-actions">
+            <input type="text" class="input input-sm" placeholder="Search Hands..." x-model="query" @input.debounce.400ms="search()" style="width:220px">
+            <button class="btn btn-ghost btn-sm" @click="search()" title="Refresh">&#8635;</button>
+          </div>
+        </div>
+        <div class="page-body" x-init="search()">
+          <div x-show="loading" class="loading-state"><div class="spinner"></div><span>Loading FangHub...</span></div>
+          <div x-show="!loading && error" class="error-state"><span class="error-icon">!</span><p x-text="error"></p><button class="btn btn-ghost btn-sm" @click="search()">Retry</button></div>
+          <div x-show="!loading && !error">
+            <div x-show="results.length === 0" class="empty-state">
+              <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+              <p>No Hands found. Try a different search term.</p>
+            </div>
+            <div class="grid grid-cols-3" style="gap:16px">
+              <template x-for="pkg in results" :key="pkg.id">
+                <div class="card" style="display:flex;flex-direction:column;gap:10px">
+                  <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                    <div>
+                      <div style="font-weight:600;font-size:14px" x-text="pkg.name"></div>
+                      <div style="font-size:11px;color:var(--text-dim)" x-text="'by ' + pkg.author"></div>
+                    </div>
+                    <span class="badge badge-dim" style="font-size:10px" x-text="'v' + pkg.version"></span>
+                  </div>
+                  <p style="font-size:12px;color:var(--text-dim);margin:0;flex:1" x-text="pkg.description"></p>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap">
+                    <template x-for="tag in (pkg.tags || []).slice(0,4)" :key="tag">
+                      <span class="badge badge-dim" style="font-size:10px" x-text="tag"></span>
+                    </template>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
+                    <span style="font-size:11px;color:var(--text-dim)" x-text="(pkg.downloads || 0).toLocaleString() + ' downloads'"></span>
+                    <button class="btn btn-primary btn-sm" :disabled="installing === pkg.id" @click="install(pkg.id)" x-text="installing === pkg.id ? 'Installing...' : 'Install'"></button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ─── Mesh page ─── -->
+    <template x-if="page === 'mesh'">
+      <div x-data="meshPage()">
+        <div class="page-header">
+          <h2>Multi-Agent Mesh</h2>
+          <div class="page-header-actions">
+            <button class="btn btn-ghost btn-sm" @click="loadAll()">&#8635; Refresh</button>
+          </div>
+        </div>
+        <div class="page-body" x-init="loadAll()">
+          <div x-show="loading" class="loading-state"><div class="spinner"></div><span>Loading mesh status...</span></div>
+          <div x-show="!loading">
+            <!-- Mesh topology summary -->
+            <div class="stats-row" style="margin-bottom:20px">
+              <div class="stat-card"><div class="stat-value" x-text="peers.filter(p => p.state === 'Connected').length"></div><div class="stat-label">Connected Peers</div></div>
+              <div class="stat-card"><div class="stat-value" x-text="peers.length"></div><div class="stat-label">Total Peers</div></div>
+              <div class="stat-card"><div class="stat-value" x-text="a2aAgents.length"></div><div class="stat-label">A2A Agents</div></div>
+              <div class="stat-card"><div class="stat-value" x-text="routeLog.length"></div><div class="stat-label">Tasks Routed</div></div>
+            </div>
+
+            <!-- Connect new peer -->
+            <div class="card" style="margin-bottom:20px">
+              <div class="card-header">Connect Peer</div>
+              <div style="display:flex;gap:10px;margin-top:12px">
+                <input type="text" class="input" placeholder="ofp://hostname:7700" x-model="connectAddr" style="flex:1" @keydown.enter="connectPeer()">
+                <button class="btn btn-primary" :disabled="connecting" @click="connectPeer()" x-text="connecting ? 'Connecting...' : 'Connect'"></button>
+              </div>
+              <div x-show="connectError" class="error-state" style="margin-top:8px"><span class="error-icon">!</span><p x-text="connectError"></p></div>
+            </div>
+
+            <!-- Peer list -->
+            <div class="card" style="margin-bottom:20px">
+              <div class="card-header">Peers</div>
+              <div x-show="peers.length === 0" class="empty-state" style="padding:24px"><p>No peers connected. Enter an OFP address above to connect to a remote node.</p></div>
+              <div class="table-wrap" x-show="peers.length > 0">
+                <table class="table">
+                  <thead><tr><th>Node ID</th><th>Address</th><th>State</th><th>Latency</th><th>Actions</th></tr></thead>
+                  <tbody>
+                    <template x-for="peer in peers" :key="peer.id">
+                      <tr>
+                        <td style="font-family:monospace;font-size:12px" x-text="peer.id.substring(0,12) + '...'"></td>
+                        <td x-text="peer.address || '-'"></td>
+                        <td><span class="badge" :class="peer.state === 'Connected' ? 'badge-success' : 'badge-dim'" x-text="peer.state"></span></td>
+                        <td x-text="peer.latency_ms ? peer.latency_ms + 'ms' : '-'"></td>
+                        <td><button class="btn btn-ghost btn-sm" @click="disconnectPeer(peer.id)">Disconnect</button></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- A2A Agents discovered from mesh -->
+            <div class="card" style="margin-bottom:20px">
+              <div class="card-header">Discovered A2A Agents</div>
+              <div x-show="a2aAgents.length === 0" class="empty-state" style="padding:24px"><p>No A2A agents discovered. Connect to peers that expose A2A endpoints.</p></div>
+              <div class="table-wrap" x-show="a2aAgents.length > 0">
+                <table class="table">
+                  <thead><tr><th>Agent ID</th><th>Name</th><th>Endpoint</th><th>Capabilities</th></tr></thead>
+                  <tbody>
+                    <template x-for="agent in a2aAgents" :key="agent.id">
+                      <tr>
+                        <td style="font-family:monospace;font-size:12px" x-text="agent.id"></td>
+                        <td x-text="agent.name || agent.id"></td>
+                        <td style="font-size:12px" x-text="agent.endpoint || '-'"></td>
+                        <td>
+                          <template x-for="cap in (agent.capabilities || []).slice(0,3)" :key="cap">
+                            <span class="badge badge-dim" style="font-size:10px;margin-right:3px" x-text="cap"></span>
+                          </template>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Route log -->
+            <div class="card">
+              <div class="card-header" style="display:flex;justify-content:space-between">
+                <span>Task Route Log</span>
+                <button class="btn btn-ghost btn-sm" @click="routeLog = []">Clear</button>
+              </div>
+              <div x-show="routeLog.length === 0" class="empty-state" style="padding:24px"><p>No tasks have been routed through the mesh yet.</p></div>
+              <div class="table-wrap" x-show="routeLog.length > 0">
+                <table class="table">
+                  <thead><tr><th>Time</th><th>Task</th><th>Target</th><th>Duration</th><th>Status</th></tr></thead>
+                  <tbody>
+                    <template x-for="entry in routeLog" :key="entry.id">
+                      <tr>
+                        <td style="font-size:12px" x-text="new Date(entry.ts).toLocaleTimeString()"></td>
+                        <td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="entry.task"></td>
+                        <td style="font-size:12px" x-text="entry.target"></td>
+                        <td style="font-size:12px" x-text="entry.duration_ms ? entry.duration_ms + 'ms' : '-'"></td>
+                        <td><span class="badge" :class="entry.status === 'ok' ? 'badge-success' : 'badge-error'" x-text="entry.status"></span></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
   </main>
 </div>
-
 <!-- Toast notification container -->
 <div id="toast-container" class="toast-container" aria-live="polite"></div>

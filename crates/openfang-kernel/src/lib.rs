@@ -15,6 +15,7 @@ pub mod error;
 pub mod event_bus;
 pub mod heartbeat;
 pub mod kernel;
+pub mod mesh;
 pub mod metering;
 pub mod pairing;
 pub mod registry;

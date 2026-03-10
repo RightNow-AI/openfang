@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.36] - 2026-03-10
+### Added
+- **Desktop & UI Polish** (Phase 13)
+  - **FangHub page:** New page in the SPA dashboard for browsing and installing Hands from the FangHub marketplace.
+  - **Mesh page:** New page in the SPA dashboard for Multi-Agent Mesh management (peer list, connect peer, route log).
+  - **Tauri desktop commands:** New `install_from_fanghub`, `list_mesh_peers`, and `connect_mesh_peer` commands expose Phase 11/12 features to the desktop UI.
+  - **10 new integration tests** in `desktop_ui.rs` covering the new API routes and SPA page content.
+
+### Changed
+- `openfang-api` now has `/api/mesh/*` and `/api/fanghub/*` routes for the SPA dashboard.
+- `openfang-kernel` now has a `connect_peer` method that handles the `self_arc` internally.
+- `openfang-desktop` `connect_mesh_peer` command rewritten to use `Arc::clone` and avoid move errors.
+- Workspace version bumped from `0.3.35` to `0.3.36`.
+
+
 ## [0.3.35] - 2026-03-10
 ### Added
 - **Multi-Agent Mesh** (Phase 12)
@@ -162,7 +177,8 @@ The `validate_criteria()` function has been significantly enhanced with whole-wo
 
 The initial public release of OpenFang. A 15-crate Rust workspace implementing a full Agent Operating System, including agent lifecycle management, a SQLite-backed memory substrate, 41 built-in tools, a WASM sandbox with dual metering, a workflow engine, 40 channel adapters, 3 native LLM drivers supporting 27 providers, a Tauri 2.0 desktop app, and 7 autonomous Hands packages. 1,731+ tests across 15 crates.
 
-[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.35...HEAD
+[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.36...HEAD
+[0.3.36]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.35...v0.3.36
 [0.3.35]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.34...v0.3.35
 [0.3.34]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.33...v0.3.34
 [0.3.33]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.32...v0.3.33

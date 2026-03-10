@@ -5011,6 +5011,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
  "uuid",
 ]
 
@@ -6045,6 +6046,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "urlencoding",
  "uuid",
 ]
 

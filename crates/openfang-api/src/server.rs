@@ -619,6 +619,32 @@ pub async fn build_router(
             "/api/a2a/tasks/{id}/status",
             axum::routing::get(routes::a2a_external_task_status),
         )
+        // Mesh management endpoints (Phase 12)
+        .route(
+            "/api/mesh/peers",
+            axum::routing::get(routes::mesh_list_peers),
+        )
+        .route(
+            "/api/mesh/connect",
+            axum::routing::post(routes::mesh_connect_peer),
+        )
+        .route(
+            "/api/mesh/peers/{id}",
+            axum::routing::delete(routes::mesh_disconnect_peer),
+        )
+        .route(
+            "/api/mesh/route-log",
+            axum::routing::get(routes::mesh_route_log),
+        )
+        // FangHub marketplace endpoints (Phase 11)
+        .route(
+            "/api/fanghub/search",
+            axum::routing::get(routes::fanghub_search),
+        )
+        .route(
+            "/api/fanghub/install",
+            axum::routing::post(routes::fanghub_install),
+        )
         // Integration management endpoints
         .route(
             "/api/integrations",

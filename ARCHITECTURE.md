@@ -769,3 +769,38 @@ The Agent-to-Agent (A2A) protocol implementation in `openfang-api` was upgraded 
 ### Integration Tests
 
 8 new integration tests were added in `maestro-integration-tests/tests/multi_agent_mesh.rs` to cover the new functionality, including parallel step execution, A2A per-agent routing, and SSE streaming task submission.
+
+
+## Phase 13: Desktop & UI Polish
+
+Phase 13 completes the user-facing components of the platform, adding the final two pages to the SPA dashboard and wiring up the Tauri desktop app to the new Phase 11/12 backend features.
+
+### SPA Dashboard Pages
+
+Two new pages were added to the 17-page SPA dashboard in `openfang-api/static/index_body.html`:
+
+- **FangHub Page:** A full-featured marketplace UI for browsing, searching, and installing Hands from a FangHub registry. The page is driven by a new `fanghubPage()` Alpine.js component in `fanghub.js` and calls the new `/api/fanghub/*` backend routes.
+- **Mesh Page:** A dedicated page for managing the multi-agent mesh. It provides a live-updating list of connected peers, a form to connect to new peers, and a real-time log of tasks being routed through the mesh. The page is driven by `meshPage()` in `mesh.js` and calls the `/api/mesh/*` routes.
+
+### Backend API Routes
+
+New API routes were added to `openfang-api` to support the new SPA pages:
+
+- `GET /api/mesh/peers`
+- `POST /api/mesh/connect`
+- `DELETE /api/mesh/peers/:id`
+- `GET /api/mesh/route-log`
+- `GET /api/fanghub/search?q=`
+- `POST /api/fanghub/install`
+
+### Tauri Desktop Commands
+
+Three new Tauri commands were added to `openfang-desktop/src/commands.rs` to expose the new backend features to the desktop application:
+
+- `install_from_fanghub(hand_id: String, registry_url: String)`
+- `list_mesh_peers()`
+- `connect_mesh_peer(addr: String)`
+
+### Integration Tests
+
+10 new integration tests were added in `maestro-integration-tests/tests/desktop_ui.rs` to validate the new API routes and ensure the SPA dashboard HTML contains the new page elements.

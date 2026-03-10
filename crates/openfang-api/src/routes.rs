@@ -10529,3 +10529,263 @@ pub async fn comms_task(
         ),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Mesh management endpoints (Phase 12)
+// ---------------------------------------------------------------------------
+
+/// GET /api/mesh/peers — List all known OFP peers with their state.
+pub async fn mesh_list_peers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if let Some(ref peer_registry) = state.peer_registry {
+        let peers: Vec<serde_json::Value> = peer_registry
+            .all_peers()
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.node_id,
+                    "name": p.node_name,
+                    "address": p.address.to_string(),
+                    "state": format!("{:?}", p.state),
+                    "latency_ms": serde_json::Value::Null,
+                    "connected_at": p.connected_at.to_rfc3339(),
+                    "protocol_version": p.protocol_version,
+                    "agents": p.agents.iter().map(|a| serde_json::json!({
+                        "id": a.id,
+                        "name": a.name,
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let total = peers.len();
+        (StatusCode::OK, Json(serde_json::json!({"peers": peers, "total": total})))
+    } else {
+        (StatusCode::OK, Json(serde_json::json!({"peers": [], "total": 0})))
+    }
+}
+
+/// POST /api/mesh/connect — Initiate a connection to a remote OFP peer.
+pub async fn mesh_connect_peer(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let address = match req.get("address").and_then(|v| v.as_str()) {
+        Some(a) => a.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "address is required"})),
+            );
+        }
+    };
+    // Check that the network is enabled before spawning.
+    if state.kernel.peer_node.is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "OFP network is not enabled. Set network_enabled = true in config."})),
+        );
+    }
+    let addr_str = address.trim_start_matches("ofp://");
+    match addr_str.parse::<std::net::SocketAddr>() {
+        Ok(socket_addr) => {
+            // Clone the Arc<OpenFangKernel> so the spawned task owns it.
+            let kernel = state.kernel.clone();
+            tokio::spawn(async move {
+                if let Err(e) = kernel.connect_peer(socket_addr).await {
+                    tracing::warn!("Mesh peer connection failed: {e}");
+                }
+            });
+            (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({"ok": true, "message": format!("Connecting to {address}")})),
+            )
+        }
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("Invalid address: {address}")})),
+        ),
+    }
+}
+
+/// DELETE /api/mesh/peers/{id} — Disconnect a peer by node ID.
+pub async fn mesh_disconnect_peer(
+    State(state): State<Arc<AppState>>,
+    Path(peer_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(ref peer_registry) = state.peer_registry {
+        peer_registry.remove_peer(&peer_id);
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok": true, "message": format!("Peer {peer_id} disconnected")})),
+        )
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Peer not found or network not enabled"})),
+        )
+    }
+}
+
+/// GET /api/mesh/route-log — Return recent task routing log entries.
+pub async fn mesh_route_log(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let entries: Vec<serde_json::Value> = state
+        .kernel
+        .mesh_route_log
+        .read()
+        .await
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "id": e.id,
+                "ts": e.ts.to_rfc3339(),
+                "task": e.task_summary,
+                "target": e.target,
+                "duration_ms": e.duration_ms,
+                "status": e.status,
+            })
+        })
+        .collect();
+    let total = entries.len();
+    Json(serde_json::json!({"entries": entries, "total": total}))
+}
+
+// ---------------------------------------------------------------------------
+// FangHub marketplace endpoints (Phase 11)
+// ---------------------------------------------------------------------------
+
+/// GET /api/fanghub/search?q=... — Search the FangHub registry for Hand packages.
+pub async fn fanghub_search(
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let registry = std::env::var("FANGHUB_REGISTRY_URL")
+        .unwrap_or_else(|_| "https://fanghub.paradiseai.io".to_string());
+    let q = params.get("q").map(|s| s.as_str()).unwrap_or("");
+    let url = if q.is_empty() {
+        format!("{registry}/packages")
+    } else {
+        format!("{registry}/packages?q={}", urlencoding::encode(q))
+    };
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => reqwest::Client::new(),
+    };
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<serde_json::Value>().await {
+                Ok(data) => {
+                    let packages: Vec<serde_json::Value> = data["results"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|pkg| {
+                            serde_json::json!({
+                                "id": pkg["package_id"].as_str().unwrap_or(""),
+                                "name": pkg["name"].as_str().unwrap_or(""),
+                                "author": pkg["author"].as_str().unwrap_or(""),
+                                "description": pkg["description"].as_str().unwrap_or(""),
+                                "version": pkg["latest_version"].as_str().unwrap_or("0.1.0"),
+                                "tags": pkg["tags"].as_array().cloned().unwrap_or_default(),
+                                "downloads": pkg["install_count"].as_u64().unwrap_or(0),
+                                "category": pkg["category"].as_str().unwrap_or(""),
+                            })
+                        })
+                        .collect();
+                    let total = packages.len();
+                    (StatusCode::OK, Json(serde_json::json!({"packages": packages, "total": total})))
+                }
+                Err(e) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({"error": format!("Registry parse error: {e}")})),
+                ),
+            }
+        }
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("Registry returned HTTP {status}")})),
+            )
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("Registry unreachable: {e}")})),
+        ),
+    }
+}
+
+/// POST /api/fanghub/install — Install a Hand package from FangHub.
+pub async fn fanghub_install(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let hand_id = match req.get("hand_id").and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "hand_id is required"})),
+            );
+        }
+    };
+    let registry = std::env::var("FANGHUB_REGISTRY_URL")
+        .unwrap_or_else(|_| "https://fanghub.paradiseai.io".to_string());
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => reqwest::Client::new(),
+    };
+    // Resolve latest version
+    let pkg_url = format!("{registry}/packages/{hand_id}");
+    let pkg_info: serde_json::Value = match client.get(&pkg_url).send().await {
+        Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
+        Ok(r) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("Package '{}' not found (HTTP {})", hand_id, r.status())})),
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("Registry unreachable: {e}")})),
+            );
+        }
+    };
+    let version = match pkg_info["latest_version"].as_str() {
+        Some(v) => v.to_string(),
+        None => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"error": "Package has no published versions"})),
+            );
+        }
+    };
+    // Record install in registry (fire-and-forget)
+    let install_url = format!("{registry}/packages/{hand_id}/versions/{version}/install");
+    let _ = client.post(&install_url).send().await;
+    // Install via kernel hand system
+    match state
+        .kernel
+        .install_from_fanghub(&hand_id, &registry)
+        .await
+    {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "hand_id": hand_id,
+                "version": version,
+                "message": format!("Hand '{}' v{} installed successfully", hand_id, version),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Install failed: {e}")})),
+        ),
+    }
+}

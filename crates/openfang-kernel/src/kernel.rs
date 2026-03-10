@@ -165,6 +165,8 @@ pub struct OpenFangKernel {
     pub trace_store: Option<Arc<maestro_observability::traces::TraceStore>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
+    /// Mesh task routing log — ring buffer of the last 200 routing decisions (Phase 12).
+    pub mesh_route_log: tokio::sync::RwLock<std::collections::VecDeque<crate::mesh::MeshRouteEntry>>,
 }
 
 /// Bounded in-memory delivery receipt tracker.
@@ -1010,6 +1012,7 @@ impl OpenFangKernel {
             })),
             trace_store: Some(Arc::new(maestro_observability::traces::TraceStore::new())),
             self_handle: OnceLock::new(),
+            mesh_route_log: tokio::sync::RwLock::new(std::collections::VecDeque::with_capacity(200)),
         };
 
         // Restore persisted agents from SQLite
@@ -3330,8 +3333,31 @@ impl OpenFangKernel {
                 format!("Failed to install Hand {} from FangHub: {}", hand_id, e),
             )))?;
 
-        info!(hand = %def.id, name = %def.name, version = %version_str, "Hand installed from FangHub");
+         info!(hand = %def.id, name = %def.name, version = %version_str, "Hand installed from FangHub");
         Ok(def)
+    }
+
+    /// Connect to a remote OFP mesh peer by socket address.
+    ///
+    /// This is the public API for connecting to a peer — it passes `self` as the
+    /// `PeerHandle` so the remote peer can route messages to local agents.
+    /// The kernel must be wrapped in `Arc` (i.e., `set_self_handle` must have been called).
+    pub async fn connect_peer(
+        self: &Arc<Self>,
+        addr: std::net::SocketAddr,
+    ) -> KernelResult<()> {
+        let node = self
+            .peer_node
+            .as_ref()
+            .ok_or_else(|| KernelError::OpenFang(OpenFangError::Internal(
+                "OFP network is not enabled. Set network_enabled = true in config.".to_string(),
+            )))?;
+        let handle: Arc<dyn openfang_wire::peer::PeerHandle> = self.self_arc();
+        node.connect_to_peer(addr, handle)
+            .await
+            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(
+                format!("Failed to connect to peer {addr}: {e}"),
+            )))
     }
 
         /// Set the weak self-reference for trigger dispatch.
