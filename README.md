@@ -1,5 +1,3 @@
-# OpenFang: The Agent Operating System
-
 <p align="center">
   <img src="public/assets/openfang-logo.png" width="160" alt="OpenFang Logo" />
 </p>
@@ -8,7 +6,7 @@
 <h3 align="center">The Agent Operating System</h3>
 
 <p align="center">
-  Open-source Agent OS built in Rust. 166K LOC. 25 crates. 1,900+ tests. Zero clippy warnings.<br/>
+  Open-source Agent OS built in Rust. 143K LOC. 26 crates. 2,010+ tests. Zero clippy warnings.<br/>
   <strong>One binary. Battle-tested. Agents that actually work for you.</strong>
 </p>
 
@@ -21,18 +19,18 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-v0.3.31-green?style=flat-square" alt="v0.3.31" />
-  <img src="https://img.shields.io/badge/phase-9%20✅%20complete-blue?style=flat-square" alt="Phase 9 Complete" />
-  <img src="https://img.shields.io/badge/tests-1,900%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/version-v0.3.32-green?style=flat-square" alt="v0.3.32" />
+  <img src="https://img.shields.io/badge/phase-10%20🟡%20in%20progress-blue?style=flat-square" alt="Phase 10 In Progress" />
+  <img src="https://img.shields.io/badge/tests-2,010%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
   <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
 </p>
 
 ---
 
-> **v0.3.31 — Phase 9 Complete (March 2026)**
+> **v0.3.32 — Phase 10 In Progress (March 2026)**
 >
-> Phase 9 (Hand System & FangHub) is complete. The system now includes a full implementation of the autonomous `Hand` system, including the `HandScheduler` for cron-based execution and the `FangHubClient` for discovering and installing new Hands from the marketplace. See [ROADMAP.md](ROADMAP.md) for full details.
+> Phase 10 (Production Hardening) is underway. The system now has a comprehensive integration test suite (44 tests), a new Hand scheduler, and is fully async. See [ROADMAP.md](ROADMAP.md) for full details.
 
 ---
 
@@ -111,71 +109,9 @@ openfang hand list
 
 ---
 
-## OpenFang vs The Landscape
-
-<p align="center">
-  <img src="public/assets/openfang-vs-claws.png" width="600" alt="OpenFang vs OpenClaw vs ZeroClaw" />
-</p>
-
-### Benchmarks: Measured, Not Marketed
-
-All data from official documentation and public repositories — March 2026.
-
-#### Cold Start Time (lower is better)
-
-```
-ZeroClaw   ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10 ms
-OpenFang   ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  180 ms    ★
-LangGraph  █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░  2.5 sec
-CrewAI     ████████████████████░░░░░░░░░░░░░░░░░░░░░░░  3.0 sec
-AutoGen    ██████████████████████████░░░░░░░░░░░░░░░░░  4.0 sec
-OpenClaw   █████████████████████████████████████████░░  5.98 sec
-```
-
-#### Idle Memory Usage (lower is better)
-
-```
-ZeroClaw   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    5 MB
-OpenFang   ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   40 MB    ★
-LangGraph  ██████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░  180 MB
-CrewAI     ████████████████████░░░░░░░░░░░░░░░░░░░░░░░  200 MB
-AutoGen    █████████████████████████░░░░░░░░░░░░░░░░░░  250 MB
-OpenClaw   ████████████████████████████████████████░░░░  394 MB
-```
-
-#### Install Size (lower is better)
-
-```
-ZeroClaw   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  8.8 MB
-OpenFang   ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   38 MB    ★
-CrewAI     ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  100 MB
-LangGraph  ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  150 MB
-AutoGen    ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  200 MB
-OpenClaw   ████████████████████████████████████████░░░░  500 MB
-```
-
-### Feature-by-Feature Comparison
-
-| Feature | OpenFang | OpenClaw | ZeroClaw | CrewAI | AutoGen | LangGraph |
-|---------|----------|----------|----------|--------|---------|-----------|
-| **Language** | **Rust** | TypeScript | **Rust** | Python | Python | Python |
-| **Autonomous Hands** | **7 built-in** | None | None | None | None | None |
-| **Security Layers** | **16 discrete** | 3 basic | 6 layers | 1 basic | Docker | AES enc. |
-| **Agent Sandbox** | **WASM dual-metered** | None | Allowlists | None | Docker | None |
-| **Channel Adapters** | **40** | 13 | 15 | 0 | 0 | 0 |
-| **Built-in Tools** | **53 + MCP + A2A** | 50+ | 12 | Plugins | MCP | LC tools |
-| **Memory** | **SurrealDB v3** | File-based | SQLite FTS5 | 4-layer | External | Checkpoints |
-| **Desktop App** | **Tauri 2.0** | None | None | None | Studio | None |
-| **Audit Trail** | **Merkle hash-chain** | Logs | Logs | Tracing | Logs | Checkpoints |
-| **Cold Start** | **<200ms** | ~6s | ~10ms | ~3s | ~4s | ~2.5s |
-| **Install Size** | **~38 MB** | ~500 MB | ~8.8 MB | ~100 MB | ~200 MB | ~150 MB |
-| **License** | MIT | MIT | MIT | MIT | Apache 2.0 | MIT |
-
----
-
 ## Architecture
 
-25 Rust crates. 166,000+ lines of code. Modular kernel design.
+26 Rust crates. 143,528 lines of code. Modular kernel design.
 
 ```
 openfang-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget tracking
@@ -194,15 +130,11 @@ maestro-sdk          Rust embedding SDK for OpenFang agents (AgentHandle, Sessio
 maestro-marketplace  Local agent marketplace (install, search, publish, update_all)
 maestro-pai          Self-evolution engine (hooks, patterns, telos, wisdom)
 maestro-rlm          Recursive Language Model (RLM) for long-context processing via PyO3
+maestro-integration-tests  Black-box integration test suite (44+ tests)
 openfang-types       Core types, taint tracking, Ed25519 manifest signing, model catalog
-openfang-skills      62 bundled skills, SKILL.md parser, FangHub marketplace, FangHubClient (Hand install/update/search)
+openfang-skills      60 bundled skills, SKILL.md parser, FangHub marketplace
 openfang-cli         CLI with daemon management, TUI dashboard, MCP server mode
 openfang-desktop     Tauri 2.0 native app (system tray, notifications, global shortcuts)
-openfang-hands       Autonomous Hand system (HAND.toml, lifecycle, scheduler, 7 bundled Hands)
-openfang-extensions  FFmpeg, yt-dlp, and other external tool integrations
-openfang-migrate     Migration engine for OpenClaw workspaces
-openfang-wire        Peer-to-peer agent communication protocol (OFP)
-maestro-falkor-analytics L4 analytics engine (placeholder)
 xtask                Build automation
 ```
 
@@ -232,7 +164,7 @@ curl -X POST localhost:4200/v1/chat/completions \
 # Build the workspace
 cargo build --workspace --lib
 
-# Run all tests (1,900+)
+# Run all tests (2,010+)
 cargo test --workspace
 
 # Lint (must be 0 warnings)
@@ -246,7 +178,7 @@ cargo fmt --all -- --check
 
 ## Stability Notice
 
-OpenFang v0.3.31 is a significant update. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
+OpenFang v0.3.32 is a significant update. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
 
 - **Breaking changes** may occur between minor versions until v1.0
 - **Some Hands** are more mature than others (Browser and Researcher are the most battle-tested)
