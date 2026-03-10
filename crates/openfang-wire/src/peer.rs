@@ -55,7 +55,7 @@ impl NonceTracker {
 
         // Check for replay
         if self.seen.contains_key(nonce) {
-            return Err(format!("Nonce replay detected: {}", &nonce[..nonce.len().min(16)]));
+            return Err(format!("Nonce replay detected: {}", openfang_types::truncate_str(nonce, 16)));
         }
 
         // Record the nonce

@@ -587,7 +587,7 @@ impl SessionStore {
                             ContentBlock::Thinking { thinking } => {
                                 text_parts.push(format!(
                                     "[thinking: {}]",
-                                    &thinking[..thinking.len().min(200)]
+                                    openfang_types::truncate_str(thinking, 200)
                                 ));
                             }
                             ContentBlock::Unknown => {}

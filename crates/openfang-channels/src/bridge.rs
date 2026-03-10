@@ -288,6 +288,15 @@ impl BridgeManager {
     }
 
     /// Start an adapter: subscribe to its message stream and spawn a dispatch task.
+    ///
+    /// Each incoming message is dispatched as a concurrent task so that slow LLM
+    /// calls (10-30s) don't block subsequent messages. This prevents voice/media
+    /// messages sent in quick succession from appearing "lost" — all messages
+    /// begin processing immediately. Per-agent serialization (to prevent session
+    /// corruption) is handled by the kernel's `agent_msg_locks`.
+    ///
+    /// A semaphore limits concurrent dispatch tasks to prevent unbounded memory
+    /// growth under burst traffic.
     pub async fn start_adapter(
         &mut self,
         adapter: Arc<dyn ChannelAdapter>,
@@ -299,6 +308,10 @@ impl BridgeManager {
         let adapter_clone = adapter.clone();
         let mut shutdown = self.shutdown_rx.clone();
 
+        // Limit concurrent dispatch tasks to prevent unbounded growth.
+        // 32 is generous — most setups have 1-5 concurrent users.
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
+
         let task = tokio::spawn(async move {
             let mut stream = std::pin::pin!(stream);
             loop {
@@ -306,13 +319,28 @@ impl BridgeManager {
                     msg = stream.next() => {
                         match msg {
                             Some(message) => {
-                                dispatch_message(
-                                    &message,
-                                    &handle,
-                                    &router,
-                                    adapter_clone.as_ref(),
-                                    &rate_limiter,
-                                ).await;
+                                // Spawn each dispatch as a concurrent task so the stream
+                                // loop is never blocked by slow LLM calls. The kernel's
+                                // per-agent lock ensures session integrity.
+                                let handle = handle.clone();
+                                let router = router.clone();
+                                let adapter = adapter_clone.clone();
+                                let rate_limiter = rate_limiter.clone();
+                                let sem = semaphore.clone();
+                                tokio::spawn(async move {
+                                    // Acquire semaphore permit (blocks if 32 tasks are in flight).
+                                    let _permit = match sem.acquire().await {
+                                        Ok(p) => p,
+                                        Err(_) => return, // semaphore closed — shutting down
+                                    };
+                                    dispatch_message(
+                                        &message,
+                                        &handle,
+                                        &router,
+                                        adapter.as_ref(),
+                                        &rate_limiter,
+                                    ).await;
+                                });
                             }
                             None => {
                                 info!("Channel adapter {} stream ended", adapter_clone.name());
