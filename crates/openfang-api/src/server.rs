@@ -180,6 +180,10 @@ pub async fn build_router(
             axum::routing::patch(routes::patch_agent_config),
         )
         .route(
+            "/api/agents/{id}/workspace",
+            axum::routing::put(agent::set_agent_workspace),
+        )
+        .route(
             "/api/agents/{id}/clone",
             axum::routing::post(routes::clone_agent),
         )

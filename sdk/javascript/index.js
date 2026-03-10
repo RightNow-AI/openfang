@@ -334,6 +334,13 @@ class AgentResource {
   async getFile(id, filename) {
     return this._c._request("GET", "/api/agents/" + id + "/files/" + filename);
   }
+
+  /**set agent workspace */
+  async setWorkspace(id, path) {
+    return this._c._request("PUT", "/api/agents/" + id + "/workspace", {
+      path: path,
+    });
+  }
 }
 
 // ── Session Resource ────────────────────────────────────────────
