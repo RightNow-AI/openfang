@@ -271,7 +271,7 @@ impl LlmDriver for OpenAIDriver {
                     for block in blocks {
                         match block {
                             ContentBlock::Text { text } => text_parts.push(text.clone()),
-                            ContentBlock::ToolUse { id, name, input } => {
+                            ContentBlock::ToolUse { id, name, input, .. } => {
                                 tool_calls.push(OaiToolCall {
                                     id: id.clone(),
                                     call_type: "function".to_string(),
@@ -546,6 +546,7 @@ impl LlmDriver for OpenAIDriver {
                         id: call.id.clone(),
                         name: call.function.name.clone(),
                         input: input.clone(),
+                        provider_metadata: None,
                     });
                     tool_calls.push(ToolCall {
                         id: call.id,
@@ -669,7 +670,7 @@ impl LlmDriver for OpenAIDriver {
                     for block in blocks {
                         match block {
                             ContentBlock::Text { text } => text_parts.push(text.clone()),
-                            ContentBlock::ToolUse { id, name, input } => {
+                            ContentBlock::ToolUse { id, name, input, .. } => {
                                 tool_calls_out.push(OaiToolCall {
                                     id: id.clone(),
                                     call_type: "function".to_string(),
@@ -1094,6 +1095,7 @@ impl LlmDriver for OpenAIDriver {
                     id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
+                    provider_metadata: None,
                 });
                 tool_calls.push(ToolCall {
                     id: id.clone(),

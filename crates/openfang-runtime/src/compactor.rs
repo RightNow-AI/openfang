@@ -850,6 +850,7 @@ mod tests {
                 id: "tu-1".to_string(),
                 name: "web_search".to_string(),
                 input: serde_json::json!({"query": "test"}),
+                provider_metadata: None,
             }]),
         };
         messages[2] = Message {
@@ -1184,6 +1185,7 @@ mod tests {
                         id: "tu-1".to_string(),
                         name: "web_search".to_string(),
                         input: serde_json::json!({"query": "rust"}),
+                        provider_metadata: None,
                     },
                 ]),
             },

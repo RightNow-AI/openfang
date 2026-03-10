@@ -1119,6 +1119,9 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
     let status = extract_status_code(&inner);
     let classified = llm_errors::classify_error(&inner, status);
 
+    // Build a user-facing message. The classified.sanitized_message now
+    // includes a redacted excerpt of the raw error (issue #493 fix), so we
+    // use it as the base and only override for cases that need extra context.
     match classified.category {
         llm_errors::LlmErrorCategory::ContextOverflow => {
             "Context is full. Try /compact or /new.".to_string()
@@ -1126,20 +1129,24 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
         llm_errors::LlmErrorCategory::RateLimit => {
             if let Some(delay_ms) = classified.suggested_delay_ms {
                 let secs = (delay_ms / 1000).max(1);
-                format!("Provider rate limited. Wait ~{secs}s and try again.")
+                format!("Rate limited. Wait ~{secs}s and try again.")
             } else {
-                "Provider rate limited. Wait a moment and try again.".to_string()
+                "Rate limited. Wait a moment and try again.".to_string()
             }
         }
         llm_errors::LlmErrorCategory::Billing => {
-            "Check provider account status (billing issue detected).".to_string()
+            format!("Billing issue. {}", classified.sanitized_message)
         }
-        llm_errors::LlmErrorCategory::Auth => "Verify your API key in config.".to_string(),
+        llm_errors::LlmErrorCategory::Auth => {
+            // Show the actual error detail so users can diagnose (issue #493).
+            // The sanitized_message already redacts secrets.
+            classified.sanitized_message.clone()
+        }
         llm_errors::LlmErrorCategory::ModelNotFound => {
             if inner.contains("localhost:11434") || inner.contains("ollama") {
-                "Model not found on Ollama. Run `ollama pull <model>` to download it, then try again. Use /model to see options.".to_string()
+                "Model not found on Ollama. Run `ollama pull <model>` first. Use /model to see options.".to_string()
             } else {
-                "Model unavailable. Use /model to see options or check your provider configuration.".to_string()
+                format!("{}. Use /model to see options.", classified.sanitized_message)
             }
         }
         llm_errors::LlmErrorCategory::Format => {
@@ -1147,7 +1154,7 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
             if inner.contains("Claude Code CLI") || inner.contains("claude auth") {
                 classified.raw_message.clone()
             } else {
-                "LLM request failed. Check your API key and model configuration in Settings.".to_string()
+                classified.sanitized_message.clone()
             }
         }
         _ => classified.sanitized_message,
@@ -1156,6 +1163,14 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
 
 /// Try to extract an HTTP status code from an error string.
 fn extract_status_code(s: &str) -> Option<u16> {
+    // "API error (NNN):" — the format produced by LlmError::Api Display impl
+    if let Some(idx) = s.find("API error (") {
+        let after = &s[idx + 11..];
+        let num: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(code) = num.parse::<u16>() {
+            return Some(code);
+        }
+    }
     // "status: NNN"
     if let Some(idx) = s.find("status: ") {
         let after = &s[idx + 8..];
@@ -1274,6 +1289,15 @@ mod tests {
         );
         assert_eq!(extract_status_code("StatusCode(401)"), Some(401));
         assert_eq!(extract_status_code("some random error"), None);
+        // LlmError::Api Display format (issue #493 fix)
+        assert_eq!(
+            extract_status_code("LLM driver error: API error (403): quota exceeded"),
+            Some(403)
+        );
+        assert_eq!(
+            extract_status_code("API error (401): invalid api key"),
+            Some(401)
+        );
     }
 
     #[test]

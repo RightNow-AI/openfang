@@ -810,6 +810,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         recipient: &str,
         success: bool,
         error: Option<&str>,
+        thread_id: Option<&str>,
     ) {
         let receipt = if success {
             openfang_kernel::DeliveryTracker::sent_receipt(channel, recipient)
@@ -822,9 +823,13 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         };
         self.kernel.delivery_tracker.record(agent_id, receipt);
 
-        // Persist last channel for cron CronDelivery::LastChannel
+        // Persist last channel for cron CronDelivery::LastChannel.
+        // Include thread_id when present so forum-topic context survives restarts.
         if success {
-            let kv_val = serde_json::json!({"channel": channel, "recipient": recipient});
+            let mut kv_val = serde_json::json!({"channel": channel, "recipient": recipient});
+            if let Some(tid) = thread_id {
+                kv_val["thread_id"] = serde_json::json!(tid);
+            }
             let _ = self
                 .kernel
                 .memory

@@ -60,6 +60,11 @@ pub enum ContentBlock {
         name: String,
         /// The tool input parameters.
         input: serde_json::Value,
+        /// Provider-specific metadata (e.g. Gemini `thoughtSignature`).
+        /// Opaque to the core — drivers read/write this to round-trip
+        /// fields the provider requires on subsequent requests.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<serde_json::Value>,
     },
     /// A tool result from executing a tool.
     #[serde(rename = "tool_result")]

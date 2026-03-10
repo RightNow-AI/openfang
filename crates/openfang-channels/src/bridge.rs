@@ -135,6 +135,9 @@ pub trait ChannelBridgeHandle: Send + Sync {
     }
 
     /// Record a delivery result for tracking (optional — default no-op).
+    ///
+    /// `thread_id` preserves Telegram forum-topic context so cron/workflow
+    /// delivery can target the same topic later.
     async fn record_delivery(
         &self,
         _agent_id: AgentId,
@@ -142,6 +145,7 @@ pub trait ChannelBridgeHandle: Send + Sync {
         _recipient: &str,
         _success: bool,
         _error: Option<&str>,
+        _thread_id: Option<&str>,
     ) {
         // Default: no tracking
     }
@@ -740,7 +744,7 @@ async fn dispatch_message(
     if let Some(reply) = handle.check_auto_reply(agent_id, &text).await {
         send_response(adapter, &message.sender, reply, thread_id, output_format).await;
         handle
-            .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None)
+            .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None, thread_id)
             .await;
         return;
     }
@@ -759,7 +763,7 @@ async fn dispatch_message(
             send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
             handle
-                .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None)
+                .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None, thread_id)
                 .await;
         }
         Err(e) => {
@@ -781,6 +785,7 @@ async fn dispatch_message(
                     &message.sender.platform_id,
                     false,
                     Some(&err_msg),
+                    thread_id,
                 )
                 .await;
         }
@@ -947,7 +952,7 @@ async fn dispatch_with_blocks(
             send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
             handle
-                .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None)
+                .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None, thread_id)
                 .await;
         }
         Err(e) => {
@@ -969,6 +974,7 @@ async fn dispatch_with_blocks(
                     &message.sender.platform_id,
                     false,
                     Some(&err_msg),
+                    thread_id,
                 )
                 .await;
         }
