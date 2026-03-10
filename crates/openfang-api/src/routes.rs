@@ -491,6 +491,7 @@ pub async fn get_agent_session(
                                     id,
                                     name,
                                     input,
+                                    ..
                                 } => {
                                     let tool_idx = tools.len();
                                     tools.push(serde_json::json!({
@@ -3182,8 +3183,7 @@ pub async fn clawhub_search(
         Err(e) => {
             let msg = format!("{e}");
             tracing::warn!("ClawHub search failed: {msg}");
-            // Propagate 429 status instead of masking as 200
-            let status = if msg.contains("429") || msg.contains("rate limit") {
+            let status = if is_clawhub_rate_limit(&e) {
                 StatusCode::TOO_MANY_REQUESTS
             } else {
                 StatusCode::OK
@@ -3251,7 +3251,7 @@ pub async fn clawhub_browse(
         Err(e) => {
             let msg = format!("{e}");
             tracing::warn!("ClawHub browse failed: {msg}");
-            let status = if msg.contains("429") || msg.contains("rate limit") {
+            let status = if is_clawhub_rate_limit(&e) {
                 StatusCode::TOO_MANY_REQUESTS
             } else {
                 StatusCode::OK
@@ -3319,10 +3319,14 @@ pub async fn clawhub_skill_detail(
                 })),
             )
         }
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        ),
+        Err(e) => {
+            let status = if is_clawhub_rate_limit(&e) {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::NOT_FOUND
+            };
+            (status, Json(serde_json::json!({"error": format!("{e}")})))
+        }
     }
 }
 
@@ -3423,11 +3427,11 @@ pub async fn clawhub_install(
         }
         Err(e) => {
             let msg = format!("{e}");
-            let status = if msg.contains("SecurityBlocked") {
+            let status = if matches!(e, openfang_skills::SkillError::SecurityBlocked(_)) {
                 StatusCode::FORBIDDEN
-            } else if msg.contains("429") || msg.contains("rate limit") {
+            } else if is_clawhub_rate_limit(&e) {
                 StatusCode::TOO_MANY_REQUESTS
-            } else if msg.contains("Network error") || msg.contains("returned 4") || msg.contains("returned 5") {
+            } else if matches!(e, openfang_skills::SkillError::Network(_)) {
                 StatusCode::BAD_GATEWAY
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -3436,6 +3440,11 @@ pub async fn clawhub_install(
             (status, Json(serde_json::json!({"error": msg})))
         }
     }
+}
+
+/// Check whether a SkillError represents a ClawHub rate-limit (429).
+fn is_clawhub_rate_limit(err: &openfang_skills::SkillError) -> bool {
+    matches!(err, openfang_skills::SkillError::RateLimited(_))
 }
 
 /// Convert a browse entry (nested stats/tags) to a flat JSON object for the frontend.

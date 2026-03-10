@@ -84,16 +84,51 @@ const BILLING_PATTERNS: &[&str] = &[
 ];
 
 /// Auth patterns.
+///
+/// NOTE: These are intentionally specific to avoid false positives.
+/// "forbidden" alone is too broad (Chinese providers return 403 + "forbidden"
+/// for quota/region/model-permission issues, not just invalid API keys).
+/// We rely on the 401 status-code fast-path for genuine auth failures and
+/// only use patterns here as a fallback for status-less classification.
 const AUTH_PATTERNS: &[&str] = &[
     "invalid api key",
     "invalid api_key",
     "invalid apikey",
     "incorrect api key",
+    "invalid x-api-key",
     "invalid token",
     "unauthorized",
-    "forbidden",
-    "authentication",
-    "permission denied",
+    "invalid_auth",
+    "authentication_error",
+    "authentication failed",
+    "api key not found",
+    "api key is missing",
+    "invalid credentials",
+    "not authenticated",
+];
+
+/// Patterns that indicate 403 is NOT an auth issue (quota, region, model
+/// permission). Checked before falling back to Auth for status 403.
+const FORBIDDEN_NON_AUTH_PATTERNS: &[&str] = &[
+    "quota",
+    "limit",
+    "balance",
+    "credit",
+    "billing",
+    "region",
+    "not available",
+    "not supported",
+    "not allowed",
+    "access denied",       // model/resource access, not API key
+    "permission",          // model permission, not API key auth
+    "insufficient",
+    "exceeded",
+    "capacity",
+    "blocked",
+    "restricted",
+    "not enabled",
+    "does not exist",
+    "model",               // model-level 403 (e.g., "model access forbidden")
 ];
 
 /// Rate-limit patterns.
@@ -215,11 +250,36 @@ pub fn classify_error(message: &str, status: Option<u16>) -> ClassifiedError {
             402 => return build(LlmErrorCategory::Billing),
             401 => return build(LlmErrorCategory::Auth),
             403 => {
-                // 403 could be auth OR rate-limit on some providers; check message
+                // 403 can mean many things depending on provider:
+                // - Rate limiting (Anthropic, some Chinese providers)
+                // - Quota/billing exhausted
+                // - Model access not enabled
+                // - Region restrictions
+                // Only classify as Auth if the message actually looks like an
+                // API key problem; otherwise fall through to pattern matching.
                 if matches_any(&lower, RATE_LIMIT_PATTERNS) {
                     return build(LlmErrorCategory::RateLimit);
                 }
-                return build(LlmErrorCategory::Auth);
+                if matches_any(&lower, BILLING_PATTERNS) {
+                    return build(LlmErrorCategory::Billing);
+                }
+                if matches_any(&lower, CONTEXT_OVERFLOW_PATTERNS) {
+                    return build(LlmErrorCategory::ContextOverflow);
+                }
+                if matches_any(&lower, MODEL_NOT_FOUND_PATTERNS) {
+                    return build(LlmErrorCategory::ModelNotFound);
+                }
+                // If the 403 body mentions non-auth concepts (quota, region,
+                // model permission, etc.), do NOT classify as Auth — fall
+                // through to the general pattern-matching pipeline instead.
+                if matches_any(&lower, FORBIDDEN_NON_AUTH_PATTERNS) {
+                    // Don't return here — let the general pipeline classify it
+                } else if matches_any(&lower, AUTH_PATTERNS) {
+                    return build(LlmErrorCategory::Auth);
+                } else {
+                    // Generic 403 with no recognizable body: default Auth
+                    return build(LlmErrorCategory::Auth);
+                }
             }
             _ => {}
         }
@@ -244,7 +304,10 @@ pub fn classify_error(message: &str, status: Option<u16>) -> ClassifiedError {
     if matches_any(&lower, AUTH_PATTERNS) {
         return build(LlmErrorCategory::Auth);
     }
-    if matches!(status, Some(401) | Some(403)) {
+    // Note: 403 is NOT included here because it's fully handled in the
+    // status-code fast-path above (where FORBIDDEN_NON_AUTH_PATTERNS can
+    // redirect it to the general pipeline for non-auth 403s).
+    if status == Some(401) {
         return build(LlmErrorCategory::Auth);
     }
 
@@ -315,38 +378,152 @@ pub fn classify_error(message: &str, status: Option<u16>) -> ClassifiedError {
 // Sanitization
 // ---------------------------------------------------------------------------
 
-/// Produce a user-friendly error message.
+/// Produce a user-friendly error message that includes a sanitized excerpt
+/// of the raw provider error so users can actually diagnose problems.
 ///
-/// Maps each category to a human-readable description, capped at 200 chars.
-pub fn sanitize_for_user(category: LlmErrorCategory, _raw: &str) -> String {
-    let msg = match category {
-        LlmErrorCategory::RateLimit => {
-            "The AI provider is rate-limiting requests. Retrying shortly..."
-        }
-        LlmErrorCategory::Overloaded => "The AI provider is temporarily overloaded. Retrying...",
-        LlmErrorCategory::Timeout => "The request timed out. Check your network connection.",
-        LlmErrorCategory::Billing => "Billing issue with the AI provider. Check your API plan.",
-        LlmErrorCategory::Auth => "Authentication failed. Check your API key configuration.",
-        LlmErrorCategory::ContextOverflow => {
-            "The conversation is too long for the model's context window."
-        }
-        LlmErrorCategory::Format => {
-            "LLM request failed. Check your API key and model configuration in Settings."
-        }
-        LlmErrorCategory::ModelNotFound => {
-            "The requested model was not found. Check the model name."
-        }
+/// Previous versions returned only a generic category message ("Verify your
+/// API key") which made it impossible for users to tell what was wrong when
+/// their keys were actually valid (issue #493).
+pub fn sanitize_for_user(category: LlmErrorCategory, raw: &str) -> String {
+    let prefix = match category {
+        LlmErrorCategory::RateLimit => "Rate limited",
+        LlmErrorCategory::Overloaded => "Provider overloaded",
+        LlmErrorCategory::Timeout => "Request timed out",
+        LlmErrorCategory::Billing => "Billing issue",
+        LlmErrorCategory::Auth => "Auth error",
+        LlmErrorCategory::ContextOverflow => "Context too long",
+        LlmErrorCategory::Format => "Request failed",
+        LlmErrorCategory::ModelNotFound => "Model not found",
     };
-    // Cap at 200 chars (all built-in messages are under 200, but defensive).
-    if msg.chars().count() > 200 {
+
+    let detail = sanitize_raw_excerpt(raw);
+    if detail.is_empty() {
+        // Fall back to a helpful generic message when there is no raw detail.
+        match category {
+            LlmErrorCategory::RateLimit => {
+                "Rate limited — retrying shortly.".to_string()
+            }
+            LlmErrorCategory::Overloaded => {
+                "Provider temporarily overloaded — retrying.".to_string()
+            }
+            LlmErrorCategory::Timeout => {
+                "Request timed out. Check your network connection.".to_string()
+            }
+            LlmErrorCategory::Billing => {
+                "Billing issue. Check your API plan and balance.".to_string()
+            }
+            LlmErrorCategory::Auth => {
+                "Auth error. Check your API key configuration.".to_string()
+            }
+            LlmErrorCategory::ContextOverflow => {
+                "Context too long for the model's context window.".to_string()
+            }
+            LlmErrorCategory::Format => {
+                "Request failed. Check API key and model config.".to_string()
+            }
+            LlmErrorCategory::ModelNotFound => {
+                "Model not found. Check the model name.".to_string()
+            }
+        }
+    } else {
+        // Include the sanitized detail — cap total at 300 chars.
+        let full = format!("{prefix}: {detail}");
+        cap_message(&full, 300)
+    }
+}
+
+/// Extract a safe excerpt from the raw error for display to the user.
+///
+/// Strips potential API key fragments (sk-xxx, key-xxx, Bearer xxx) and
+/// truncates to avoid dumping huge HTML error pages.
+fn sanitize_raw_excerpt(raw: &str) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+
+    // If it looks like an HTML error page, don't show HTML to the user.
+    if is_html_error_page(raw) {
+        return "provider returned an error page (possible outage)".to_string();
+    }
+
+    // Try to extract the "message" field from JSON error bodies.
+    let excerpt = extract_json_message(raw).unwrap_or_else(|| raw.to_string());
+
+    // Strip anything that looks like a secret.
+    let cleaned = redact_secrets(&excerpt);
+
+    // Strip the "LLM driver error: API error (NNN): " wrapper if present —
+    // the status code is already captured by the classifier.
+    let cleaned = strip_llm_wrapper(&cleaned);
+
+    // Cap length.
+    cap_message(&cleaned, 200)
+}
+
+/// Try to pull `.error.message` or `.message` from a JSON error body.
+fn extract_json_message(raw: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+    // OpenAI / most providers: {"error": {"message": "..."}}
+    if let Some(msg) = v.pointer("/error/message").and_then(|v| v.as_str()) {
+        return Some(msg.to_string());
+    }
+    // Anthropic: {"error": {"type": "...", "message": "..."}}
+    if let Some(msg) = v.pointer("/message").and_then(|v| v.as_str()) {
+        return Some(msg.to_string());
+    }
+    // Some providers: {"detail": "..."}
+    if let Some(msg) = v.pointer("/detail").and_then(|v| v.as_str()) {
+        return Some(msg.to_string());
+    }
+    None
+}
+
+/// Redact anything that looks like an API key or bearer token.
+fn redact_secrets(s: &str) -> String {
+    let mut result = s.to_string();
+    // Common key prefixes: sk-..., key-..., Bearer ...
+    // Replace sequences that look like keys (long alphanumeric after prefix).
+    for prefix in &["sk-", "key-", "Bearer ", "bearer "] {
+        while let Some(start) = result.find(prefix) {
+            let end = result[start + prefix.len()..]
+                .find(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+                .map(|i| start + prefix.len() + i)
+                .unwrap_or(result.len());
+            if end > start + prefix.len() + 4 {
+                result.replace_range(start..end, "<redacted>");
+            } else {
+                break; // Avoid infinite loop on short matches
+            }
+        }
+    }
+    result
+}
+
+/// Strip the "LLM driver error: API error (NNN): " prefix if present.
+fn strip_llm_wrapper(s: &str) -> String {
+    // Pattern: "LLM driver error: API error (NNN): actual message"
+    if let Some(idx) = s.find("API error (") {
+        if let Some(close) = s[idx..].find("): ") {
+            return s[idx + close + 3..].to_string();
+        }
+    }
+    if let Some(rest) = s.strip_prefix("LLM driver error: ") {
+        return rest.to_string();
+    }
+    s.to_string()
+}
+
+/// Cap a message at `max` chars, adding "..." if truncated.
+fn cap_message(msg: &str, max: usize) -> String {
+    if msg.chars().count() <= max {
+        msg.to_string()
+    } else {
         let end = msg
             .char_indices()
-            .nth(197)
+            .nth(max - 3)
             .map(|(i, _)| i)
             .unwrap_or(msg.len());
         format!("{}...", &msg[..end])
-    } else {
-        msg.to_string()
     }
 }
 
@@ -628,21 +805,32 @@ mod tests {
 
     #[test]
     fn test_sanitize_messages() {
+        // With raw detail — should include the raw excerpt in the message
         let msg = sanitize_for_user(LlmErrorCategory::RateLimit, "raw error details here");
-        assert!(msg.contains("rate-limiting"));
-        assert!(!msg.contains("raw error"));
+        assert!(msg.contains("Rate limited"));
+        assert!(msg.contains("raw error details here"));
 
-        let msg = sanitize_for_user(LlmErrorCategory::Auth, "sk-xxxx invalid");
-        assert!(msg.contains("Authentication"));
-        assert!(!msg.contains("sk-xxxx"));
+        // Auth with API key in raw — key should be redacted
+        let msg = sanitize_for_user(LlmErrorCategory::Auth, "sk-abc123xyz invalid key");
+        assert!(msg.contains("Auth error"));
+        assert!(!msg.contains("sk-abc123xyz"));
+        assert!(msg.contains("<redacted>"));
 
+        // Empty raw — fallback to generic
         let msg = sanitize_for_user(LlmErrorCategory::ContextOverflow, "");
-        assert!(msg.contains("context window"));
+        assert!(msg.contains("Context too long"));
 
         let msg = sanitize_for_user(LlmErrorCategory::ModelNotFound, "");
-        assert!(msg.contains("model"));
+        assert!(msg.contains("Model not found"));
 
-        // All messages should be under 200 chars
+        // JSON error body — should extract the message field
+        let msg = sanitize_for_user(
+            LlmErrorCategory::Auth,
+            r#"{"error":{"message":"Your API key is invalid","type":"auth_error"}}"#,
+        );
+        assert!(msg.contains("Your API key is invalid"));
+
+        // All fallback messages (empty raw) should be under 300 chars
         for cat in [
             LlmErrorCategory::RateLimit,
             LlmErrorCategory::Overloaded,
@@ -653,14 +841,53 @@ mod tests {
             LlmErrorCategory::Format,
             LlmErrorCategory::ModelNotFound,
         ] {
-            let m = sanitize_for_user(cat, "test");
+            let m = sanitize_for_user(cat, "");
             assert!(
-                m.len() <= 200,
-                "Message for {:?} too long: {}",
+                m.len() <= 300,
+                "Fallback message for {:?} too long: {}",
                 cat,
                 m.len()
             );
         }
+    }
+
+    #[test]
+    fn test_sanitize_redacts_secrets() {
+        let msg = sanitize_raw_excerpt("Invalid key: sk-proj-abcdefg12345");
+        assert!(!msg.contains("sk-proj-abcdefg12345"));
+        assert!(msg.contains("<redacted>"));
+
+        let msg = sanitize_raw_excerpt("Bearer eyJhbGciOiJIUzI1NiJ9 was rejected");
+        assert!(!msg.contains("eyJhbGciOiJIUzI1NiJ9"));
+    }
+
+    #[test]
+    fn test_sanitize_extracts_json_message() {
+        let msg = sanitize_raw_excerpt(
+            r#"{"error":{"message":"Rate limit exceeded","type":"rate_limit"}}"#,
+        );
+        assert_eq!(msg, "Rate limit exceeded");
+    }
+
+    #[test]
+    fn test_sanitize_html_page() {
+        let msg =
+            sanitize_raw_excerpt("<!DOCTYPE html><html><body>502 Bad Gateway</body></html>");
+        assert!(msg.contains("error page"));
+        assert!(!msg.contains("<html>"));
+    }
+
+    #[test]
+    fn test_strip_llm_wrapper() {
+        assert_eq!(
+            strip_llm_wrapper("LLM driver error: API error (403): quota exceeded"),
+            "quota exceeded"
+        );
+        assert_eq!(
+            strip_llm_wrapper("LLM driver error: some other error"),
+            "some other error"
+        );
+        assert_eq!(strip_llm_wrapper("plain error"), "plain error");
     }
 
     #[test]
@@ -746,6 +973,42 @@ mod tests {
         // Gemini resource exhausted (rate limit)
         let e = classify_error("Resource exhausted: request rate limit exceeded", None);
         assert_eq!(e.category, LlmErrorCategory::RateLimit);
+    }
+
+    #[test]
+    fn test_403_non_auth_classification() {
+        // Chinese providers often return 403 for quota/region/model issues,
+        // not auth problems. These should NOT be classified as Auth.
+
+        // Quota exceeded with 403
+        let e = classify_error("Quota exceeded for this model", Some(403));
+        assert_ne!(e.category, LlmErrorCategory::Auth);
+        assert_eq!(e.category, LlmErrorCategory::RateLimit);
+
+        // Region restriction with 403
+        let e = classify_error("This model is not available in your region", Some(403));
+        assert_ne!(e.category, LlmErrorCategory::Auth);
+
+        // Insufficient balance with 403 (e.g., Qwen/ZhiPu)
+        let e = classify_error("Insufficient balance in your account", Some(403));
+        assert_ne!(e.category, LlmErrorCategory::Auth);
+        assert_eq!(e.category, LlmErrorCategory::Billing);
+
+        // Model access not enabled with 403
+        let e = classify_error("Model access is not enabled for your account", Some(403));
+        assert_ne!(e.category, LlmErrorCategory::Auth);
+
+        // Rate limit via 403 (some providers)
+        let e = classify_error("Rate limit exceeded", Some(403));
+        assert_eq!(e.category, LlmErrorCategory::RateLimit);
+
+        // Genuine auth failure with 403
+        let e = classify_error("Invalid API key or unauthorized access", Some(403));
+        assert_eq!(e.category, LlmErrorCategory::Auth);
+
+        // Generic 403 with no clues — defaults to Auth
+        let e = classify_error("Forbidden", Some(403));
+        assert_eq!(e.category, LlmErrorCategory::Auth);
     }
 
     #[test]

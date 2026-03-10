@@ -86,10 +86,14 @@ impl TelegramAdapter {
     }
 
     /// Call `sendMessage` on the Telegram API.
+    ///
+    /// When `thread_id` is provided, includes `message_thread_id` in the request
+    /// so the message lands in the correct forum topic.
     async fn api_send_message(
         &self,
         chat_id: i64,
         text: &str,
+        thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "{}/bot{}/sendMessage",
@@ -105,11 +109,14 @@ impl TelegramAdapter {
         // Telegram has a 4096 character limit per message — split if needed
         let chunks = split_message(&sanitized, 4096);
         for chunk in chunks {
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "chat_id": chat_id,
                 "text": chunk,
                 "parse_mode": "HTML",
             });
+            if let Some(tid) = thread_id {
+                body["message_thread_id"] = serde_json::json!(tid);
+            }
 
             let resp = self.client.post(&url).json(&body).send().await?;
             let status = resp.status();
@@ -127,6 +134,7 @@ impl TelegramAdapter {
         chat_id: i64,
         photo_url: &str,
         caption: Option<&str>,
+        thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "{}/bot{}/sendPhoto",
@@ -140,6 +148,9 @@ impl TelegramAdapter {
         if let Some(cap) = caption {
             body["caption"] = serde_json::Value::String(cap.to_string());
             body["parse_mode"] = serde_json::Value::String("HTML".to_string());
+        }
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
         }
         let resp = self.client.post(&url).json(&body).send().await?;
         if !resp.status().is_success() {
@@ -155,17 +166,21 @@ impl TelegramAdapter {
         chat_id: i64,
         document_url: &str,
         filename: &str,
+        thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "{}/bot{}/sendDocument",
             self.api_base_url,
             self.token.as_str()
         );
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "chat_id": chat_id,
             "document": document_url,
             "caption": filename,
         });
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
+        }
         let resp = self.client.post(&url).json(&body).send().await?;
         if !resp.status().is_success() {
             let body_text = resp.text().await.unwrap_or_default();
@@ -179,16 +194,20 @@ impl TelegramAdapter {
         &self,
         chat_id: i64,
         voice_url: &str,
+        thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "{}/bot{}/sendVoice",
             self.api_base_url,
             self.token.as_str()
         );
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "chat_id": chat_id,
             "voice": voice_url,
         });
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
+        }
         let resp = self.client.post(&url).json(&body).send().await?;
         if !resp.status().is_success() {
             let body_text = resp.text().await.unwrap_or_default();
@@ -203,17 +222,21 @@ impl TelegramAdapter {
         chat_id: i64,
         lat: f64,
         lon: f64,
+        thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "{}/bot{}/sendLocation",
             self.api_base_url,
             self.token.as_str()
         );
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "chat_id": chat_id,
             "latitude": lat,
             "longitude": lon,
         });
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
+        }
         let resp = self.client.post(&url).json(&body).send().await?;
         if !resp.status().is_success() {
             let body_text = resp.text().await.unwrap_or_default();
@@ -223,16 +246,25 @@ impl TelegramAdapter {
     }
 
     /// Call `sendChatAction` to show "typing..." indicator.
-    async fn api_send_typing(&self, chat_id: i64) -> Result<(), Box<dyn std::error::Error>> {
+    ///
+    /// When `thread_id` is provided, the typing indicator appears in the forum topic.
+    async fn api_send_typing(
+        &self,
+        chat_id: i64,
+        thread_id: Option<i64>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "{}/bot{}/sendChatAction",
             self.api_base_url,
             self.token.as_str()
         );
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "chat_id": chat_id,
             "action": "typing",
         });
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
+        }
         let _ = self.client.post(&url).json(&body).send().await?;
         Ok(())
     }
@@ -266,6 +298,52 @@ impl TelegramAdapter {
                 _ => {}
             }
         });
+    }
+}
+
+impl TelegramAdapter {
+    /// Internal helper: send content with optional forum-topic thread_id.
+    ///
+    /// Both `send()` and `send_in_thread()` delegate here. When `thread_id` is
+    /// `Some(id)`, every outbound Telegram API call includes `message_thread_id`
+    /// so the message lands in the correct forum topic.
+    async fn send_content(
+        &self,
+        user: &ChannelUser,
+        content: ChannelContent,
+        thread_id: Option<i64>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let chat_id: i64 = user
+            .platform_id
+            .parse()
+            .map_err(|_| format!("Invalid Telegram chat_id: {}", user.platform_id))?;
+
+        match content {
+            ChannelContent::Text(text) => {
+                self.api_send_message(chat_id, &text, thread_id).await?;
+            }
+            ChannelContent::Image { url, caption } => {
+                self.api_send_photo(chat_id, &url, caption.as_deref(), thread_id)
+                    .await?;
+            }
+            ChannelContent::File { url, filename } => {
+                self.api_send_document(chat_id, &url, &filename, thread_id)
+                    .await?;
+            }
+            ChannelContent::Voice { url, .. } => {
+                self.api_send_voice(chat_id, &url, thread_id).await?;
+            }
+            ChannelContent::Location { lat, lon } => {
+                self.api_send_location(chat_id, lat, lon, thread_id)
+                    .await?;
+            }
+            ChannelContent::Command { name, args } => {
+                let text = format!("/{name} {}", args.join(" "));
+                self.api_send_message(chat_id, text.trim(), thread_id)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -459,34 +537,7 @@ impl ChannelAdapter for TelegramAdapter {
         user: &ChannelUser,
         content: ChannelContent,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let chat_id: i64 = user
-            .platform_id
-            .parse()
-            .map_err(|_| format!("Invalid Telegram chat_id: {}", user.platform_id))?;
-
-        match content {
-            ChannelContent::Text(text) => {
-                self.api_send_message(chat_id, &text).await?;
-            }
-            ChannelContent::Image { url, caption } => {
-                self.api_send_photo(chat_id, &url, caption.as_deref())
-                    .await?;
-            }
-            ChannelContent::File { url, filename } => {
-                self.api_send_document(chat_id, &url, &filename).await?;
-            }
-            ChannelContent::Voice { url, .. } => {
-                self.api_send_voice(chat_id, &url).await?;
-            }
-            ChannelContent::Location { lat, lon } => {
-                self.api_send_location(chat_id, lat, lon).await?;
-            }
-            ChannelContent::Command { name, args } => {
-                let text = format!("/{name} {}", args.join(" "));
-                self.api_send_message(chat_id, text.trim()).await?;
-            }
-        }
-        Ok(())
+        self.send_content(user, content, None).await
     }
 
     async fn send_typing(&self, user: &ChannelUser) -> Result<(), Box<dyn std::error::Error>> {
@@ -494,7 +545,17 @@ impl ChannelAdapter for TelegramAdapter {
             .platform_id
             .parse()
             .map_err(|_| format!("Invalid Telegram chat_id: {}", user.platform_id))?;
-        self.api_send_typing(chat_id).await
+        self.api_send_typing(chat_id, None).await
+    }
+
+    async fn send_in_thread(
+        &self,
+        user: &ChannelUser,
+        content: ChannelContent,
+        thread_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tid: Option<i64> = thread_id.parse().ok();
+        self.send_content(user, content, tid).await
     }
 
     async fn send_reaction(
@@ -652,6 +713,12 @@ async fn parse_telegram_update(
         return None;
     };
 
+    // Extract forum topic thread_id (Telegram sends this as `message_thread_id`
+    // for messages inside forum topics / reply threads).
+    let thread_id = message["message_thread_id"]
+        .as_i64()
+        .map(|tid| tid.to_string());
+
     Some(ChannelMessage {
         channel: ChannelType::Telegram,
         platform_message_id: message_id.to_string(),
@@ -664,7 +731,7 @@ async fn parse_telegram_update(
         target_agent: None,
         timestamp,
         is_group,
-        thread_id: None,
+        thread_id,
         metadata: HashMap::new(),
     })
 }
@@ -1021,5 +1088,76 @@ mod tests {
             }
             other => panic!("Expected Text or Voice for voice message, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_parse_telegram_forum_topic_thread_id() {
+        // Messages inside a Telegram forum topic include `message_thread_id`.
+        let update = serde_json::json!({
+            "update_id": 400,
+            "message": {
+                "message_id": 70,
+                "message_thread_id": 42,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": -1001234567890_i64, "type": "supergroup" },
+                "date": 1700000000,
+                "text": "Hello from a forum topic"
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        assert_eq!(msg.thread_id, Some("42".to_string()));
+        assert!(msg.is_group);
+    }
+
+    #[tokio::test]
+    async fn test_parse_telegram_no_thread_id_in_private_chat() {
+        // Private chats should have thread_id = None.
+        let update = serde_json::json!({
+            "update_id": 401,
+            "message": {
+                "message_id": 71,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "text": "Hello from DM"
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        assert_eq!(msg.thread_id, None);
+        assert!(!msg.is_group);
+    }
+
+    #[tokio::test]
+    async fn test_parse_telegram_edited_message_in_forum() {
+        // Edited messages in forum topics should also preserve thread_id.
+        let update = serde_json::json!({
+            "update_id": 402,
+            "edited_message": {
+                "message_id": 72,
+                "message_thread_id": 99,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": -1001234567890_i64, "type": "supergroup" },
+                "date": 1700000000,
+                "edit_date": 1700000060,
+                "text": "Edited in forum"
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        assert_eq!(msg.thread_id, Some("99".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_telegram_html_basic() {
+        // Allowed tags preserved, unknown tags escaped
+        let input = "<b>bold</b> <thinking>hmm</thinking>";
+        let output = sanitize_telegram_html(input);
+        assert!(output.contains("<b>bold</b>"));
+        assert!(output.contains("&lt;thinking&gt;"));
     }
 }
