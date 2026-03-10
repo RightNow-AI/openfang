@@ -6107,8 +6107,10 @@ dependencies = [
 name = "openfang-a2a"
 version = "0.3.34"
 dependencies = [
+ "async-trait",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
