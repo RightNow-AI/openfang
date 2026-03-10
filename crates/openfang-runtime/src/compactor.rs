@@ -850,6 +850,7 @@ mod tests {
                 id: "tu-1".to_string(),
                 name: "web_search".to_string(),
                 input: serde_json::json!({"query": "test"}),
+                provider_metadata: None,
             }]),
         };
         messages[2] = Message {
@@ -1184,6 +1185,7 @@ mod tests {
                         id: "tu-1".to_string(),
                         name: "web_search".to_string(),
                         input: serde_json::json!({"query": "rust"}),
+                        provider_metadata: None,
                     },
                 ]),
             },
@@ -1227,7 +1229,7 @@ mod tests {
         assert!(
             text.contains("truncated from"),
             "Oversized message should be truncated, got: {}",
-            &text[..text.len().min(200)]
+            crate::str_utils::safe_truncate_str(&text, 200)
         );
     }
 

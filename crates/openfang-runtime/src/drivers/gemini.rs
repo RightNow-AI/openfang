@@ -221,12 +221,24 @@ fn convert_messages(
                         ContentBlock::Text { text } => {
                             parts.push(GeminiPart::Text { text: text.clone() });
                         }
-                        ContentBlock::ToolUse { name, input, .. } => {
+                        ContentBlock::ToolUse {
+                            name,
+                            input,
+                            provider_metadata,
+                            ..
+                        } => {
+                            // Echo back thought_signature from provider_metadata
+                            // if present — required by Gemini 2.5+ thinking models.
+                            let thought_signature = provider_metadata
+                                .as_ref()
+                                .and_then(|m| m.get("thought_signature"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
                             parts.push(GeminiPart::FunctionCall {
                                 function_call: GeminiFunctionCallData {
                                     name: name.clone(),
                                     args: input.clone(),
-                                    thought_signature: None,
+                                    thought_signature,
                                 },
                             });
                         }
@@ -341,10 +353,17 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
                     }
                     GeminiPart::FunctionCall { function_call } => {
                         let id = format!("call_{}", uuid::Uuid::new_v4().simple());
+                        // Preserve thought_signature in provider_metadata so it
+                        // gets echoed back on the next request (Gemini 2.5+ requirement).
+                        let provider_metadata =
+                            function_call.thought_signature.as_ref().map(|sig| {
+                                serde_json::json!({ "thought_signature": sig })
+                            });
                         content.push(ContentBlock::ToolUse {
                             id: id.clone(),
                             name: function_call.name.clone(),
                             input: function_call.args.clone(),
+                            provider_metadata,
                         });
                         tool_calls.push(ToolCall {
                             id,
@@ -555,8 +574,8 @@ impl LlmDriver for GeminiDriver {
             // Parse SSE stream
             let mut buffer = String::new();
             let mut text_content = String::new();
-            // Track function calls: (name, args_json)
-            let mut fn_calls: Vec<(String, serde_json::Value)> = Vec::new();
+            // Track function calls: (name, args_json, thought_signature)
+            let mut fn_calls: Vec<(String, serde_json::Value, Option<String>)> = Vec::new();
             let mut finish_reason: Option<String> = None;
             let mut usage = TokenUsage::default();
 
@@ -630,6 +649,7 @@ impl LlmDriver for GeminiDriver {
                                         fn_calls.push((
                                             function_call.name.clone(),
                                             function_call.args.clone(),
+                                            function_call.thought_signature.clone(),
                                         ));
                                     }
                                     GeminiPart::InlineData { .. }
@@ -649,12 +669,16 @@ impl LlmDriver for GeminiDriver {
                 content.push(ContentBlock::Text { text: text_content });
             }
 
-            for (name, args) in fn_calls {
+            for (name, args, thought_sig) in fn_calls {
                 let id = format!("call_{}", uuid::Uuid::new_v4().simple());
+                let provider_metadata = thought_sig
+                    .as_ref()
+                    .map(|sig| serde_json::json!({ "thought_signature": sig }));
                 content.push(ContentBlock::ToolUse {
                     id: id.clone(),
                     name: name.clone(),
                     input: args.clone(),
+                    provider_metadata,
                 });
                 tool_calls.push(ToolCall {
                     id,
@@ -987,5 +1011,276 @@ mod tests {
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json["temperature"], 0.5);
         assert_eq!(json["maxOutputTokens"], 2048);
+    }
+
+    // --- Issue #501: thought_signature round-trip tests ---
+
+    #[test]
+    fn test_thought_signature_captured_from_response() {
+        // Gemini 2.5+ thinking models return thoughtSignature on functionCall parts.
+        let json = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {
+                            "name": "web_search",
+                            "args": {"query": "rust lang"},
+                            "thoughtSignature": "abc123signature"
+                        }
+                    }]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 20,
+                "candidatesTokenCount": 15
+            }
+        });
+
+        let resp: GeminiResponse = serde_json::from_value(json).unwrap();
+        let completion = convert_response(resp).unwrap();
+        assert_eq!(completion.tool_calls.len(), 1);
+        assert_eq!(completion.tool_calls[0].name, "web_search");
+        assert_eq!(completion.stop_reason, StopReason::ToolUse);
+
+        // The thought_signature should be stored in provider_metadata
+        let tool_use_block = &completion.content[0];
+        match tool_use_block {
+            ContentBlock::ToolUse {
+                provider_metadata, ..
+            } => {
+                let meta = provider_metadata.as_ref().expect("provider_metadata should be set");
+                assert_eq!(meta["thought_signature"], "abc123signature");
+            }
+            _ => panic!("Expected ToolUse content block"),
+        }
+    }
+
+    #[test]
+    fn test_thought_signature_echoed_in_request() {
+        // When a ToolUse block carries provider_metadata with thought_signature,
+        // convert_messages should echo it back in the GeminiFunctionCallData.
+        let messages = vec![
+            Message::user("Search for rust"),
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "call_123".to_string(),
+                    name: "web_search".to_string(),
+                    input: serde_json::json!({"query": "rust"}),
+                    provider_metadata: Some(serde_json::json!({
+                        "thought_signature": "sig_xyz789"
+                    })),
+                }]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_123".to_string(),
+                    tool_name: "web_search".to_string(),
+                    content: "Results about Rust programming".to_string(),
+                    is_error: false,
+                }]),
+            },
+        ];
+
+        let (contents, _) = convert_messages(&messages, &None);
+
+        // The assistant's turn (index 1) should have a FunctionCall with the thought_signature
+        let assistant_turn = &contents[1];
+        assert_eq!(assistant_turn.role.as_deref(), Some("model"));
+
+        let fc_part = &assistant_turn.parts[0];
+        match fc_part {
+            GeminiPart::FunctionCall { function_call } => {
+                assert_eq!(function_call.name, "web_search");
+                assert_eq!(
+                    function_call.thought_signature.as_deref(),
+                    Some("sig_xyz789")
+                );
+            }
+            _ => panic!("Expected FunctionCall part"),
+        }
+    }
+
+    #[test]
+    fn test_thought_signature_none_when_absent() {
+        // When there's no thought_signature, provider_metadata should be None
+        let json = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {
+                            "name": "read_file",
+                            "args": {"path": "/tmp/test.txt"}
+                        }
+                    }]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 5
+            }
+        });
+
+        let resp: GeminiResponse = serde_json::from_value(json).unwrap();
+        let completion = convert_response(resp).unwrap();
+
+        match &completion.content[0] {
+            ContentBlock::ToolUse {
+                provider_metadata, ..
+            } => {
+                assert!(
+                    provider_metadata.is_none(),
+                    "provider_metadata should be None when no thoughtSignature"
+                );
+            }
+            _ => panic!("Expected ToolUse"),
+        }
+    }
+
+    #[test]
+    fn test_thought_signature_not_echoed_without_metadata() {
+        // ToolUse blocks without provider_metadata should produce
+        // GeminiFunctionCallData with thought_signature: None
+        let messages = vec![
+            Message::user("Hello"),
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "call_456".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": "/tmp/test"}),
+                    provider_metadata: None,
+                }]),
+            },
+        ];
+
+        let (contents, _) = convert_messages(&messages, &None);
+        let assistant_turn = &contents[1];
+
+        match &assistant_turn.parts[0] {
+            GeminiPart::FunctionCall { function_call } => {
+                assert!(
+                    function_call.thought_signature.is_none(),
+                    "thought_signature should be None when no provider_metadata"
+                );
+            }
+            _ => panic!("Expected FunctionCall part"),
+        }
+    }
+
+    #[test]
+    fn test_thought_signature_serialization_round_trip() {
+        // Verify the GeminiFunctionCallData serializes thoughtSignature correctly
+        let data = GeminiFunctionCallData {
+            name: "web_search".to_string(),
+            args: serde_json::json!({"query": "test"}),
+            thought_signature: Some("my_sig_abc".to_string()),
+        };
+
+        let part = GeminiPart::FunctionCall {
+            function_call: data,
+        };
+        let json = serde_json::to_value(&part).unwrap();
+        assert_eq!(json["functionCall"]["thoughtSignature"], "my_sig_abc");
+        assert_eq!(json["functionCall"]["name"], "web_search");
+
+        // Verify it can round-trip through deserialization
+        let deserialized: GeminiPart = serde_json::from_value(json).unwrap();
+        match deserialized {
+            GeminiPart::FunctionCall { function_call } => {
+                assert_eq!(
+                    function_call.thought_signature.as_deref(),
+                    Some("my_sig_abc")
+                );
+            }
+            _ => panic!("Expected FunctionCall"),
+        }
+    }
+
+    #[test]
+    fn test_thought_signature_omitted_when_none() {
+        // When thought_signature is None, the JSON should not contain the field
+        let data = GeminiFunctionCallData {
+            name: "read_file".to_string(),
+            args: serde_json::json!({}),
+            thought_signature: None,
+        };
+
+        let part = GeminiPart::FunctionCall {
+            function_call: data,
+        };
+        let json = serde_json::to_value(&part).unwrap();
+        assert!(
+            json["functionCall"].get("thoughtSignature").is_none(),
+            "thoughtSignature should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn test_multiple_function_calls_with_mixed_signatures() {
+        // Response with multiple function calls, some with signatures, some without
+        let json = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "name": "web_search",
+                                "args": {"query": "rust"},
+                                "thoughtSignature": "sig_1"
+                            }
+                        },
+                        {
+                            "functionCall": {
+                                "name": "read_file",
+                                "args": {"path": "/tmp/test"}
+                            }
+                        }
+                    ]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 30,
+                "candidatesTokenCount": 20
+            }
+        });
+
+        let resp: GeminiResponse = serde_json::from_value(json).unwrap();
+        let completion = convert_response(resp).unwrap();
+        assert_eq!(completion.tool_calls.len(), 2);
+
+        // First call has signature
+        match &completion.content[0] {
+            ContentBlock::ToolUse {
+                name,
+                provider_metadata,
+                ..
+            } => {
+                assert_eq!(name, "web_search");
+                let meta = provider_metadata.as_ref().unwrap();
+                assert_eq!(meta["thought_signature"], "sig_1");
+            }
+            _ => panic!("Expected ToolUse"),
+        }
+
+        // Second call has no signature
+        match &completion.content[1] {
+            ContentBlock::ToolUse {
+                name,
+                provider_metadata,
+                ..
+            } => {
+                assert_eq!(name, "read_file");
+                assert!(provider_metadata.is_none());
+            }
+            _ => panic!("Expected ToolUse"),
+        }
     }
 }

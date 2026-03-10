@@ -3,6 +3,7 @@
 //! Works with OpenAI, Ollama, vLLM, and any other OpenAI-compatible endpoint.
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
+use crate::think_filter::{FilterAction, StreamingThinkFilter};
 use async_trait::async_trait;
 use futures::StreamExt;
 use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
@@ -166,6 +167,9 @@ struct OaiChoice {
 struct OaiResponseMessage {
     content: Option<String>,
     tool_calls: Option<Vec<OaiToolCall>>,
+    /// Reasoning/thinking content returned by some models (DeepSeek-R1, Qwen3, etc.)
+    /// via LM Studio, Ollama, and other local inference servers.
+    reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -268,7 +272,7 @@ impl LlmDriver for OpenAIDriver {
                     for block in blocks {
                         match block {
                             ContentBlock::Text { text } => text_parts.push(text.clone()),
-                            ContentBlock::ToolUse { id, name, input } => {
+                            ContentBlock::ToolUse { id, name, input, .. } => {
                                 tool_calls.push(OaiToolCall {
                                     id: id.clone(),
                                     call_type: "function".to_string(),
@@ -489,10 +493,50 @@ impl LlmDriver for OpenAIDriver {
             let mut content = Vec::new();
             let mut tool_calls = Vec::new();
 
+            // Capture reasoning_content from models that use a separate field
+            // (DeepSeek-R1, Qwen3, etc. via LM Studio/Ollama)
+            if let Some(ref reasoning) = choice.message.reasoning_content {
+                if !reasoning.is_empty() {
+                    debug!(len = reasoning.len(), "Captured reasoning_content from response");
+                    content.push(ContentBlock::Thinking {
+                        thinking: reasoning.clone(),
+                    });
+                }
+            }
+
             if let Some(text) = choice.message.content {
                 if !text.is_empty() {
-                    content.push(ContentBlock::Text { text });
+                    // Extract <think>...</think> blocks that some local models
+                    // embed directly in the content field.
+                    let (cleaned, thinking) = extract_think_tags(&text);
+                    if let Some(think_text) = thinking {
+                        // Only add if we didn't already get reasoning_content
+                        if choice.message.reasoning_content.is_none() {
+                            content.push(ContentBlock::Thinking {
+                                thinking: think_text,
+                            });
+                        }
+                    }
+                    if !cleaned.is_empty() {
+                        content.push(ContentBlock::Text { text: cleaned });
+                    }
                 }
+            }
+
+            // If we have reasoning but no text content and no tool calls,
+            // synthesize a brief text block so the agent loop doesn't treat
+            // this as an empty response.
+            let has_text = content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
+            let has_thinking = content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. }));
+            if has_thinking && !has_text && choice.message.tool_calls.is_none() {
+                // Extract the last sentence or line from the thinking as a response
+                let thinking_text = content.iter().find_map(|b| match b {
+                    ContentBlock::Thinking { thinking } => Some(thinking.as_str()),
+                    _ => None,
+                }).unwrap_or("");
+                let summary = extract_thinking_summary(thinking_text);
+                debug!(summary_len = summary.len(), "Synthesizing text from thinking-only response");
+                content.push(ContentBlock::Text { text: summary });
             }
 
             if let Some(calls) = choice.message.tool_calls {
@@ -503,6 +547,7 @@ impl LlmDriver for OpenAIDriver {
                         id: call.id.clone(),
                         name: call.function.name.clone(),
                         input: input.clone(),
+                        provider_metadata: None,
                     });
                     tool_calls.push(ToolCall {
                         id: call.id,
@@ -525,13 +570,22 @@ impl LlmDriver for OpenAIDriver {
                 }
             };
 
-            let usage = oai_response
+            let mut usage = oai_response
                 .usage
                 .map(|u| TokenUsage {
                     input_tokens: u.prompt_tokens,
                     output_tokens: u.completion_tokens,
                 })
                 .unwrap_or_default();
+
+            // Guard: if the model returned content but usage is missing/zero
+            // (common with local LLMs like LM Studio, Ollama), set a synthetic
+            // non-zero output_tokens so the agent loop doesn't misclassify
+            // this as a "silent failure" and loop unnecessarily.
+            if !content.is_empty() && usage.input_tokens == 0 && usage.output_tokens == 0 {
+                debug!("Response has content but no usage stats — setting synthetic output_tokens=1");
+                usage.output_tokens = 1;
+            }
 
             return Ok(CompletionResponse {
                 content,
@@ -617,7 +671,7 @@ impl LlmDriver for OpenAIDriver {
                     for block in blocks {
                         match block {
                             ContentBlock::Text { text } => text_parts.push(text.clone()),
-                            ContentBlock::ToolUse { id, name, input } => {
+                            ContentBlock::ToolUse { id, name, input, .. } => {
                                 tool_calls_out.push(OaiToolCall {
                                     id: id.clone(),
                                     call_type: "function".to_string(),
@@ -835,6 +889,10 @@ impl LlmDriver for OpenAIDriver {
             // Parse the SSE stream
             let mut buffer = String::new();
             let mut text_content = String::new();
+            let mut reasoning_content = String::new();
+            // Filter <think>...</think> tags from streaming text deltas so they
+            // don't leak through to the client as visible text.
+            let mut think_filter = StreamingThinkFilter::new();
             // Track tool calls: index -> (id, name, arguments)
             let mut tool_accum: Vec<(String, String, String)> = Vec::new();
             let mut finish_reason: Option<String> = None;
@@ -890,13 +948,37 @@ impl LlmDriver for OpenAIDriver {
                     for choice in choices {
                         let delta = &choice["delta"];
 
-                        // Text content delta
+                        // Text content delta — route through think filter to
+                        // strip <think>...</think> tags before they reach the client.
                         if let Some(text) = delta["content"].as_str() {
                             if !text.is_empty() {
                                 text_content.push_str(text);
+                                for action in think_filter.process(text) {
+                                    match action {
+                                        FilterAction::EmitText(t) => {
+                                            let _ = tx
+                                                .send(StreamEvent::TextDelta { text: t })
+                                                .await;
+                                        }
+                                        FilterAction::EmitThinking(t) => {
+                                            // Route think content the same way as
+                                            // reasoning_content deltas.
+                                            let _ = tx
+                                                .send(StreamEvent::ThinkingDelta { text: t })
+                                                .await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Reasoning/thinking content delta (DeepSeek-R1, Qwen3 via LM Studio/Ollama)
+                        if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                            if !reasoning.is_empty() {
+                                reasoning_content.push_str(reasoning);
                                 let _ = tx
-                                    .send(StreamEvent::TextDelta {
-                                        text: text.to_string(),
+                                    .send(StreamEvent::ThinkingDelta {
+                                        text: reasoning.to_string(),
                                     })
                                     .await;
                             }
@@ -952,8 +1034,24 @@ impl LlmDriver for OpenAIDriver {
                 }
             }
 
+            // Flush any remaining buffered content from the think filter
+            // (e.g. partial tag at stream end, or unclosed think block).
+            for action in think_filter.flush() {
+                match action {
+                    FilterAction::EmitText(t) => {
+                        let _ = tx.send(StreamEvent::TextDelta { text: t }).await;
+                    }
+                    FilterAction::EmitThinking(t) => {
+                        let _ = tx
+                            .send(StreamEvent::ThinkingDelta { text: t })
+                            .await;
+                    }
+                }
+            }
+
             // Log stream summary for diagnostics
             let is_empty_stream = text_content.is_empty()
+                && reasoning_content.is_empty()
                 && tool_accum.is_empty()
                 && usage.input_tokens == 0
                 && usage.output_tokens == 0;
@@ -970,6 +1068,7 @@ impl LlmDriver for OpenAIDriver {
                     chunks = chunk_count,
                     sse_lines = sse_line_count,
                     text_len = text_content.len(),
+                    reasoning_len = reasoning_content.len(),
                     tool_count = tool_accum.len(),
                     finish = ?finish_reason,
                     input_tokens = usage.input_tokens,
@@ -983,8 +1082,42 @@ impl LlmDriver for OpenAIDriver {
             let mut content = Vec::new();
             let mut tool_calls = Vec::new();
 
+            // Add reasoning/thinking content if present
+            if !reasoning_content.is_empty() {
+                content.push(ContentBlock::Thinking {
+                    thinking: reasoning_content.clone(),
+                });
+            }
+
             if !text_content.is_empty() {
-                content.push(ContentBlock::Text { text: text_content });
+                // Extract <think>...</think> blocks from streamed text content
+                let (cleaned, thinking) = extract_think_tags(&text_content);
+                if let Some(think_text) = thinking {
+                    // Only add if we didn't already get reasoning_content
+                    if reasoning_content.is_empty() {
+                        content.push(ContentBlock::Thinking {
+                            thinking: think_text,
+                        });
+                    }
+                }
+                if !cleaned.is_empty() {
+                    content.push(ContentBlock::Text { text: cleaned });
+                }
+            }
+
+            // If we have reasoning but no text content and no tool calls,
+            // synthesize a brief text block so the agent loop doesn't treat
+            // this as an empty response.
+            let has_text = content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
+            let has_thinking = content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. }));
+            if has_thinking && !has_text && tool_accum.is_empty() {
+                let thinking_text = content.iter().find_map(|b| match b {
+                    ContentBlock::Thinking { thinking } => Some(thinking.as_str()),
+                    _ => None,
+                }).unwrap_or("");
+                let summary = extract_thinking_summary(thinking_text);
+                debug!(summary_len = summary.len(), "Synthesizing text from thinking-only stream response");
+                content.push(ContentBlock::Text { text: summary });
             }
 
             for (id, name, arguments) in &tool_accum {
@@ -993,6 +1126,7 @@ impl LlmDriver for OpenAIDriver {
                     id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
+                    provider_metadata: None,
                 });
                 tool_calls.push(ToolCall {
                     id: id.clone(),
@@ -1022,6 +1156,15 @@ impl LlmDriver for OpenAIDriver {
                 }
             };
 
+            // Guard: if the model returned content but usage is missing/zero
+            // (common with local LLMs like LM Studio, Ollama), set a synthetic
+            // non-zero output_tokens so the agent loop doesn't misclassify
+            // this as a "silent failure" and loop unnecessarily.
+            if !content.is_empty() && usage.input_tokens == 0 && usage.output_tokens == 0 {
+                debug!("Stream has content but no usage stats — setting synthetic output_tokens=1");
+                usage.output_tokens = 1;
+            }
+
             let _ = tx
                 .send(StreamEvent::ContentComplete { stop_reason, usage })
                 .await;
@@ -1038,6 +1181,85 @@ impl LlmDriver for OpenAIDriver {
             status: 0,
             message: "Max retries exceeded".to_string(),
         })
+    }
+}
+
+/// Extract `<think>...</think>` blocks from content text.
+///
+/// Some local LLMs (Qwen3, DeepSeek-R1) embed their reasoning directly in the
+/// content field wrapped in `<think>` tags. This function separates the thinking
+/// from the actual response text.
+///
+/// Returns `(cleaned_text, Option<thinking_text>)`.
+fn extract_think_tags(text: &str) -> (String, Option<String>) {
+    let mut thinking_parts = Vec::new();
+    let mut cleaned = text.to_string();
+
+    // Extract all <think>...</think> blocks (greedy within each block)
+    while let Some(start) = cleaned.find("<think>") {
+        if let Some(end) = cleaned.find("</think>") {
+            let think_start = start + "<think>".len();
+            if think_start <= end {
+                let thought = cleaned[think_start..end].trim().to_string();
+                if !thought.is_empty() {
+                    thinking_parts.push(thought);
+                }
+                // Remove the entire <think>...</think> block
+                cleaned = format!(
+                    "{}{}",
+                    &cleaned[..start],
+                    &cleaned[end + "</think>".len()..]
+                );
+            } else {
+                break;
+            }
+        } else {
+            // Unclosed <think> tag — treat everything after as thinking
+            let thought = cleaned[start + "<think>".len()..].trim().to_string();
+            if !thought.is_empty() {
+                thinking_parts.push(thought);
+            }
+            cleaned = cleaned[..start].to_string();
+            break;
+        }
+    }
+
+    let cleaned = cleaned.trim().to_string();
+    if thinking_parts.is_empty() {
+        (cleaned, None)
+    } else {
+        (cleaned, Some(thinking_parts.join("\n\n")))
+    }
+}
+
+/// Extract a usable summary from thinking-only output.
+///
+/// When a local model returns only thinking/reasoning with no actual response text,
+/// we extract the last meaningful paragraph as a synthesized response rather than
+/// showing "empty response" to the user.
+fn extract_thinking_summary(thinking: &str) -> String {
+    let trimmed = thinking.trim();
+    if trimmed.is_empty() {
+        return "[The model produced reasoning but no final answer. Try rephrasing your question.]".to_string();
+    }
+
+    // Take the last non-empty paragraph (models usually conclude with their answer)
+    let paragraphs: Vec<&str> = trimmed
+        .split("\n\n")
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .collect();
+
+    if let Some(last) = paragraphs.last() {
+        // If the last paragraph is reasonably short, use it directly
+        if last.len() <= 2000 {
+            last.to_string()
+        } else {
+            // Take the last 2000 chars
+            last[last.len() - 2000..].to_string()
+        }
+    } else {
+        "[The model produced reasoning but no final answer. Try rephrasing your question.]".to_string()
     }
 }
 
@@ -1264,5 +1486,96 @@ mod tests {
     #[test]
     fn test_extract_max_tokens_limit_no_match() {
         assert_eq!(extract_max_tokens_limit("some random error"), None);
+    }
+
+    // ----- extract_think_tags tests -----
+
+    #[test]
+    fn test_extract_think_tags_no_tags() {
+        let (cleaned, thinking) = extract_think_tags("Hello world");
+        assert_eq!(cleaned, "Hello world");
+        assert!(thinking.is_none());
+    }
+
+    #[test]
+    fn test_extract_think_tags_with_thinking() {
+        let input = "<think>Let me reason about this...</think>The answer is 42.";
+        let (cleaned, thinking) = extract_think_tags(input);
+        assert_eq!(cleaned, "The answer is 42.");
+        assert_eq!(thinking.unwrap(), "Let me reason about this...");
+    }
+
+    #[test]
+    fn test_extract_think_tags_only_thinking() {
+        let input = "<think>I need to think about this carefully.\n\nThe user wants to know about Rust.</think>";
+        let (cleaned, thinking) = extract_think_tags(input);
+        assert_eq!(cleaned, "");
+        assert!(thinking.is_some());
+        assert!(thinking.unwrap().contains("think about this carefully"));
+    }
+
+    #[test]
+    fn test_extract_think_tags_multiple_blocks() {
+        let input = "<think>First thought</think>Middle text<think>Second thought</think>Final text";
+        let (cleaned, thinking) = extract_think_tags(input);
+        assert_eq!(cleaned, "Middle textFinal text");
+        let t = thinking.unwrap();
+        assert!(t.contains("First thought"));
+        assert!(t.contains("Second thought"));
+    }
+
+    #[test]
+    fn test_extract_think_tags_unclosed() {
+        let input = "Some text<think>unclosed thinking content";
+        let (cleaned, thinking) = extract_think_tags(input);
+        assert_eq!(cleaned, "Some text");
+        assert_eq!(thinking.unwrap(), "unclosed thinking content");
+    }
+
+    // ----- extract_thinking_summary tests -----
+
+    #[test]
+    fn test_extract_thinking_summary_empty() {
+        let summary = extract_thinking_summary("");
+        assert!(summary.contains("no final answer"));
+    }
+
+    #[test]
+    fn test_extract_thinking_summary_single_paragraph() {
+        let summary = extract_thinking_summary("The answer is 42.");
+        assert_eq!(summary, "The answer is 42.");
+    }
+
+    #[test]
+    fn test_extract_thinking_summary_multiple_paragraphs() {
+        let input = "First I need to consider X.\n\nThen I should check Y.\n\nThe answer is 42.";
+        let summary = extract_thinking_summary(input);
+        assert_eq!(summary, "The answer is 42.");
+    }
+
+    // ----- reasoning_content deserialization test -----
+
+    #[test]
+    fn test_oai_response_message_with_reasoning_content() {
+        let json = r#"{"content": null, "reasoning_content": "Let me think...", "tool_calls": null}"#;
+        let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.content.is_none());
+        assert_eq!(msg.reasoning_content.as_deref(), Some("Let me think..."));
+    }
+
+    #[test]
+    fn test_oai_response_message_without_reasoning_content() {
+        let json = r#"{"content": "Hello", "tool_calls": null}"#;
+        let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.content.as_deref(), Some("Hello"));
+        assert!(msg.reasoning_content.is_none());
+    }
+
+    #[test]
+    fn test_oai_response_message_null_content_null_reasoning() {
+        let json = r#"{"content": null, "tool_calls": null}"#;
+        let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.content.is_none());
+        assert!(msg.reasoning_content.is_none());
     }
 }

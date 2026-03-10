@@ -100,7 +100,7 @@ pub async fn create_sandbox(
     let container_name = sanitize_container_name(&format!(
         "{}-{}",
         config.container_prefix,
-        &agent_id[..agent_id.len().min(8)]
+        crate::str_utils::safe_truncate_str(agent_id, 8)
     ))?;
 
     let mut cmd = tokio::process::Command::new("docker");

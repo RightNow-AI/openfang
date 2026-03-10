@@ -135,6 +135,9 @@ pub trait ChannelBridgeHandle: Send + Sync {
     }
 
     /// Record a delivery result for tracking (optional — default no-op).
+    ///
+    /// `thread_id` preserves Telegram forum-topic context so cron/workflow
+    /// delivery can target the same topic later.
     async fn record_delivery(
         &self,
         _agent_id: AgentId,
@@ -142,6 +145,7 @@ pub trait ChannelBridgeHandle: Send + Sync {
         _recipient: &str,
         _success: bool,
         _error: Option<&str>,
+        _thread_id: Option<&str>,
     ) {
         // Default: no tracking
     }
@@ -288,6 +292,15 @@ impl BridgeManager {
     }
 
     /// Start an adapter: subscribe to its message stream and spawn a dispatch task.
+    ///
+    /// Each incoming message is dispatched as a concurrent task so that slow LLM
+    /// calls (10-30s) don't block subsequent messages. This prevents voice/media
+    /// messages sent in quick succession from appearing "lost" — all messages
+    /// begin processing immediately. Per-agent serialization (to prevent session
+    /// corruption) is handled by the kernel's `agent_msg_locks`.
+    ///
+    /// A semaphore limits concurrent dispatch tasks to prevent unbounded memory
+    /// growth under burst traffic.
     pub async fn start_adapter(
         &mut self,
         adapter: Arc<dyn ChannelAdapter>,
@@ -299,6 +312,10 @@ impl BridgeManager {
         let adapter_clone = adapter.clone();
         let mut shutdown = self.shutdown_rx.clone();
 
+        // Limit concurrent dispatch tasks to prevent unbounded growth.
+        // 32 is generous — most setups have 1-5 concurrent users.
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
+
         let task = tokio::spawn(async move {
             let mut stream = std::pin::pin!(stream);
             loop {
@@ -306,13 +323,28 @@ impl BridgeManager {
                     msg = stream.next() => {
                         match msg {
                             Some(message) => {
-                                dispatch_message(
-                                    &message,
-                                    &handle,
-                                    &router,
-                                    adapter_clone.as_ref(),
-                                    &rate_limiter,
-                                ).await;
+                                // Spawn each dispatch as a concurrent task so the stream
+                                // loop is never blocked by slow LLM calls. The kernel's
+                                // per-agent lock ensures session integrity.
+                                let handle = handle.clone();
+                                let router = router.clone();
+                                let adapter = adapter_clone.clone();
+                                let rate_limiter = rate_limiter.clone();
+                                let sem = semaphore.clone();
+                                tokio::spawn(async move {
+                                    // Acquire semaphore permit (blocks if 32 tasks are in flight).
+                                    let _permit = match sem.acquire().await {
+                                        Ok(p) => p,
+                                        Err(_) => return, // semaphore closed — shutting down
+                                    };
+                                    dispatch_message(
+                                        &message,
+                                        &handle,
+                                        &router,
+                                        adapter.as_ref(),
+                                        &rate_limiter,
+                                    ).await;
+                                });
                             }
                             None => {
                                 info!("Channel adapter {} stream ended", adapter_clone.name());
@@ -712,7 +744,7 @@ async fn dispatch_message(
     if let Some(reply) = handle.check_auto_reply(agent_id, &text).await {
         send_response(adapter, &message.sender, reply, thread_id, output_format).await;
         handle
-            .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None)
+            .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None, thread_id)
             .await;
         return;
     }
@@ -731,7 +763,7 @@ async fn dispatch_message(
             send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
             handle
-                .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None)
+                .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None, thread_id)
                 .await;
         }
         Err(e) => {
@@ -753,6 +785,7 @@ async fn dispatch_message(
                     &message.sender.platform_id,
                     false,
                     Some(&err_msg),
+                    thread_id,
                 )
                 .await;
         }
@@ -919,7 +952,7 @@ async fn dispatch_with_blocks(
             send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
             handle
-                .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None)
+                .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None, thread_id)
                 .await;
         }
         Err(e) => {
@@ -941,6 +974,7 @@ async fn dispatch_with_blocks(
                     &message.sender.platform_id,
                     false,
                     Some(&err_msg),
+                    thread_id,
                 )
                 .await;
         }
