@@ -6311,6 +6311,7 @@ dependencies = [
  "maestro-falkor-analytics",
  "maestro-guardrails",
  "maestro-observability",
+ "openfang-a2a",
  "openfang-channels",
  "openfang-extensions",
  "openfang-hands",

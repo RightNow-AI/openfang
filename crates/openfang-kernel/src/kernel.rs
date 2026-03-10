@@ -167,6 +167,7 @@ pub struct OpenFangKernel {
     self_handle: OnceLock<Weak<OpenFangKernel>>,
     /// Mesh task routing log — ring buffer of the last 200 routing decisions (Phase 12).
     pub mesh_route_log: tokio::sync::RwLock<std::collections::VecDeque<crate::mesh::MeshRouteEntry>>,
+    pub a2a_engine: Option<Arc<openfang_a2a::engine::A2AEngine>>,
 }
 
 /// Bounded in-memory delivery receipt tracker.
@@ -1013,6 +1014,7 @@ impl OpenFangKernel {
             trace_store: Some(Arc::new(maestro_observability::traces::TraceStore::new())),
             self_handle: OnceLock::new(),
             mesh_route_log: tokio::sync::RwLock::new(std::collections::VecDeque::with_capacity(200)),
+            a2a_engine: None,
         };
 
         // Restore persisted agents from SQLite
