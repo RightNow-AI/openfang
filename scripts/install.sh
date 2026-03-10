@@ -145,21 +145,25 @@ install() {
         */bash) SHELL_RC="$HOME/.bashrc" ;;
         */fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
     esac
-    # Also check for config files if shell detection failed
+    # Also check for config files if shell detection failed.
+    # Check bash/zsh first (more common defaults), fish last — avoids
+    # writing to config.fish for users who merely have Fish installed.
     if [ -z "$SHELL_RC" ]; then
-        if [ -f "$HOME/.config/fish/config.fish" ]; then
-            SHELL_RC="$HOME/.config/fish/config.fish"
-            USER_SHELL="/usr/bin/fish"
+        if [ -f "$HOME/.bashrc" ]; then
+            SHELL_RC="$HOME/.bashrc"
         elif [ -f "$HOME/.zshrc" ]; then
             SHELL_RC="$HOME/.zshrc"
-        elif [ -f "$HOME/.bashrc" ]; then
-            SHELL_RC="$HOME/.bashrc"
+        elif [ -f "$HOME/.config/fish/config.fish" ]; then
+            SHELL_RC="$HOME/.config/fish/config.fish"
         fi
     fi
 
     if [ -n "$SHELL_RC" ] && ! grep -q "openfang" "$SHELL_RC" 2>/dev/null; then
-        case "$USER_SHELL" in
-            */fish)
+        # Determine syntax from the TARGET FILE, not $USER_SHELL — this
+        # prevents Bash syntax from ever being written to config.fish even
+        # when shell detection mis-identifies the user's shell.
+        case "$SHELL_RC" in
+            */config.fish)
                 mkdir -p "$(dirname "$SHELL_RC")"
                 echo "fish_add_path \"$INSTALL_DIR\"" >> "$SHELL_RC"
                 ;;

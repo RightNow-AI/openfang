@@ -3,15 +3,15 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 09:16:01
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-09 14:51:19
+ * @LastEditTime       : 2026-03-10 15:31:35
  */
 //! OpenFang daemon server — boots the kernel and serves the HTTP API.
 
-use crate::agent;
 use crate::channel_bridge;
 use crate::middleware;
 use crate::rate_limiter;
 use crate::routes::{self, AppState};
+use crate::uni_agent;
 use crate::webchat;
 use crate::ws;
 use axum::Router;
@@ -58,6 +58,7 @@ pub async fn build_router(
         channels_config: tokio::sync::RwLock::new(channels_config),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
+        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
     });
 
     // CORS: allow localhost origins by default. If API key is set, the API
@@ -82,7 +83,8 @@ pub async fn build_router(
         .allow_methods(tower_http::cors::Any)
         .allow_headers(tower_http::cors::Any);
 
-    let api_key = state.kernel.config.api_key.clone();
+    // Trim whitespace so `api_key = ""` or `api_key = "  "` both disable auth.
+    let api_key = state.kernel.config.api_key.trim().to_string();
     let gcra_limiter = rate_limiter::create_rate_limiter();
 
     let app = Router::new()
@@ -161,7 +163,8 @@ pub async fn build_router(
         )
         .route(
             "/api/agents/{id}/builtin_tools",
-            axum::routing::get(agent::get_agent_builtin_tools_config).put(routes::set_agent_tools),
+            axum::routing::get(uni_agent::get_agent_builtin_tools_config)
+                .put(routes::set_agent_tools),
         )
         .route(
             "/api/agents/{id}/skills",

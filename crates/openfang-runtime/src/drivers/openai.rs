@@ -55,6 +55,9 @@ struct OaiRequest {
     tool_choice: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+    /// Request usage stats in streaming responses (OpenAI extension, supported by Groq et al).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<serde_json::Value>,
 }
 
 /// Returns true if a model uses `max_completion_tokens` instead of `max_tokens`.
@@ -69,11 +72,20 @@ fn uses_completion_tokens(model: &str) -> bool {
 
 /// Returns true if a model rejects the `temperature` parameter.
 ///
-/// OpenAI's o-series reasoning models and some GPT-5 variants do not support
-/// temperature and return 400 if it is included.
+/// OpenAI's o-series reasoning models and GPT-5-mini variants only accept
+/// `temperature=1` (the default). Sending any other value causes a 400 error.
+/// We proactively omit `temperature` for these models to avoid wasting a retry.
 fn rejects_temperature(model: &str) -> bool {
     let m = model.to_lowercase();
-    m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4")
+    // o-series reasoning models: o1, o1-mini, o1-preview, o3, o3-mini, o3-pro, o4-mini, etc.
+    m.starts_with("o1")
+        || m.starts_with("o3")
+        || m.starts_with("o4")
+        // GPT-5-mini is a reasoning model that rejects temperature
+        || m.starts_with("gpt-5-mini")
+        || m.starts_with("gpt5-mini")
+        // Catch any model explicitly tagged as "reasoning"
+        || m.contains("-reasoning")
 }
 
 #[derive(Debug, Serialize)]
@@ -272,10 +284,19 @@ impl LlmDriver for OpenAIDriver {
                             _ => {}
                         }
                     }
+                    let has_tool_calls = !tool_calls.is_empty();
                     oai_messages.push(OaiMessage {
                         role: "assistant".to_string(),
+                        // ZHIPU (GLM) rejects assistant messages where content is
+                        // null or omitted when tool_calls are present (error 1214).
+                        // Always send an empty string so every OpenAI-compat
+                        // provider gets a valid payload.
                         content: if text_parts.is_empty() {
-                            None
+                            if has_tool_calls {
+                                Some(OaiMessageContent::Text(String::new()))
+                            } else {
+                                None
+                            }
                         } else {
                             Some(OaiMessageContent::Text(text_parts.join("")))
                         },
@@ -331,6 +352,7 @@ impl LlmDriver for OpenAIDriver {
             tools: oai_tools,
             tool_choice,
             stream: false,
+            stream_options: None,
         };
 
         let max_retries = 3;
@@ -628,10 +650,15 @@ impl LlmDriver for OpenAIDriver {
                             _ => {}
                         }
                     }
+                    let has_tool_calls = !tool_calls_out.is_empty();
                     oai_messages.push(OaiMessage {
                         role: "assistant".to_string(),
                         content: if text_parts.is_empty() {
-                            None
+                            if has_tool_calls {
+                                Some(OaiMessageContent::Text(String::new()))
+                            } else {
+                                None
+                            }
                         } else {
                             Some(OaiMessageContent::Text(text_parts.join("")))
                         },
@@ -687,6 +714,7 @@ impl LlmDriver for OpenAIDriver {
             tools: oai_tools,
             tool_choice,
             stream: true,
+            stream_options: Some(serde_json::json!({"include_usage": true})),
         };
 
         // Retry loop for the initial HTTP request
@@ -794,6 +822,19 @@ impl LlmDriver for OpenAIDriver {
                     continue;
                 }
 
+                // Provider doesn't support stream_options — retry without it
+                if status == 400
+                    && oai_request.stream_options.is_some()
+                    && attempt < max_retries
+                    && (body.contains("stream_options")
+                        || body.contains("stream_option")
+                        || body.contains("Unrecognized request argument"))
+                {
+                    warn!(model = %oai_request.model, "Stripping stream_options (unsupported by provider)");
+                    oai_request.stream_options = None;
+                    continue;
+                }
+
                 // Model doesn't support function calling — retry without tools
                 let body_lower = body.to_lowercase();
                 if !oai_request.tools.is_empty()
@@ -828,10 +869,13 @@ impl LlmDriver for OpenAIDriver {
             let mut tool_accum: Vec<(String, String, String)> = Vec::new();
             let mut finish_reason: Option<String> = None;
             let mut usage = TokenUsage::default();
+            let mut chunk_count: u32 = 0;
+            let mut sse_line_count: u32 = 0;
 
             let mut byte_stream = resp.bytes_stream();
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
+                chunk_count += 1;
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
                 // Process complete lines
@@ -843,6 +887,7 @@ impl LlmDriver for OpenAIDriver {
                         continue;
                     }
 
+                    sse_line_count += 1;
                     let data = match line.strip_prefix("data:") {
                         Some(d) => d.trim_start(),
                         None => continue,
@@ -937,6 +982,33 @@ impl LlmDriver for OpenAIDriver {
                         }
                     }
                 }
+            }
+
+            // Log stream summary for diagnostics
+            let is_empty_stream = text_content.is_empty()
+                && tool_accum.is_empty()
+                && usage.input_tokens == 0
+                && usage.output_tokens == 0;
+            if is_empty_stream {
+                warn!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    finish = ?finish_reason,
+                    buffer_remaining = buffer.len(),
+                    "SSE stream returned empty: 0 content, 0 tokens — likely a silently failed request"
+                );
+            } else {
+                debug!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    text_len = text_content.len(),
+                    tool_count = tool_accum.len(),
+                    finish = ?finish_reason,
+                    input_tokens = usage.input_tokens,
+                    output_tokens = usage.output_tokens,
+                    buffer_remaining = buffer.len(),
+                    "SSE stream completed"
+                );
             }
 
             // Build the final response
@@ -1134,5 +1206,95 @@ mod tests {
         assert!(result.is_some());
         let resp = result.unwrap();
         assert_eq!(resp.tool_calls[0].name, "shell_exec");
+    }
+
+    // ----- rejects_temperature tests -----
+
+    #[test]
+    fn test_rejects_temperature_o1_models() {
+        assert!(rejects_temperature("o1"));
+        assert!(rejects_temperature("o1-mini"));
+        assert!(rejects_temperature("o1-mini-2024-09-12"));
+        assert!(rejects_temperature("o1-preview"));
+        assert!(rejects_temperature("o1-preview-2024-09-12"));
+    }
+
+    #[test]
+    fn test_rejects_temperature_o3_models() {
+        assert!(rejects_temperature("o3"));
+        assert!(rejects_temperature("o3-mini"));
+        assert!(rejects_temperature("o3-mini-2025-01-31"));
+        assert!(rejects_temperature("o3-pro"));
+    }
+
+    #[test]
+    fn test_rejects_temperature_o4_models() {
+        assert!(rejects_temperature("o4-mini"));
+        assert!(rejects_temperature("o4-mini-2025-04-16"));
+    }
+
+    #[test]
+    fn test_rejects_temperature_gpt5_mini() {
+        assert!(rejects_temperature("gpt-5-mini"));
+        assert!(rejects_temperature("gpt-5-mini-2025-08-07"));
+        assert!(rejects_temperature("gpt5-mini"));
+        assert!(rejects_temperature("GPT-5-MINI-2025-08-07"));
+    }
+
+    #[test]
+    fn test_rejects_temperature_reasoning_suffix() {
+        assert!(rejects_temperature("some-model-reasoning"));
+        assert!(rejects_temperature("deepseek-r1-reasoning"));
+    }
+
+    #[test]
+    fn test_does_not_reject_temperature_normal_models() {
+        assert!(!rejects_temperature("gpt-4o"));
+        assert!(!rejects_temperature("gpt-4o-mini"));
+        assert!(!rejects_temperature("gpt-5"));
+        assert!(!rejects_temperature("gpt-5-2025-06-01"));
+        assert!(!rejects_temperature("claude-sonnet-4-20250514"));
+        assert!(!rejects_temperature("llama-3.3-70b-versatile"));
+        assert!(!rejects_temperature("deepseek-chat"));
+    }
+
+    // ----- uses_completion_tokens tests -----
+
+    #[test]
+    fn test_uses_completion_tokens_gpt5() {
+        assert!(uses_completion_tokens("gpt-5"));
+        assert!(uses_completion_tokens("gpt-5-mini"));
+        assert!(uses_completion_tokens("gpt-5-mini-2025-08-07"));
+        assert!(uses_completion_tokens("gpt5-mini"));
+    }
+
+    #[test]
+    fn test_uses_completion_tokens_o_series() {
+        assert!(uses_completion_tokens("o1"));
+        assert!(uses_completion_tokens("o1-mini"));
+        assert!(uses_completion_tokens("o3"));
+        assert!(uses_completion_tokens("o3-mini"));
+        assert!(uses_completion_tokens("o3-pro"));
+        assert!(uses_completion_tokens("o4-mini"));
+    }
+
+    #[test]
+    fn test_does_not_use_completion_tokens_normal_models() {
+        assert!(!uses_completion_tokens("gpt-4o"));
+        assert!(!uses_completion_tokens("gpt-4o-mini"));
+        assert!(!uses_completion_tokens("llama-3.3-70b"));
+    }
+
+    // ----- extract_max_tokens_limit tests -----
+
+    #[test]
+    fn test_extract_max_tokens_limit() {
+        let body = r#"max_tokens must be less than or equal to `8192`"#;
+        assert_eq!(extract_max_tokens_limit(body), Some(8192));
+    }
+
+    #[test]
+    fn test_extract_max_tokens_limit_no_match() {
+        assert_eq!(extract_max_tokens_limit("some random error"), None);
     }
 }

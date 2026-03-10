@@ -411,7 +411,7 @@ function agentsPage() {
       var f = this.spawnForm;
       var si = this.spawnIdentity;
       var lines = [
-        'name = "' + f.name + '"',
+        'name = "' + f.name.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"',
         'module = "builtin:chat"'
       ];
       if (f.profile && f.profile !== 'custom') {
@@ -420,7 +420,7 @@ function agentsPage() {
       lines.push('', '[model]');
       lines.push('provider = "' + f.provider + '"');
       lines.push('model = "' + f.model + '"');
-      lines.push('system_prompt = "' + f.systemPrompt.replace(/"/g, '\\"') + '"');
+      lines.push('system_prompt = """\n' + f.systemPrompt.replace(/\\/g, '\\\\').replace(/"""/g, '""\\"') + '\n"""');
       if (f.profile === 'custom') {
         lines.push('', '[capabilities]');
         if (f.caps.memory_read) lines.push('memory_read = ["*"]');
@@ -597,8 +597,9 @@ function agentsPage() {
       if (!this.detailAgent || !this.newModelValue.trim()) return;
       this.modelSaving = true;
       try {
-        await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: this.newModelValue.trim() });
-        OpenFangToast.success('Model changed (memory reset)');
+        var resp = await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: this.newModelValue.trim() });
+        var providerInfo = (resp && resp.provider) ? ' (provider: ' + resp.provider + ')' : '';
+        OpenFangToast.success('Model changed' + providerInfo + ' (memory reset)');
         this.editingModel = false;
         await Alpine.store('app').refreshAgents();
         // Refresh detailAgent

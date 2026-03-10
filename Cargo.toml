@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.33"
+version = "0.3.42"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
@@ -49,6 +49,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 
 # IDs
 uuid = { version = "1", features = ["v4", "serde"] }

@@ -1073,11 +1073,23 @@ pub(crate) fn find_daemon() -> Option<String> {
 }
 
 /// Build an HTTP client for daemon calls.
+///
+/// When api_key is configured in config.toml, the client automatically
+/// includes a `Authorization: Bearer <key>` header on every request.
+/// When api_key is empty or missing, no auth header is sent.
 pub(crate) fn daemon_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .expect("Failed to build HTTP client")
+    let mut builder = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120));
+
+    if let Some(key) = read_api_key() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {key}")) {
+            headers.insert(reqwest::header::AUTHORIZATION, val);
+        }
+        builder = builder.default_headers(headers);
+    }
+
+    builder.build().expect("Failed to build HTTP client")
 }
 
 /// Helper: send a request to the daemon and parse the JSON body.
@@ -1289,10 +1301,18 @@ fn launch_desktop_app(_openfang_dir: &std::path::Path) {
             ui::blank();
             if let Some(base) = find_daemon() {
                 let url = format!("{base}/");
-                let _ = open_in_browser(&url);
-                // Always print the URL — browser launch may silently fail
-                // (e.g., Chromium sandbox EPERM in containers)
+                if !open_in_browser(&url) {
+                    // Browser launch failed entirely (e.g., sandbox EPERM,
+                    // no display server, container environment).
+                    ui::hint("Could not open a browser automatically.");
+                }
+                // Always print the URL so the user can open it manually,
+                // even when open_in_browser reported success — the spawned
+                // opener may still fail asynchronously.
                 ui::hint(&format!("Dashboard: {url}"));
+            } else {
+                ui::hint("Daemon is not running. Start it with: openfang start");
+                ui::hint("Then open: http://127.0.0.1:4200");
             }
         }
     }
@@ -1340,7 +1360,7 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
         (
             "openrouter",
             "OPENROUTER_API_KEY",
-            "openrouter/anthropic/claude-sonnet-4",
+            "openrouter/google/gemini-2.5-flash",
             "OpenRouter",
         ),
     ]
@@ -1456,11 +1476,14 @@ fn cmd_start(config: Option<PathBuf>) {
 }
 
 /// Read the api_key from ~/.openfang/config.toml (if any).
+///
+/// Returns `None` when the key is missing, empty, or whitespace-only —
+/// meaning the daemon is running in public (unauthenticated) mode.
 fn read_api_key() -> Option<String> {
     let config_path = cli_openfang_home().join("config.toml");
     let text = std::fs::read_to_string(config_path).ok()?;
     let table: toml::Value = text.parse().ok()?;
-    let key = table.get("api_key")?.as_str()?;
+    let key = table.get("api_key")?.as_str()?.trim();
     if key.is_empty() {
         None
     } else {
@@ -1472,11 +1495,7 @@ fn cmd_stop() {
     match find_daemon() {
         Some(base) => {
             let client = daemon_client();
-            let mut req = client.post(format!("{base}/api/shutdown"));
-            if let Some(key) = read_api_key() {
-                req = req.bearer_auth(key);
-            }
-            match req.send() {
+            match client.post(format!("{base}/api/shutdown")).send() {
                 Ok(r) if r.status().is_success() => {
                     // Wait for daemon to actually stop (up to 5 seconds)
                     for _ in 0..10 {
@@ -2963,16 +2982,31 @@ pub(crate) fn open_in_browser(url: &str) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        // Detach from parent to avoid inheriting sandbox restrictions.
-        // Some Chromium-based browsers fail with EPERM when launched from
-        // restricted environments (containers, snaps, flatpaks).
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .is_ok()
+        // Try multiple openers in order. xdg-open is the standard, but it
+        // (or the browser it launches) can fail with EPERM in sandboxed
+        // environments (containers, Snap, Flatpak, user-namespace
+        // restrictions). Fall through to alternatives if any opener fails.
+        let openers = [
+            "xdg-open",
+            "sensible-browser",
+            "x-www-browser",
+            "firefox",
+            "google-chrome",
+            "chromium",
+            "chromium-browser",
+        ];
+        for opener in &openers {
+            let result = std::process::Command::new(opener)
+                .arg(url)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            if result.is_ok() {
+                return true;
+            }
+        }
+        false
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {

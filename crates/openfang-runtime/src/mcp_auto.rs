@@ -1,3 +1,10 @@
+/*
+ * @Author             : Felix
+ * @Email              : 307253927@qq.com
+ * @Date               : 2026-03-09 17:04:33
+ * @LastEditors        : Felix
+ * @LastEditTime       : 2026-03-10 14:20:54
+ */
 //! MCP (Model Context Protocol) client — connect to external MCP servers.
 //!
 //! MCP uses JSON-RPC 2.0 over stdio or HTTP+SSE. This module lets OpenFang
@@ -6,11 +13,14 @@
 //!
 //! All MCP tools are namespaced with `mcp_{server}_{tool}` to prevent collisions.
 
+use futures::TryStreamExt as _;
 use openfang_types::tool::ToolDefinition;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio_stream::StreamExt;
+use tokio_util::io::StreamReader;
 use tracing::{debug, info};
 
 // ---------------------------------------------------------------------------
@@ -46,8 +56,10 @@ pub enum McpTransport {
         #[serde(default)]
         args: Vec<String>,
     },
-    /// HTTP Server-Sent Events.
+    /// HTTP Server-Sent Events (2024-11-05).
     Sse { url: String },
+    /// Streamable HTTP (2025-03-26).
+    Http { url: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +90,11 @@ enum McpTransportHandle {
         stdout: BufReader<tokio::process::ChildStdout>,
     },
     Sse {
+        client: reqwest::Client,
+        url: String,
+        message_url: Option<http::Uri>,
+    },
+    Http {
         client: reqwest::Client,
         url: String,
     },
@@ -130,10 +147,8 @@ impl McpConnection {
             McpTransport::Stdio { command, args } => {
                 Self::connect_stdio(command, args, &config.env).await?
             }
-            McpTransport::Sse { url } => {
-                // SSRF check: reject private/localhost URLs unless explicitly configured
-                Self::connect_sse(url).await?
-            }
+            McpTransport::Sse { url } => Self::connect_sse(url).await?,
+            McpTransport::Http { url } => Self::connect_http(url).await?,
         };
 
         let mut conn = Self {
@@ -173,8 +188,9 @@ impl McpConnection {
 
     /// Send the MCP `initialize` handshake.
     async fn initialize(&mut self) -> Result<(), String> {
+        let protocol_version = self.get_protocol_version();
         let params = serde_json::json!({
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": protocol_version,
             "capabilities": {},
             "clientInfo": {
                 "name": "openfang",
@@ -212,19 +228,6 @@ impl McpConnection {
                     let input_schema = tool
                         .get("inputSchema")
                         .cloned()
-                        .and_then(|v| {
-                            // Ensure input_schema is a JSON object. MCP servers may
-                            // return it as a string, null, or omit it entirely.
-                            match &v {
-                                serde_json::Value::Object(_) => Some(v),
-                                serde_json::Value::String(s) => {
-                                    serde_json::from_str::<serde_json::Value>(s)
-                                        .ok()
-                                        .filter(|p| p.is_object())
-                                }
-                                _ => None,
-                            }
-                        })
                         .unwrap_or(serde_json::json!({"type": "object"}));
 
                     // Namespace: mcp_{server}_{tool}
@@ -302,6 +305,14 @@ impl McpConnection {
         &self.config.name
     }
 
+    fn get_protocol_version(&self) -> String {
+        match &self.transport {
+            McpTransportHandle::Stdio { .. } => "2024-11-05".to_string(),
+            McpTransportHandle::Sse { .. } => "2024-11-05".to_string(),
+            McpTransportHandle::Http { .. } => "2025-03-26".to_string(),
+        }
+    }
+
     // --- Transport helpers ---
 
     async fn send_request(
@@ -322,7 +333,12 @@ impl McpConnection {
         let request_json = serde_json::to_string(&request)
             .map_err(|e| format!("Failed to serialize request: {e}"))?;
 
-        debug!(method, id, "MCP request");
+        debug!(
+            method,
+            id,
+            version = self.get_protocol_version(),
+            "MCP request"
+        );
 
         match &mut self.transport {
             McpTransportHandle::Stdio { stdin, stdout, .. } => {
@@ -359,11 +375,22 @@ impl McpConnection {
 
                 Ok(response.result)
             }
-            McpTransportHandle::Sse { client, url } => {
-                tracing::debug!("MCP SSE request url:{}, params: {:?}", url, request.params);
+            McpTransportHandle::Sse {
+                client,
+                url,
+                message_url,
+            } => {
+                let target_url = message_url
+                    .as_ref()
+                    .map_or_else(|| url.clone(), |u| u.to_string());
+                tracing::debug!(
+                    "MCP SSE request to {}, params: {:?}",
+                    target_url,
+                    request_json
+                );
                 let response = client
-                    .get(url.as_str())
-                    // .json(&request)
+                    .post(target_url)
+                    .json(&request)
                     .timeout(std::time::Duration::from_secs(self.config.timeout_secs))
                     .send()
                     .await
@@ -380,6 +407,34 @@ impl McpConnection {
 
                 let rpc_response: JsonRpcResponse = serde_json::from_str(&body)
                     .map_err(|e| format!("Invalid MCP SSE JSON-RPC response: {e}"))?;
+
+                if let Some(err) = rpc_response.error {
+                    return Err(format!("rpc_response error: {err}"));
+                }
+
+                Ok(rpc_response.result)
+            }
+            McpTransportHandle::Http { client, url } => {
+                tracing::debug!("MCP HTTP request to {}, params: {:?}", url, request.params);
+                let response = client
+                    .post(url.as_str())
+                    .json(&request)
+                    .timeout(std::time::Duration::from_secs(self.config.timeout_secs))
+                    .send()
+                    .await
+                    .map_err(|e| format!("MCP HTTP request failed: {e}"))?;
+
+                if !response.status().is_success() {
+                    return Err(format!("MCP HTTP returned {}", response.status()));
+                }
+
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|e| format!("Failed to read HTTP response: {e}"))?;
+
+                let rpc_response: JsonRpcResponse = serde_json::from_str(&body)
+                    .map_err(|e| format!("Invalid MCP HTTP JSON-RPC response: {e}"))?;
 
                 if let Some(err) = rpc_response.error {
                     return Err(format!("{err}"));
@@ -416,7 +471,17 @@ impl McpConnection {
                     .map_err(|e| format!("Write newline: {e}"))?;
                 stdin.flush().await.map_err(|e| format!("Flush: {e}"))?;
             }
-            McpTransportHandle::Sse { client, url } => {
+            McpTransportHandle::Sse {
+                client,
+                url,
+                message_url,
+            } => {
+                let target_url = message_url
+                    .as_ref()
+                    .map_or_else(|| url.clone(), |u| u.to_string());
+                let _ = client.post(target_url).json(&notification).send().await;
+            }
+            McpTransportHandle::Http { client, url } => {
                 let _ = client.post(url.as_str()).json(&notification).send().await;
             }
         }
@@ -526,7 +591,6 @@ impl McpConnection {
     }
 
     async fn connect_sse(url: &str) -> Result<McpTransportHandle, String> {
-        // Basic SSRF check: reject obviously private URLs
         let lower = url.to_lowercase();
         if lower.contains("169.254.169.254") || lower.contains("metadata.google") {
             return Err("SSRF: MCP SSE URL targets metadata endpoint".to_string());
@@ -537,11 +601,106 @@ impl McpConnection {
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
+        tracing::debug!("MCP SSE connect: url={}", url);
+
+        let message_url = Self::fetch_sse_endpoint(&client, url).await?;
+
         Ok(McpTransportHandle::Sse {
+            client,
+            url: url.to_string(),
+            message_url: Some(message_url),
+        })
+    }
+
+    async fn fetch_sse_endpoint(client: &reqwest::Client, url: &str) -> Result<http::Uri, String> {
+        let response = client
+            .get(url)
+            .header("Accept", "text/event-stream")
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| format!("MCP SSE connect request failed: {e}"))?;
+
+        if !response.status().is_success() {
+            return Err(format!("MCP SSE connect returned {}", response.status()));
+        }
+
+        let mut event_type = String::new();
+        let mut event_data = String::new();
+        let stream = response.bytes_stream();
+        let reader =
+            StreamReader::new(stream.map(|result| {
+                result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            }));
+        let mut lines = tokio::io::BufReader::new(reader).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if line.starts_with("event:") {
+                event_type = line.trim_start_matches("event:").trim().to_string();
+            } else if line.starts_with("data:") {
+                event_data = line.trim_start_matches("data:").trim().to_string();
+            } else if line.is_empty() && !event_type.is_empty() && !event_data.is_empty() {
+                if event_type == "endpoint" {
+                    let endpoint = message_endpoint(url, event_data.clone()).unwrap_or_default();
+                    tracing::debug!("MCP SSE endpoint: {}", endpoint);
+                    return Ok(endpoint);
+                }
+                event_type.clear();
+                event_data.clear();
+            }
+        }
+
+        Err("Failed to parse SSE endpoint from response".to_string())
+    }
+
+    async fn connect_http(url: &str) -> Result<McpTransportHandle, String> {
+        let lower = url.to_lowercase();
+        if lower.contains("169.254.169.254") || lower.contains("metadata.google") {
+            return Err("SSRF: MCP HTTP URL targets metadata endpoint".to_string());
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+        tracing::debug!("MCP HTTP connect: url={}", url);
+
+        Ok(McpTransportHandle::Http {
             client,
             url: url.to_string(),
         })
     }
+}
+
+fn message_endpoint(base: &str, endpoint: String) -> Result<http::Uri, http::uri::InvalidUri> {
+    let base = base.parse::<http::Uri>()?;
+    // If endpoint is a full URL, parse and return it directly
+    if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+        return endpoint.parse::<http::Uri>();
+    }
+
+    let mut base_parts = base.into_parts();
+    let endpoint_clone = endpoint.clone();
+
+    if endpoint.starts_with("?") {
+        // Query only - keep base path and append query
+        if let Some(base_path_and_query) = &base_parts.path_and_query {
+            let base_path = base_path_and_query.path();
+            base_parts.path_and_query = Some(format!("{}{}", base_path, endpoint).parse()?);
+        } else {
+            base_parts.path_and_query = Some(format!("/{}", endpoint).parse()?);
+        }
+    } else {
+        // Path (with optional query) - replace entire path_and_query
+        let path_to_use = if endpoint.starts_with("/") {
+            endpoint // Use absolute path as-is
+        } else {
+            format!("/{}", endpoint) // Make relative path absolute
+        };
+        base_parts.path_and_query = Some(path_to_use.parse()?);
+    }
+
+    http::Uri::from_parts(base_parts).map_err(|_| endpoint_clone.parse::<http::Uri>().unwrap_err())
 }
 
 impl Drop for McpConnection {
@@ -721,11 +880,11 @@ mod tests {
             _ => panic!("Expected Stdio transport"),
         }
 
-        // SSE variant
+        // HTTP variant - SSE mode
         let sse_config = McpServerConfig {
             name: "test".to_string(),
-            transport: McpTransport::Sse {
-                url: "https://example.com/mcp".to_string(),
+            transport: McpTransport::Http {
+                url: "https://example.com/sse".to_string(),
             },
             timeout_secs: 60,
             env: vec![],
@@ -733,8 +892,24 @@ mod tests {
         let json = serde_json::to_string(&sse_config).unwrap();
         let back: McpServerConfig = serde_json::from_str(&json).unwrap();
         match back.transport {
-            McpTransport::Sse { url } => assert_eq!(url, "https://example.com/mcp"),
-            _ => panic!("Expected SSE transport"),
+            McpTransport::Http { url } => assert_eq!(url, "https://example.com/sse"),
+            _ => panic!("Expected HTTP transport"),
+        }
+
+        // HTTP variant - MCP mode
+        let mcp_config = McpServerConfig {
+            name: "test2".to_string(),
+            transport: McpTransport::Http {
+                url: "https://example.com/mcp?token=abc".to_string(),
+            },
+            timeout_secs: 60,
+            env: vec![],
+        };
+        let json = serde_json::to_string(&mcp_config).unwrap();
+        let back: McpServerConfig = serde_json::from_str(&json).unwrap();
+        match back.transport {
+            McpTransport::Http { url } => assert_eq!(url, "https://example.com/mcp?token=abc"),
+            _ => panic!("Expected HTTP transport"),
         }
     }
 }

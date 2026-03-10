@@ -283,10 +283,12 @@ function wizardPage() {
     },
 
     get canGoNext() {
-      if (this.step === 2) return this.keySaved || this.hasConfiguredProvider;
+      if (this.step === 2) return this.keySaved || this.hasConfiguredProvider || this.claudeCodeDetected;
       if (this.step === 3) return this.agentName.trim().length > 0;
       return true;
     },
+
+    claudeCodeDetected: false,
 
     get hasConfiguredProvider() {
       var self = this;
@@ -409,6 +411,28 @@ function wizardPage() {
       this.testingProvider = false;
     },
 
+    async detectClaudeCode() {
+      this.testingProvider = true;
+      this.testResult = null;
+      try {
+        var result = await OpenFangAPI.post('/api/providers/claude-code/test', {});
+        this.testResult = result;
+        if (result.status === 'ok') {
+          this.claudeCodeDetected = true;
+          this.keySaved = true;
+          this.setupSummary.provider = 'Claude Code';
+          OpenFangToast.success('Claude Code detected (' + (result.latency_ms || '?') + 'ms)');
+        } else {
+          this.testResult = { status: 'error', error: 'Claude Code CLI not detected' };
+          OpenFangToast.error('Claude Code CLI not detected. Make sure you\'ve run: npm install -g @anthropic-ai/claude-code && claude auth');
+        }
+      } catch(e) {
+        this.testResult = { status: 'error', error: e.message };
+        OpenFangToast.error('Claude Code CLI not detected. Make sure you\'ve run: npm install -g @anthropic-ai/claude-code && claude auth');
+      }
+      this.testingProvider = false;
+    },
+
     // ── Step 3: Agent creation ──
 
     selectTemplate(index) {
@@ -469,7 +493,7 @@ function wizardPage() {
         gemini: 'gemini-2.5-flash',
         groq: 'llama-3.3-70b-versatile',
         deepseek: 'deepseek-chat',
-        openrouter: 'openrouter/auto',
+        openrouter: 'openrouter/google/gemini-2.5-flash',
         mistral: 'mistral-large-latest',
         together: 'meta-llama/Llama-3-70b-chat-hf',
         fireworks: 'accounts/fireworks/models/llama-v3p1-70b-instruct',

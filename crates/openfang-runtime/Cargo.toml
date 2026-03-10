@@ -6,6 +6,7 @@ license.workspace = true
 description = "Agent runtime and execution environment for OpenFang"
 
 [dependencies]
+http = "1"
 openfang-types = { path = "../openfang-types" }
 openfang-memory = { path = "../openfang-memory" }
 openfang-skills = { path = "../openfang-skills" }
@@ -22,6 +23,7 @@ futures = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = "0.7"
 wasmtime = { workspace = true }
 anyhow = { workspace = true }
 sha2 = { workspace = true }
