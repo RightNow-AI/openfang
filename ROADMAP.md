@@ -1,7 +1,7 @@
 # Maestro Project — Evolved Roadmap
 
 **Date:** 2026-03-09  
-**Status:** Phase 10 In Progress
+**Status:** Phase 11 In Progress
 
 ---
 
@@ -20,9 +20,9 @@ This document outlines the official, evolved roadmap for the Maestro-OpenFang pr
 | **10.1** | v0.3.32 | ✅ Done | **Integration Test Suite:** Created the `maestro-integration-tests` crate with 44 black-box tests covering the full kernel and API. |
 | **10.2** | v0.3.32 | ✅ Done | **Hand Scheduler:** Implemented the `HandScheduler` for cron, interval, and one-shot autonomous agent execution. |
 | **10.3** | v0.3.32 | ✅ Done | **Full Async & Bug Fixes:** Eliminated all remaining blocking calls and fixed numerous bugs surfaced by the new integration tests. |
-| **10.4** | v0.3.32 | 🟡 In Progress | **Health & Readiness Probes:** Implement a deep `/api/health/detail` check and a new `/api/ready` endpoint for Kubernetes. |
-| **10.5** | v0.3.32 | ⬜ To Do | **Graceful Shutdown:** Wire the `graceful_shutdown` signal handler into the main kernel loop for clean termination. |
-| **10.6** | v0.3.32 | ⬜ To Do | **CI/CD & Docker:** Add the integration test suite to CI and create a multi-stage `Dockerfile` for a minimal production image. |
+| **10.4** | v0.3.32 | ✅ Done | **Health & Readiness Probes:** Added `/api/ready` readiness probe (HTTP 200 when booted + DB reachable, HTTP 503 otherwise). |
+| **10.5** | v0.3.32 | ✅ Done | **Graceful Shutdown:** SIGTERM → `kernel.shutdown()` chain verified and documented. Ordered teardown: agents suspended, supervisor stopped, DB closed. |
+| **10.6** | v0.3.32 | ✅ Done | **CI/CD & Docker:** 3-stage production Dockerfile, non-root user, HEALTHCHECK; docker-compose healthcheck + resource limits; CI integration job. |
 
 ## 3. Completed Phases
 
