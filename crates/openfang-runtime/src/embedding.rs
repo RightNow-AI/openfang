@@ -189,7 +189,28 @@ pub fn create_embedding_driver(
 
     let base_url = custom_base_url
         .filter(|u| !u.is_empty())
-        .map(|u| u.to_string())
+        .map(|u| {
+            let trimmed = u.trim_end_matches('/');
+            // All OpenAI-compatible embedding providers need /v1 in the path.
+            // If the user supplied a bare host URL (e.g. "http://192.168.0.1:11434"),
+            // append /v1 so the final request hits {base}/v1/embeddings.
+            let needs_v1 = matches!(
+                provider,
+                "openai"
+                    | "groq"
+                    | "together"
+                    | "fireworks"
+                    | "mistral"
+                    | "ollama"
+                    | "vllm"
+                    | "lmstudio"
+            );
+            if needs_v1 && !trimmed.ends_with("/v1") {
+                format!("{trimmed}/v1")
+            } else {
+                trimmed.to_string()
+            }
+        })
         .unwrap_or_else(|| match provider {
             "openai" => OPENAI_BASE_URL.to_string(),
             "groq" => GROQ_BASE_URL.to_string(),
@@ -358,5 +379,41 @@ mod tests {
         let driver = create_embedding_driver("ollama", "all-MiniLM-L6-v2", "", None);
         assert!(driver.is_ok());
         assert_eq!(driver.unwrap().dimensions(), 384);
+    }
+
+    #[test]
+    fn test_create_embedding_driver_custom_url_with_v1() {
+        // Custom URL already containing /v1 should be used as-is
+        let driver = create_embedding_driver(
+            "ollama",
+            "nomic-embed-text",
+            "",
+            Some("http://192.168.0.1:11434/v1"),
+        );
+        assert!(driver.is_ok());
+    }
+
+    #[test]
+    fn test_create_embedding_driver_custom_url_without_v1() {
+        // Custom URL missing /v1 should get it appended for known providers
+        let driver = create_embedding_driver(
+            "ollama",
+            "nomic-embed-text",
+            "",
+            Some("http://192.168.0.1:11434"),
+        );
+        assert!(driver.is_ok());
+    }
+
+    #[test]
+    fn test_create_embedding_driver_custom_url_trailing_slash() {
+        // Trailing slash should be trimmed before appending /v1
+        let driver = create_embedding_driver(
+            "ollama",
+            "nomic-embed-text",
+            "",
+            Some("http://192.168.0.1:11434/"),
+        );
+        assert!(driver.is_ok());
     }
 }

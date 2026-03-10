@@ -146,7 +146,9 @@ pub async fn agent_ws(
     uri: axum::http::Uri,
 ) -> impl IntoResponse {
     // SECURITY: Authenticate WebSocket upgrades (bypasses middleware).
-    let api_key = &state.kernel.config.api_key;
+    // Trim whitespace so empty/whitespace-only api_key disables auth.
+    let api_key_raw = &state.kernel.config.api_key;
+    let api_key = api_key_raw.trim();
     if !api_key.is_empty() {
         // SECURITY: Use constant-time comparison to prevent timing attacks on API key
         let ct_eq = |token: &str, key: &str| -> bool {
@@ -809,12 +811,19 @@ async fn handle_command(
             } else {
                 match state.kernel.set_agent_model(agent_id, args) {
                     Ok(()) => {
-                        let msg = if let Some(entry) = state.kernel.registry.get(agent_id) {
-                            format!("Model switched to: {} (provider: {})", entry.manifest.model.model, entry.manifest.model.provider)
+                        if let Some(entry) = state.kernel.registry.get(agent_id) {
+                            let model = &entry.manifest.model.model;
+                            let provider = &entry.manifest.model.provider;
+                            serde_json::json!({
+                                "type": "command_result",
+                                "command": cmd,
+                                "message": format!("Model switched to: {model} (provider: {provider})"),
+                                "model": model,
+                                "provider": provider
+                            })
                         } else {
-                            format!("Model switched to: {args}")
-                        };
-                        serde_json::json!({"type": "command_result", "command": cmd, "message": msg})
+                            serde_json::json!({"type": "command_result", "command": cmd, "message": format!("Model switched to: {args}")})
+                        }
                     }
                     Err(e) => {
                         serde_json::json!({"type": "error", "content": format!("Model switch failed: {e}")})
@@ -1134,7 +1143,12 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
             }
         }
         llm_errors::LlmErrorCategory::Format => {
-            "LLM request failed. Check your API key and model configuration in Settings.".to_string()
+            // Claude Code CLI errors have actionable messages — pass them through
+            if inner.contains("Claude Code CLI") || inner.contains("claude auth") {
+                classified.raw_message.clone()
+            } else {
+                "LLM request failed. Check your API key and model configuration in Settings.".to_string()
+            }
         }
         _ => classified.sanitized_message,
     }

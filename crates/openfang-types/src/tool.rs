@@ -56,7 +56,20 @@ pub fn normalize_schema_for_provider(
 fn normalize_schema_recursive(schema: &serde_json::Value) -> serde_json::Value {
     let obj = match schema.as_object() {
         Some(o) => o,
-        None => return schema.clone(),
+        None => {
+            // If the schema is a JSON string, try to parse it as a JSON object.
+            // Some MCP servers / skill definitions serialize schemas as strings.
+            if let Some(s) = schema.as_str() {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
+                    if parsed.is_object() {
+                        return normalize_schema_recursive(&parsed);
+                    }
+                }
+            }
+            // Non-object schema (null, number, bool, unparseable string, array) —
+            // return a valid empty object schema so providers don't reject it.
+            return serde_json::json!({"type": "object", "properties": {}});
+        }
     };
 
     let mut result = serde_json::Map::new();
@@ -257,5 +270,53 @@ mod tests {
         assert!(result["properties"]["outer"]["properties"]["inner"]
             .get("$schema")
             .is_none());
+    }
+
+    #[test]
+    fn test_normalize_schema_string_parsed_to_object() {
+        // MCP servers may return inputSchema as a JSON string
+        let schema = serde_json::Value::String(
+            r#"{"type":"object","properties":{"query":{"type":"string"}}}"#.to_string(),
+        );
+        let result = normalize_schema_for_provider(&schema, "openai");
+        assert!(result.is_object());
+        assert_eq!(result["type"], "object");
+        assert!(result["properties"]["query"].is_object());
+    }
+
+    #[test]
+    fn test_normalize_schema_null_becomes_empty_object() {
+        let schema = serde_json::Value::Null;
+        let result = normalize_schema_for_provider(&schema, "openai");
+        assert!(result.is_object());
+        assert_eq!(result["type"], "object");
+    }
+
+    #[test]
+    fn test_normalize_schema_unparseable_string_becomes_empty_object() {
+        let schema = serde_json::Value::String("not valid json".to_string());
+        let result = normalize_schema_for_provider(&schema, "openai");
+        assert!(result.is_object());
+        assert_eq!(result["type"], "object");
+    }
+
+    #[test]
+    fn test_normalize_schema_number_becomes_empty_object() {
+        let schema = serde_json::json!(42);
+        let result = normalize_schema_for_provider(&schema, "openai");
+        assert!(result.is_object());
+        assert_eq!(result["type"], "object");
+    }
+
+    #[test]
+    fn test_normalize_schema_string_with_dollar_schema_stripped() {
+        // String schema that contains $schema — should be parsed AND normalized
+        let schema = serde_json::Value::String(
+            r#"{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{}}"#.to_string(),
+        );
+        let result = normalize_schema_for_provider(&schema, "openai");
+        assert!(result.is_object());
+        assert_eq!(result["type"], "object");
+        assert!(result.get("$schema").is_none());
     }
 }

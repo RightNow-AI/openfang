@@ -275,10 +275,19 @@ impl LlmDriver for OpenAIDriver {
                             _ => {}
                         }
                     }
+                    let has_tool_calls = !tool_calls.is_empty();
                     oai_messages.push(OaiMessage {
                         role: "assistant".to_string(),
+                        // ZHIPU (GLM) rejects assistant messages where content is
+                        // null or omitted when tool_calls are present (error 1214).
+                        // Always send an empty string so every OpenAI-compat
+                        // provider gets a valid payload.
                         content: if text_parts.is_empty() {
-                            None
+                            if has_tool_calls {
+                                Some(OaiMessageContent::Text(String::new()))
+                            } else {
+                                None
+                            }
                         } else {
                             Some(OaiMessageContent::Text(text_parts.join("")))
                         },
@@ -615,10 +624,15 @@ impl LlmDriver for OpenAIDriver {
                             _ => {}
                         }
                     }
+                    let has_tool_calls = !tool_calls_out.is_empty();
                     oai_messages.push(OaiMessage {
                         role: "assistant".to_string(),
                         content: if text_parts.is_empty() {
-                            None
+                            if has_tool_calls {
+                                Some(OaiMessageContent::Text(String::new()))
+                            } else {
+                                None
+                            }
                         } else {
                             Some(OaiMessageContent::Text(text_parts.join("")))
                         },
@@ -932,17 +946,31 @@ impl LlmDriver for OpenAIDriver {
             }
 
             // Log stream summary for diagnostics
-            debug!(
-                chunks = chunk_count,
-                sse_lines = sse_line_count,
-                text_len = text_content.len(),
-                tool_count = tool_accum.len(),
-                finish = ?finish_reason,
-                input_tokens = usage.input_tokens,
-                output_tokens = usage.output_tokens,
-                buffer_remaining = buffer.len(),
-                "SSE stream completed"
-            );
+            let is_empty_stream = text_content.is_empty()
+                && tool_accum.is_empty()
+                && usage.input_tokens == 0
+                && usage.output_tokens == 0;
+            if is_empty_stream {
+                warn!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    finish = ?finish_reason,
+                    buffer_remaining = buffer.len(),
+                    "SSE stream returned empty: 0 content, 0 tokens — likely a silently failed request"
+                );
+            } else {
+                debug!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    text_len = text_content.len(),
+                    tool_count = tool_accum.len(),
+                    finish = ?finish_reason,
+                    input_tokens = usage.input_tokens,
+                    output_tokens = usage.output_tokens,
+                    buffer_remaining = buffer.len(),
+                    "SSE stream completed"
+                );
+            }
 
             // Build the final response
             let mut content = Vec::new();

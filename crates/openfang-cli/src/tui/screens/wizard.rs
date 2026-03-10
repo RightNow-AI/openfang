@@ -40,7 +40,7 @@ const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
         name: "openrouter",
         env_var: "OPENROUTER_API_KEY",
-        default_model: "anthropic/claude-sonnet-4-20250514",
+        default_model: "google/gemini-2.5-flash",
         needs_key: true,
     },
     ProviderInfo {
@@ -126,6 +126,12 @@ const PROVIDERS: &[ProviderInfo] = &[
         env_var: "ZHIPU_API_KEY",
         default_model: "codegeex-4",
         needs_key: true,
+    },
+    ProviderInfo {
+        name: "claude-code",
+        env_var: "",
+        default_model: "claude-code/sonnet",
+        needs_key: false,
     },
     ProviderInfo {
         name: "ollama",
@@ -215,13 +221,23 @@ impl WizardState {
         self.provider_order.clear();
         // Detected providers first
         for (i, p) in PROVIDERS.iter().enumerate() {
-            if std::env::var(p.env_var).is_ok() {
+            let detected = if p.name == "claude-code" {
+                openfang_runtime::drivers::claude_code::claude_code_available()
+            } else {
+                !p.env_var.is_empty() && std::env::var(p.env_var).is_ok()
+            };
+            if detected {
                 self.provider_order.push(i);
             }
         }
         // Then the rest
         for (i, p) in PROVIDERS.iter().enumerate() {
-            if std::env::var(p.env_var).is_err() {
+            let detected = if p.name == "claude-code" {
+                openfang_runtime::drivers::claude_code::claude_code_available()
+            } else {
+                !p.env_var.is_empty() && std::env::var(p.env_var).is_ok()
+            };
+            if !detected {
                 self.provider_order.push(i);
             }
         }
@@ -376,6 +392,8 @@ impl WizardState {
 
         let api_key_line = if !self.api_key_input.is_empty() {
             format!("api_key = \"{}\"", self.api_key_input)
+        } else if p.env_var.is_empty() {
+            String::new()
         } else {
             format!("api_key_env = \"{}\"", p.env_var)
         };
@@ -506,9 +524,15 @@ fn draw_provider(f: &mut Frame, area: Rect, state: &mut WizardState) {
         .iter()
         .map(|&idx| {
             let p = &PROVIDERS[idx];
-            let hint = if !p.needs_key {
+            let hint = if p.name == "claude-code" {
+                if openfang_runtime::drivers::claude_code::claude_code_available() {
+                    "CLI detected".to_string()
+                } else {
+                    "no API key needed".to_string()
+                }
+            } else if !p.needs_key {
                 "local, no key needed".to_string()
-            } else if std::env::var(p.env_var).is_ok() {
+            } else if !p.env_var.is_empty() && std::env::var(p.env_var).is_ok() {
                 format!("{} detected", p.env_var)
             } else {
                 format!("requires {}", p.env_var)
