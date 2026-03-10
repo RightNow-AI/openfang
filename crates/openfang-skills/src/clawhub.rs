@@ -422,50 +422,26 @@ impl ClawHubClient {
         slug: &str,
         target_dir: &Path,
     ) -> Result<ClawHubInstallResult, SkillError> {
-        // Use /api/v1/download?slug=... endpoint
-        let url = format!("{}/download?slug={}", self.base_url, urlencoded(slug));
+        info!(slug, "Installing skill from ClawHub");
 
-        info!(slug, "Downloading skill from ClawHub");
+        // Try the /file endpoint first (SKILL.md). It has a much higher rate
+        // limit (120 req/window vs 20 for /download) and avoids downloading
+        // a full zip when the skill is prompt-only.
+        let file_result = self.try_fetch_skillmd(slug).await;
 
-        // Retry with exponential backoff on 429/5xx
-        let mut last_err = String::new();
-        let mut bytes_result = None;
-        for attempt in 0..3u32 {
-            if attempt > 0 {
-                let delay = std::time::Duration::from_millis(1000 * 2u64.pow(attempt));
-                tokio::time::sleep(delay).await;
-                info!(slug, attempt, "Retrying ClawHub download");
+        let (bytes, is_skillmd) = match file_result {
+            Ok(content) => {
+                info!(slug, "Fetched SKILL.md via file endpoint");
+                (content.into_bytes(), true)
             }
-            match self
-                .client
-                .get(&url)
-                .header("User-Agent", "OpenFang/0.1")
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    match resp.bytes().await {
-                        Ok(b) => {
-                            bytes_result = Some(b);
-                            break;
-                        }
-                        Err(e) => last_err = format!("Failed to read download: {e}"),
-                    }
-                }
-                Ok(resp) if resp.status().as_u16() == 429 || resp.status().is_server_error() => {
-                    last_err = format!("ClawHub download returned {}", resp.status());
-                }
-                Ok(resp) => {
-                    return Err(SkillError::Network(format!(
-                        "ClawHub download returned {}",
-                        resp.status()
-                    )));
-                }
-                Err(e) => last_err = format!("ClawHub download failed: {e}"),
+            Err(_) => {
+                // Fall back to /download for non-SKILL.md skills (zips, packages)
+                info!(slug, "SKILL.md not available, falling back to /download");
+                let b = self.download_with_retry(slug).await?;
+                let is_md = String::from_utf8_lossy(&b).trim_start().starts_with("---");
+                (b, is_md)
             }
-        }
-        let bytes = bytes_result
-            .ok_or_else(|| SkillError::Network(format!("{last_err} (after 3 attempts)")))?;
+        };
 
         // Step 1: SHA256 of downloaded content
         let sha256 = {
@@ -480,9 +456,6 @@ impl ClawHubClient {
         std::fs::create_dir_all(&skill_dir)?;
 
         // Detect content type and extract accordingly
-        let content_str = String::from_utf8_lossy(&bytes);
-        let is_skillmd = content_str.trim_start().starts_with("---");
-
         if is_skillmd {
             std::fs::write(skill_dir.join("SKILL.md"), &*bytes)?;
         } else if bytes.len() >= 4 && bytes[0] == 0x50 && bytes[1] == 0x4b {
@@ -604,6 +577,98 @@ impl ClawHubClient {
         );
 
         Ok(result)
+    }
+
+    /// Try to fetch a skill's SKILL.md via the /file endpoint.
+    ///
+    /// This endpoint has a higher rate limit (120 req/window) than /download
+    /// (20 req/window), so we prefer it for prompt-only skills.
+    async fn try_fetch_skillmd(&self, slug: &str) -> Result<String, SkillError> {
+        let url = format!(
+            "{}/skills/{}/file?path=SKILL.md",
+            self.base_url,
+            urlencoded(slug)
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("User-Agent", "OpenFang/0.1")
+            .send()
+            .await
+            .map_err(|e| SkillError::Network(format!("ClawHub file fetch failed: {e}")))?;
+
+        if !response.status().is_success() {
+            return Err(SkillError::Network(format!(
+                "ClawHub file returned {}",
+                response.status()
+            )));
+        }
+
+        let text = response
+            .text()
+            .await
+            .map_err(|e| SkillError::Network(format!("Failed to read ClawHub file: {e}")))?;
+
+        // Verify it looks like a SKILL.md (YAML frontmatter)
+        if !text.trim_start().starts_with("---") {
+            return Err(SkillError::InvalidManifest(
+                "File endpoint did not return valid SKILL.md content".to_string(),
+            ));
+        }
+
+        Ok(text)
+    }
+
+    /// Download a skill via /download with retry and retry-after support.
+    async fn download_with_retry(&self, slug: &str) -> Result<Vec<u8>, SkillError> {
+        let url = format!("{}/download?slug={}", self.base_url, urlencoded(slug));
+        let mut last_err = String::new();
+
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                info!(slug, attempt, "Retrying ClawHub download");
+            }
+            match self
+                .client
+                .get(&url)
+                .header("User-Agent", "OpenFang/0.1")
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    match resp.bytes().await {
+                        Ok(b) => return Ok(b.to_vec()),
+                        Err(e) => last_err = format!("Failed to read download: {e}"),
+                    }
+                }
+                Ok(resp) if resp.status().as_u16() == 429 || resp.status().is_server_error() => {
+                    // Respect retry-after header if present
+                    let wait = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(2u64.pow(attempt + 1));
+                    last_err = format!("ClawHub download returned {}", resp.status());
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                }
+                Ok(resp) => {
+                    return Err(SkillError::Network(format!(
+                        "ClawHub download returned {}",
+                        resp.status()
+                    )));
+                }
+                Err(e) => {
+                    last_err = format!("ClawHub download failed: {e}");
+                    let delay = std::time::Duration::from_secs(2u64.pow(attempt + 1));
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+        Err(SkillError::Network(format!(
+            "{last_err} (after 3 attempts)"
+        )))
     }
 
     /// Check if a ClawHub skill is already installed locally.

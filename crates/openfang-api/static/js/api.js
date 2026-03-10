@@ -123,7 +123,7 @@ function friendlyError(status, serverMsg) {
   if (status === 404) return serverMsg || 'Resource not found';
   if (status === 429) return 'Rate limited — slow down and try again';
   if (status === 413) return 'Request too large';
-  if (status === 500) return 'Server error — check daemon logs';
+  if (status === 500) return serverMsg || 'Server error — check daemon logs';
   if (status === 502 || status === 503) return 'Daemon unavailable — is it running?';
   return serverMsg || 'Unexpected error (' + status + ')';
 }
@@ -161,17 +161,6 @@ var OpenFangAPI = (function() {
     return fetch(BASE + path, opts).then(function(r) {
       if (_connectionState !== 'connected') setConnectionState('connected');
       if (!r.ok) {
-        // On 401, auto-show auth prompt so the user can re-enter their key
-        if (r.status === 401 && typeof Alpine !== 'undefined') {
-          try {
-            var store = Alpine.store('app');
-            if (store && !store.showAuthPrompt) {
-              _authToken = '';
-              localStorage.removeItem('openfang-api-key');
-              store.showAuthPrompt = true;
-            }
-          } catch(e2) { /* ignore Alpine errors */ }
-        }
         return r.text().then(function(text) {
           var msg = '';
           try {
