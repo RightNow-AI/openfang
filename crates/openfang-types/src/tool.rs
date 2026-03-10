@@ -72,11 +72,20 @@ fn normalize_schema_recursive(schema: &serde_json::Value) -> serde_json::Value {
         }
     };
 
+    // Resolve $ref references before processing.
+    // If the schema has $defs and $ref, inline the referenced definition.
+    let resolved = resolve_refs(obj);
+    let obj = resolved.as_object().unwrap_or(obj);
+
     let mut result = serde_json::Map::new();
 
     for (key, value) in obj {
-        // Strip $schema keys
-        if key == "$schema" {
+        // Strip fields unsupported by Gemini and most non-Anthropic providers
+        if matches!(
+            key.as_str(),
+            "$schema" | "$defs" | "$ref" | "additionalProperties" | "default"
+                | "$id" | "$comment" | "examples" | "title"
+        ) {
             continue;
         }
 
@@ -112,6 +121,60 @@ fn normalize_schema_recursive(schema: &serde_json::Value) -> serde_json::Value {
     }
 
     serde_json::Value::Object(result)
+}
+
+/// Resolve `$ref` references by inlining definitions from `$defs`.
+///
+/// If the schema has `$defs` and any property uses `$ref: "#/$defs/Foo"`,
+/// replace the `$ref` with the actual definition. This is needed because
+/// Gemini and most providers don't support `$ref`/`$defs`.
+fn resolve_refs(obj: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+    let defs = match obj.get("$defs").and_then(|d| d.as_object()) {
+        Some(d) => d.clone(),
+        None => return serde_json::Value::Object(obj.clone()),
+    };
+
+    let mut result = obj.clone();
+    result.remove("$defs");
+
+    // Recursively replace $ref in the schema
+    fn inline_refs(
+        val: &mut serde_json::Value,
+        defs: &serde_json::Map<String, serde_json::Value>,
+    ) {
+        match val {
+            serde_json::Value::Object(map) => {
+                // If this object is a $ref, replace it with the definition
+                if let Some(ref_val) = map.get("$ref").and_then(|r| r.as_str()) {
+                    let ref_name = ref_val
+                        .strip_prefix("#/$defs/")
+                        .or_else(|| ref_val.strip_prefix("#/definitions/"));
+                    if let Some(name) = ref_name {
+                        if let Some(def) = defs.get(name) {
+                            *val = def.clone();
+                            // Recurse into the inlined definition
+                            inline_refs(val, defs);
+                            return;
+                        }
+                    }
+                }
+                // Recurse into all values
+                for v in map.values_mut() {
+                    inline_refs(v, defs);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for item in arr.iter_mut() {
+                    inline_refs(item, defs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut resolved = serde_json::Value::Object(result);
+    inline_refs(&mut resolved, &defs);
+    resolved
 }
 
 /// Try to flatten an `anyOf` array into a simple type + enum.
@@ -318,5 +381,55 @@ mod tests {
         assert!(result.is_object());
         assert_eq!(result["type"], "object");
         assert!(result.get("$schema").is_none());
+    }
+
+    #[test]
+    fn test_normalize_strips_additional_properties() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "name": { "type": "string", "default": "hello", "title": "Name" }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        assert!(result.get("additionalProperties").is_none());
+        assert!(result["properties"]["name"].get("default").is_none());
+        assert!(result["properties"]["name"].get("title").is_none());
+        assert_eq!(result["properties"]["name"]["type"], "string");
+    }
+
+    #[test]
+    fn test_normalize_resolves_refs() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "$defs": {
+                "Color": {
+                    "type": "string",
+                    "enum": ["red", "green", "blue"]
+                }
+            },
+            "properties": {
+                "color": { "$ref": "#/$defs/Color" }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        assert!(result.get("$defs").is_none());
+        assert_eq!(result["properties"]["color"]["type"], "string");
+        assert!(result["properties"]["color"]["enum"].is_array());
+    }
+
+    #[test]
+    fn test_normalize_strips_defs_without_refs() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "$defs": { "Unused": { "type": "number" } },
+            "properties": {
+                "x": { "type": "string" }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        assert!(result.get("$defs").is_none());
+        assert_eq!(result["properties"]["x"]["type"], "string");
     }
 }

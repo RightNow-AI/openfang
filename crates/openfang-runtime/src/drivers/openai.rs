@@ -72,13 +72,20 @@ fn uses_completion_tokens(model: &str) -> bool {
 
 /// Returns true if a model rejects the `temperature` parameter.
 ///
-/// OpenAI's o-series reasoning models and some GPT-5 variants do not support
-/// temperature and return 400 if it is included.
+/// OpenAI's o-series reasoning models and GPT-5-mini variants only accept
+/// `temperature=1` (the default). Sending any other value causes a 400 error.
+/// We proactively omit `temperature` for these models to avoid wasting a retry.
 fn rejects_temperature(model: &str) -> bool {
     let m = model.to_lowercase();
+    // o-series reasoning models: o1, o1-mini, o1-preview, o3, o3-mini, o3-pro, o4-mini, etc.
     m.starts_with("o1")
         || m.starts_with("o3")
         || m.starts_with("o4")
+        // GPT-5-mini is a reasoning model that rejects temperature
+        || m.starts_with("gpt-5-mini")
+        || m.starts_with("gpt5-mini")
+        // Catch any model explicitly tagged as "reasoning"
+        || m.contains("-reasoning")
 }
 
 #[derive(Debug, Serialize)]
@@ -1167,5 +1174,95 @@ mod tests {
         assert!(result.is_some());
         let resp = result.unwrap();
         assert_eq!(resp.tool_calls[0].name, "shell_exec");
+    }
+
+    // ----- rejects_temperature tests -----
+
+    #[test]
+    fn test_rejects_temperature_o1_models() {
+        assert!(rejects_temperature("o1"));
+        assert!(rejects_temperature("o1-mini"));
+        assert!(rejects_temperature("o1-mini-2024-09-12"));
+        assert!(rejects_temperature("o1-preview"));
+        assert!(rejects_temperature("o1-preview-2024-09-12"));
+    }
+
+    #[test]
+    fn test_rejects_temperature_o3_models() {
+        assert!(rejects_temperature("o3"));
+        assert!(rejects_temperature("o3-mini"));
+        assert!(rejects_temperature("o3-mini-2025-01-31"));
+        assert!(rejects_temperature("o3-pro"));
+    }
+
+    #[test]
+    fn test_rejects_temperature_o4_models() {
+        assert!(rejects_temperature("o4-mini"));
+        assert!(rejects_temperature("o4-mini-2025-04-16"));
+    }
+
+    #[test]
+    fn test_rejects_temperature_gpt5_mini() {
+        assert!(rejects_temperature("gpt-5-mini"));
+        assert!(rejects_temperature("gpt-5-mini-2025-08-07"));
+        assert!(rejects_temperature("gpt5-mini"));
+        assert!(rejects_temperature("GPT-5-MINI-2025-08-07"));
+    }
+
+    #[test]
+    fn test_rejects_temperature_reasoning_suffix() {
+        assert!(rejects_temperature("some-model-reasoning"));
+        assert!(rejects_temperature("deepseek-r1-reasoning"));
+    }
+
+    #[test]
+    fn test_does_not_reject_temperature_normal_models() {
+        assert!(!rejects_temperature("gpt-4o"));
+        assert!(!rejects_temperature("gpt-4o-mini"));
+        assert!(!rejects_temperature("gpt-5"));
+        assert!(!rejects_temperature("gpt-5-2025-06-01"));
+        assert!(!rejects_temperature("claude-sonnet-4-20250514"));
+        assert!(!rejects_temperature("llama-3.3-70b-versatile"));
+        assert!(!rejects_temperature("deepseek-chat"));
+    }
+
+    // ----- uses_completion_tokens tests -----
+
+    #[test]
+    fn test_uses_completion_tokens_gpt5() {
+        assert!(uses_completion_tokens("gpt-5"));
+        assert!(uses_completion_tokens("gpt-5-mini"));
+        assert!(uses_completion_tokens("gpt-5-mini-2025-08-07"));
+        assert!(uses_completion_tokens("gpt5-mini"));
+    }
+
+    #[test]
+    fn test_uses_completion_tokens_o_series() {
+        assert!(uses_completion_tokens("o1"));
+        assert!(uses_completion_tokens("o1-mini"));
+        assert!(uses_completion_tokens("o3"));
+        assert!(uses_completion_tokens("o3-mini"));
+        assert!(uses_completion_tokens("o3-pro"));
+        assert!(uses_completion_tokens("o4-mini"));
+    }
+
+    #[test]
+    fn test_does_not_use_completion_tokens_normal_models() {
+        assert!(!uses_completion_tokens("gpt-4o"));
+        assert!(!uses_completion_tokens("gpt-4o-mini"));
+        assert!(!uses_completion_tokens("llama-3.3-70b"));
+    }
+
+    // ----- extract_max_tokens_limit tests -----
+
+    #[test]
+    fn test_extract_max_tokens_limit() {
+        let body = r#"max_tokens must be less than or equal to `8192`"#;
+        assert_eq!(extract_max_tokens_limit(body), Some(8192));
+    }
+
+    #[test]
+    fn test_extract_max_tokens_limit_no_match() {
+        assert_eq!(extract_max_tokens_limit("some random error"), None);
     }
 }
