@@ -3,6 +3,7 @@
 //! Works with OpenAI, Ollama, vLLM, and any other OpenAI-compatible endpoint.
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
+use crate::think_filter::{FilterAction, StreamingThinkFilter};
 use async_trait::async_trait;
 use futures::StreamExt;
 use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
@@ -889,6 +890,9 @@ impl LlmDriver for OpenAIDriver {
             let mut buffer = String::new();
             let mut text_content = String::new();
             let mut reasoning_content = String::new();
+            // Filter <think>...</think> tags from streaming text deltas so they
+            // don't leak through to the client as visible text.
+            let mut think_filter = StreamingThinkFilter::new();
             // Track tool calls: index -> (id, name, arguments)
             let mut tool_accum: Vec<(String, String, String)> = Vec::new();
             let mut finish_reason: Option<String> = None;
@@ -944,15 +948,27 @@ impl LlmDriver for OpenAIDriver {
                     for choice in choices {
                         let delta = &choice["delta"];
 
-                        // Text content delta
+                        // Text content delta — route through think filter to
+                        // strip <think>...</think> tags before they reach the client.
                         if let Some(text) = delta["content"].as_str() {
                             if !text.is_empty() {
                                 text_content.push_str(text);
-                                let _ = tx
-                                    .send(StreamEvent::TextDelta {
-                                        text: text.to_string(),
-                                    })
-                                    .await;
+                                for action in think_filter.process(text) {
+                                    match action {
+                                        FilterAction::EmitText(t) => {
+                                            let _ = tx
+                                                .send(StreamEvent::TextDelta { text: t })
+                                                .await;
+                                        }
+                                        FilterAction::EmitThinking(t) => {
+                                            // Route think content the same way as
+                                            // reasoning_content deltas.
+                                            let _ = tx
+                                                .send(StreamEvent::ThinkingDelta { text: t })
+                                                .await;
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -1014,6 +1030,21 @@ impl LlmDriver for OpenAIDriver {
                         if let Some(fr) = choice["finish_reason"].as_str() {
                             finish_reason = Some(fr.to_string());
                         }
+                    }
+                }
+            }
+
+            // Flush any remaining buffered content from the think filter
+            // (e.g. partial tag at stream end, or unclosed think block).
+            for action in think_filter.flush() {
+                match action {
+                    FilterAction::EmitText(t) => {
+                        let _ = tx.send(StreamEvent::TextDelta { text: t }).await;
+                    }
+                    FilterAction::EmitThinking(t) => {
+                        let _ = tx
+                            .send(StreamEvent::ThinkingDelta { text: t })
+                            .await;
                     }
                 }
             }

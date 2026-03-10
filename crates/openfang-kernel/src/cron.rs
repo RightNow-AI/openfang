@@ -256,6 +256,27 @@ impl CronScheduler {
         count
     }
 
+    /// Remove all cron jobs belonging to a specific agent.
+    ///
+    /// Used when an agent is deleted so its cron entries don't linger as
+    /// orphans pointing at a dead UUID. Returns the number of jobs removed.
+    pub fn remove_agent_jobs(&self, agent_id: AgentId) -> usize {
+        let ids: Vec<CronJobId> = self
+            .jobs
+            .iter()
+            .filter(|r| r.value().job.agent_id == agent_id)
+            .map(|r| *r.key())
+            .collect();
+        let count = ids.len();
+        for id in ids {
+            self.jobs.remove(&id);
+        }
+        if count > 0 {
+            info!(agent = %agent_id, count, "Removed cron jobs for deleted agent");
+        }
+        count
+    }
+
     /// Total number of tracked jobs.
     pub fn total_jobs(&self) -> usize {
         self.jobs.len()
@@ -1103,6 +1124,82 @@ mod tests {
             let job = sched.get_job(id).unwrap();
             assert_eq!(job.agent_id, new_agent);
             assert!(sched.list_jobs(old_agent).is_empty());
+        }
+    }
+
+    // -- remove_agent_jobs (#504) -------------------------------------------
+
+    #[test]
+    fn test_remove_agent_jobs_basic() {
+        let (sched, _tmp) = make_scheduler(100);
+        let agent = AgentId::new();
+        let other = AgentId::new();
+
+        let mut j1 = make_job(agent);
+        j1.name = "job-a".into();
+        let mut j2 = make_job(agent);
+        j2.name = "job-b".into();
+        let mut j3 = make_job(other);
+        j3.name = "job-other".into();
+
+        sched.add_job(j1, false).unwrap();
+        sched.add_job(j2, false).unwrap();
+        let id3 = sched.add_job(j3, false).unwrap();
+
+        assert_eq!(sched.total_jobs(), 3);
+
+        let removed = sched.remove_agent_jobs(agent);
+        assert_eq!(removed, 2);
+        assert_eq!(sched.total_jobs(), 1);
+
+        // The other agent's job should still exist
+        assert!(sched.list_jobs(agent).is_empty());
+        assert_eq!(sched.list_jobs(other).len(), 1);
+        assert!(sched.get_job(id3).is_some());
+    }
+
+    #[test]
+    fn test_remove_agent_jobs_no_match() {
+        let (sched, _tmp) = make_scheduler(100);
+        let agent = AgentId::new();
+
+        let job = make_job(agent);
+        sched.add_job(job, false).unwrap();
+
+        // Remove for a non-existent agent
+        let removed = sched.remove_agent_jobs(AgentId::new());
+        assert_eq!(removed, 0);
+        assert_eq!(sched.total_jobs(), 1);
+    }
+
+    #[test]
+    fn test_remove_agent_jobs_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = AgentId::new();
+        let other = AgentId::new();
+
+        // Add jobs for two agents, remove one agent's jobs, persist
+        {
+            let sched = CronScheduler::new(tmp.path(), 100);
+            let mut j1 = make_job(agent);
+            j1.name = "doomed".into();
+            let mut j2 = make_job(other);
+            j2.name = "survivor".into();
+
+            sched.add_job(j1, false).unwrap();
+            sched.add_job(j2, false).unwrap();
+
+            sched.remove_agent_jobs(agent);
+            sched.persist().unwrap();
+        }
+
+        // Reload and verify
+        {
+            let sched = CronScheduler::new(tmp.path(), 100);
+            sched.load().unwrap();
+            assert_eq!(sched.total_jobs(), 1);
+            assert!(sched.list_jobs(agent).is_empty());
+            assert_eq!(sched.list_jobs(other).len(), 1);
         }
     }
 }

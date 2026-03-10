@@ -2941,6 +2941,14 @@ impl OpenFangKernel {
         self.event_bus.unsubscribe_agent(agent_id);
         self.triggers.remove_agent_triggers(agent_id);
 
+        // Remove cron jobs so they don't linger as orphans (#504)
+        let cron_removed = self.cron_scheduler.remove_agent_jobs(agent_id);
+        if cron_removed > 0 {
+            if let Err(e) = self.cron_scheduler.persist() {
+                warn!("Failed to persist cron jobs after agent deletion: {e}");
+            }
+        }
+
         // Remove from persistent storage
         let _ = self.memory.remove_agent(agent_id);
 
