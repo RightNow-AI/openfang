@@ -6104,6 +6104,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "openfang-a2a"
+version = "0.3.34"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "openfang-api"
 version = "0.3.34"
 dependencies = [
