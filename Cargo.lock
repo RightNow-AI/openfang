@@ -5138,7 +5138,6 @@ dependencies = [
  "async-trait",
  "pyo3",
  "regex",
- "rig-core",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

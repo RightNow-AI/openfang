@@ -13,6 +13,5 @@ thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
-rig-core.workspace = true
 pyo3.workspace = true
 regex.workspace = true
