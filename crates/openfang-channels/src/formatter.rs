@@ -21,65 +21,210 @@ pub fn format_for_channel(text: &str, format: OutputFormat) -> String {
 ///
 /// Supported tags: `<b>`, `<i>`, `<code>`, `<pre>`, `<a href="">`.
 fn markdown_to_telegram_html(text: &str) -> String {
+    let mut placeholders = Vec::new();
+    let mut result = replace_fenced_code_blocks(text, &mut placeholders);
+    result = replace_markdown_tables(&result, &mut placeholders);
+
     // Escape HTML special characters first so agent names and other text
     // don't get interpreted as HTML tags by Telegram's parser.
-    let mut result = text
-        .replace('&', "&amp;")
+    result = escape_telegram_html(&result);
+    result = replace_inline_code(&result, &mut placeholders);
+    result = replace_markdown_links(result);
+    result = replace_markdown_bold(result);
+    result = replace_markdown_italic(&result);
+
+    restore_placeholders(result, &placeholders)
+}
+
+fn escape_telegram_html(text: &str) -> String {
+    text.replace('&', "&amp;")
         .replace('<', "&lt;")
-        .replace('>', "&gt;");
+        .replace('>', "&gt;")
+}
 
-    // Bold: **text** → <b>text</b>
-    while let Some(start) = result.find("**") {
-        if let Some(end) = result[start + 2..].find("**") {
-            let end = start + 2 + end;
-            let inner = result[start + 2..end].to_string();
-            result = format!("{}<b>{}</b>{}", &result[..start], inner, &result[end + 2..]);
-        } else {
-            break;
-        }
+fn stash_placeholder(placeholders: &mut Vec<(String, String)>, rendered: String) -> String {
+    let token = format!("__TG_PLACEHOLDER_{}__", placeholders.len());
+    placeholders.push((token.clone(), rendered));
+    token
+}
+
+fn restore_placeholders(mut text: String, placeholders: &[(String, String)]) -> String {
+    for (token, rendered) in placeholders {
+        text = text.replace(token, rendered);
     }
+    text
+}
 
-    // Italic: *text* → <i>text</i> (but not inside bold tags)
-    // Simple heuristic: match single * not preceded/followed by *
-    let mut out = String::with_capacity(result.len());
-    let chars: Vec<char> = result.chars().collect();
+fn replace_fenced_code_blocks(text: &str, placeholders: &mut Vec<(String, String)>) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut rendered = Vec::with_capacity(lines.len());
     let mut i = 0;
-    let mut in_italic = false;
-    while i < chars.len() {
-        if chars[i] == '*'
-            && (i == 0 || chars[i - 1] != '*')
-            && (i + 1 >= chars.len() || chars[i + 1] != '*')
-        {
-            if in_italic {
-                out.push_str("</i>");
-            } else {
-                out.push_str("<i>");
+
+    while i < lines.len() {
+        if lines[i].trim_start().starts_with("```") {
+            let mut j = i + 1;
+            while j < lines.len() && !lines[j].trim_start().starts_with("```") {
+                j += 1;
             }
-            in_italic = !in_italic;
-        } else {
-            out.push(chars[i]);
+            if j < lines.len() {
+                let code = lines[i + 1..j].join("\n");
+                rendered.push(stash_placeholder(
+                    placeholders,
+                    format!("<pre>{}</pre>", escape_telegram_html(&code)),
+                ));
+                i = j + 1;
+                continue;
+            }
         }
+
+        rendered.push(lines[i].to_string());
         i += 1;
     }
-    result = out;
 
-    // Inline code: `text` → <code>text</code>
+    rendered.join("\n")
+}
+
+fn replace_markdown_tables(text: &str, placeholders: &mut Vec<(String, String)>) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut rendered = Vec::with_capacity(lines.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        if let Some((table_html, consumed)) = parse_markdown_table(&lines[i..]) {
+            rendered.push(stash_placeholder(placeholders, table_html));
+            i += consumed;
+            continue;
+        }
+
+        rendered.push(lines[i].to_string());
+        i += 1;
+    }
+
+    rendered.join("\n")
+}
+
+fn parse_markdown_table(lines: &[&str]) -> Option<(String, usize)> {
+    if lines.len() < 2 {
+        return None;
+    }
+
+    let header = parse_table_row(lines[0])?;
+    if header.len() < 2 || !is_table_separator(lines[1]) {
+        return None;
+    }
+
+    let mut rows = Vec::new();
+    let mut consumed = 2;
+    while consumed < lines.len() {
+        match parse_table_row(lines[consumed]) {
+            Some(row) => {
+                rows.push(row);
+                consumed += 1;
+            }
+            None => break,
+        }
+    }
+
+    let table = render_markdown_table(&header, &rows);
+    Some((format!("<pre>{}</pre>", escape_telegram_html(&table)), consumed))
+}
+
+fn parse_table_row(line: &str) -> Option<Vec<String>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with("```") || !trimmed.contains('|') {
+        return None;
+    }
+
+    let trimmed = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix('|').unwrap_or(trimmed);
+    let cells: Vec<String> = trimmed.split('|').map(|cell| cell.trim().to_string()).collect();
+    (cells.len() >= 2).then_some(cells)
+}
+
+fn is_table_separator(line: &str) -> bool {
+    parse_table_row(line).is_some_and(|cells| {
+        cells.len() >= 2
+            && cells
+                .iter()
+                .all(|cell| !cell.is_empty() && cell.contains('-') && cell.chars().all(|ch| ch == '-' || ch == ':'))
+    })
+}
+
+fn render_markdown_table(header: &[String], rows: &[Vec<String>]) -> String {
+    let col_count = std::iter::once(header.len())
+        .chain(rows.iter().map(|row| row.len()))
+        .max()
+        .unwrap_or(0);
+
+    let mut normalized = Vec::with_capacity(rows.len() + 1);
+    let mut header_cells: Vec<String> = header
+        .iter()
+        .map(|cell| markdown_to_plain(cell).trim().to_string())
+        .collect();
+    header_cells.resize(col_count, String::new());
+    normalized.push(header_cells);
+    for row in rows {
+        let mut cells: Vec<String> = row
+            .iter()
+            .map(|cell| markdown_to_plain(cell).trim().to_string())
+            .collect();
+        cells.resize(col_count, String::new());
+        normalized.push(cells);
+    }
+
+    let mut widths = vec![0; col_count];
+    for row in &normalized {
+        for (idx, cell) in row.iter().enumerate() {
+            widths[idx] = widths[idx].max(cell.chars().count()).max(1);
+        }
+    }
+
+    let header_line = render_table_row(&normalized[0], &widths);
+    let separator_line = widths
+        .iter()
+        .map(|width| "-".repeat(*width))
+        .collect::<Vec<_>>()
+        .join("-+-");
+    let body_lines = normalized
+        .iter()
+        .skip(1)
+        .map(|row| render_table_row(row, &widths))
+        .collect::<Vec<_>>();
+
+    std::iter::once(header_line)
+        .chain(std::iter::once(separator_line))
+        .chain(body_lines)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_table_row(row: &[String], widths: &[usize]) -> String {
+    row.iter()
+        .zip(widths.iter())
+        .map(|(cell, width)| {
+            let padding = width.saturating_sub(cell.chars().count());
+            format!("{cell}{}", " ".repeat(padding))
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn replace_inline_code(text: &str, placeholders: &mut Vec<(String, String)>) -> String {
+    let mut result = text.to_string();
     while let Some(start) = result.find('`') {
         if let Some(end) = result[start + 1..].find('`') {
             let end = start + 1 + end;
             let inner = result[start + 1..end].to_string();
-            result = format!(
-                "{}<code>{}</code>{}",
-                &result[..start],
-                inner,
-                &result[end + 1..]
-            );
+            let replacement = stash_placeholder(placeholders, format!("<code>{inner}</code>"));
+            result = format!("{}{}{}", &result[..start], replacement, &result[end + 1..]);
         } else {
             break;
         }
     }
+    result
+}
 
-    // Links: [text](url) → <a href="url">text</a>
+fn replace_markdown_links(mut result: String) -> String {
     while let Some(bracket_start) = result.find('[') {
         if let Some(bracket_end) = result[bracket_start..].find("](") {
             let bracket_end = bracket_start + bracket_end;
@@ -101,8 +246,44 @@ fn markdown_to_telegram_html(text: &str) -> String {
             break;
         }
     }
-
     result
+}
+
+fn replace_markdown_bold(mut result: String) -> String {
+    while let Some(start) = result.find("**") {
+        if let Some(end) = result[start + 2..].find("**") {
+            let end = start + 2 + end;
+            let inner = result[start + 2..end].to_string();
+            result = format!("{}<b>{}</b>{}", &result[..start], inner, &result[end + 2..]);
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+fn replace_markdown_italic(result: &str) -> String {
+    let mut out = String::with_capacity(result.len());
+    let chars: Vec<char> = result.chars().collect();
+    let mut i = 0;
+    let mut in_italic = false;
+    while i < chars.len() {
+        if chars[i] == '*'
+            && (i == 0 || chars[i - 1] != '*')
+            && (i + 1 >= chars.len() || chars[i + 1] != '*')
+        {
+            if in_italic {
+                out.push_str("</i>");
+            } else {
+                out.push_str("<i>");
+            }
+            in_italic = !in_italic;
+        } else {
+            out.push(chars[i]);
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Convert Markdown to Slack mrkdwn format.
@@ -229,6 +410,31 @@ mod tests {
     fn test_telegram_html_link() {
         let result = markdown_to_telegram_html("[click here](https://example.com)");
         assert_eq!(result, "<a href=\"https://example.com\">click here</a>");
+    }
+
+    #[test]
+    fn test_telegram_html_table() {
+        let result = markdown_to_telegram_html(
+            "| Name | Notes |\n| --- | --- |\n| **Alice** | [Docs](https://example.com) |\n| Bob | `ready` |",
+        );
+        assert!(result.starts_with("<pre>"));
+        assert!(result.ends_with("</pre>"));
+        assert!(result.contains("Name"));
+        assert!(result.contains("Alice"));
+        assert!(result.contains("Docs (https://example.com)"));
+        assert!(result.contains("ready"));
+        assert!(!result.contains("**Alice**"));
+    }
+
+    #[test]
+    fn test_telegram_html_mixed_text_and_table() {
+        let result = markdown_to_telegram_html(
+            "Summary\n\n| Name | Value |\n| --- | --- |\n| Foo | 42 |\n\n**done**",
+        );
+        assert!(result.contains("Summary"));
+        assert!(result.contains("<pre>Name"));
+        assert!(result.contains("Foo"));
+        assert!(result.contains("<b>done</b>"));
     }
 
     #[test]
