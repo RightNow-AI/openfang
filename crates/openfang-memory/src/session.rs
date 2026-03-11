@@ -557,7 +557,7 @@ impl SessionStore {
                 MessageContent::Blocks(blocks) => {
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text } => {
+                            ContentBlock::Text { text, .. } => {
                                 text_parts.push(text.clone());
                             }
                             ContentBlock::ToolUse { id, name, input, .. } => {

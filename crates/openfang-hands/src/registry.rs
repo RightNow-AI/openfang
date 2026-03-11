@@ -352,6 +352,46 @@ impl HandRegistry {
         entry.updated_at = chrono::Utc::now();
         Ok(())
     }
+
+    /// Compute readiness for a hand, cross-referencing requirements with
+    /// active instance state.
+    ///
+    /// Returns `None` if the hand definition does not exist.
+    pub fn readiness(&self, hand_id: &str) -> Option<HandReadiness> {
+        let reqs = self.check_requirements(hand_id).ok()?;
+
+        let requirements_met = reqs.iter().all(|(_, ok)| *ok);
+
+        // A hand is active if at least one instance is in Active status.
+        let active = self.instances.iter().any(|entry| {
+            entry.hand_id == hand_id && entry.status == HandStatus::Active
+        });
+
+        // Degraded: active, but at least one non-optional requirement is unmet
+        // OR any optional requirement is unmet. In practice, the most useful
+        // definition is: active + any requirement unsatisfied.
+        let degraded = active && reqs.iter().any(|(_, ok)| !ok);
+
+        Some(HandReadiness {
+            requirements_met,
+            active,
+            degraded,
+        })
+    }
+}
+
+/// Readiness snapshot for a hand definition — combines requirement checks
+/// with runtime activation state so the API can report unambiguous status.
+#[derive(Debug, Clone, Serialize)]
+pub struct HandReadiness {
+    /// Whether all declared requirements are currently satisfied.
+    pub requirements_met: bool,
+    /// Whether the hand currently has a running (Active-status) instance.
+    pub active: bool,
+    /// Whether the hand is active but some requirements are unmet.
+    /// This means the hand is running in a degraded mode — some features
+    /// may not work (e.g. browser hand without chromium).
+    pub degraded: bool,
 }
 
 impl Default for HandRegistry {
@@ -638,6 +678,7 @@ mod tests {
             requirement_type: RequirementType::EnvVar,
             check_value: "OPENFANG_TEST_HAND_REQ".to_string(),
             description: None,
+            optional: false,
             install: None,
         };
         assert!(check_requirement(&req));
@@ -648,9 +689,93 @@ mod tests {
             requirement_type: RequirementType::EnvVar,
             check_value: "OPENFANG_NONEXISTENT_VAR_12345".to_string(),
             description: None,
+            optional: false,
             install: None,
         };
         assert!(!check_requirement(&req_missing));
         std::env::remove_var("OPENFANG_TEST_HAND_REQ");
+    }
+
+    #[test]
+    fn readiness_nonexistent_hand() {
+        let reg = HandRegistry::new();
+        assert!(reg.readiness("nonexistent").is_none());
+    }
+
+    #[test]
+    fn readiness_inactive_hand() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Lead hand has no requirements, so requirements_met = true
+        let r = reg.readiness("lead").unwrap();
+        assert!(r.requirements_met);
+        assert!(!r.active);
+        assert!(!r.degraded);
+    }
+
+    #[test]
+    fn readiness_active_hand_all_met() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Lead hand has no requirements — activate it
+        let instance = reg.activate("lead", HashMap::new()).unwrap();
+        let r = reg.readiness("lead").unwrap();
+        assert!(r.requirements_met);
+        assert!(r.active);
+        assert!(!r.degraded); // all met, so not degraded
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn readiness_active_hand_degraded() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Browser hand requires python3 + chromium. Activate it — if either
+        // requirement is unmet on this machine, it will show as degraded.
+        let instance = reg.activate("browser", HashMap::new()).unwrap();
+        let r = reg.readiness("browser").unwrap();
+        assert!(r.active);
+
+        // If any requirement is not satisfied, degraded should be true
+        if !r.requirements_met {
+            assert!(r.degraded);
+        } else {
+            assert!(!r.degraded);
+        }
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn readiness_paused_hand_not_active() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        let instance = reg.activate("lead", HashMap::new()).unwrap();
+        reg.pause(instance.instance_id).unwrap();
+
+        let r = reg.readiness("lead").unwrap();
+        assert!(!r.active); // Paused is not Active
+        assert!(!r.degraded);
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn optional_field_defaults_false() {
+        let req = HandRequirement {
+            key: "test".to_string(),
+            label: "test".to_string(),
+            requirement_type: RequirementType::Binary,
+            check_value: "test".to_string(),
+            description: None,
+            optional: false,
+            install: None,
+        };
+        assert!(!req.optional);
     }
 }

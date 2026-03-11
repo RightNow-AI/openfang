@@ -330,7 +330,7 @@ pub async fn execute_tool(
         "cron_cancel" => tool_cron_cancel(input, kernel).await,
 
         // Channel send tool (proactive outbound messaging)
-        "channel_send" => tool_channel_send(input, kernel).await,
+        "channel_send" => tool_channel_send(input, kernel, workspace_root).await,
 
         // Persistent process tools
         "process_start" => tool_process_start(input, process_manager, caller_agent_id).await,
@@ -1024,7 +1024,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Channel send tool (proactive outbound messaging) ---
         ToolDefinition {
             name: "channel_send".to_string(),
-            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url or file_url to send an image or file instead of (or alongside) text.".to_string(),
+            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url, file_url, or file_path to send an image or file instead of (or alongside) text. Use thread_id to reply in a specific thread/topic.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1034,7 +1034,9 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "message": { "type": "string", "description": "The message body to send (required for text, optional caption for media)" },
                     "image_url": { "type": "string", "description": "URL of an image to send (supported on Telegram, Discord, Slack)" },
                     "file_url": { "type": "string", "description": "URL of a file to send as attachment" },
-                    "filename": { "type": "string", "description": "Filename for file attachments (defaults to 'file')" }
+                    "file_path": { "type": "string", "description": "Local file path to send as attachment (reads from disk; use instead of file_url for local files)" },
+                    "filename": { "type": "string", "description": "Filename for file attachments (defaults to the basename of file_path, or 'file')" },
+                    "thread_id": { "type": "string", "description": "Thread/topic ID to reply in (e.g., Telegram message_thread_id, Slack thread_ts)" }
                 },
                 "required": ["channel", "recipient"]
             }),
@@ -2175,6 +2177,7 @@ async fn tool_cron_cancel(
 async fn tool_channel_send(
     input: &serde_json::Value,
     kernel: Option<&Arc<dyn KernelHandle>>,
+    workspace_root: Option<&Path>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
 
@@ -2192,14 +2195,17 @@ async fn tool_channel_send(
         return Err("Recipient cannot be empty".to_string());
     }
 
-    // Check for media content (image_url or file_url)
+    let thread_id = input["thread_id"].as_str().filter(|s| !s.is_empty());
+
+    // Check for media content (image_url, file_url, or file_path)
     let image_url = input["image_url"].as_str().filter(|s| !s.is_empty());
     let file_url = input["file_url"].as_str().filter(|s| !s.is_empty());
+    let file_path = input["file_path"].as_str().filter(|s| !s.is_empty());
 
     if let Some(url) = image_url {
         let caption = input["message"].as_str().filter(|s| !s.is_empty());
         return kh
-            .send_channel_media(&channel, recipient, "image", url, caption, None)
+            .send_channel_media(&channel, recipient, "image", url, caption, None, thread_id)
             .await;
     }
 
@@ -2207,7 +2213,64 @@ async fn tool_channel_send(
         let caption = input["message"].as_str().filter(|s| !s.is_empty());
         let filename = input["filename"].as_str();
         return kh
-            .send_channel_media(&channel, recipient, "file", url, caption, filename)
+            .send_channel_media(&channel, recipient, "file", url, caption, filename, thread_id)
+            .await;
+    }
+
+    // Local file attachment: read from disk and send as FileData
+    if let Some(raw_path) = file_path {
+        let resolved = resolve_file_path(raw_path, workspace_root)?;
+        let data = tokio::fs::read(&resolved)
+            .await
+            .map_err(|e| format!("Failed to read file '{}': {e}", resolved.display()))?;
+
+        // Derive filename from the path if not explicitly provided
+        let filename = input["filename"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                resolved
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("file")
+                    .to_string()
+            });
+
+        // Determine MIME type from extension
+        let ext = resolved
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let mime_type = match ext.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "svg" => "image/svg+xml",
+            "pdf" => "application/pdf",
+            "txt" => "text/plain",
+            "csv" => "text/csv",
+            "json" => "application/json",
+            "xml" => "application/xml",
+            "zip" => "application/zip",
+            "gz" | "gzip" => "application/gzip",
+            "tar" => "application/x-tar",
+            "mp3" => "audio/mpeg",
+            "wav" => "audio/wav",
+            "mp4" => "video/mp4",
+            "doc" => "application/msword",
+            "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "xls" => "application/vnd.ms-excel",
+            "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            _ => "application/octet-stream",
+        };
+
+        return kh
+            .send_channel_file_data(
+                &channel, recipient, data, &filename, mime_type, thread_id,
+            )
             .await;
     }
 
@@ -2238,7 +2301,7 @@ async fn tool_channel_send(
         message.to_string()
     };
 
-    kh.send_channel_message(&channel, recipient, &final_message)
+    kh.send_channel_message(&channel, recipient, &final_message, thread_id)
         .await
 }
 
