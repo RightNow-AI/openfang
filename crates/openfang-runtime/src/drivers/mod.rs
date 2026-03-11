@@ -19,9 +19,9 @@ use openfang_types::model_catalog::{
     KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL,
     MODELSCOPE_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
     PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL,
-    SILICONFLOW_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
-    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
-    ZHIPU_CODING_BASE_URL,
+    SILICONFLOW_BASE_URL, TOGETHER_BASE_URL, UNIGPT_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
+    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
+    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -352,6 +352,21 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .clone()
             .unwrap_or_else(|| KIMI_CODING_BASE_URL.to_string());
         return Ok(Arc::new(anthropic::AnthropicDriver::new(api_key, base_url)));
+    }
+
+    if provider == "unigpt" {
+        let api_key = config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("UNIGPT_API_KEY").ok())
+            .ok_or_else(|| {
+                LlmError::MissingApiKey("Set UNIGPT_API_KEY environment variable".to_string())
+            })?;
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| UNIGPT_BASE_URL.to_string());
+        return Ok(Arc::new(unigpt::UniGPTDriver::new(api_key, base_url)));
     }
 
     // All other providers use OpenAI-compatible format
