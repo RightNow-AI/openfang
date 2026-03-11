@@ -552,7 +552,11 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                         match self.kernel.cron_scheduler.remove_job(j.id) {
                             Ok(_) => {
                                 let id_str = j.id.0.to_string();
-                                format!("Job [{}] '{}' removed.", safe_truncate_str(&id_str, 8), j.name)
+                                format!(
+                                    "Job [{}] '{}' removed.",
+                                    safe_truncate_str(&id_str, 8),
+                                    j.name
+                                )
                             }
                             Err(e) => format!("Failed to remove job: {e}"),
                         }
@@ -801,6 +805,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             "gotify" => channels.gotify.as_ref().map(|c| c.overrides.clone()),
             "webhook" => channels.webhook.as_ref().map(|c| c.overrides.clone()),
             "linkedin" => channels.linkedin.as_ref().map(|c| c.overrides.clone()),
+            "wecom" => channels.wecom.as_ref().map(|c| c.overrides.clone()),
             _ => None,
         }
     }
@@ -1168,7 +1173,9 @@ pub async fn start_channel_bridge_with_config(
     // WhatsApp — supports Cloud API mode (access token) or Web/QR mode (gateway URL)
     if let Some(ref wa_config) = config.whatsapp {
         let cloud_token = read_token(&wa_config.access_token_env, "WhatsApp");
-        let gateway_url = std::env::var(&wa_config.gateway_url_env).ok().filter(|u| !u.is_empty());
+        let gateway_url = std::env::var(&wa_config.gateway_url_env)
+            .ok()
+            .filter(|u| !u.is_empty());
 
         if cloud_token.is_some() || gateway_url.is_some() {
             let token = cloud_token.unwrap_or_default();
