@@ -114,6 +114,7 @@ export class ModelResource {
   list(): Promise<unknown[]>;
   get(id: string): Promise<unknown>;
   aliases(): Promise<unknown>;
+  updateUnigptModels(models: Record<string, unknown>): Promise<unknown>;
 }
 
 export class ProviderResource {
