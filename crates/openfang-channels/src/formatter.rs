@@ -19,19 +19,14 @@ pub fn format_for_channel(text: &str, format: OutputFormat) -> String {
 
 /// Convert Markdown to Telegram HTML subset.
 ///
-/// Supported tags: `<b>`, `<i>`, `<code>`, `<pre>`, `<a href="">`.
+/// Supported tags: `<b>`, `<i>`, `<u>`, `<s>`, `<tg-spoiler>`,
+/// `<code>`, `<pre>`, `<blockquote>`, `<a href="">`.
 fn markdown_to_telegram_html(text: &str) -> String {
     let mut placeholders = Vec::new();
     let mut result = replace_fenced_code_blocks(text, &mut placeholders);
     result = replace_markdown_tables(&result, &mut placeholders);
-
-    // Escape HTML special characters first so agent names and other text
-    // don't get interpreted as HTML tags by Telegram's parser.
-    result = escape_telegram_html(&result);
-    result = replace_inline_code(&result, &mut placeholders);
-    result = replace_markdown_links(result);
-    result = replace_markdown_bold(result);
-    result = replace_markdown_italic(&result);
+    result = replace_markdown_blockquotes(&result, &mut placeholders);
+    result = format_telegram_inline(&result, &mut placeholders);
 
     restore_placeholders(result, &placeholders)
 }
@@ -43,16 +38,27 @@ fn escape_telegram_html(text: &str) -> String {
 }
 
 fn stash_placeholder(placeholders: &mut Vec<(String, String)>, rendered: String) -> String {
-    let token = format!("__TG_PLACEHOLDER_{}__", placeholders.len());
+    let token = format!("@@TG_PLACEHOLDER_{}@@", placeholders.len());
     placeholders.push((token.clone(), rendered));
     token
 }
 
 fn restore_placeholders(mut text: String, placeholders: &[(String, String)]) -> String {
-    for (token, rendered) in placeholders {
+    for (token, rendered) in placeholders.iter().rev() {
         text = text.replace(token, rendered);
     }
     text
+}
+
+fn format_telegram_inline(text: &str, placeholders: &mut Vec<(String, String)>) -> String {
+    let mut result = escape_telegram_html(text);
+    result = replace_inline_code(&result, placeholders);
+    result = replace_markdown_links(result);
+    result = replace_markdown_spoiler(result);
+    result = replace_markdown_strikethrough(result);
+    result = replace_markdown_underline(result);
+    result = replace_markdown_bold(result);
+    replace_markdown_italic(&result)
 }
 
 fn replace_fenced_code_blocks(text: &str, placeholders: &mut Vec<(String, String)>) -> String {
@@ -101,6 +107,45 @@ fn replace_markdown_tables(text: &str, placeholders: &mut Vec<(String, String)>)
     }
 
     rendered.join("\n")
+}
+
+fn replace_markdown_blockquotes(text: &str, placeholders: &mut Vec<(String, String)>) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut rendered = Vec::with_capacity(lines.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        if let Some(first_line) = parse_blockquote_line(lines[i]) {
+            let mut block = vec![first_line];
+            i += 1;
+            while i < lines.len() {
+                match parse_blockquote_line(lines[i]) {
+                    Some(line) => {
+                        block.push(line);
+                        i += 1;
+                    }
+                    None => break,
+                }
+            }
+            let inner = format_telegram_inline(&block.join("\n"), placeholders);
+            rendered.push(stash_placeholder(
+                placeholders,
+                format!("<blockquote>{inner}</blockquote>"),
+            ));
+            continue;
+        }
+
+        rendered.push(lines[i].to_string());
+        i += 1;
+    }
+
+    rendered.join("\n")
+}
+
+fn parse_blockquote_line(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let stripped = trimmed.strip_prefix('>')?;
+    Some(stripped.strip_prefix(' ').unwrap_or(stripped).to_string())
 }
 
 fn parse_markdown_table(lines: &[&str]) -> Option<(String, usize)> {
@@ -224,6 +269,31 @@ fn replace_inline_code(text: &str, placeholders: &mut Vec<(String, String)>) -> 
     result
 }
 
+fn replace_delimited_markup(
+    mut result: String,
+    delimiter: &str,
+    open_tag: &str,
+    close_tag: &str,
+) -> String {
+    while let Some(start) = result.find(delimiter) {
+        if let Some(end) = result[start + delimiter.len()..].find(delimiter) {
+            let end = start + delimiter.len() + end;
+            let inner = result[start + delimiter.len()..end].to_string();
+            result = format!(
+                "{}{}{}{}{}",
+                &result[..start],
+                open_tag,
+                inner,
+                close_tag,
+                &result[end + delimiter.len()..]
+            );
+        } else {
+            break;
+        }
+    }
+    result
+}
+
 fn replace_markdown_links(mut result: String) -> String {
     while let Some(bracket_start) = result.find('[') {
         if let Some(bracket_end) = result[bracket_start..].find("](") {
@@ -249,17 +319,20 @@ fn replace_markdown_links(mut result: String) -> String {
     result
 }
 
-fn replace_markdown_bold(mut result: String) -> String {
-    while let Some(start) = result.find("**") {
-        if let Some(end) = result[start + 2..].find("**") {
-            let end = start + 2 + end;
-            let inner = result[start + 2..end].to_string();
-            result = format!("{}<b>{}</b>{}", &result[..start], inner, &result[end + 2..]);
-        } else {
-            break;
-        }
-    }
-    result
+fn replace_markdown_spoiler(result: String) -> String {
+    replace_delimited_markup(result, "||", "<tg-spoiler>", "</tg-spoiler>")
+}
+
+fn replace_markdown_strikethrough(result: String) -> String {
+    replace_delimited_markup(result, "~~", "<s>", "</s>")
+}
+
+fn replace_markdown_underline(result: String) -> String {
+    replace_delimited_markup(result, "__", "<u>", "</u>")
+}
+
+fn replace_markdown_bold(result: String) -> String {
+    replace_delimited_markup(result, "**", "<b>", "</b>")
 }
 
 fn replace_markdown_italic(result: &str) -> String {
@@ -331,8 +404,24 @@ fn markdown_to_slack_mrkdwn(text: &str) -> String {
 fn markdown_to_plain(text: &str) -> String {
     let mut result = text.to_string();
 
+    result = result
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if let Some(stripped) = trimmed.strip_prefix('>') {
+                stripped.strip_prefix(' ').unwrap_or(stripped).to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     // Remove bold markers
     result = result.replace("**", "");
+    result = result.replace("__", "");
+    result = result.replace("~~", "");
+    result = result.replace("||", "");
 
     // Remove italic markers (single *)
     // Simple approach: remove isolated *
@@ -413,6 +502,26 @@ mod tests {
     }
 
     #[test]
+    fn test_telegram_html_extended_entities() {
+        let result = markdown_to_telegram_html("__under__ ~~gone~~ ||secret||");
+        assert_eq!(
+            result,
+            "<u>under</u> <s>gone</s> <tg-spoiler>secret</tg-spoiler>"
+        );
+    }
+
+    #[test]
+    fn test_telegram_html_blockquote_with_nested_formatting() {
+        let result = markdown_to_telegram_html(
+            "> quoted **bold**\n> second __line__ with ||spoiler||\n\noutside",
+        );
+        assert_eq!(
+            result,
+            "<blockquote>quoted <b>bold</b>\nsecond <u>line</u> with <tg-spoiler>spoiler</tg-spoiler></blockquote>\n\noutside"
+        );
+    }
+
+    #[test]
     fn test_telegram_html_table() {
         let result = markdown_to_telegram_html(
             "| Name | Notes |\n| --- | --- |\n| **Alice** | [Docs](https://example.com) |\n| Bob | `ready` |",
@@ -451,13 +560,19 @@ mod tests {
 
     #[test]
     fn test_plain_text_strips_formatting() {
-        let result = markdown_to_plain("**bold** and `code` and *italic*");
-        assert_eq!(result, "bold and code and italic");
+        let result = markdown_to_plain("**bold** and `code` and *italic* and ~~gone~~ and __under__");
+        assert_eq!(result, "bold and code and italic and gone and under");
     }
 
     #[test]
     fn test_plain_text_converts_links() {
         let result = markdown_to_plain("[click](https://example.com)");
         assert_eq!(result, "click (https://example.com)");
+    }
+
+    #[test]
+    fn test_plain_text_strips_blockquote_and_spoiler() {
+        let result = markdown_to_plain("> quoted ||secret||");
+        assert_eq!(result, "quoted secret");
     }
 }
