@@ -559,9 +559,16 @@ async fn dispatch_message(
                 None => format!("[User sent a photo: {url}]"),
             }
         }
-        ChannelContent::File { ref url, ref filename } => {
-            format!("[User sent a file ({filename}): {url}]")
-        }
+        ChannelContent::File {
+            ref url,
+            ref filename,
+            ref caption,
+        } => match caption {
+            Some(caption) => format!(
+                "[User sent a file ({filename}): {url}]\nCaption: {caption}"
+            ),
+            None => format!("[User sent a file ({filename}): {url}]"),
+        },
         ChannelContent::Voice { ref url, duration_seconds } => {
             format!("[User sent a voice message ({duration_seconds}s): {url}]")
         }

@@ -1035,7 +1035,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Channel send tool (proactive outbound messaging) ---
         ToolDefinition {
             name: "channel_send".to_string(),
-            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url, file_url, or file_path to send an image or file instead of (or alongside) text. Use thread_id to target a specific thread/topic on thread-capable channels.".to_string(),
+            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url, file_url, or file_path to send an image or file instead of (or alongside) text. Use thread_id to target a specific thread/topic on thread-capable channels. Local file_path attachments currently require the telegram channel.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1045,7 +1045,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "message": { "type": "string", "description": "The message body to send (required for text, optional caption for media)" },
                     "image_url": { "type": "string", "description": "URL of an image to send (supported on Telegram, Discord, Slack)" },
                     "file_url": { "type": "string", "description": "URL of a file to send as attachment" },
-                    "file_path": { "type": "string", "description": "Local filesystem path of a file to send as attachment" },
+                    "file_path": { "type": "string", "description": "Local filesystem path of a file to send as attachment (currently supported for telegram only)" },
                     "filename": { "type": "string", "description": "Filename for file attachments (defaults to the basename of file_path or 'file')" },
                     "thread_id": {
                         "oneOf": [
@@ -2282,6 +2282,11 @@ async fn tool_channel_send(
     }
 
     if let Some(path) = file_path {
+        if channel != "telegram" {
+            return Err(format!(
+                "Local file_path attachments are currently only supported for the telegram channel, got '{channel}'"
+            ));
+        }
         let path = Path::new(path);
         if !path.is_file() {
             return Err(format!("Local file not found: {}", path.display()));
@@ -3539,6 +3544,33 @@ mod tests {
                 filename: Some("report.pdf".to_string()),
                 thread_id: Some("99".to_string()),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_channel_send_rejects_non_telegram_file_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("report.pdf");
+        std::fs::write(&file_path, b"%PDF-1.4\n").unwrap();
+
+        let kernel_impl = Arc::new(MockKernel::default());
+        let kernel = kernel_impl as Arc<dyn KernelHandle>;
+        let result = tool_channel_send(
+            &serde_json::json!({
+                "channel": "slack",
+                "recipient": "C123",
+                "file_path": file_path,
+                "message": "latest build"
+            }),
+            Some(&kernel),
+        )
+        .await;
+        assert_eq!(
+            result,
+            Err(
+                "Local file_path attachments are currently only supported for the telegram channel, got 'slack'"
+                    .to_string()
+            )
         );
     }
 

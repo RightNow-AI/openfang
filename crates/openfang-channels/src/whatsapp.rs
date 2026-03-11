@@ -222,14 +222,15 @@ impl ChannelAdapter for WhatsAppAdapter {
         if let Some(ref gw) = self.gateway_url {
             let text = match &content {
                 ChannelContent::Text(t) => t.clone(),
-                ChannelContent::Image { caption, .. } => {
-                    caption
-                        .clone()
-                        .unwrap_or_else(|| "(Image — not supported in Web mode)".to_string())
-                }
-                ChannelContent::File { filename, .. } => {
-                    format!("(File: {filename} — not supported in Web mode)")
-                }
+                ChannelContent::Image { caption, .. } => caption
+                    .clone()
+                    .unwrap_or_else(|| "(Image — not supported in Web mode)".to_string()),
+                ChannelContent::File {
+                    filename, caption, ..
+                } => caption.as_deref().map_or_else(
+                    || format!("(File: {filename} — not supported in Web mode)"),
+                    |caption| format!("(File: {filename} — not supported in Web mode)\n{caption}"),
+                ),
                 _ => "(Unsupported content type in Web mode)".to_string(),
             };
             // Split long messages the same way as Cloud API mode
@@ -267,14 +268,19 @@ impl ChannelAdapter for WhatsAppAdapter {
                     .send()
                     .await?;
             }
-            ChannelContent::File { url, filename } => {
+            ChannelContent::File {
+                url,
+                filename,
+                caption,
+            } => {
                 let body = serde_json::json!({
                     "messaging_product": "whatsapp",
                     "to": user.platform_id,
                     "type": "document",
                     "document": {
                         "link": url,
-                        "filename": filename
+                        "filename": filename,
+                        "caption": caption.unwrap_or_default()
                     }
                 });
                 let api_url = format!(

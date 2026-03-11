@@ -179,6 +179,7 @@ impl TelegramAdapter {
         chat_id: i64,
         document_ref: &str,
         filename: &str,
+        caption: Option<&str>,
         thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
@@ -186,11 +187,12 @@ impl TelegramAdapter {
             self.api_base_url,
             self.token.as_str()
         );
+        let caption = caption.unwrap_or(filename);
         if is_remote_url(document_ref) {
             let mut body = serde_json::json!({
                 "chat_id": chat_id,
                 "document": document_ref,
-                "caption": filename,
+                "caption": caption,
             });
             if let Some(tid) = thread_id {
                 body["message_thread_id"] = serde_json::json!(tid);
@@ -224,7 +226,7 @@ impl TelegramAdapter {
         let document_part = reqwest::multipart::Part::bytes(bytes).file_name(file_name.clone());
         let mut form = reqwest::multipart::Form::new()
             .text("chat_id", chat_id.to_string())
-            .text("caption", file_name)
+            .text("caption", caption.to_string())
             .part("document", document_part);
         if let Some(tid) = thread_id {
             form = form.text("message_thread_id", tid.to_string());
@@ -370,8 +372,12 @@ impl TelegramAdapter {
                 self.api_send_photo(chat_id, &url, caption.as_deref(), thread_id)
                     .await?;
             }
-            ChannelContent::File { url, filename } => {
-                self.api_send_document(chat_id, &url, &filename, thread_id)
+            ChannelContent::File {
+                url,
+                filename,
+                caption,
+            } => {
+                self.api_send_document(chat_id, &url, &filename, caption.as_deref(), thread_id)
                     .await?;
             }
             ChannelContent::Voice { url, .. } => {
@@ -742,9 +748,19 @@ async fn parse_telegram_update(
             .as_str()
             .unwrap_or("document")
             .to_string();
+        let caption = message["caption"].as_str().map(str::to_string);
         match telegram_get_file_url(token, client, file_id, api_base_url).await {
-            Some(url) => ChannelContent::File { url, filename },
-            None => ChannelContent::Text(format!("[Document received: {filename}]")),
+            Some(url) => ChannelContent::File {
+                url,
+                filename,
+                caption,
+            },
+            None => ChannelContent::Text(
+                message["caption"]
+                    .as_str()
+                    .map(|caption| format!("[Document received: {filename}]\nCaption: {caption}"))
+                    .unwrap_or_else(|| format!("[Document received: {filename}]")),
+            ),
         }
     } else if message.get("voice").is_some() {
         let file_id = message["voice"]["file_id"].as_str().unwrap_or("");
@@ -1162,6 +1178,7 @@ mod tests {
                 "from": { "id": 123, "first_name": "Alice" },
                 "chat": { "id": 123, "type": "private" },
                 "date": 1700000000,
+                "caption": "latest build",
                 "document": {
                     "file_id": "doc_id",
                     "file_unique_id": "c",
@@ -1179,9 +1196,13 @@ mod tests {
             ChannelContent::Text(t) => {
                 assert!(t.contains("Document received"));
                 assert!(t.contains("report.pdf"));
+                assert!(t.contains("latest build"));
             }
-            ChannelContent::File { filename, .. } => {
+            ChannelContent::File {
+                filename, caption, ..
+            } => {
                 assert_eq!(filename, "report.pdf");
+                assert_eq!(caption.as_deref(), Some("latest build"));
             }
             other => panic!("Expected Text or File for document, got {other:?}"),
         }
@@ -1308,6 +1329,7 @@ mod tests {
                 12345,
                 file_path.to_string_lossy().as_ref(),
                 "report.pdf",
+                Some("latest build"),
                 Some(99),
             )
             .await
@@ -1321,7 +1343,7 @@ mod tests {
         assert!(request.contains("name=\"message_thread_id\""));
         assert!(request.contains("\r\n99\r\n"));
         assert!(request.contains("name=\"caption\""));
-        assert!(request.contains("\r\nreport.pdf\r\n"));
+        assert!(request.contains("\r\nlatest build\r\n"));
         assert!(request.contains("name=\"document\"; filename=\"report.pdf\""));
 
         let _ = std::fs::remove_file(file_path);

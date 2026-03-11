@@ -48,6 +48,7 @@ pub enum ChannelContent {
     File {
         url: String,
         filename: String,
+        caption: Option<String>,
     },
     Voice {
         url: String,
