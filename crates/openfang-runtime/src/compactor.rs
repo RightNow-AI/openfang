@@ -343,7 +343,11 @@ fn build_conversation_text(messages: &[Message], config: &CompactionConfig) -> S
                     if oversized {
                         let limit = config.max_chunk_chars / 4;
                         let truncated = if s.len() > limit {
-                            format!("{}...[truncated from {} chars]", safe_truncate_str(s, limit), s.len())
+                            format!(
+                                "{}...[truncated from {} chars]",
+                                safe_truncate_str(s, limit),
+                                s.len()
+                            )
                         } else {
                             s.clone()
                         };
@@ -431,7 +435,11 @@ async fn summarize_messages(
         let safe_start = if conversation_text.is_char_boundary(start) {
             start
         } else {
-            conversation_text[start..].char_indices().next().map(|(i, _)| start + i).unwrap_or(conversation_text.len())
+            conversation_text[start..]
+                .char_indices()
+                .next()
+                .map(|(i, _)| start + i)
+                .unwrap_or(conversation_text.len())
         };
         conversation_text = conversation_text[safe_start..].to_string();
     }

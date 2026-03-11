@@ -13,15 +13,14 @@ pub mod openai;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
-    AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL,
-    FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, LEMONADE_BASE_URL,
-    LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
-    OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    QWEN_CODING_BASE_URL, QWEN_CODING_INTL_BASE_URL, QWEN_INTL_BASE_URL, REPLICATE_BASE_URL,
-    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
-    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    AI21_BASE_URL, ALIBABA_CODING_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, COHERE_BASE_URL,
+    DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
+    LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL,
+    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
+    QWEN_BASE_URL, REPLICATE_BASE_URL,
+    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -158,13 +157,13 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         }),
         "qwen" | "dashscope" | "model_studio" => Some(ProviderDefaults {
             base_url: QWEN_BASE_URL,
-            api_key_env: "DASHSCOPE_API_KEY",
+            api_key_env: "ALIBABA_CODING_API_KEY",
             key_required: true,
         }),
         // DashScope Coding Plan — multi-brand (Qwen, Zhipu/GLM, Kimi, MiniMax)
-        "qwen_coding_intl" | "dashscope_coding" | "dashscope_coding_intl" => Some(ProviderDefaults {
-            base_url: QWEN_CODING_INTL_BASE_URL,
-            api_key_env: "DASHSCOPE_API_KEY",
+        "alibaba_coding" => Some(ProviderDefaults {
+            base_url: ALIBABA_CODING_BASE_URL,
+            api_key_env: "ALIBABA_CODING_API_KEY",
             key_required: true,
         }),
         "minimax" => Some(ProviderDefaults {
@@ -285,9 +284,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .or_else(|| std::env::var("OPENAI_API_KEY").ok())
             .or_else(crate::model_catalog::read_codex_credential)
             .ok_or_else(|| {
-                LlmError::MissingApiKey(
-                    "Set OPENAI_API_KEY or install Codex CLI".to_string(),
-                )
+                LlmError::MissingApiKey("Set OPENAI_API_KEY or install Codex CLI".to_string())
             })?;
         let base_url = config
             .base_url
@@ -326,11 +323,11 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
     }
 
     // DashScope Coding Plan — requires User-Agent: OpenClaw/1.0
-    if provider == "qwen_coding_intl" || provider == "dashscope_coding" || provider == "dashscope_coding_intl" {
+    if provider == "alibaba_coding" {
         let api_key = config
             .api_key
             .clone()
-            .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok())
+            .or_else(|| std::env::var("ALIBABA_CODING_API_KEY").ok())
             .or_else(|| std::env::var("QWEN_API_KEY").ok())
             .unwrap_or_default();
 
@@ -343,7 +340,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         let base_url = config
             .base_url
             .clone()
-            .unwrap_or_else(|| QWEN_CODING_INTL_BASE_URL.to_string());
+            .unwrap_or_else(|| ALIBABA_CODING_BASE_URL.to_string());
 
         return Ok(Arc::new(
             openai::OpenAIDriver::new(api_key, base_url)
@@ -432,21 +429,45 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
         ("gemini", "gemini-2.5-flash", "GEMINI_API_KEY"),
         ("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY"),
         ("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY"),
-        ("openrouter", "openrouter/google/gemini-2.5-flash", "OPENROUTER_API_KEY"),
+        (
+            "openrouter",
+            "openrouter/google/gemini-2.5-flash",
+            "OPENROUTER_API_KEY",
+        ),
         ("mistral", "mistral-large-latest", "MISTRAL_API_KEY"),
-        ("together", "meta-llama/Llama-3-70b-chat-hf", "TOGETHER_API_KEY"),
-        ("fireworks", "accounts/fireworks/models/llama-v3p1-70b-instruct", "FIREWORKS_API_KEY"),
+        (
+            "together",
+            "meta-llama/Llama-3-70b-chat-hf",
+            "TOGETHER_API_KEY",
+        ),
+        (
+            "fireworks",
+            "accounts/fireworks/models/llama-v3p1-70b-instruct",
+            "FIREWORKS_API_KEY",
+        ),
         ("xai", "grok-2", "XAI_API_KEY"),
-        ("perplexity", "llama-3.1-sonar-large-128k-online", "PERPLEXITY_API_KEY"),
+        (
+            "perplexity",
+            "llama-3.1-sonar-large-128k-online",
+            "PERPLEXITY_API_KEY",
+        ),
         ("cohere", "command-r-plus", "COHERE_API_KEY"),
     ];
     for &(provider, model, env_var) in PROBE_ORDER {
-        if std::env::var(env_var).ok().filter(|v| !v.is_empty()).is_some() {
+        if std::env::var(env_var)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .is_some()
+        {
             return Some((provider, model, env_var));
         }
     }
     // Also check GOOGLE_API_KEY as alias for Gemini
-    if std::env::var("GOOGLE_API_KEY").ok().filter(|v| !v.is_empty()).is_some() {
+    if std::env::var("GOOGLE_API_KEY")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .is_some()
+    {
         return Some(("gemini", "gemini-2.5-flash", "GOOGLE_API_KEY"));
     }
     None
@@ -478,7 +499,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "github-copilot",
         "moonshot",
         "qwen",
-        "qwen_coding_intl",
+        "alibaba_coding",
         "minimax",
         "zhipu",
         "zhipu_coding",
@@ -576,7 +597,7 @@ mod tests {
         assert!(providers.contains(&"github-copilot"));
         assert!(providers.contains(&"moonshot"));
         assert!(providers.contains(&"qwen"));
-        assert!(providers.contains(&"qwen_coding_intl"));
+        assert!(providers.contains(&"alibaba_coding"));
         assert!(providers.contains(&"minimax"));
         assert!(providers.contains(&"zhipu"));
         assert!(providers.contains(&"zhipu_coding"));
@@ -637,7 +658,10 @@ mod tests {
             base_url: Some("https://integrate.api.nvidia.com/v1".to_string()),
         };
         let driver = create_driver(&config);
-        assert!(driver.is_ok(), "Custom provider with env var convention should succeed");
+        assert!(
+            driver.is_ok(),
+            "Custom provider with env var convention should succeed"
+        );
         std::env::remove_var("NVIDIA_API_KEY");
     }
 
@@ -666,7 +690,11 @@ mod tests {
         let result = create_driver(&config);
         assert!(result.is_err());
         let err = result.err().unwrap().to_string();
-        assert!(err.contains("base_url"), "Error should mention base_url: {}", err);
+        assert!(
+            err.contains("base_url"),
+            "Error should mention base_url: {}",
+            err
+        );
         std::env::remove_var("NVIDIA_API_KEY");
     }
 

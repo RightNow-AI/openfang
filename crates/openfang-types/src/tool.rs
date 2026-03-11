@@ -83,8 +83,15 @@ fn normalize_schema_recursive(schema: &serde_json::Value) -> serde_json::Value {
         // Strip fields unsupported by Gemini and most non-Anthropic providers
         if matches!(
             key.as_str(),
-            "$schema" | "$defs" | "$ref" | "additionalProperties" | "default"
-                | "$id" | "$comment" | "examples" | "title"
+            "$schema"
+                | "$defs"
+                | "$ref"
+                | "additionalProperties"
+                | "default"
+                | "$id"
+                | "$comment"
+                | "examples"
+                | "title"
         ) {
             continue;
         }
@@ -138,10 +145,7 @@ fn resolve_refs(obj: &serde_json::Map<String, serde_json::Value>) -> serde_json:
     result.remove("$defs");
 
     // Recursively replace $ref in the schema
-    fn inline_refs(
-        val: &mut serde_json::Value,
-        defs: &serde_json::Map<String, serde_json::Value>,
-    ) {
+    fn inline_refs(val: &mut serde_json::Value, defs: &serde_json::Map<String, serde_json::Value>) {
         match val {
             serde_json::Value::Object(map) => {
                 // If this object is a $ref, replace it with the definition

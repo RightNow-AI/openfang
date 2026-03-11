@@ -232,9 +232,11 @@ impl LlmDriver for OpenAIDriver {
                                 has_tool_results = true;
                                 oai_messages.push(OaiMessage {
                                     role: "tool".to_string(),
-                                    content: Some(OaiMessageContent::Text(
-                                        if content.is_empty() { "(empty)".to_string() } else { content.clone() }
-                                    )),
+                                    content: Some(OaiMessageContent::Text(if content.is_empty() {
+                                        "(empty)".to_string()
+                                    } else {
+                                        content.clone()
+                                    })),
                                     tool_calls: None,
                                     tool_call_id: Some(tool_use_id.clone()),
                                 });
@@ -342,7 +344,11 @@ impl LlmDriver for OpenAIDriver {
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
-            temperature: if rejects_temperature(&request.model) { None } else { Some(request.temperature) },
+            temperature: if rejects_temperature(&request.model) {
+                None
+            } else {
+                Some(request.temperature)
+            },
             tools: oai_tools,
             tool_choice,
             stream: false,
@@ -434,9 +440,16 @@ impl LlmDriver for OpenAIDriver {
 
                 // Auto-cap max_tokens when model rejects our value (e.g. Groq Maverick limit 8192)
                 if status == 400 && body.contains("max_tokens") && attempt < max_retries {
-                    let current = oai_request.max_tokens.or(oai_request.max_completion_tokens).unwrap_or(4096);
+                    let current = oai_request
+                        .max_tokens
+                        .or(oai_request.max_completion_tokens)
+                        .unwrap_or(4096);
                     let cap = extract_max_tokens_limit(&body).unwrap_or(current / 2);
-                    warn!(old = current, new = cap, "Auto-capping max_tokens to model limit");
+                    warn!(
+                        old = current,
+                        new = cap,
+                        "Auto-capping max_tokens to model limit"
+                    );
                     if oai_request.max_completion_tokens.is_some() {
                         oai_request.max_completion_tokens = Some(cap);
                     } else {
@@ -602,9 +615,11 @@ impl LlmDriver for OpenAIDriver {
                         {
                             oai_messages.push(OaiMessage {
                                 role: "tool".to_string(),
-                                content: Some(OaiMessageContent::Text(
-                                    if content.is_empty() { "(empty)".to_string() } else { content.clone() }
-                                )),
+                                content: Some(OaiMessageContent::Text(if content.is_empty() {
+                                    "(empty)".to_string()
+                                } else {
+                                    content.clone()
+                                })),
                                 tool_calls: None,
                                 tool_call_id: Some(tool_use_id.clone()),
                             });
@@ -687,7 +702,11 @@ impl LlmDriver for OpenAIDriver {
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
-            temperature: if rejects_temperature(&request.model) { None } else { Some(request.temperature) },
+            temperature: if rejects_temperature(&request.model) {
+                None
+            } else {
+                Some(request.temperature)
+            },
             tools: oai_tools,
             tool_choice,
             stream: true,
@@ -781,7 +800,10 @@ impl LlmDriver for OpenAIDriver {
 
                 // Auto-cap max_tokens when model rejects our value
                 if status == 400 && body.contains("max_tokens") && attempt < max_retries {
-                    let current = oai_request.max_tokens.or(oai_request.max_completion_tokens).unwrap_or(4096);
+                    let current = oai_request
+                        .max_tokens
+                        .or(oai_request.max_completion_tokens)
+                        .unwrap_or(4096);
                     let cap = extract_max_tokens_limit(&body).unwrap_or(current / 2);
                     warn!(old = current, new = cap, "Auto-capping max_tokens (stream)");
                     if oai_request.max_completion_tokens.is_some() {

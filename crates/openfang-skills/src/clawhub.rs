@@ -443,15 +443,13 @@ impl ClawHubClient {
                 .send()
                 .await
             {
-                Ok(resp) if resp.status().is_success() => {
-                    match resp.bytes().await {
-                        Ok(b) => {
-                            bytes_result = Some(b);
-                            break;
-                        }
-                        Err(e) => last_err = format!("Failed to read download: {e}"),
+                Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                    Ok(b) => {
+                        bytes_result = Some(b);
+                        break;
                     }
-                }
+                    Err(e) => last_err = format!("Failed to read download: {e}"),
+                },
                 Ok(resp) if resp.status().as_u16() == 429 || resp.status().is_server_error() => {
                     last_err = format!("ClawHub download returned {}", resp.status());
                 }

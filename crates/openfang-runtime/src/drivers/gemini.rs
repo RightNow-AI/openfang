@@ -93,7 +93,11 @@ struct GeminiFunctionCallData {
     name: String,
     args: serde_json::Value,
     /// Gemini 2.5+ thinking models return this on functionCall parts.
-    #[serde(rename = "thoughtSignature", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "thoughtSignature",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     thought_signature: Option<String>,
 }
 
@@ -184,7 +188,8 @@ fn parse_gemini_error(body: &str) -> String {
     }
     // Google sometimes returns bare JSON arrays or HTML error pages
     if body.starts_with('<') {
-        return "Google API returned an HTML error page — check your API key and model name".to_string();
+        return "Google API returned an HTML error page — check your API key and model name"
+            .to_string();
     }
     body.to_string()
 }
@@ -359,10 +364,7 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
             }
         }
         None => {
-            let reason = candidate
-                .finish_reason
-                .as_deref()
-                .unwrap_or("unknown");
+            let reason = candidate.finish_reason.as_deref().unwrap_or("unknown");
             warn!(finish_reason = %reason, "Gemini returned candidate with no content");
             return Err(LlmError::Parse(format!(
                 "Gemini returned empty response (finish_reason: {reason})"
@@ -419,7 +421,9 @@ impl LlmDriver for GeminiDriver {
         for attempt in 0..=max_retries {
             let url = format!(
                 "{}/v1beta/models/{}:generateContent?key={}",
-                self.base_url, request.model, self.api_key.as_str()
+                self.base_url,
+                request.model,
+                self.api_key.as_str()
             );
             debug!(url = %url, attempt, "Sending Gemini API request");
 
@@ -503,7 +507,9 @@ impl LlmDriver for GeminiDriver {
         for attempt in 0..=max_retries {
             let url = format!(
                 "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
-                self.base_url, request.model, self.api_key.as_str()
+                self.base_url,
+                request.model,
+                self.api_key.as_str()
             );
             debug!(url = %url, attempt, "Sending Gemini streaming request");
 

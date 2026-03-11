@@ -748,6 +748,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono-tz"
+version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
+dependencies = [
+ "chrono",
+ "phf 0.12.1",
+]
+
+[[package]]
 name = "chumsky"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3875,7 +3885,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-api"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "async-trait",
  "axum",
@@ -3912,7 +3922,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-channels"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "async-trait",
  "axum",
@@ -3944,7 +3954,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-cli"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3971,7 +3981,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-desktop"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "axum",
  "open",
@@ -3997,7 +4007,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-extensions"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -4025,7 +4035,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-hands"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "chrono",
  "dashmap",
@@ -4042,10 +4052,11 @@ dependencies = [
 
 [[package]]
 name = "openfang-kernel"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "async-trait",
  "chrono",
+ "chrono-tz",
  "cron",
  "crossbeam",
  "dashmap",
@@ -4078,7 +4089,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-memory"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4097,7 +4108,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-migrate"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -4116,7 +4127,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-runtime"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4131,9 +4142,11 @@ dependencies = [
  "openfang-types",
  "regex-lite",
  "reqwest 0.12.28",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "shlex",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -4148,7 +4161,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-skills"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "chrono",
  "hex",
@@ -4171,7 +4184,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-types"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4190,10 +4203,11 @@ dependencies = [
 
 [[package]]
 name = "openfang-wire"
-version = "0.3.26"
+version = "0.3.42"
 dependencies = [
  "async-trait",
  "chrono",
+ "dashmap",
  "hex",
  "hmac",
  "openfang-types",
@@ -4460,6 +4474,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "phf"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
+dependencies = [
+ "phf_shared 0.12.1",
+]
+
+[[package]]
 name = "phf_codegen"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4559,6 +4582,15 @@ name = "phf_shared"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
+dependencies = [
+ "siphasher 1.0.2",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
 dependencies = [
  "siphasher 1.0.2",
 ]
@@ -8818,7 +8850,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.3.26"
+version = "0.3.42"
 
 [[package]]
 name = "yoke"

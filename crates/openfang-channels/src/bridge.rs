@@ -11,10 +11,10 @@ use crate::types::{
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
-use openfang_types::message::ContentBlock;
 use futures::StreamExt;
 use openfang_types::agent::AgentId;
 use openfang_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputFormat};
+use openfang_types::message::ContentBlock;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::watch;
@@ -451,7 +451,9 @@ async fn dispatch_message(
                 }
                 GroupPolicy::MentionOnly => {
                     // Only allow messages where the bot was @mentioned or commands.
-                    let was_mentioned = message.metadata.get("was_mentioned")
+                    let was_mentioned = message
+                        .metadata
+                        .get("was_mentioned")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     let is_command = matches!(&message.content, ChannelContent::Command { .. });
@@ -497,9 +499,16 @@ async fn dispatch_message(
     }
 
     // For images: download, base64 encode, and send as multimodal content blocks
-    if let ChannelContent::Image { ref url, ref caption } = message.content {
+    if let ChannelContent::Image {
+        ref url,
+        ref caption,
+    } = message.content
+    {
         let blocks = download_image_to_blocks(url, caption.as_deref()).await;
-        if blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. })) {
+        if blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. }))
+        {
             // We have actual image data — send as structured blocks for vision
             dispatch_with_blocks(
                 blocks,
@@ -520,17 +529,26 @@ async fn dispatch_message(
     let text = match &message.content {
         ChannelContent::Text(t) => t.clone(),
         ChannelContent::Command { .. } => unreachable!(), // handled above
-        ChannelContent::Image { ref url, ref caption } => {
+        ChannelContent::Image {
+            ref url,
+            ref caption,
+        } => {
             // Fallback when image download failed
             match caption {
                 Some(c) => format!("[User sent a photo: {url}]\nCaption: {c}"),
                 None => format!("[User sent a photo: {url}]"),
             }
         }
-        ChannelContent::File { ref url, ref filename } => {
+        ChannelContent::File {
+            ref url,
+            ref filename,
+        } => {
             format!("[User sent a file ({filename}): {url}]")
         }
-        ChannelContent::Voice { ref url, duration_seconds } => {
+        ChannelContent::Voice {
+            ref url,
+            duration_seconds,
+        } => {
             format!("[User sent a voice message ({duration_seconds}s): {url}]")
         }
         ChannelContent::Location { lat, lon } => {
@@ -816,7 +834,10 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
             bytes.len()
         );
         let desc = match caption {
-            Some(c) => format!("[Image too large for vision ({} KB)]\nCaption: {c}", bytes.len() / 1024),
+            Some(c) => format!(
+                "[Image too large for vision ({} KB)]\nCaption: {c}",
+                bytes.len() / 1024
+            ),
             None => format!("[Image too large for vision ({} KB)]", bytes.len() / 1024),
         };
         return vec![ContentBlock::Text { text: desc }];

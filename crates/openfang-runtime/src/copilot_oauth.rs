@@ -89,10 +89,7 @@ pub async fn poll_device_flow(device_code: &str) -> DeviceFlowStatus {
         .header("Accept", "application/json")
         .form(&[
             ("client_id", COPILOT_CLIENT_ID),
-            (
-                "grant_type",
-                "urn:ietf:params:oauth:grant-type:device_code",
-            ),
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ("device_code", device_code),
         ])
         .send()
@@ -112,10 +109,7 @@ pub async fn poll_device_flow(device_code: &str) -> DeviceFlowStatus {
         return match error {
             "authorization_pending" => DeviceFlowStatus::Pending,
             "slow_down" => {
-                let interval = body
-                    .get("interval")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(10);
+                let interval = body.get("interval").and_then(|v| v.as_u64()).unwrap_or(10);
                 DeviceFlowStatus::SlowDown {
                     new_interval: interval,
                 }

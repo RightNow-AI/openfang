@@ -424,7 +424,10 @@ mod tests {
         let html = "<body>İstanbul ẞtraße <B>bold</B> text</body>";
         let md = html_to_markdown(html);
         assert!(md.contains("**bold**"), "Expected bold, got: {md}");
-        assert!(md.contains("İstanbul"), "Expected unicode preserved, got: {md}");
+        assert!(
+            md.contains("İstanbul"),
+            "Expected unicode preserved, got: {md}"
+        );
     }
 
     #[test]

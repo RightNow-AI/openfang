@@ -128,11 +128,7 @@ impl TelegramAdapter {
         photo_url: &str,
         caption: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let url = format!(
-            "{}/bot{}/sendPhoto",
-            self.api_base_url,
-            self.token.as_str()
-        );
+        let url = format!("{}/bot{}/sendPhoto", self.api_base_url, self.token.as_str());
         let mut body = serde_json::json!({
             "chat_id": chat_id,
             "photo": photo_url,
@@ -180,11 +176,7 @@ impl TelegramAdapter {
         chat_id: i64,
         voice_url: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let url = format!(
-            "{}/bot{}/sendVoice",
-            self.api_base_url,
-            self.token.as_str()
-        );
+        let url = format!("{}/bot{}/sendVoice", self.api_base_url, self.token.as_str());
         let body = serde_json::json!({
             "chat_id": chat_id,
             "voice": voice_url,
@@ -427,7 +419,15 @@ impl ChannelAdapter for TelegramAdapter {
                     }
 
                     // Parse the message
-                    let msg = match parse_telegram_update(update, &allowed_users, token.as_str(), &client, &api_base_url).await {
+                    let msg = match parse_telegram_update(
+                        update,
+                        &allowed_users,
+                        token.as_str(),
+                        &client,
+                        &api_base_url,
+                    )
+                    .await
+                    {
                         Some(m) => m,
                         None => continue, // filtered out or unparseable
                     };
@@ -541,9 +541,7 @@ async fn telegram_get_file_url(
         return None;
     }
     let file_path = body["result"]["file_path"].as_str()?;
-    Some(format!(
-        "{api_base_url}/file/bot{token}/{file_path}"
-    ))
+    Some(format!("{api_base_url}/file/bot{token}/{file_path}"))
 }
 
 async fn parse_telegram_update(
@@ -620,7 +618,10 @@ async fn parse_telegram_update(
             Some(url) => ChannelContent::Image { url, caption },
             None => ChannelContent::Text(format!(
                 "[Photo received{}]",
-                caption.as_deref().map(|c| format!(": {c}")).unwrap_or_default()
+                caption
+                    .as_deref()
+                    .map(|c| format!(": {c}"))
+                    .unwrap_or_default()
             )),
         }
     } else if message.get("document").is_some() {
@@ -681,7 +682,17 @@ pub fn calculate_backoff(current: Duration) -> Duration {
 /// Everything else (e.g. `<name>`, `<thinking>`) gets escaped to `&lt;...&gt;`.
 fn sanitize_telegram_html(text: &str) -> String {
     const ALLOWED: &[&str] = &[
-        "b", "i", "u", "s", "em", "strong", "a", "code", "pre", "blockquote", "tg-spoiler",
+        "b",
+        "i",
+        "u",
+        "s",
+        "em",
+        "strong",
+        "a",
+        "code",
+        "pre",
+        "blockquote",
+        "tg-spoiler",
         "tg-emoji",
     ];
 
@@ -760,7 +771,9 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL)
+            .await
+            .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
         assert_eq!(msg.sender.display_name, "Alice Smith");
         assert_eq!(msg.sender.platform_id, "111222333");
@@ -792,7 +805,9 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL)
+            .await
+            .unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -829,12 +844,14 @@ mod tests {
 
         // Non-matching allowed_users = filter out
         let blocked: Vec<String> = vec!["111".to_string(), "222".to_string()];
-        let msg = parse_telegram_update(&update, &blocked, "fake:token", &client, DEFAULT_API_URL).await;
+        let msg =
+            parse_telegram_update(&update, &blocked, "fake:token", &client, DEFAULT_API_URL).await;
         assert!(msg.is_none());
 
         // Matching allowed_users = allow
         let allowed: Vec<String> = vec!["999".to_string()];
-        let msg = parse_telegram_update(&update, &allowed, "fake:token", &client, DEFAULT_API_URL).await;
+        let msg =
+            parse_telegram_update(&update, &allowed, "fake:token", &client, DEFAULT_API_URL).await;
         assert!(msg.is_some());
     }
 
@@ -860,7 +877,9 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL)
+            .await
+            .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
         assert_eq!(msg.sender.display_name, "Alice Smith");
         assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Edited message!"));
@@ -896,7 +915,9 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL)
+            .await
+            .unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agents");
@@ -920,7 +941,9 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL)
+            .await
+            .unwrap();
         assert!(matches!(msg.content, ChannelContent::Location { .. }));
     }
 
@@ -944,7 +967,9 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL)
+            .await
+            .unwrap();
         // With a fake token, getFile will fail, so we get a text fallback
         match &msg.content {
             ChannelContent::Text(t) => {
@@ -979,7 +1004,9 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL)
+            .await
+            .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.contains("Document received"));
@@ -1010,13 +1037,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL)
+            .await
+            .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.contains("Voice message"));
                 assert!(t.contains("15s"));
             }
-            ChannelContent::Voice { duration_seconds, .. } => {
+            ChannelContent::Voice {
+                duration_seconds, ..
+            } => {
                 assert_eq!(*duration_seconds, 15);
             }
             other => panic!("Expected Text or Voice for voice message, got {other:?}"),

@@ -170,7 +170,8 @@ impl HandRegistry {
 
     /// List all known hand definitions.
     pub fn list_definitions(&self) -> Vec<HandDefinition> {
-        let mut defs: Vec<HandDefinition> = self.definitions.iter().map(|r| r.value().clone()).collect();
+        let mut defs: Vec<HandDefinition> =
+            self.definitions.iter().map(|r| r.value().clone()).collect();
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
     }
@@ -380,7 +381,9 @@ fn check_requirement(req: &HandRequirement) -> bool {
                     || which_binary("google-chrome")
                     || which_binary("google-chrome-stable")
                     || which_binary("chrome")
-                    || std::env::var("CHROME_PATH").map(|v| !v.is_empty()).unwrap_or(false);
+                    || std::env::var("CHROME_PATH")
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false);
             }
             false
         }
