@@ -7,7 +7,6 @@
 ///
 /// This module declares the Leptos `App` component and all pages/components.
 /// The `leptos_axum::LeptosRoutes` extractor wires them into the Axum router in `server.rs`.
-
 pub mod components;
 pub mod pages;
 

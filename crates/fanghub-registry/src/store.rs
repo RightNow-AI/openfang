@@ -3,8 +3,9 @@ use crate::{
     models::{HandPackage, PackageVersion, RegistryStats, SearchQuery, SearchResult, SortOrder, UserAccount},
 };
 use chrono::Utc;
-use serde_json::json;
 use surrealdb::{engine::any::Any, Surreal};
+
+#[cfg(test)]
 use uuid::Uuid;
 
 /// The FangHub data store — wraps SurrealDB with typed query methods.
@@ -255,7 +256,7 @@ impl RegistryStore {
     /// Search packages with optional text, category, and tag filters.
     pub async fn search(&self, query: &SearchQuery) -> RegistryResult<(Vec<SearchResult>, u64)> {
         let page = query.page.unwrap_or(1).max(1);
-        let per_page = query.per_page.unwrap_or(20).min(100).max(1);
+        let per_page = query.per_page.unwrap_or(20).clamp(1, 100);
         let offset = (page - 1) * per_page;
 
         // Build a SurrealQL query with optional filters

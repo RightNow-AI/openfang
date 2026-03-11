@@ -30,10 +30,10 @@ pub fn SearchPage() -> impl IntoView {
             q: map.get("q").map(|s| s.to_string()),
             category: map.get("category").map(|s| s.to_string()),
             tag: map.get("tag").map(|s| s.to_string()),
-            sort: map.get("sort").and_then(|s| match s.as_str() {
-                "name" => Some(SortOrder::Name),
-                "updated" => Some(SortOrder::Updated),
-                _ => Some(SortOrder::Installs),
+            sort: map.get("sort").map(|s| match s.as_str() {
+                "name" => SortOrder::Name,
+                "updated" => SortOrder::Updated,
+                _ => SortOrder::Installs,
             }),
             page: map.get("page").and_then(|s| s.parse().ok()),
             per_page: Some(24),

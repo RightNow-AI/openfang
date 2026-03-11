@@ -154,6 +154,7 @@ pub struct SupervisorEngine {
 }
 
 /// Internal tracking for an active orchestration.
+#[allow(dead_code)]
 struct ActiveRun {
     id: OrchestrationId,
     task: String,
@@ -501,7 +502,7 @@ impl SupervisorEngine {
             self.kernel
                 .send_to_agent(&agent.id, task)
                 .await
-                .map_err(|e| AlgorithmError::DelegationError(e))?
+                .map_err(AlgorithmError::DelegationError)?
         } else {
             // Spawn a temporary agent for this task
             info!("Passthrough: spawning temporary agent");
@@ -510,13 +511,13 @@ impl SupervisorEngine {
                 .kernel
                 .spawn_agent(&manifest, None)
                 .await
-                .map_err(|e| AlgorithmError::DelegationError(e))?;
+                .map_err(AlgorithmError::DelegationError)?;
 
             let result = self
                 .kernel
                 .send_to_agent(&agent_id, task)
                 .await
-                .map_err(|e| AlgorithmError::DelegationError(e))?;
+                .map_err(AlgorithmError::DelegationError)?;
 
             // Kill the temporary agent
             let _ = self.kernel.kill_agent(&agent_id).await;
@@ -904,7 +905,7 @@ impl<'a> ExecutionHooks for SupervisorHooks<'a> {
                 .kernel
                 .spawn_agent(&manifest, None)
                 .await
-                .map_err(|e| AlgorithmError::DelegationError(e))?;
+                .map_err(AlgorithmError::DelegationError)?;
 
             info!(agent_id = %id, agent_name = %name, "Spawned new worker agent");
 
@@ -923,7 +924,7 @@ impl<'a> ExecutionHooks for SupervisorHooks<'a> {
             .kernel
             .send_to_agent(&agent_id, step_description)
             .await
-            .map_err(|e| AlgorithmError::DelegationError(e))?;
+            .map_err(AlgorithmError::DelegationError)?;
 
         Ok(response)
     }
