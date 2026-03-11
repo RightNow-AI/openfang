@@ -203,7 +203,7 @@ fn convert_messages(oai_messages: &[OaiMessage]) -> Vec<Message> {
                         .iter()
                         .filter_map(|part| match part {
                             OaiContentPart::Text { text } => {
-                                Some(ContentBlock::Text { text: text.clone() })
+                                Some(ContentBlock::Text { text: text.clone(), provider_metadata: None })
                             }
                             OaiContentPart::ImageUrl { image_url } => {
                                 // Parse data URI: data:{media_type};base64,{data}
