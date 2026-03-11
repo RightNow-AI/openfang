@@ -1152,7 +1152,7 @@ impl OpenFangKernel {
             info!("No agents found — spawning default assistant");
             let dm = &kernel.config.default_model;
             let manifest = AgentManifest {
-                name: "assistant".to_string(),
+                name: "默认助手".to_string(),
                 description: "General-purpose assistant".to_string(),
                 model: openfang_types::agent::ModelConfig {
                     provider: dm.provider.clone(),

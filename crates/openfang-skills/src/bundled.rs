@@ -12,6 +12,10 @@ pub fn bundled_skills() -> Vec<(&'static str, &'static str)> {
         // Tier 1 (8)
         ("github", include_str!("../bundled/github/SKILL.md")),
         ("docker", include_str!("../bundled/docker/SKILL.md")),
+        (
+            "browser-automation",
+            include_str!("../bundled/browser-automation/SKILL.md"),
+        ),
         ("web-search", include_str!("../bundled/web-search/SKILL.md")),
         (
             "code-reviewer",
