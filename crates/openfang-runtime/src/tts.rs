@@ -114,7 +114,7 @@ impl TtsEngine {
         if !response.status().is_success() {
             let status = response.status();
             let err = response.text().await.unwrap_or_default();
-            let truncated = crate::str_utils::safe_truncate_str(&err, 500);
+            let truncated = if err.len() > 500 { let mut end = 500; while end > 0 && !err.is_char_boundary(end) { end -= 1; } &err[..end] } else { &err };
             return Err(format!("OpenAI TTS failed (HTTP {status}): {truncated}"));
         }
 
@@ -186,7 +186,7 @@ impl TtsEngine {
         if !response.status().is_success() {
             let status = response.status();
             let err = response.text().await.unwrap_or_default();
-            let truncated = crate::str_utils::safe_truncate_str(&err, 500);
+            let truncated = if err.len() > 500 { let mut end = 500; while end > 0 && !err.is_char_boundary(end) { end -= 1; } &err[..end] } else { &err };
             return Err(format!(
                 "ElevenLabs TTS failed (HTTP {status}): {truncated}"
             ));

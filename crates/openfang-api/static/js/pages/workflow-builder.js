@@ -1,4 +1,4 @@
-// OpenFang Visual Workflow Builder — Drag-and-drop workflow designer
+// Operis Visual Workflow Builder — Drag-and-drop workflow designer
 'use strict';
 
 function workflowBuilder() {
@@ -48,7 +48,7 @@ function workflowBuilder() {
       var self = this;
       // Load agents for the agent step dropdown
       try {
-        var list = await OpenFangAPI.get('/api/agents');
+        var list = await OperisAPI.get('/api/agents');
         self.agents = Array.isArray(list) ? list : [];
       } catch(_) {
         self.agents = [];
@@ -558,15 +558,15 @@ function workflowBuilder() {
         steps.push(step);
       }
       try {
-        await OpenFangAPI.post('/api/workflows', {
+        await OperisAPI.post('/api/workflows', {
           name: this.workflowName || 'untitled',
           description: this.workflowDescription || '',
           steps: steps
         });
-        OpenFangToast.success('Workflow saved!');
+        OperisToast.success('Workflow saved!');
         this.showSaveModal = false;
       } catch(e) {
-        OpenFangToast.error('Failed to save: ' + e.message);
+        OperisToast.error('Failed to save: ' + e.message);
       }
     },
 

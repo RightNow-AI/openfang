@@ -1,4 +1,4 @@
-// OpenFang App — Alpine.js init, hash router, global store
+// Operis App — Alpine.js init, hash router, global store
 'use strict';
 
 // Marked.js configuration
@@ -87,10 +87,6 @@ function toolIcon(toolName) {
 
 // Alpine.js global store
 document.addEventListener('alpine:init', function() {
-  // Restore saved API key on load
-  var savedKey = localStorage.getItem('openfang-api-key');
-  if (savedKey) OpenFangAPI.setAuthToken(savedKey);
-
   Alpine.store('app', {
     agents: [],
     connected: false,
@@ -101,18 +97,17 @@ document.addEventListener('alpine:init', function() {
     version: '0.1.0',
     agentCount: 0,
     pendingAgent: null,
-    focusMode: localStorage.getItem('openfang-focus') === 'true',
+    focusMode: localStorage.getItem('operis-focus') === 'true',
     showOnboarding: false,
-    showAuthPrompt: false,
 
     toggleFocusMode() {
       this.focusMode = !this.focusMode;
-      localStorage.setItem('openfang-focus', this.focusMode);
+      localStorage.setItem('operis-focus', this.focusMode);
     },
 
     async refreshAgents() {
       try {
-        var agents = await OpenFangAPI.get('/api/agents');
+        var agents = await OperisAPI.get('/api/agents');
         this.agents = Array.isArray(agents) ? agents : [];
         this.agentCount = this.agents.length;
       } catch(e) { /* silent */ }
@@ -120,7 +115,7 @@ document.addEventListener('alpine:init', function() {
 
     async checkStatus() {
       try {
-        var s = await OpenFangAPI.get('/api/status');
+        var s = await OperisAPI.get('/api/status');
         this.connected = true;
         this.booting = false;
         this.lastError = '';
@@ -129,14 +124,14 @@ document.addEventListener('alpine:init', function() {
       } catch(e) {
         this.connected = false;
         this.lastError = e.message || 'Unknown error';
-        console.warn('[OpenFang] Status check failed:', e.message);
+        console.warn('[Operis] Status check failed:', e.message);
       }
     },
 
     async checkOnboarding() {
-      if (localStorage.getItem('openfang-onboarded')) return;
+      if (localStorage.getItem('operis-onboarded')) return;
       try {
-        var config = await OpenFangAPI.get('/api/config');
+        var config = await OperisAPI.get('/api/config');
         var apiKey = config && config.api_key;
         var noKey = !apiKey || apiKey === 'not set' || apiKey === '';
         if (noKey && this.agentCount === 0) {
@@ -150,40 +145,7 @@ document.addEventListener('alpine:init', function() {
 
     dismissOnboarding() {
       this.showOnboarding = false;
-      localStorage.setItem('openfang-onboarded', 'true');
-    },
-
-    async checkAuth() {
-      try {
-        // Use a protected endpoint (not in the public allowlist) to detect
-        // whether the server requires an API key.
-        await OpenFangAPI.get('/api/tools');
-        this.showAuthPrompt = false;
-      } catch(e) {
-        if (e.message && (e.message.indexOf('Not authorized') >= 0 || e.message.indexOf('401') >= 0 || e.message.indexOf('Missing Authorization') >= 0 || e.message.indexOf('Unauthorized') >= 0)) {
-          // Only show prompt if we don't already have a saved key
-          var saved = localStorage.getItem('openfang-api-key');
-          if (saved) {
-            // Saved key might be stale — clear it and show prompt
-            OpenFangAPI.setAuthToken('');
-            localStorage.removeItem('openfang-api-key');
-          }
-          this.showAuthPrompt = true;
-        }
-      }
-    },
-
-    submitApiKey(key) {
-      if (!key || !key.trim()) return;
-      OpenFangAPI.setAuthToken(key.trim());
-      localStorage.setItem('openfang-api-key', key.trim());
-      this.showAuthPrompt = false;
-      this.refreshAgents();
-    },
-
-    clearApiKey() {
-      OpenFangAPI.setAuthToken('');
-      localStorage.removeItem('openfang-api-key');
+      localStorage.setItem('operis-onboarded', 'true');
     }
   });
 });
@@ -192,13 +154,13 @@ document.addEventListener('alpine:init', function() {
 function app() {
   return {
     page: 'agents',
-    themeMode: localStorage.getItem('openfang-theme-mode') || 'system',
+    themeMode: localStorage.getItem('operis-theme-mode') || 'system',
     theme: (() => {
-      var mode = localStorage.getItem('openfang-theme-mode') || 'system';
+      var mode = localStorage.getItem('operis-theme-mode') || 'system';
       if (mode === 'system') return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       return mode;
     })(),
-    sidebarCollapsed: localStorage.getItem('openfang-sidebar') === 'collapsed',
+    sidebarCollapsed: localStorage.getItem('operis-sidebar') === 'collapsed',
     mobileMenuOpen: false,
     connected: false,
     wsConnected: false,
@@ -218,7 +180,7 @@ function app() {
       });
 
       // Hash routing
-      var validPages = ['overview','agents','sessions','approvals','comms','workflows','scheduler','channels','skills','hands','analytics','logs','runtime','settings','wizard'];
+      var validPages = ['overview','agents','sessions','approvals','workflows','scheduler','channels','skills','hands','analytics','logs','settings','wizard'];
       var pageRedirects = {
         'chat': 'agents',
         'templates': 'agents',
@@ -268,14 +230,13 @@ function app() {
       });
 
       // Connection state listener
-      OpenFangAPI.onConnectionChange(function(state) {
+      OperisAPI.onConnectionChange(function(state) {
         Alpine.store('app').connectionState = state;
       });
 
       // Initial data load
       this.pollStatus();
       Alpine.store('app').checkOnboarding();
-      Alpine.store('app').checkAuth();
       setInterval(function() { self.pollStatus(); }, 5000);
     },
 
@@ -287,7 +248,7 @@ function app() {
 
     setTheme(mode) {
       this.themeMode = mode;
-      localStorage.setItem('openfang-theme-mode', mode);
+      localStorage.setItem('operis-theme-mode', mode);
       if (mode === 'system') {
         this.theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       } else {
@@ -303,7 +264,7 @@ function app() {
 
     toggleSidebar() {
       this.sidebarCollapsed = !this.sidebarCollapsed;
-      localStorage.setItem('openfang-sidebar', this.sidebarCollapsed ? 'collapsed' : 'expanded');
+      localStorage.setItem('operis-sidebar', this.sidebarCollapsed ? 'collapsed' : 'expanded');
     },
 
     async pollStatus() {
@@ -313,7 +274,7 @@ function app() {
       this.connected = store.connected;
       this.version = store.version;
       this.agentCount = store.agentCount;
-      this.wsConnected = OpenFangAPI.isWsConnected();
+      this.wsConnected = OperisAPI.isWsConnected();
     }
   };
 }

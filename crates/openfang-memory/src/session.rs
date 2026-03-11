@@ -128,20 +128,6 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Delete the canonical (cross-channel) session for an agent.
-    pub fn delete_canonical_session(&self, agent_id: AgentId) -> OpenFangResult<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
-        conn.execute(
-            "DELETE FROM canonical_sessions WHERE agent_id = ?1",
-            rusqlite::params![agent_id.0.to_string()],
-        )
-        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        Ok(())
-    }
-
     /// List all sessions with metadata (session_id, agent_id, message_count, created_at).
     pub fn list_sessions(&self) -> OpenFangResult<Vec<serde_json::Value>> {
         let conn = self
@@ -442,24 +428,21 @@ impl SessionStore {
                     };
                     let text = msg.content.text_content();
                     if !text.is_empty() {
-                        // Truncate individual messages in summary to keep it compact (UTF-8 safe)
+                        // Truncate individual messages in summary to keep it compact
                         let truncated = if text.len() > 200 {
-                            format!("{}...", openfang_types::truncate_str(&text, 200))
+                            let mut end = 200;
+                            while end > 0 && !text.is_char_boundary(end) { end -= 1; }
+                            format!("{}...", &text[..end])
                         } else {
                             text
                         };
                         summary_parts.push(format!("{role}: {truncated}"));
                     }
                 }
-                // Keep summary under ~4000 chars (UTF-8 safe)
+                // Keep summary under ~4000 chars
                 let mut full_summary = summary_parts.join("\n");
                 if full_summary.len() > 4000 {
-                    let start = full_summary.len() - 4000;
-                    // Find the next char boundary at or after `start`
-                    let safe_start = (start..full_summary.len())
-                        .find(|&i| full_summary.is_char_boundary(i))
-                        .unwrap_or(full_summary.len());
-                    full_summary = full_summary[safe_start..].to_string();
+                    full_summary = full_summary[full_summary.len() - 4000..].to_string();
                 }
                 canonical.compacted_summary = Some(full_summary);
                 canonical.compaction_cursor = to_compact;
@@ -560,7 +543,7 @@ impl SessionStore {
                             ContentBlock::Text { text } => {
                                 text_parts.push(text.clone());
                             }
-                            ContentBlock::ToolUse { id, name, input, .. } => {
+                            ContentBlock::ToolUse { id, name, input } => {
                                 tool_parts.push(serde_json::json!({
                                     "type": "tool_use",
                                     "id": id,
@@ -570,7 +553,6 @@ impl SessionStore {
                             }
                             ContentBlock::ToolResult {
                                 tool_use_id,
-                                tool_name: _,
                                 content,
                                 is_error,
                             } => {
@@ -587,7 +569,7 @@ impl SessionStore {
                             ContentBlock::Thinking { thinking } => {
                                 text_parts.push(format!(
                                     "[thinking: {}]",
-                                    openfang_types::truncate_str(thinking, 200)
+                                    &thinking[..thinking.len().min(200)]
                                 ));
                             }
                             ContentBlock::Unknown => {}

@@ -1,4 +1,4 @@
-// OpenFang Channels Page — OpenClaw-style setup UX with QR code support
+// Operis Channels Page — OpenClaw-style setup UX with QR code support
 'use strict';
 
 function channelsPage() {
@@ -89,7 +89,7 @@ function channelsPage() {
       this.loading = true;
       this.loadError = '';
       try {
-        var data = await OpenFangAPI.get('/api/channels');
+        var data = await OperisAPI.get('/api/channels');
         this.allChannels = (data.channels || []).map(function(ch) {
           ch.connected = ch.configured && ch.has_token;
           return ch;
@@ -111,7 +111,7 @@ function channelsPage() {
 
     async refreshStatus() {
       try {
-        var data = await OpenFangAPI.get('/api/channels');
+        var data = await OperisAPI.get('/api/channels');
         var byName = {};
         (data.channels || []).forEach(function(ch) { byName[ch.name] = ch; });
         this.allChannels.forEach(function(c) {
@@ -178,7 +178,7 @@ function channelsPage() {
       this.qr.connected = false;
       this.qr.expired = false;
       try {
-        var result = await OpenFangAPI.post('/api/channels/whatsapp/qr/start', {});
+        var result = await OperisAPI.post('/api/channels/whatsapp/qr/start', {});
         this.qr.available = result.available || false;
         this.qr.dataUrl = result.qr_data_url || '';
         this.qr.sessionId = result.session_id || '';
@@ -189,7 +189,7 @@ function channelsPage() {
           this.pollQR();
         }
         if (this.qr.connected) {
-          OpenFangToast.success('WhatsApp connected!');
+          OperisToast.success('WhatsApp connected!');
           await this.refreshStatus();
         }
       } catch(e) {
@@ -203,13 +203,13 @@ function channelsPage() {
       if (this.qrPollTimer) clearInterval(this.qrPollTimer);
       this.qrPollTimer = setInterval(async function() {
         try {
-          var result = await OpenFangAPI.get('/api/channels/whatsapp/qr/status?session_id=' + encodeURIComponent(self.qr.sessionId));
+          var result = await OperisAPI.get('/api/channels/whatsapp/qr/status?session_id=' + encodeURIComponent(self.qr.sessionId));
           if (result.connected) {
             clearInterval(self.qrPollTimer);
             self.qrPollTimer = null;
             self.qr.connected = true;
             self.qr.message = result.message || 'Connected!';
-            OpenFangToast.success('WhatsApp linked successfully!');
+            OperisToast.success('WhatsApp linked successfully!');
             await self.refreshStatus();
           } else if (result.expired) {
             clearInterval(self.qrPollTimer);
@@ -230,26 +230,26 @@ function channelsPage() {
       var name = this.setupModal.name;
       this.configuring = true;
       try {
-        await OpenFangAPI.post('/api/channels/' + name + '/configure', {
+        await OperisAPI.post('/api/channels/' + name + '/configure', {
           fields: this.formValues
         });
         this.setupStep = 2;
         // Auto-test after save
         try {
-          var testResult = await OpenFangAPI.post('/api/channels/' + name + '/test', {});
+          var testResult = await OperisAPI.post('/api/channels/' + name + '/test', {});
           if (testResult.status === 'ok') {
             this.testPassed = true;
             this.setupStep = 3;
-            OpenFangToast.success(this.setupModal.display_name + ' activated!');
+            OperisToast.success(this.setupModal.display_name + ' activated!');
           } else {
-            OpenFangToast.success(this.setupModal.display_name + ' saved. ' + (testResult.message || ''));
+            OperisToast.success(this.setupModal.display_name + ' saved. ' + (testResult.message || ''));
           }
         } catch(te) {
-          OpenFangToast.success(this.setupModal.display_name + ' saved. Test to verify connection.');
+          OperisToast.success(this.setupModal.display_name + ' saved. Test to verify connection.');
         }
         await this.refreshStatus();
       } catch(e) {
-        OpenFangToast.error('Failed: ' + (e.message || 'Unknown error'));
+        OperisToast.error('Failed: ' + (e.message || 'Unknown error'));
       }
       this.configuring = false;
     },
@@ -259,14 +259,14 @@ function channelsPage() {
       var name = this.setupModal.name;
       var displayName = this.setupModal.display_name;
       var self = this;
-      OpenFangToast.confirm('Remove Channel', 'Remove ' + displayName + ' configuration? This will deactivate the channel.', async function() {
+      OperisToast.confirm('Remove Channel', 'Remove ' + displayName + ' configuration? This will deactivate the channel.', async function() {
         try {
-          await OpenFangAPI.delete('/api/channels/' + name + '/configure');
-          OpenFangToast.success(displayName + ' removed and deactivated.');
+          await OperisAPI.delete('/api/channels/' + name + '/configure');
+          OperisToast.success(displayName + ' removed and deactivated.');
           await self.refreshStatus();
           self.setupModal = null;
         } catch(e) {
-          OpenFangToast.error('Failed: ' + (e.message || 'Unknown error'));
+          OperisToast.error('Failed: ' + (e.message || 'Unknown error'));
         }
       });
     },
@@ -276,16 +276,16 @@ function channelsPage() {
       var name = this.setupModal.name;
       this.testing[name] = true;
       try {
-        var result = await OpenFangAPI.post('/api/channels/' + name + '/test', {});
+        var result = await OperisAPI.post('/api/channels/' + name + '/test', {});
         if (result.status === 'ok') {
           this.testPassed = true;
           this.setupStep = 3;
-          OpenFangToast.success(result.message);
+          OperisToast.success(result.message);
         } else {
-          OpenFangToast.error(result.message);
+          OperisToast.error(result.message);
         }
       } catch(e) {
-        OpenFangToast.error('Test failed: ' + (e.message || 'Unknown error'));
+        OperisToast.error('Test failed: ' + (e.message || 'Unknown error'));
       }
       this.testing[name] = false;
     },
@@ -295,9 +295,9 @@ function channelsPage() {
       if (!tpl) return;
       try {
         await navigator.clipboard.writeText(tpl);
-        OpenFangToast.success('Copied to clipboard');
+        OperisToast.success('Copied to clipboard');
       } catch(e) {
-        OpenFangToast.error('Copy failed');
+        OperisToast.error('Copy failed');
       }
     },
 

@@ -146,7 +146,9 @@ impl WorkspaceContext {
             if let Some(content) = self.get_file(&name) {
                 // Take first 200 chars as preview
                 let preview = if content.len() > 200 {
-                    format!("{}...", crate::str_utils::safe_truncate_str(content, 200))
+                    let mut end = 200;
+                    while end > 0 && !content.is_char_boundary(end) { end -= 1; }
+                    format!("{}...", &content[..end])
                 } else {
                     content.to_string()
                 };

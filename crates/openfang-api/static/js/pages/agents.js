@@ -1,20 +1,6 @@
-// OpenFang Agents Page — Multi-step spawn wizard, detail view with tabs, file editor, personality presets
+// Operis — Nền tảng vận hành doanh nghiệp thông minh
+// Giao diện quản lý agent & công ty
 'use strict';
-
-/** Escape a string for use inside TOML triple-quoted strings ("""\n...\n""").
- *  Backslashes are escaped, and runs of 3+ consecutive double-quotes are
- *  broken up so the TOML parser never sees an unintended closing delimiter.
- */
-function tomlMultilineEscape(s) {
-  return s.replace(/\\/g, '\\\\').replace(/"""/g, '""\\"');
-}
-
-/** Escape a string for use inside a TOML basic (single-line) string ("...").
- *  Backslashes, double-quotes, and common control chars are escaped.
- */
-function tomlBasicEscape(s) {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-}
 
 function agentsPage() {
   return {
@@ -24,7 +10,7 @@ function agentsPage() {
     showSpawnModal: false,
     showDetailModal: false,
     detailAgent: null,
-    spawnMode: 'wizard',
+    spawnMode: 'quick',
     spawning: false,
     spawnToml: '',
     filterState: 'all',
@@ -32,35 +18,179 @@ function agentsPage() {
     loadError: '',
     spawnForm: {
       name: '',
-      provider: 'groq',
-      model: 'llama-3.3-70b-versatile',
-      systemPrompt: 'You are a helpful assistant.',
+      provider: 'openai',
+      model: 'kimi-k2-250905',
+      systemPrompt: '',
       profile: 'full',
-      caps: { memory_read: true, memory_write: true, network: false, shell: false, agent_spawn: false }
+      caps: { memory_read: true, memory_write: true, network: false, shell: true, agent_spawn: false }
     },
 
-    // -- Multi-step wizard state --
-    spawnStep: 1,
-    spawnIdentity: { emoji: '', color: '#FF5C00', archetype: '' },
-    selectedPreset: '',
-    soulContent: '',
-    emojiOptions: [
-      '\u{1F916}', '\u{1F4BB}', '\u{1F50D}', '\u{270D}\uFE0F', '\u{1F4CA}', '\u{1F6E0}\uFE0F',
-      '\u{1F4AC}', '\u{1F393}', '\u{1F310}', '\u{1F512}', '\u{26A1}', '\u{1F680}',
-      '\u{1F9EA}', '\u{1F3AF}', '\u{1F4D6}', '\u{1F9D1}\u200D\u{1F4BB}', '\u{1F4E7}', '\u{1F3E2}',
-      '\u{2764}\uFE0F', '\u{1F31F}', '\u{1F527}', '\u{1F4DD}', '\u{1F4A1}', '\u{1F3A8}'
-    ],
-    archetypeOptions: ['Assistant', 'Researcher', 'Coder', 'Writer', 'DevOps', 'Support', 'Analyst', 'Custom'],
-    personalityPresets: [
-      { id: 'professional', label: 'Professional', soul: 'Communicate in a clear, professional tone. Be direct and structured. Use formal language and data-driven reasoning. Prioritize accuracy over personality.' },
-      { id: 'friendly', label: 'Friendly', soul: 'Be warm, approachable, and conversational. Use casual language and show genuine interest in the user. Add personality to your responses while staying helpful.' },
-      { id: 'technical', label: 'Technical', soul: 'Focus on technical accuracy and depth. Use precise terminology. Show your work and reasoning. Prefer code examples and structured explanations.' },
-      { id: 'creative', label: 'Creative', soul: 'Be imaginative and expressive. Use vivid language, analogies, and unexpected connections. Encourage creative thinking and explore multiple perspectives.' },
-      { id: 'concise', label: 'Concise', soul: 'Be extremely brief and to the point. No filler, no pleasantries. Answer in the fewest words possible while remaining accurate and complete.' },
-      { id: 'mentor', label: 'Mentor', soul: 'Be patient and encouraging like a great teacher. Break down complex topics step by step. Ask guiding questions. Celebrate progress and build confidence.' }
+    // -- Trạng thái tạo công ty --
+    showCompanyModal: false,
+    companyStep: 1,
+    companyForm: {
+      name: '', tax_id: '', industry: '', address: '', representative: '', phone: '', email: ''
+    },
+
+    // -- Templates cho doanh nghiệp --
+    selectedCategory: 'Tất cả',
+    searchQuery: '',
+
+    builtinTemplates: [
+      {
+        name: 'Trợ lý Giám đốc',
+        description: 'Báo cáo tổng quan, duyệt đơn hàng vượt quyền, theo dõi hiệu suất toàn công ty.',
+        category: 'Quản lý',
+        icon: '👔',
+        provider: 'openai',
+        model: 'kimi-k2-250905',
+        profile: 'full',
+        system_prompt: 'Bạn là trợ lý AI cho Giám đốc. Luôn dùng tiếng Việt. Báo cáo ngắn gọn bằng số liệu. Ưu tiên: escalation chờ duyệt, dòng tiền, hiệu suất nhân viên. Khi nhận lệnh, chạy report:director để lấy tổng quan.'
+      },
+      {
+        name: 'Trợ lý Kinh doanh',
+        description: 'Chốt đơn, báo giá, quản lý khách hàng, theo dõi hợp đồng và doanh thu.',
+        category: 'Kinh doanh',
+        icon: '💼',
+        provider: 'openai',
+        model: 'kimi-k2-250905',
+        profile: 'full',
+        system_prompt: 'Bạn là trợ lý AI cho bộ phận Kinh doanh. Luôn dùng tiếng Việt. Hỗ trợ sale chốt đơn, báo giá, tạo hợp đồng. Luôn check auth:check trước khi quyết định. Nếu vượt quyền → escalate lên cấp trên.'
+      },
+      {
+        name: 'Trợ lý Kế toán',
+        description: 'Ghi nhận thu chi, quản lý công nợ, báo cáo tài chính, theo dõi thanh toán hợp đồng.',
+        category: 'Tài chính',
+        icon: '📊',
+        provider: 'openai',
+        model: 'kimi-k2-250905',
+        profile: 'full',
+        system_prompt: 'Bạn là trợ lý AI cho Kế toán. Luôn dùng tiếng Việt. Số tiền luôn dạng INTEGER đồng Việt Nam. Hỗ trợ ghi nhận thanh toán, báo cáo dòng tiền, công nợ phải thu/phải trả. Chạy report:cashflow, report:receivables khi được hỏi.'
+      },
+      {
+        name: 'Trợ lý Sản xuất',
+        description: 'Quản lý xưởng, phân công thợ, theo dõi vật tư, tiến độ sản xuất.',
+        category: 'Vận hành',
+        icon: '🏭',
+        provider: 'openai',
+        model: 'kimi-k2-250905',
+        profile: 'full',
+        system_prompt: 'Bạn là trợ lý AI cho bộ phận Sản xuất. Luôn dùng tiếng Việt. Hỗ trợ quản lý xưởng, đặt vật tư, phân công công việc. Check auth:check trước khi duyệt chi. Nếu vượt hạn mức → escalate.'
+      },
+      {
+        name: 'Onboard công ty mới',
+        description: 'Thu thập thông tin công ty, nhân sự, quy trình → tự động tạo hệ thống hoàn chỉnh.',
+        category: 'Thiết lập',
+        icon: '🏢',
+        provider: 'openai',
+        model: 'kimi-k2-250905',
+        profile: 'full',
+        system_prompt: `Bạn là chuyên gia onboard doanh nghiệp cho Operis. LUÔN dùng tiếng Việt. Phong cách: chuyên nghiệp, thân thiện, hỏi từng bước rõ ràng.
+
+## OPERIS LÀ GÌ?
+Operis là **hệ thống trung gian điều phối công việc** trong doanh nghiệp. Cách hoạt động:
+- **Mỗi nhân viên** sẽ chat trực tiếp với AI (qua Telegram, web, hoặc app)
+- AI **biết workflow, SOP, thẩm quyền** của từng người → tự động hướng dẫn, nhắc việc, kiểm tra quyền hạn
+- Khi một bước trong workflow hoàn thành → AI **tự động chuyển việc đến người tiếp theo** theo luồng
+- Ví dụ: Sale tiếp nhận khách → AI tự báo kế toán → kế toán tạo báo giá → AI gửi lên GĐ duyệt → duyệt xong AI thông báo Sale
+- AI cũng **giám sát workflow**: phát hiện công việc bị treo, nhắc nhở, escalate khi cần
+- Giám đốc nhìn tổng quan: ai đang làm gì, workflow nào đang tắc, tài chính ra sao
+
+Tóm lại: Operis = **AI điều phối viên** đứng giữa tất cả nhân viên, biết mọi quy trình, tự động giao-nhận-nhắc-duyệt công việc.
+
+Khi giải thích cho khách hàng, hãy nói rõ: "Hệ thống sẽ là trung gian để điều phối công việc giữa các nhân viên. Mỗi nhân viên sẽ chat trực tiếp với AI, AI sẽ theo workflow để chuyển việc đến đúng người, đúng lúc."
+
+## MỤC TIÊU
+Thu thập đủ thông tin để chạy lệnh company:setup tạo toàn bộ hệ thống quản lý doanh nghiệp.
+
+## QUY TRÌNH HỎI (6 bước)
+
+### Bước 1: Thông tin công ty
+Hỏi lần lượt:
+- Tên công ty đầy đủ
+- Mã số thuế (MST)
+- Ngành nghề chính (xây dựng, nội thất, thương mại, dịch vụ, sản xuất, F&B, v.v.)
+- Địa chỉ
+- Người đại diện pháp luật
+- SĐT & email công ty
+- Ngân hàng & số tài khoản (nếu có)
+
+### Bước 2: Cơ cấu tổ chức
+- Công ty có những phòng ban nào?
+- Mỗi phòng ban có bao nhiêu người?
+- Liệt kê nhân viên chủ chốt: Tên, Mã NV (hoặc để trống sẽ tự sinh), Chức vụ, Phòng ban, SĐT
+- Ai là giám đốc? Ai báo cáo cho ai?
+
+### Bước 3: Thẩm quyền & hạn mức
+- Giám đốc duyệt tất cả? Hay có phó GĐ?
+- Sale tự chốt đơn được bao nhiêu tiền? (mặc định 50 triệu)
+- Trưởng phòng duyệt chi bao nhiêu? (mặc định 20 triệu)
+- Nhân viên thường chi tiêu tối đa bao nhiêu? (mặc định 2 triệu)
+
+Nếu khách nói "mặc định" hoặc "tùy bạn" → dùng giá trị mặc định, KHÔNG hỏi lại.
+
+### Bước 4: Quy trình làm việc
+- Quy trình bán hàng của công ty như thế nào? (từ tiếp nhận KH đến thu tiền)
+- Có quy trình duyệt chi không?
+- Có quy trình đặc thù ngành không? (thi công, sản xuất, giao hàng...)
+
+Nếu khách không mô tả chi tiết → hệ thống sẽ TỰ SINH workflow dựa trên ngành nghề.
+
+### Bước 5: Yêu cầu đặc biệt
+Hỏi: "Anh/chị có cần quản lý thêm module nào không? Ví dụ:"
+- Quản lý kho (nhập/xuất/tồn kho)
+- Quản lý khách hàng CRM
+- Chấm công
+- Quản lý dự án
+- Hoặc module khác?
+
+Nếu CÓ → tạo custom_modules trong JSON. Ví dụ kho:
+{
+  "code": "inventory",
+  "name": "Quản lý kho",
+  "icon": "📦",
+  "fields": [
+    {"name": "product_name", "type": "text", "required": true},
+    {"name": "sku", "type": "text", "required": false},
+    {"name": "quantity", "type": "number", "required": true},
+    {"name": "unit", "type": "text", "required": true},
+    {"name": "unit_price", "type": "number", "required": false},
+    {"name": "warehouse", "type": "text", "required": false}
+  ]
+}
+Đồng thời tạo SOP tương ứng cho module đó.
+
+### Bước 6: Xác nhận & Thực thi
+Khi ĐỦ thông tin:
+1. Tóm tắt lại toàn bộ dưới dạng bảng đẹp:
+   - Công ty: tên, MST, ngành
+   - Phòng ban: danh sách
+   - Nhân viên: bảng (mã, tên, chức vụ, phòng ban)
+   - Thẩm quyền: tóm tắt hạn mức
+   - Workflow: danh sách quy trình
+   - Module thêm: nếu có
+2. Hỏi: "Thông tin đã đầy đủ chưa? Tôi sẽ tạo hệ thống ngay."
+3. Khi khách xác nhận → Ghi JSON ra file rồi gọi:
+   node "C:/Users/Admin/Desktop/test operis/ofn-finance/src/cli.js" <tenant_id> company:setup <file.json>
+4. Hiển thị kết quả: đã tạo bao nhiêu phòng ban, nhân viên, SOP, workflow, v.v.
+
+## QUY TẮC QUAN TRỌNG
+- KHÔNG hỏi tất cả cùng lúc. Hỏi từng bước, chờ trả lời.
+- Nếu khách trả lời ngắn gọn → tự suy luận hợp lý, đề xuất và xác nhận.
+- Nếu khách nói "thêm module X" → tạo custom_module với fields phù hợp + SOP tương ứng.
+- Nếu thiếu thông tin không quan trọng (email, MST) → bỏ qua, tạo sau.
+- Mã nhân viên: nếu không cung cấp → tự sinh (KD001, KT001, TC001, GD001...).
+- Tiền VND: luôn dùng INTEGER. 50 triệu = 50000000.
+- tenant_id = tên công ty viết thường, thay dấu cách bằng _, bỏ dấu tiếng Việt.
+
+## VÍ DỤ TENANT_ID
+- "Nội Thất Hưng Thịnh" → noi_that_hung_thinh
+- "Xây Dựng ABC" → xay_dung_abc
+- "Công ty TNHH Minh Phát" → minh_phat`
+      }
     ],
 
-    // -- Detail modal tabs --
+    // -- Detail modal --
     detailTab: 'info',
     agentFiles: [],
     editingFile: null,
@@ -69,143 +199,33 @@ function agentsPage() {
     filesLoading: false,
     configForm: {},
     configSaving: false,
-    // -- Tool filters --
-    toolFilters: { tool_allowlist: [], tool_blocklist: [] },
-    toolFiltersLoading: false,
-    newAllowTool: '',
-    newBlockTool: '',
-    // -- Model switch --
-    editingModel: false,
-    newModelValue: '',
-    modelSaving: false,
-    // -- Fallback chain --
-    editingFallback: false,
-    newFallbackValue: '',
 
     // -- Templates state --
     tplTemplates: [],
     tplProviders: [],
     tplLoading: false,
     tplLoadError: '',
-    selectedCategory: 'All',
-    searchQuery: '',
-
-    builtinTemplates: [
-      {
-        name: 'General Assistant',
-        description: 'A versatile conversational agent that can help with everyday tasks, answer questions, and provide recommendations.',
-        category: 'General',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'full',
-        system_prompt: 'You are a helpful, friendly assistant. Provide clear, accurate, and concise responses. Ask clarifying questions when needed.'
-      },
-      {
-        name: 'Code Helper',
-        description: 'A programming-focused agent that writes, reviews, and debugs code across multiple languages.',
-        category: 'Development',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'coding',
-        system_prompt: 'You are an expert programmer. Help users write clean, efficient code. Explain your reasoning. Follow best practices and conventions for the language being used.'
-      },
-      {
-        name: 'Researcher',
-        description: 'An analytical agent that breaks down complex topics, synthesizes information, and provides cited summaries.',
-        category: 'Research',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'research',
-        system_prompt: 'You are a research analyst. Break down complex topics into clear explanations. Provide structured analysis with key findings. Cite sources when available.'
-      },
-      {
-        name: 'Writer',
-        description: 'A creative writing agent that helps with drafting, editing, and improving written content of all kinds.',
-        category: 'Writing',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'full',
-        system_prompt: 'You are a skilled writer and editor. Help users create polished content. Adapt your tone and style to match the intended audience. Offer constructive suggestions for improvement.'
-      },
-      {
-        name: 'Data Analyst',
-        description: 'A data-focused agent that helps analyze datasets, create queries, and interpret statistical results.',
-        category: 'Development',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'coding',
-        system_prompt: 'You are a data analysis expert. Help users understand their data, write SQL/Python queries, and interpret results. Present findings clearly with actionable insights.'
-      },
-      {
-        name: 'DevOps Engineer',
-        description: 'A systems-focused agent for CI/CD, infrastructure, Docker, and deployment troubleshooting.',
-        category: 'Development',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'automation',
-        system_prompt: 'You are a DevOps engineer. Help with CI/CD pipelines, Docker, Kubernetes, infrastructure as code, and deployment. Prioritize reliability and security.'
-      },
-      {
-        name: 'Customer Support',
-        description: 'A professional, empathetic agent for handling customer inquiries and resolving issues.',
-        category: 'Business',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'messaging',
-        system_prompt: 'You are a professional customer support representative. Be empathetic, patient, and solution-oriented. Acknowledge concerns before offering solutions. Escalate complex issues appropriately.'
-      },
-      {
-        name: 'Tutor',
-        description: 'A patient educational agent that explains concepts step-by-step and adapts to the learner\'s level.',
-        category: 'General',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'full',
-        system_prompt: 'You are a patient and encouraging tutor. Explain concepts step by step, starting from fundamentals. Use analogies and examples. Check understanding before moving on. Adapt to the learner\'s pace.'
-      },
-      {
-        name: 'API Designer',
-        description: 'An agent specialized in RESTful API design, OpenAPI specs, and integration architecture.',
-        category: 'Development',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'coding',
-        system_prompt: 'You are an API design expert. Help users design clean, consistent RESTful APIs following best practices. Cover endpoint naming, request/response schemas, error handling, and versioning.'
-      },
-      {
-        name: 'Meeting Notes',
-        description: 'Summarizes meeting transcripts into structured notes with action items and key decisions.',
-        category: 'Business',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'minimal',
-        system_prompt: 'You are a meeting summarizer. When given a meeting transcript or notes, produce a structured summary with: key decisions, action items (with owners), discussion highlights, and follow-up questions.'
-      }
-    ],
 
     // ── Profile Descriptions ──
     profileDescriptions: {
-      minimal: { label: 'Minimal', desc: 'Read-only file access' },
-      coding: { label: 'Coding', desc: 'Files + shell + web fetch' },
-      research: { label: 'Research', desc: 'Web search + file read/write' },
-      messaging: { label: 'Messaging', desc: 'Agents + memory access' },
-      automation: { label: 'Automation', desc: 'All tools except custom' },
-      balanced: { label: 'Balanced', desc: 'General-purpose tool set' },
-      precise: { label: 'Precise', desc: 'Focused tool set for accuracy' },
-      creative: { label: 'Creative', desc: 'Full tools with creative emphasis' },
-      full: { label: 'Full', desc: 'All 35+ tools' }
+      minimal: { label: 'Tối thiểu', desc: 'Chỉ đọc file' },
+      coding: { label: 'Lập trình', desc: 'File + shell + web' },
+      research: { label: 'Nghiên cứu', desc: 'Tìm kiếm web + đọc/ghi file' },
+      messaging: { label: 'Nhắn tin', desc: 'Giao tiếp agent + bộ nhớ' },
+      automation: { label: 'Tự động', desc: 'Tất cả công cụ trừ tùy chỉnh' },
+      full: { label: 'Đầy đủ', desc: 'Tất cả 35+ công cụ' }
     },
     profileInfo: function(name) {
       return this.profileDescriptions[name] || { label: name, desc: '' };
     },
 
-    // ── Tool Preview in Spawn Modal ──
+    // ── Tool Preview ──
     spawnProfiles: [],
     spawnProfilesLoaded: false,
     async loadSpawnProfiles() {
       if (this.spawnProfilesLoaded) return;
       try {
-        var data = await OpenFangAPI.get('/api/profiles');
+        var data = await OperisAPI.get('/api/profiles');
         this.spawnProfiles = data.profiles || [];
         this.spawnProfilesLoaded = true;
       } catch(e) { this.spawnProfiles = []; }
@@ -233,18 +253,17 @@ function agentsPage() {
       return this.agents.filter(function(a) { return a.state !== 'Running'; }).length;
     },
 
-    // -- Templates computed --
+    // -- Template filters --
     get categories() {
-      var cats = { 'All': true };
+      var cats = { 'Tất cả': true };
       this.builtinTemplates.forEach(function(t) { cats[t.category] = true; });
-      this.tplTemplates.forEach(function(t) { if (t.category) cats[t.category] = true; });
       return Object.keys(cats);
     },
 
     get filteredBuiltins() {
       var self = this;
       return this.builtinTemplates.filter(function(t) {
-        if (self.selectedCategory !== 'All' && t.category !== self.selectedCategory) return false;
+        if (self.selectedCategory !== 'Tất cả' && t.category !== self.selectedCategory) return false;
         if (self.searchQuery) {
           var q = self.searchQuery.toLowerCase();
           if (t.name.toLowerCase().indexOf(q) === -1 &&
@@ -279,16 +298,14 @@ function agentsPage() {
       try {
         await Alpine.store('app').refreshAgents();
       } catch(e) {
-        this.loadError = e.message || 'Could not load agents. Is the daemon running?';
+        this.loadError = e.message || 'Không thể tải danh sách agent. Daemon có đang chạy không?';
       }
       this.loading = false;
 
-      // If a pending agent was set (e.g. from wizard or redirect), open chat inline
       var store = Alpine.store('app');
       if (store.pendingAgent) {
         this.activeChatAgent = store.pendingAgent;
       }
-      // Watch for future pendingAgent changes
       this.$watch('$store.app.pendingAgent', function(agent) {
         if (agent) {
           self.activeChatAgent = agent;
@@ -302,7 +319,7 @@ function agentsPage() {
       try {
         await Alpine.store('app').refreshAgents();
       } catch(e) {
-        this.loadError = e.message || 'Could not load agents.';
+        this.loadError = e.message || 'Không thể tải danh sách agent.';
       }
       this.loading = false;
     },
@@ -312,14 +329,14 @@ function agentsPage() {
       this.tplLoadError = '';
       try {
         var results = await Promise.all([
-          OpenFangAPI.get('/api/templates'),
-          OpenFangAPI.get('/api/providers').catch(function() { return { providers: [] }; })
+          OperisAPI.get('/api/templates'),
+          OperisAPI.get('/api/providers').catch(function() { return { providers: [] }; })
         ]);
         this.tplTemplates = results[0].templates || [];
         this.tplProviders = results[1].providers || [];
       } catch(e) {
         this.tplTemplates = [];
-        this.tplLoadError = e.message || 'Could not load templates.';
+        this.tplLoadError = e.message || 'Không thể tải templates.';
       }
       this.tplLoading = false;
     },
@@ -331,18 +348,15 @@ function agentsPage() {
 
     closeChat() {
       this.activeChatAgent = null;
-      OpenFangAPI.wsDisconnect();
+      OperisAPI.wsDisconnect();
     },
 
-    async showDetail(agent) {
+    showDetail(agent) {
       this.detailAgent = agent;
-      this.detailAgent._fallbacks = [];
       this.detailTab = 'info';
       this.agentFiles = [];
       this.editingFile = null;
       this.fileContent = '';
-      this.editingFallback = false;
-      this.newFallbackValue = '';
       this.configForm = {
         name: agent.name || '',
         system_prompt: agent.system_prompt || '',
@@ -352,23 +366,18 @@ function agentsPage() {
         vibe: (agent.identity && agent.identity.vibe) || ''
       };
       this.showDetailModal = true;
-      // Fetch full agent detail to get fallback_models
-      try {
-        var full = await OpenFangAPI.get('/api/agents/' + agent.id);
-        this.detailAgent._fallbacks = full.fallback_models || [];
-      } catch(e) { /* ignore */ }
     },
 
     killAgent(agent) {
       var self = this;
-      OpenFangToast.confirm('Stop Agent', 'Stop agent "' + agent.name + '"? The agent will be shut down.', async function() {
+      OperisToast.confirm('Dừng Agent', 'Dừng agent "' + agent.name + '"?', async function() {
         try {
-          await OpenFangAPI.del('/api/agents/' + agent.id);
-          OpenFangToast.success('Agent "' + agent.name + '" stopped');
+          await OperisAPI.del('/api/agents/' + agent.id);
+          OperisToast.success('Đã dừng "' + agent.name + '"');
           self.showDetailModal = false;
           await Alpine.store('app').refreshAgents();
         } catch(e) {
-          OpenFangToast.error('Failed to stop agent: ' + e.message);
+          OperisToast.error('Lỗi dừng agent: ' + e.message);
         }
       });
     },
@@ -376,57 +385,35 @@ function agentsPage() {
     killAllAgents() {
       var list = this.filteredAgents;
       if (!list.length) return;
-      OpenFangToast.confirm('Stop All Agents', 'Stop ' + list.length + ' agent(s)? All agents will be shut down.', async function() {
+      OperisToast.confirm('Dừng tất cả', 'Dừng ' + list.length + ' agent?', async function() {
         var errors = [];
         for (var i = 0; i < list.length; i++) {
           try {
-            await OpenFangAPI.del('/api/agents/' + list[i].id);
+            await OperisAPI.del('/api/agents/' + list[i].id);
           } catch(e) { errors.push(list[i].name + ': ' + e.message); }
         }
         await Alpine.store('app').refreshAgents();
         if (errors.length) {
-          OpenFangToast.error('Some agents failed to stop: ' + errors.join(', '));
+          OperisToast.error('Một số agent lỗi: ' + errors.join(', '));
         } else {
-          OpenFangToast.success(list.length + ' agent(s) stopped');
+          OperisToast.success('Đã dừng ' + list.length + ' agent');
         }
       });
     },
 
-    // ── Multi-step wizard navigation ──
+    // ── Tạo agent nhanh ──
     openSpawnWizard() {
       this.showSpawnModal = true;
-      this.spawnStep = 1;
-      this.spawnMode = 'wizard';
-      this.spawnIdentity = { emoji: '', color: '#FF5C00', archetype: '' };
-      this.selectedPreset = '';
-      this.soulContent = '';
+      this.spawnMode = 'quick';
       this.spawnForm.name = '';
-      this.spawnForm.systemPrompt = 'You are a helpful assistant.';
+      this.spawnForm.systemPrompt = 'Bạn là trợ lý AI cho doanh nghiệp. Luôn dùng tiếng Việt. Hỗ trợ nhân viên theo quy trình SOP, kiểm tra thẩm quyền trước khi quyết định.';
       this.spawnForm.profile = 'full';
-    },
-
-    nextStep() {
-      if (this.spawnStep === 1 && !this.spawnForm.name.trim()) {
-        OpenFangToast.warn('Please enter an agent name');
-        return;
-      }
-      if (this.spawnStep < 5) this.spawnStep++;
-    },
-
-    prevStep() {
-      if (this.spawnStep > 1) this.spawnStep--;
-    },
-
-    selectPreset(preset) {
-      this.selectedPreset = preset.id;
-      this.soulContent = preset.soul;
     },
 
     generateToml() {
       var f = this.spawnForm;
-      var si = this.spawnIdentity;
       var lines = [
-        'name = "' + tomlBasicEscape(f.name) + '"',
+        'name = "' + f.name + '"',
         'module = "builtin:chat"'
       ];
       if (f.profile && f.profile !== 'custom') {
@@ -435,67 +422,44 @@ function agentsPage() {
       lines.push('', '[model]');
       lines.push('provider = "' + f.provider + '"');
       lines.push('model = "' + f.model + '"');
-      lines.push('system_prompt = """\n' + tomlMultilineEscape(f.systemPrompt) + '\n"""');
-      if (f.profile === 'custom') {
-        lines.push('', '[capabilities]');
-        if (f.caps.memory_read) lines.push('memory_read = ["*"]');
-        if (f.caps.memory_write) lines.push('memory_write = ["self.*"]');
-        if (f.caps.network) lines.push('network = ["*"]');
-        if (f.caps.shell) lines.push('shell = ["*"]');
-        if (f.caps.agent_spawn) lines.push('agent_spawn = true');
-      }
+      lines.push('system_prompt = "' + f.systemPrompt.replace(/"/g, '\\"') + '"');
       return lines.join('\n');
     },
 
     async setMode(agent, mode) {
       try {
-        await OpenFangAPI.put('/api/agents/' + agent.id + '/mode', { mode: mode });
+        await OperisAPI.put('/api/agents/' + agent.id + '/mode', { mode: mode });
         agent.mode = mode;
-        OpenFangToast.success('Mode set to ' + mode);
+        OperisToast.success('Chế độ: ' + mode);
         await Alpine.store('app').refreshAgents();
       } catch(e) {
-        OpenFangToast.error('Failed to set mode: ' + e.message);
+        OperisToast.error('Lỗi đặt chế độ: ' + e.message);
       }
     },
 
     async spawnAgent() {
       this.spawning = true;
-      var toml = this.spawnMode === 'wizard' ? this.generateToml() : this.spawnToml;
+      var toml = this.spawnMode === 'quick' ? this.generateToml() : this.spawnToml;
       if (!toml.trim()) {
         this.spawning = false;
-        OpenFangToast.warn('Manifest is empty \u2014 enter agent config first');
+        OperisToast.warn('Chưa có cấu hình agent');
         return;
       }
 
       try {
-        var res = await OpenFangAPI.post('/api/agents', { manifest_toml: toml });
+        var res = await OperisAPI.post('/api/agents', { manifest_toml: toml });
         if (res.agent_id) {
-          // Post-spawn: update identity + write SOUL.md if personality preset selected
-          var patchBody = {};
-          if (this.spawnIdentity.emoji) patchBody.emoji = this.spawnIdentity.emoji;
-          if (this.spawnIdentity.color) patchBody.color = this.spawnIdentity.color;
-          if (this.spawnIdentity.archetype) patchBody.archetype = this.spawnIdentity.archetype;
-          if (this.selectedPreset) patchBody.vibe = this.selectedPreset;
-
-          if (Object.keys(patchBody).length) {
-            OpenFangAPI.patch('/api/agents/' + res.agent_id + '/config', patchBody).catch(function(e) { console.warn('Post-spawn config patch failed:', e.message); });
-          }
-          if (this.soulContent.trim()) {
-            OpenFangAPI.put('/api/agents/' + res.agent_id + '/files/SOUL.md', { content: '# Soul\n' + this.soulContent }).catch(function(e) { console.warn('SOUL.md write failed:', e.message); });
-          }
-
           this.showSpawnModal = false;
           this.spawnForm.name = '';
           this.spawnToml = '';
-          this.spawnStep = 1;
-          OpenFangToast.success('Agent "' + (res.name || 'new') + '" spawned');
+          OperisToast.success('Đã tạo "' + (res.name || 'mới') + '"');
           await Alpine.store('app').refreshAgents();
           this.chatWithAgent({ id: res.agent_id, name: res.name, model_provider: '?', model_name: '?' });
         } else {
-          OpenFangToast.error('Spawn failed: ' + (res.error || 'Unknown error'));
+          OperisToast.error('Tạo thất bại: ' + (res.error || 'Lỗi không xác định'));
         }
       } catch(e) {
-        OpenFangToast.error('Failed to spawn agent: ' + e.message);
+        OperisToast.error('Lỗi tạo agent: ' + e.message);
       }
       this.spawning = false;
     },
@@ -505,28 +469,27 @@ function agentsPage() {
       if (!this.detailAgent) return;
       this.filesLoading = true;
       try {
-        var data = await OpenFangAPI.get('/api/agents/' + this.detailAgent.id + '/files');
+        var data = await OperisAPI.get('/api/agents/' + this.detailAgent.id + '/files');
         this.agentFiles = data.files || [];
       } catch(e) {
         this.agentFiles = [];
-        OpenFangToast.error('Failed to load files: ' + e.message);
+        OperisToast.error('Lỗi tải file: ' + e.message);
       }
       this.filesLoading = false;
     },
 
     async openFile(file) {
       if (!file.exists) {
-        // Create with empty content
         this.editingFile = file.name;
         this.fileContent = '';
         return;
       }
       try {
-        var data = await OpenFangAPI.get('/api/agents/' + this.detailAgent.id + '/files/' + encodeURIComponent(file.name));
+        var data = await OperisAPI.get('/api/agents/' + this.detailAgent.id + '/files/' + encodeURIComponent(file.name));
         this.editingFile = file.name;
         this.fileContent = data.content || '';
       } catch(e) {
-        OpenFangToast.error('Failed to read file: ' + e.message);
+        OperisToast.error('Lỗi đọc file: ' + e.message);
       }
     },
 
@@ -534,11 +497,11 @@ function agentsPage() {
       if (!this.editingFile || !this.detailAgent) return;
       this.fileSaving = true;
       try {
-        await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/files/' + encodeURIComponent(this.editingFile), { content: this.fileContent });
-        OpenFangToast.success(this.editingFile + ' saved');
+        await OperisAPI.put('/api/agents/' + this.detailAgent.id + '/files/' + encodeURIComponent(this.editingFile), { content: this.fileContent });
+        OperisToast.success('Đã lưu ' + this.editingFile);
         await this.loadAgentFiles();
       } catch(e) {
-        OpenFangToast.error('Failed to save file: ' + e.message);
+        OperisToast.error('Lỗi lưu file: ' + e.message);
       }
       this.fileSaving = false;
     },
@@ -553,11 +516,11 @@ function agentsPage() {
       if (!this.detailAgent) return;
       this.configSaving = true;
       try {
-        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', this.configForm);
-        OpenFangToast.success('Config updated');
+        await OperisAPI.patch('/api/agents/' + this.detailAgent.id + '/config', this.configForm);
+        OperisToast.success('Đã lưu cấu hình');
         await Alpine.store('app').refreshAgents();
       } catch(e) {
-        OpenFangToast.error('Failed to save config: ' + e.message);
+        OperisToast.error('Lỗi lưu cấu hình: ' + e.message);
       }
       this.configSaving = false;
     },
@@ -566,169 +529,51 @@ function agentsPage() {
     async cloneAgent(agent) {
       var newName = (agent.name || 'agent') + '-copy';
       try {
-        var res = await OpenFangAPI.post('/api/agents/' + agent.id + '/clone', { new_name: newName });
+        var res = await OperisAPI.post('/api/agents/' + agent.id + '/clone', { new_name: newName });
         if (res.agent_id) {
-          OpenFangToast.success('Cloned as "' + res.name + '"');
+          OperisToast.success('Đã nhân bản "' + res.name + '"');
           await Alpine.store('app').refreshAgents();
           this.showDetailModal = false;
         }
       } catch(e) {
-        OpenFangToast.error('Clone failed: ' + e.message);
+        OperisToast.error('Lỗi nhân bản: ' + e.message);
       }
     },
 
     // -- Template methods --
     async spawnFromTemplate(name) {
       try {
-        var data = await OpenFangAPI.get('/api/templates/' + encodeURIComponent(name));
+        var data = await OperisAPI.get('/api/templates/' + encodeURIComponent(name));
         if (data.manifest_toml) {
-          var res = await OpenFangAPI.post('/api/agents', { manifest_toml: data.manifest_toml });
+          var res = await OperisAPI.post('/api/agents', { manifest_toml: data.manifest_toml });
           if (res.agent_id) {
-            OpenFangToast.success('Agent "' + (res.name || name) + '" spawned from template');
+            OperisToast.success('Đã tạo "' + (res.name || name) + '"');
             await Alpine.store('app').refreshAgents();
             this.chatWithAgent({ id: res.agent_id, name: res.name || name, model_provider: '?', model_name: '?' });
           }
         }
       } catch(e) {
-        OpenFangToast.error('Failed to spawn from template: ' + e.message);
-      }
-    },
-
-    // ── Clear agent history ──
-    async clearHistory(agent) {
-      var self = this;
-      OpenFangToast.confirm('Clear History', 'Clear all conversation history for "' + agent.name + '"? This cannot be undone.', async function() {
-        try {
-          await OpenFangAPI.del('/api/agents/' + agent.id + '/history');
-          OpenFangToast.success('History cleared for "' + agent.name + '"');
-        } catch(e) {
-          OpenFangToast.error('Failed to clear history: ' + e.message);
-        }
-      });
-    },
-
-    // ── Model switch ──
-    async changeModel() {
-      if (!this.detailAgent || !this.newModelValue.trim()) return;
-      this.modelSaving = true;
-      try {
-        var resp = await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: this.newModelValue.trim() });
-        var providerInfo = (resp && resp.provider) ? ' (provider: ' + resp.provider + ')' : '';
-        OpenFangToast.success('Model changed' + providerInfo + ' (memory reset)');
-        this.editingModel = false;
-        await Alpine.store('app').refreshAgents();
-        // Refresh detailAgent
-        var agents = Alpine.store('app').agents;
-        for (var i = 0; i < agents.length; i++) {
-          if (agents[i].id === this.detailAgent.id) { this.detailAgent = agents[i]; break; }
-        }
-      } catch(e) {
-        OpenFangToast.error('Failed to change model: ' + e.message);
-      }
-      this.modelSaving = false;
-    },
-
-    // ── Fallback model chain ──
-    async addFallback() {
-      if (!this.detailAgent || !this.newFallbackValue.trim()) return;
-      var parts = this.newFallbackValue.trim().split('/');
-      var provider = parts.length > 1 ? parts[0] : this.detailAgent.model_provider;
-      var model = parts.length > 1 ? parts.slice(1).join('/') : parts[0];
-      if (!this.detailAgent._fallbacks) this.detailAgent._fallbacks = [];
-      this.detailAgent._fallbacks.push({ provider: provider, model: model });
-      try {
-        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', {
-          fallback_models: this.detailAgent._fallbacks
-        });
-        OpenFangToast.success('Fallback added: ' + provider + '/' + model);
-      } catch(e) {
-        OpenFangToast.error('Failed to save fallbacks: ' + e.message);
-        this.detailAgent._fallbacks.pop();
-      }
-      this.editingFallback = false;
-      this.newFallbackValue = '';
-    },
-
-    async removeFallback(idx) {
-      if (!this.detailAgent || !this.detailAgent._fallbacks) return;
-      var removed = this.detailAgent._fallbacks.splice(idx, 1);
-      try {
-        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', {
-          fallback_models: this.detailAgent._fallbacks
-        });
-        OpenFangToast.success('Fallback removed');
-      } catch(e) {
-        OpenFangToast.error('Failed to save fallbacks: ' + e.message);
-        this.detailAgent._fallbacks.splice(idx, 0, removed[0]);
-      }
-    },
-
-    // ── Tool filters ──
-    async loadToolFilters() {
-      if (!this.detailAgent) return;
-      this.toolFiltersLoading = true;
-      try {
-        this.toolFilters = await OpenFangAPI.get('/api/agents/' + this.detailAgent.id + '/tools');
-      } catch(e) {
-        this.toolFilters = { tool_allowlist: [], tool_blocklist: [] };
-      }
-      this.toolFiltersLoading = false;
-    },
-
-    addAllowTool() {
-      var t = this.newAllowTool.trim();
-      if (t && this.toolFilters.tool_allowlist.indexOf(t) === -1) {
-        this.toolFilters.tool_allowlist.push(t);
-        this.newAllowTool = '';
-        this.saveToolFilters();
-      }
-    },
-
-    removeAllowTool(tool) {
-      this.toolFilters.tool_allowlist = this.toolFilters.tool_allowlist.filter(function(t) { return t !== tool; });
-      this.saveToolFilters();
-    },
-
-    addBlockTool() {
-      var t = this.newBlockTool.trim();
-      if (t && this.toolFilters.tool_blocklist.indexOf(t) === -1) {
-        this.toolFilters.tool_blocklist.push(t);
-        this.newBlockTool = '';
-        this.saveToolFilters();
-      }
-    },
-
-    removeBlockTool(tool) {
-      this.toolFilters.tool_blocklist = this.toolFilters.tool_blocklist.filter(function(t) { return t !== tool; });
-      this.saveToolFilters();
-    },
-
-    async saveToolFilters() {
-      if (!this.detailAgent) return;
-      try {
-        await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/tools', this.toolFilters);
-      } catch(e) {
-        OpenFangToast.error('Failed to update tool filters: ' + e.message);
+        OperisToast.error('Lỗi tạo từ template: ' + e.message);
       }
     },
 
     async spawnBuiltin(t) {
-      var toml = 'name = "' + tomlBasicEscape(t.name) + '"\n';
-      toml += 'description = "' + tomlBasicEscape(t.description) + '"\n';
+      var toml = 'name = "' + t.name + '"\n';
+      toml += 'description = "' + t.description.replace(/"/g, '\\"') + '"\n';
       toml += 'module = "builtin:chat"\n';
       toml += 'profile = "' + t.profile + '"\n\n';
       toml += '[model]\nprovider = "' + t.provider + '"\nmodel = "' + t.model + '"\n';
-      toml += 'system_prompt = """\n' + tomlMultilineEscape(t.system_prompt) + '\n"""\n';
+      toml += 'system_prompt = """\n' + t.system_prompt + '\n"""\n';
 
       try {
-        var res = await OpenFangAPI.post('/api/agents', { manifest_toml: toml });
+        var res = await OperisAPI.post('/api/agents', { manifest_toml: toml });
         if (res.agent_id) {
-          OpenFangToast.success('Agent "' + t.name + '" spawned');
+          OperisToast.success('Đã tạo "' + t.name + '"');
           await Alpine.store('app').refreshAgents();
           this.chatWithAgent({ id: res.agent_id, name: t.name, model_provider: t.provider, model_name: t.model });
         }
       } catch(e) {
-        OpenFangToast.error('Failed to spawn agent: ' + e.message);
+        OperisToast.error('Lỗi tạo agent: ' + e.message);
       }
     }
   };

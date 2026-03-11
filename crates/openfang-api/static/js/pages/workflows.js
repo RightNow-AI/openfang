@@ -1,4 +1,4 @@
-// OpenFang Workflows Page — Workflow builder + run history
+// Operis Workflows Page — Workflow builder + run history
 'use strict';
 
 function workflowsPage() {
@@ -19,7 +19,7 @@ function workflowsPage() {
       this.loading = true;
       this.loadError = '';
       try {
-        this.workflows = await OpenFangAPI.get('/api/workflows');
+        this.workflows = await OperisAPI.get('/api/workflows');
       } catch(e) {
         this.workflows = [];
         this.loadError = e.message || 'Could not load workflows.';
@@ -35,13 +35,13 @@ function workflowsPage() {
       });
       try {
         var wfName = this.newWf.name;
-        await OpenFangAPI.post('/api/workflows', { name: wfName, description: this.newWf.description, steps: steps });
+        await OperisAPI.post('/api/workflows', { name: wfName, description: this.newWf.description, steps: steps });
         this.showCreateModal = false;
         this.newWf = { name: '', description: '', steps: [{ name: '', agent_name: '', mode: 'sequential', prompt: '{{input}}' }] };
-        OpenFangToast.success('Workflow "' + wfName + '" created');
+        OperisToast.success('Workflow "' + wfName + '" created');
         await this.loadWorkflows();
       } catch(e) {
-        OpenFangToast.error('Failed to create workflow: ' + e.message);
+        OperisToast.error('Failed to create workflow: ' + e.message);
       }
     },
 
@@ -56,23 +56,23 @@ function workflowsPage() {
       this.running = true;
       this.runResult = '';
       try {
-        var res = await OpenFangAPI.post('/api/workflows/' + this.runModal.id + '/run', { input: this.runInput });
+        var res = await OperisAPI.post('/api/workflows/' + this.runModal.id + '/run', { input: this.runInput });
         this.runResult = res.output || JSON.stringify(res, null, 2);
-        OpenFangToast.success('Workflow completed');
+        OperisToast.success('Workflow completed');
       } catch(e) {
         this.runResult = 'Error: ' + e.message;
-        OpenFangToast.error('Workflow failed: ' + e.message);
+        OperisToast.error('Workflow failed: ' + e.message);
       }
       this.running = false;
     },
 
     async viewRuns(wf) {
       try {
-        var runs = await OpenFangAPI.get('/api/workflows/' + wf.id + '/runs');
+        var runs = await OperisAPI.get('/api/workflows/' + wf.id + '/runs');
         this.runResult = JSON.stringify(runs, null, 2);
         this.runModal = wf;
       } catch(e) {
-        OpenFangToast.error('Failed to load run history: ' + e.message);
+        OperisToast.error('Failed to load run history: ' + e.message);
       }
     }
   };

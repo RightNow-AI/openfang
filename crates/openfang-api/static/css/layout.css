@@ -1,4 +1,4 @@
-/* OpenFang Layout — Grid + Sidebar + Responsive */
+/* Operis Layout — Grid + Sidebar + Responsive */
 
 .app-layout {
   display: flex;
@@ -10,12 +10,13 @@
 .sidebar {
   width: var(--sidebar-width);
   background: var(--bg-primary);
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   transition: width var(--transition-normal);
   z-index: 100;
+  box-shadow: 1px 0 8px rgba(0,0,0,0.03);
 }
 
 .sidebar.collapsed {
@@ -61,11 +62,20 @@
 }
 
 .sidebar-header h1 {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
-  color: var(--accent);
-  letter-spacing: 3px;
-  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  font-family: var(--font-sans);
+}
+
+.operis-brand-icon svg {
+  filter: drop-shadow(0 2px 4px rgba(37, 99, 235, 0.3));
+  transition: transform 0.2s, filter 0.2s;
+}
+
+.operis-brand-icon svg:hover {
+  transform: scale(1.08);
+  filter: drop-shadow(0 3px 8px rgba(37, 99, 235, 0.4));
 }
 
 .sidebar-header .version {
