@@ -281,6 +281,7 @@ pub fn classify_error(message: &str, status: Option<u16>) -> ClassifiedError {
                     return build(LlmErrorCategory::Auth);
                 }
             }
+            404 => return build(LlmErrorCategory::ModelNotFound),
             _ => {}
         }
     }

@@ -15,11 +15,12 @@ use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
     DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
-    LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL,
-    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL,
-    QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL,
-    VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL,
-    XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL,
+    MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
+    OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
+    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
+    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
+    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -149,9 +150,14 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "",
             key_required: false,
         }),
-        "moonshot" | "kimi" => Some(ProviderDefaults {
+        "moonshot" | "kimi" | "kimi2" => Some(ProviderDefaults {
             base_url: MOONSHOT_BASE_URL,
             api_key_env: "MOONSHOT_API_KEY",
+            key_required: true,
+        }),
+        "kimi_coding" => Some(ProviderDefaults {
+            base_url: KIMI_CODING_BASE_URL,
+            api_key_env: "KIMI_API_KEY",
             key_required: true,
         }),
         "qwen" | "dashscope" | "model_studio" => Some(ProviderDefaults {
@@ -174,7 +180,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "ZHIPU_API_KEY",
             key_required: true,
         }),
-        "zai" => Some(ProviderDefaults {
+        "zai" | "z.ai" => Some(ProviderDefaults {
             base_url: ZAI_BASE_URL,
             api_key_env: "ZHIPU_API_KEY",
             key_required: true,
@@ -323,6 +329,22 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         )));
     }
 
+    // Kimi for Code — Anthropic-compatible endpoint
+    if provider == "kimi_coding" {
+        let api_key = config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("KIMI_API_KEY").ok())
+            .ok_or_else(|| {
+                LlmError::MissingApiKey("Set KIMI_API_KEY environment variable".to_string())
+            })?;
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| KIMI_CODING_BASE_URL.to_string());
+        return Ok(Arc::new(anthropic::AnthropicDriver::new(api_key, base_url)));
+    }
+
     // All other providers use OpenAI-compatible format
     if let Some(defaults) = provider_defaults(provider) {
         let api_key = config
@@ -453,6 +475,8 @@ pub fn known_providers() -> &'static [&'static str] {
         "minimax",
         "zhipu",
         "zhipu_coding",
+        "zai",
+        "kimi_coding",
         "qianfan",
         "volcengine",
         "chutes",
@@ -551,12 +575,14 @@ mod tests {
         assert!(providers.contains(&"minimax"));
         assert!(providers.contains(&"zhipu"));
         assert!(providers.contains(&"zhipu_coding"));
+        assert!(providers.contains(&"zai"));
+        assert!(providers.contains(&"kimi_coding"));
         assert!(providers.contains(&"qianfan"));
         assert!(providers.contains(&"volcengine"));
         assert!(providers.contains(&"chutes"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
-        assert_eq!(providers.len(), 32);
+        assert_eq!(providers.len(), 34);
     }
 
     #[test]
@@ -640,6 +666,14 @@ mod tests {
         let err = result.err().unwrap().to_string();
         assert!(err.contains("base_url"), "Error should mention base_url: {}", err);
         std::env::remove_var("NVIDIA_API_KEY");
+    }
+
+    #[test]
+    fn test_provider_defaults_kimi_coding() {
+        let d = provider_defaults("kimi_coding").unwrap();
+        assert_eq!(d.base_url, "https://api.kimi.com/coding");
+        assert_eq!(d.api_key_env, "KIMI_API_KEY");
+        assert!(d.key_required);
     }
 
     #[test]
