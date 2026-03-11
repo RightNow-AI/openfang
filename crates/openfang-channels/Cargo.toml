@@ -27,6 +27,7 @@ sha2 = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 html-escape = { workspace = true }
+unicode-width = "0.2.0"
 
 lettre = { workspace = true }
 imap = { workspace = true }

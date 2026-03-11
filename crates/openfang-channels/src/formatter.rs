@@ -6,6 +6,7 @@
 //! - Plain text: strips all formatting
 
 use openfang_types::config::OutputFormat;
+use unicode_width::UnicodeWidthStr;
 
 /// Format a message for a specific channel output format.
 pub fn format_for_channel(text: &str, format: OutputFormat) -> String {
@@ -220,7 +221,7 @@ fn render_markdown_table(header: &[String], rows: &[Vec<String>]) -> String {
     let mut widths = vec![0; col_count];
     for row in &normalized {
         for (idx, cell) in row.iter().enumerate() {
-            widths[idx] = widths[idx].max(cell.chars().count()).max(1);
+            widths[idx] = widths[idx].max(display_width(cell)).max(1);
         }
     }
 
@@ -247,11 +248,15 @@ fn render_table_row(row: &[String], widths: &[usize]) -> String {
     row.iter()
         .zip(widths.iter())
         .map(|(cell, width)| {
-            let padding = width.saturating_sub(cell.chars().count());
+            let padding = width.saturating_sub(display_width(cell));
             format!("{cell}{}", " ".repeat(padding))
         })
         .collect::<Vec<_>>()
         .join(" | ")
+}
+
+fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width_cjk(text)
 }
 
 fn replace_inline_code(text: &str, placeholders: &mut Vec<(String, String)>) -> String {
@@ -544,6 +549,18 @@ mod tests {
         assert!(result.contains("<pre>Name"));
         assert!(result.contains("Foo"));
         assert!(result.contains("<b>done</b>"));
+    }
+
+    #[test]
+    fn test_render_markdown_table_uses_display_width() {
+        let header = vec!["名称".to_string(), "状态".to_string()];
+        let rows = vec![
+            vec!["中文".to_string(), "ok".to_string()],
+            vec!["A".to_string(), "世界".to_string()],
+        ];
+        let table = render_markdown_table(&header, &rows);
+        let widths: Vec<usize> = table.lines().map(display_width).collect();
+        assert_eq!(widths, vec![11, 11, 11, 11]);
     }
 
     #[test]
