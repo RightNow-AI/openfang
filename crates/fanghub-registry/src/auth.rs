@@ -26,7 +26,7 @@ pub fn issue_token(
 ) -> RegistryResult<String> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| RegistryError::Internal(format!("System clock error: {e}")))?
         .as_secs();
     let claims = TokenClaims {
         sub: github_login.to_string(),

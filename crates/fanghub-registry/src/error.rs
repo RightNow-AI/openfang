@@ -36,6 +36,9 @@ pub enum RegistryError {
     #[error("Signature verification failed: {0}")]
     SignatureInvalid(String),
 
+    #[error("Payload too large: {0}")]
+    PayloadTooLarge(String),
+
     #[error("Authentication required")]
     Unauthenticated,
 
@@ -61,19 +64,24 @@ pub type RegistryResult<T> = Result<T, RegistryError>;
 impl IntoResponse for RegistryError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
-            RegistryError::PackageNotFound(_) | RegistryError::VersionNotFound { .. } | RegistryError::UserNotFound(_) => {
-                (StatusCode::NOT_FOUND, self.to_string())
-            }
-            RegistryError::PackageAlreadyExists(_) | RegistryError::VersionAlreadyPublished { .. } => {
+            RegistryError::PackageNotFound(_)
+            | RegistryError::VersionNotFound { .. }
+            | RegistryError::UserNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
+            RegistryError::PackageAlreadyExists(_)
+            | RegistryError::VersionAlreadyPublished { .. } => {
                 (StatusCode::CONFLICT, self.to_string())
             }
             RegistryError::InvalidPackageId(_)
             | RegistryError::InvalidVersion(_)
             | RegistryError::InvalidManifest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            RegistryError::PayloadTooLarge(_) => (StatusCode::PAYLOAD_TOO_LARGE, self.to_string()),
             RegistryError::SignatureInvalid(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             RegistryError::Unauthenticated => (StatusCode::UNAUTHORIZED, self.to_string()),
             RegistryError::Forbidden(_) => (StatusCode::FORBIDDEN, self.to_string()),
-            RegistryError::Database(_) | RegistryError::Serialization(_) | RegistryError::Io(_) | RegistryError::Internal(_) => {
+            RegistryError::Database(_)
+            | RegistryError::Serialization(_)
+            | RegistryError::Io(_)
+            | RegistryError::Internal(_) => {
                 tracing::error!("Internal registry error: {}", self);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,

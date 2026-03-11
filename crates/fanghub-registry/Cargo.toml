@@ -43,3 +43,4 @@ leptos_router.workspace = true
 leptos_config.workspace = true
 urlencoding.workspace = true
 hex.workspace = true
+rand.workspace = true

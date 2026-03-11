@@ -2,7 +2,7 @@ use crate::{
     auth::{extract_bearer, hash_token, sha256_hex, validate_package_id},
     error::{RegistryError, RegistryResult},
     models::{
-        HandPackage, PackageVersion, PublishRequest, PublishResponse, SearchQuery, SearchResponse,
+        HandPackage, PackageVersion, PublishResponse, SearchQuery, SearchResponse,
         UserAccount,
     },
     store::RegistryStore,
@@ -15,8 +15,14 @@ use axum::{
 use chrono::Utc;
 use leptos::prelude::LeptosOptions;
 use serde_json::{json, Value};
-use std::sync::Arc;
 use uuid::Uuid;
+
+/// Maximum allowed archive size: 50MB
+const MAX_ARCHIVE_SIZE: usize = 50 * 1024 * 1024;
+/// Maximum allowed manifest size: 1MB
+const MAX_MANIFEST_SIZE: usize = 1024 * 1024;
+/// Maximum allowed release notes size: 100KB
+const MAX_RELEASE_NOTES_SIZE: usize = 100 * 1024;
 
 /// Shared application state for all route handlers.
 /// `LeptosOptions` is included so that `LeptosRoutes` (which requires `LeptosOptions: FromRef<S>`)
@@ -98,7 +104,7 @@ pub async fn search_packages(
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, RegistryError> {
     let (results, total) = state.store.search(&query).await?;
-    let per_page = query.per_page.unwrap_or(20).min(100).max(1);
+    let per_page = query.per_page.unwrap_or(20).clamp(1, 100);
     let page = query.page.unwrap_or(1).max(1);
     let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
 
@@ -175,7 +181,7 @@ pub async fn publish_version(
     // Validate package ID
     validate_package_id(&package_id)?;
 
-    // Parse multipart fields
+    // Parse multipart fields with size limits
     let mut manifest_content: Option<String> = None;
     let mut archive_bytes: Option<Vec<u8>> = None;
     let mut release_notes: Option<String> = None;
@@ -186,21 +192,45 @@ pub async fn publish_version(
     })? {
         match field.name() {
             Some("manifest") => {
-                manifest_content = Some(field.text().await.map_err(|e| {
+                let bytes = field.bytes().await.map_err(|e| {
                     RegistryError::InvalidManifest(format!("Failed to read manifest: {e}"))
+                })?;
+                if bytes.len() > MAX_MANIFEST_SIZE {
+                    return Err(RegistryError::PayloadTooLarge(format!(
+                        "Manifest exceeds maximum size of {} bytes",
+                        MAX_MANIFEST_SIZE
+                    )));
+                }
+                manifest_content = Some(String::from_utf8(bytes.to_vec()).map_err(|e| {
+                    RegistryError::InvalidManifest(format!("Manifest is not valid UTF-8: {e}"))
                 })?);
             }
             Some("archive") => {
-                archive_bytes = Some(field.bytes().await.map_err(|e| {
-                    RegistryError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Failed to read archive: {e}"),
-                    ))
-                })?.to_vec());
+                let bytes = field.bytes().await.map_err(|e| {
+                    RegistryError::Io(std::io::Error::other(format!(
+                        "Failed to read archive: {e}"
+                    )))
+                })?;
+                if bytes.len() > MAX_ARCHIVE_SIZE {
+                    return Err(RegistryError::PayloadTooLarge(format!(
+                        "Archive exceeds maximum size of {}MB",
+                        MAX_ARCHIVE_SIZE / 1024 / 1024
+                    )));
+                }
+                archive_bytes = Some(bytes.to_vec());
             }
             Some("release_notes") => {
-                release_notes = Some(field.text().await.map_err(|e| {
+                let bytes = field.bytes().await.map_err(|e| {
                     RegistryError::InvalidManifest(format!("Failed to read release_notes: {e}"))
+                })?;
+                if bytes.len() > MAX_RELEASE_NOTES_SIZE {
+                    return Err(RegistryError::PayloadTooLarge(format!(
+                        "Release notes exceed maximum size of {}KB",
+                        MAX_RELEASE_NOTES_SIZE / 1024
+                    )));
+                }
+                release_notes = Some(String::from_utf8(bytes.to_vec()).map_err(|e| {
+                    RegistryError::InvalidManifest(format!("Release notes are not valid UTF-8: {e}"))
                 })?);
             }
             Some("signature") => {

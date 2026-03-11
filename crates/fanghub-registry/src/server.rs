@@ -17,7 +17,7 @@ use leptos_config::Env;
 use std::sync::Arc;
 use tower_http::{
     compression::CompressionLayer,
-    cors::{Any, CorsLayer},
+    cors::CorsLayer,
     trace::TraceLayer,
 };
 
@@ -38,16 +38,54 @@ pub struct RegistryConfig {
     pub leptos_env: Env,
 }
 
-impl Default for RegistryConfig {
-    fn default() -> Self {
+impl RegistryConfig {
+    /// Create a new configuration suitable for development/testing.
+    /// NOTE: This generates a random JWT secret. For production, always
+    /// provide an explicit secret via environment variable or secure config.
+    pub fn development() -> Self {
+        // Generate a random JWT secret for development to avoid hardcoded credentials
+        let random_secret: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
+
         Self {
             db_url: "mem://".to_string(),
             bind_addr: "0.0.0.0:4300".to_string(),
-            jwt_secret: b"fanghub-dev-secret-change-in-production!".to_vec(),
+            jwt_secret: random_secret,
             base_url: "http://localhost:4300".to_string(),
             site_root: "site".to_string(),
             leptos_env: Env::DEV,
         }
+    }
+
+    /// Create configuration from environment variables.
+    /// Panics if FANGHUB_JWT_SECRET is not set or is less than 32 bytes.
+    pub fn from_env() -> Self {
+        use std::env;
+
+        let jwt_secret = env::var("FANGHUB_JWT_SECRET")
+            .expect("FANGHUB_JWT_SECRET environment variable must be set in production")
+            .into_bytes();
+
+        if jwt_secret.len() < 32 {
+            panic!("FANGHUB_JWT_SECRET must be at least 32 bytes long");
+        }
+
+        Self {
+            db_url: env::var("FANGHUB_DB_URL").unwrap_or_else(|_| "surrealkv://./data/fanghub.db".to_string()),
+            bind_addr: env::var("FANGHUB_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:4300".to_string()),
+            jwt_secret,
+            base_url: env::var("FANGHUB_BASE_URL").unwrap_or_else(|_| "http://localhost:4300".to_string()),
+            site_root: env::var("FANGHUB_SITE_ROOT").unwrap_or_else(|_| "site".to_string()),
+            leptos_env: match env::var("FANGHUB_ENV").as_deref() {
+                Ok("production") | Ok("prod") => Env::PROD,
+                _ => Env::DEV,
+            },
+        }
+    }
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self::development()
     }
 }
 
@@ -133,10 +171,31 @@ impl RegistryServer {
             .layer(TraceLayer::new_for_http())
             .layer(CompressionLayer::new())
             .layer(
+                // CORS configuration: restrict to known origins in production
                 CorsLayer::new()
-                    .allow_origin(Any)
-                    .allow_methods(Any)
-                    .allow_headers(Any),
+                    .allow_origin(
+                        if self.config.leptos_env == Env::PROD {
+                            // In production, only allow same-origin requests
+                            tower_http::cors::AllowOrigin::exact(
+                                self.config.base_url.parse().unwrap_or_else(|_| "http://localhost:4300".parse().unwrap())
+                            )
+                        } else {
+                            // In development, allow any origin
+                            tower_http::cors::AllowOrigin::any()
+                        }
+                    )
+                    .allow_methods([
+                        axum::http::Method::GET,
+                        axum::http::Method::POST,
+                        axum::http::Method::PUT,
+                        axum::http::Method::DELETE,
+                        axum::http::Method::OPTIONS,
+                    ])
+                    .allow_headers([
+                        axum::http::header::AUTHORIZATION,
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::header::ACCEPT,
+                    ]),
             );
 
         Ok(router)
