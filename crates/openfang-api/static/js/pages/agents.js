@@ -5,6 +5,8 @@ function agentsPage() {
   return {
     tab: 'agents',
     activeChatAgent: null,
+    // -- i18n state for reactivity --
+    _currentLang: typeof i18n !== 'undefined' ? i18n.getLanguage() : 'en',
     // -- Agents state --
     showSpawnModal: false,
     showDetailModal: false,
@@ -167,6 +169,31 @@ function agentsPage() {
         system_prompt: 'You are a meeting summarizer. When given a meeting transcript or notes, produce a structured summary with: key decisions, action items (with owners), discussion highlights, and follow-up questions.'
       }
     ],
+
+    // ── Localized Templates (i18n support) ──
+    get localizedTemplates() {
+      var self = this;
+      // Access _currentLang to trigger reactivity on language change
+      var lang = this._currentLang;
+      if (typeof i18n === 'undefined' || lang === 'en') {
+        return this.builtinTemplates;
+      }
+      return this.builtinTemplates.map(function(t) {
+        var key = t.name.replace(/\s+/g, '');
+        var translatedName = i18n.t('template.' + key + '.name');
+        var translatedDesc = i18n.t('template.' + key + '.desc');
+        var translatedCategory = i18n.t('category.' + t.category.toLowerCase());
+        return {
+          name: translatedName && !translatedName.startsWith('[') ? translatedName : t.name,
+          description: translatedDesc && !translatedDesc.startsWith('[') ? translatedDesc : t.description,
+          category: translatedCategory && !translatedCategory.startsWith('[') ? translatedCategory : t.category,
+          provider: t.provider,
+          model: t.model,
+          profile: t.profile,
+          system_prompt: t.system_prompt
+        };
+      });
+    },
 
     // ── Profile Descriptions ──
     profileDescriptions: {

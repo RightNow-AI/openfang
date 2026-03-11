@@ -1435,7 +1435,7 @@ fn cmd_start(config: Option<PathBuf>) {
 
     ui::banner();
     ui::blank();
-    println!("  Starting daemon...");
+    println!("  {}", i18n::t("daemon-starting"));
     ui::blank();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1459,21 +1459,21 @@ fn cmd_start(config: Option<PathBuf>) {
             .map(|c| c.list_models().len())
             .unwrap_or(0);
 
-        ui::success(&format!("Kernel booted ({provider}/{model})"));
+        ui::success(&i18n::t_args("kernel-booted", &[("provider", &provider), ("model", &model)]));
         if model_count > 0 {
-            ui::success(&format!("{model_count} models available"));
+            ui::success(&i18n::t_args("models-available", &[("count", &model_count.to_string())]));
         }
         if agent_count > 0 {
-            ui::success(&format!("{agent_count} agent(s) loaded"));
+            ui::success(&i18n::t_args("agents-loaded", &[("count", &agent_count.to_string())]));
         }
         ui::blank();
-        ui::kv("API", &format!("http://{listen_addr}"));
-        ui::kv("Dashboard", &format!("http://{listen_addr}/"));
-        ui::kv("Provider", &provider);
-        ui::kv("Model", &model);
+        ui::kv(&i18n::t("label-api"), &format!("http://{listen_addr}"));
+        ui::kv(&i18n::t("label-dashboard"), &format!("http://{listen_addr}/"));
+        ui::kv(&i18n::t("label-provider"), &provider);
+        ui::kv(&i18n::t("label-model"), &model);
         ui::blank();
-        ui::hint("Open the dashboard in your browser, or run `openfang chat`");
-        ui::hint("Press Ctrl+C to stop the daemon");
+        ui::hint(&i18n::t("hint-open-dashboard"));
+        ui::hint(&i18n::t("hint-stop-daemon"));
         ui::blank();
 
         if let Err(e) =

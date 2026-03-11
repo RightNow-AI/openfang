@@ -3,11 +3,11 @@
 <!-- API Key Auth Prompt -->
 <div x-show="$store.app.showAuthPrompt" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px)" x-data="{ apiKeyInput: '' }">
   <div style="background:var(--bg-card,#1e1e2e);border:1px solid var(--border,#333);border-radius:12px;padding:2rem;max-width:400px;width:90%">
-    <h3 style="margin:0 0 0.5rem;font-size:1.1rem">API Key Required</h3>
-    <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 0.5rem">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
-    <p style="color:var(--text-dim,#666);font-size:0.75rem;margin:0 0 1rem">Add <code style="color:var(--accent-light,#a78bfa);background:var(--bg,#111);padding:1px 4px;border-radius:2px">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.openfang/config.toml</code> (not under any [section]).</p>
-    <input type="password" x-model="apiKeyInput" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
-    <button @click="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
+    <h3 style="margin:0 0 0.5rem;font-size:1.1rem" data-i18n="auth.title">API Key Required</h3>
+    <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 0.5rem" data-i18n="auth.description">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
+    <p style="color:var(--text-dim,#666);font-size:0.75rem;margin:0 0 1rem" data-i18n="auth.hint">Add <code style="color:var(--accent-light,#a78bfa);background:var(--bg,#111);padding:1px 4px;border-radius:2px">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.openfang/config.toml</code> (not under any [section]).</p>
+    <input type="password" x-model="apiKeyInput" data-i18n-placeholder="auth.placeholder" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
+    <button @click="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem" data-i18n="btn.unlock">Unlock Dashboard</button>
   </div>
 </div>
 
@@ -29,14 +29,18 @@
         <button class="theme-opt" :class="{ active: themeMode === 'system' }" @click="setTheme('system')" title="System">&#9675;</button>
         <button class="theme-opt" :class="{ active: themeMode === 'dark' }" @click="setTheme('dark')" title="Dark">&#9790;</button>
       </div>
+      <div class="language-switcher" x-data="{ lang: (typeof i18n !== 'undefined' ? i18n.getLanguage() : 'en') }">
+        <button class="lang-opt" :class="{ active: lang === 'en' }" @click="i18n.setLanguage('en').then(() => lang = 'en')" title="English">EN</button>
+        <button class="lang-opt" :class="{ active: lang === 'zh-CN' }" @click="i18n.setLanguage('zh-CN').then(() => lang = 'zh-CN')" title="中文">中</button>
+      </div>
     </div>
 
     <div class="sidebar-status" :class="{ offline: !connected && !$store.app.booting }">
       <span class="status-dot"></span>
-      <span class="sidebar-label" x-show="connected" x-text="agentCount + ' agent(s) running'"></span>
-      <span class="sidebar-label" x-show="$store.app.booting && !connected" class="conn-reconnecting">Connecting...</span>
-      <span class="sidebar-label" x-show="!connected && !$store.app.booting && $store.app.connectionState === 'reconnecting'" class="conn-reconnecting">Reconnecting...</span>
-      <span class="sidebar-label" x-show="!connected && !$store.app.booting && $store.app.connectionState !== 'reconnecting'" x-text="'disconnected' + ($store.app.lastError ? ' — ' + $store.app.lastError : '')">disconnected</span>
+      <span class="sidebar-label" x-show="connected" x-text="agentCount + ' ' + (typeof i18n !== 'undefined' ? i18n.t('label.agents') : 'agent(s) running')"></span>
+      <span class="sidebar-label" x-show="$store.app.booting && !connected" class="conn-reconnecting" data-i18n="status.connecting">Connecting...</span>
+      <span class="sidebar-label" x-show="!connected && !$store.app.booting && $store.app.connectionState === 'reconnecting'" class="conn-reconnecting" data-i18n="status.reconnecting">Reconnecting...</span>
+      <span class="sidebar-label" x-show="!connected && !$store.app.booting && $store.app.connectionState !== 'reconnecting'" x-text="(typeof i18n !== 'undefined' ? i18n.t('status.disconnected') : 'disconnected') + ($store.app.lastError ? ' — ' + $store.app.lastError : '')">disconnected</span>
       <span class="conn-badge sidebar-label" :class="wsConnected ? 'ws' : 'http'" x-text="wsConnected ? 'WS' : 'HTTP'" x-show="connected"></span>
     </div>
 
@@ -44,14 +48,14 @@
       <!-- Chat — primary action -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Chat">
         <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Chat</span>
+          <span class="nav-label" data-i18n="nav.chat">Chat</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
         <template x-if="!collapsed">
           <div x-transition>
             <a class="nav-item" :class="{ active: page === 'agents' }" @click="navigate('agents')" :aria-current="page === 'agents' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
-              <span class="nav-label">Chat</span>
+              <span class="nav-label" data-i18n="nav.chat">Chat</span>
             </a>
           </div>
         </template>
@@ -60,22 +64,22 @@
       <!-- Monitor -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Monitor">
         <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Monitor</span>
+          <span class="nav-label" data-i18n="nav.monitor">Monitor</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
         <template x-if="!collapsed">
           <div x-transition>
             <a class="nav-item" :class="{ active: page === 'overview' }" @click="navigate('overview')" :aria-current="page === 'overview' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg></span>
-              <span class="nav-label">Overview</span>
+              <span class="nav-label" data-i18n="nav.overview">Overview</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'analytics' }" @click="navigate('analytics')" :aria-current="page === 'analytics' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg></span>
-              <span class="nav-label">Analytics</span>
+              <span class="nav-label" data-i18n="nav.analytics">Analytics</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'logs' }" @click="navigate('logs')" :aria-current="page === 'logs' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span>
-              <span class="nav-label">Logs</span>
+              <span class="nav-label" data-i18n="nav.logs">Logs</span>
             </a>
           </div>
         </template>
@@ -84,22 +88,22 @@
       <!-- Agents -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Agents">
         <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Agents</span>
+          <span class="nav-label" data-i18n="nav.agents">Agents</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
         <template x-if="!collapsed">
           <div x-transition>
             <a class="nav-item" :class="{ active: page === 'sessions' }" @click="navigate('sessions')" :aria-current="page === 'sessions' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m12 2-10 5 10 5 10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg></span>
-              <span class="nav-label">Sessions</span>
+              <span class="nav-label" data-i18n="nav.sessions">Sessions</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'approvals' }" @click="navigate('approvals')" :aria-current="page === 'approvals' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg></span>
-              <span class="nav-label">Approvals</span>
+              <span class="nav-label" data-i18n="nav.approvals">Approvals</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'comms' }" @click="navigate('comms')" :aria-current="page === 'comms' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg></span>
-              <span class="nav-label">Comms</span>
+              <span class="nav-label" data-i18n="nav.comms">Comms</span>
             </a>
           </div>
         </template>
@@ -108,18 +112,18 @@
       <!-- Automation -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Automation">
         <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Automation</span>
+          <span class="nav-label" data-i18n="nav.automation">Automation</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
         <template x-if="!collapsed">
           <div x-transition>
             <a class="nav-item" :class="{ active: page === 'workflows' }" @click="navigate('workflows')" :aria-current="page === 'workflows' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M6 3v12M18 9a9 9 0 0 1-9 9"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/></svg></span>
-              <span class="nav-label">Workflows</span>
+              <span class="nav-label" data-i18n="nav.workflows">Workflows</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'scheduler' }" @click="navigate('scheduler')" :aria-current="page === 'scheduler' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span>
-              <span class="nav-label">Scheduler</span>
+              <span class="nav-label" data-i18n="nav.scheduler">Scheduler</span>
             </a>
           </div>
         </template>
@@ -128,22 +132,22 @@
       <!-- Extensions -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Extensions">
         <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Extensions</span>
+          <span class="nav-label" data-i18n="nav.extensions">Extensions</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
         <template x-if="!collapsed">
           <div x-transition>
             <a class="nav-item" :class="{ active: page === 'channels' }" @click="navigate('channels')" :aria-current="page === 'channels' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3l-2 18M16 3l-2 18"/></svg></span>
-              <span class="nav-label">Channels</span>
+              <span class="nav-label" data-i18n="nav.channels">Channels</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'skills' }" @click="navigate('skills')" :aria-current="page === 'skills' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></svg></span>
-              <span class="nav-label">Skills</span>
+              <span class="nav-label" data-i18n="nav.skills">Skills</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'hands' }" @click="navigate('hands')" :aria-current="page === 'hands' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v6"/><path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-5.7-2.4L3.4 16a2 2 0 0 1 3.2-2.4L8 15"/></svg></span>
-              <span class="nav-label">Hands</span>
+              <span class="nav-label" data-i18n="nav.hands">Hands</span>
             </a>
           </div>
         </template>
@@ -152,18 +156,18 @@
       <!-- System -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="System">
         <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">System</span>
+          <span class="nav-label" data-i18n="nav.system">System</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
         <template x-if="!collapsed">
           <div x-transition>
             <a class="nav-item" :class="{ active: page === 'runtime' }" @click="navigate('runtime')" :aria-current="page === 'runtime' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>
-              <span class="nav-label">Runtime</span>
+              <span class="nav-label" data-i18n="nav.runtime">Runtime</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'settings' }" @click="navigate('settings')" :aria-current="page === 'settings' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></svg></span>
-              <span class="nav-label">Settings</span>
+              <span class="nav-label" data-i18n="nav.settings">Settings</span>
             </a>
           </div>
         </template>
@@ -189,10 +193,10 @@
     <template x-if="page === 'overview'">
       <div x-data="overviewPage" x-init="loadOverview().then(() => startAutoRefresh())" @page-leave.window="stopAutoRefresh()">
         <div class="page-header">
-          <h2>Overview</h2>
+          <h2 data-i18n="page.overview">Overview</h2>
           <div class="flex items-center gap-2">
-            <span class="health-indicator" :class="health.status === 'ok' ? 'health-ok' : 'health-down'" x-text="health.status === 'ok' ? 'Healthy' : 'Unreachable'"></span>
-            <button class="btn btn-ghost btn-sm" @click="silentRefresh()" title="Refresh" style="padding:4px 8px">
+            <span class="health-indicator" :class="health.status === 'ok' ? 'health-ok' : 'health-down'" x-text="health.status === 'ok' ? (typeof i18n !== 'undefined' ? i18n.t('health.healthy') : 'Healthy') : (typeof i18n !== 'undefined' ? i18n.t('health.unreachable') : 'Unreachable')"></span>
+            <button class="btn btn-ghost btn-sm" @click="silentRefresh()" data-i18n-title="btn.refresh" title="Refresh" style="padding:4px 8px">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
             </button>
           </div>
@@ -267,7 +271,7 @@
                 </div>
                 <div>
                   <div class="stat-value" :class="(status.agent_count || 0) > 0 ? 'stat-value-success' : ''" x-text="status.agent_count || 0"></div>
-                  <div class="stat-label">Agents Running</div>
+                  <div class="stat-label" data-i18n="stat.agentsRunning">Agents Running</div>
                 </div>
               </div>
             </div>
@@ -278,7 +282,7 @@
                 </div>
                 <div>
                   <div class="stat-value" x-text="formatNumber(usageSummary.total_tokens)"></div>
-                  <div class="stat-label">Tokens Used</div>
+                  <div class="stat-label" data-i18n="stat.tokensUsed">Tokens Used</div>
                 </div>
               </div>
             </div>
@@ -289,7 +293,7 @@
                 </div>
                 <div>
                   <div class="stat-value stat-value-accent" x-text="formatCost(usageSummary.total_cost)"></div>
-                  <div class="stat-label">Total Cost</div>
+                  <div class="stat-label" data-i18n="stat.totalCost">Total Cost</div>
                 </div>
               </div>
             </div>
@@ -300,7 +304,7 @@
                 </div>
                 <div>
                   <div class="stat-value" x-text="formatUptime(status.uptime_seconds)"></div>
-                  <div class="stat-label">Uptime</div>
+                  <div class="stat-label" data-i18n="stat.uptime">Uptime</div>
                 </div>
               </div>
             </div>
@@ -310,23 +314,23 @@
           <div class="stats-row animate-entry stagger-5" style="margin-bottom:16px">
             <div class="stat-card" @click="location.hash='channels'" style="cursor:pointer">
               <div class="stat-value" style="font-size:18px" x-text="channels.length"></div>
-              <div class="stat-label">Channels</div>
+              <div class="stat-label" data-i18n="stat.channels">Channels</div>
             </div>
             <div class="stat-card" @click="location.hash='skills'" style="cursor:pointer">
               <div class="stat-value" style="font-size:18px" x-text="skillCount"></div>
-              <div class="stat-label">Skills</div>
+              <div class="stat-label" data-i18n="stat.skills">Skills</div>
             </div>
             <div class="stat-card">
               <div class="stat-value" style="font-size:18px" x-text="connectedMcp.length"></div>
-              <div class="stat-label">MCP Servers</div>
+              <div class="stat-label" data-i18n="stat.mcpServers">MCP Servers</div>
             </div>
             <div class="stat-card">
               <div class="stat-value" style="font-size:18px" x-text="formatNumber(usageSummary.total_tools)"></div>
-              <div class="stat-label">Tool Calls</div>
+              <div class="stat-label" data-i18n="stat.toolCalls">Tool Calls</div>
             </div>
             <div class="stat-card">
               <div class="stat-value" :class="configuredProviders.length > 0 ? 'stat-value-success' : ''" style="font-size:18px" x-text="configuredProviders.length"></div>
-              <div class="stat-label">Providers</div>
+              <div class="stat-label" data-i18n="stat.providers">Providers</div>
             </div>
           </div>
 
@@ -335,7 +339,7 @@
             <div class="flex justify-between items-center mb-2">
               <div class="card-header" style="margin:0">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-                LLM Providers
+                <span data-i18n="card.llmProviders">LLM Providers</span>
               </div>
               <span class="text-xs text-dim" x-text="configuredProviders.length + '/' + providers.length + ' configured'"></span>
             </div>
@@ -354,7 +358,7 @@
             <div class="card">
               <div class="card-header">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-                System Health
+                <span data-i18n="card.systemHealth">System Health</span>
               </div>
               <div class="detail-grid" style="margin-top:8px">
                 <div class="detail-row"><span class="detail-label">Status</span><span class="badge" :class="health.status === 'ok' ? 'badge-running' : 'badge-crashed'" x-text="health.status || 'unknown'"></span></div>
@@ -368,7 +372,7 @@
             <div class="card">
               <div class="card-header">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                Security Systems
+                <span data-i18n="card.securitySystems">Security Systems</span>
               </div>
               <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px">
                 <span class="badge badge-success" style="font-size:9px;padding:2px 8px">Merkle Audit</span>
@@ -388,7 +392,7 @@
             <div class="card" x-show="channels.length">
               <div class="card-header">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><path d="M4 9h16M4 15h16M10 3l-2 18M16 3l-2 18"/></svg>
-                Connected Channels
+                <span data-i18n="card.connectedChannels">Connected Channels</span>
               </div>
               <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px">
                 <template x-for="ch in channels" :key="ch.name">
@@ -521,7 +525,7 @@
 
     <!-- Page: Agents -->
     <template x-if="page === 'agents'">
-      <div x-data="agentsPage" @close-chat.window="closeChat()">
+      <div x-data="agentsPage" @close-chat.window="closeChat()" x-init="window.addEventListener('i18n-changed', function(e) { _currentLang = e.detail.language; })">
 
         <!-- MODE 1: Inline Chat (agent selected) -->
         <template x-if="activeChatAgent">
@@ -825,17 +829,17 @@
         <!-- MODE 2: Agent picker + Templates (no agent chatting) -->
         <div x-show="!activeChatAgent" class="chat-wrapper">
         <div class="page-header">
-          <h2>Chat</h2>
+          <h2 data-i18n="nav.chat">Chat</h2>
           <div class="flex gap-2">
-            <button class="btn btn-ghost btn-sm" x-show="agents.length" @click="openSpawnWizard()">+ New Agent</button>
-            <button class="btn btn-danger btn-sm" x-show="agents.length > 1" @click="killAllAgents()">Stop All</button>
+            <button class="btn btn-ghost btn-sm" x-show="agents.length" @click="openSpawnWizard()" data-i18n="agents.newAgent">+ New Agent</button>
+            <button class="btn btn-danger btn-sm" x-show="agents.length > 1" @click="killAllAgents()" data-i18n="agents.stopAll">Stop All</button>
           </div>
         </div>
         <div class="page-body" style="overflow-y:auto;padding:24px">
 
           <!-- Running agents — click to chat -->
           <div x-show="agents.length" style="margin-bottom:28px">
-            <div class="text-sm font-bold mb-2" style="color:var(--text-dim);letter-spacing:0.5px;font-size:11px;text-transform:uppercase">Your Agents</div>
+            <div class="text-sm font-bold mb-2" style="color:var(--text-dim);letter-spacing:0.5px;font-size:11px;text-transform:uppercase" x-text="typeof i18n !== 'undefined' ? i18n.t('agents.yourAgents') : 'Your Agents'">Your Agents</div>
             <div style="display:flex;flex-wrap:wrap;gap:10px">
               <template x-for="agent in agents" :key="agent.id">
                 <div class="agent-chip" @click="chatWithAgent(agent)" style="cursor:pointer;display:flex;align-items:center;gap:10px;padding:12px 18px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);transition:all 0.2s var(--ease-spring, ease);min-width:200px;box-shadow:var(--shadow-xs)" @mouseenter="$el.style.borderColor='var(--accent)';$el.style.transform='translateY(-2px)';$el.style.boxShadow='var(--shadow-md)'" @mouseleave="$el.style.borderColor='var(--border)';$el.style.transform='';$el.style.boxShadow='var(--shadow-xs)'">
@@ -858,9 +862,9 @@
 
           <!-- Quick-start templates — spawn + chat in one click -->
           <div>
-            <div class="text-sm font-bold mb-2" style="color:var(--text-dim);letter-spacing:0.5px;font-size:11px;text-transform:uppercase" x-text="agents.length ? 'Or Start a New Agent' : 'Start Chatting'"></div>
+            <div class="text-sm font-bold mb-2" style="color:var(--text-dim);letter-spacing:0.5px;font-size:11px;text-transform:uppercase" x-text="agents.length ? (typeof i18n !== 'undefined' ? i18n.t('agents.startNew') : 'Or Start a New Agent') : (typeof i18n !== 'undefined' ? i18n.t('agents.startChatting') : 'Start Chatting')"></div>
             <div class="card-grid">
-              <template x-for="t in builtinTemplates" :key="t.name">
+              <template x-for="t in localizedTemplates" :key="t.name">
                 <div class="card" style="cursor:pointer" @click="spawnBuiltin(t)">
                   <div class="flex justify-between items-center mb-1">
                     <div class="card-header" style="margin:0;font-size:14px;font-weight:600" x-text="t.name"></div>
@@ -887,28 +891,30 @@
                   <button class="modal-close" @click="showDetailModal = false">&times;</button>
                 </div>
                 <div class="tabs" style="margin-bottom:16px">
-                  <div class="tab" :class="{ active: detailTab === 'info' }" @click="detailTab = 'info'">Info</div>
-                  <div class="tab" :class="{ active: detailTab === 'files' }" @click="detailTab = 'files'; loadAgentFiles()">Files</div>
-                  <div class="tab" :class="{ active: detailTab === 'config' }" @click="detailTab = 'config'; loadToolFilters()">Config</div>
+                  <div class="tab" :class="{ active: detailTab === 'info' }" @click="detailTab = 'info'" data-i18n="detail.info">Info</div>
+                  <div class="tab" :class="{ active: detailTab === 'files' }" @click="detailTab = 'files'; loadAgentFiles()" data-i18n="detail.files">Files</div>
+                  <div class="tab" :class="{ active: detailTab === 'config' }" @click="detailTab = 'config'; loadToolFilters()" data-i18n="detail.config">Config</div>
                 </div>
 
                 <!-- Tab: Info -->
                 <div x-show="detailTab === 'info'">
                   <div class="detail-grid">
                     <div class="detail-row"><span class="detail-label">ID</span><span class="detail-value text-xs" x-text="detailAgent.id" style="word-break:break-all"></span></div>
-                    <div class="detail-row"><span class="detail-label">State</span><span class="badge" :class="'badge-' + detailAgent.state.toLowerCase()" x-text="detailAgent.state"></span></div>
-                    <div class="detail-row"><span class="detail-label">Mode</span>
+                    <div class="detail-row"><span class="detail-label" data-i18n="detail.state">State</span><span class="badge" :class="'badge-' + detailAgent.state.toLowerCase()" x-text="detailAgent.state"></span></div>
+                    <div class="detail-row"><span class="detail-label" data-i18n="detail.mode">Mode</span>
                       <select class="form-select" style="width:140px" :value="detailAgent.mode || 'full'" @change="setMode(detailAgent, $event.target.value)">
-                        <option value="observe">Observe</option><option value="assist">Assist</option><option value="full">Full</option>
+                        <option value="observe" x-text="typeof i18n !== 'undefined' ? i18n.t('mode.observe') : 'Observe'">Observe</option>
+                        <option value="assist" x-text="typeof i18n !== 'undefined' ? i18n.t('mode.assist') : 'Assist'">Assist</option>
+                        <option value="full" x-text="typeof i18n !== 'undefined' ? i18n.t('mode.full') : 'Full'">Full</option>
                       </select>
                     </div>
-                    <div class="detail-row" x-show="detailAgent.profile"><span class="detail-label">Profile</span><span class="detail-value" style="text-transform:capitalize" x-text="detailAgent.profile || '-'"></span></div>
-                    <div class="detail-row"><span class="detail-label">Provider</span><span class="detail-value" x-text="detailAgent.model_provider"></span></div>
-                    <div class="detail-row"><span class="detail-label">Model</span>
+                    <div class="detail-row" x-show="detailAgent.profile"><span class="detail-label" data-i18n="detail.profile">Profile</span><span class="detail-value" style="text-transform:capitalize" x-text="detailAgent.profile || '-'"></span></div>
+                    <div class="detail-row"><span class="detail-label" data-i18n="detail.provider">Provider</span><span class="detail-value" x-text="detailAgent.model_provider"></span></div>
+                    <div class="detail-row"><span class="detail-label" data-i18n="detail.model">Model</span>
                       <template x-if="!editingModel">
                         <span>
                           <span class="detail-value" x-text="detailAgent.model_name"></span>
-                          <button class="btn btn-ghost btn-sm" style="margin-left:8px;padding:2px 8px;font-size:11px" @click="editingModel = true; newModelValue = detailAgent.model_provider + '/' + detailAgent.model_name">Change</button>
+                          <button class="btn btn-ghost btn-sm" style="margin-left:8px;padding:2px 8px;font-size:11px" @click="editingModel = true; newModelValue = detailAgent.model_provider + '/' + detailAgent.model_name" data-i18n="detail.change">Change</button>
                         </span>
                       </template>
                       <template x-if="editingModel">
@@ -921,11 +927,11 @@
                         </span>
                       </template>
                     </div>
-                    <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value" x-text="detailAgent.created_at ? new Date(detailAgent.created_at).toLocaleString() : '-'"></span></div>
+                    <div class="detail-row"><span class="detail-label" data-i18n="detail.created">Created</span><span class="detail-value" x-text="detailAgent.created_at ? new Date(detailAgent.created_at).toLocaleString() : '-'"></span></div>
 
                     <!-- Fallback Model Chain -->
                     <div class="detail-row" style="align-items:flex-start">
-                      <span class="detail-label">Fallbacks</span>
+                      <span class="detail-label" data-i18n="detail.fallbacks">Fallbacks</span>
                       <div style="flex:1">
                         <template x-if="detailAgent._fallbacks && detailAgent._fallbacks.length > 0">
                           <div>
@@ -938,10 +944,10 @@
                           </div>
                         </template>
                         <template x-if="!detailAgent._fallbacks || detailAgent._fallbacks.length === 0">
-                          <span class="text-dim" style="font-size:12px">None — add a fallback chain</span>
+                          <span class="text-dim" style="font-size:12px" x-text="typeof i18n !== 'undefined' ? i18n.t('detail.none') : 'None — add a fallback chain'">None — add a fallback chain</span>
                         </template>
                         <template x-if="!editingFallback">
-                          <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;margin-top:4px" @click="editingFallback = true; newFallbackValue = ''">+ Add</button>
+                          <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;margin-top:4px" @click="editingFallback = true; newFallbackValue = ''" data-i18n="detail.addFallback">+ Add</button>
                         </template>
                         <template x-if="editingFallback">
                           <div class="flex gap-1 mt-1" style="align-items:center">

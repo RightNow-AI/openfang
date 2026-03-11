@@ -1271,6 +1271,28 @@ mark.search-highlight {
 .theme-opt:hover { color: var(--text-primary); background: var(--bg-hover); }
 .theme-opt.active { color: var(--accent); background: var(--accent-glow); }
 
+/* Language Switcher */
+.language-switcher {
+  display: inline-flex;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  margin-left: 8px;
+}
+.lang-opt {
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  transition: all 0.2s;
+  line-height: 1;
+}
+.lang-opt:hover { color: var(--text-primary); background: var(--bg-hover); }
+.lang-opt.active { color: #fff; background: var(--accent); }
+
 /* Utility */
 .flex { display: flex; }
 .flex-col { flex-direction: column; }

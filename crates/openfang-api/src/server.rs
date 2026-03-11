@@ -111,6 +111,8 @@ pub async fn build_router(
         .route("/", axum::routing::get(webchat::webchat_page))
         .route("/logo.png", axum::routing::get(webchat::logo_png))
         .route("/favicon.ico", axum::routing::get(webchat::favicon_ico))
+        .route("/locales/en.json", axum::routing::get(webchat::locale_en))
+        .route("/locales/zh-CN.json", axum::routing::get(webchat::locale_zh_cn))
         .route(
             "/api/metrics",
             axum::routing::get(routes::prometheus_metrics),

@@ -34,4 +34,3 @@ colored = { workspace = true }
 fluent = "0.16"
 fluent-bundle = "0.15"
 unic-langid = "0.9"
-include_dir = "0.7"

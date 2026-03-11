@@ -24,6 +24,10 @@ const LOGO_PNG: &[u8] = include_bytes!("../static/logo.png");
 /// Embedded favicon ICO for browser tabs.
 const FAVICON_ICO: &[u8] = include_bytes!("../static/favicon.ico");
 
+/// Embedded locale files for i18n.
+const LOCALE_EN: &str = include_str!("../static/locales/en.json");
+const LOCALE_ZH_CN: &str = include_str!("../static/locales/zh-CN.json");
+
 /// GET /logo.png — Serve the OpenFang logo.
 pub async fn logo_png() -> impl IntoResponse {
     (
@@ -43,6 +47,28 @@ pub async fn favicon_ico() -> impl IntoResponse {
             (header::CACHE_CONTROL, "public, max-age=86400, immutable"),
         ],
         FAVICON_ICO,
+    )
+}
+
+/// GET /locales/en.json — Serve English locale file.
+pub async fn locale_en() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        LOCALE_EN,
+    )
+}
+
+/// GET /locales/zh-CN.json — Serve Chinese locale file.
+pub async fn locale_zh_cn() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        LOCALE_ZH_CN,
     )
 }
 

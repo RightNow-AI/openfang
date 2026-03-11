@@ -5,12 +5,12 @@
 //! on the user's configuration.
 
 use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
-use include_dir::{include_dir, Dir};
 use std::cell::RefCell;
 use unic_langid::LanguageIdentifier;
 
-/// Embedded locales directory
-static LOCALES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/locales");
+/// Embedded language files
+const EN_FTL: &str = include_str!("../locales/en/main.ftl");
+const ZH_CN_FTL: &str = include_str!("../locales/zh-CN/main.ftl");
 
 /// Supported languages
 pub const SUPPORTED_LANGUAGES: &[&str] = &["en", "zh-CN"];
@@ -53,18 +53,12 @@ impl I18n {
 
         let mut bundle = FluentBundle::new(vec![lang_id]);
 
-        // Load the main.ftl file for this language
-        let lang_dir = LOCALES_DIR
-            .get_dir(language)
-            .ok_or_else(|| format!("Language directory not found: {language}"))?;
-
-        let main_ftl = lang_dir
-            .get_file("main.ftl")
-            .ok_or_else(|| format!("main.ftl not found for language: {language}"))?;
-
-        let ftl_content = main_ftl
-            .contents_utf8()
-            .ok_or_else(|| "Failed to read main.ftl as UTF-8".to_string())?;
+        // Get the FTL content for the requested language
+        let ftl_content = match language {
+            "en" => EN_FTL,
+            "zh-CN" => ZH_CN_FTL,
+            _ => EN_FTL, // Fallback to English
+        };
 
         let resource = FluentResource::try_new(ftl_content.to_string())
             .map_err(|(_, errors)| format!("Failed to parse Fluent resource: {errors:?}"))?;
