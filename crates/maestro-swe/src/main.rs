@@ -1,7 +1,4 @@
-pub mod protocol;
-
 fn main() {
-    println!("Hello, world!");
+    // Binary entry point for maestro-swe
+    // The library functionality is available via maestro_swe::*
 }
-
-pub mod executor;
