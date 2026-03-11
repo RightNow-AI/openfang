@@ -1582,6 +1582,8 @@ pub struct ChannelsConfig {
     pub webhook: Option<WebhookConfig>,
     /// LinkedIn messaging configuration (None = disabled).
     pub linkedin: Option<LinkedInConfig>,
+    /// WeCom/WeChat Work configuration (None = disabled).
+    pub wecom: Option<WeComConfig>,
 }
 
 /// Telegram channel adapter configuration.
@@ -2309,6 +2311,44 @@ impl Default for FeishuConfig {
             app_id: String::new(),
             app_secret_env: "FEISHU_APP_SECRET".to_string(),
             webhook_port: 8453,
+            default_agent: None,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
+/// WeCom/WeChat Work channel adapter configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WeComConfig {
+    /// WeCom corp ID.
+    pub corp_id: String,
+    /// WeCom application agent ID.
+    pub agent_id: String,
+    /// Env var name holding the application secret.
+    pub secret_env: String,
+    /// Port for the incoming webhook.
+    pub webhook_port: u16,
+    /// Callback verification token (optional, for URL verification).
+    pub token: Option<String>,
+    /// Encoding AES key for callback (optional, for encrypted mode).
+    pub encoding_aes_key: Option<String>,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for WeComConfig {
+    fn default() -> Self {
+        Self {
+            corp_id: String::new(),
+            agent_id: String::new(),
+            secret_env: "WECOM_SECRET".to_string(),
+            webhook_port: 8454,
+            token: None,
+            encoding_aes_key: None,
             default_agent: None,
             overrides: ChannelOverrides::default(),
         }

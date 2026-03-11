@@ -50,6 +50,7 @@ use openfang_channels::linkedin::LinkedInAdapter;
 use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
+use openfang_channels::wecom::WeComAdapter;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::agent::AgentId;
 use std::sync::Arc;
@@ -1381,6 +1382,21 @@ pub async fn start_channel_bridge_with_config(
         if let Some(token) = read_token(&rv_config.bot_token_env, "Revolt") {
             let adapter = Arc::new(RevoltAdapter::new(token));
             adapters.push((adapter, rv_config.default_agent.clone()));
+        }
+    }
+
+    // WeCom/WeChat Work
+    if let Some(ref wc_config) = config.wecom {
+        if let Some(secret) = read_token(&wc_config.secret_env, "WeCom") {
+            let adapter = Arc::new(WeComAdapter::with_verification(
+                wc_config.corp_id.clone(),
+                wc_config.agent_id.clone(),
+                secret,
+                wc_config.webhook_port,
+                wc_config.encoding_aes_key.clone(),
+                wc_config.token.clone(),
+            ));
+            adapters.push((adapter, wc_config.default_agent.clone()));
         }
     }
 
