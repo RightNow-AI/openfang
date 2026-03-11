@@ -104,7 +104,7 @@ pub async fn build_router(
         .route("/api/version", axum::routing::get(routes::version))
         .route(
             "/api/agents",
-            axum::routing::get(routes::list_agents).post(routes::spawn_agent),
+            axum::routing::get(routes::list_agents).post(uni_agent::spawn_agent),
         )
         .route(
             "/api/agents/{id}",

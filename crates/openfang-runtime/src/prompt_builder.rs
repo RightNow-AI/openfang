@@ -275,7 +275,7 @@ pub fn build_canonical_context_message(ctx: &PromptContext) -> Option<String> {
 ///
 /// Also used by `agent_loop.rs` to append recalled memories after DB lookup.
 pub fn build_memory_section(memories: &[(String, String)]) -> String {
-    // 暂时不做memory_recall，等有需要再放开
+    // TODO 暂时不做memory_recall，等有需要再放开
     return String::new();
     let mut out = String::from(
         "## Memory\n\

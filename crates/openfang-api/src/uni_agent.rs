@@ -5,12 +5,15 @@ use axum::{
     Json,
 };
 use openfang_runtime::tool_runner::builtin_tool_definitions;
-use openfang_types::agent::AgentId;
+use openfang_types::agent::{AgentId, AgentManifest, ModelConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::routes::AppState;
+use crate::{
+    routes::AppState,
+    types::{SpawnRequest, SpawnResponse},
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BuiltinToolInfo {
@@ -62,6 +65,96 @@ pub struct SetWorkspaceRequest {
 pub struct SetMcpResponse {
     pub status: String,
     pub servers: Vec<String>,
+}
+
+/// POST /api/agents — Spawn a new agent.
+pub async fn spawn_agent(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SpawnRequest>,
+) -> impl IntoResponse {
+    // Resolve template name → manifest_toml if template is provided and manifest_toml is empty
+    let manifest_toml = req.manifest_toml.clone();
+
+    // SECURITY: Reject oversized manifests to prevent parser memory exhaustion.
+    const MAX_MANIFEST_SIZE: usize = 1024 * 1024; // 1MB
+    if manifest_toml.len() > MAX_MANIFEST_SIZE {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": "Manifest too large (max 1MB)"})),
+        );
+    }
+
+    // SECURITY: Verify Ed25519 signature when a signed manifest is provided
+    if let Some(ref signed_json) = req.signed_manifest {
+        match state.kernel.verify_signed_manifest(signed_json) {
+            Ok(verified_toml) => {
+                // Ensure the signed manifest matches the provided manifest_toml
+                if verified_toml.trim() != manifest_toml.trim() {
+                    tracing::warn!("Signed manifest content does not match manifest_toml");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(
+                            serde_json::json!({"error": "Signed manifest content does not match manifest_toml"}),
+                        ),
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Manifest signature verification failed: {e}");
+                state.kernel.audit_log.record(
+                    "system",
+                    openfang_runtime::audit::AuditAction::AuthAttempt,
+                    "manifest signature verification failed",
+                    format!("error: {e}"),
+                );
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({"error": "Manifest signature verification failed"})),
+                );
+            }
+        }
+    }
+
+    let mut manifest: AgentManifest = match toml::from_str(&manifest_toml) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("Invalid manifest TOML: {e}");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid manifest format"})),
+            );
+        }
+    };
+
+    if manifest.model.provider.is_empty() || manifest.model.provider == "default" {
+        let default_model = state.kernel.config.default_model.clone();
+        let mut model = ModelConfig::default();
+        model.provider = default_model.provider.clone();
+        model.model = default_model.model.clone();
+        if !default_model.api_key_env.is_empty() {
+            model.api_key_env = Some(default_model.api_key_env.clone());
+        }
+        model.base_url = default_model.base_url.clone();
+        manifest.model = model;
+    }
+
+    let name = manifest.name.clone();
+    match state.kernel.spawn_agent(manifest) {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!(SpawnResponse {
+                agent_id: id.to_string(),
+                name,
+            })),
+        ),
+        Err(e) => {
+            tracing::warn!("Spawn failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Agent spawn failed"})),
+            )
+        }
+    }
 }
 
 pub async fn get_agent_builtin_tools_config(
@@ -355,7 +448,9 @@ pub async fn set_agent_workspace(
                 if let Err(e) = move_dir_recursive(old, &new_path) {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": format!("Failed to move workspace: {e}")})),
+                        Json(
+                            serde_json::json!({"error": format!("Failed to move workspace: {e}")}),
+                        ),
                     );
                 }
                 // Source root is now empty; remove it.
