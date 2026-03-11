@@ -819,18 +819,11 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
         .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
-        .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_string());
+        .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_string())
+        .filter(|ct| ct.starts_with("image/"));
 
     let media_type = content_type.unwrap_or_else(|| {
-        if url.contains(".png") {
-            "image/png".to_string()
-        } else if url.contains(".gif") {
-            "image/gif".to_string()
-        } else if url.contains(".webp") {
-            "image/webp".to_string()
-        } else {
-            "image/jpeg".to_string()
-        }
+        media_type_from_url(url)
     });
 
     let bytes = match resp.bytes().await {
@@ -855,6 +848,11 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
         return vec![ContentBlock::Text { text: desc }];
     }
 
+    // Refine media type using magic bytes — most reliable detection method.
+    // Telegram (and some other services) return application/octet-stream for
+    // all file downloads, so the Content-Type header alone is not sufficient.
+    let media_type = media_type_from_magic_bytes(&bytes).unwrap_or(media_type);
+
     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
     let mut blocks = Vec::new();
@@ -871,6 +869,37 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
     blocks.push(ContentBlock::Image { media_type, data });
 
     blocks
+}
+
+/// Detect image MIME type from file magic bytes.
+fn media_type_from_magic_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg".to_string())
+    } else if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        Some("image/png".to_string())
+    } else if bytes.starts_with(b"GIF8") {
+        Some("image/gif".to_string())
+    } else if bytes.starts_with(b"RIFF") && bytes.len() >= 12 && &bytes[8..12] == b"WEBP" {
+        Some("image/webp".to_string())
+    } else {
+        None
+    }
+}
+
+/// Detect image MIME type from URL file extension.
+fn media_type_from_url(url: &str) -> String {
+    if url.contains(".png") {
+        "image/png".to_string()
+    } else if url.contains(".gif") {
+        "image/gif".to_string()
+    } else if url.contains(".webp") {
+        "image/webp".to_string()
+    } else {
+        "image/jpeg".to_string()
+    }
 }
 
 /// Dispatch a multimodal message (content blocks) to an agent, handling routing
@@ -1467,5 +1496,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, "Echo: ");
+    }
+
+    #[test]
+    fn test_media_type_from_magic_bytes_jpeg() {
+        let jpeg = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00];
+        assert_eq!(media_type_from_magic_bytes(jpeg), Some("image/jpeg".to_string()));
+    }
+
+    #[test]
+    fn test_media_type_from_magic_bytes_png() {
+        let png = &[0x89, 0x50, 0x4E, 0x47, 0x0D];
+        assert_eq!(media_type_from_magic_bytes(png), Some("image/png".to_string()));
+    }
+
+    #[test]
+    fn test_media_type_from_magic_bytes_gif() {
+        let gif = b"GIF89a";
+        assert_eq!(media_type_from_magic_bytes(gif), Some("image/gif".to_string()));
+    }
+
+    #[test]
+    fn test_media_type_from_magic_bytes_webp() {
+        let mut webp = vec![0u8; 12];
+        webp[..4].copy_from_slice(b"RIFF");
+        webp[8..12].copy_from_slice(b"WEBP");
+        assert_eq!(media_type_from_magic_bytes(&webp), Some("image/webp".to_string()));
+    }
+
+    #[test]
+    fn test_media_type_from_magic_bytes_unknown() {
+        let unknown = &[0x00, 0x01, 0x02, 0x03];
+        assert_eq!(media_type_from_magic_bytes(unknown), None);
+    }
+
+    #[test]
+    fn test_media_type_from_magic_bytes_too_short() {
+        let short = &[0xFF, 0xD8];
+        assert_eq!(media_type_from_magic_bytes(short), None);
+    }
+
+    #[test]
+    fn test_media_type_from_url_jpeg() {
+        assert_eq!(media_type_from_url("https://example.com/photo.jpg"), "image/jpeg");
+        assert_eq!(media_type_from_url("https://api.telegram.org/file/bot123/photos/file_0"), "image/jpeg");
+    }
+
+    #[test]
+    fn test_media_type_from_url_png() {
+        assert_eq!(media_type_from_url("https://example.com/image.png"), "image/png");
+    }
+
+    #[test]
+    fn test_media_type_from_url_webp() {
+        assert_eq!(media_type_from_url("https://example.com/image.webp"), "image/webp");
     }
 }
