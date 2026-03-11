@@ -52,6 +52,7 @@ pub enum ChannelContent {
     Voice {
         url: String,
         duration_seconds: u32,
+        transcription: Option<String>,
     },
     Location {
         lat: f64,

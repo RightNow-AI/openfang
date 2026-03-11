@@ -548,6 +548,7 @@ async fn dispatch_message(
         ChannelContent::Voice {
             ref url,
             duration_seconds,
+            transcription: _,
         } => {
             format!("[User sent a voice message ({duration_seconds}s): {url}]")
         }

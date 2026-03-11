@@ -637,12 +637,23 @@ async fn parse_telegram_update(
     } else if message.get("voice").is_some() {
         let file_id = message["voice"]["file_id"].as_str().unwrap_or("");
         let duration = message["voice"]["duration"].as_u64().unwrap_or(0) as u32;
+        let transcription = message["voice"]["transcription"]
+            .as_str()
+            .map(|s| s.to_string());
         match telegram_get_file_url(token, client, file_id, api_base_url).await {
             Some(url) => ChannelContent::Voice {
                 url,
                 duration_seconds: duration,
+                transcription,
             },
-            None => ChannelContent::Text(format!("[Voice message, {duration}s]")),
+            None => {
+                // If transcription is available, use it; otherwise show duration
+                if let Some(text) = &transcription {
+                    ChannelContent::Text(format!("[Voice message, {duration}s: {text}]"))
+                } else {
+                    ChannelContent::Text(format!("[Voice message, {duration}s]"))
+                }
+            }
         }
     } else if message.get("location").is_some() {
         let lat = message["location"]["latitude"].as_f64().unwrap_or(0.0);
@@ -1046,11 +1057,64 @@ mod tests {
                 assert!(t.contains("15s"));
             }
             ChannelContent::Voice {
-                duration_seconds, ..
+                duration_seconds,
+                transcription,
+                ..
             } => {
                 assert_eq!(*duration_seconds, 15);
+                assert!(transcription.is_none()); // No transcription in this test
             }
             other => panic!("Expected Text or Voice for voice message, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_telegram_voice_with_transcription() {
+        let update = serde_json::json!({
+            "update_id": 303,
+            "message": {
+                "message_id": 63,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "voice": {
+                    "file_id": "voice_id",
+                    "file_unique_id": "d",
+                    "duration": 15,
+                    "transcription": "Hola, este es un mensaje de voz transcrito"
+                }
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL)
+            .await
+            .unwrap();
+
+        // Verify sender
+        assert_eq!(msg.sender.platform_id, "123");
+        assert_eq!(msg.sender.display_name, "Alice");
+
+        // When file download fails but transcription is available, it returns Text with transcription
+        match &msg.content {
+            ChannelContent::Text(t) => {
+                assert!(t.contains("Voice message"));
+                assert!(t.contains("15s"));
+                assert!(t.contains("Hola, este es un mensaje de voz transcrito"));
+            }
+            ChannelContent::Voice {
+                duration_seconds,
+                transcription,
+                ..
+            } => {
+                assert_eq!(*duration_seconds, 15);
+                assert!(transcription.is_some());
+                assert_eq!(
+                    transcription.as_ref().unwrap(),
+                    "Hola, este es un mensaje de voz transcrito"
+                );
+            }
+            other => panic!("Expected Voice or Text with transcription, got {other:?}"),
         }
     }
 }
