@@ -28,20 +28,11 @@ fn check_taint_shell_exec(command: &str) -> Option<String> {
     // Layer 1: Block shell metacharacters that enable command injection.
     // Uses the same validator as subprocess_sandbox and docker_sandbox.
     if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
-        return Some(format!(
-            "Shell metacharacter injection blocked: {reason}"
-        ));
+        return Some(format!("Shell metacharacter injection blocked: {reason}"));
     }
 
     // Layer 2: Heuristic patterns for injected external URLs / base64 payloads
-    let suspicious_patterns = [
-        "curl ",
-        "wget ",
-        "| sh",
-        "| bash",
-        "base64 -d",
-        "eval ",
-    ];
+    let suspicious_patterns = ["curl ", "wget ", "| sh", "| bash", "base64 -d", "eval "];
     for pattern in &suspicious_patterns {
         if command.contains(pattern) {
             let mut labels = HashSet::new();
@@ -202,7 +193,9 @@ pub async fn execute_tool(
             let headers = input.get("headers").and_then(|v| v.as_object());
             let body = input["body"].as_str();
             if let Some(ctx) = web_ctx {
-                ctx.fetch.fetch_with_options(url, method, headers, body).await
+                ctx.fetch
+                    .fetch_with_options(url, method, headers, body)
+                    .await
             } else {
                 tool_web_fetch_legacy(input).await
             }
@@ -223,7 +216,8 @@ pub async fn execute_tool(
 
             // SECURITY: Always check for shell metacharacters, even in Full mode.
             // These enable command injection regardless of exec policy.
-            if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
+            if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command)
+            {
                 return ToolResult {
                     tool_use_id: tool_use_id.to_string(),
                     content: format!(
@@ -365,8 +359,7 @@ pub async fn execute_tool(
                     crate::browser::tool_browser_navigate(input, mgr, aid).await
                 }
                 None => Err(
-                    "Browser tools not available. Ensure Chrome/Chromium is installed."
-                        .to_string(),
+                    "Browser tools not available. Ensure Chrome/Chromium is installed.".to_string(),
                 ),
             }
         }
@@ -375,63 +368,81 @@ pub async fn execute_tool(
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_click(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_type" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_type(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_screenshot" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_screenshot(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_read_page" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_read_page(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_close" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_close(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_scroll" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_scroll(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_wait" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_wait(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_run_js" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_run_js(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_back" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_back(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
 
         // Canvas / A2UI tool
@@ -1024,7 +1035,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Channel send tool (proactive outbound messaging) ---
         ToolDefinition {
             name: "channel_send".to_string(),
-            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url or file_url to send an image or file instead of (or alongside) text.".to_string(),
+            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url, file_url, or file_path to send an image or file instead of (or alongside) text. Use thread_id to target a specific thread/topic on thread-capable channels.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1034,7 +1045,15 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "message": { "type": "string", "description": "The message body to send (required for text, optional caption for media)" },
                     "image_url": { "type": "string", "description": "URL of an image to send (supported on Telegram, Discord, Slack)" },
                     "file_url": { "type": "string", "description": "URL of a file to send as attachment" },
-                    "filename": { "type": "string", "description": "Filename for file attachments (defaults to 'file')" }
+                    "file_path": { "type": "string", "description": "Local filesystem path of a file to send as attachment" },
+                    "filename": { "type": "string", "description": "Filename for file attachments (defaults to the basename of file_path or 'file')" },
+                    "thread_id": {
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "integer" }
+                        ],
+                        "description": "Optional thread/topic identifier for thread-capable channels such as Telegram forum topics"
+                    }
                 },
                 "required": ["channel", "recipient"]
             }),
@@ -2172,6 +2191,30 @@ async fn tool_cron_cancel(
 // Channel send tool (proactive outbound messaging via configured adapters)
 // ---------------------------------------------------------------------------
 
+fn optional_thread_id(input: &serde_json::Value) -> Result<Option<String>, String> {
+    match input.get("thread_id") {
+        None => Ok(None),
+        Some(value) if value.is_null() => Ok(None),
+        Some(value) => {
+            if let Some(thread_id) = value.as_str() {
+                let thread_id = thread_id.trim();
+                return if thread_id.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(thread_id.to_string()))
+                };
+            }
+            if let Some(thread_id) = value.as_i64() {
+                return Ok(Some(thread_id.to_string()));
+            }
+            if let Some(thread_id) = value.as_u64() {
+                return Ok(Some(thread_id.to_string()));
+            }
+            Err("thread_id must be a string or integer".to_string())
+        }
+    }
+}
+
 async fn tool_channel_send(
     input: &serde_json::Value,
     kernel: Option<&Arc<dyn KernelHandle>>,
@@ -2192,14 +2235,33 @@ async fn tool_channel_send(
         return Err("Recipient cannot be empty".to_string());
     }
 
-    // Check for media content (image_url or file_url)
+    let thread_id = optional_thread_id(input)?;
+
+    // Check for media content (image_url or file_url/file_path)
     let image_url = input["image_url"].as_str().filter(|s| !s.is_empty());
     let file_url = input["file_url"].as_str().filter(|s| !s.is_empty());
+    let file_path = input["file_path"].as_str().filter(|s| !s.is_empty());
+    let media_inputs = [image_url.is_some(), file_url.is_some(), file_path.is_some()]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+
+    if media_inputs > 1 {
+        return Err("Specify only one of 'image_url', 'file_url', or 'file_path'".to_string());
+    }
 
     if let Some(url) = image_url {
         let caption = input["message"].as_str().filter(|s| !s.is_empty());
         return kh
-            .send_channel_media(&channel, recipient, "image", url, caption, None)
+            .send_channel_media(
+                &channel,
+                recipient,
+                "image",
+                url,
+                caption,
+                None,
+                thread_id.as_deref(),
+            )
             .await;
     }
 
@@ -2207,7 +2269,40 @@ async fn tool_channel_send(
         let caption = input["message"].as_str().filter(|s| !s.is_empty());
         let filename = input["filename"].as_str();
         return kh
-            .send_channel_media(&channel, recipient, "file", url, caption, filename)
+            .send_channel_media(
+                &channel,
+                recipient,
+                "file",
+                url,
+                caption,
+                filename,
+                thread_id.as_deref(),
+            )
+            .await;
+    }
+
+    if let Some(path) = file_path {
+        let path = Path::new(path);
+        if !path.is_file() {
+            return Err(format!("Local file not found: {}", path.display()));
+        }
+        let local_path = path.to_string_lossy().into_owned();
+        let caption = input["message"].as_str().filter(|s| !s.is_empty());
+        let filename = input["filename"].as_str().or_else(|| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+        });
+        return kh
+            .send_channel_media(
+                &channel,
+                recipient,
+                "file",
+                &local_path,
+                caption,
+                filename,
+                thread_id.as_deref(),
+            )
             .await;
     }
 
@@ -2238,7 +2333,7 @@ async fn tool_channel_send(
         message.to_string()
     };
 
-    kh.send_channel_message(&channel, recipient, &final_message)
+    kh.send_channel_message(&channel, recipient, &final_message, thread_id.as_deref())
         .await
 }
 
@@ -3144,7 +3239,10 @@ async fn tool_canvas_present(
     let _ = tokio::fs::create_dir_all(&output_dir).await;
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let filename = format!("canvas_{timestamp}_{}.html", crate::str_utils::safe_truncate_str(&canvas_id, 8));
+    let filename = format!(
+        "canvas_{timestamp}_{}.html",
+        crate::str_utils::safe_truncate_str(&canvas_id, 8)
+    );
     let filepath = output_dir.join(&filename);
 
     // Write the full HTML document
@@ -3168,6 +3266,7 @@ async fn tool_canvas_present(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn test_builtin_tool_definitions() {
@@ -3235,6 +3334,240 @@ mod tests {
         assert!(names.contains(&"canvas_present"));
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum MockChannelCall {
+        Message {
+            channel: String,
+            recipient: String,
+            message: String,
+            thread_id: Option<String>,
+        },
+        Media {
+            channel: String,
+            recipient: String,
+            media_type: String,
+            media_url: String,
+            caption: Option<String>,
+            filename: Option<String>,
+            thread_id: Option<String>,
+        },
+    }
+
+    #[derive(Default)]
+    struct MockKernel {
+        last_call: Mutex<Option<MockChannelCall>>,
+    }
+
+    impl MockKernel {
+        fn take_call(&self) -> MockChannelCall {
+            self.last_call
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("expected channel send call")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KernelHandle for MockKernel {
+        async fn spawn_agent(
+            &self,
+            _manifest_toml: &str,
+            _parent_id: Option<&str>,
+        ) -> Result<(String, String), String> {
+            unimplemented!()
+        }
+
+        async fn send_to_agent(&self, _agent_id: &str, _message: &str) -> Result<String, String> {
+            unimplemented!()
+        }
+
+        fn list_agents(&self) -> Vec<crate::kernel_handle::AgentInfo> {
+            unimplemented!()
+        }
+
+        fn kill_agent(&self, _agent_id: &str) -> Result<(), String> {
+            unimplemented!()
+        }
+
+        fn memory_store(&self, _key: &str, _value: serde_json::Value) -> Result<(), String> {
+            unimplemented!()
+        }
+
+        fn memory_recall(&self, _key: &str) -> Result<Option<serde_json::Value>, String> {
+            unimplemented!()
+        }
+
+        fn find_agents(&self, _query: &str) -> Vec<crate::kernel_handle::AgentInfo> {
+            unimplemented!()
+        }
+
+        async fn task_post(
+            &self,
+            _title: &str,
+            _description: &str,
+            _assigned_to: Option<&str>,
+            _created_by: Option<&str>,
+        ) -> Result<String, String> {
+            unimplemented!()
+        }
+
+        async fn task_claim(&self, _agent_id: &str) -> Result<Option<serde_json::Value>, String> {
+            unimplemented!()
+        }
+
+        async fn task_complete(&self, _task_id: &str, _result: &str) -> Result<(), String> {
+            unimplemented!()
+        }
+
+        async fn task_list(&self, _status: Option<&str>) -> Result<Vec<serde_json::Value>, String> {
+            unimplemented!()
+        }
+
+        async fn publish_event(
+            &self,
+            _event_type: &str,
+            _payload: serde_json::Value,
+        ) -> Result<(), String> {
+            unimplemented!()
+        }
+
+        async fn knowledge_add_entity(
+            &self,
+            _entity: openfang_types::memory::Entity,
+        ) -> Result<String, String> {
+            unimplemented!()
+        }
+
+        async fn knowledge_add_relation(
+            &self,
+            _relation: openfang_types::memory::Relation,
+        ) -> Result<String, String> {
+            unimplemented!()
+        }
+
+        async fn knowledge_query(
+            &self,
+            _pattern: openfang_types::memory::GraphPattern,
+        ) -> Result<Vec<openfang_types::memory::GraphMatch>, String> {
+            unimplemented!()
+        }
+
+        async fn send_channel_message(
+            &self,
+            channel: &str,
+            recipient: &str,
+            message: &str,
+            thread_id: Option<&str>,
+        ) -> Result<String, String> {
+            *self.last_call.lock().unwrap() = Some(MockChannelCall::Message {
+                channel: channel.to_string(),
+                recipient: recipient.to_string(),
+                message: message.to_string(),
+                thread_id: thread_id.map(str::to_string),
+            });
+            Ok("ok".to_string())
+        }
+
+        async fn send_channel_media(
+            &self,
+            channel: &str,
+            recipient: &str,
+            media_type: &str,
+            media_url: &str,
+            caption: Option<&str>,
+            filename: Option<&str>,
+            thread_id: Option<&str>,
+        ) -> Result<String, String> {
+            *self.last_call.lock().unwrap() = Some(MockChannelCall::Media {
+                channel: channel.to_string(),
+                recipient: recipient.to_string(),
+                media_type: media_type.to_string(),
+                media_url: media_url.to_string(),
+                caption: caption.map(str::to_string),
+                filename: filename.map(str::to_string),
+                thread_id: thread_id.map(str::to_string),
+            });
+            Ok("ok".to_string())
+        }
+    }
+
+    #[test]
+    fn test_channel_send_schema_exposes_thread_id_and_file_path() {
+        let tools = builtin_tool_definitions();
+        let channel_send = tools
+            .iter()
+            .find(|tool| tool.name == "channel_send")
+            .expect("channel_send tool definition");
+        let props = channel_send
+            .input_schema
+            .get("properties")
+            .and_then(|value| value.as_object())
+            .expect("channel_send properties");
+        assert!(props.contains_key("thread_id"));
+        assert!(props.contains_key("file_path"));
+    }
+
+    #[tokio::test]
+    async fn test_channel_send_file_path_defaults_filename() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("report.pdf");
+        std::fs::write(&file_path, b"%PDF-1.4\n").unwrap();
+
+        let kernel_impl = Arc::new(MockKernel::default());
+        let kernel = kernel_impl.clone() as Arc<dyn KernelHandle>;
+        let result = tool_channel_send(
+            &serde_json::json!({
+                "channel": "telegram",
+                "recipient": "-100123",
+                "file_path": file_path,
+                "message": "latest build",
+                "thread_id": "99"
+            }),
+            Some(&kernel),
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(
+            kernel_impl.take_call(),
+            MockChannelCall::Media {
+                channel: "telegram".to_string(),
+                recipient: "-100123".to_string(),
+                media_type: "file".to_string(),
+                media_url: file_path.to_string_lossy().into_owned(),
+                caption: Some("latest build".to_string()),
+                filename: Some("report.pdf".to_string()),
+                thread_id: Some("99".to_string()),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_channel_send_text_records_thread_id() {
+        let kernel_impl = Arc::new(MockKernel::default());
+        let kernel = kernel_impl.clone() as Arc<dyn KernelHandle>;
+        let result = tool_channel_send(
+            &serde_json::json!({
+                "channel": "telegram",
+                "recipient": "-100123",
+                "message": "hello from workflow",
+                "thread_id": 42
+            }),
+            Some(&kernel),
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(
+            kernel_impl.take_call(),
+            MockChannelCall::Message {
+                channel: "telegram".to_string(),
+                recipient: "-100123".to_string(),
+                message: "hello from workflow".to_string(),
+                thread_id: Some("42".to_string()),
+            }
+        );
+    }
+
     #[test]
     fn test_collaboration_tool_schemas() {
         let tools = builtin_tool_definitions();
@@ -3290,7 +3623,11 @@ mod tests {
             None, // process_manager
         )
         .await;
-        assert!(result.is_error, "Expected error but got: {}", result.content);
+        assert!(
+            result.is_error,
+            "Expected error but got: {}",
+            result.content
+        );
     }
 
     #[tokio::test]
@@ -3504,10 +3841,17 @@ mod tests {
         )
         .await;
         // Should fail for file-not-found, NOT for permission denied
-        assert!(result.is_error, "Expected error but got: {}", result.content);
         assert!(
-            result.content.contains("Failed to read") || result.content.contains("not found") || result.content.contains("No such file"),
-            "Unexpected error: {}", result.content
+            result.is_error,
+            "Expected error but got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("Failed to read")
+                || result.content.contains("not found")
+                || result.content.contains("No such file"),
+            "Unexpected error: {}",
+            result.content
         );
     }
 
