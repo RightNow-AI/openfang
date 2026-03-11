@@ -30,7 +30,11 @@ struct TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
-        self.state.kernel.shutdown();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                self.state.kernel.shutdown().await;
+            });
+        });
     }
 }
 

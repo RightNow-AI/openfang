@@ -15,13 +15,14 @@ use tempfile::TempDir;
 
 /// Build a minimal KernelConfig suitable for integration testing.
 fn test_config(tmp: &TempDir) -> KernelConfig {
-    let mut cfg = KernelConfig::default();
-    cfg.home_dir = tmp.path().to_path_buf();
-    cfg.data_dir = tmp.path().join("data");
-    cfg.api_listen = "127.0.0.1:0".to_string();
-    cfg.network_enabled = false;
-    cfg.api_key = String::new();
-    cfg
+    KernelConfig {
+        home_dir: tmp.path().to_path_buf(),
+        data_dir: tmp.path().join("data"),
+        api_listen: "127.0.0.1:0".to_string(),
+        network_enabled: false,
+        api_key: String::new(),
+        ..Default::default()
+    }
 }
 
 #[tokio::test]

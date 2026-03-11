@@ -57,7 +57,7 @@ memory_write = ["self.*"]
     )
     .unwrap();
 
-    let agent_id = kernel.spawn_agent(manifest).expect("Agent should spawn");
+    let agent_id = kernel.spawn_agent(manifest).await.expect("Agent should spawn");
 
     // Send message
     let result = kernel
@@ -79,8 +79,8 @@ memory_write = ["self.*"]
     );
 
     // Kill agent
-    kernel.kill_agent(agent_id).expect("Agent should be killed");
-    kernel.shutdown();
+    kernel.kill_agent(agent_id).await.expect("Agent should be killed");
+    kernel.shutdown().await;
 }
 
 #[tokio::test]
@@ -135,8 +135,8 @@ memory_write = ["self.*"]
     )
     .unwrap();
 
-    let id1 = kernel.spawn_agent(manifest1).expect("Agent 1 should spawn");
-    let id2 = kernel.spawn_agent(manifest2).expect("Agent 2 should spawn");
+    let id1 = kernel.spawn_agent(manifest1).await.expect("Agent 1 should spawn");
+    let id2 = kernel.spawn_agent(manifest2).await.expect("Agent 2 should spawn");
 
     // Send messages to both
     let r1 = kernel
@@ -157,7 +157,7 @@ memory_write = ["self.*"]
     assert!(!r2.response.is_empty());
 
     // Cleanup
-    kernel.kill_agent(id1).unwrap();
-    kernel.kill_agent(id2).unwrap();
-    kernel.shutdown();
+    kernel.kill_agent(id1).await.unwrap();
+    kernel.kill_agent(id2).await.unwrap();
+    kernel.shutdown().await;
 }

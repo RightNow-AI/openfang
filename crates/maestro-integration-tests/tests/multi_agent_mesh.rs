@@ -7,16 +7,19 @@
 //! 4. A2A per-agent routing (agentId in params)
 //! 5. openfang-mesh crate API surface
 
+#![allow(unused_imports, clippy::clone_on_copy)]
+
 use maestro_algorithm::{
     executor::{AlgorithmConfig, AlgorithmExecutor, ExecutionHooks, ModelProvider},
     types::{
         AdaptOutput, ExecuteOutput, LearnOutput, ObserveOutput, OrientOutput, PlanOutput,
-        ExecutionStep, AgentAssignment, IscCriterion, StepResult, ParameterAdjustment,
+        ExecutionStep, AgentAssignment, Criterion, StepResult, ParameterAdjustment,
     },
     AlgorithmResult, Learning, LearningCategory, Phase, PhaseOutput, RunId,
     error::AlgorithmError,
 };
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use std::time::Duration;
@@ -165,7 +168,7 @@ impl ExecutionHooks for CountingHooks {
         vec![]
     }
 
-    async fn store_learning(&self, _learning: Learning) {}
+    async fn store_learning(&self, _learning: &Learning) {}
 
     async fn on_phase_start(&self, _run_id: RunId, _phase: Phase) {}
 
@@ -326,7 +329,7 @@ fn test_mesh_router_score_empty_required() {
 fn test_mesh_router_spawn_new_when_no_targets() {
     use openfang_mesh::router::{ExecutionTarget, LocalAgentView, MeshRouter, MeshRouterConfig};
     use openfang_wire::registry::PeerRegistry;
-    use openfang_hands::HandRegistry;
+    use openfang_hands::registry::HandRegistry;
 
     let hand_registry = Arc::new(HandRegistry::new());
     let peer_registry = Arc::new(PeerRegistry::new());
@@ -346,7 +349,7 @@ fn test_mesh_router_spawn_new_when_no_targets() {
 fn test_mesh_router_routes_to_local_agent() {
     use openfang_mesh::router::{ExecutionTarget, LocalAgentView, MeshRouter, MeshRouterConfig};
     use openfang_wire::registry::PeerRegistry;
-    use openfang_hands::HandRegistry;
+    use openfang_hands::registry::HandRegistry;
     use openfang_types::agent::AgentId;
 
     let hand_registry = Arc::new(HandRegistry::new());
@@ -379,7 +382,7 @@ fn test_mesh_router_routes_to_local_agent() {
 fn test_a2a_agent_id_routing_logic() {
     // Test the agent selection logic extracted from a2a_send_task
     // (We test the logic directly since we can't spin up a full HTTP server here)
-    let agents = vec![
+    let agents = [
         ("agent-1-uuid".to_string(), "alpha".to_string()),
         ("agent-2-uuid".to_string(), "beta".to_string()),
         ("agent-3-uuid".to_string(), "gamma".to_string()),

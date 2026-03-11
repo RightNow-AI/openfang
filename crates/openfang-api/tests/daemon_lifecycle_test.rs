@@ -184,7 +184,7 @@ async fn test_full_daemon_lifecycle() {
     let _ = std::fs::remove_file(&daemon_info_path);
     assert!(!daemon_info_path.exists());
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }
 
 /// Test that stale daemon info is detected when no process is running at that PID.
@@ -268,5 +268,5 @@ async fn test_server_immediate_responsiveness() {
         latency.as_millis()
     );
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }

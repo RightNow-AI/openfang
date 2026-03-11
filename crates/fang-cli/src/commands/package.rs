@@ -1,6 +1,6 @@
 use crate::{manifest::load_manifest, packager::{build_archive, write_archive}};
 use anyhow::Result;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub async fn run(output: Option<String>) -> Result<()> {
     let dir = std::env::current_dir()?;

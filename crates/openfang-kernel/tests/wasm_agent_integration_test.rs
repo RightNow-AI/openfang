@@ -5,6 +5,8 @@
 //!
 //! These tests use real WASM execution — no mocks.
 
+#![allow(clippy::expect_fun_call, clippy::or_fun_call)]
+
 use openfang_kernel::OpenFangKernel;
 use openfang_types::agent::AgentManifest;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
@@ -156,7 +158,7 @@ async fn test_wasm_agent_hello_response() {
     let kernel = OpenFangKernel::boot_with_config(config).await.expect("Kernel should boot");
 
     let manifest = wasm_manifest("wasm-hello", "hello.wat");
-    let agent_id = kernel.spawn_agent(manifest).unwrap();
+    let agent_id = kernel.spawn_agent(manifest).await.unwrap();
 
     let result = kernel
         .send_message(agent_id, "Hi there!")
@@ -166,7 +168,7 @@ async fn test_wasm_agent_hello_response() {
     assert_eq!(result.response, "hello from wasm");
     assert_eq!(result.iterations, 1);
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }
 
 /// Test that a WASM echo module returns input data.
@@ -179,7 +181,7 @@ async fn test_wasm_agent_echo() {
     let kernel = OpenFangKernel::boot_with_config(config).await.expect("Kernel should boot");
 
     let manifest = wasm_manifest("wasm-echo", "echo.wat");
-    let agent_id = kernel.spawn_agent(manifest).unwrap();
+    let agent_id = kernel.spawn_agent(manifest).await.unwrap();
 
     let result = kernel
         .send_message(agent_id, "test message")
@@ -193,7 +195,7 @@ async fn test_wasm_agent_echo() {
         result.response
     );
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }
 
 /// Test that WASM fuel exhaustion is caught and reported as an error.
@@ -206,7 +208,7 @@ async fn test_wasm_agent_fuel_exhaustion() {
     let kernel = OpenFangKernel::boot_with_config(config).await.expect("Kernel should boot");
 
     let manifest = wasm_manifest("wasm-loop", "loop.wat");
-    let agent_id = kernel.spawn_agent(manifest).unwrap();
+    let agent_id = kernel.spawn_agent(manifest).await.unwrap();
 
     let result = kernel.send_message(agent_id, "go").await;
     assert!(
@@ -219,7 +221,7 @@ async fn test_wasm_agent_fuel_exhaustion() {
         "Error should mention fuel exhaustion, got: {err_msg}"
     );
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }
 
 /// Test that a missing WASM module produces a clear error.
@@ -232,7 +234,7 @@ async fn test_wasm_agent_missing_module() {
     let kernel = OpenFangKernel::boot_with_config(config).await.expect("Kernel should boot");
 
     let manifest = wasm_manifest("wasm-missing", "nonexistent.wasm");
-    let agent_id = kernel.spawn_agent(manifest).unwrap();
+    let agent_id = kernel.spawn_agent(manifest).await.unwrap();
 
     let result = kernel.send_message(agent_id, "hello").await;
     assert!(result.is_err(), "Missing module should fail");
@@ -242,7 +244,7 @@ async fn test_wasm_agent_missing_module() {
         "Error should mention the missing file, got: {err_msg}"
     );
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }
 
 /// Test that host_call time_now works end-to-end through the kernel.
@@ -272,7 +274,7 @@ memory_read = ["*"]
 memory_write = ["self.*"]
 "#;
     let manifest: AgentManifest = toml::from_str(toml_str).unwrap();
-    let agent_id = kernel.spawn_agent(manifest).unwrap();
+    let agent_id = kernel.spawn_agent(manifest).await.unwrap();
 
     // The proxy module expects JSON like {"method":"time_now","params":{}}
     // But our kernel wraps it as {"message":"...", "agent_id":"...", "agent_name":"..."}
@@ -286,7 +288,7 @@ memory_write = ["self.*"]
     // The response will contain the host_call dispatch result
     assert!(!result.response.is_empty(), "Response should not be empty");
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }
 
 /// Test WASM agent with streaming (falls back to single event).
@@ -300,10 +302,11 @@ async fn test_wasm_agent_streaming_fallback() {
     let kernel = Arc::new(kernel);
 
     let manifest = wasm_manifest("wasm-stream", "hello.wat");
-    let agent_id = kernel.spawn_agent(manifest).unwrap();
+    let agent_id = kernel.spawn_agent(manifest).await.unwrap();
 
     let (mut rx, handle) = kernel
         .send_message_streaming(agent_id, "Hi!", None)
+        .await
         .expect("Streaming should start");
 
     // Collect all stream events
@@ -322,7 +325,7 @@ async fn test_wasm_agent_streaming_fallback() {
     let final_result = handle.await.unwrap().expect("Task should complete");
     assert_eq!(final_result.response, "hello from wasm");
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }
 
 /// Test that spawning multiple WASM agents works concurrently.
@@ -337,9 +340,11 @@ async fn test_multiple_wasm_agents() {
 
     let hello_id = kernel
         .spawn_agent(wasm_manifest("hello-agent", "hello.wat"))
+        .await
         .unwrap();
     let echo_id = kernel
         .spawn_agent(wasm_manifest("echo-agent", "echo.wat"))
+        .await
         .unwrap();
 
     // Execute both
@@ -353,7 +358,7 @@ async fn test_multiple_wasm_agents() {
     let agents = kernel.registry.list();
     assert_eq!(agents.len(), 3);
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }
 
 /// Test WASM agent alongside LLM agent (mixed fleet).
@@ -368,6 +373,7 @@ async fn test_mixed_wasm_and_llm_agents() {
     // Spawn a WASM agent
     let wasm_id = kernel
         .spawn_agent(wasm_manifest("wasm-agent", "hello.wat"))
+        .await
         .unwrap();
 
     // Spawn a regular LLM agent (won't actually call LLM since ollama isn't running,
@@ -389,7 +395,7 @@ memory_read = ["*"]
 memory_write = ["self.*"]
 "#;
     let llm_manifest: AgentManifest = toml::from_str(llm_toml).unwrap();
-    let llm_id = kernel.spawn_agent(llm_manifest).unwrap();
+    let llm_id = kernel.spawn_agent(llm_manifest).await.unwrap();
 
     // Verify both agents exist + default assistant
     let agents = kernel.registry.list();
@@ -403,8 +409,8 @@ memory_write = ["self.*"]
     assert!(kernel.registry.get(llm_id).is_some());
 
     // Kill WASM agent
-    kernel.kill_agent(wasm_id).unwrap();
+    kernel.kill_agent(wasm_id).await.unwrap();
     assert_eq!(kernel.registry.list().len(), 2);
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }

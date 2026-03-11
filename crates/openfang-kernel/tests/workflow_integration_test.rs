@@ -29,7 +29,7 @@ fn test_config(provider: &str, model: &str, api_key_env: &str) -> KernelConfig {
     }
 }
 
-fn spawn_test_agent(
+async fn spawn_test_agent(
     kernel: &OpenFangKernel,
     name: &str,
     system_prompt: &str,
@@ -53,7 +53,7 @@ memory_write = ["self.*"]
 "#
     );
     let manifest: AgentManifest = toml::from_str(&manifest_str).unwrap();
-    kernel.spawn_agent(manifest).expect("Agent should spawn")
+    kernel.spawn_agent(manifest).await.expect("Agent should spawn")
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +87,7 @@ memory_write = ["self.*"]
 "#,
     )
     .unwrap();
-    let alpha_id = kernel.spawn_agent(manifest).unwrap();
+    let alpha_id = kernel.spawn_agent(manifest).await.unwrap();
 
     let manifest2: AgentManifest = toml::from_str(
         r#"
@@ -108,7 +108,7 @@ memory_write = ["self.*"]
 "#,
     )
     .unwrap();
-    let beta_id = kernel.spawn_agent(manifest2).unwrap();
+    let beta_id = kernel.spawn_agent(manifest2).await.unwrap();
 
     // Create a 2-step workflow referencing agents by name
     let workflow = Workflow {
@@ -168,7 +168,7 @@ memory_write = ["self.*"]
     let run = kernel.workflows.get_run(run_id.unwrap()).await.unwrap();
     assert_eq!(run.input, "test input");
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }
 
 /// Test workflow with agent referenced by ID.
@@ -196,7 +196,7 @@ memory_write = ["self.*"]
 "#,
     )
     .unwrap();
-    let agent_id = kernel.spawn_agent(manifest).unwrap();
+    let agent_id = kernel.spawn_agent(manifest).await.unwrap();
 
     let workflow = Workflow {
         id: WorkflowId::new(),
@@ -225,7 +225,7 @@ memory_write = ["self.*"]
         .await;
     assert!(run_id.is_some());
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }
 
 /// Test trigger registration and listing at kernel level.
@@ -255,7 +255,7 @@ memory_write = ["self.*"]
 "#,
     )
     .unwrap();
-    let agent_id = kernel.spawn_agent(manifest).unwrap();
+    let agent_id = kernel.spawn_agent(manifest).await.unwrap();
 
     // Register triggers
     let t1 = kernel
@@ -292,7 +292,7 @@ memory_write = ["self.*"]
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].id, t2);
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,12 +318,12 @@ async fn test_workflow_e2e_with_groq() {
         &kernel,
         "wf-analyst",
         "You are an analyst. When given text, respond with exactly: ANALYSIS: followed by a one-sentence analysis.",
-    );
+    ).await;
     let _writer_id = spawn_test_agent(
         &kernel,
         "wf-writer",
         "You are a writer. When given text, respond with exactly: SUMMARY: followed by a one-sentence summary.",
-    );
+    ).await;
 
     // Create a 2-step pipeline: analyst → writer
     let workflow = Workflow {
@@ -400,5 +400,5 @@ async fn test_workflow_e2e_with_groq() {
     let runs = kernel.workflows.list_runs(None).await;
     assert_eq!(runs.len(), 1);
 
-    kernel.shutdown();
+    kernel.shutdown().await;
 }

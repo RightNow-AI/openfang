@@ -147,6 +147,7 @@ memory_write = ["self.*"]
         let manifest = load_manifest(manifest_str);
         let id = kernel
             .spawn_agent(manifest)
+            .await
             .unwrap_or_else(|e| panic!("Failed to spawn {name}: {e}"));
         println!("  Spawned: {name:<12} -> {id}");
         agent_ids.push(id);
@@ -195,7 +196,7 @@ memory_write = ["self.*"]
 
     // Cleanup
     for id in agent_ids {
-        kernel.kill_agent(id).unwrap();
+        kernel.kill_agent(id).await.unwrap();
     }
-    kernel.shutdown();
+    kernel.shutdown().await;
 }

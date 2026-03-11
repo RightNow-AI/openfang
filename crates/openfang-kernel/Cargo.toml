@@ -42,6 +42,7 @@ sha2 = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 cron = "0.15"
+maestro-swe = { path = "../maestro-swe" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -49,7 +50,3 @@ libc = "0.2"
 [dev-dependencies]
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
-
-
-
-maestro-swe = { path = "../maestro-swe" }

@@ -796,7 +796,8 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             let _ = self
                 .kernel
                 .memory
-                .structured_set(agent_id, "delivery.last_channel", kv_val);
+                .structured_set(agent_id, "delivery.last_channel", kv_val)
+                .await;
         }
     }
 

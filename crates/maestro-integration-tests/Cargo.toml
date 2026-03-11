@@ -19,6 +19,7 @@ maestro-guardrails = { path = "../maestro-guardrails" }
 maestro-observability = { path = "../maestro-observability" }
 maestro-eval = { path = "../maestro-eval" }
 maestro-algorithm = { path = "../maestro-algorithm" }
+serde = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

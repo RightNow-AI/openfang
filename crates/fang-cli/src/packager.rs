@@ -1,8 +1,7 @@
 //! Creates a .tar.gz archive from a Hand package directory.
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use walkdir::WalkDir;
 
 /// Build a .tar.gz archive from the given directory.
