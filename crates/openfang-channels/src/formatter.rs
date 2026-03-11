@@ -52,7 +52,7 @@ fn restore_placeholders(mut text: String, placeholders: &[(String, String)]) -> 
 }
 
 fn format_telegram_inline(text: &str, placeholders: &mut Vec<(String, String)>) -> String {
-    let mut result = escape_telegram_html(text);
+    let mut result = escape_telegram_html(&replace_markdown_task_lists(text));
     result = replace_inline_code(&result, placeholders);
     result = replace_markdown_links(result);
     result = replace_markdown_spoiler(result);
@@ -60,6 +60,62 @@ fn format_telegram_inline(text: &str, placeholders: &mut Vec<(String, String)>) 
     result = replace_markdown_underline(result);
     result = replace_markdown_bold(result);
     replace_markdown_italic(&result)
+}
+
+fn replace_markdown_task_lists(text: &str) -> String {
+    text.lines()
+        .map(rewrite_task_list_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn rewrite_task_list_line(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let indent = &line[..line.len() - trimmed.len()];
+
+    let (list_prefix, checked, content) = match trim_task_list_prefix(trimmed) {
+        Some(parts) => parts,
+        None => return line.to_string(),
+    };
+
+    let marker = if checked { "☑" } else { "☐" };
+    let content = content.trim_start();
+    if content.is_empty() {
+        format!("{indent}{list_prefix}{marker}")
+    } else {
+        format!("{indent}{list_prefix}{marker} {content}")
+    }
+}
+
+fn trim_task_list_prefix(line: &str) -> Option<(&str, bool, &str)> {
+    let (list_prefix, remainder) = if let Some(rest) = line.strip_prefix("- ") {
+        ("- ", rest)
+    } else if let Some(rest) = line.strip_prefix("* ") {
+        ("* ", rest)
+    } else if let Some(rest) = line.strip_prefix("+ ") {
+            ("+ ", rest)
+        } else {
+            let digit_count = line.chars().take_while(|ch| ch.is_ascii_digit()).count();
+            if digit_count == 0 {
+                ("", line)
+            } else {
+                if let Some(rest) = line[digit_count..].strip_prefix(". ") {
+                    (&line[..digit_count + 2], rest)
+                } else {
+                    ("", line)
+                }
+        }
+    };
+
+    if let Some(rest) = remainder.strip_prefix("[ ]") {
+        Some((list_prefix, false, rest))
+    } else if let Some(rest) = remainder.strip_prefix("[x]") {
+        Some((list_prefix, true, rest))
+    } else if let Some(rest) = remainder.strip_prefix("[X]") {
+        Some((list_prefix, true, rest))
+    } else {
+        None
+    }
 }
 
 fn replace_fenced_code_blocks(text: &str, placeholders: &mut Vec<(String, String)>) -> String {
@@ -278,6 +334,8 @@ fn render_record_table(header: &[String], rows: &[Vec<String>]) -> String {
                 .collect::<Vec<_>>()
                 .join("\n")
         })
+        .collect::<Vec<_>>()
+        .into_iter()
         .filter(|row| !row.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -399,6 +457,7 @@ fn replace_markdown_italic(result: &str) -> String {
         if chars[i] == '*'
             && (i == 0 || chars[i - 1] != '*')
             && (i + 1 >= chars.len() || chars[i + 1] != '*')
+            && !is_list_bullet_marker(&chars, i)
         {
             if in_italic {
                 out.push_str("</i>");
@@ -412,6 +471,25 @@ fn replace_markdown_italic(result: &str) -> String {
         i += 1;
     }
     out
+}
+
+fn is_list_bullet_marker(chars: &[char], index: usize) -> bool {
+    if chars.get(index) != Some(&'*') || chars.get(index + 1) != Some(&' ') {
+        return false;
+    }
+
+    let mut cursor = index;
+    while cursor > 0 {
+        cursor -= 1;
+        if chars[cursor] == '\n' {
+            return true;
+        }
+        if !chars[cursor].is_whitespace() {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Convert Markdown to Slack mrkdwn format.
@@ -457,7 +535,7 @@ fn markdown_to_slack_mrkdwn(text: &str) -> String {
 
 /// Strip all Markdown formatting, producing plain text.
 fn markdown_to_plain(text: &str) -> String {
-    let mut result = text.to_string();
+    let mut result = replace_markdown_task_lists(text);
 
     result = result
         .lines()
@@ -566,6 +644,17 @@ mod tests {
     }
 
     #[test]
+    fn test_telegram_html_task_lists() {
+        let result = markdown_to_telegram_html(
+            "- [x] done\n- [ ] todo\n1. [x] numbered\n  * [ ] nested with **bold**",
+        );
+        assert_eq!(
+            result,
+            "- ☑ done\n- ☐ todo\n1. ☑ numbered\n  * ☐ nested with <b>bold</b>"
+        );
+    }
+
+    #[test]
     fn test_telegram_html_blockquote_with_nested_formatting() {
         let result = markdown_to_telegram_html(
             "> quoted **bold**\n> second __line__ with ||spoiler||\n\noutside",
@@ -651,5 +740,11 @@ mod tests {
     fn test_plain_text_strips_blockquote_and_spoiler() {
         let result = markdown_to_plain("> quoted ||secret||");
         assert_eq!(result, "quoted secret");
+    }
+
+    #[test]
+    fn test_plain_text_task_lists_use_checkboxes() {
+        let result = markdown_to_plain("- [x] done\n- [ ] todo");
+        assert_eq!(result, "- ☑ done\n- ☐ todo");
     }
 }
