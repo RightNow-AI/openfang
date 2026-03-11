@@ -172,7 +172,12 @@ fn parse_markdown_table(lines: &[&str]) -> Option<(String, usize)> {
     }
 
     let table = render_markdown_table(&header, &rows);
-    Some((format!("<pre>{}</pre>", escape_telegram_html(&table)), consumed))
+    let rendered = if should_render_table_as_records(&header, &rows) {
+        escape_telegram_html(&table)
+    } else {
+        format!("<pre>{}</pre>", escape_telegram_html(&table))
+    };
+    Some((rendered, consumed))
 }
 
 fn parse_table_row(line: &str) -> Option<Vec<String>> {
@@ -197,6 +202,10 @@ fn is_table_separator(line: &str) -> bool {
 }
 
 fn render_markdown_table(header: &[String], rows: &[Vec<String>]) -> String {
+    if should_render_table_as_records(header, rows) {
+        return render_record_table(header, rows);
+    }
+
     let col_count = std::iter::once(header.len())
         .chain(rows.iter().map(|row| row.len()))
         .max()
@@ -244,6 +253,36 @@ fn render_markdown_table(header: &[String], rows: &[Vec<String>]) -> String {
         .join("\n")
 }
 
+fn render_record_table(header: &[String], rows: &[Vec<String>]) -> String {
+    let headers: Vec<String> = header
+        .iter()
+        .map(|cell| markdown_to_plain(cell).trim().to_string())
+        .collect();
+
+    rows.iter()
+        .map(|row| {
+            headers
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, label)| {
+                    let value = row
+                        .get(idx)
+                        .map(|cell| markdown_to_plain(cell).trim().to_string())
+                        .unwrap_or_default();
+                    if label.is_empty() || value.is_empty() {
+                        None
+                    } else {
+                        Some(format!("{label}: {value}"))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .filter(|row| !row.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 fn render_table_row(row: &[String], widths: &[usize]) -> String {
     row.iter()
         .zip(widths.iter())
@@ -257,6 +296,17 @@ fn render_table_row(row: &[String], widths: &[usize]) -> String {
 
 fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width_cjk(text)
+}
+
+fn contains_wide_chars(text: &str) -> bool {
+    display_width(text) > text.chars().count()
+}
+
+fn should_render_table_as_records(header: &[String], rows: &[Vec<String>]) -> bool {
+    header
+        .iter()
+        .chain(rows.iter().flatten())
+        .any(|cell| contains_wide_chars(cell))
 }
 
 fn replace_inline_code(text: &str, placeholders: &mut Vec<(String, String)>) -> String {
@@ -541,6 +591,16 @@ mod tests {
     }
 
     #[test]
+    fn test_telegram_html_cjk_table_falls_back_to_records() {
+        let result =
+            markdown_to_telegram_html("| 名称 | 状态 |\n| --- | --- |\n| 中文 | ok |\n| 派遣周报 | 已同步 |");
+        assert!(!result.contains("<pre>"));
+        assert!(result.contains("名称: 中文"));
+        assert!(result.contains("状态: ok"));
+        assert!(result.contains("名称: 派遣周报"));
+    }
+
+    #[test]
     fn test_telegram_html_mixed_text_and_table() {
         let result = markdown_to_telegram_html(
             "Summary\n\n| Name | Value |\n| --- | --- |\n| Foo | 42 |\n\n**done**",
@@ -553,14 +613,14 @@ mod tests {
 
     #[test]
     fn test_render_markdown_table_uses_display_width() {
-        let header = vec!["名称".to_string(), "状态".to_string()];
+        let header = vec!["Name".to_string(), "State".to_string()];
         let rows = vec![
-            vec!["中文".to_string(), "ok".to_string()],
-            vec!["A".to_string(), "世界".to_string()],
+            vec!["Alice".to_string(), "ok".to_string()],
+            vec!["Bob".to_string(), "ready".to_string()],
         ];
         let table = render_markdown_table(&header, &rows);
         let widths: Vec<usize> = table.lines().map(display_width).collect();
-        assert_eq!(widths, vec![11, 11, 11, 11]);
+        assert_eq!(widths, vec![13, 13, 13, 13]);
     }
 
     #[test]
