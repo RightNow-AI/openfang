@@ -134,7 +134,9 @@ pub async fn spawn_agent(
         if !default_model.api_key_env.is_empty() {
             model.api_key_env = Some(default_model.api_key_env.clone());
         }
-        model.base_url = default_model.base_url.clone();
+        if !default_model.base_url.is_none() {
+            model.base_url = default_model.base_url.clone();
+        }
         manifest.model = model;
     }
 
