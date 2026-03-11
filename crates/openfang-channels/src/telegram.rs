@@ -32,16 +32,31 @@ fn is_remote_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
 }
 
-fn local_document_path(document_ref: &str) -> Option<PathBuf> {
-    let path = document_ref
-        .strip_prefix("file://")
-        .unwrap_or(document_ref)
-        .trim();
+fn local_media_path(media_ref: &str) -> Option<PathBuf> {
+    let path = media_ref.strip_prefix("file://").unwrap_or(media_ref).trim();
     if path.is_empty() {
         return None;
     }
     let path = PathBuf::from(path);
     path.is_file().then_some(path)
+}
+
+fn local_document_path(document_ref: &str) -> Option<PathBuf> {
+    local_media_path(document_ref)
+}
+
+fn infer_image_mime(path: &PathBuf) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        _ => "image/png",
+    }
 }
 
 /// Telegram Bot API adapter using long-polling.
@@ -149,26 +164,63 @@ impl TelegramAdapter {
     async fn api_send_photo(
         &self,
         chat_id: i64,
-        photo_url: &str,
+        photo_ref: &str,
         caption: Option<&str>,
         thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!("{}/bot{}/sendPhoto", self.api_base_url, self.token.as_str());
-        let mut body = serde_json::json!({
-            "chat_id": chat_id,
-            "photo": photo_url,
-        });
+        if is_remote_url(photo_ref) {
+            let mut body = serde_json::json!({
+                "chat_id": chat_id,
+                "photo": photo_ref,
+            });
+            if let Some(cap) = caption {
+                body["caption"] = serde_json::Value::String(cap.to_string());
+                body["parse_mode"] = serde_json::Value::String("HTML".to_string());
+            }
+            if let Some(tid) = thread_id {
+                body["message_thread_id"] = serde_json::json!(tid);
+            }
+            let resp = self.client.post(&url).json(&body).send().await?;
+            if !resp.status().is_success() {
+                let body_text = resp.text().await.unwrap_or_default();
+                warn!("Telegram sendPhoto failed: {body_text}");
+            }
+            return Ok(());
+        }
+
+        let local_path = local_media_path(photo_ref).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Telegram photo must be an http(s) URL or existing local file path: {photo_ref}"
+                ),
+            )
+        })?;
+        let bytes = tokio::fs::read(&local_path).await?;
+        let file_name = local_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("image.png")
+            .to_string();
+        let photo_part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(file_name)
+            .mime_str(infer_image_mime(&local_path))?;
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("photo", photo_part);
         if let Some(cap) = caption {
-            body["caption"] = serde_json::Value::String(cap.to_string());
-            body["parse_mode"] = serde_json::Value::String("HTML".to_string());
+            form = form
+                .text("caption", cap.to_string())
+                .text("parse_mode", "HTML".to_string());
         }
         if let Some(tid) = thread_id {
-            body["message_thread_id"] = serde_json::json!(tid);
+            form = form.text("message_thread_id", tid.to_string());
         }
-        let resp = self.client.post(&url).json(&body).send().await?;
+        let resp = self.client.post(&url).multipart(form).send().await?;
         if !resp.status().is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            warn!("Telegram sendPhoto failed: {body_text}");
+            warn!("Telegram sendPhoto multipart failed: {body_text}");
         }
         Ok(())
     }
@@ -1347,6 +1399,43 @@ mod tests {
         assert!(request.contains("name=\"document\"; filename=\"report.pdf\""));
 
         let _ = std::fs::remove_file(file_path);
+    }
+
+    #[tokio::test]
+    async fn test_api_send_photo_multipart_for_local_file_preserves_thread_id() {
+        let (api_base_url, request_rx) = capture_single_request().await;
+        let image_path =
+            std::env::temp_dir().join(format!("openfang-telegram-send-{}.png", std::process::id()));
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\n").unwrap();
+
+        let adapter = TelegramAdapter::new(
+            "fake:token".to_string(),
+            vec![],
+            Duration::from_millis(1),
+            Some(api_base_url),
+        );
+        adapter
+            .api_send_photo(
+                12345,
+                image_path.to_string_lossy().as_ref(),
+                Some("table image"),
+                Some(18),
+            )
+            .await
+            .unwrap();
+
+        let request = request_rx.await.unwrap();
+        assert!(request.starts_with("POST /botfake:token/sendPhoto HTTP/1.1"));
+        assert!(request.contains("multipart/form-data; boundary="));
+        assert!(request.contains("name=\"chat_id\""));
+        assert!(request.contains("\r\n12345\r\n"));
+        assert!(request.contains("name=\"message_thread_id\""));
+        assert!(request.contains("\r\n18\r\n"));
+        assert!(request.contains("name=\"caption\""));
+        assert!(request.contains("\r\ntable image\r\n"));
+        assert!(request.contains("name=\"photo\"; filename=\""));
+
+        let _ = std::fs::remove_file(image_path);
     }
 
     #[test]

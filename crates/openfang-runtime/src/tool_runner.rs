@@ -1035,7 +1035,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Channel send tool (proactive outbound messaging) ---
         ToolDefinition {
             name: "channel_send".to_string(),
-            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url, file_url, or file_path to send an image or file instead of (or alongside) text. Use thread_id to target a specific thread/topic on thread-capable channels. Local file_path attachments currently require the telegram channel.".to_string(),
+            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url, image_path, file_url, or file_path to send an image or file instead of (or alongside) text. Use thread_id to target a specific thread/topic on thread-capable channels. Local image_path/file_path attachments currently require the telegram channel.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1044,6 +1044,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "subject": { "type": "string", "description": "Optional subject line (used for email; ignored for other channels)" },
                     "message": { "type": "string", "description": "The message body to send (required for text, optional caption for media)" },
                     "image_url": { "type": "string", "description": "URL of an image to send (supported on Telegram, Discord, Slack)" },
+                    "image_path": { "type": "string", "description": "Local filesystem path of an image to send inline (currently supported for telegram only)" },
                     "file_url": { "type": "string", "description": "URL of a file to send as attachment" },
                     "file_path": { "type": "string", "description": "Local filesystem path of a file to send as attachment (currently supported for telegram only)" },
                     "filename": { "type": "string", "description": "Filename for file attachments (defaults to the basename of file_path or 'file')" },
@@ -2237,17 +2238,26 @@ async fn tool_channel_send(
 
     let thread_id = optional_thread_id(input)?;
 
-    // Check for media content (image_url or file_url/file_path)
+    // Check for media content (image_url/image_path or file_url/file_path)
     let image_url = input["image_url"].as_str().filter(|s| !s.is_empty());
+    let image_path = input["image_path"].as_str().filter(|s| !s.is_empty());
     let file_url = input["file_url"].as_str().filter(|s| !s.is_empty());
     let file_path = input["file_path"].as_str().filter(|s| !s.is_empty());
-    let media_inputs = [image_url.is_some(), file_url.is_some(), file_path.is_some()]
+    let media_inputs = [
+        image_url.is_some(),
+        image_path.is_some(),
+        file_url.is_some(),
+        file_path.is_some(),
+    ]
         .into_iter()
         .filter(|present| *present)
         .count();
 
     if media_inputs > 1 {
-        return Err("Specify only one of 'image_url', 'file_url', or 'file_path'".to_string());
+        return Err(
+            "Specify only one of 'image_url', 'image_path', 'file_url', or 'file_path'"
+                .to_string(),
+        );
     }
 
     if let Some(url) = image_url {
@@ -2258,6 +2268,31 @@ async fn tool_channel_send(
                 recipient,
                 "image",
                 url,
+                caption,
+                None,
+                thread_id.as_deref(),
+            )
+            .await;
+    }
+
+    if let Some(path) = image_path {
+        if channel != "telegram" {
+            return Err(format!(
+                "Local image_path attachments are currently only supported for the telegram channel, got '{channel}'"
+            ));
+        }
+        let path = Path::new(path);
+        if !path.is_file() {
+            return Err(format!("Local image not found: {}", path.display()));
+        }
+        let local_path = path.to_string_lossy().into_owned();
+        let caption = input["message"].as_str().filter(|s| !s.is_empty());
+        return kh
+            .send_channel_media(
+                &channel,
+                recipient,
+                "image",
+                &local_path,
                 caption,
                 None,
                 thread_id.as_deref(),
@@ -3510,7 +3545,42 @@ mod tests {
             .and_then(|value| value.as_object())
             .expect("channel_send properties");
         assert!(props.contains_key("thread_id"));
+        assert!(props.contains_key("image_path"));
         assert!(props.contains_key("file_path"));
+    }
+
+    #[tokio::test]
+    async fn test_channel_send_image_path_uses_image_media() {
+        let temp = tempfile::tempdir().unwrap();
+        let image_path = temp.path().join("table.png");
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\n").unwrap();
+
+        let kernel_impl = Arc::new(MockKernel::default());
+        let kernel = kernel_impl.clone() as Arc<dyn KernelHandle>;
+        let result = tool_channel_send(
+            &serde_json::json!({
+                "channel": "telegram",
+                "recipient": "-100123",
+                "image_path": image_path,
+                "message": "table image",
+                "thread_id": 18
+            }),
+            Some(&kernel),
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(
+            kernel_impl.take_call(),
+            MockChannelCall::Media {
+                channel: "telegram".to_string(),
+                recipient: "-100123".to_string(),
+                media_type: "image".to_string(),
+                media_url: image_path.to_string_lossy().into_owned(),
+                caption: Some("table image".to_string()),
+                filename: None,
+                thread_id: Some("18".to_string()),
+            }
+        );
     }
 
     #[tokio::test]
