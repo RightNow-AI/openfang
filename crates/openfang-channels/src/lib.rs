@@ -51,3 +51,4 @@ pub mod linkedin;
 pub mod mumble;
 pub mod ntfy;
 pub mod webhook;
+pub mod wecom;
