@@ -341,6 +341,10 @@ class AgentResource {
       path: path,
     });
   }
+
+  async delHistory(id) {
+    return this._c._request("DELETE", "/api/agents/" + id + "/history");
+  }
 }
 
 // ── Session Resource ────────────────────────────────────────────
@@ -521,6 +525,12 @@ class ModelResource {
   async updateUnigptModels(models) {
     return this._c._request("POST", "/unigpt/models", models);
   }
+
+  async setToken(token) {
+    return this._c._request("POST", "/unigpt/set_token", {
+      token: token,
+    });
+  }
 }
 
 // ── Provider Resource ───────────────────────────────────────────
@@ -548,7 +558,7 @@ class ProviderResource {
     return this._c._request("POST", "/api/providers/" + name + "/test");
   }
 
-  setUrl(name, url) {
+  async setUrl(name, url) {
     return this._c._request("PUT", "/api/providers/" + name + "/url", {
       base_url: url,
     });
