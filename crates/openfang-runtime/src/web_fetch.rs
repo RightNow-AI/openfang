@@ -23,6 +23,7 @@ impl WebFetchEngine {
     /// Create a new fetch engine from config with a shared cache.
     pub fn new(config: WebFetchConfig, cache: Arc<WebCache>) -> Self {
         let client = reqwest::Client::builder()
+            .user_agent(crate::USER_AGENT)
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .gzip(true)
             .deflate(true)
@@ -71,7 +72,7 @@ impl WebFetchEngine {
             "DELETE" => self.client.delete(url),
             _ => self.client.get(url),
         };
-        req = req.header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)");
+        req = req.header("User-Agent", format!("Mozilla/5.0 (compatible; {})", crate::USER_AGENT));
 
         // Add custom headers
         if let Some(hdrs) = headers {

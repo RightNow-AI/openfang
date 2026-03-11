@@ -1,6 +1,16 @@
 // OpenFang Setup Wizard — First-run guided setup (Provider + Agent + Channel)
 'use strict';
 
+/** Escape a string for use inside TOML triple-quoted strings ("""\n...\n"""). */
+function wizardTomlMultilineEscape(s) {
+  return s.replace(/\\/g, '\\\\').replace(/"""/g, '""\\"');
+}
+
+/** Escape a string for use inside a TOML basic (single-line) string ("..."). */
+function wizardTomlBasicEscape(s) {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+}
+
 function wizardPage() {
   return {
     step: 1,
@@ -462,12 +472,12 @@ function wizardPage() {
       }
 
       var toml = '[agent]\n';
-      toml += 'name = "' + name.replace(/"/g, '\\"') + '"\n';
-      toml += 'description = "' + tpl.description.replace(/"/g, '\\"') + '"\n';
+      toml += 'name = "' + wizardTomlBasicEscape(name) + '"\n';
+      toml += 'description = "' + wizardTomlBasicEscape(tpl.description) + '"\n';
       toml += 'profile = "' + tpl.profile + '"\n\n';
       toml += '[model]\nprovider = "' + provider + '"\n';
       toml += 'model = "' + model + '"\n';
-      toml += 'system_prompt = """\n' + tpl.system_prompt + '\n"""\n';
+      toml += 'system_prompt = """\n' + wizardTomlMultilineEscape(tpl.system_prompt) + '\n"""\n';
 
       this.creatingAgent = true;
       try {

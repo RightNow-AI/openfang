@@ -1108,9 +1108,8 @@ pub struct BudgetConfig {
     pub max_monthly_usd: f64,
     /// Alert threshold as a fraction (0.0 - 1.0). Trigger warnings at this % of any limit.
     pub alert_threshold: f64,
-    /// Default per-agent hourly token limit override. When set (> 0), agents that
-    /// still have the built-in default (1,000,000) or a lower per-agent value will
-    /// be overridden to this value. Set to 0 to keep each agent's own limit.
+    /// Default per-agent hourly token limit override. When set (> 0), all agents
+    /// will be overridden to this value. Set to 0 to keep each agent's own limit.
     /// Use this to globally raise or lower the token budget for all agents.
     pub default_max_llm_tokens_per_hour: u64,
 }
