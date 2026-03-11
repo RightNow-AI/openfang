@@ -424,7 +424,7 @@ pub async fn set_agent_workspace(
     }
 
     // Prevent moving a workspace into one of its own subdirectories —
-    // copy_dir_recursive would encounter the destination while iterating
+    // move_dir_recursive would encounter the destination while iterating
     // the source, causing infinite directory creation.
     if let Some(ref old) = old_path {
         if new_path.starts_with(old) {
@@ -441,9 +441,11 @@ pub async fn set_agent_workspace(
         if old.exists() {
             let file_count = count_files_recursive(old);
 
-            // Prefer atomic rename; fall back to copy+delete on cross-device error
+            // Prefer atomic rename of the whole tree (same filesystem, zero
+            // copies). On cross-device failure, move each entry individually:
+            // rename per file, only copy+remove_file when rename is unavailable.
             if std::fs::rename(old, &new_path).is_err() {
-                if let Err(e) = copy_dir_recursive(old, &new_path) {
+                if let Err(e) = move_dir_recursive(old, &new_path) {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(
@@ -451,7 +453,8 @@ pub async fn set_agent_workspace(
                         ),
                     );
                 }
-                if let Err(e) = std::fs::remove_dir_all(old) {
+                // Source root is now empty; remove it.
+                if let Err(e) = std::fs::remove_dir(old) {
                     tracing::warn!("Failed to remove old workspace {}: {e}", old.display());
                 }
             }
@@ -516,22 +519,26 @@ fn count_files_recursive(dir: &std::path::Path) -> usize {
     count
 }
 
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+fn move_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let src_path = entry.path();
-        // Skip any entry that is a prefix of dst — this is exactly the case
-        // where dst lives inside src, and blindly recursing would create
-        // dst/dst/dst/... indefinitely.
+        // Skip entries that are on the path to dst (infinite-recursion guard).
         if dst.starts_with(&src_path) {
             continue;
         }
         let dst_path = dst.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
+            move_dir_recursive(&src_path, &dst_path)?;
+            // Directory is now empty; remove it.
+            std::fs::remove_dir(&src_path)?;
         } else {
-            std::fs::copy(&src_path, &dst_path)?;
+            // Try atomic rename first; only copy+remove when cross-device.
+            if std::fs::rename(&src_path, &dst_path).is_err() {
+                std::fs::copy(&src_path, &dst_path)?;
+                std::fs::remove_file(&src_path)?;
+            }
         }
     }
     Ok(())
