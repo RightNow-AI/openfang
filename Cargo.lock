@@ -3854,6 +3854,7 @@ dependencies = [
  "tokio-test",
  "tokio-tungstenite 0.24.0",
  "tracing",
+ "unicode-width 0.2.0",
  "url",
  "uuid",
  "zeroize",
