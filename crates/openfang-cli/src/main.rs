@@ -1021,7 +1021,10 @@ fn main() {
             SystemCommands::Version { json } => cmd_system_version(json),
         },
         Some(Commands::Reset { confirm }) => cmd_reset(confirm),
-        Some(Commands::Uninstall { confirm, keep_config }) => cmd_uninstall(confirm, keep_config),
+        Some(Commands::Uninstall {
+            confirm,
+            keep_config,
+        }) => cmd_uninstall(confirm, keep_config),
     }
 }
 
@@ -1078,8 +1081,8 @@ pub(crate) fn find_daemon() -> Option<String> {
 /// includes a `Authorization: Bearer <key>` header on every request.
 /// When api_key is empty or missing, no auth header is sent.
 pub(crate) fn daemon_client() -> reqwest::blocking::Client {
-    let mut builder = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120));
+    let mut builder =
+        reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(120));
 
     if let Some(key) = read_api_key() {
         let mut headers = reqwest::header::HeaderMap::new();
@@ -1971,6 +1974,7 @@ fn cmd_status(config: Option<PathBuf>, json: bool) {
     }
 }
 
+#[allow(clippy::collapsible_else_if)]
 fn cmd_doctor(json: bool, repair: bool) {
     let mut checks: Vec<serde_json::Value> = Vec::new();
     let mut all_ok = true;
@@ -2183,7 +2187,9 @@ decay_rate = 0.05
                     if !json {
                         ui::check_ok(&format!("Port {api_listen} is available"));
                     }
-                    checks.push(serde_json::json!({"check": "port", "status": "ok", "address": api_listen}));
+                    checks.push(
+                        serde_json::json!({"check": "port", "status": "ok", "address": api_listen}),
+                    );
                 }
                 Err(_) => {
                     if !json {
@@ -3985,7 +3991,10 @@ fn cmd_hand_install(path: &str) {
         body["name"].as_str().unwrap_or("?"),
         body["id"].as_str().unwrap_or("?"),
     );
-    println!("Use `openfang hand activate {}` to start it.", body["id"].as_str().unwrap_or("?"));
+    println!(
+        "Use `openfang hand activate {}` to start it.",
+        body["id"].as_str().unwrap_or("?")
+    );
 }
 
 fn cmd_hand_list() {
@@ -4010,10 +4019,7 @@ fn cmd_hand_list() {
             println!("No hands available.");
             return;
         }
-        println!(
-            "{:<14} {:<20} {:<10} DESCRIPTION",
-            "ID", "NAME", "CATEGORY"
-        );
+        println!("{:<14} {:<20} {:<10} DESCRIPTION", "ID", "NAME", "CATEGORY");
         println!("{}", "-".repeat(72));
         for h in arr {
             println!(
@@ -4021,7 +4027,12 @@ fn cmd_hand_list() {
                 h["id"].as_str().unwrap_or("?"),
                 h["name"].as_str().unwrap_or("?"),
                 h["category"].as_str().unwrap_or("?"),
-                h["description"].as_str().unwrap_or("").chars().take(40).collect::<String>(),
+                h["description"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(40)
+                    .collect::<String>(),
             );
         }
         println!("\nUse `openfang hand activate <id>` to activate a hand.");
@@ -4043,10 +4054,7 @@ fn cmd_hand_active() {
         println!("No active hands.");
         return;
     }
-    println!(
-        "{:<38} {:<14} {:<10} AGENT",
-        "INSTANCE", "HAND", "STATUS"
-    );
+    println!("{:<38} {:<14} {:<10} AGENT", "INSTANCE", "HAND", "STATUS");
     println!("{}", "-".repeat(72));
     for i in &arr {
         println!(
@@ -4134,10 +4142,7 @@ fn cmd_hand_info(id: &str) {
     let client = daemon_client();
     let body = daemon_json(client.get(format!("{base}/api/hands/{id}")).send());
     if body.get("error").is_some() {
-        eprintln!(
-            "Hand not found: {}",
-            body["error"].as_str().unwrap_or(id)
-        );
+        eprintln!("Hand not found: {}", body["error"].as_str().unwrap_or(id));
         std::process::exit(1);
     }
     println!(
@@ -5456,7 +5461,15 @@ fn cmd_cron_create(agent: &str, spec: &str, prompt: &str, explicit_name: Option<
             .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
             .take(64)
             .collect();
-        format!("{}-{}", agent, if short_prompt.is_empty() { "job" } else { &short_prompt })
+        format!(
+            "{}-{}",
+            agent,
+            if short_prompt.is_empty() {
+                "job"
+            } else {
+                &short_prompt
+            }
+        )
     };
 
     let body = daemon_json(
@@ -6210,10 +6223,7 @@ fn cmd_uninstall(confirm: bool, keep_config: bool) {
         } else {
             match std::fs::remove_dir_all(&openfang_dir) {
                 Ok(()) => ui::success(&format!("Removed {}", openfang_dir.display())),
-                Err(e) => ui::error(&format!(
-                    "Failed to remove {}: {e}",
-                    openfang_dir.display()
-                )),
+                Err(e) => ui::error(&format!("Failed to remove {}: {e}", openfang_dir.display())),
             }
         }
     }
@@ -6222,10 +6232,7 @@ fn cmd_uninstall(confirm: bool, keep_config: bool) {
     if cargo_bin.exists() && exe_path.as_ref().is_none_or(|e| *e != cargo_bin) {
         match std::fs::remove_file(&cargo_bin) {
             Ok(()) => ui::success(&format!("Removed {}", cargo_bin.display())),
-            Err(e) => ui::error(&format!(
-                "Failed to remove {}: {e}",
-                cargo_bin.display()
-            )),
+            Err(e) => ui::error(&format!("Failed to remove {}: {e}", cargo_bin.display())),
         }
     }
 
@@ -6465,7 +6472,10 @@ fn remove_self_binary(exe_path: &std::path::Path) {
             .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
             .spawn();
 
-        ui::success(&format!("Removed {} (deferred cleanup)", exe_path.display()));
+        ui::success(&format!(
+            "Removed {} (deferred cleanup)",
+            exe_path.display()
+        ));
     }
 }
 

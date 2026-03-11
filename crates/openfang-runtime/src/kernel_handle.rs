@@ -22,6 +22,7 @@ pub struct AgentInfo {
 
 /// Handle to kernel operations, passed into the agent loop so agents
 /// can interact with each other via tools.
+#[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub trait KernelHandle: Send + Sync {
     /// Spawn a new agent from a TOML manifest string.
@@ -209,7 +210,9 @@ pub trait KernelHandle: Send + Sync {
         filename: Option<&str>,
         thread_id: Option<&str>,
     ) -> Result<String, String> {
-        let _ = (channel, recipient, media_type, media_url, caption, filename, thread_id);
+        let _ = (
+            channel, recipient, media_type, media_url, caption, filename, thread_id,
+        );
         Err("Channel media send not available".to_string())
     }
 

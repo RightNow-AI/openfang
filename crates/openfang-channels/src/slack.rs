@@ -337,7 +337,7 @@ async fn parse_slack_event(
     allowed_channels: &[String],
 ) -> Option<ChannelMessage> {
     let event_type = event["type"].as_str()?;
-    if event_type != "message" {
+    if event_type != "message" && event_type != "app_mention" {
         return None;
     }
 
@@ -413,6 +413,11 @@ async fn parse_slack_event(
         ChannelContent::Text(text.to_string())
     };
 
+    let mut metadata = HashMap::new();
+    if event_type == "app_mention" {
+        metadata.insert("was_mentioned".to_string(), serde_json::Value::Bool(true));
+    }
+
     Some(ChannelMessage {
         channel: ChannelType::Slack,
         platform_message_id: ts.to_string(),
@@ -426,7 +431,7 @@ async fn parse_slack_event(
         timestamp,
         is_group: true,
         thread_id: None,
-        metadata: HashMap::new(),
+        metadata,
     })
 }
 
