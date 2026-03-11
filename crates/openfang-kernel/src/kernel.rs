@@ -806,12 +806,20 @@ impl OpenFangKernel {
             use openfang_runtime::embedding::create_embedding_driver;
             let configured_model = &config.memory.embedding_model;
             if let Some(ref provider) = config.memory.embedding_provider {
-                // Explicit config takes priority — use the configured embedding model
+                // Explicit config takes priority — use the configured embedding model.
+                // If the user left embedding_model at the default ("all-MiniLM-L6-v2"),
+                // pick a sensible default for the chosen provider so we don't send a
+                // local model name to a cloud API.
+                let model = if configured_model == "all-MiniLM-L6-v2" {
+                    default_embedding_model_for_provider(provider)
+                } else {
+                    configured_model.as_str()
+                };
                 let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
                 let custom_url = config.provider_urls.get(provider.as_str()).map(|s| s.as_str());
-                match create_embedding_driver(provider, configured_model, api_key_env, custom_url) {
+                match create_embedding_driver(provider, model, api_key_env, custom_url) {
                     Ok(d) => {
-                        info!(provider = %provider, model = %configured_model, "Embedding driver configured from memory config");
+                        info!(provider = %provider, model = %model, "Embedding driver configured from memory config");
                         Some(Arc::from(d))
                     }
                     Err(e) => {
@@ -821,14 +829,14 @@ impl OpenFangKernel {
                 }
             } else if std::env::var("OPENAI_API_KEY").is_ok() {
                 let model = if configured_model == "all-MiniLM-L6-v2" {
-                    "text-embedding-3-small"
+                    default_embedding_model_for_provider("openai")
                 } else {
                     configured_model.as_str()
                 };
                 let openai_url = config.provider_urls.get("openai").map(|s| s.as_str());
                 match create_embedding_driver("openai", model, "OPENAI_API_KEY", openai_url) {
                     Ok(d) => {
-                        info!("Embedding driver auto-detected: OpenAI");
+                        info!(model = %model, "Embedding driver auto-detected: OpenAI");
                         Some(Arc::from(d))
                     }
                     Err(e) => {
@@ -839,14 +847,14 @@ impl OpenFangKernel {
             } else {
                 // Try Ollama (local, no key needed)
                 let model = if configured_model == "all-MiniLM-L6-v2" {
-                    "nomic-embed-text"
+                    default_embedding_model_for_provider("ollama")
                 } else {
                     configured_model.as_str()
                 };
                 let ollama_url = config.provider_urls.get("ollama").map(|s| s.as_str());
                 match create_embedding_driver("ollama", model, "", ollama_url) {
                     Ok(d) => {
-                        info!("Embedding driver auto-detected: Ollama (local)");
+                        info!(model = %model, "Embedding driver auto-detected: Ollama (local)");
                         Some(Arc::from(d))
                     }
                     Err(e) => {
@@ -4916,6 +4924,21 @@ fn apply_budget_defaults(
     // via config.toml [budget] default_max_llm_tokens_per_hour = 10000000
     if budget.default_max_llm_tokens_per_hour > 0 {
         resources.max_llm_tokens_per_hour = budget.default_max_llm_tokens_per_hour;
+    }
+}
+
+/// Pick a sensible default embedding model for a given provider when the user
+/// configured an explicit `embedding_provider` but left `embedding_model` at the
+/// default value (which is a local model name that cloud APIs wouldn't recognise).
+fn default_embedding_model_for_provider(provider: &str) -> &'static str {
+    match provider {
+        "openai" => "text-embedding-3-small",
+        "mistral" => "mistral-embed",
+        "cohere" => "embed-english-v3.0",
+        // Local providers use nomic-embed-text as a good default
+        "ollama" | "vllm" | "lmstudio" => "nomic-embed-text",
+        // Other OpenAI-compatible APIs typically support the OpenAI model names
+        _ => "text-embedding-3-small",
     }
 }
 

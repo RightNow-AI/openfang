@@ -1,6 +1,21 @@
 // OpenFang Agents Page — Multi-step spawn wizard, detail view with tabs, file editor, personality presets
 'use strict';
 
+/** Escape a string for use inside TOML triple-quoted strings ("""\n...\n""").
+ *  Backslashes are escaped, and runs of 3+ consecutive double-quotes are
+ *  broken up so the TOML parser never sees an unintended closing delimiter.
+ */
+function tomlMultilineEscape(s) {
+  return s.replace(/\\/g, '\\\\').replace(/"""/g, '""\\"');
+}
+
+/** Escape a string for use inside a TOML basic (single-line) string ("...").
+ *  Backslashes, double-quotes, and common control chars are escaped.
+ */
+function tomlBasicEscape(s) {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+}
+
 function agentsPage() {
   return {
     tab: 'agents',
@@ -411,7 +426,7 @@ function agentsPage() {
       var f = this.spawnForm;
       var si = this.spawnIdentity;
       var lines = [
-        'name = "' + f.name.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"',
+        'name = "' + tomlBasicEscape(f.name) + '"',
         'module = "builtin:chat"'
       ];
       if (f.profile && f.profile !== 'custom') {
@@ -420,7 +435,7 @@ function agentsPage() {
       lines.push('', '[model]');
       lines.push('provider = "' + f.provider + '"');
       lines.push('model = "' + f.model + '"');
-      lines.push('system_prompt = """\n' + f.systemPrompt.replace(/\\/g, '\\\\').replace(/"""/g, '""\\"') + '\n"""');
+      lines.push('system_prompt = """\n' + tomlMultilineEscape(f.systemPrompt) + '\n"""');
       if (f.profile === 'custom') {
         lines.push('', '[capabilities]');
         if (f.caps.memory_read) lines.push('memory_read = ["*"]');
@@ -698,12 +713,12 @@ function agentsPage() {
     },
 
     async spawnBuiltin(t) {
-      var toml = 'name = "' + t.name + '"\n';
-      toml += 'description = "' + t.description.replace(/"/g, '\\"') + '"\n';
+      var toml = 'name = "' + tomlBasicEscape(t.name) + '"\n';
+      toml += 'description = "' + tomlBasicEscape(t.description) + '"\n';
       toml += 'module = "builtin:chat"\n';
       toml += 'profile = "' + t.profile + '"\n\n';
       toml += '[model]\nprovider = "' + t.provider + '"\nmodel = "' + t.model + '"\n';
-      toml += 'system_prompt = """\n' + t.system_prompt + '\n"""\n';
+      toml += 'system_prompt = """\n' + tomlMultilineEscape(t.system_prompt) + '\n"""\n';
 
       try {
         var res = await OpenFangAPI.post('/api/agents', { manifest_toml: toml });
