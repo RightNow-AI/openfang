@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 14:47:41
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-09 15:11:25
+ * @LastEditTime       : 2026-03-11 17:15:04
  */
 
 use crate::routes::AppState;
@@ -159,6 +159,33 @@ pub async fn update_models(
             "removed_count": removed_count,
             "added_count": added_count,
             "updated_count": updated_count
+        })),
+    )
+}
+
+pub async fn set_api_key(Json(body): Json<serde_json::Value>) -> impl IntoResponse {
+    let api_key = body
+        .get("token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if api_key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "status": "error",
+                "message": "API key is required"
+            })),
+        );
+    }
+    std::env::set_var("UNIGPT_API_KEY", api_key);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "success",
+            "message": "API key set successfully"
         })),
     )
 }
