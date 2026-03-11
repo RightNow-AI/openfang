@@ -17,6 +17,15 @@ pub fn format_for_channel(text: &str, format: OutputFormat) -> String {
     }
 }
 
+/// Format a message for WeCom, using a stronger plain-text conversion to avoid
+/// leaking Markdown syntax into enterprise chat replies.
+pub fn format_for_wecom(text: &str, format: OutputFormat) -> String {
+    match format {
+        OutputFormat::PlainText => markdown_to_wecom_plain(text),
+        _ => format_for_channel(text, format),
+    }
+}
+
 /// Convert Markdown to Telegram HTML subset.
 ///
 /// Supported tags: `<b>`, `<i>`, `<code>`, `<pre>`, `<a href="">`.
@@ -146,6 +155,188 @@ fn markdown_to_slack_mrkdwn(text: &str) -> String {
     result
 }
 
+fn strip_atx_heading(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let heading_level = trimmed.chars().take_while(|c| *c == '#').count();
+    if !(1..=6).contains(&heading_level) {
+        return line.to_string();
+    }
+
+    if trimmed.chars().nth(heading_level) != Some(' ') {
+        return line.to_string();
+    }
+
+    trimmed[heading_level..]
+        .trim()
+        .trim_end_matches('#')
+        .trim_end()
+        .to_string()
+}
+
+fn strip_blockquote_prefix(line: &str) -> String {
+    let mut trimmed = line.trim_start();
+    while let Some(rest) = trimmed.strip_prefix('>') {
+        trimmed = rest.trim_start();
+    }
+    trimmed.to_string()
+}
+
+fn strip_task_list_prefix(line: &str) -> String {
+    let trimmed = line.trim_start();
+    for prefix in [
+        "- [ ] ", "- [x] ", "- [X] ", "* [ ] ", "* [x] ", "* [X] ", "+ [ ] ", "+ [x] ", "+ [X] ",
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return rest.to_string();
+        }
+    }
+    line.to_string()
+}
+
+fn is_fenced_code_marker(line: &str) -> bool {
+    let trimmed = line.trim();
+    let mut chars = trimmed.chars();
+    let Some(marker) = chars.next() else {
+        return false;
+    };
+    if marker != '`' && marker != '~' {
+        return false;
+    }
+    chars.all(|c| c == marker || c.is_ascii_alphanumeric())
+}
+
+fn is_setext_heading_underline(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.len() < 3 {
+        return false;
+    }
+    trimmed.chars().all(|c| c == '=' || c == '-') && trimmed.contains(['=', '-'])
+}
+
+fn is_table_divider(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty() && trimmed.chars().all(|c| matches!(c, '|' | ':' | '-' | ' '))
+}
+
+fn strip_inline_markdown(mut text: String) -> String {
+    while let Some(start) = text.find("![") {
+        if let Some(mid) = text[start..].find("](") {
+            let mid = start + mid;
+            if let Some(end) = text[mid + 2..].find(')') {
+                let end = mid + 2 + end;
+                let alt = &text[start + 2..mid];
+                let url = &text[mid + 2..end];
+                let replacement = if alt.is_empty() {
+                    url.to_string()
+                } else {
+                    format!("{alt} ({url})")
+                };
+                text = format!("{}{}{}", &text[..start], replacement, &text[end + 1..]);
+                continue;
+            }
+        }
+        break;
+    }
+
+    while let Some(start) = text.find('[') {
+        if let Some(mid) = text[start..].find("](") {
+            let mid = start + mid;
+            if let Some(end) = text[mid + 2..].find(')') {
+                let end = mid + 2 + end;
+                let label = &text[start + 1..mid];
+                let url = &text[mid + 2..end];
+                text = format!("{}{} ({}){}", &text[..start], label, url, &text[end + 1..]);
+                continue;
+            }
+        }
+        break;
+    }
+
+    while let Some(start) = text.find('<') {
+        if let Some(end) = text[start + 1..].find('>') {
+            let end = start + 1 + end;
+            let inner = &text[start + 1..end];
+            if inner.starts_with("http://")
+                || inner.starts_with("https://")
+                || inner.starts_with("mailto:")
+            {
+                text = format!("{}{}{}", &text[..start], inner, &text[end + 1..]);
+                continue;
+            }
+        }
+        break;
+    }
+
+    text = text.replace("**", "");
+    text = text.replace("__", "");
+    text = text.replace("~~", "");
+    text = text.replace('`', "");
+
+    let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch == '*'
+            && (i == 0 || chars[i - 1] != '*')
+            && (i + 1 >= chars.len() || chars[i + 1] != '*')
+        {
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Strip common Markdown blocks for WeCom plain-text replies.
+fn markdown_to_wecom_plain(text: &str) -> String {
+    let mut result_lines = Vec::new();
+    let mut in_fenced_code = false;
+
+    for raw_line in text.replace("\r\n", "\n").lines() {
+        let trimmed = raw_line.trim();
+
+        if is_fenced_code_marker(trimmed) {
+            in_fenced_code = !in_fenced_code;
+            continue;
+        }
+
+        if in_fenced_code {
+            result_lines.push(raw_line.trim_end().to_string());
+            continue;
+        }
+
+        if is_setext_heading_underline(trimmed) || is_table_divider(trimmed) {
+            continue;
+        }
+
+        let mut line = strip_atx_heading(raw_line);
+        line = strip_blockquote_prefix(&line);
+        line = strip_task_list_prefix(&line);
+
+        let trimmed_line = line.trim();
+        if trimmed_line.starts_with('|') && trimmed_line.ends_with('|') && trimmed_line.len() > 2 {
+            line = trimmed_line
+                .trim_matches('|')
+                .split('|')
+                .map(|cell| cell.trim())
+                .collect::<Vec<_>>()
+                .join("    ");
+        }
+
+        line = strip_inline_markdown(line);
+        result_lines.push(line.trim().to_string());
+    }
+
+    let mut collapsed = Vec::new();
+    for line in result_lines {
+        if line.is_empty() && collapsed.last().is_some_and(|prev: &String| prev.is_empty()) {
+            continue;
+        }
+        collapsed.push(line);
+    }
+
+    collapsed.join("\n").trim().to_string()
+}
+
 /// Strip all Markdown formatting, producing plain text.
 fn markdown_to_plain(text: &str) -> String {
     let mut result = text.to_string();
@@ -253,5 +444,27 @@ mod tests {
     fn test_plain_text_converts_links() {
         let result = markdown_to_plain("[click](https://example.com)");
         assert_eq!(result, "click (https://example.com)");
+    }
+
+    #[test]
+    fn test_wecom_plain_text_strips_common_markdown_blocks() {
+        let result = markdown_to_wecom_plain(
+            "# Title\n\
+             \n\
+             > quoted text\n\
+             \n\
+             - [x] done item\n\
+             - [ ] todo item\n\
+             \n\
+             ```rust\n\
+             let value = 1;\n\
+             ```\n\
+             \n\
+             [docs](https://example.com)\n",
+        );
+        assert_eq!(
+            result,
+            "Title\n\nquoted text\n\ndone item\ntodo item\n\nlet value = 1;\n\ndocs (https://example.com)"
+        );
     }
 }
