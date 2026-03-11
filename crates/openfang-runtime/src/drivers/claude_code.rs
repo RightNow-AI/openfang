@@ -140,13 +140,13 @@ impl ClaudeCodeDriver {
 
 /// JSON output from `claude -p --output-format json`.
 ///
-/// The CLI may return the response text in different fields depending on
-/// version: `result`, `content`, or `text`. We try all three.
+/// Current CLI emits: {"type":"result","result":"...","usage":{...}}
+/// Older versions used `content` or `text`.
 #[derive(Debug, Deserialize)]
 struct ClaudeJsonOutput {
     result: Option<String>,
     #[serde(default)]
-    content: Option<String>,
+    content: Option<serde_json::Value>,
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
@@ -170,8 +170,12 @@ struct ClaudeUsage {
 struct ClaudeStreamEvent {
     #[serde(default)]
     r#type: String,
+    /// Flat content string (older CLI versions)
     #[serde(default)]
     content: Option<String>,
+    /// Nested assistant message (current CLI: {"role":"assistant","content":[{"type":"text","text":"..."}]})
+    #[serde(default)]
+    message: Option<serde_json::Value>,
     #[serde(default)]
     result: Option<String>,
     #[serde(default)]
@@ -201,6 +205,7 @@ impl LlmDriver for ClaudeCodeDriver {
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        cmd.env_remove("CLAUDECODE");
 
         debug!(cli = %self.cli_path, "Spawning Claude Code CLI");
 
@@ -249,10 +254,25 @@ impl LlmDriver for ClaudeCodeDriver {
 
         // Try JSON parse first
         if let Ok(parsed) = serde_json::from_str::<ClaudeJsonOutput>(&stdout) {
-            let text = parsed.result
-                .or(parsed.content)
-                .or(parsed.text)
-                .unwrap_or_default();
+            // content may be a string or an array of blocks [{type:"text",text:"..."}]
+            let content_text = parsed.content.and_then(|v| {
+                v.as_str().map(str::to_string).or_else(|| {
+                    v.as_array().map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter_map(|b| {
+                                if b["type"].as_str() == Some("text") {
+                                    b["text"].as_str().map(str::to_string)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                })
+            });
+            let text = parsed.result.or(content_text).or(parsed.text).unwrap_or_default();
             let usage = parsed.usage.unwrap_or_default();
             return Ok(CompletionResponse {
                 content: vec![ContentBlock::Text { text: text.clone() }],
@@ -301,6 +321,7 @@ impl LlmDriver for ClaudeCodeDriver {
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        cmd.env_remove("CLAUDECODE");
 
         debug!(cli = %self.cli_path, "Spawning Claude Code CLI (streaming)");
 
@@ -334,7 +355,7 @@ impl LlmDriver for ClaudeCodeDriver {
             match serde_json::from_str::<ClaudeStreamEvent>(&line) {
                 Ok(event) => {
                     match event.r#type.as_str() {
-                        "content" | "text" | "assistant" | "content_block_delta" => {
+                        "content" | "text" | "content_block_delta" => {
                             if let Some(ref content) = event.content {
                                 full_text.push_str(content);
                                 let _ = tx
@@ -342,6 +363,33 @@ impl LlmDriver for ClaudeCodeDriver {
                                         text: content.clone(),
                                     })
                                     .await;
+                            }
+                        }
+                        "assistant" => {
+                            // Current CLI: message.content is [{type:"text",text:"..."}]
+                            let text = if let Some(ref msg) = event.message {
+                                msg["content"]
+                                    .as_array()
+                                    .map(|blocks| {
+                                        blocks
+                                            .iter()
+                                            .filter_map(|b| {
+                                                if b["type"].as_str() == Some("text") {
+                                                    b["text"].as_str().map(str::to_string)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("")
+                                    })
+                                    .unwrap_or_default()
+                            } else {
+                                event.content.clone().unwrap_or_default()
+                            };
+                            if !text.is_empty() {
+                                full_text.push_str(&text);
+                                let _ = tx.send(StreamEvent::TextDelta { text }).await;
                             }
                         }
                         "result" | "done" | "complete" => {

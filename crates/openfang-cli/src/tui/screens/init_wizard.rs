@@ -280,6 +280,19 @@ enum KeyTestState {
     Warn,
 }
 
+/// Sub-state for the Anthropic auth method picker (shown before key entry).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnthropicAuthMode {
+    /// Show "API key / Claude Code OAuth" choice list.
+    Pick,
+    /// User chose API key — show the key entry UI.
+    EnterKey,
+    /// User chose OAuth and the credentials file is present.
+    OAuthReady,
+    /// User chose OAuth but the credentials file is missing.
+    OAuthMissing,
+}
+
 /// A model entry for list display.
 struct ModelEntry {
     id: String,
@@ -314,9 +327,12 @@ struct State {
     provider_order: Vec<usize>,
     selected_provider: Option<usize>,
 
-    // API key
+    // API key / auth method
+    anthropic_auth_mode: AnthropicAuthMode,
+    anthropic_auth_list: ListState,
     api_key_input: String,
     api_key_from_env: bool,
+    use_claude_code_oauth: bool,
     key_test: KeyTestState,
     key_test_started: Option<Instant>,
 
@@ -359,8 +375,11 @@ impl State {
             provider_list: ListState::default(),
             provider_order: Vec::new(),
             selected_provider: None,
+            anthropic_auth_mode: AnthropicAuthMode::Pick,
+            anthropic_auth_list: ListState::default(),
             api_key_input: String::new(),
             api_key_from_env: false,
+            use_claude_code_oauth: false,
             key_test: KeyTestState::Idle,
             key_test_started: None,
             model_input: String::new(),
@@ -451,6 +470,8 @@ impl State {
         }
         (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
             || (p.name == "gemini" && std::env::var("GOOGLE_API_KEY").is_ok())
+            || (p.name == "anthropic"
+                && openfang_runtime::model_catalog::read_claude_oauth_token().is_some())
     }
 
     /// Populate model_entries from the catalog for the selected provider.
@@ -493,6 +514,39 @@ impl State {
             });
         }
 
+        self.model_list.select(Some(default_idx));
+    }
+
+    /// Populate model_entries from the catalog for an arbitrary provider name string.
+    fn load_models_for_provider_name(&mut self, provider_name: &str) {
+        self.model_entries.clear();
+        let models = self.model_catalog.models_by_provider(provider_name);
+        let mut default_idx = 0usize;
+        for (i, m) in models.iter().enumerate() {
+            let tier = tier_label(m.tier);
+            let cost = if m.input_cost_per_m == 0.0 && m.output_cost_per_m == 0.0 {
+                "free".to_string()
+            } else {
+                format!("${:.2}/${:.2}", m.input_cost_per_m, m.output_cost_per_m)
+            };
+            if i == 0 {
+                default_idx = 0;
+            }
+            self.model_entries.push(ModelEntry {
+                id: m.id.clone(),
+                display_name: m.display_name.clone(),
+                tier,
+                cost,
+            });
+        }
+        if self.model_entries.is_empty() {
+            self.model_entries.push(ModelEntry {
+                id: "claude-sonnet-4-20250514".to_string(),
+                display_name: "claude-sonnet-4-20250514".to_string(),
+                tier: "default",
+                cost: String::new(),
+            });
+        }
         self.model_list.select(Some(default_idx));
     }
 
@@ -744,16 +798,37 @@ pub fn run() -> InitResult {
 
                                 if !p.needs_key {
                                     state.api_key_from_env = false;
+                                    state.use_claude_code_oauth = false;
                                     state.load_models_for_provider();
+                                    state.step = Step::Model;
+                                } else if p.name == "anthropic"
+                                    && std::env::var(p.env_var)
+                                        .ok()
+                                        .filter(|v| !v.is_empty())
+                                        .is_none()
+                                    && openfang_runtime::model_catalog::read_claude_oauth_token()
+                                        .is_some()
+                                {
+                                    // Detected via OAuth token only — route through claude-code
+                                    state.use_claude_code_oauth = true;
+                                    state.api_key_from_env = false;
+                                    state.load_models_for_provider_name("claude-code");
                                     state.step = Step::Model;
                                 } else if state.is_provider_detected(prov_idx) {
                                     state.api_key_from_env = true;
+                                    state.use_claude_code_oauth = false;
                                     state.load_models_for_provider();
                                     state.step = Step::Model;
                                 } else {
                                     state.api_key_from_env = false;
+                                    state.use_claude_code_oauth = false;
                                     state.api_key_input.clear();
                                     state.key_test = KeyTestState::Idle;
+                                    // Anthropic supports OAuth — show method picker first.
+                                    if p.name == "anthropic" {
+                                        state.anthropic_auth_mode = AnthropicAuthMode::Pick;
+                                        state.anthropic_auth_list.select(Some(0));
+                                    }
                                     state.step = Step::ApiKey;
                                 }
                             }
@@ -762,6 +837,88 @@ pub fn run() -> InitResult {
                     },
 
                     Step::ApiKey => {
+                        // ── Anthropic auth-method picker ──
+                        let is_anthropic = state
+                            .provider()
+                            .map(|p| p.name == "anthropic")
+                            .unwrap_or(false);
+                        if is_anthropic
+                            && state.anthropic_auth_mode == AnthropicAuthMode::Pick
+                        {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    state.step = Step::Provider;
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    let i =
+                                        state.anthropic_auth_list.selected().unwrap_or(0);
+                                    state.anthropic_auth_list.select(Some(if i == 0 { 1 } else { 0 }));
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    let i =
+                                        state.anthropic_auth_list.selected().unwrap_or(0);
+                                    state.anthropic_auth_list.select(Some(if i == 0 { 1 } else { 0 }));
+                                }
+                                KeyCode::Enter => {
+                                    match state.anthropic_auth_list.selected() {
+                                        Some(0) => {
+                                            // API key
+                                            state.anthropic_auth_mode =
+                                                AnthropicAuthMode::EnterKey;
+                                        }
+                                        _ => {
+                                            // OAuth
+                                            if openfang_runtime::model_catalog::read_claude_oauth_token()
+                                                .is_some()
+                                            {
+                                                state.anthropic_auth_mode =
+                                                    AnthropicAuthMode::OAuthReady;
+                                            } else {
+                                                state.anthropic_auth_mode =
+                                                    AnthropicAuthMode::OAuthMissing;
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+
+                        // ── OAuth ready — just confirm and advance ──
+                        if is_anthropic
+                            && matches!(
+                                state.anthropic_auth_mode,
+                                AnthropicAuthMode::OAuthReady | AnthropicAuthMode::OAuthMissing
+                            )
+                        {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    state.use_claude_code_oauth = false;
+                                    state.anthropic_auth_mode = AnthropicAuthMode::Pick;
+                                }
+                                KeyCode::Enter => {
+                                    if state.anthropic_auth_mode == AnthropicAuthMode::OAuthReady {
+                                        state.use_claude_code_oauth = true;
+                                        state.api_key_from_env = false;
+                                        state.load_models_for_provider_name("claude-code");
+                                        state.step = Step::Model;
+                                    } else {
+                                        // Re-check in case the user just ran `claude`
+                                        if openfang_runtime::model_catalog::read_claude_oauth_token()
+                                            .is_some()
+                                        {
+                                            state.anthropic_auth_mode =
+                                                AnthropicAuthMode::OAuthReady;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+
+                        // ── Regular API key entry ──
                         if matches!(state.key_test, KeyTestState::Ok | KeyTestState::Warn) {
                             continue;
                         }
@@ -769,7 +926,11 @@ pub fn run() -> InitResult {
                         match key.code {
                             KeyCode::Esc => {
                                 state.key_test = KeyTestState::Idle;
-                                state.step = Step::Provider;
+                                if is_anthropic {
+                                    state.anthropic_auth_mode = AnthropicAuthMode::Pick;
+                                } else {
+                                    state.step = Step::Provider;
+                                }
                             }
                             KeyCode::Enter => {
                                 if !state.api_key_input.is_empty()
@@ -1110,10 +1271,15 @@ complex_threshold = 500
     };
 
     let config_path = openfang_dir.join("config.toml");
-    let api_key_line = if p.env_var.is_empty() {
+    let (provider_str, env_var_str) = if state.use_claude_code_oauth {
+        ("claude-code".to_string(), String::new())
+    } else {
+        (p.name.to_string(), p.env_var.to_string())
+    };
+    let api_key_line = if env_var_str.is_empty() {
         String::new()
     } else {
-        format!("api_key_env = \"{}\"", p.env_var)
+        format!("api_key_env = \"{}\"", env_var_str)
     };
 
     let config = format!(
@@ -1130,7 +1296,7 @@ model = "{model}"
 [memory]
 decay_rate = 0.05
 {routing_section}"#,
-        provider = p.name,
+        provider = provider_str,
     );
 
     match std::fs::write(&config_path, &config) {
@@ -1734,7 +1900,14 @@ fn draw_provider(f: &mut Frame, area: Rect, state: &mut State) {
                     "no API key needed".to_string()
                 }
             } else if detected {
-                format!("{} detected", p.env_var)
+                if p.name == "anthropic"
+                    && std::env::var(p.env_var).is_err()
+                    && openfang_runtime::model_catalog::read_claude_oauth_token().is_some()
+                {
+                    "Claude Code OAuth detected".to_string()
+                } else {
+                    format!("{} detected", p.env_var)
+                }
             } else if !p.needs_key {
                 "local, no key needed".to_string()
             } else if !p.hint.is_empty() {
@@ -1768,6 +1941,24 @@ fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
         None => return,
     };
 
+    // ── Anthropic: auth method picker ──────────────────────────────────────
+    if p.name == "anthropic" && state.anthropic_auth_mode == AnthropicAuthMode::Pick {
+        draw_anthropic_auth_pick(f, area, state);
+        return;
+    }
+
+    // ── Anthropic: OAuth status screens ────────────────────────────────────
+    if p.name == "anthropic"
+        && matches!(
+            state.anthropic_auth_mode,
+            AnthropicAuthMode::OAuthReady | AnthropicAuthMode::OAuthMissing
+        )
+    {
+        draw_anthropic_oauth_status(f, area, state);
+        return;
+    }
+
+    // ── Standard API key entry ──────────────────────────────────────────────
     let chunks = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(1),
@@ -1853,6 +2044,127 @@ fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
             theme::hint_style(),
         )])),
         chunks[5],
+    );
+}
+
+fn draw_anthropic_auth_pick(f: &mut Frame, area: Rect, state: &mut State) {
+    let chunks = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(2),
+        Constraint::Length(1),
+    ])
+    .split(area);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::raw(
+            "  How do you want to authenticate with Anthropic?",
+        )])),
+        chunks[0],
+    );
+
+    let oauth_available =
+        openfang_runtime::model_catalog::read_claude_oauth_token().is_some();
+    let oauth_hint = if oauth_available {
+        "token found in ~/.claude/.credentials.json"
+    } else {
+        "requires Claude Code to be signed in"
+    };
+
+    let options: &[(&str, &str)] = &[
+        ("API key", "paste your ANTHROPIC_API_KEY"),
+        ("Claude Code OAuth", oauth_hint),
+    ];
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .map(|(label, hint)| {
+            ListItem::new(Line::from(vec![
+                Span::raw(format!("  {:<22}", label)),
+                Span::styled(*hint, theme::dim_style()),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .highlight_style(theme::selected_style())
+        .highlight_symbol("\u{25b8} ");
+    f.render_stateful_widget(list, chunks[1], &mut state.anthropic_auth_list);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            "  [\u{2191}\u{2193}/jk] Navigate  [Enter] Select  [Esc] Back",
+            theme::hint_style(),
+        )])),
+        chunks[2],
+    );
+}
+
+fn draw_anthropic_oauth_status(f: &mut Frame, area: Rect, state: &State) {
+    let chunks = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .split(area);
+
+    if state.anthropic_auth_mode == AnthropicAuthMode::OAuthReady {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::raw(
+                "  Claude Code OAuth",
+            )])),
+            chunks[0],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  \u{2714} ", Style::default().fg(theme::GREEN)),
+                Span::styled(
+                    "Token found in ~/.claude/.credentials.json",
+                    Style::default().fg(theme::GREEN),
+                ),
+            ])),
+            chunks[1],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                "    Press Enter to continue",
+                theme::dim_style(),
+            )])),
+            chunks[2],
+        );
+    } else {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::raw(
+                "  Claude Code OAuth",
+            )])),
+            chunks[0],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  \u{26a0} ", Style::default().fg(theme::YELLOW)),
+                Span::styled(
+                    "~/.claude/.credentials.json not found",
+                    Style::default().fg(theme::YELLOW),
+                ),
+            ])),
+            chunks[1],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                "    Run `claude` in another terminal to authenticate, then press Enter to retry",
+                theme::dim_style(),
+            )])),
+            chunks[2],
+        );
+    }
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            "  [Enter] Confirm  [Esc] Back",
+            theme::hint_style(),
+        )])),
+        chunks[4],
     );
 }
 

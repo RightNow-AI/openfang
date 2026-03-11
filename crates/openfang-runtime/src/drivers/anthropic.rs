@@ -14,23 +14,38 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
 
+/// Authentication mode for the Anthropic driver.
+enum AuthMode {
+    /// Standard API key authentication via `x-api-key` header.
+    ApiKey(Zeroizing<String>),
+}
+
 /// Anthropic Claude API driver.
 pub struct AnthropicDriver {
-    api_key: Zeroizing<String>,
+    auth: AuthMode,
     base_url: String,
     client: reqwest::Client,
 }
 
 impl AnthropicDriver {
-    /// Create a new Anthropic driver.
+    /// Create a new Anthropic driver using an API key.
     pub fn new(api_key: String, base_url: String) -> Self {
         Self {
-            api_key: Zeroizing::new(api_key),
+            auth: AuthMode::ApiKey(Zeroizing::new(api_key)),
             base_url,
             client: reqwest::Client::builder()
                 .user_agent(crate::USER_AGENT)
                 .build()
                 .unwrap_or_default(),
+        }
+    }
+
+    /// Apply authentication headers to a request builder.
+    fn apply_auth_headers(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.auth {
+            AuthMode::ApiKey(k) => builder
+                .header("x-api-key", k.as_str())
+                .header("anthropic-version", "2023-06-01"),
         }
     }
 }
@@ -205,10 +220,7 @@ impl LlmDriver for AnthropicDriver {
             debug!(url = %url, attempt, "Sending Anthropic API request");
 
             let resp = self
-                .client
-                .post(&url)
-                .header("x-api-key", self.api_key.as_str())
-                .header("anthropic-version", "2023-06-01")
+                .apply_auth_headers(self.client.post(&url))
                 .header("content-type", "application/json")
                 .json(&api_request)
                 .send()
@@ -312,10 +324,7 @@ impl LlmDriver for AnthropicDriver {
             debug!(url = %url, attempt, "Sending Anthropic streaming request");
 
             let resp = self
-                .client
-                .post(&url)
-                .header("x-api-key", self.api_key.as_str())
-                .header("anthropic-version", "2023-06-01")
+                .apply_auth_headers(self.client.post(&url))
                 .header("content-type", "application/json")
                 .json(&api_request)
                 .send()

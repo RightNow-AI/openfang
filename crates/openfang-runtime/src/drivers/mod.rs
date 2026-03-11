@@ -248,18 +248,24 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
 
     // Anthropic uses a different API format — special case
     if provider == "anthropic" {
-        let api_key = config
-            .api_key
-            .clone()
-            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
-            .ok_or_else(|| {
-                LlmError::MissingApiKey("Set ANTHROPIC_API_KEY environment variable".to_string())
-            })?;
         let base_url = config
             .base_url
             .clone()
             .unwrap_or_else(|| ANTHROPIC_BASE_URL.to_string());
-        return Ok(Arc::new(anthropic::AnthropicDriver::new(api_key, base_url)));
+
+        // Priority 1: explicit api_key in DriverConfig
+        if let Some(key) = config.api_key.clone() {
+            return Ok(Arc::new(anthropic::AnthropicDriver::new(key, base_url)));
+        }
+        // Priority 2: ANTHROPIC_API_KEY env var
+        if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+            if !key.is_empty() {
+                return Ok(Arc::new(anthropic::AnthropicDriver::new(key, base_url)));
+            }
+        }
+        return Err(LlmError::MissingApiKey(
+            "Set ANTHROPIC_API_KEY environment variable".to_string(),
+        ));
     }
 
     // Gemini uses a different API format — special case
