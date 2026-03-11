@@ -13,6 +13,7 @@ use crate::supervisor::Supervisor;
 use crate::triggers::{TriggerEngine, TriggerId, TriggerPattern};
 use crate::workflow::{StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowRunId};
 
+use openfang_channels::formatter;
 use openfang_memory::MemorySubstrate;
 use openfang_runtime::agent_loop::{
     run_agent_loop, run_agent_loop_streaming, strip_provider_prefix, AgentLoopResult,
@@ -29,7 +30,7 @@ use openfang_runtime::sandbox::{SandboxConfig, WasmSandbox};
 use openfang_runtime::tool_runner::builtin_tool_definitions;
 use openfang_types::agent::*;
 use openfang_types::capability::Capability;
-use openfang_types::config::KernelConfig;
+use openfang_types::config::{KernelConfig, OutputFormat};
 use openfang_types::error::OpenFangError;
 use openfang_types::event::*;
 use openfang_types::memory::Memory;
@@ -55,6 +56,18 @@ impl LlmDriver for StubDriver {
                 .to_string(),
         ))
     }
+}
+
+fn proactive_output_format(channel: &str) -> OutputFormat {
+    match channel {
+        "telegram" => OutputFormat::TelegramHtml,
+        "slack" => OutputFormat::SlackMrkdwn,
+        _ => OutputFormat::Markdown,
+    }
+}
+
+fn format_proactive_channel_text(channel: &str, text: &str) -> String {
+    formatter::format_for_channel(text, proactive_output_format(channel))
 }
 
 pub struct OpenFangKernel {
@@ -5607,7 +5620,9 @@ impl KernelHandle for OpenFangKernel {
             openfang_user: None,
         };
 
-        let content = openfang_channels::types::ChannelContent::Text(message.to_string());
+        let content = openfang_channels::types::ChannelContent::Text(
+            format_proactive_channel_text(channel, message),
+        );
         let result = if let Some(thread_id) = thread_id.filter(|tid| !tid.trim().is_empty()) {
             adapter.send_in_thread(&user, content, thread_id).await
         } else {
@@ -5653,12 +5668,12 @@ impl KernelHandle for OpenFangKernel {
         let content = match media_type {
             "image" => openfang_channels::types::ChannelContent::Image {
                 url: media_url.to_string(),
-                caption: caption.map(|s| s.to_string()),
+                caption: caption.map(|s| format_proactive_channel_text(channel, s)),
             },
             "file" => openfang_channels::types::ChannelContent::File {
                 url: media_url.to_string(),
                 filename: filename.unwrap_or("file").to_string(),
-                caption: caption.map(|s| s.to_string()),
+                caption: caption.map(|s| format_proactive_channel_text(channel, s)),
             },
             _ => {
                 return Err(format!(
@@ -5885,6 +5900,24 @@ mod tests {
         // UUID lookup should also work
         let found_by_id = registry.get(agent_id);
         assert!(found_by_id.is_some());
+    }
+
+    #[test]
+    fn test_format_proactive_channel_text_for_telegram() {
+        let formatted = format_proactive_channel_text(
+            "telegram",
+            "**bold** and *italic* and `code` and [link](https://example.com)",
+        );
+        assert_eq!(
+            formatted,
+            "<b>bold</b> and <i>italic</i> and <code>code</code> and <a href=\"https://example.com\">link</a>"
+        );
+    }
+
+    #[test]
+    fn test_format_proactive_channel_text_defaults_to_markdown() {
+        let formatted = format_proactive_channel_text("discord", "**bold**");
+        assert_eq!(formatted, "**bold**");
     }
 
     #[test]
