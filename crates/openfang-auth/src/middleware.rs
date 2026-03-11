@@ -17,7 +17,7 @@ pub async fn auth(
 
     if let Some(token) = token {
         let decoding_key = DecodingKey::from_secret("secret".as_ref());
-        if let Ok(token_data) = decode::<Claims>(token, &decoding_key, &Validation::default()) {
+        if let Ok(_token_data) = decode::<Claims>(token, &decoding_key, &Validation::default()) {
             // You can add the claims to the request extensions for later use
             // req.extensions_mut().insert(token_data.claims);
             return next.run(req).await;

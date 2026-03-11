@@ -55,6 +55,7 @@ struct AgentAccumulator {
 
 /// In-process metrics store that powers the observability dashboard.
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct MetricsStore {
     agents: Arc<DashMap<String, AgentAccumulator>>,
     recent_latencies: Arc<RwLock<Vec<(DateTime<Utc>, u64)>>>,

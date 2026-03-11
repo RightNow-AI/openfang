@@ -89,7 +89,7 @@ impl<E: ExecutionEnvironment> RlmAgent<E> {
         let mut rlm_loop = RlmLoop::new(env, self.config.clone());
         let max = self.config.max_iterations;
 
-        let mut current_prompt = rlm_loop.build_prompt(prompt, "context");
+        let mut _current_prompt = rlm_loop.build_prompt(prompt, "context");
 
         for iteration in 0..max {
             // Placeholder for actual model interaction
@@ -98,7 +98,7 @@ impl<E: ExecutionEnvironment> RlmAgent<E> {
             match rlm_loop.step(iteration, &llm_response)? {
                 StepResult::Final(answer) => return Ok(answer),
                 StepResult::Continue(result) => {
-                    current_prompt = format!(
+                    _current_prompt = format!(
                         "{}\n\nLast result: {}",
                         rlm_loop.build_prompt(prompt, "context"),
                         result

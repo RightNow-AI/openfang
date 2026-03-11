@@ -109,7 +109,7 @@ impl FangHubClient {
 
     /// Create a new client with custom configuration.
     pub fn with_config(config: FangHubConfig) -> Self {
-        let mut builder = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .user_agent("openfang-fanghub/0.1");
 
         // Reqwest doesn't expose a direct header-on-builder API in all
@@ -432,6 +432,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[allow(dead_code)]
     fn test_config() -> FangHubConfig {
         FangHubConfig {
             api_base: "https://api.github.com".to_string(),

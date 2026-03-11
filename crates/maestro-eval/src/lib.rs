@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -200,7 +200,7 @@ impl ScoringEngine {
                 // Without an embedding model, fall back to token overlap (Jaccard similarity)
                 let expected = test.expected_output.as_deref().unwrap_or("");
                 let score = jaccard_similarity(expected, actual);
-                let passed = score >= *threshold;
+                let _passed = score >= *threshold;
                 (score, Some(format!("Jaccard similarity: {:.3} (threshold: {})", score, threshold)))
             }
             ScoringMethod::LlmAsJudge { rubric: _ } => {

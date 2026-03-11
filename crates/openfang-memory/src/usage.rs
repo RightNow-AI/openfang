@@ -27,13 +27,22 @@ impl SurrealUsageStore {
     pub fn with_db(db: Surreal<Db>) -> Self {
         Self { db: Some(db) }
     }
+}
 
+impl Default for SurrealUsageStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SurrealUsageStore {
     /// Create an empty (no-op) usage store.
     pub fn new() -> Self {
         Self { db: None }
     }
 
     /// Get a reference to the database, returning an error if not initialized.
+    #[allow(dead_code)]
     fn db(&self) -> OpenFangResult<&Surreal<Db>> {
         self.db.as_ref().ok_or_else(|| {
             OpenFangError::Memory("SurrealUsageStore: database not initialized".to_string())

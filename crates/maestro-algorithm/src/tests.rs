@@ -4,14 +4,14 @@
 //! algorithm configuration, and the executor's retry/backoff logic.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use crate::executor::AlgorithmConfig;
     use crate::isc::validate_criteria;
     use crate::prompts::*;
     use crate::types::*;
     use crate::{
-        AlgorithmResult, IdealStateCriterion, Learning, LearningCategory, Phase, PhaseOutput,
-        RunId,
+        AlgorithmResult, IdealStateCriterion, Learning, LearningCategory, Phase, PhaseOutput, RunId,
     };
     use chrono::Utc;
 

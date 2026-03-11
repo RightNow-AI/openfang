@@ -112,13 +112,13 @@ impl MemorySubstrate {
             .and_then(|v| v.as_str())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|| chrono::Utc::now());
+            .unwrap_or_else(chrono::Utc::now);
 
         let accessed_at = value.get("accessed_at")
             .and_then(|v| v.as_str())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|| chrono::Utc::now());
+            .unwrap_or_else(chrono::Utc::now);
 
         let access_count = value.get("access_count")
             .and_then(|v| v.as_u64())
@@ -175,12 +175,12 @@ impl MemorySubstrate {
                     .and_then(|v| v.as_str())
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|| chrono::Utc::now()),
+                    .unwrap_or_else(chrono::Utc::now),
                 updated_at: ent.get("updated_at")
                     .and_then(|v| v.as_str())
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|| chrono::Utc::now()),
+                    .unwrap_or_else(chrono::Utc::now),
             }
         };
 
@@ -213,7 +213,7 @@ impl MemorySubstrate {
             .and_then(|v| v.as_str())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|| chrono::Utc::now());
+            .unwrap_or_else(chrono::Utc::now);
 
         let relation = Relation {
             source: source_id.to_string(),

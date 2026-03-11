@@ -180,7 +180,7 @@ fn chunk_fixed(doc: &Document, text: &str, config: &ChunkConfig) -> Vec<Chunk> {
 
 fn chunk_sentences(doc: &Document, text: &str, config: &ChunkConfig) -> Vec<Chunk> {
     let sentences: Vec<&str> = text
-        .split_inclusive(|c| c == '.' || c == '!' || c == '?' || c == '\n')
+        .split_inclusive(['.', '!', '?', '\n'])
         .filter(|s| !s.trim().is_empty())
         .collect();
     let mut chunks = Vec::new();

@@ -11,7 +11,7 @@ use crate::l2::{L2Cache, L2Config};
 use async_trait::async_trait;
 use openfang_memory::MemorySubstrate;
 use openfang_types::agent::{AgentEntry, AgentId, SessionId};
-use openfang_types::error::{OpenFangError, OpenFangResult};
+use openfang_types::error::OpenFangResult;
 use openfang_types::memory::*;
 use openfang_types::session::Session;
 use serde_json::Value as JsonValue;
@@ -170,13 +170,13 @@ impl CachingMemory {
 
     /// Save an agent entry (write-through + invalidate).
     pub async fn save_agent(&self, entry: &AgentEntry) -> OpenFangResult<()> {
-        let result = self.l3.save_agent(entry).await?;
+        self.l3.save_agent(entry).await?;
         if self.enabled {
             let key = Self::agent_cache_key(entry.id);
             self.l1_agents.invalidate(&key).await;
             self.l2.invalidate("agents", &key).await;
         }
-        Ok(result)
+        Ok(())
     }
 
     /// Load all agents (cached).
@@ -201,7 +201,7 @@ impl CachingMemory {
 
     /// Remove an agent (write-through + invalidate).
     pub async fn remove_agent(&self, agent_id: AgentId) -> OpenFangResult<()> {
-        let result = self.l3.remove_agent(agent_id).await?;
+        self.l3.remove_agent(agent_id).await?;
         if self.enabled {
             let key = Self::agent_cache_key(agent_id);
             self.l1_agents.invalidate(&key).await;
@@ -209,7 +209,7 @@ impl CachingMemory {
             self.l2.invalidate("agents", &key).await;
             self.l2.invalidate("agents", "__all__").await;
         }
-        Ok(result)
+        Ok(())
     }
 
     /// Get a session by ID (cached).

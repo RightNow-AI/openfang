@@ -91,7 +91,7 @@ impl MeshClient {
         let stream = timeout(self.config.connect_timeout, TcpStream::connect(addr))
             .await
             .map_err(|_| MeshError::RemotePeer(format!("Connection to {peer_addr} timed out")))?
-            .map_err(|e| MeshError::Io(e))?;
+            .map_err(MeshError::Io)?;
 
         let (mut reader, mut writer) = stream.into_split();
 

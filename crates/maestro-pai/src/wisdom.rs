@@ -12,7 +12,9 @@ pub struct WisdomStore {
 
 impl WisdomStore {
     pub fn new() -> Self {
-        Self { frames: HashMap::new() }
+        Self {
+            frames: HashMap::new(),
+        }
     }
 
     /// Add a wisdom frame.
@@ -39,14 +41,20 @@ impl WisdomStore {
 
     /// Search wisdom frames by domain.
     pub fn by_domain(&self, domain: &str) -> Vec<&WisdomFrame> {
-        self.frames.values().filter(|f| f.domain == domain).collect()
+        self.frames
+            .values()
+            .filter(|f| f.domain == domain)
+            .collect()
     }
 
     /// Search wisdom frames by keyword.
     pub fn search(&self, query: &str) -> Vec<&WisdomFrame> {
         let q = query.to_lowercase();
-        self.frames.values()
-            .filter(|f| f.title.to_lowercase().contains(&q) || f.content.to_lowercase().contains(&q))
+        self.frames
+            .values()
+            .filter(|f| {
+                f.title.to_lowercase().contains(&q) || f.content.to_lowercase().contains(&q)
+            })
             .collect()
     }
 
@@ -65,12 +73,18 @@ impl WisdomStore {
         frames.into_iter().take(n).collect()
     }
 
-    pub fn len(&self) -> usize { self.frames.len() }
-    pub fn is_empty(&self) -> bool { self.frames.is_empty() }
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
 }
 
 impl Default for WisdomStore {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -95,7 +109,7 @@ mod tests {
         let mut store = WisdomStore::new();
         let p = make_pattern("parallel execution");
         let frame = WisdomStore::from_pattern(&p, "performance");
-        let frame_id = frame.id;
+        let _frame_id = frame.id;
         store.add(frame);
 
         let results = store.search("parallel");

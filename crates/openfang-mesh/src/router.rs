@@ -13,8 +13,8 @@
 
 use std::sync::Arc;
 
-use openfang_hands::{HandDefinition, HandInstance, HandStatus};
 use openfang_hands::registry::HandRegistry;
+use openfang_hands::{HandDefinition, HandInstance, HandStatus};
 use openfang_types::agent::AgentId;
 use openfang_wire::registry::PeerRegistry;
 use tracing::{debug, info};
@@ -203,17 +203,11 @@ impl MeshRouter {
                 continue;
             }
             let def = definitions.iter().find(|d| d.id == instance.hand_id)?;
-            let available: Vec<String> = def
-                .tools
-                .iter()
-                .chain(def.skills.iter())
-                .cloned()
-                .collect();
+            let available: Vec<String> =
+                def.tools.iter().chain(def.skills.iter()).cloned().collect();
             let score = Self::score_capabilities(&available, capabilities);
-            if score >= self.config.min_score {
-                if best.as_ref().map_or(true, |(s, _, _)| score > *s) {
-                    best = Some((score, instance, def.clone()));
-                }
+            if score >= self.config.min_score && best.as_ref().is_none_or(|(s, _, _)| score > *s) {
+                best = Some((score, instance, def.clone()));
             }
         }
 
@@ -243,15 +237,13 @@ impl MeshRouter {
                 .cloned()
                 .collect();
             let score = Self::score_capabilities(&available, capabilities);
-            if score >= self.config.min_score {
-                if best.as_ref().map_or(true, |(s, _)| score > *s) {
-                    best = Some((score, agent));
-                }
+            if score >= self.config.min_score && best.as_ref().is_none_or(|(s, _)| score > *s) {
+                best = Some((score, agent));
             }
         }
 
         best.map(|(score, agent)| ExecutionTarget::LocalAgent {
-            agent_id: agent.agent_id.clone(),
+            agent_id: agent.agent_id,
             agent_name: agent.name.clone(),
             score,
         })
@@ -269,17 +261,10 @@ impl MeshRouter {
         let mut best: Option<(f32, String, String)> = None; // (score, node_id, agent_id)
 
         for remote in remote_agents {
-            let available: Vec<String> = remote
-                .info
-                .tags
-                .iter()
-                .cloned()
-                .collect();
+            let available: Vec<String> = remote.info.tags.to_vec();
             let score = Self::score_capabilities(&available, capabilities);
-            if score >= self.config.min_score {
-                if best.as_ref().map_or(true, |(s, _, _)| score > *s) {
-                    best = Some((score, remote.peer_node_id.clone(), remote.info.id.clone()));
-                }
+            if score >= self.config.min_score && best.as_ref().is_none_or(|(s, _, _)| score > *s) {
+                best = Some((score, remote.peer_node_id.clone(), remote.info.id.clone()));
             }
         }
 
@@ -300,7 +285,10 @@ mod tests {
         let available = vec!["code".to_string(), "rust".to_string(), "review".to_string()];
         let required = vec!["code".to_string(), "rust".to_string()];
         let score = MeshRouter::score_capabilities(&available, &required);
-        assert!((score - 1.0).abs() < f32::EPSILON, "Expected 1.0, got {score}");
+        assert!(
+            (score - 1.0).abs() < f32::EPSILON,
+            "Expected 1.0, got {score}"
+        );
     }
 
     #[test]
@@ -308,7 +296,10 @@ mod tests {
         let available = vec!["code".to_string()];
         let required = vec!["code".to_string(), "rust".to_string()];
         let score = MeshRouter::score_capabilities(&available, &required);
-        assert!((score - 0.5).abs() < f32::EPSILON, "Expected 0.5, got {score}");
+        assert!(
+            (score - 0.5).abs() < f32::EPSILON,
+            "Expected 0.5, got {score}"
+        );
     }
 
     #[test]
@@ -324,7 +315,10 @@ mod tests {
         let available = vec!["code".to_string()];
         let required: Vec<String> = vec![];
         let score = MeshRouter::score_capabilities(&available, &required);
-        assert!((score - 1.0).abs() < f32::EPSILON, "Expected 1.0 for empty required");
+        assert!(
+            (score - 1.0).abs() < f32::EPSILON,
+            "Expected 1.0 for empty required"
+        );
     }
 
     #[test]
@@ -332,6 +326,9 @@ mod tests {
         let available = vec!["Code-Review".to_string()];
         let required = vec!["code-review".to_string()];
         let score = MeshRouter::score_capabilities(&available, &required);
-        assert!((score - 1.0).abs() < f32::EPSILON, "Expected case-insensitive match");
+        assert!(
+            (score - 1.0).abs() < f32::EPSILON,
+            "Expected case-insensitive match"
+        );
     }
 }

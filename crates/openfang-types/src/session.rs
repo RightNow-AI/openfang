@@ -5,7 +5,7 @@ use crate::message::Message;
 use serde::{Deserialize, Serialize};
 
 /// A conversation session with message history.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Session {
     /// Session ID.
     pub id: SessionId,
@@ -17,18 +17,6 @@ pub struct Session {
     pub context_window_tokens: u64,
     /// Optional human-readable session label.
     pub label: Option<String>,
-}
-
-impl Default for Session {
-    fn default() -> Self {
-        Self {
-            id: SessionId::new(),
-            agent_id: AgentId::default(),
-            messages: Vec::new(),
-            context_window_tokens: 0,
-            label: None,
-        }
-    }
 }
 
 /// Trait for types that can persist sessions.

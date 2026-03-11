@@ -9,6 +9,7 @@
 
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
+#[allow(unused_imports)]
 use tracing::{debug, trace, warn};
 
 /// Configuration for the L2 Redis cache.
@@ -40,6 +41,7 @@ impl Default for L2Config {
 pub struct L2Cache {
     #[cfg(feature = "redis-cache")]
     connection: Option<redis::aio::MultiplexedConnection>,
+    #[allow(dead_code)]
     config: L2Config,
 }
 
@@ -96,6 +98,7 @@ impl L2Cache {
     }
 
     /// Build the full Redis key with namespace prefix.
+    #[allow(dead_code)]
     fn full_key(&self, namespace: &str, key: &str) -> String {
         format!("{}:{}:{}", self.config.key_prefix, namespace, key)
     }

@@ -1,4 +1,4 @@
-use crate::protocol::{A2AMessage, A2APayload, TaskRequest, TaskResponse, TaskStatus};
+use crate::protocol::{A2AMessage, A2APayload, TaskRequest, TaskResponse};
 use crate::transport::A2ATransport;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,14 +25,11 @@ impl A2AEngine {
             loop {
                 let mut transport = transport.lock().await;
                 if let Some(message) = transport.receive().await {
-                    match message.payload {
-                        A2APayload::TaskResponse(response) => {
-                            let mut pending_tasks = pending_tasks.lock().await;
-                            if let Some(sender) = pending_tasks.remove(&response.task_id) {
-                                sender.send(response).unwrap();
-                            }
+                    if let A2APayload::TaskResponse(response) = message.payload {
+                        let mut pending_tasks = pending_tasks.lock().await;
+                        if let Some(sender) = pending_tasks.remove(&response.task_id) {
+                            sender.send(response).unwrap();
                         }
-                        _ => {}
                     }
                 }
             }

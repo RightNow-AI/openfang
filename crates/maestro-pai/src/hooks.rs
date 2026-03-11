@@ -57,7 +57,7 @@ impl LearningStore {
     /// RecordId `id` field and our application-level `id` UUID string.
     async fn init_schema(&self) -> Result<(), LearningError> {
         self.db
-            .query("DEFINE TABLE IF NOT EXISTS learnings SCHEMALESS")
+            .query(format!("DEFINE TABLE IF NOT EXISTS {} SCHEMALESS", TABLE))
             .await?;
         Ok(())
     }

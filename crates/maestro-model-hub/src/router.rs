@@ -31,7 +31,7 @@ pub struct RoutingDecision {
 }
 
 /// Cost budget configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BudgetConfig {
     /// Maximum spend per agent per hour (USD). None = unlimited.
     pub per_agent_hourly: Option<f64>,
@@ -39,16 +39,6 @@ pub struct BudgetConfig {
     pub per_session: Option<f64>,
     /// Maximum total spend (USD). None = unlimited.
     pub total_max: Option<f64>,
-}
-
-impl Default for BudgetConfig {
-    fn default() -> Self {
-        Self {
-            per_agent_hourly: None,
-            per_session: None,
-            total_max: None,
-        }
-    }
 }
 
 /// Circuit breaker state for a model.

@@ -2,7 +2,6 @@
 
 use crate::{Command, ExecutionEnvironment, RlmConfig, RlmError};
 use std::fmt::Write;
-use tracing::debug;
 
 #[derive(Debug, Clone)]
 pub struct Turn {
@@ -19,7 +18,11 @@ pub struct RlmLoop<E: ExecutionEnvironment> {
 
 impl<E: ExecutionEnvironment> RlmLoop<E> {
     pub fn new(env: E, config: RlmConfig) -> Self {
-        Self { env, config, history: Vec::new() }
+        Self {
+            env,
+            config,
+            history: Vec::new(),
+        }
     }
 
     pub fn step(&mut self, iteration: u32, raw_command: &str) -> Result<StepResult, RlmError> {
@@ -32,15 +35,24 @@ impl<E: ExecutionEnvironment> RlmLoop<E> {
                     self.env.execute(code)
                 }
             }
-            Command::Run { program: _, args: _ } => {
+            Command::Run {
+                program: _,
+                args: _,
+            } => {
                 if !self.config.allow_shell {
-                    Err(RlmError::ReplError("Shell execution disabled in secure mode".to_string()))
+                    Err(RlmError::ReplError(
+                        "Shell execution disabled in secure mode".to_string(),
+                    ))
                 } else {
                     Ok("shell execution not implemented".to_string())
                 }
             }
             Command::Final(answer) => {
-                self.history.push(Turn { iteration, command: raw_command.to_string(), result: answer.clone() });
+                self.history.push(Turn {
+                    iteration,
+                    command: raw_command.to_string(),
+                    result: answer.clone(),
+                });
                 return Ok(StepResult::Final(answer.clone()));
             }
             Command::SubQuery(prompt) => Ok(format!("[SubQuery: {}]", prompt)),
@@ -51,13 +63,21 @@ impl<E: ExecutionEnvironment> RlmLoop<E> {
             Ok(s) => s,
             Err(e) => format!("ERROR: {}", e),
         };
-        self.history.push(Turn { iteration, command: raw_command.to_string(), result: result_str.clone() });
+        self.history.push(Turn {
+            iteration,
+            command: raw_command.to_string(),
+            result: result_str.clone(),
+        });
         Ok(StepResult::Continue(result_str))
     }
 
     pub fn build_prompt(&self, initial_prompt: &str, context_var: &str) -> String {
         let mut prompt = String::new();
-        let _ = writeln!(prompt, "You are an RLM agent. Context is in Python variable `{}`.", context_var);
+        let _ = writeln!(
+            prompt,
+            "You are an RLM agent. Context is in Python variable `{}`.",
+            context_var
+        );
         let _ = writeln!(prompt, "Context length: {} chars.", initial_prompt.len());
         let _ = writeln!(prompt, "\nAvailable commands:");
         let _ = writeln!(prompt, "  ```repl\\n<code>\\n```  — Execute Python");
@@ -66,7 +86,11 @@ impl<E: ExecutionEnvironment> RlmLoop<E> {
         if !self.history.is_empty() {
             let _ = writeln!(prompt, "\n## History");
             for t in &self.history {
-                let _ = writeln!(prompt, "Iter {}: {} => {}", t.iteration, t.command, t.result);
+                let _ = writeln!(
+                    prompt,
+                    "Iter {}: {} => {}",
+                    t.iteration, t.command, t.result
+                );
             }
         }
         let _ = writeln!(prompt, "\n## Task\n{}", initial_prompt);
@@ -78,7 +102,14 @@ impl<E: ExecutionEnvironment> RlmLoop<E> {
             let to_remove = self.history.len() - keep_last;
             let summary = format!("[Compressed {} turns]", to_remove);
             self.history.drain(0..to_remove);
-            self.history.insert(0, Turn { iteration: 0, command: "[compressed]".to_string(), result: summary });
+            self.history.insert(
+                0,
+                Turn {
+                    iteration: 0,
+                    command: "[compressed]".to_string(),
+                    result: summary,
+                },
+            );
         }
     }
 }
@@ -96,9 +127,15 @@ mod tests {
 
     struct EchoEnv;
     impl ExecutionEnvironment for EchoEnv {
-        fn execute(&self, code: &str) -> Result<String, RlmError> { Ok(format!("ECHO: {}", code)) }
-        fn set_variable(&self, _: &str, _: &str) -> Result<(), RlmError> { Ok(()) }
-        fn env_type(&self) -> &str { "echo" }
+        fn execute(&self, code: &str) -> Result<String, RlmError> {
+            Ok(format!("ECHO: {}", code))
+        }
+        fn set_variable(&self, _: &str, _: &str) -> Result<(), RlmError> {
+            Ok(())
+        }
+        fn env_type(&self) -> &str {
+            "echo"
+        }
     }
 
     #[test]
@@ -120,7 +157,11 @@ mod tests {
     fn test_history_compression() {
         let mut lp = RlmLoop::new(EchoEnv, RlmConfig::default());
         for i in 0..20u32 {
-            lp.history.push(Turn { iteration: i, command: format!("cmd-{}", i), result: format!("res-{}", i) });
+            lp.history.push(Turn {
+                iteration: i,
+                command: format!("cmd-{}", i),
+                result: format!("res-{}", i),
+            });
         }
         lp.compress_history(5);
         assert!(lp.history.len() <= 6);
@@ -135,7 +176,13 @@ mod tests {
 
     #[test]
     fn test_shell_disabled() {
-        let mut lp = RlmLoop::new(EchoEnv, RlmConfig { allow_shell: false, ..Default::default() });
+        let mut lp = RlmLoop::new(
+            EchoEnv,
+            RlmConfig {
+                allow_shell: false,
+                ..Default::default()
+            },
+        );
         let r = lp.step(1, "RUN ls -la").unwrap();
         assert!(matches!(r, StepResult::Continue(s) if s.contains("ERROR")));
     }
