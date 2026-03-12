@@ -9,7 +9,7 @@ use futures::StreamExt;
 use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
 use openfang_types::tool::ToolCall;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use zeroize::Zeroizing;
 
 /// OpenAI-compatible API driver.
@@ -407,11 +407,7 @@ impl LlmDriver for OpenAIDriver {
         let max_retries = 3;
         for attempt in 0..=max_retries {
             let url = format!("{}/chat/completions", self.base_url);
-            info!(url = %url, attempt, "Sending OpenAI API request");
-            debug!(
-                "Request: {:?}",
-                serde_json::to_string(&oai_request).unwrap_or_default()
-            );
+            debug!(url = %url, attempt, "Sending OpenAI API request");
 
             let mut req_builder = self
                 .client
@@ -614,7 +610,10 @@ impl LlmDriver for OpenAIDriver {
                     summary_len = summary.len(),
                     "Synthesizing text from thinking-only response"
                 );
-                content.push(ContentBlock::Text { text: summary });
+                content.push(ContentBlock::Text {
+                    text: summary,
+                    provider_metadata: None,
+                });
             }
 
             if let Some(calls) = choice.message.tool_calls {
@@ -757,7 +756,7 @@ impl LlmDriver for OpenAIDriver {
                     let mut tool_calls_out = Vec::new();
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text } => text_parts.push(text.clone()),
+                            ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
                             ContentBlock::ToolUse {
                                 id, name, input, ..
                             } => {
@@ -837,7 +836,11 @@ impl LlmDriver for OpenAIDriver {
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
-            temperature: if rejects_temperature(&request.model) {
+            temperature: if self.kimi_needs_reasoning_content(&request.model) {
+                Some(0.6)
+            } else if temperature_must_be_one(&request.model) {
+                Some(1.0)
+            } else if rejects_temperature(&request.model) {
                 None
             } else {
                 Some(request.temperature)
@@ -857,11 +860,7 @@ impl LlmDriver for OpenAIDriver {
         let max_retries = 3;
         for attempt in 0..=max_retries {
             let url = format!("{}/chat/completions", self.base_url);
-            info!(url = %url, attempt, "Sending OpenAI streaming request");
-            debug!(
-                "Request: {:?}",
-                serde_json::to_string(&oai_request).unwrap_or_default()
-            );
+            debug!(url = %url, attempt, "Sending OpenAI streaming request");
 
             let mut req_builder = self
                 .client
@@ -1050,7 +1049,6 @@ impl LlmDriver for OpenAIDriver {
                         if let Some(ct) = u["completion_tokens"].as_u64() {
                             usage.output_tokens = ct;
                         }
-                        tracing::debug!("usage: {:?}", usage);
                     }
 
                     let choices = match json["choices"].as_array() {
@@ -1140,7 +1138,6 @@ impl LlmDriver for OpenAIDriver {
 
                         // Finish reason
                         if let Some(fr) = choice["finish_reason"].as_str() {
-                            tracing::info!("finish_reason: {:?}", fr);
                             finish_reason = Some(fr.to_string());
                         }
                     }
@@ -1241,7 +1238,10 @@ impl LlmDriver for OpenAIDriver {
                     summary_len = summary.len(),
                     "Synthesizing text from thinking-only stream response"
                 );
-                content.push(ContentBlock::Text { text: summary });
+                content.push(ContentBlock::Text {
+                    text: summary,
+                    provider_metadata: None,
+                });
             }
 
             for (id, name, arguments) in &tool_accum {

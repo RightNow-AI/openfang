@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 13:50:06
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-11 09:48:38
+ * @LastEditTime       : 2026-03-12 09:23:07
  */
 //! UniGPT-compatible API driver.
 //!
@@ -277,7 +277,7 @@ impl LlmDriver for UniGPTDriver {
                                     reasoning_content: None,
                                 });
                             }
-                            ContentBlock::Text { text } => {
+                            ContentBlock::Text { text, .. } => {
                                 parts.push(UniContentPart::Text { text: text.clone() });
                             }
                             ContentBlock::Image { media_type, data } => {
@@ -306,7 +306,7 @@ impl LlmDriver for UniGPTDriver {
                     let mut tool_calls = Vec::new();
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text } => text_parts.push(text.clone()),
+                            ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
                             ContentBlock::ToolUse {
                                 id, name, input, ..
                             } => {
@@ -589,7 +589,10 @@ impl LlmDriver for UniGPTDriver {
                         }
                     }
                     if !cleaned.is_empty() {
-                        content.push(ContentBlock::Text { text: cleaned });
+                        content.push(ContentBlock::Text {
+                            text: cleaned,
+                            provider_metadata: None,
+                        });
                     }
                 }
             }
@@ -617,7 +620,10 @@ impl LlmDriver for UniGPTDriver {
                     summary_len = summary.len(),
                     "Synthesizing text from thinking-only response"
                 );
-                content.push(ContentBlock::Text { text: summary });
+                content.push(ContentBlock::Text {
+                    text: summary,
+                    provider_metadata: None,
+                });
             }
 
             if let Some(calls) = choice.message.tool_calls {
@@ -760,7 +766,7 @@ impl LlmDriver for UniGPTDriver {
                     let mut tool_calls_out = Vec::new();
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text } => text_parts.push(text.clone()),
+                            ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
                             ContentBlock::ToolUse {
                                 id, name, input, ..
                             } => {
@@ -1214,7 +1220,10 @@ impl LlmDriver for UniGPTDriver {
                     }
                 }
                 if !cleaned.is_empty() {
-                    content.push(ContentBlock::Text { text: cleaned });
+                    content.push(ContentBlock::Text {
+                        text: cleaned,
+                        provider_metadata: None,
+                    });
                 }
             }
 
@@ -1240,7 +1249,10 @@ impl LlmDriver for UniGPTDriver {
                     summary_len = summary.len(),
                     "Synthesizing text from thinking-only stream response"
                 );
-                content.push(ContentBlock::Text { text: summary });
+                content.push(ContentBlock::Text {
+                    text: summary,
+                    provider_metadata: None,
+                });
             }
 
             for (id, name, arguments) in &tool_accum {
@@ -1467,6 +1479,7 @@ fn parse_groq_failed_tool_call(body: &str) -> Option<CompletionResponse> {
             return Some(CompletionResponse {
                 content: vec![ContentBlock::Text {
                     text: failed.to_string(),
+                    provider_metadata: None,
                 }],
                 tool_calls: vec![],
                 stop_reason: StopReason::EndTurn,

@@ -824,7 +824,7 @@ impl OpenFangKernel {
                     .provider_urls
                     .get(provider.as_str())
                     .map(|s| s.as_str());
-                match create_embedding_driver(provider, configured_model, api_key_env, custom_url) {
+                match create_embedding_driver(provider, model, api_key_env, custom_url) {
                     Ok(d) => {
                         info!(provider = %provider, model = %model, "Embedding driver configured from memory config");
                         Some(Arc::from(d))
@@ -1155,7 +1155,7 @@ impl OpenFangKernel {
             info!("No agents found — spawning default assistant");
             let dm = &kernel.config.default_model;
             let manifest = AgentManifest {
-                name: "默认助手".to_string(),
+                name: "assistant".to_string(),
                 description: "General-purpose assistant".to_string(),
                 model: openfang_types::agent::ModelConfig {
                     provider: dm.provider.clone(),
@@ -1753,7 +1753,6 @@ impl OpenFangKernel {
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
-            tracing::debug!(system_prompt = %manifest.model.system_prompt, "Built system prompt");
             // Store canonical context separately for injection as user message
             // (keeps system prompt stable across turns for provider prompt caching)
             if let Some(cc_msg) =
@@ -2651,16 +2650,47 @@ impl OpenFangKernel {
     }
 
     /// Switch an agent's model.
-    pub fn set_agent_model(&self, agent_id: AgentId, model: &str) -> KernelResult<()> {
-        // Resolve provider from model catalog so switching models also switches provider
-        let resolved_provider = self.model_catalog.read().ok().and_then(|catalog| {
-            catalog
-                .find_model(model)
-                .map(|entry| entry.provider.clone())
-        });
+    ///
+    /// When `explicit_provider` is `Some`, that provider name is used as-is
+    /// (respecting the user's custom configuration). When `None`, the provider
+    /// is auto-detected from the model catalog or inferred from the model name,
+    /// but only if the agent does NOT have a custom `base_url` configured.
+    /// Agents with a custom `base_url` keep their current provider unless
+    /// overridden explicitly — this prevents custom setups (e.g. Tencent,
+    /// Azure, or other third-party endpoints) from being misidentified.
+    pub fn set_agent_model(
+        &self,
+        agent_id: AgentId,
+        model: &str,
+        explicit_provider: Option<&str>,
+    ) -> KernelResult<()> {
+        let provider = if let Some(ep) = explicit_provider {
+            // User explicitly set the provider — use it as-is
+            Some(ep.to_string())
+        } else {
+            // Check whether the agent has a custom base_url, which indicates
+            // a user-configured provider endpoint. In that case, preserve the
+            // current provider name instead of overriding it with auto-detection.
+            let has_custom_url = self
+                .registry
+                .get(agent_id)
+                .map(|e| e.manifest.model.base_url.is_some())
+                .unwrap_or(false);
 
-        // If catalog lookup failed, try to infer provider from model name prefix
-        let provider = resolved_provider.or_else(|| infer_provider_from_model(model));
+            if has_custom_url {
+                // Keep the current provider — don't let auto-detection override
+                // a deliberately configured custom endpoint.
+                None
+            } else {
+                // No custom base_url: safe to auto-detect from catalog / model name
+                let resolved_provider = self.model_catalog.read().ok().and_then(|catalog| {
+                    catalog
+                        .find_model(model)
+                        .map(|entry| entry.provider.clone())
+                });
+                resolved_provider.or_else(|| infer_provider_from_model(model))
+            }
+        };
 
         // Strip the provider prefix from the model name (e.g. "openrouter/deepseek/deepseek-chat" → "deepseek/deepseek-chat")
         let normalized_model = if let Some(ref prov) = provider {
@@ -3137,7 +3167,9 @@ impl OpenFangKernel {
             );
         }
 
-        // If an agent with this hand's name already exists, remove it first
+        // If an agent with this hand's name already exists, remove it first.
+        // Save triggers before kill so they can be restored under the new ID
+        // (issue #519 — triggers were lost on agent restart).
         let existing = self
             .registry
             .list()
@@ -3547,20 +3579,6 @@ impl OpenFangKernel {
                                             "Failed to persist cron jobs after hand restore: {e}"
                                         );
                                     }
-                                }
-                                // Reassign triggers (#519). Currently a no-op on
-                                // cold boot (triggers are in-memory only), but
-                                // correct if trigger persistence is added later.
-                                let t_migrated =
-                                    self.triggers.reassign_agent_triggers(old_id, new_id);
-                                if t_migrated > 0 {
-                                    info!(
-                                        hand = %hand_id,
-                                        old_agent = %old_id,
-                                        new_agent = %new_id,
-                                        migrated = t_migrated,
-                                        "Reassigned triggers after restart"
-                                    );
                                 }
                                 // Reassign triggers (#519). Currently a no-op on
                                 // cold boot (triggers are in-memory only), but
@@ -4209,18 +4227,13 @@ impl OpenFangKernel {
             let base_url = if has_custom_url {
                 manifest.model.base_url.clone()
             } else if agent_provider == default_provider {
-                effective_default.base_url.clone().or_else(|| {
-                    self.config
-                        .provider_urls
-                        .get(agent_provider.as_str())
-                        .cloned()
-                })
+                effective_default
+                    .base_url
+                    .clone()
+                    .or_else(|| self.lookup_provider_url(agent_provider))
             } else {
-                // Check provider_urls before falling back to hardcoded defaults
-                self.config
-                    .provider_urls
-                    .get(agent_provider.as_str())
-                    .cloned()
+                // Check provider_urls + catalog before falling back to hardcoded defaults
+                self.lookup_provider_url(agent_provider)
             };
 
             let driver_config = DriverConfig {
@@ -5605,10 +5618,6 @@ impl KernelHandle for OpenFangKernel {
         tool_name: &str,
         action_summary: &str,
     ) -> Result<bool, String> {
-        // TODO Always approve shell_exec for now.
-        if tool_name == "shell_exec" {
-            return Ok(true);
-        }
         use openfang_types::approval::{ApprovalDecision, ApprovalRequest as TypedRequest};
 
         // Hand agents are curated trusted packages — auto-approve tool execution.
@@ -5690,13 +5699,19 @@ impl KernelHandle for OpenFangKernel {
             openfang_user: None,
         };
 
-        adapter
-            .send(
-                &user,
-                openfang_channels::types::ChannelContent::Text(message.to_string()),
-            )
-            .await
-            .map_err(|e| format!("Channel send failed: {e}"))?;
+        let content = openfang_channels::types::ChannelContent::Text(message.to_string());
+
+        if let Some(tid) = thread_id {
+            adapter
+                .send_in_thread(&user, content, tid)
+                .await
+                .map_err(|e| format!("Channel send failed: {e}"))?;
+        } else {
+            adapter
+                .send(&user, content)
+                .await
+                .map_err(|e| format!("Channel send failed: {e}"))?;
+        }
 
         Ok(format!("Message sent to {} via {}", recipient, channel))
     }
@@ -5821,6 +5836,7 @@ impl KernelHandle for OpenFangKernel {
             filename, recipient, channel
         ))
     }
+
     async fn spawn_agent_checked(
         &self,
         manifest_toml: &str,
