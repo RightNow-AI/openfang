@@ -6,7 +6,7 @@
 <h3 align="center">The Agent Operating System</h3>
 
 <p align="center">
-  Open-source Agent OS built in Rust. 143K+ LOC. 26+ crates. 2,010+ tests. Zero clippy warnings.<br/>
+  Open-source Agent OS built in Rust. 150K+ LOC. 30 crates. 1,744+ tests. Zero clippy warnings.<br/>
   <strong>One binary. Battle-tested. Agents that actually work for you.</strong>
 </p>
 
@@ -19,18 +19,18 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-v0.3.40-green?style=flat-square" alt="v0.3.40" />
+  <img src="https://img.shields.io/badge/version-v0.3.41-green?style=flat-square" alt="v0.3.41" />
   <img src="https://img.shields.io/badge/phase-18%20✅%20complete-blue?style=flat-square" alt="Phase 18 Complete" />
-  <img src="https://img.shields.io/badge/tests-2,010%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-1,744%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
   <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
 </p>
 
 ---
 
-> **v0.3.40 — Phase 18 (SWE Agent Framework) Complete (March 2026)**
+> **v0.3.41 — Phase 18 (SWE Agent Framework) Complete (March 2026)**
 >
-> Phase 18 implemented a complete Software Engineering (SWE) Agent framework with dashboard visualization, APIs, and A2A (Agent-to-Agent) integration. The system now supports automated software development tasks through a new SWE Agent that can perform file operations, execute commands, write code, and collaborate with the supervisor engine. See [ROADMAP.md](ROADMAP.md) for full details.
+> Phase 18 implemented a complete Software Engineering (SWE) Agent framework with dashboard visualization, APIs, and A2A (Agent-to-Agent) integration. This release includes critical security hardening: command injection prevention, path traversal protection, CVE updates, and 17 new security tests. See [ROADMAP.md](ROADMAP.md) for full details.
 
 ---
 
@@ -174,7 +174,7 @@ The dashboard includes an evaluation UI for running suites and viewing results w
 
 ## Architecture
 
-26+ Rust crates. 143,500+ lines of code. Modular kernel design.
+30 Rust crates. 150,000+ lines of code. Modular kernel design.
 
 ```
 openfang-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget tracking
@@ -243,7 +243,7 @@ cargo fmt --all -- --check
 
 ## Stability Notice
 
-OpenFang v0.3.40 is the culmination of Phase 18 implementation, adding a complete Software Engineering Agent framework. The architecture is solid, the test suite is comprehensive, and the security model is robust. That said:
+OpenFang v0.3.41 is the culmination of Phase 18 implementation, adding a complete Software Engineering Agent framework with critical security hardening. The architecture is solid, the test suite is comprehensive, and the security model is robust. That said:
 
 - **Breaking changes** in the SWE-specific APIs may occur between minor versions until v1.0
 - **SWE Agent maturity** varies — file operations are the most battle-tested, command execution requires proper sandboxing
