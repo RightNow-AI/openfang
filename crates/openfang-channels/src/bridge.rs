@@ -41,7 +41,7 @@ pub trait ChannelBridgeHandle: Send + Sync {
         let text: String = blocks
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -568,6 +568,9 @@ async fn dispatch_message(
         ChannelContent::Location { lat, lon } => {
             format!("[User shared location: {lat}, {lon}]")
         }
+        ChannelContent::FileData { ref filename, .. } => {
+            format!("[User sent a local file: {filename}]")
+        }
     };
 
     // Check if it's a slash command embedded in text (e.g. "/agents")
@@ -792,6 +795,40 @@ async fn dispatch_message(
     }
 }
 
+/// Detect image format from the first few magic bytes.
+///
+/// Returns `Some("image/...")` for JPEG, PNG, GIF, and WebP.
+fn detect_image_magic(bytes: &[u8]) -> Option<String> {
+    if bytes.len() >= 3 && bytes[..3] == [0xFF, 0xD8, 0xFF] {
+        return Some("image/jpeg".to_string());
+    }
+    if bytes.len() >= 4 && bytes[..4] == [0x89, 0x50, 0x4E, 0x47] {
+        return Some("image/png".to_string());
+    }
+    if bytes.len() >= 4 && bytes[..4] == [0x47, 0x49, 0x46, 0x38] {
+        return Some("image/gif".to_string());
+    }
+    if bytes.len() >= 12 && bytes[..4] == [0x52, 0x49, 0x46, 0x46] && bytes[8..12] == [0x57, 0x45, 0x42, 0x50]
+    {
+        return Some("image/webp".to_string());
+    }
+    None
+}
+
+/// Guess image media type from the URL file extension.
+fn media_type_from_url(url: &str) -> String {
+    if url.contains(".png") {
+        "image/png".to_string()
+    } else if url.contains(".gif") {
+        "image/gif".to_string()
+    } else if url.contains(".webp") {
+        "image/webp".to_string()
+    } else {
+        // JPEG is the most common image format — safe default
+        "image/jpeg".to_string()
+    }
+}
+
 /// Download an image from a URL and build content blocks for multimodal LLM input.
 ///
 /// Returns a `Vec<ContentBlock>` containing an image block (base64-encoded) and
@@ -810,28 +847,20 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
             warn!("Failed to download image from channel: {e}");
             return vec![ContentBlock::Text {
                 text: format!("[Image download failed: {e}]"),
+                provider_metadata: None,
             }];
         }
     };
 
-    // Detect media type from Content-Type header, fall back to URL extension
-    let content_type = resp
+    // Detect media type from Content-Type header — but only trust it if it's
+    // actually an image/* type. Many APIs (Telegram, S3 pre-signed URLs) return
+    // `application/octet-stream` for all files, which breaks vision.
+    let header_type = resp
         .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
-        .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_string());
-
-    let media_type = content_type.unwrap_or_else(|| {
-        if url.contains(".png") {
-            "image/png".to_string()
-        } else if url.contains(".gif") {
-            "image/gif".to_string()
-        } else if url.contains(".webp") {
-            "image/webp".to_string()
-        } else {
-            "image/jpeg".to_string()
-        }
-    });
+        .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_string())
+        .filter(|ct| ct.starts_with("image/"));
 
     let bytes = match resp.bytes().await {
         Ok(b) => b,
@@ -839,9 +868,18 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
             warn!("Failed to read image bytes: {e}");
             return vec![ContentBlock::Text {
                 text: format!("[Image read failed: {e}]"),
+                provider_metadata: None,
             }];
         }
     };
+
+    // Three-tier media type detection:
+    // 1. Trusted Content-Type header (only if image/*)
+    // 2. Magic byte sniffing (most reliable for binary data)
+    // 3. URL extension fallback
+    let media_type = header_type.unwrap_or_else(|| {
+        detect_image_magic(&bytes).unwrap_or_else(|| media_type_from_url(url))
+    });
 
     if bytes.len() > MAX_IMAGE_BYTES {
         warn!(
@@ -852,7 +890,7 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
             Some(c) => format!("[Image too large for vision ({} KB)]\nCaption: {c}", bytes.len() / 1024),
             None => format!("[Image too large for vision ({} KB)]", bytes.len() / 1024),
         };
-        return vec![ContentBlock::Text { text: desc }];
+        return vec![ContentBlock::Text { text: desc, provider_metadata: None }];
     }
 
     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -864,6 +902,7 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
         if !cap.is_empty() {
             blocks.push(ContentBlock::Text {
                 text: cap.to_string(),
+                provider_metadata: None,
             });
         }
     }
@@ -1433,6 +1472,7 @@ mod tests {
         let blocks = vec![
             ContentBlock::Text {
                 text: "What is in this photo?".to_string(),
+                provider_metadata: None,
             },
             ContentBlock::Image {
                 media_type: "image/jpeg".to_string(),
@@ -1467,5 +1507,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, "Echo: ");
+    }
+
+    #[test]
+    fn test_detect_image_magic_jpeg() {
+        let bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        assert_eq!(detect_image_magic(&bytes), Some("image/jpeg".to_string()));
+    }
+
+    #[test]
+    fn test_detect_image_magic_png() {
+        let bytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        assert_eq!(detect_image_magic(&bytes), Some("image/png".to_string()));
+    }
+
+    #[test]
+    fn test_detect_image_magic_gif() {
+        let bytes = [0x47, 0x49, 0x46, 0x38, 0x39, 0x61];
+        assert_eq!(detect_image_magic(&bytes), Some("image/gif".to_string()));
+    }
+
+    #[test]
+    fn test_detect_image_magic_webp() {
+        let bytes = [
+            0x52, 0x49, 0x46, 0x46, // RIFF
+            0x00, 0x00, 0x00, 0x00, // size (don't care)
+            0x57, 0x45, 0x42, 0x50, // WEBP
+        ];
+        assert_eq!(detect_image_magic(&bytes), Some("image/webp".to_string()));
+    }
+
+    #[test]
+    fn test_detect_image_magic_unknown() {
+        let bytes = [0x00, 0x01, 0x02, 0x03];
+        assert_eq!(detect_image_magic(&bytes), None);
+    }
+
+    #[test]
+    fn test_detect_image_magic_empty() {
+        assert_eq!(detect_image_magic(&[]), None);
+    }
+
+    #[test]
+    fn test_media_type_from_url() {
+        assert_eq!(media_type_from_url("https://example.com/photo.png"), "image/png");
+        assert_eq!(media_type_from_url("https://example.com/anim.gif"), "image/gif");
+        assert_eq!(media_type_from_url("https://example.com/img.webp"), "image/webp");
+        assert_eq!(media_type_from_url("https://example.com/photo.jpg"), "image/jpeg");
+        // No extension — defaults to JPEG
+        assert_eq!(media_type_from_url("https://api.telegram.org/file/bot123/photos/file_42"), "image/jpeg");
     }
 }

@@ -84,7 +84,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         let text: String = blocks
             .iter()
             .filter_map(|b| match b {
-                openfang_types::message::ContentBlock::Text { text } => Some(text.as_str()),
+                openfang_types::message::ContentBlock::Text { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -684,7 +684,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             ));
         }
         self.kernel
-            .set_agent_model(agent_id, model)
+            .set_agent_model(agent_id, model, None)
             .map_err(|e| format!("{e}"))?;
         // Read back resolved model+provider from registry
         let entry = self

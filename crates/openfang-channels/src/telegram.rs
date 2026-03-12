@@ -36,6 +36,9 @@ pub struct TelegramAdapter {
     poll_interval: Duration,
     /// Base URL for Telegram Bot API (supports proxies/mirrors).
     api_base_url: String,
+    /// Bot username (without @), populated from `getMe` during `start()`.
+    /// Used for @mention detection in group messages.
+    bot_username: Arc<tokio::sync::RwLock<Option<String>>>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
 }
@@ -63,6 +66,7 @@ impl TelegramAdapter {
             allowed_users,
             poll_interval,
             api_base_url,
+            bot_username: Arc::new(tokio::sync::RwLock::new(None)),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -185,6 +189,44 @@ impl TelegramAdapter {
         if !resp.status().is_success() {
             let body_text = resp.text().await.unwrap_or_default();
             warn!("Telegram sendDocument failed: {body_text}");
+        }
+        Ok(())
+    }
+
+    /// Call `sendDocument` with multipart upload for local file data.
+    ///
+    /// Used by the proactive `channel_send` tool when `file_path` is provided.
+    /// Uploads raw bytes as a multipart form instead of passing a URL.
+    async fn api_send_document_upload(
+        &self,
+        chat_id: i64,
+        data: Vec<u8>,
+        filename: &str,
+        mime_type: &str,
+        thread_id: Option<i64>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "{}/bot{}/sendDocument",
+            self.api_base_url,
+            self.token.as_str()
+        );
+
+        let file_part = reqwest::multipart::Part::bytes(data)
+            .file_name(filename.to_string())
+            .mime_str(mime_type)?;
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("document", file_part);
+
+        if let Some(tid) = thread_id {
+            form = form.text("message_thread_id", tid.to_string());
+        }
+
+        let resp = self.client.post(&url).multipart(form).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram sendDocument upload failed: {body_text}");
         }
         Ok(())
     }
@@ -330,6 +372,14 @@ impl TelegramAdapter {
                 self.api_send_document(chat_id, &url, &filename, thread_id)
                     .await?;
             }
+            ChannelContent::FileData {
+                data,
+                filename,
+                mime_type,
+            } => {
+                self.api_send_document_upload(chat_id, data, &filename, &mime_type, thread_id)
+                    .await?;
+            }
             ChannelContent::Voice { url, .. } => {
                 self.api_send_voice(chat_id, &url, thread_id).await?;
             }
@@ -361,8 +411,12 @@ impl ChannelAdapter for TelegramAdapter {
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = ChannelMessage> + Send>>, Box<dyn std::error::Error>>
     {
-        // Validate token first (fail fast)
+        // Validate token first (fail fast) and store bot username for mention detection
         let bot_name = self.validate_token().await?;
+        {
+            let mut username = self.bot_username.write().await;
+            *username = Some(bot_name.clone());
+        }
         info!("Telegram bot @{bot_name} connected");
 
         // Clear any existing webhook to avoid 409 Conflict during getUpdates polling.
@@ -393,6 +447,7 @@ impl ChannelAdapter for TelegramAdapter {
         let allowed_users = self.allowed_users.clone();
         let poll_interval = self.poll_interval;
         let api_base_url = self.api_base_url.clone();
+        let bot_username = self.bot_username.clone();
         let mut shutdown = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
@@ -505,7 +560,8 @@ impl ChannelAdapter for TelegramAdapter {
                     }
 
                     // Parse the message
-                    let msg = match parse_telegram_update(update, &allowed_users, token.as_str(), &client, &api_base_url).await {
+                    let bot_uname = bot_username.read().await.clone();
+                    let msg = match parse_telegram_update(update, &allowed_users, token.as_str(), &client, &api_base_url, bot_uname.as_deref()).await {
                         Some(m) => m,
                         None => continue, // filtered out or unparseable
                     };
@@ -613,12 +669,51 @@ async fn parse_telegram_update(
     token: &str,
     client: &reqwest::Client,
     api_base_url: &str,
+    bot_username: Option<&str>,
 ) -> Option<ChannelMessage> {
-    let message = update
-        .get("message")
-        .or_else(|| update.get("edited_message"))?;
-    let from = message.get("from")?;
-    let user_id = from["id"].as_i64()?;
+    let update_id = update["update_id"].as_i64().unwrap_or(0);
+    let message = match update.get("message").or_else(|| update.get("edited_message")) {
+        Some(m) => m,
+        None => {
+            debug!("Telegram: dropping update {update_id} — no message or edited_message field");
+            return None;
+        }
+    };
+
+    // Extract sender info: prefer `from` (user), fall back to `sender_chat` (channel/group)
+    let (user_id, display_name) = if let Some(from) = message.get("from") {
+        let uid = match from["id"].as_i64() {
+            Some(id) => id,
+            None => {
+                debug!("Telegram: dropping update {update_id} — from.id is not an integer");
+                return None;
+            }
+        };
+        let first_name = from["first_name"].as_str().unwrap_or("Unknown");
+        let last_name = from["last_name"].as_str().unwrap_or("");
+        let name = if last_name.is_empty() {
+            first_name.to_string()
+        } else {
+            format!("{first_name} {last_name}")
+        };
+        (uid, name)
+    } else if let Some(sender_chat) = message.get("sender_chat") {
+        // Messages sent on behalf of a channel or group have `sender_chat` instead of `from`.
+        let uid = match sender_chat["id"].as_i64() {
+            Some(id) => id,
+            None => {
+                debug!("Telegram: dropping update {update_id} — sender_chat.id is not an integer");
+                return None;
+            }
+        };
+        let title = sender_chat["title"]
+            .as_str()
+            .unwrap_or("Unknown Channel");
+        (uid, title.to_string())
+    } else {
+        debug!("Telegram: dropping update {update_id} — no from or sender_chat field");
+        return None;
+    };
 
     // Security: check allowed_users (compare as strings for consistency)
     let user_id_str = user_id.to_string();
@@ -627,13 +722,12 @@ async fn parse_telegram_update(
         return None;
     }
 
-    let chat_id = message["chat"]["id"].as_i64()?;
-    let first_name = from["first_name"].as_str().unwrap_or("Unknown");
-    let last_name = from["last_name"].as_str().unwrap_or("");
-    let display_name = if last_name.is_empty() {
-        first_name.to_string()
-    } else {
-        format!("{first_name} {last_name}")
+    let chat_id = match message["chat"]["id"].as_i64() {
+        Some(id) => id,
+        None => {
+            debug!("Telegram: dropping update {update_id} — chat.id is not an integer");
+            return None;
+        }
     };
 
     let chat_type = message["chat"]["type"].as_str().unwrap_or("private");
@@ -710,6 +804,7 @@ async fn parse_telegram_update(
         ChannelContent::Location { lat, lon }
     } else {
         // Unsupported message type (stickers, polls, etc.)
+        debug!("Telegram: dropping update {update_id} — unsupported message type (no text/photo/document/voice/location)");
         return None;
     };
 
@@ -718,6 +813,17 @@ async fn parse_telegram_update(
     let thread_id = message["message_thread_id"]
         .as_i64()
         .map(|tid| tid.to_string());
+
+    // Detect @mention of the bot in entities / caption_entities for MentionOnly group policy.
+    let mut metadata = HashMap::new();
+    if is_group {
+        if let Some(bot_uname) = bot_username {
+            let was_mentioned = check_mention_entities(message, bot_uname);
+            if was_mentioned {
+                metadata.insert("was_mentioned".to_string(), serde_json::json!(true));
+            }
+        }
+    }
 
     Some(ChannelMessage {
         channel: ChannelType::Telegram,
@@ -732,8 +838,43 @@ async fn parse_telegram_update(
         timestamp,
         is_group,
         thread_id,
-        metadata: HashMap::new(),
+        metadata,
     })
+}
+
+/// Check whether the bot was @mentioned in a Telegram message.
+///
+/// Inspects both `entities` (for text messages) and `caption_entities` (for media
+/// with captions) for entity type `"mention"` whose text matches `@bot_username`.
+fn check_mention_entities(message: &serde_json::Value, bot_username: &str) -> bool {
+    let bot_mention = format!("@{}", bot_username.to_lowercase());
+
+    // Check both entities (text messages) and caption_entities (photo/document captions)
+    for entities_key in &["entities", "caption_entities"] {
+        if let Some(entities) = message[entities_key].as_array() {
+            // Get the text that the entities refer to
+            let text = if *entities_key == "entities" {
+                message["text"].as_str().unwrap_or("")
+            } else {
+                message["caption"].as_str().unwrap_or("")
+            };
+
+            for entity in entities {
+                if entity["type"].as_str() != Some("mention") {
+                    continue;
+                }
+                let offset = entity["offset"].as_i64().unwrap_or(0) as usize;
+                let length = entity["length"].as_i64().unwrap_or(0) as usize;
+                if offset + length <= text.len() {
+                    let mention_text = &text[offset..offset + length];
+                    if mention_text.to_lowercase() == bot_mention {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Calculate exponential backoff capped at MAX_BACKOFF.
@@ -827,7 +968,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
         assert_eq!(msg.sender.display_name, "Alice Smith");
         assert_eq!(msg.sender.platform_id, "111222333");
@@ -859,7 +1000,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -891,17 +1032,17 @@ mod tests {
         let client = test_client();
 
         // Empty allowed_users = allow all
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await;
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
         assert!(msg.is_some());
 
         // Non-matching allowed_users = filter out
         let blocked: Vec<String> = vec!["111".to_string(), "222".to_string()];
-        let msg = parse_telegram_update(&update, &blocked, "fake:token", &client, DEFAULT_API_URL).await;
+        let msg = parse_telegram_update(&update, &blocked, "fake:token", &client, DEFAULT_API_URL, None).await;
         assert!(msg.is_none());
 
         // Matching allowed_users = allow
         let allowed: Vec<String> = vec!["999".to_string()];
-        let msg = parse_telegram_update(&update, &allowed, "fake:token", &client, DEFAULT_API_URL).await;
+        let msg = parse_telegram_update(&update, &allowed, "fake:token", &client, DEFAULT_API_URL, None).await;
         assert!(msg.is_some());
     }
 
@@ -927,7 +1068,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
         assert_eq!(msg.sender.display_name, "Alice Smith");
         assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Edited message!"));
@@ -963,7 +1104,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agents");
@@ -987,7 +1128,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
         assert!(matches!(msg.content, ChannelContent::Location { .. }));
     }
 
@@ -1011,7 +1152,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
         // With a fake token, getFile will fail, so we get a text fallback
         match &msg.content {
             ChannelContent::Text(t) => {
@@ -1046,7 +1187,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.contains("Document received"));
@@ -1077,7 +1218,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.contains("Voice message"));
@@ -1106,7 +1247,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
         assert_eq!(msg.thread_id, Some("42".to_string()));
         assert!(msg.is_group);
     }
@@ -1126,7 +1267,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
         assert_eq!(msg.thread_id, None);
         assert!(!msg.is_group);
     }
@@ -1148,8 +1289,213 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL).await.unwrap();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
         assert_eq!(msg.thread_id, Some("99".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_parse_sender_chat_fallback() {
+        // Messages sent on behalf of a channel have `sender_chat` instead of `from`.
+        let update = serde_json::json!({
+            "update_id": 500,
+            "message": {
+                "message_id": 80,
+                "sender_chat": {
+                    "id": -1001999888777_i64,
+                    "title": "My Channel",
+                    "type": "channel"
+                },
+                "chat": { "id": -1001234567890_i64, "type": "supergroup" },
+                "date": 1700000000,
+                "text": "Forwarded from channel"
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
+        assert_eq!(msg.sender.display_name, "My Channel");
+        assert_eq!(msg.sender.platform_id, "-1001234567890");
+        assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Forwarded from channel"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_no_from_no_sender_chat_drops() {
+        // Updates with neither `from` nor `sender_chat` should be dropped with debug logging.
+        let update = serde_json::json!({
+            "update_id": 501,
+            "message": {
+                "message_id": 81,
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "text": "orphan"
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
+        assert!(msg.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_was_mentioned_in_group() {
+        // Bot @mentioned in a group message should set metadata["was_mentioned"].
+        let update = serde_json::json!({
+            "update_id": 600,
+            "message": {
+                "message_id": 90,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": -1001234567890_i64, "type": "supergroup" },
+                "date": 1700000000,
+                "text": "Hey @testbot what do you think?",
+                "entities": [{
+                    "type": "mention",
+                    "offset": 4,
+                    "length": 8
+                }]
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, Some("testbot")).await.unwrap();
+        assert!(msg.is_group);
+        assert_eq!(msg.metadata.get("was_mentioned").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_not_mentioned_in_group() {
+        // Group message without a mention should NOT have was_mentioned.
+        let update = serde_json::json!({
+            "update_id": 601,
+            "message": {
+                "message_id": 91,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": -1001234567890_i64, "type": "supergroup" },
+                "date": 1700000000,
+                "text": "Just chatting"
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, Some("testbot")).await.unwrap();
+        assert!(msg.is_group);
+        assert!(!msg.metadata.contains_key("was_mentioned"));
+    }
+
+    #[tokio::test]
+    async fn test_mentioned_different_bot_not_set() {
+        // @mention of a different bot should NOT set was_mentioned.
+        let update = serde_json::json!({
+            "update_id": 602,
+            "message": {
+                "message_id": 92,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": -1001234567890_i64, "type": "supergroup" },
+                "date": 1700000000,
+                "text": "Hey @otherbot what do you think?",
+                "entities": [{
+                    "type": "mention",
+                    "offset": 4,
+                    "length": 9
+                }]
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, Some("testbot")).await.unwrap();
+        assert!(msg.is_group);
+        assert!(!msg.metadata.contains_key("was_mentioned"));
+    }
+
+    #[tokio::test]
+    async fn test_mention_in_caption_entities() {
+        // Bot mentioned in a photo caption should set was_mentioned.
+        let update = serde_json::json!({
+            "update_id": 603,
+            "message": {
+                "message_id": 93,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": -1001234567890_i64, "type": "supergroup" },
+                "date": 1700000000,
+                "photo": [
+                    { "file_id": "photo_id", "file_unique_id": "x", "width": 800, "height": 600 }
+                ],
+                "caption": "Look @testbot",
+                "caption_entities": [{
+                    "type": "mention",
+                    "offset": 5,
+                    "length": 8
+                }]
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, Some("testbot")).await.unwrap();
+        assert!(msg.is_group);
+        assert_eq!(msg.metadata.get("was_mentioned").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_mention_case_insensitive() {
+        // Mention detection should be case-insensitive.
+        let update = serde_json::json!({
+            "update_id": 604,
+            "message": {
+                "message_id": 94,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": -1001234567890_i64, "type": "supergroup" },
+                "date": 1700000000,
+                "text": "Hey @TestBot help",
+                "entities": [{
+                    "type": "mention",
+                    "offset": 4,
+                    "length": 8
+                }]
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, Some("testbot")).await.unwrap();
+        assert_eq!(msg.metadata.get("was_mentioned").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_private_chat_no_mention_check() {
+        // Private chats should NOT populate was_mentioned even with entities.
+        let update = serde_json::json!({
+            "update_id": 605,
+            "message": {
+                "message_id": 95,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "text": "Hey @testbot",
+                "entities": [{
+                    "type": "mention",
+                    "offset": 4,
+                    "length": 8
+                }]
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, Some("testbot")).await.unwrap();
+        assert!(!msg.is_group);
+        // In private chats, mention detection is skipped — no metadata set
+        assert!(!msg.metadata.contains_key("was_mentioned"));
+    }
+
+    #[test]
+    fn test_check_mention_entities_direct() {
+        let message = serde_json::json!({
+            "text": "Hello @mybot world",
+            "entities": [{
+                "type": "mention",
+                "offset": 6,
+                "length": 6
+            }]
+        });
+        assert!(check_mention_entities(&message, "mybot"));
+        assert!(!check_mention_entities(&message, "otherbot"));
     }
 
     #[test]

@@ -492,7 +492,7 @@ fn is_empty_or_blank_content(content: &MessageContent) -> bool {
         MessageContent::Blocks(blocks) => {
             blocks.is_empty()
                 || blocks.iter().all(|b| match b {
-                    ContentBlock::Text { text } => text.trim().is_empty(),
+                    ContentBlock::Text { text, .. } => text.trim().is_empty(),
                     ContentBlock::Unknown => true,
                     _ => false,
                 })
@@ -630,7 +630,7 @@ pub fn prune_heartbeat_turns(messages: &mut Vec<Message>, keep_recent: usize) {
                 }
                 MessageContent::Blocks(blocks) => {
                     blocks.len() == 1
-                        && matches!(&blocks[0], ContentBlock::Text { text } if {
+                        && matches!(&blocks[0], ContentBlock::Text { text, .. } if {
                             let t = text.trim();
                             t == "NO_REPLY" || t == "[no reply needed]"
                         })
@@ -675,7 +675,7 @@ fn merge_content(dst: &mut MessageContent, src: MessageContent) {
 /// Convert MessageContent to a Vec<ContentBlock>.
 fn content_to_blocks(content: MessageContent) -> Vec<ContentBlock> {
     match content {
-        MessageContent::Text(s) => vec![ContentBlock::Text { text: s }],
+        MessageContent::Text(s) => vec![ContentBlock::Text { text: s, provider_metadata: None }],
         MessageContent::Blocks(blocks) => blocks,
     }
 }
@@ -1017,6 +1017,7 @@ mod tests {
                 role: Role::Assistant,
                 content: MessageContent::Blocks(vec![ContentBlock::Text {
                     text: String::new(),
+                    provider_metadata: None,
                 }]),
             },
             Message::user("Never mind"),

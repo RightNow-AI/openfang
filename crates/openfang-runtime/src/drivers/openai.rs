@@ -268,7 +268,7 @@ impl LlmDriver for OpenAIDriver {
                                     reasoning_content: None,
                                 });
                             }
-                            ContentBlock::Text { text } => {
+                            ContentBlock::Text { text, .. } => {
                                 parts.push(OaiContentPart::Text { text: text.clone() });
                             }
                             ContentBlock::Image { media_type, data } => {
@@ -297,7 +297,7 @@ impl LlmDriver for OpenAIDriver {
                     let mut tool_calls = Vec::new();
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text } => text_parts.push(text.clone()),
+                            ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
                             ContentBlock::ToolUse { id, name, input, .. } => {
                                 tool_calls.push(OaiToolCall {
                                     id: id.clone(),
@@ -563,7 +563,7 @@ impl LlmDriver for OpenAIDriver {
                         }
                     }
                     if !cleaned.is_empty() {
-                        content.push(ContentBlock::Text { text: cleaned });
+                        content.push(ContentBlock::Text { text: cleaned, provider_metadata: None });
                     }
                 }
             }
@@ -581,7 +581,7 @@ impl LlmDriver for OpenAIDriver {
                 }).unwrap_or("");
                 let summary = extract_thinking_summary(thinking_text);
                 debug!(summary_len = summary.len(), "Synthesizing text from thinking-only response");
-                content.push(ContentBlock::Text { text: summary });
+                content.push(ContentBlock::Text { text: summary, provider_metadata: None });
             }
 
             if let Some(calls) = choice.message.tool_calls {
@@ -720,7 +720,7 @@ impl LlmDriver for OpenAIDriver {
                     let mut tool_calls_out = Vec::new();
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text } => text_parts.push(text.clone()),
+                            ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
                             ContentBlock::ToolUse { id, name, input, .. } => {
                                 tool_calls_out.push(OaiToolCall {
                                     id: id.clone(),
@@ -1169,7 +1169,7 @@ impl LlmDriver for OpenAIDriver {
                     }
                 }
                 if !cleaned.is_empty() {
-                    content.push(ContentBlock::Text { text: cleaned });
+                    content.push(ContentBlock::Text { text: cleaned, provider_metadata: None });
                 }
             }
 
@@ -1185,7 +1185,7 @@ impl LlmDriver for OpenAIDriver {
                 }).unwrap_or("");
                 let summary = extract_thinking_summary(thinking_text);
                 debug!(summary_len = summary.len(), "Synthesizing text from thinking-only stream response");
-                content.push(ContentBlock::Text { text: summary });
+                content.push(ContentBlock::Text { text: summary, provider_metadata: None });
             }
 
             for (id, name, arguments) in &tool_accum {
@@ -1410,6 +1410,7 @@ fn parse_groq_failed_tool_call(body: &str) -> Option<CompletionResponse> {
             return Some(CompletionResponse {
                 content: vec![ContentBlock::Text {
                     text: failed.to_string(),
+                    provider_metadata: None,
                 }],
                 tool_calls: vec![],
                 stop_reason: StopReason::EndTurn,

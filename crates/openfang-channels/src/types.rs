@@ -49,6 +49,13 @@ pub enum ChannelContent {
         url: String,
         filename: String,
     },
+    /// Local file data (bytes read from disk). Used by the proactive `channel_send`
+    /// tool when `file_path` is provided instead of `file_url`.
+    FileData {
+        data: Vec<u8>,
+        filename: String,
+        mime_type: String,
+    },
     Voice {
         url: String,
         duration_seconds: u32,
