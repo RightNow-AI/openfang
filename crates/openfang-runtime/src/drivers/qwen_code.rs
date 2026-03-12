@@ -452,10 +452,10 @@ pub fn qwen_code_available() -> bool {
 
 /// Check if Qwen credentials exist.
 ///
-/// Qwen Code stores session/credentials in `~/.qwen-code/` directory.
+/// Qwen Code stores session/credentials in `~/.qwen/` directory.
 fn qwen_credentials_exist() -> bool {
     if let Some(home) = home_dir() {
-        let qwen_dir = home.join(".qwen-code");
+        let qwen_dir = home.join(".qwen");
         qwen_dir.exists()
     } else {
         false
