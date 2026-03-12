@@ -1018,7 +1018,7 @@ impl OpenFangKernel {
             mesh_route_log: tokio::sync::RwLock::new(std::collections::VecDeque::with_capacity(200)),
             a2a_engine: None,
             a2a_handler_registry: None,
-            swe_agent: Some(Arc::new(maestro_swe::executor::SWEAgentExecutor::new())),
+            swe_agent: Some(Arc::new(maestro_swe::executor::SWEAgentExecutor::default())),
         };
 
         // Restore persisted agents from SQLite

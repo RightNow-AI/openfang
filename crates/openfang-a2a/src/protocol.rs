@@ -51,9 +51,22 @@ pub enum SWETaskStatus {
 /// SWE agent execution event.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SWEAgentEvent {
+    /// File was successfully read. Contains (path, content).
     FileRead(String, String),
+    /// File was successfully written. Contains path.
     FileWritten(String),
+    /// File read failed. Contains (path, error_message).
+    FileReadFailed(String, String),
+    /// File write failed. Contains (path, error_message).
+    FileWriteFailed(String, String),
+    /// Command was executed. Contains (command, stdout, exit_code).
     CommandExecuted(String, String, i32),
+    /// Command was blocked due to security policy. Contains (command, reason).
+    CommandBlocked(String, String),
+    /// Command execution timed out. Contains (command, timeout_seconds).
+    CommandTimedOut(String, u64),
+    /// Path traversal attempt was blocked. Contains (path, reason).
+    PathBlocked(String, String),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

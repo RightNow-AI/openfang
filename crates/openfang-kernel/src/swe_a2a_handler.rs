@@ -18,7 +18,7 @@ impl SWEA2AHandler {
     /// Create a new SWE A2A handler.
     pub fn new() -> Self {
         Self {
-            executor: SWEAgentExecutor::new(),
+            executor: SWEAgentExecutor::default(),
         }
     }
 }
@@ -62,11 +62,12 @@ impl SWEA2AHandler {
     ) -> A2APayload {
         let mut events = Vec::new();
         let mut result = String::new();
+        let mut has_error = false;
 
         for action_req in actions {
             let action = convert_action(action_req);
-            let event = self.executor.execute(action);
-            
+            let event = self.executor.execute(action).await;
+
             // Accumulate results
             match &event {
                 maestro_swe::SWEAgentEvent::FileRead(path, content) => {
@@ -76,6 +77,16 @@ impl SWEA2AHandler {
                 maestro_swe::SWEAgentEvent::FileWritten(path) => {
                     events.push(SWEAgentEvent::FileWritten(path.clone()));
                     result.push_str(&format!("Wrote file {}\n", path));
+                }
+                maestro_swe::SWEAgentEvent::FileReadFailed(path, error) => {
+                    events.push(SWEAgentEvent::FileReadFailed(path.clone(), error.clone()));
+                    result.push_str(&format!("Failed to read file {}: {}\n", path, error));
+                    has_error = true;
+                }
+                maestro_swe::SWEAgentEvent::FileWriteFailed(path, error) => {
+                    events.push(SWEAgentEvent::FileWriteFailed(path.clone(), error.clone()));
+                    result.push_str(&format!("Failed to write file {}: {}\n", path, error));
+                    has_error = true;
                 }
                 maestro_swe::SWEAgentEvent::CommandExecuted(cmd, output, code) => {
                     events.push(SWEAgentEvent::CommandExecuted(
@@ -88,15 +99,36 @@ impl SWEA2AHandler {
                         cmd, code
                     ));
                 }
+                maestro_swe::SWEAgentEvent::CommandBlocked(cmd, reason) => {
+                    events.push(SWEAgentEvent::CommandBlocked(cmd.clone(), reason.clone()));
+                    result.push_str(&format!("Command '{}' blocked: {}\n", cmd, reason));
+                    has_error = true;
+                }
+                maestro_swe::SWEAgentEvent::CommandTimedOut(cmd, timeout_secs) => {
+                    events.push(SWEAgentEvent::CommandTimedOut(cmd.clone(), *timeout_secs));
+                    result.push_str(&format!("Command '{}' timed out after {}s\n", cmd, timeout_secs));
+                    has_error = true;
+                }
+                maestro_swe::SWEAgentEvent::PathBlocked(path, reason) => {
+                    events.push(SWEAgentEvent::PathBlocked(path.clone(), reason.clone()));
+                    result.push_str(&format!("Path '{}' blocked: {}\n", path, reason));
+                    has_error = true;
+                }
             }
         }
 
+        let status = if has_error {
+            SWETaskStatus::Failed
+        } else {
+            SWETaskStatus::Completed
+        };
+
         A2APayload::SWETaskResponse {
             task_id,
-            status: SWETaskStatus::Completed,
+            status,
             events,
             result: Some(result),
-            error: None,
+            error: if has_error { Some("One or more actions failed".to_string()) } else { None },
         }
     }
 }

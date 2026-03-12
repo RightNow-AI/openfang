@@ -117,7 +117,7 @@ fn spawn_task_executor(
     store: SWETaskStore,
 ) {
     tokio::spawn(async move {
-        let executor = SWEAgentExecutor::new();
+        let executor = SWEAgentExecutor::default();
         let mut events = Vec::new();
 
         // Mark as running
@@ -141,7 +141,7 @@ fn spawn_task_executor(
                 }
             }
 
-            let event = executor.execute(action);
+            let event = executor.execute(action).await;
             events.push(event);
 
             // Update events in store
@@ -365,12 +365,47 @@ pub async fn get_task_events(
                             "path": path,
                         })
                     }
+                    SWEAgentEvent::FileReadFailed(path, error) => {
+                        serde_json::json!({
+                            "type": "FileReadFailed",
+                            "path": path,
+                            "error": error,
+                        })
+                    }
+                    SWEAgentEvent::FileWriteFailed(path, error) => {
+                        serde_json::json!({
+                            "type": "FileWriteFailed",
+                            "path": path,
+                            "error": error,
+                        })
+                    }
                     SWEAgentEvent::CommandExecuted(command, output, exit_code) => {
                         serde_json::json!({
                             "type": "CommandExecuted",
                             "command": command,
                             "output_preview": output.chars().take(500).collect::<String>(),
                             "exit_code": exit_code,
+                        })
+                    }
+                    SWEAgentEvent::CommandBlocked(command, reason) => {
+                        serde_json::json!({
+                            "type": "CommandBlocked",
+                            "command": command,
+                            "reason": reason,
+                        })
+                    }
+                    SWEAgentEvent::CommandTimedOut(command, timeout_secs) => {
+                        serde_json::json!({
+                            "type": "CommandTimedOut",
+                            "command": command,
+                            "timeout_secs": timeout_secs,
+                        })
+                    }
+                    SWEAgentEvent::PathBlocked(path, reason) => {
+                        serde_json::json!({
+                            "type": "PathBlocked",
+                            "path": path,
+                            "reason": reason,
                         })
                     }
                 })
