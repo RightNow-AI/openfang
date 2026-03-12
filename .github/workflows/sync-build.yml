@@ -79,3 +79,19 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: fliva/openfang
           readme-filepath: ./DOCKER_README.md
+
+      - name: Notify Telegram (success)
+        if: success() && (github.event_name == 'push' || steps.check.outputs.new_release == 'true')
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d parse_mode="Markdown" \
+            -d text="✅ *OpenFang Build OK*%0A%0ATag: \`${{ steps.check.outputs.latest || 'custom' }}\`%0ACommit: \`${GITHUB_SHA::7}\`%0A[View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Notify Telegram (failure)
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d parse_mode="Markdown" \
+            -d text="❌ *OpenFang Build FAILED*%0A%0ACommit: \`${GITHUB_SHA::7}\`%0A[View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
