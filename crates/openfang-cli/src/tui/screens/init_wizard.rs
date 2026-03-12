@@ -364,7 +364,7 @@ impl State {
             key_test: KeyTestState::Idle,
             key_test_started: None,
             model_input: String::new(),
-            model_catalog: ModelCatalog::new(),
+            model_catalog: ModelCatalog::from_home_dir(&crate::openfang_home()),
             model_entries: Vec::new(),
             model_list: ListState::default(),
             routing_phase: RoutingPhase::Choice,
@@ -950,7 +950,9 @@ fn handle_migration_key(
                     let target_dir = if let Ok(h) = std::env::var("OPENFANG_HOME") {
                         PathBuf::from(h)
                     } else {
-                        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".openfang")
+                        dirs::home_dir()
+                            .unwrap_or_else(|| PathBuf::from("."))
+                            .join(".openfang")
                     };
                     let tx = migrate_tx.clone();
                     std::thread::spawn(move || {
