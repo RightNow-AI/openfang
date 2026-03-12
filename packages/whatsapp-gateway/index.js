@@ -20,6 +20,8 @@ let qrDataUrl = '';       // latest QR code as data:image/png;base64,...
 let connStatus = 'disconnected'; // disconnected | qr_ready | connected
 let qrExpired = false;
 let statusMessage = 'Not started';
+let reconnectAttempts = 0; // track consecutive reconnection attempts
+const MAX_RECONNECT_DELAY = 60_000; // cap backoff at 60s
 
 // ---------------------------------------------------------------------------
 // Baileys connection
@@ -84,6 +86,7 @@ async function startConnection() {
         statusMessage = 'Logged out. Generate a new QR code to reconnect.';
         qrDataUrl = '';
         sock = null;
+        reconnectAttempts = 0;
         // Remove auth store so next connect gets a fresh QR
         const fs = require('node:fs');
         const path = require('node:path');
@@ -91,18 +94,17 @@ async function startConnection() {
         if (fs.existsSync(authPath)) {
           fs.rmSync(authPath, { recursive: true, force: true });
         }
-      } else if (statusCode === DisconnectReason.restartRequired ||
-                 statusCode === DisconnectReason.timedOut) {
-        // Recoverable — reconnect automatically
-        console.log('[gateway] Reconnecting...');
-        statusMessage = 'Reconnecting...';
-        setTimeout(() => startConnection(), 2000);
       } else {
-        // QR expired or other non-recoverable close
-        qrExpired = true;
+        // All other close reasons are recoverable — reconnect with backoff.
+        // This includes: connectionClosed (428), connectionLost (408),
+        // connectionReplaced (440), restartRequired (515), timedOut (408),
+        // multideviceMismatch, and QR expiry.
+        reconnectAttempts++;
+        const delay = Math.min(2000 * Math.pow(1.5, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
+        console.log(`[gateway] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts})...`);
         connStatus = 'disconnected';
-        statusMessage = 'QR code expired. Click "Generate New QR" to retry.';
-        qrDataUrl = '';
+        statusMessage = `Reconnecting (attempt ${reconnectAttempts})...`;
+        setTimeout(() => startConnection(), delay);
       }
     }
 
@@ -110,6 +112,7 @@ async function startConnection() {
       connStatus = 'connected';
       qrExpired = false;
       qrDataUrl = '';
+      reconnectAttempts = 0;
       statusMessage = 'Connected to WhatsApp';
       console.log('[gateway] Connected to WhatsApp!');
     }
@@ -332,11 +335,24 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, '127.0.0.1', async () => {
   console.log(`[gateway] WhatsApp Web gateway listening on http://127.0.0.1:${PORT}`);
   console.log(`[gateway] OpenFang URL: ${OPENFANG_URL}`);
   console.log(`[gateway] Default agent: ${DEFAULT_AGENT}`);
-  console.log('[gateway] Waiting for POST /login/start to begin QR flow...');
+
+  // Auto-connect if auth credentials already exist (previous session)
+  const fs = require('node:fs');
+  const authPath = require('node:path').join(__dirname, 'auth_store', 'creds.json');
+  if (fs.existsSync(authPath)) {
+    console.log('[gateway] Found existing auth — auto-connecting...');
+    try {
+      await startConnection();
+    } catch (err) {
+      console.error('[gateway] Auto-connect failed:', err.message);
+    }
+  } else {
+    console.log('[gateway] No auth found — waiting for POST /login/start to begin QR flow...');
+  }
 });
 
 // Graceful shutdown
