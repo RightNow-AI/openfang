@@ -458,6 +458,7 @@ async fn dispatch_message(
         .and_then(|o| o.output_format)
         .unwrap_or(channel_default_format);
     let threading_enabled = overrides.as_ref().map(|o| o.threading).unwrap_or(false);
+    let lifecycle_reactions = overrides.as_ref().map(|o| o.lifecycle_reactions).unwrap_or(true);
     let thread_id = if threading_enabled {
         message.thread_id.as_deref()
     } else {
@@ -542,6 +543,7 @@ async fn dispatch_message(
                 ct_str,
                 thread_id,
                 output_format,
+                lifecycle_reactions,
             )
             .await;
             return;
@@ -757,20 +759,26 @@ async fn dispatch_message(
 
     // Lifecycle reaction: ⏳ Queued → 🤔 Thinking → ✅ Done / ❌ Error
     let msg_id = &message.platform_message_id;
-    send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Queued).await;
-    send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Thinking).await;
+    if lifecycle_reactions {
+        send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Queued).await;
+        send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Thinking).await;
+    }
 
     // Send to agent and relay response
     match handle.send_message(agent_id, &text).await {
         Ok(response) => {
-            send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
+            }
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
             handle
                 .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None, thread_id)
                 .await;
         }
         Err(e) => {
-            send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Error).await;
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Error).await;
+            }
             warn!("Agent error for {agent_id}: {e}");
             let err_msg = format!("Agent error: {e}");
             send_response(
@@ -924,6 +932,7 @@ async fn dispatch_with_blocks(
     ct_str: &str,
     thread_id: Option<&str>,
     output_format: OutputFormat,
+    lifecycle_reactions: bool,
 ) {
     // Route to agent (same logic as text path)
     let agent_id = router.resolve(
@@ -983,19 +992,25 @@ async fn dispatch_with_blocks(
 
     // Lifecycle reaction: ⏳ Queued → 🤔 Thinking → ✅ Done / ❌ Error
     let msg_id = &message.platform_message_id;
-    send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Queued).await;
-    send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Thinking).await;
+    if lifecycle_reactions {
+        send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Queued).await;
+        send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Thinking).await;
+    }
 
     match handle.send_message_with_blocks(agent_id, blocks).await {
         Ok(response) => {
-            send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
+            }
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
             handle
                 .record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None, thread_id)
                 .await;
         }
         Err(e) => {
-            send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Error).await;
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Error).await;
+            }
             warn!("Agent error for {agent_id}: {e}");
             let err_msg = format!("Agent error: {e}");
             send_response(

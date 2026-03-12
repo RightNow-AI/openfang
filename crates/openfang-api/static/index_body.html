@@ -1,13 +1,28 @@
 <body x-data="app" :data-theme="theme">
 
-<!-- API Key Auth Prompt -->
-<div x-show="$store.app.showAuthPrompt" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px)" x-data="{ apiKeyInput: '' }">
+<!-- Auth Prompt (API Key or Username/Password) -->
+<div x-show="$store.app.showAuthPrompt" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px)" x-data="{ apiKeyInput: '', loginUser: '', loginPass: '' }">
   <div style="background:var(--bg-card,#1e1e2e);border:1px solid var(--border,#333);border-radius:12px;padding:2rem;max-width:400px;width:90%">
-    <h3 style="margin:0 0 0.5rem;font-size:1.1rem">API Key Required</h3>
-    <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 0.5rem">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
-    <p style="color:var(--text-dim,#666);font-size:0.75rem;margin:0 0 1rem">Add <code style="color:var(--accent-light,#a78bfa);background:var(--bg,#111);padding:1px 4px;border-radius:2px">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.openfang/config.toml</code> (not under any [section]).</p>
-    <input type="password" x-model="apiKeyInput" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
-    <button @click="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
+    <!-- Session login mode -->
+    <template x-if="$store.app.authMode === 'session'">
+      <div>
+        <h3 style="margin:0 0 0.5rem;font-size:1.1rem">Sign In</h3>
+        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 1rem">Enter your dashboard credentials.</p>
+        <input type="text" x-model="loginUser" placeholder="Username" autocomplete="username" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.5rem">
+        <input type="password" x-model="loginPass" placeholder="Password" autocomplete="current-password" @keydown.enter="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
+        <button @click="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Sign In</button>
+      </div>
+    </template>
+    <!-- API key mode -->
+    <template x-if="$store.app.authMode === 'apikey'">
+      <div>
+        <h3 style="margin:0 0 0.5rem;font-size:1.1rem">API Key Required</h3>
+        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 0.5rem">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
+        <p style="color:var(--text-dim,#666);font-size:0.75rem;margin:0 0 1rem">Add <code style="color:var(--accent-light,#a78bfa);background:var(--bg,#111);padding:1px 4px;border-radius:2px">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.openfang/config.toml</code> (not under any [section]).</p>
+        <input type="password" x-model="apiKeyInput" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
+        <button @click="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
+      </div>
+    </template>
   </div>
 </div>
 
@@ -171,6 +186,10 @@
     </div>
 
     <div class="sidebar-footer">
+      <div x-show="$store.app.sessionUser" style="padding:4px 16px;display:flex;align-items:center;justify-content:space-between">
+        <span class="text-xs text-dim" x-text="$store.app.sessionUser" style="letter-spacing:0.5px"></span>
+        <button @click="$store.app.sessionLogout()" class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;opacity:0.7" title="Sign out">Logout</button>
+      </div>
       <div class="sidebar-label text-xs text-dim" style="padding:0 16px 4px;letter-spacing:0.5px">Ctrl+K agents | Ctrl+N new</div>
     </div>
     <div class="sidebar-toggle" @click="toggleSidebar()" x-text="sidebarCollapsed ? '\u276F' : '\u276E'"></div>
@@ -1320,7 +1339,9 @@
                     <td class="text-xs" x-text="new Date(wf.created_at).toLocaleDateString()"></td>
                     <td>
                       <button class="btn btn-primary btn-sm" @click="showRunModal(wf)">Run</button>
+                      <button class="btn btn-ghost btn-sm" @click="showEditModal(wf)">Edit</button>
                       <button class="btn btn-ghost btn-sm" @click="viewRuns(wf)">History</button>
+                      <button class="btn btn-danger btn-sm" @click="deleteWorkflow(wf)">Delete</button>
                     </td>
                   </tr>
                 </template>
@@ -1382,6 +1403,39 @@
                   <div class="card-header">Result</div>
                   <pre style="font-size:11px;white-space:pre-wrap;margin-top:8px;color:var(--text-dim)" x-text="runResult"></pre>
                 </div>
+              </div>
+            </div>
+          </template>
+          <!-- Edit modal -->
+          <template x-if="editModal">
+            <div class="modal-overlay" @click.self="editModal = null" @keydown.escape.window="editModal = null">
+              <div class="modal">
+                <div class="modal-header"><h3 x-text="'Edit: ' + editModal.name"></h3><button class="modal-close" @click="editModal = null">&times;</button></div>
+                <div class="form-group"><label>Name</label><input class="form-input" x-model="editWf.name" placeholder="Workflow name"></div>
+                <div class="form-group"><label>Description</label><input class="form-input" x-model="editWf.description" placeholder="What does this workflow do?"></div>
+                <div class="mb-4">
+                  <div class="form-group" style="margin:0"><label>Steps</label></div>
+                  <div class="text-xs text-dim mb-2">Each step runs an agent. Use <code style="color:var(--accent)">{{input}}</code> in prompts to pass the previous step's output.</div>
+                  <template x-for="(step, i) in editWf.steps" :key="i">
+                    <div class="card mt-2" style="padding:10px">
+                      <div class="flex gap-2 items-center">
+                        <span class="text-xs text-dim font-bold" x-text="'#' + (i+1)" style="width:24px"></span>
+                        <input class="form-input" style="flex:1" x-model="step.name" placeholder="Step name">
+                        <input class="form-input" style="flex:1" x-model="step.agent_name" placeholder="Agent name">
+                        <select class="form-select" style="width:120px" x-model="step.mode">
+                          <option value="sequential">Sequential</option>
+                          <option value="fan_out">Fan Out</option>
+                          <option value="conditional">Conditional</option>
+                          <option value="loop">Loop</option>
+                        </select>
+                        <button class="btn btn-danger btn-sm" @click="editWf.steps.splice(i,1)">&times;</button>
+                      </div>
+                      <input class="form-input mt-2" x-model="step.prompt" placeholder="Prompt template (use {{input}})">
+                    </div>
+                  </template>
+                  <button class="btn btn-ghost btn-sm mt-2" @click="editWf.steps.push({name:'',agent_name:'',mode:'sequential',prompt:'{{input}}'})">+ Add Step</button>
+                </div>
+                <button class="btn btn-primary btn-block" @click="saveWorkflow()">Save Changes</button>
               </div>
             </div>
           </template>

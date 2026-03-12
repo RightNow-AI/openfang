@@ -2186,14 +2186,25 @@ async fn tool_channel_send(
         .ok_or("Missing 'channel' parameter")?
         .trim()
         .to_lowercase();
-    let recipient = input["recipient"]
+    let recipient_input = input["recipient"]
         .as_str()
-        .ok_or("Missing 'recipient' parameter")?
-        .trim();
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
 
-    if recipient.is_empty() {
-        return Err("Recipient cannot be empty".to_string());
-    }
+    // If recipient is empty, resolve from channel's default_chat_id config.
+    let recipient = if recipient_input.is_empty() {
+        let default_id = kh.get_channel_default_recipient(&channel).await;
+        match default_id {
+            Some(id) => id,
+            None => return Err(format!(
+                "Missing 'recipient' parameter. Set default_chat_id in [channels.{channel}] config \
+                 or pass recipient explicitly."
+            )),
+        }
+    } else {
+        recipient_input
+    };
+    let recipient = recipient.as_str();
 
     let thread_id = input["thread_id"].as_str().filter(|s| !s.is_empty());
 
