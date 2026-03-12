@@ -2262,6 +2262,34 @@ impl OpenFangKernel {
             }
         }
 
+        // If message contains images and a vision model is configured, swap to it.
+        // Many text models (e.g. qwen-plus) don't support image input — the vision
+        // model (e.g. qwen-vl-plus) handles multimodal content correctly.
+        if let Some(ref blocks) = content_blocks {
+            let has_images = blocks.iter().any(|b| {
+                matches!(
+                    b,
+                    openfang_types::message::ContentBlock::Image { .. }
+                        | openfang_types::message::ContentBlock::ImageUrl { .. }
+                )
+            });
+            if has_images {
+                if let Some(ref vision_model) = self.config.default_model.vision_model {
+                    info!(
+                        agent = %manifest.name,
+                        default_model = %manifest.model.model,
+                        vision_model = %vision_model,
+                        "Swapping to vision model for image content"
+                    );
+                    manifest.model.model = vision_model.clone();
+                    // The vision model lives on the same provider as the default
+                    // model. Without this swap, an agent using e.g. claude-code
+                    // would try to send the image to the wrong driver.
+                    manifest.model.provider = self.config.default_model.provider.clone();
+                }
+            }
+        }
+
         let driver = self.resolve_driver(&manifest)?;
 
         // Look up model's actual context window from the catalog

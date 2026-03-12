@@ -56,6 +56,12 @@ pub enum ContentBlock {
         /// Base64-encoded image data.
         data: String,
     },
+    /// A URL-referenced image (for providers like DashScope that prefer URLs over base64).
+    #[serde(rename = "image_url")]
+    ImageUrl {
+        /// The URL of the image.
+        url: String,
+    },
     /// A tool use request from the assistant.
     #[serde(rename = "tool_use")]
     ToolUse {
@@ -144,6 +150,7 @@ impl MessageContent {
                     ContentBlock::Thinking { thinking } => thinking.len(),
                     ContentBlock::ToolUse { .. }
                     | ContentBlock::Image { .. }
+                    | ContentBlock::ImageUrl { .. }
                     | ContentBlock::Unknown => 0,
                 })
                 .sum(),

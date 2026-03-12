@@ -528,25 +528,34 @@ async fn dispatch_message(
         return;
     }
 
-    // For images: download, base64 encode, and send as multimodal content blocks
+    // For images: build content blocks with the image URL for vision models.
+    // We pass the original URL rather than downloading + base64-encoding because
+    // many providers (DashScope/Qwen, OpenAI) prefer or require direct URLs.
     if let ChannelContent::Image { ref url, ref caption } = message.content {
-        let blocks = download_image_to_blocks(url, caption.as_deref()).await;
-        if blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. })) {
-            // We have actual image data — send as structured blocks for vision
-            dispatch_with_blocks(
-                blocks,
-                message,
-                handle,
-                router,
-                adapter,
-                ct_str,
-                thread_id,
-                output_format,
-            )
-            .await;
-            return;
+        let mut blocks = Vec::new();
+        if let Some(cap) = caption {
+            if !cap.is_empty() {
+                blocks.push(ContentBlock::Text {
+                    text: cap.clone(),
+                    provider_metadata: None,
+                });
+            }
         }
-        // Image download failed — fall through to text description below
+        blocks.push(ContentBlock::ImageUrl {
+            url: url.clone(),
+        });
+        dispatch_with_blocks(
+            blocks,
+            message,
+            handle,
+            router,
+            adapter,
+            ct_str,
+            thread_id,
+            output_format,
+        )
+        .await;
+        return;
     }
 
     let text = match &message.content {

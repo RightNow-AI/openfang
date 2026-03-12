@@ -1393,6 +1393,10 @@ pub struct DefaultModelConfig {
     pub api_key_env: String,
     /// Optional base URL override.
     pub base_url: Option<String>,
+    /// Optional vision-capable model for image messages.
+    /// When set, agents receiving images will automatically use this model
+    /// instead of the default (which may not support vision).
+    pub vision_model: Option<String>,
 }
 
 impl Default for DefaultModelConfig {
@@ -1402,6 +1406,7 @@ impl Default for DefaultModelConfig {
             model: "claude-sonnet-4-20250514".to_string(),
             api_key_env: "ANTHROPIC_API_KEY".to_string(),
             base_url: None,
+            vision_model: None,
         }
     }
 }

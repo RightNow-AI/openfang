@@ -6852,6 +6852,7 @@ pub async fn set_provider_key(
                     model: model_id,
                     api_key_env: env_var.clone(),
                     base_url: None,
+                    vision_model: None,
                 };
                 let mut guard = state
                     .kernel
