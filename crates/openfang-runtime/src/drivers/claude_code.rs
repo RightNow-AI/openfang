@@ -92,8 +92,8 @@ impl ClaudeCodeDriver {
 
     /// Build a text prompt from the completion request messages.
     ///
-    /// Image content blocks are represented as `[Attached image: <filename>]`
-    /// placeholders — the actual image files are passed via `--file`.
+    /// Image content blocks are referenced using Claude Code's `@path` syntax,
+    /// which tells the CLI to read the local file directly.
     fn build_prompt(request: &CompletionRequest, image_files: &[PathBuf]) -> String {
         let mut parts = Vec::new();
         let mut img_idx = 0;
@@ -127,11 +127,8 @@ impl ClaudeCodeDriver {
                             }
                             ContentBlock::Image { .. } | ContentBlock::ImageUrl { .. } => {
                                 if img_idx < image_files.len() {
-                                    let fname = image_files[img_idx]
-                                        .file_name()
-                                        .map(|n| n.to_string_lossy().to_string())
-                                        .unwrap_or_else(|| format!("image_{img_idx}"));
-                                    msg_parts.push(format!("[Attached image: {fname}]"));
+                                    let path = &image_files[img_idx];
+                                    msg_parts.push(format!("@{}", path.display()));
                                     img_idx += 1;
                                 }
                             }
@@ -339,11 +336,6 @@ impl LlmDriver for ClaudeCodeDriver {
             cmd.arg("--model").arg(model);
         }
 
-        // Attach image files so the CLI can see them
-        for img_path in &image_files {
-            cmd.arg("--file").arg(img_path);
-        }
-
         Self::apply_env_filter(&mut cmd);
 
         cmd.stdout(std::process::Stdio::piped());
@@ -449,11 +441,6 @@ impl LlmDriver for ClaudeCodeDriver {
 
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);
-        }
-
-        // Attach image files so the CLI can see them
-        for img_path in &image_files {
-            cmd.arg("--file").arg(img_path);
         }
 
         Self::apply_env_filter(&mut cmd);
