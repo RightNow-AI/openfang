@@ -362,6 +362,18 @@ This phase enabled bi-directional SWE-Supervisor collaboration with automatic an
 - **Direct SWE API:** Added `/api/supervisor/delegate` endpoint enabling explicit SWE agent routing without automatic classification
 - **Bi-Directional A2A:** Supervisor now routes SWE tasks to SWE agent via handler registry, while A2A remains available for cross-node communication of non-SWE tasks
 
+### SWE Evaluation Suite
+
+Phase 18.4 added a comprehensive evaluation framework for testing SWE agent capabilities:
+
+- **Test Types:** `SWETestCase` supports FileRead, FileWrite, CommandExecution, CodeGeneration, BugFix, Refactoring, and MultiStep tasks
+- **Difficulty Levels:** Beginner, Intermediate, Advanced, Expert with progressive complexity
+- **Test Runner:** `SWETestRunner` executes test cases with setup/cleanup commands and validates results
+- **Validation:** Checks file creation, content patterns, command outputs, and compilation
+- **Scoring:** 0.0-1.0 score based on validation checks with 0.8 pass threshold
+- **Pre-defined Suites:** basic (5 tests), intermediate (5), advanced (4), expert (3)
+- **API Endpoints:** `GET /api/swe/evaluate?suite=<name>` and `GET /api/swe/evaluate/suites`
+
 ---
 
 ## 24. The Memory Subsystem in Detail
