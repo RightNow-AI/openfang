@@ -10,6 +10,7 @@ pub mod copilot;
 pub mod fallback;
 pub mod gemini;
 pub mod openai;
+pub mod qwen_code;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
@@ -309,6 +310,15 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         )));
     }
 
+    // Qwen Code CLI — subprocess-based, uses Qwen OAuth (free tier)
+    if provider == "qwen-code" {
+        let cli_path = config.base_url.clone();
+        return Ok(Arc::new(qwen_code::QwenCodeDriver::new(
+            cli_path,
+            config.skip_permissions,
+        )));
+    }
+
     // GitHub Copilot — wraps OpenAI-compatible driver with automatic token exchange.
     // The CopilotDriver exchanges the GitHub PAT for a Copilot API token on demand,
     // caches it, and refreshes when expired.
@@ -486,6 +496,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "venice",
         "codex",
         "claude-code",
+        "qwen-code",
     ]
 }
 
@@ -587,7 +598,8 @@ mod tests {
         assert!(providers.contains(&"chutes"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
-        assert_eq!(providers.len(), 34);
+        assert!(providers.contains(&"qwen-code"));
+        assert_eq!(providers.len(), 35);
     }
 
     #[test]

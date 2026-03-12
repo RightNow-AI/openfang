@@ -22,6 +22,7 @@ pub struct AgentInfo {
 
 /// Handle to kernel operations, passed into the agent loop so agents
 /// can interact with each other via tools.
+#[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub trait KernelHandle: Send + Sync {
     /// Spawn a new agent from a TOML manifest string.
