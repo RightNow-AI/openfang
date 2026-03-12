@@ -362,8 +362,8 @@ impl McpConnection {
             McpTransportHandle::Sse { client, url } => {
                 tracing::debug!("MCP SSE request url:{}, params: {:?}", url, request.params);
                 let response = client
-                    .get(url.as_str())
-                    // .json(&request)
+                    .post(url.as_str())
+                    .json(&request)
                     .timeout(std::time::Duration::from_secs(self.config.timeout_secs))
                     .send()
                     .await
