@@ -1480,15 +1480,26 @@ fn cmd_start(config: Option<PathBuf>) {
 /// Returns `None` when the key is missing, empty, or whitespace-only —
 /// meaning the daemon is running in public (unauthenticated) mode.
 fn read_api_key() -> Option<String> {
+    // 1. Config file takes precedence
     let config_path = cli_openfang_home().join("config.toml");
-    let text = std::fs::read_to_string(config_path).ok()?;
-    let table: toml::Value = text.parse().ok()?;
-    let key = table.get("api_key")?.as_str()?.trim();
-    if key.is_empty() {
-        None
-    } else {
-        Some(key.to_string())
+    if let Ok(text) = std::fs::read_to_string(config_path) {
+        if let Ok(table) = text.parse::<toml::Value>() {
+            if let Some(key) = table.get("api_key").and_then(|v| v.as_str()) {
+                let key = key.trim();
+                if !key.is_empty() {
+                    return Some(key.to_string());
+                }
+            }
+        }
     }
+    // 2. Fall back to OPENFANG_API_KEY env var
+    if let Ok(key) = std::env::var("OPENFANG_API_KEY") {
+        let key = key.trim().to_string();
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+    None
 }
 
 fn cmd_stop() {

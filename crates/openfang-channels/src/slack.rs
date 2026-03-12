@@ -76,14 +76,18 @@ impl SlackAdapter {
         &self,
         channel_id: &str,
         text: &str,
+        thread_ts: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let chunks = split_message(text, SLACK_MSG_LIMIT);
 
         for chunk in chunks {
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "channel": channel_id,
                 "text": chunk,
             });
+            if let Some(ts) = thread_ts {
+                body["thread_ts"] = serde_json::json!(ts);
+            }
 
             let resp: serde_json::Value = self
                 .client
@@ -289,11 +293,35 @@ impl ChannelAdapter for SlackAdapter {
         let channel_id = &user.platform_id;
         match content {
             ChannelContent::Text(text) => {
-                self.api_send_message(channel_id, &text).await?;
+                self.api_send_message(channel_id, &text, None).await?;
             }
             _ => {
-                self.api_send_message(channel_id, "(Unsupported content type)")
+                self.api_send_message(channel_id, "(Unsupported content type)", None)
                     .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_in_thread(
+        &self,
+        user: &ChannelUser,
+        content: ChannelContent,
+        thread_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let channel_id = &user.platform_id;
+        match content {
+            ChannelContent::Text(text) => {
+                self.api_send_message(channel_id, &text, Some(thread_id))
+                    .await?;
+            }
+            _ => {
+                self.api_send_message(
+                    channel_id,
+                    "(Unsupported content type)",
+                    Some(thread_id),
+                )
+                .await?;
             }
         }
         Ok(())
@@ -413,6 +441,23 @@ async fn parse_slack_event(
         ChannelContent::Text(text.to_string())
     };
 
+    // Extract thread_id: threaded replies have `thread_ts`, top-level messages
+    // use their own `ts` so the reply will start a thread under the original.
+    let thread_id = msg_data["thread_ts"]
+        .as_str()
+        .or_else(|| event["thread_ts"].as_str())
+        .map(|s| s.to_string())
+        .or_else(|| Some(ts.to_string()));
+
+    // Check if the bot was @-mentioned (for group_policy = "mention_only")
+    let mut metadata = HashMap::new();
+    if let Some(ref bid) = *bot_user_id.read().await {
+        let mention_tag = format!("<@{bid}>");
+        if text.contains(&mention_tag) {
+            metadata.insert("was_mentioned".to_string(), serde_json::json!(true));
+        }
+    }
+
     Some(ChannelMessage {
         channel: ChannelType::Slack,
         platform_message_id: ts.to_string(),
@@ -425,8 +470,8 @@ async fn parse_slack_event(
         target_agent: None,
         timestamp,
         is_group: true,
-        thread_id: None,
-        metadata: HashMap::new(),
+        thread_id,
+        metadata,
     })
 }
 
