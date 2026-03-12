@@ -304,6 +304,14 @@ fn convert_messages(
                                 },
                             });
                         }
+                        ContentBlock::ImageUrl { url } => {
+                            // Gemini supports fileData for URL-based images;
+                            // fall back to a text description if not supported.
+                            parts.push(GeminiPart::Text {
+                                text: format!("[Image: {url}]"),
+                                thought_signature: None,
+                            });
+                        }
                         ContentBlock::ToolResult {
                             content, tool_name, ..
                         } => {

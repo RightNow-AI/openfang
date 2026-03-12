@@ -278,6 +278,13 @@ impl LlmDriver for OpenAIDriver {
                                     },
                                 });
                             }
+                            ContentBlock::ImageUrl { url } => {
+                                parts.push(OaiContentPart::ImageUrl {
+                                    image_url: OaiImageUrl {
+                                        url: url.clone(),
+                                    },
+                                });
+                            }
                             ContentBlock::Thinking { .. } => {}
                             _ => {}
                         }
