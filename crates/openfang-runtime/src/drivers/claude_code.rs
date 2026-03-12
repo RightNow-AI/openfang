@@ -93,7 +93,7 @@ impl ClaudeCodeDriver {
     /// Build a text prompt from the completion request messages.
     ///
     /// Image content blocks are represented as `[Attached image: <filename>]`
-    /// placeholders — the actual image files are passed via `--files`.
+    /// placeholders — the actual image files are passed via `--file`.
     fn build_prompt(request: &CompletionRequest, image_files: &[PathBuf]) -> String {
         let mut parts = Vec::new();
         let mut img_idx = 0;
@@ -341,7 +341,7 @@ impl LlmDriver for ClaudeCodeDriver {
 
         // Attach image files so the CLI can see them
         for img_path in &image_files {
-            cmd.arg("--files").arg(img_path);
+            cmd.arg("--file").arg(img_path);
         }
 
         Self::apply_env_filter(&mut cmd);
@@ -453,7 +453,7 @@ impl LlmDriver for ClaudeCodeDriver {
 
         // Attach image files so the CLI can see them
         for img_path in &image_files {
-            cmd.arg("--files").arg(img_path);
+            cmd.arg("--file").arg(img_path);
         }
 
         Self::apply_env_filter(&mut cmd);
