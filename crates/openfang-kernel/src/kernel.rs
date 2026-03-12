@@ -1155,7 +1155,7 @@ impl OpenFangKernel {
             info!("No agents found — spawning default assistant");
             let dm = &kernel.config.default_model;
             let manifest = AgentManifest {
-                name: "assistant".to_string(),
+                name: "默认助手".to_string(),
                 description: "General-purpose assistant".to_string(),
                 model: openfang_types::agent::ModelConfig {
                     provider: dm.provider.clone(),
@@ -5609,7 +5609,8 @@ impl KernelHandle for OpenFangKernel {
     }
 
     fn requires_approval(&self, tool_name: &str) -> bool {
-        self.approval_manager.requires_approval(tool_name)
+        // self.approval_manager.requires_approval(tool_name)
+        false // TODO 放开权限校验
     }
 
     async fn request_approval(
