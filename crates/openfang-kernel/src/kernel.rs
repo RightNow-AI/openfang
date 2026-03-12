@@ -2262,9 +2262,10 @@ impl OpenFangKernel {
             }
         }
 
-        // If message contains images and the current model doesn't support vision,
-        // swap to the configured vision model. Models that already support vision
-        // (e.g. claude-opus-4-6) keep running — no swap needed.
+        // Vision model selection for image content.
+        // Priority: 1) explicit vision_model from config (forced override)
+        //           2) current agent model if it supports vision (no swap needed)
+        //           3) error — no vision capability available
         if let Some(ref blocks) = content_blocks {
             let has_images = blocks.iter().any(|b| {
                 matches!(
@@ -2274,37 +2275,38 @@ impl OpenFangKernel {
                 )
             });
             if has_images {
-                let current_supports_vision = self
-                    .model_catalog
-                    .read()
-                    .ok()
-                    .and_then(|cat| cat.find_model(&manifest.model.model).map(|m| m.supports_vision))
-                    .unwrap_or(false);
-
-                if current_supports_vision {
+                if let Some(ref vision_model) = self.config.default_model.vision_model {
+                    // Explicit vision_model configured — always use it
                     info!(
                         agent = %manifest.name,
-                        model = %manifest.model.model,
-                        "Current model supports vision — skipping swap"
-                    );
-                } else if let Some(ref vision_model) = self.config.default_model.vision_model {
-                    info!(
-                        agent = %manifest.name,
-                        default_model = %manifest.model.model,
+                        current_model = %manifest.model.model,
                         vision_model = %vision_model,
-                        "Swapping to vision model for image content"
+                        "Swapping to configured vision model for image content"
                     );
                     manifest.model.model = vision_model.clone();
-                    // The vision model lives on the same provider as the default
-                    // model. Without this swap, an agent using e.g. claude-code
-                    // would try to send the image to the wrong driver.
                     manifest.model.provider = self.config.default_model.provider.clone();
                 } else {
-                    warn!(
-                        agent = %manifest.name,
-                        model = %manifest.model.model,
-                        "Image received but model lacks vision and no vision_model configured"
-                    );
+                    // No vision_model forced — check if current model handles vision
+                    let current_supports_vision = self
+                        .model_catalog
+                        .read()
+                        .ok()
+                        .and_then(|cat| cat.find_model(&manifest.model.model).map(|m| m.supports_vision))
+                        .unwrap_or(false);
+
+                    if current_supports_vision {
+                        info!(
+                            agent = %manifest.name,
+                            model = %manifest.model.model,
+                            "Current model supports vision — no swap needed"
+                        );
+                    } else {
+                        warn!(
+                            agent = %manifest.name,
+                            model = %manifest.model.model,
+                            "Image received but no vision_model configured and current model lacks vision support"
+                        );
+                    }
                 }
             }
         }
