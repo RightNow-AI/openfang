@@ -573,6 +573,12 @@ fn convert_message(msg: &Message) -> ApiMessage {
                             data: data.clone(),
                         },
                     }),
+                    ContentBlock::ImageUrl { url } => {
+                        // Anthropic requires base64; pass as text description for now.
+                        Some(ApiContentBlock::Text {
+                            text: format!("[Image: {url}]"),
+                        })
+                    }
                     ContentBlock::ToolUse { id, name, input, .. } => Some(ApiContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),

@@ -7,8 +7,9 @@
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
-use openfang_types::message::{ContentBlock, Role, StopReason, TokenUsage};
+use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
 use serde::Deserialize;
+use std::path::PathBuf;
 use tokio::io::AsyncBufReadExt;
 use tracing::{debug, warn};
 
@@ -90,8 +91,12 @@ impl ClaudeCodeDriver {
     }
 
     /// Build a text prompt from the completion request messages.
-    fn build_prompt(request: &CompletionRequest) -> String {
+    ///
+    /// Image content blocks are represented as `[Attached image: <filename>]`
+    /// placeholders — the actual image files are passed via `--files`.
+    fn build_prompt(request: &CompletionRequest, image_files: &[PathBuf]) -> String {
         let mut parts = Vec::new();
+        let mut img_idx = 0;
 
         if let Some(ref sys) = request.system {
             parts.push(format!("[System]\n{sys}"));
@@ -103,13 +108,133 @@ impl ClaudeCodeDriver {
                 Role::Assistant => "Assistant",
                 Role::System => "System",
             };
-            let text = msg.content.text_content();
-            if !text.is_empty() {
-                parts.push(format!("[{role_label}]\n{text}"));
+
+            let mut msg_parts = Vec::new();
+
+            match &msg.content {
+                MessageContent::Text(s) => {
+                    if !s.is_empty() {
+                        msg_parts.push(s.clone());
+                    }
+                }
+                MessageContent::Blocks(blocks) => {
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text, .. } => {
+                                if !text.is_empty() {
+                                    msg_parts.push(text.clone());
+                                }
+                            }
+                            ContentBlock::Image { .. } | ContentBlock::ImageUrl { .. } => {
+                                if img_idx < image_files.len() {
+                                    let fname = image_files[img_idx]
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| format!("image_{img_idx}"));
+                                    msg_parts.push(format!("[Attached image: {fname}]"));
+                                    img_idx += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            if !msg_parts.is_empty() {
+                let combined = msg_parts.join("\n");
+                parts.push(format!("[{role_label}]\n{combined}"));
             }
         }
 
         parts.join("\n\n")
+    }
+
+    /// Extract image content blocks from messages and write them to temp files.
+    ///
+    /// Returns the list of temp file paths. The caller is responsible for
+    /// cleaning them up after the CLI finishes.
+    async fn extract_images_to_temp(request: &CompletionRequest) -> Vec<PathBuf> {
+        use base64::Engine;
+
+        let mut paths = Vec::new();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+
+        for msg in &request.messages {
+            if let MessageContent::Blocks(blocks) = &msg.content {
+                for (i, block) in blocks.iter().enumerate() {
+                    match block {
+                        ContentBlock::Image { media_type, data } => {
+                            let ext = media_type
+                                .strip_prefix("image/")
+                                .unwrap_or("png");
+                            let path = PathBuf::from(format!(
+                                "/tmp/openfang-img-{ts}-{i}.{ext}"
+                            ));
+                            if let Ok(bytes) =
+                                base64::engine::general_purpose::STANDARD.decode(data)
+                            {
+                                if std::fs::write(&path, &bytes).is_ok() {
+                                    paths.push(path);
+                                }
+                            }
+                        }
+                        ContentBlock::ImageUrl { url } => {
+                            // If it's a data URI, decode it; otherwise download
+                            if let Some(rest) = url.strip_prefix("data:") {
+                                // data:image/png;base64,<data>
+                                if let Some((meta, b64)) = rest.split_once(",") {
+                                    let ext = meta
+                                        .split(';')
+                                        .next()
+                                        .and_then(|m| m.strip_prefix("image/"))
+                                        .unwrap_or("png");
+                                    let path = PathBuf::from(format!(
+                                        "/tmp/openfang-img-{ts}-{i}.{ext}"
+                                    ));
+                                    if let Ok(bytes) =
+                                        base64::engine::general_purpose::STANDARD.decode(b64)
+                                    {
+                                        if std::fs::write(&path, &bytes).is_ok() {
+                                            paths.push(path);
+                                        }
+                                    }
+                                }
+                            } else {
+                                // HTTP(S) URL — try to download
+                                let path = PathBuf::from(format!(
+                                    "/tmp/openfang-img-{ts}-{i}.jpg"
+                                ));
+                                match reqwest::get(url).await {
+                                    Ok(resp) => {
+                                        if let Ok(bytes) = resp.bytes().await {
+                                            if std::fs::write(&path, &bytes).is_ok() {
+                                                paths.push(path);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(url = %url, error = %e, "Failed to download image for Claude CLI");
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        paths
+    }
+
+    /// Clean up temporary image files.
+    fn cleanup_temp_images(paths: &[PathBuf]) {
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     /// Map a model ID like "claude-code/opus" to CLI --model flag value.
@@ -196,7 +321,8 @@ impl LlmDriver for ClaudeCodeDriver {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, LlmError> {
-        let prompt = Self::build_prompt(&request);
+        let image_files = Self::extract_images_to_temp(&request).await;
+        let prompt = Self::build_prompt(&request, &image_files);
         let model_flag = Self::model_flag(&request.model);
 
         let mut cmd = tokio::process::Command::new(&self.cli_path);
@@ -211,6 +337,11 @@ impl LlmDriver for ClaudeCodeDriver {
 
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);
+        }
+
+        // Attach image files so the CLI can see them
+        for img_path in &image_files {
+            cmd.arg("--files").arg(img_path);
         }
 
         Self::apply_env_filter(&mut cmd);
@@ -230,6 +361,7 @@ impl LlmDriver for ClaudeCodeDriver {
             )))?;
 
         if !output.status.success() {
+            Self::cleanup_temp_images(&image_files);
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let detail = if !stderr.is_empty() { &stderr } else { &stdout };
@@ -261,6 +393,7 @@ impl LlmDriver for ClaudeCodeDriver {
             });
         }
 
+        Self::cleanup_temp_images(&image_files);
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         // Try JSON parse first
@@ -299,7 +432,8 @@ impl LlmDriver for ClaudeCodeDriver {
         request: CompletionRequest,
         tx: tokio::sync::mpsc::Sender<StreamEvent>,
     ) -> Result<CompletionResponse, LlmError> {
-        let prompt = Self::build_prompt(&request);
+        let image_files = Self::extract_images_to_temp(&request).await;
+        let prompt = Self::build_prompt(&request, &image_files);
         let model_flag = Self::model_flag(&request.model);
 
         let mut cmd = tokio::process::Command::new(&self.cli_path);
@@ -315,6 +449,11 @@ impl LlmDriver for ClaudeCodeDriver {
 
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);
+        }
+
+        // Attach image files so the CLI can see them
+        for img_path in &image_files {
+            cmd.arg("--files").arg(img_path);
         }
 
         Self::apply_env_filter(&mut cmd);
@@ -412,6 +551,8 @@ impl LlmDriver for ClaudeCodeDriver {
             .await
             .map_err(|e| LlmError::Http(format!("Claude CLI wait failed: {e}")))?;
 
+        Self::cleanup_temp_images(&image_files);
+
         if !status.success() {
             warn!(code = ?status.code(), "Claude CLI exited with error");
         }
@@ -486,7 +627,7 @@ mod tests {
             thinking: None,
         };
 
-        let prompt = ClaudeCodeDriver::build_prompt(&request);
+        let prompt = ClaudeCodeDriver::build_prompt(&request, &[]);
         assert!(prompt.contains("[System]"));
         assert!(prompt.contains("You are helpful."));
         assert!(prompt.contains("[User]"));
