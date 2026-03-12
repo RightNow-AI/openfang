@@ -34,6 +34,8 @@ pub struct AgentRouter {
     default_agent: Option<AgentId>,
     /// Per-channel-type default agent (e.g., Telegram -> agent_a, Discord -> agent_b).
     channel_defaults: DashMap<String, AgentId>,
+    /// Per-channel-type default agent NAME (for re-resolution after agent kill+respawn).
+    channel_default_names: DashMap<String, String>,
     /// Sorted bindings (most specific first). Uses Mutex for runtime updates via Arc.
     bindings: Mutex<Vec<(AgentBinding, String)>>,
     /// Broadcast configuration. Uses Mutex for runtime updates via Arc.
@@ -50,6 +52,7 @@ impl AgentRouter {
             direct_routes: DashMap::new(),
             default_agent: None,
             channel_defaults: DashMap::new(),
+            channel_default_names: DashMap::new(),
             bindings: Mutex::new(Vec::new()),
             broadcast: Mutex::new(BroadcastConfig::default()),
             agent_name_cache: DashMap::new(),
@@ -64,6 +67,20 @@ impl AgentRouter {
     /// Set a per-channel-type default agent (e.g., "Telegram" -> agent_id).
     pub fn set_channel_default(&self, channel_key: String, agent_id: AgentId) {
         self.channel_defaults.insert(channel_key, agent_id);
+    }
+
+    /// Set a per-channel-type default agent with its name for later re-resolution.
+    ///
+    /// When an agent is killed and respawned (new UUID), the bridge can use the
+    /// stored name to re-resolve the agent by calling `find_agent_by_name()`.
+    pub fn set_channel_default_with_name(&self, channel_key: String, agent_id: AgentId, agent_name: String) {
+        self.channel_default_names.insert(channel_key.clone(), agent_name);
+        self.channel_defaults.insert(channel_key, agent_id);
+    }
+
+    /// Get the configured default agent name for a channel type (if set via `set_channel_default_with_name`).
+    pub fn channel_default_name(&self, channel_key: &str) -> Option<String> {
+        self.channel_default_names.get(channel_key).map(|r| r.clone())
     }
 
     /// Set a user's default agent.
@@ -105,6 +122,13 @@ impl AgentRouter {
     /// Register an agent name -> ID mapping for binding resolution.
     pub fn register_agent(&self, name: String, id: AgentId) {
         self.agent_name_cache.insert(name, id);
+    }
+
+    /// Update a channel default agent ID (used when re-resolving after agent respawn).
+    ///
+    /// Only updates the cached AgentId -- the name remains unchanged.
+    pub fn update_channel_default(&self, channel_key: &str, new_agent_id: AgentId) {
+        self.channel_defaults.insert(channel_key.to_string(), new_agent_id);
     }
 
     /// Resolve which agent should handle a message.
