@@ -14,8 +14,9 @@ use openfang_hands::registry::HandRegistry;
 const TEST_HAND_TOML: &str = r#"
 id = "test-hand"
 name = "Test Hand"
+version = "1.0.0"
 description = "A hand used for integration testing."
-category = "Development"
+category = "development"
 icon = "🧪"
 tools = []
 skills = []
@@ -25,6 +26,7 @@ settings = []
 
 [agent]
 name = "Test Agent"
+description = "A test agent for integration testing."
 system_prompt = "You are a test agent."
 model = "gpt-4.1-mini"
 "#;

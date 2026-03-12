@@ -298,7 +298,7 @@ impl SurrealKnowledgeStore {
     async fn initialize_schema(&self) -> KnowledgeResult<()> {
         self.db.query(r#"
             DEFINE TABLE IF NOT EXISTS kg_documents SCHEMAFULL;
-            DEFINE FIELD IF NOT EXISTS id ON kg_documents TYPE string;
+            DEFINE FIELD IF NOT EXISTS doc_id ON kg_documents TYPE string;
             DEFINE FIELD IF NOT EXISTS title ON kg_documents TYPE string;
             DEFINE FIELD IF NOT EXISTS source ON kg_documents TYPE string;
             DEFINE FIELD IF NOT EXISTS content_hash ON kg_documents TYPE string;
@@ -307,9 +307,10 @@ impl SurrealKnowledgeStore {
             DEFINE FIELD IF NOT EXISTS created_at ON kg_documents TYPE string;
             DEFINE FIELD IF NOT EXISTS updated_at ON kg_documents TYPE string;
             DEFINE INDEX IF NOT EXISTS idx_kg_doc_hash ON kg_documents FIELDS content_hash UNIQUE;
+            DEFINE INDEX IF NOT EXISTS idx_kg_doc_id ON kg_documents FIELDS doc_id UNIQUE;
 
             DEFINE TABLE IF NOT EXISTS kg_chunks SCHEMAFULL;
-            DEFINE FIELD IF NOT EXISTS id ON kg_chunks TYPE string;
+            DEFINE FIELD IF NOT EXISTS chunk_id ON kg_chunks TYPE string;
             DEFINE FIELD IF NOT EXISTS document_id ON kg_chunks TYPE string;
             DEFINE FIELD IF NOT EXISTS content ON kg_chunks TYPE string;
             DEFINE FIELD IF NOT EXISTS chunk_index ON kg_chunks TYPE int;
@@ -327,17 +328,14 @@ impl SurrealKnowledgeStore {
     pub async fn store_chunk(&self, chunk: &Chunk) -> KnowledgeResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
         self.db
-            .query("CREATE type::record('kg_chunks', $id) CONTENT $data")
+            .query("CREATE kg_chunks SET chunk_id = $id, document_id = $document_id, content = $content, chunk_index = $chunk_index, metadata = $metadata, embedding = $embedding, created_at = $created_at")
             .bind(("id", chunk.id.clone()))
-            .bind(("data", serde_json::json!({
-                "id": chunk.id,
-                "document_id": chunk.document_id,
-                "content": chunk.content,
-                "chunk_index": chunk.chunk_index,
-                "metadata": chunk.metadata,
-                "embedding": chunk.embedding,
-                "created_at": now,
-            })))
+            .bind(("document_id", chunk.document_id.clone()))
+            .bind(("content", chunk.content.clone()))
+            .bind(("chunk_index", chunk.chunk_index as i64))
+            .bind(("metadata", chunk.metadata.clone()))
+            .bind(("embedding", chunk.embedding.clone()))
+            .bind(("created_at", now))
             .await
             .map_err(|e| KnowledgeError::Database(format!("Chunk store failed: {}", e)))?;
         Ok(())
@@ -346,32 +344,31 @@ impl SurrealKnowledgeStore {
     pub async fn store_document_meta(&self, doc: &Document, chunk_count: usize) -> KnowledgeResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
         self.db
-            .query("UPSERT type::record('kg_documents', $id) CONTENT $data")
+            .query("CREATE kg_documents SET doc_id = $id, title = $title, source = $source, content_hash = $content_hash, metadata = $metadata, chunk_count = $chunk_count, created_at = $created_at, updated_at = $updated_at")
             .bind(("id", doc.id.clone()))
-            .bind(("data", serde_json::json!({
-                "id": doc.id,
-                "title": doc.title,
-                "source": doc.source,
-                "content_hash": doc.content_hash,
-                "metadata": doc.metadata,
-                "chunk_count": chunk_count,
-                "created_at": now,
-                "updated_at": now,
-            })))
+            .bind(("title", doc.title.clone()))
+            .bind(("source", doc.source.clone()))
+            .bind(("content_hash", doc.content_hash.clone()))
+            .bind(("metadata", doc.metadata.clone()))
+            .bind(("chunk_count", chunk_count as i64))
+            .bind(("created_at", now.clone()))
+            .bind(("updated_at", now))
             .await
             .map_err(|e| KnowledgeError::Database(format!("Document meta store failed: {}", e)))?;
         Ok(())
     }
 
     async fn find_by_hash(&self, hash: &str) -> KnowledgeResult<Option<String>> {
+        // In SurrealDB v3, record IDs are returned as record types.
+        // Use record::id() to extract just the ID string portion.
         let results: Vec<serde_json::Value> = self.db
-            .query("SELECT id FROM kg_documents WHERE content_hash = $hash LIMIT 1")
+            .query("SELECT doc_id FROM kg_documents WHERE content_hash = $hash LIMIT 1")
             .bind(("hash", hash.to_string()))
             .await
             .map_err(|e| KnowledgeError::Database(format!("Hash lookup failed: {}", e)))?
             .take(0)
             .map_err(|e| KnowledgeError::Database(format!("Hash lookup result failed: {}", e)))?;
-        Ok(results.first().and_then(|v| v.get("id")).and_then(|v| v.as_str()).map(|s| s.to_string()))
+        Ok(results.first().and_then(|v| v.get("doc_id")).and_then(|v| v.as_str()).map(|s| s.to_string()))
     }
 
     async fn get_document_meta(&self, doc_id: &str) -> KnowledgeResult<(String, String)> {
@@ -417,7 +414,7 @@ impl KnowledgeStore for SurrealKnowledgeStore {
         _filter: Option<HashMap<String, String>>,
     ) -> KnowledgeResult<Vec<SearchResult>> {
         let sql = format!(
-            "SELECT *, vector::similarity::cosine(embedding, $vec) AS score \
+            "SELECT chunk_id, document_id, content, chunk_index, metadata, vector::similarity::cosine(embedding, $vec) AS score \
              FROM kg_chunks WHERE embedding != NONE \
              ORDER BY embedding <|{},64|> $vec LIMIT $k",
             top_k
@@ -436,7 +433,7 @@ impl KnowledgeStore for SurrealKnowledgeStore {
             let doc_id = row.get("document_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let (doc_title, doc_source) = self.get_document_meta(&doc_id).await.unwrap_or_default();
             let chunk = Chunk {
-                id: row.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                id: row.get("chunk_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 document_id: doc_id,
                 content: row.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 chunk_index: row.get("chunk_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
@@ -450,9 +447,11 @@ impl KnowledgeStore for SurrealKnowledgeStore {
     }
 
     async fn search_by_text(&self, query: &str, top_k: usize) -> KnowledgeResult<Vec<SearchResult>> {
+        // Use a case-insensitive search pattern compatible with SurrealDB v3
+        let q_owned = query.to_string();
         let results: Vec<serde_json::Value> = self.db
-            .query("SELECT * FROM kg_chunks WHERE string::contains(string::lowercase(content), $q) LIMIT $k")
-            .bind(("q", query.to_lowercase()))
+            .query("SELECT chunk_id, document_id, content, chunk_index, metadata FROM kg_chunks WHERE string::contains(string::lowercase(content), string::lowercase($q)) LIMIT $k")
+            .bind(("q", q_owned))
             .bind(("k", top_k))
             .await
             .map_err(|e| KnowledgeError::Database(format!("Text search failed: {}", e)))?
@@ -464,7 +463,7 @@ impl KnowledgeStore for SurrealKnowledgeStore {
             let doc_id = row.get("document_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let (doc_title, doc_source) = self.get_document_meta(&doc_id).await.unwrap_or_default();
             let chunk = Chunk {
-                id: row.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                id: row.get("chunk_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 document_id: doc_id,
                 content: row.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 chunk_index: row.get("chunk_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
@@ -481,7 +480,7 @@ impl KnowledgeStore for SurrealKnowledgeStore {
             .bind(("doc_id", document_id.to_string()))
             .await
             .map_err(|e| KnowledgeError::Database(format!("Chunk delete failed: {}", e)))?;
-        self.db.query("DELETE kg_documents WHERE id = $doc_id")
+        self.db.query("DELETE kg_documents WHERE doc_id = $doc_id")
             .bind(("doc_id", document_id.to_string()))
             .await
             .map_err(|e| KnowledgeError::Database(format!("Document delete failed: {}", e)))?;
@@ -510,7 +509,7 @@ impl KnowledgeStore for SurrealKnowledgeStore {
 
     async fn list_documents(&self) -> KnowledgeResult<Vec<(String, String)>> {
         let results: Vec<serde_json::Value> = self.db
-            .query("SELECT id, title FROM kg_documents ORDER BY created_at DESC")
+            .query("SELECT doc_id, title FROM kg_documents ORDER BY created_at DESC")
             .await
             .map_err(|e| KnowledgeError::Database(format!("List query failed: {}", e)))?
             .take(0)

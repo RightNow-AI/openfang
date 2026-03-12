@@ -2,7 +2,6 @@ use crate::{
     error::{RegistryError, RegistryResult},
     models::{HandPackage, PackageVersion, RegistryStats, SearchQuery, SearchResult, SortOrder, UserAccount},
 };
-use chrono::Utc;
 use surrealdb::{engine::any::Any, Surreal};
 
 #[cfg(test)]
@@ -45,7 +44,7 @@ impl RegistryStore {
             let data2 = serde_json::to_value(user)?;
             let created: Vec<serde_json::Value> = self
                 .db
-                .query("CREATE fh_users CONTENT $data RETURN AFTER")
+                .query("CREATE fh_users CONTENT $data RETURN record::id(id) AS id, *")
                 .bind(("data", data2))
                 .await?
                 .take(0)
@@ -71,7 +70,7 @@ impl RegistryStore {
     ) -> RegistryResult<Option<UserAccount>> {
         let results: Vec<serde_json::Value> = self
             .db
-            .query("SELECT * FROM fh_users WHERE api_token_hash = $hash LIMIT 1")
+            .query("SELECT record::id(id) AS id, * FROM fh_users WHERE api_token_hash = $hash LIMIT 1")
             .bind(("hash", token_hash.to_string()))
             .await?
             .take(0)
@@ -87,7 +86,7 @@ impl RegistryStore {
     pub async fn find_user_by_login(&self, login: &str) -> RegistryResult<Option<UserAccount>> {
         let results: Vec<serde_json::Value> = self
             .db
-            .query("SELECT * FROM fh_users WHERE github_login = $login LIMIT 1")
+            .query("SELECT record::id(id) AS id, * FROM fh_users WHERE github_login = $login LIMIT 1")
             .bind(("login", login.to_string()))
             .await?
             .take(0)
@@ -108,9 +107,10 @@ impl RegistryStore {
             return Err(RegistryError::PackageAlreadyExists(pkg.package_id.clone()));
         }
         let data = serde_json::to_value(pkg)?;
+        // SurrealDB v3 returns record IDs as record types, so we need to cast them
         let results: Vec<serde_json::Value> = self
             .db
-            .query("CREATE fh_packages CONTENT $data RETURN AFTER")
+            .query("CREATE fh_packages CONTENT $data RETURN record::id(id) AS id, *")
             .bind(("data", data))
             .await?
             .take(0)
@@ -124,9 +124,10 @@ impl RegistryStore {
 
     /// Get a package by its slug ID.
     pub async fn get_package(&self, package_id: &str) -> RegistryResult<Option<HandPackage>> {
+        // SurrealDB v3 returns record IDs as record types, cast to string
         let results: Vec<serde_json::Value> = self
             .db
-            .query("SELECT * FROM fh_packages WHERE package_id = $id LIMIT 1")
+            .query("SELECT record::id(id) AS id, * FROM fh_packages WHERE package_id = $id LIMIT 1")
             .bind(("id", package_id.to_string()))
             .await?
             .take(0)
@@ -146,10 +147,9 @@ impl RegistryStore {
     ) -> RegistryResult<()> {
         self.db
             .query(
-                "UPDATE fh_packages SET latest_version = $version, updated_at = $now WHERE package_id = $package_id",
+                "UPDATE fh_packages SET latest_version = $version, updated_at = time::now() WHERE package_id = $package_id",
             )
             .bind(("version", version.to_string()))
-            .bind(("now", Utc::now().to_rfc3339()))
             .bind(("package_id", package_id.to_string()))
             .await?;
         Ok(())
@@ -176,7 +176,7 @@ impl RegistryStore {
     pub async fn list_packages_by_owner(&self, owner: &str) -> RegistryResult<Vec<HandPackage>> {
         let results: Vec<serde_json::Value> = self
             .db
-            .query("SELECT * FROM fh_packages WHERE owner = $owner ORDER BY updated_at DESC")
+            .query("SELECT record::id(id) AS id, * FROM fh_packages WHERE owner = $owner ORDER BY updated_at DESC")
             .bind(("owner", owner.to_string()))
             .await?
             .take(0)
@@ -202,7 +202,7 @@ impl RegistryStore {
         let data = serde_json::to_value(ver)?;
         let results: Vec<serde_json::Value> = self
             .db
-            .query("CREATE fh_versions CONTENT $data RETURN AFTER")
+            .query("CREATE fh_versions CONTENT $data RETURN record::id(id) AS id, *")
             .bind(("data", data))
             .await?
             .take(0)
@@ -223,7 +223,7 @@ impl RegistryStore {
         let results: Vec<serde_json::Value> = self
             .db
             .query(
-                "SELECT * FROM fh_versions WHERE package_id = $package_id AND version = $version LIMIT 1",
+                "SELECT record::id(id) AS id, * FROM fh_versions WHERE package_id = $package_id AND version = $version LIMIT 1",
             )
             .bind(("package_id", package_id.to_string()))
             .bind(("version", version.to_string()))
@@ -242,7 +242,7 @@ impl RegistryStore {
         let results: Vec<serde_json::Value> = self
             .db
             .query(
-                "SELECT * FROM fh_versions WHERE package_id = $package_id ORDER BY published_at DESC",
+                "SELECT record::id(id) AS id, * FROM fh_versions WHERE package_id = $package_id ORDER BY published_at DESC",
             )
             .bind(("package_id", package_id.to_string()))
             .await?
@@ -264,7 +264,7 @@ impl RegistryStore {
         // In production this would use SurrealDB full-text search
         let all_packages: Vec<serde_json::Value> = self
             .db
-            .query("SELECT * FROM fh_packages ORDER BY install_count DESC")
+            .query("SELECT record::id(id) AS id, * FROM fh_packages ORDER BY install_count DESC")
             .await?
             .take(0)
             .map_err(|e| RegistryError::Internal(e.to_string()))?;

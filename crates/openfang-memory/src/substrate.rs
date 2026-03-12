@@ -1212,22 +1212,24 @@ impl Memory for MemorySubstrate {
     async fn export(&self, format: ExportFormat) -> OpenFangResult<Vec<u8>> {
         let export_data = match format {
             ExportFormat::Json => {
+                // In SurrealDB v3, record IDs are returned as record types.
+                // We need to convert them to strings using record::id() or cast to string.
                 let memory_results: Vec<serde_json::Value> = self.db
-                    .query("SELECT * FROM memory_fragments WHERE deleted = false")
+                    .query("SELECT *, record::id(id) AS id FROM memory_fragments WHERE deleted = false")
                     .await
                     .map_err(|e| OpenFangError::Memory(format!("Memory export query failed: {}", e)))?
                     .take(0)
                     .map_err(|e| OpenFangError::Memory(format!("Memory export result parsing failed: {}", e)))?;
 
                 let entity_results: Vec<serde_json::Value> = self.db
-                    .query("SELECT * FROM entities")
+                    .query("SELECT *, record::id(id) AS id FROM entities")
                     .await
                     .map_err(|e| OpenFangError::Memory(format!("Entity export query failed: {}", e)))?
                     .take(0)
                     .map_err(|e| OpenFangError::Memory(format!("Entity export result parsing failed: {}", e)))?;
 
                 let relation_results: Vec<serde_json::Value> = self.db
-                    .query("SELECT * FROM relations")
+                    .query("SELECT *, record::id(id) AS id FROM relations")
                     .await
                     .map_err(|e| OpenFangError::Memory(format!("Relation export query failed: {}", e)))?
                     .take(0)

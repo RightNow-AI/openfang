@@ -132,20 +132,20 @@ impl RegistryServer {
             .route("/api/health", get(health))
             .route("/api/stats", get(get_stats))
             .route("/api/packages", get(search_packages))
-            .route("/api/packages/:package_id", get(get_package))
+            .route("/api/packages/{package_id}", get(get_package))
             .route(
-                "/api/packages/:package_id/versions",
+                "/api/packages/{package_id}/versions",
                 get(list_versions).post(publish_version),
             )
             .route(
-                "/api/packages/:package_id/versions/:version",
+                "/api/packages/{package_id}/versions/{version}",
                 get(get_version),
             )
             .route(
-                "/api/packages/:package_id/versions/:version/install",
+                "/api/packages/{package_id}/versions/{version}/install",
                 post(record_install),
             )
-            .route("/api/users/:login", get(get_user_profile))
+            .route("/api/users/{login}", get(get_user_profile))
             .route("/api/me", get(get_me))
             // ── Leptos SSR routes (auto-generated from FangHubApp router) ─────
             .leptos_routes_with_context(
