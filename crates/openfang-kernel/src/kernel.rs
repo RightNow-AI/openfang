@@ -168,6 +168,7 @@ pub struct OpenFangKernel {
     /// Mesh task routing log — ring buffer of the last 200 routing decisions (Phase 12).
     pub mesh_route_log: tokio::sync::RwLock<std::collections::VecDeque<crate::mesh::MeshRouteEntry>>,
     pub a2a_engine: Option<Arc<openfang_a2a::engine::A2AEngine>>,
+    pub a2a_handler_registry: Option<Arc<crate::a2a_registry::A2AHandlerRegistry>>,
     pub swe_agent: Option<Arc<maestro_swe::executor::SWEAgentExecutor>>,
 }
 
@@ -1016,6 +1017,7 @@ impl OpenFangKernel {
             self_handle: OnceLock::new(),
             mesh_route_log: tokio::sync::RwLock::new(std::collections::VecDeque::with_capacity(200)),
             a2a_engine: None,
+            a2a_handler_registry: None,
             swe_agent: Some(Arc::new(maestro_swe::executor::SWEAgentExecutor::new())),
         };
 
@@ -3369,6 +3371,19 @@ impl OpenFangKernel {
     /// Must be called once after the kernel is wrapped in `Arc`.
     pub fn set_self_handle(self: &Arc<Self>) {
         let _ = self.self_handle.set(Arc::downgrade(self));
+        
+        // Initialize the supervisor engine post-boot
+        // SAFETY: This is only called once after the Arc is created, similar 
+        // to other post-boot initialization in start_ofp_node
+        let self_ptr = Arc::as_ptr(self) as *mut OpenFangKernel;
+        unsafe {
+            (*self_ptr).supervisor_engine = Some(Arc::new(
+                crate::supervisor_engine::SupervisorEngine::new(
+                    Arc::clone(self) as Arc<dyn openfang_runtime::kernel_handle::KernelHandle>,
+                    maestro_algorithm::executor::AlgorithmConfig::default(),
+                ),
+            ));
+        }
     }
 
     // ─── Agent Binding management ──────────────────────────────────────
@@ -3626,6 +3641,29 @@ impl OpenFangKernel {
     /// Iterates the agent registry and starts background tasks for agents with
     /// `Continuous`, `Periodic`, or `Proactive` schedules.
     pub fn start_background_agents(self: &Arc<Self>) {
+        // Initialize the A2A handler registry
+        {
+            // We can initialize the a2a_handler_registry with unsafe assignment, 
+            // similar to how it's done in other init methods
+            // SAFETY: This is done once when the kernel is running as an Arc (after set_self_handle has been called) 
+            let self_ptr = Arc::as_ptr(self) as *mut OpenFangKernel;
+            unsafe {
+                (*self_ptr).a2a_handler_registry = Some(Arc::new(crate::a2a_registry::A2AHandlerRegistry::new()));
+            }
+        }
+
+        // Initialize and register SWE handler if registry and SWE agent are available
+        if let (Some(ref a2a_registry), Some(_swe_agent)) = (&self.a2a_handler_registry, &self.swe_agent) {
+            let swe_handler = Arc::new(crate::swe_a2a_handler::SWEA2AHandler::new());
+            
+            // Clone references for the async block
+            let registry_clone = Arc::clone(a2a_registry);
+            tokio::spawn(async move {
+                registry_clone.register("swe", swe_handler).await;
+                info!("SWE A2A handler registered");
+            });
+        }
+        
         let agents = self.registry.list();
         let mut bg_agents: Vec<(openfang_types::agent::AgentId, String, ScheduleMode)> =
             Vec::new();

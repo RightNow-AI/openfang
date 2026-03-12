@@ -29,3 +29,6 @@ pub mod workflow;
 
 pub use kernel::DeliveryTracker;
 pub use kernel::OpenFangKernel;
+
+pub mod a2a_registry;
+pub mod swe_a2a_handler;

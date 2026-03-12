@@ -96,3 +96,24 @@ pub struct ClawHubInstallRequest {
     /// ClawHub skill slug (e.g., "github-helper").
     pub slug: String,
 }
+
+/// Request to delegate a task to the supervisor.
+#[derive(Debug, Deserialize)]
+pub struct DelegateTaskRequest {
+    /// Description of the task to delegate.
+    pub description: String,
+    /// Optional capabilities required for the task.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+/// Response after requesting task delegation.
+#[derive(Debug, Serialize)]
+pub struct DelegateTaskResponse {
+    /// ID of the created task.
+    pub task_id: String,
+    /// Status of the delegation.
+    pub status: String,
+    /// Optional message.
+    pub message: Option<String>,
+}

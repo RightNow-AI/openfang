@@ -775,6 +775,10 @@ pub async fn build_router(
             axum::routing::get(crate::supervisor_routes::get_config)
                 .put(crate::supervisor_routes::update_config),
         )
+        .route(
+            "/api/supervisor/delegate",
+            axum::routing::post(crate::supervisor_routes::delegate_to_supervisor),
+        )
         // ── SWE Agent task routes ──
         .route(
             "/api/swe/tasks",
