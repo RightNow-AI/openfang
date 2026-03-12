@@ -2530,6 +2530,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                     <!-- Actions -->
                     <div class="flex gap-2 mt-3">
                       <button class="btn btn-ghost btn-sm" @click="loadStats(inst)">Stats</button>
+                      <template x-if="isTraderHand(inst)">
+                        <button class="btn btn-primary btn-sm" @click="openDashboard(inst)">Dashboard</button>
+                      </template>
                       <template x-if="isBrowserHand(inst)">
                         <button class="btn btn-ghost btn-sm" @click="openBrowserViewer(inst)">View Browser</button>
                       </template>
@@ -2932,6 +2935,152 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <div class="browser-info" x-show="browserViewer && !browserViewer.loading && !browserViewer.error">
                     <div class="text-dim text-sm">Title: <span x-text="browserViewer ? (browserViewer.title || '-') : '-'"></span></div>
                   </div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- Trader Dashboard Modal -->
+          <template x-if="dashboardOpen">
+            <div class="modal-overlay" @click.self="closeDashboard()" @keydown.escape.window="closeDashboard()">
+              <div class="trader-dashboard">
+                <!-- Header -->
+                <div class="trader-dashboard-header">
+                  <div class="flex items-center gap-2">
+                    <span style="font-size:1.4rem">&#x1F4C8;</span>
+                    <div>
+                      <div style="font-weight:600;font-size:1.1rem" x-text="dashboardData ? (dashboardData.agent_name || 'Trading Hand') : 'Trading Hand'"></div>
+                      <div class="text-xs text-dim">Live Trading Dashboard</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button class="btn btn-ghost btn-sm" @click="refreshDashboard()">Refresh</button>
+                    <button class="modal-close" @click="closeDashboard()">&times;</button>
+                  </div>
+                </div>
+
+                <!-- Loading -->
+                <div x-show="dashboardLoading" class="text-center" style="padding:60px 0">
+                  <div class="spinner"></div>
+                  <div class="text-dim mt-2">Loading dashboard data...</div>
+                </div>
+
+                <!-- Dashboard Content -->
+                <div class="trader-dashboard-body" x-show="!dashboardLoading && dashboardData">
+                  <!-- KPI Row -->
+                  <div class="trader-kpi-row">
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Portfolio Value</div>
+                      <div class="trader-kpi-value" x-text="dashboardData ? (dashboardData.portfolio_value || '-') : '-'"></div>
+                    </div>
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Total P&amp;L</div>
+                      <div class="trader-kpi-value" :class="dashboardData && dashboardData.total_pnl && dashboardData.total_pnl.startsWith('+') ? 'kpi-positive' : (dashboardData && dashboardData.total_pnl && dashboardData.total_pnl.startsWith('-') ? 'kpi-negative' : '')" x-text="dashboardData ? (dashboardData.total_pnl || '-') : '-'"></div>
+                    </div>
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Win Rate</div>
+                      <div class="trader-kpi-value" x-text="dashboardData && dashboardData.win_rate ? (dashboardData.win_rate + '%') : '-'"></div>
+                    </div>
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Sharpe Ratio</div>
+                      <div class="trader-kpi-value" x-text="dashboardData ? (dashboardData.sharpe_ratio || '-') : '-'"></div>
+                    </div>
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Max Drawdown</div>
+                      <div class="trader-kpi-value kpi-negative" x-text="dashboardData && dashboardData.max_drawdown ? (dashboardData.max_drawdown + '%') : '-'"></div>
+                    </div>
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Trades</div>
+                      <div class="trader-kpi-value" x-text="dashboardData ? (dashboardData.trades_count || '0') : '0'"></div>
+                    </div>
+                  </div>
+
+                  <!-- Charts Row 1: Equity Curve + Daily P&L -->
+                  <div class="trader-chart-row">
+                    <div class="trader-chart-panel" style="flex:2">
+                      <div class="trader-chart-title">Equity Curve</div>
+                      <div class="trader-chart-wrap">
+                        <canvas id="traderEquityChart"></canvas>
+                        <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.equity_curve || !dashboardData.equity_curve.length">No equity data yet</div>
+                      </div>
+                    </div>
+                    <div class="trader-chart-panel" style="flex:1">
+                      <div class="trader-chart-title">Daily P&amp;L</div>
+                      <div class="trader-chart-wrap">
+                        <canvas id="traderPnlChart"></canvas>
+                        <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.daily_pnl || !dashboardData.daily_pnl.length">No P&amp;L data yet</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Charts Row 2: Signal Radar + Watchlist Heatmap -->
+                  <div class="trader-chart-row">
+                    <div class="trader-chart-panel" style="flex:1;max-width:320px">
+                      <div class="trader-chart-title">Signal Radar</div>
+                      <div class="trader-chart-wrap" style="max-height:280px">
+                        <canvas id="traderRadarChart"></canvas>
+                        <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.signal_radar">No signal data yet</div>
+                      </div>
+                    </div>
+                    <div class="trader-chart-panel" style="flex:2">
+                      <div class="trader-chart-title">Watchlist Heatmap</div>
+                      <div class="trader-heatmap-wrap" x-show="dashboardData && dashboardData.watchlist_heatmap && dashboardData.watchlist_heatmap.length">
+                        <table class="trader-heatmap-table">
+                          <thead>
+                            <tr><th>Ticker</th><th>Change</th><th>Signal</th><th>Confidence</th></tr>
+                          </thead>
+                          <tbody>
+                            <template x-for="item in (dashboardData ? dashboardData.watchlist_heatmap || [] : [])" :key="item.ticker">
+                              <tr>
+                                <td style="font-weight:600" x-text="item.ticker"></td>
+                                <td :class="item.change_pct >= 0 ? 'heatmap-positive' : 'heatmap-negative'" x-text="(item.change_pct >= 0 ? '+' : '') + item.change_pct + '%'"></td>
+                                <td><span class="signal-badge" :class="'signal-' + (item.signal || 'hold').toLowerCase()" x-text="item.signal || 'HOLD'"></span></td>
+                                <td>
+                                  <div class="confidence-bar-wrap">
+                                    <div class="confidence-bar" :style="'width:' + (item.confidence || 0) + '%'" :class="item.confidence >= 70 ? 'conf-high' : (item.confidence >= 40 ? 'conf-mid' : 'conf-low')"></div>
+                                    <span class="confidence-label" x-text="(item.confidence || 0) + '%'"></span>
+                                  </div>
+                                </td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                      <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.watchlist_heatmap || !dashboardData.watchlist_heatmap.length">No watchlist data yet</div>
+                    </div>
+                  </div>
+
+                  <!-- Recent Trades Table -->
+                  <div class="trader-chart-panel">
+                    <div class="trader-chart-title">Recent Trades</div>
+                    <div x-show="dashboardData && dashboardData.recent_trades && dashboardData.recent_trades.length">
+                      <table class="trader-trades-table">
+                        <thead>
+                          <tr><th>Date</th><th>Ticker</th><th>Side</th><th>Price</th><th>Qty</th><th>P&amp;L</th></tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="trade in (dashboardData ? dashboardData.recent_trades || [] : [])" :key="trade.date + trade.ticker">
+                            <tr>
+                              <td class="text-dim" x-text="trade.date"></td>
+                              <td style="font-weight:600" x-text="trade.ticker"></td>
+                              <td><span class="trade-side-badge" :class="trade.side === 'BUY' ? 'trade-buy' : 'trade-sell'" x-text="trade.side"></span></td>
+                              <td x-text="'$' + Number(trade.price || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})"></td>
+                              <td x-text="trade.qty"></td>
+                              <td :class="(trade.pnl || 0) >= 0 ? 'heatmap-positive' : 'heatmap-negative'" x-text="(trade.pnl >= 0 ? '+$' : '-$') + Math.abs(trade.pnl || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.recent_trades || !dashboardData.recent_trades.length">No trades yet</div>
+                  </div>
+                </div>
+
+                <!-- No data state -->
+                <div x-show="!dashboardLoading && !dashboardData" class="text-center" style="padding:60px 0">
+                  <div style="font-size:2rem;margin-bottom:8px">&#x1F4C8;</div>
+                  <div class="text-dim">Could not load dashboard data.</div>
+                  <button class="btn btn-ghost btn-sm mt-3" @click="refreshDashboard()">Retry</button>
                 </div>
               </div>
             </div>
