@@ -68,7 +68,7 @@ pub enum OutputFormat {
 }
 
 /// Per-channel behavior overrides.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChannelOverrides {
     /// Model override (uses agent's default if None).
@@ -89,6 +89,27 @@ pub struct ChannelOverrides {
     pub usage_footer: Option<UsageFooterMode>,
     /// Typing indicator mode override.
     pub typing_mode: Option<TypingMode>,
+    /// Enable lifecycle emoji reactions on messages (⏳→🤔→✅/❌).
+    /// Defaults to true; set to false to disable.
+    #[serde(default = "default_true")]
+    pub lifecycle_reactions: bool,
+}
+
+impl Default for ChannelOverrides {
+    fn default() -> Self {
+        Self {
+            model: None,
+            system_prompt: None,
+            dm_policy: DmPolicy::default(),
+            group_policy: GroupPolicy::default(),
+            rate_limit_per_user: 0,
+            threading: false,
+            output_format: None,
+            usage_footer: None,
+            typing_mode: None,
+            lifecycle_reactions: true,
+        }
+    }
 }
 
 /// Controls what usage info appears in response footers.
@@ -3595,6 +3616,7 @@ mod tests {
         assert!(!ov.threading);
         assert!(ov.output_format.is_none());
         assert!(ov.model.is_none());
+        assert!(ov.lifecycle_reactions);
     }
 
     #[test]
