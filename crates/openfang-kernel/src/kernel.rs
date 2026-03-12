@@ -2262,9 +2262,9 @@ impl OpenFangKernel {
             }
         }
 
-        // If message contains images and a vision model is configured, swap to it.
-        // Many text models (e.g. qwen-plus) don't support image input — the vision
-        // model (e.g. qwen-vl-plus) handles multimodal content correctly.
+        // If message contains images and the current model doesn't support vision,
+        // swap to the configured vision model. Models that already support vision
+        // (e.g. claude-opus-4-6) keep running — no swap needed.
         if let Some(ref blocks) = content_blocks {
             let has_images = blocks.iter().any(|b| {
                 matches!(
@@ -2274,7 +2274,20 @@ impl OpenFangKernel {
                 )
             });
             if has_images {
-                if let Some(ref vision_model) = self.config.default_model.vision_model {
+                let current_supports_vision = self
+                    .model_catalog
+                    .read()
+                    .ok()
+                    .and_then(|cat| cat.find_model(&manifest.model.model).map(|m| m.supports_vision))
+                    .unwrap_or(false);
+
+                if current_supports_vision {
+                    info!(
+                        agent = %manifest.name,
+                        model = %manifest.model.model,
+                        "Current model supports vision — skipping swap"
+                    );
+                } else if let Some(ref vision_model) = self.config.default_model.vision_model {
                     info!(
                         agent = %manifest.name,
                         default_model = %manifest.model.model,
@@ -2286,6 +2299,12 @@ impl OpenFangKernel {
                     // model. Without this swap, an agent using e.g. claude-code
                     // would try to send the image to the wrong driver.
                     manifest.model.provider = self.config.default_model.provider.clone();
+                } else {
+                    warn!(
+                        agent = %manifest.name,
+                        model = %manifest.model.model,
+                        "Image received but model lacks vision and no vision_model configured"
+                    );
                 }
             }
         }
