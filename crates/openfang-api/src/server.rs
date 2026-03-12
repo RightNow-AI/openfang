@@ -105,6 +105,17 @@ pub async fn build_router(
 
     // Trim whitespace so `api_key = ""` or `api_key = "  "` both disable auth.
     let api_key = state.kernel.config.api_key.trim().to_string();
+    let auth_state = crate::middleware::AuthState {
+        api_key: api_key.clone(),
+        auth_enabled: state.kernel.config.auth.enabled,
+        session_secret: if !api_key.is_empty() {
+            api_key.clone()
+        } else if state.kernel.config.auth.enabled {
+            state.kernel.config.auth.password_hash.clone()
+        } else {
+            String::new()
+        },
+    };
     let gcra_limiter = rate_limiter::create_rate_limiter();
 
     let app = Router::new()
@@ -289,6 +300,10 @@ pub async fn build_router(
             axum::routing::get(routes::list_workflows).post(routes::create_workflow),
         )
         .route(
+            "/api/workflows/{id}",
+            axum::routing::get(routes::get_workflow).put(routes::update_workflow).delete(routes::delete_workflow),
+        )
+        .route(
             "/api/workflows/{id}/run",
             axum::routing::post(routes::run_workflow),
         )
@@ -422,6 +437,10 @@ pub async fn build_router(
             "/api/comms/task",
             axum::routing::post(routes::comms_task),
         )
+        ;
+
+    // Split into a second router chunk to stay within axum's type nesting limit.
+    let app = app
         // Tools endpoint
         .route("/api/tools", axum::routing::get(routes::list_tools))
         // Config endpoints
@@ -671,8 +690,21 @@ pub async fn build_router(
             "/v1/models",
             axum::routing::get(crate::openai_compat::list_models),
         )
+        // Dashboard authentication endpoints
+        .route(
+            "/api/auth/login",
+            axum::routing::post(routes::auth_login),
+        )
+        .route(
+            "/api/auth/logout",
+            axum::routing::post(routes::auth_logout),
+        )
+        .route(
+            "/api/auth/check",
+            axum::routing::get(routes::auth_check),
+        )
         .layer(axum::middleware::from_fn_with_state(
-            api_key,
+            auth_state,
             middleware::auth,
         ))
         .layer(axum::middleware::from_fn_with_state(

@@ -1,8 +1,16 @@
 #!/usr/bin/env node
-'use strict';
 
-const http = require('node:http');
-const { randomUUID } = require('node:crypto');
+import http from 'node:http';
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import QRCode from 'qrcode';
+import pino from 'pino';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ---------------------------------------------------------------------------
 // Config from environment
@@ -27,18 +35,10 @@ const MAX_RECONNECT_DELAY = 60_000; // cap at 60s
 // Baileys connection
 // ---------------------------------------------------------------------------
 async function startConnection() {
-  // Dynamic imports — Baileys is ESM-only in v6+
-  const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } =
-    await import('@whiskeysockets/baileys');
-  const QRCode = (await import('qrcode')).default || await import('qrcode');
-  const pino = (await import('pino')).default || await import('pino');
-
   const logger = pino({ level: 'warn' });
-  const authDir = require('node:path').join(__dirname, 'auth_store');
+  const authDir = path.join(__dirname, 'auth_store');
 
-  const { state, saveCreds } = await useMultiFileAuthState(
-    require('node:path').join(__dirname, 'auth_store')
-  );
+  const { state, saveCreds } = await useMultiFileAuthState(authDir);
   const { version } = await fetchLatestBaileysVersion();
 
   sessionId = randomUUID();
@@ -88,8 +88,6 @@ async function startConnection() {
         sock = null;
         reconnectAttempt = 0;
         // Remove auth store so next connect gets a fresh QR
-        const fs = require('node:fs');
-        const path = require('node:path');
         const authPath = path.join(__dirname, 'auth_store');
         if (fs.existsSync(authPath)) {
           fs.rmSync(authPath, { recursive: true, force: true });
@@ -262,11 +260,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
-  const path = url.pathname;
+  const pathname = url.pathname;
 
   try {
     // POST /login/start — start Baileys connection, return QR
-    if (req.method === 'POST' && path === '/login/start') {
+    if (req.method === 'POST' && pathname === '/login/start') {
       // If already connected, just return success
       if (connStatus === 'connected') {
         return jsonResponse(res, 200, {
@@ -296,7 +294,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // GET /login/status — poll for connection status
-    if (req.method === 'GET' && path === '/login/status') {
+    if (req.method === 'GET' && pathname === '/login/status') {
       return jsonResponse(res, 200, {
         connected: connStatus === 'connected',
         message: statusMessage,
@@ -305,7 +303,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // POST /message/send — send outgoing message via Baileys
-    if (req.method === 'POST' && path === '/message/send') {
+    if (req.method === 'POST' && pathname === '/message/send') {
       const body = await parseBody(req);
       const { to, text } = body;
 
@@ -318,7 +316,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // GET /health — health check
-    if (req.method === 'GET' && path === '/health') {
+    if (req.method === 'GET' && pathname === '/health') {
       return jsonResponse(res, 200, {
         status: 'ok',
         connected: connStatus === 'connected',
@@ -329,7 +327,7 @@ const server = http.createServer(async (req, res) => {
     // 404
     jsonResponse(res, 404, { error: 'Not found' });
   } catch (err) {
-    console.error(`[gateway] ${req.method} ${path} error:`, err.message);
+    console.error(`[gateway] ${req.method} ${pathname} error:`, err.message);
     jsonResponse(res, 500, { error: err.message });
   }
 });
@@ -340,8 +338,6 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`[gateway] Default agent: ${DEFAULT_AGENT}`);
 
   // Auto-connect if credentials already exist from a previous session
-  const fs = require('node:fs');
-  const path = require('node:path');
   const credsPath = path.join(__dirname, 'auth_store', 'creds.json');
   if (fs.existsSync(credsPath)) {
     console.log('[gateway] Found existing credentials — auto-connecting...');

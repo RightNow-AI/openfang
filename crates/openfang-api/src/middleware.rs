@@ -43,14 +43,24 @@ pub async fn request_logging(request: Request<Body>, next: Next) -> Response<Bod
     response
 }
 
+/// Authentication state passed to the auth middleware.
+#[derive(Clone)]
+pub struct AuthState {
+    pub api_key: String,
+    pub auth_enabled: bool,
+    pub session_secret: String,
+}
+
 /// Bearer token authentication middleware.
 ///
 /// When `api_key` is non-empty (after trimming), requests to non-public
 /// endpoints must include `Authorization: Bearer <api_key>`.
 /// If the key is empty or whitespace-only, auth is disabled entirely
 /// (public/local development mode).
+///
+/// When dashboard auth is enabled, session cookies are also accepted.
 pub async fn auth(
-    axum::extract::State(api_key): axum::extract::State<String>,
+    axum::extract::State(auth_state): axum::extract::State<AuthState>,
     request: Request<Body>,
     next: Next,
 ) -> Response<Body> {
@@ -114,7 +124,10 @@ pub async fn auth(
         || (path == "/api/workflows" && is_get)
         || path == "/api/logs/stream"  // SSE stream, read-only
         || (path.starts_with("/api/cron/") && is_get)
-        || path.starts_with("/api/providers/github-copilot/oauth/");
+        || path.starts_with("/api/providers/github-copilot/oauth/")
+        || path == "/api/auth/login"
+        || path == "/api/auth/logout"
+        || (path == "/api/auth/check" && is_get);
 
     if is_public {
         return next.run(request).await;
@@ -123,10 +136,11 @@ pub async fn auth(
     // If no API key configured (empty, whitespace-only, or missing), skip auth
     // entirely. Users who don't set api_key accept that all endpoints are open.
     // To secure the dashboard, set a non-empty api_key in config.toml.
-    let api_key = api_key.trim();
-    if api_key.is_empty() {
+    let api_key_trimmed = auth_state.api_key.trim().to_string();
+    if api_key_trimmed.is_empty() && !auth_state.auth_enabled {
         return next.run(request).await;
     }
+    let api_key = api_key_trimmed.as_str();
 
     // Check Authorization: Bearer <token> header, then fallback to X-API-Key
     let bearer_token = request
@@ -172,6 +186,17 @@ pub async fn auth(
         return next.run(request).await;
     }
 
+    // Check session cookie (dashboard login sessions)
+    if auth_state.auth_enabled {
+        if let Some(token) = extract_session_cookie(&request) {
+            if crate::session_auth::verify_session_token(&token, &auth_state.session_secret)
+                .is_some()
+            {
+                return next.run(request).await;
+            }
+        }
+    }
+
     // Determine error message: was a credential provided but wrong, or missing entirely?
     let credential_provided = header_auth.is_some() || query_auth.is_some();
     let error_msg = if credential_provided {
@@ -187,6 +212,19 @@ pub async fn auth(
             serde_json::json!({"error": error_msg}).to_string(),
         ))
         .unwrap_or_default()
+}
+
+/// Extract the `openfang_session` cookie value from a request.
+fn extract_session_cookie(request: &Request<Body>) -> Option<String> {
+    request
+        .headers()
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies
+                .split(';')
+                .find_map(|c| c.trim().strip_prefix("openfang_session=").map(|v| v.to_string()))
+        })
 }
 
 /// Security headers middleware — applied to ALL API responses.

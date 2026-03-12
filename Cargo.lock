@@ -3792,7 +3792,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-api"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3801,6 +3801,8 @@ dependencies = [
  "dashmap",
  "futures",
  "governor",
+ "hex",
+ "hmac",
  "openfang-channels",
  "openfang-extensions",
  "openfang-hands",
@@ -3814,6 +3816,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "socket2 0.5.10",
  "subtle",
  "tempfile",
@@ -3829,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-channels"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3861,7 +3864,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-cli"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3888,7 +3891,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-desktop"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "axum",
  "open",
@@ -3914,7 +3917,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-extensions"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3942,7 +3945,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-hands"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "dashmap",
@@ -3959,7 +3962,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-kernel"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3996,7 +3999,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-memory"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4015,7 +4018,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-migrate"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -4034,7 +4037,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-runtime"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4068,7 +4071,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-skills"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "hex",
@@ -4091,7 +4094,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-types"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4110,7 +4113,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-wire"
-version = "0.3.47"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -8773,7 +8776,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.3.47"
+version = "0.4.0"
 
 [[package]]
 name = "yoke"

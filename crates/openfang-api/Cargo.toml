@@ -33,6 +33,9 @@ governor = { workspace = true }
 tokio-stream = { workspace = true }
 subtle = { workspace = true }
 base64 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
 socket2 = { workspace = true }
 reqwest = { workspace = true }
 

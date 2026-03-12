@@ -852,6 +852,177 @@ pub async fn list_workflow_runs(
     Json(list)
 }
 
+/// GET /api/workflows/:id — Get a single workflow by ID.
+pub async fn get_workflow(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workflow_id = WorkflowId(match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid workflow ID"})),
+            );
+        }
+    });
+
+    match state.kernel.workflows.get_workflow(workflow_id).await {
+        Some(w) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "id": w.id.to_string(),
+                "name": w.name,
+                "description": w.description,
+                "steps": w.steps,
+                "created_at": w.created_at.to_rfc3339(),
+            })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Workflow not found"})),
+        ),
+    }
+}
+
+/// PUT /api/workflows/:id — Update a workflow definition.
+pub async fn update_workflow(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let workflow_id = WorkflowId(match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid workflow ID"})),
+            );
+        }
+    });
+
+    let name = req["name"].as_str().unwrap_or("unnamed").to_string();
+    let description = req["description"].as_str().unwrap_or("").to_string();
+
+    let steps_json = match req["steps"].as_array() {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Missing 'steps' array"})),
+            );
+        }
+    };
+
+    let mut steps = Vec::new();
+    for s in steps_json {
+        let step_name = s["name"].as_str().unwrap_or("step").to_string();
+        let agent = if let Some(id) = s["agent_id"].as_str() {
+            StepAgent::ById { id: id.to_string() }
+        } else if let Some(name) = s["agent_name"].as_str() {
+            StepAgent::ByName {
+                name: name.to_string(),
+            }
+        } else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    serde_json::json!({"error": format!("Step '{}' needs 'agent_id' or 'agent_name'", step_name)}),
+                ),
+            );
+        };
+
+        let mode = match s["mode"].as_str().unwrap_or("sequential") {
+            "fan_out" => StepMode::FanOut,
+            "collect" => StepMode::Collect,
+            "conditional" => StepMode::Conditional {
+                condition: s["condition"].as_str().unwrap_or("").to_string(),
+            },
+            "loop" => StepMode::Loop {
+                max_iterations: s["max_iterations"].as_u64().unwrap_or(5) as u32,
+                until: s["until"].as_str().unwrap_or("").to_string(),
+            },
+            _ => StepMode::Sequential,
+        };
+
+        let error_mode = match s["error_mode"].as_str().unwrap_or("fail") {
+            "skip" => ErrorMode::Skip,
+            "retry" => ErrorMode::Retry {
+                max_retries: s["max_retries"].as_u64().unwrap_or(3) as u32,
+            },
+            _ => ErrorMode::Fail,
+        };
+
+        steps.push(WorkflowStep {
+            name: step_name,
+            agent,
+            prompt_template: s["prompt"].as_str().unwrap_or("{{input}}").to_string(),
+            mode,
+            timeout_secs: s["timeout_secs"].as_u64().unwrap_or(120),
+            error_mode,
+            output_var: s["output_var"].as_str().map(String::from),
+        });
+    }
+
+    let updated = Workflow {
+        id: workflow_id,
+        name,
+        description,
+        steps,
+        created_at: chrono::Utc::now(), // preserved by engine
+    };
+
+    if state
+        .kernel
+        .workflows
+        .update_workflow(workflow_id, updated)
+        .await
+    {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "updated", "workflow_id": id})),
+        )
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Workflow not found"})),
+        )
+    }
+}
+
+/// DELETE /api/workflows/:id — Delete a workflow definition.
+pub async fn delete_workflow(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workflow_id = WorkflowId(match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid workflow ID"})),
+            );
+        }
+    });
+
+    if state
+        .kernel
+        .workflows
+        .remove_workflow(workflow_id)
+        .await
+    {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "removed", "workflow_id": id})),
+        )
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Workflow not found"})),
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Trigger routes
 // ---------------------------------------------------------------------------
@@ -10524,6 +10695,146 @@ pub async fn comms_task(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("Failed to post task: {e}")})),
         ),
+    }
+}
+
+// ── Dashboard Authentication (username/password sessions) ──
+
+/// POST /api/auth/login — Authenticate with username/password, returns session token.
+pub async fn auth_login(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<serde_json::Value>,
+) -> axum::response::Response {
+    use axum::response::Response;
+    use axum::body::Body;
+
+    let auth_cfg = &state.kernel.config.auth;
+    if !auth_cfg.enabled {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::json!({"error": "Auth not enabled"}).to_string()))
+            .unwrap();
+    }
+
+    let username = req.get("username").and_then(|v| v.as_str()).unwrap_or("");
+    let password = req.get("password").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Constant-time username comparison to prevent timing attacks
+    let username_ok = {
+        use subtle::ConstantTimeEq;
+        let stored = auth_cfg.username.as_bytes();
+        let provided = username.as_bytes();
+        if stored.len() != provided.len() {
+            false
+        } else {
+            bool::from(stored.ct_eq(provided))
+        }
+    };
+
+    if !username_ok || !crate::session_auth::verify_password(password, &auth_cfg.password_hash) {
+        // Audit log the failed attempt
+        state.kernel.audit_log.record(
+            "system",
+            openfang_runtime::audit::AuditAction::AuthAttempt,
+            "dashboard login failed",
+            format!("username: {username}"),
+        );
+        return Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::json!({"error": "Invalid credentials"}).to_string()))
+            .unwrap();
+    }
+
+    // Derive the session secret the same way as server.rs
+    let api_key = state.kernel.config.api_key.trim().to_string();
+    let secret = if !api_key.is_empty() {
+        api_key
+    } else {
+        auth_cfg.password_hash.clone()
+    };
+
+    let token =
+        crate::session_auth::create_session_token(username, &secret, auth_cfg.session_ttl_hours);
+    let ttl_secs = auth_cfg.session_ttl_hours * 3600;
+    let cookie = format!(
+        "openfang_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}"
+    );
+
+    state.kernel.audit_log.record(
+        "system",
+        openfang_runtime::audit::AuditAction::AuthAttempt,
+        "dashboard login success",
+        format!("username: {username}"),
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .header("set-cookie", &cookie)
+        .body(Body::from(serde_json::json!({
+            "status": "ok",
+            "token": token,
+            "username": username,
+        }).to_string()))
+        .unwrap()
+}
+
+/// POST /api/auth/logout — Clear the session cookie.
+pub async fn auth_logout() -> impl IntoResponse {
+    let cookie = "openfang_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0";
+    (
+        StatusCode::OK,
+        [("content-type", "application/json"), ("set-cookie", cookie)],
+        serde_json::json!({"status": "ok"}).to_string(),
+    )
+}
+
+/// GET /api/auth/check — Check current authentication state.
+pub async fn auth_check(
+    State(state): State<Arc<AppState>>,
+    request: axum::http::Request<axum::body::Body>,
+) -> impl IntoResponse {
+    let auth_cfg = &state.kernel.config.auth;
+    if !auth_cfg.enabled {
+        return Json(serde_json::json!({
+            "authenticated": true,
+            "mode": "none",
+        }));
+    }
+
+    // Derive the session secret the same way as server.rs
+    let api_key = state.kernel.config.api_key.trim().to_string();
+    let secret = if !api_key.is_empty() {
+        api_key
+    } else {
+        auth_cfg.password_hash.clone()
+    };
+
+    // Check session cookie
+    let session_user = request
+        .headers()
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies
+                .split(';')
+                .find_map(|c| c.trim().strip_prefix("openfang_session=").map(|v| v.to_string()))
+        })
+        .and_then(|token| crate::session_auth::verify_session_token(&token, &secret));
+
+    if let Some(username) = session_user {
+        Json(serde_json::json!({
+            "authenticated": true,
+            "mode": "session",
+            "username": username,
+        }))
+    } else {
+        Json(serde_json::json!({
+            "authenticated": false,
+            "mode": "session",
+        }))
     }
 }
 
