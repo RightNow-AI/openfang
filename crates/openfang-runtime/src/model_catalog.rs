@@ -9,12 +9,13 @@ use openfang_types::model_catalog::{
     FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
     HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
     MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
-    OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
-    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL,
+    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
+use std::path::Path;
 
 /// The model catalog — registry of all known models and providers.
 pub struct ModelCatalog {
@@ -50,6 +51,110 @@ impl ModelCatalog {
         }
     }
 
+    /// Load model catalog from `~/.openfang/catalog/` style filesystem layout.
+    ///
+    /// Expected files:
+    /// - `catalog/models.json`     -> `Vec<ModelCatalogEntry>`
+    /// - `catalog/providers.json`  -> `Vec<ProviderInfo>`
+    /// - `catalog/aliases.json`    -> `HashMap<String, String>` (optional)
+    ///
+    /// If required files are missing or invalid, returns an empty catalog.
+    pub fn from_home_dir(home_dir: &Path) -> Self {
+        let catalog_dir = home_dir.join("catalog");
+        let models_path = catalog_dir.join("models.json");
+        let providers_path = catalog_dir.join("providers.json");
+        let aliases_path = catalog_dir.join("aliases.json");
+
+        let Ok(models_raw) = std::fs::read_to_string(&models_path) else {
+            return Self {
+                models: Vec::new(),
+                aliases: HashMap::new(),
+                providers: Vec::new(),
+            };
+        };
+        let Ok(providers_raw) = std::fs::read_to_string(&providers_path) else {
+            return Self {
+                models: Vec::new(),
+                aliases: HashMap::new(),
+                providers: Vec::new(),
+            };
+        };
+
+        let Ok(models) = serde_json::from_str::<Vec<ModelCatalogEntry>>(&models_raw) else {
+            return Self {
+                models: Vec::new(),
+                aliases: HashMap::new(),
+                providers: Vec::new(),
+            };
+        };
+        let Ok(mut providers) = serde_json::from_str::<Vec<ProviderInfo>>(&providers_raw) else {
+            return Self {
+                models: Vec::new(),
+                aliases: HashMap::new(),
+                providers: Vec::new(),
+            };
+        };
+
+        let mut aliases = std::fs::read_to_string(&aliases_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<HashMap<String, String>>(&raw).ok())
+            .unwrap_or_default();
+
+        for model in &models {
+            for alias in &model.aliases {
+                let lower = alias.to_lowercase();
+                aliases.entry(lower).or_insert_with(|| model.id.clone());
+            }
+        }
+
+        for provider in &mut providers {
+            provider.model_count = models.iter().filter(|m| m.provider == provider.id).count();
+        }
+
+        Self {
+            models,
+            aliases,
+            providers,
+        }
+    }
+
+    /// Seed `catalog/*.json` under OpenFang home if missing.
+    ///
+    /// This migrates compile-time defaults to filesystem-managed catalogs so users
+    /// can customize/delete them without rebuilding the binary.
+    pub fn seed_home_catalog_if_missing(home_dir: &Path) -> Result<(), String> {
+        let catalog_dir = home_dir.join("catalog");
+        std::fs::create_dir_all(&catalog_dir)
+            .map_err(|e| format!("Failed to create catalog directory: {e}"))?;
+
+        let models_path = catalog_dir.join("models.json");
+        let providers_path = catalog_dir.join("providers.json");
+        let aliases_path = catalog_dir.join("aliases.json");
+
+        if !models_path.exists() {
+            let models = serde_json::to_string_pretty(&builtin_models())
+                .map_err(|e| format!("Failed to serialize builtin models: {e}"))?;
+            std::fs::write(&models_path, models)
+                .map_err(|e| format!("Failed to write models.json: {e}"))?;
+        }
+
+        if !providers_path.exists() {
+            let providers = serde_json::to_string_pretty(&builtin_providers())
+                .map_err(|e| format!("Failed to serialize builtin providers: {e}"))?;
+            std::fs::write(&providers_path, providers)
+                .map_err(|e| format!("Failed to write providers.json: {e}"))?;
+        }
+
+        if !aliases_path.exists() {
+            let aliases = serde_json::to_string_pretty(&builtin_aliases())
+                .map_err(|e| format!("Failed to serialize builtin aliases: {e}"))?;
+            std::fs::write(&aliases_path, aliases)
+                .map_err(|e| format!("Failed to write aliases.json: {e}"))?;
+        }
+
+        Ok(())
+    }
+
     /// Detect which providers have API keys configured.
     ///
     /// Checks `std::env::var()` for each provider's API key env var.
@@ -59,12 +164,11 @@ impl ModelCatalog {
             // Claude Code is special: no API key needed, but we probe for CLI
             // installation so the dashboard shows "Configured" vs "Not Installed".
             if provider.id == "claude-code" {
-                provider.auth_status =
-                    if crate::drivers::claude_code::claude_code_available() {
-                        AuthStatus::Configured
-                    } else {
-                        AuthStatus::Missing
-                    };
+                provider.auth_status = if crate::drivers::claude_code::claude_code_available() {
+                    AuthStatus::Configured
+                } else {
+                    AuthStatus::Missing
+                };
                 continue;
             }
 
@@ -80,8 +184,7 @@ impl ModelCatalog {
             let has_fallback = match provider.id.as_str() {
                 "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
                 "codex" => {
-                    std::env::var("OPENAI_API_KEY").is_ok()
-                        || read_codex_credential().is_some()
+                    std::env::var("OPENAI_API_KEY").is_ok() || read_codex_credential().is_some()
                 }
                 // claude-code is handled above (before key_required check)
                 _ => false,
@@ -3584,10 +3687,7 @@ mod tests {
     #[test]
     fn test_resolve_alias() {
         let catalog = ModelCatalog::new();
-        assert_eq!(
-            catalog.resolve_alias("sonnet"),
-            Some("claude-sonnet-4-6")
-        );
+        assert_eq!(catalog.resolve_alias("sonnet"), Some("claude-sonnet-4-6"));
         assert_eq!(
             catalog.resolve_alias("haiku"),
             Some("claude-haiku-4-5-20251001")
@@ -3916,5 +4016,43 @@ mod tests {
         let catalog = ModelCatalog::new();
         let entry = catalog.find_model("claude-code").unwrap();
         assert_eq!(entry.id, "claude-code/sonnet");
+    }
+
+    #[test]
+    fn test_from_home_dir_missing_returns_empty() {
+        let unique = format!(
+            "openfang-catalog-missing-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let home = std::env::temp_dir().join(unique);
+        let _ = std::fs::remove_dir_all(&home);
+
+        let catalog = ModelCatalog::from_home_dir(&home);
+        assert!(catalog.list_models().is_empty());
+        assert!(catalog.list_providers().is_empty());
+        assert!(catalog.list_aliases().is_empty());
+    }
+
+    #[test]
+    fn test_seed_home_catalog_if_missing_and_load() {
+        let unique = format!(
+            "openfang-catalog-seed-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let home = std::env::temp_dir().join(unique);
+        let _ = std::fs::remove_dir_all(&home);
+
+        ModelCatalog::seed_home_catalog_if_missing(&home).unwrap();
+        let catalog = ModelCatalog::from_home_dir(&home);
+
+        assert!(!catalog.list_models().is_empty());
+        assert!(!catalog.list_providers().is_empty());
+        assert!(!catalog.list_aliases().is_empty());
     }
 }
