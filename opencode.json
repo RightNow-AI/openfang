@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "bailian": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "Alibaba Cloud Model Studio",
+      "options": {
+        "baseURL": "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic/v1",
+        "apiKey": "sk-sp-2b7428ea4fde46008c5a9c7a775dc83b"
+      },
+      "models": {
+        "MiniMax-M2.5": {
+          "name": "MiniMax M2.5",
+          "limit": {
+            "context": 204800,
+            "output": 4096
+          },
+          "options": {
+            "thinking": {
+              "type": "enabled",
+              "budgetTokens": 1024
+            }
+          }
+        }
+      }
+    }
+  }
+}

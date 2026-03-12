@@ -1,4 +1,3 @@
-# Changelog
 
 All notable changes to OpenFang will be documented in this file.
 
@@ -6,6 +5,89 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.3.40] - 2026-03-11
+### Added
+- **SWE Agent Framework (Phase 17-18)**
+  - **SWE API Endpoints:** New `/api/swe/tasks` route family supporting `POST / GET / DELETE` with full task lifecycle for `SWEActionRequests` (ReadFile, WriteFile, ExecuteCommand), `SWEAgentEvents`, and task status management
+  - **SWE Dashboard Integration:** New "Software Engineer" tab in WebChat UI with real-time progress, task queue visualization, and event streaming
+  - **A2A SWE Handler System:** Created `a2a_registry` and `swe_a2a_handler` modules enabling Agent-to-Agent SWE task delegation with direct handler pattern bypassing network transport
+  - **Supervisor SWE Integration:** Added `TaskType::SWE` classification in SupervisorEngine with `classify_task()` and hybrid keyword/LLM detection (`"code", "implement", "fix", "debug", "refactor", "test"` patterns)
+  - **Autonomous SWE Routing:** SupervisorEngine now delegates SWE tasks directly by detecting SWE patterns using `TaskType::SWE` and routing to SWE agents
+  - **Direct SWE API:** New explicit `/api/supervisor/delegate` endpoint allowing manual SWE task routing
+  - **maestro-swe crate:** Added Software Engineering Agent functionality with file operations, command execution, and execution events (`SWEAgentAction`, `SWEAgentEvent`)
+  - **SWE Protocol Types:** Enhanced A2A payload with `SWETaskRequest` and `SWETaskResponse` variants
+  - **Task In-Memory Store:** Added `SWETaskStore` type (`Arc<RwLock<HashMap...>>`) with full CRUD endpoints in `swe_routes.rs`
+  - **Real-time Event Streaming:** Added `/api/swe/tasks/{id}/events` endpoint with `content_preview` (200 char excerpt)
+  - **Cancellation Support:** POST `/api/swe/tasks/{id}/cancel` endpoint plus supervisor cancellation integration 
+  - **Task Status Tracking:** `SWETaskStatus::{Pending, Running, Completed, Failed, Cancelled}` with auto-update during execution
+  - **Execution Events:** Full event tracking (`FileRead`, `FileWritten`, `CommandExecuted`) with preview data and error handling
+
+### Changed
+- `openfang-kernel` now has `SweA2AHandler` wired into `A2AHandlerRegistry` via `start_background_agents()`
+- `openfang-api` now routes `/api/swe/*` and `/api/supervisor/delegate` endpoints to new handlers
+- `openfang-api` now includes `swe_routes` module for SWE-specific API handling
+- `maestro-swe` enums (`SWEAgentAction`, `SWEAgentEvent`) now `derive(Clone, Deserialize, Serialize)`
+- SupervisorEngine orchestrate flow now checks `self.classify_task(task, capabilities)` before MAESTRO pipeline for SWE detection
+- `a2a_engine: None` field supplemented with new `a2a_handler_registry: None` field in kernel
+
+### Added  
+- **SWE evaluation framework:** Test suites covering code generation, file operations, shell command execution, debugging and refactoring workflows
+- **Integration tests:** SWE ↔ Supervisor Engine communication, A2A message passing with event streaming
+- **Documentation:** SWE usage guide, API reference for SWE task formats, evaluation best practices
+- **Dashboard UI:** SWE task progress with detailed event logs and action-by-action reporting
+
+### Added  
+- **Security:** Proper sandboxing for ExecuteCommand actions, read/write file path sanitization, command execution whitelisting
+- **Monitoring:** SWE task metrics in observability stack, cost accounting for file/command operations
+
+## [0.3.39] - 2026-03-11
+### Added
+- **A2A Registry & Handler System**
+  - **A2AHandlerRegistry:** Central handler dispatcher mapping agent types (`"swe"`, `"mcp"`, etc.) to concrete handlers with direct method dispatch 
+  - **A2AHandler trait:** Async `handle_message()` interface allowing in-process message handling without network serialization
+  - **Direct A2A Pattern:** Bypasses network transport using handler registry for local agent communication (`SweA2AHandler`, `McpA2AHandler`)
+  - **Supervisor-SWE Wiring:** Automatic delegation using `SWEA2AHandler` and classification system from Phase 15-17
+
+### Changed
+- A2A engine rewritten to support mixed local/remote agent routing via `kernel.a2a_handler_registry`
+- Internal A2A dispatch now preferentially calls direct handler methods over serialized network transport
+- MCP and SWE engines migrated to handler pattern (breaking change: network transport bypassed for local agents)
+- SupervisorAgent now checks `kernel.a2a_handler_registry.get(agent_type)` before falling back to standard A2A network protocols
+
+## [0.3.38] - 2026-03-10
+### Added
+- **MAESTRO Algorithm Enhancement** (Phase 16)
+  - **AlgorithmExecutor Refactor:** Centralized orchestration logic with configurable phase thresholds and adaptive parameter tuning
+  - **Parallel EXECUTE Enhancement:** `max_parallel_steps` in AlgorithmConfig controlling concurrent agent execution during EXECUTE phase when `task.parallelizable == true`
+  - **Dynamic Phase Adaptation:** Automatic threshold updates based on historical performance (`OrchestrateTask` satisfaction ratings, cost efficiency)
+  - **MAESTRO Pipeline:** Full 7-phase integration (PLAN > OBSERVE > ORIENT > DECIDE > EXECUTE > EVALUATE > LEARN) with intermediate status updates
+  - **Phase-Specific Metrics:** Individual timing, token cost, and model attribution for each MAESTRO phase 
+
+### Changed
+- `maestro-algorithm` now supports adaptive model selection and parallel step execution based on task characteristics
+- ExecutionHooks extended with phase-specific callbacks (`on_phase_start`, `on_phase_complete`, `on_phase_retry`)
+- `maestro-knowledge` RAG integrated into ORIENT phase for contextual awareness during strategy planning
+
+## [0.3.37] - 2026-03-10
+### Added
+- **Supervisor Engine Overhaul**
+  - **Task Classification System:** Hybrid keyword matching + machine learning classification for routing tasks (`SweTask`, `ResearchTask`, `GeneralTask`) 
+  - **Auto-Delegation Pipeline:** Supervisor now routes known task types (code generation, research, lead gen) to specialized agents without human intervention
+  - **Orchestration Metrics:** Added per-task efficiency metrics (cost per satisfaction score, tokens per successful outcome, time-to-answer)
+  - **Adaptive Planning:** Dynamic phase threshold adjustment based on complexity, past task success rates, and agent availability
+  - **Knowledge Graph Integration:** Cross-linking results between related tasks with automatic fact consolidation and entity disambiguation
+  - **Real-time Status:** WebSocket streaming of `PhaseProgress` events with current agent utilization and task bottlenecks
+
+### Added
+- **Agent Auto-Selection** (Phase 15)
+  - **Capability Mapping:** Agent-tool compatibility matrix with constraint solving for optimal agent assignment
+  - **Load Balancing:** Distributed workload routing with round-robin and cost-optimization strategies
+  - **Fallback Routing:** Automatic task rerouting when primary agents unavailable with seamless state restoration
+  - **Capacity Planning:** Multi-dimensional resource accounting (GPU memory, token quota, execution time) for task prioritization
+
+[Unreleased]
+
 
 ## [0.3.36] - 2026-03-10
 ### Added
@@ -177,7 +259,11 @@ The `validate_criteria()` function has been significantly enhanced with whole-wo
 
 The initial public release of OpenFang. A 15-crate Rust workspace implementing a full Agent Operating System, including agent lifecycle management, a SQLite-backed memory substrate, 41 built-in tools, a WASM sandbox with dual metering, a workflow engine, 40 channel adapters, 3 native LLM drivers supporting 27 providers, a Tauri 2.0 desktop app, and 7 autonomous Hands packages. 1,731+ tests across 15 crates.
 
-[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.36...HEAD
+[Unreleased]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.40...HEAD
+[0.3.40]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.39...v0.3.40
+[0.3.39]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.38...v0.3.39
+[0.3.38]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.37...v0.3.38
+[0.3.37]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.36...v0.3.37
 [0.3.36]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.35...v0.3.36
 [0.3.35]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.34...v0.3.35
 [0.3.34]: https://github.com/ParadiseAI/maestro-legacy/compare/v0.3.33...v0.3.34

@@ -86,7 +86,7 @@ pub struct MigrateRequest {
 
 /// Request to scan a directory for migration.
 #[derive(Debug, Deserialize)]
-pub struct MigrateScanRequest {
+pub struct MigrationScanRequest {
     pub path: String,
 }
 
@@ -107,12 +107,12 @@ pub struct DelegateTaskRequest {
     pub capabilities: Vec<String>,
 }
 
-/// Response after requesting task delegation.
+/// Response from delegating a task to the supervisor.
 #[derive(Debug, Serialize)]
 pub struct DelegateTaskResponse {
-    /// ID of the created task.
+    /// The ID of the created/delegated task.
     pub task_id: String,
-    /// Status of the delegation.
+    /// Status of the delegation operation.
     pub status: String,
     /// Optional message.
     pub message: Option<String>,

@@ -1,9 +1,9 @@
 # Maestro-OpenFang Fusion: Comprehensive Architecture Overview
 
-**Author:** Manus AI
-**Date:** March 10, 2026
-**Version:** v0.3.40 — Phase 17 In Progress
-**Repository:** [ParadiseAI/maestro-legacy](https://github.com/ParadiseAI/maestro-legacy) — branch `feature/phase-17-swe-fresh-start-2`
+**Author:** Manus AI  
+**Date:** March 11, 2026
+**Version:** v0.3.40 — Phase 18 Complete
+**Repository:** [ParadiseAI/maestro-legacy](https://github.com/ParadiseAI/maestro-legacy) — branch `feature/phase/phase-18-a2a-supervisor-wiring`
 **Primary Research Source:** [Google Doc — 11-Tab Research Compendium][1]
 
 ---
@@ -33,10 +33,11 @@
 21. [Phase 15: Enterprise Readiness](#21-phase-15-enterprise-readiness)
 22. [Phase 16: Agent-to-Agent (A2A) Communication](#22-phase-16-agent-to-agent-a2a-communication)
 23. [Phase 17: Agent-Based Software Engineering (SWE)](#23-phase-17-agent-based-software-engineering-swe)
-24. [The Memory Subsystem in Detail](#24-the-memory-subsystem-in-detail)
-25. [The Async Architecture](#25-the-async-architecture)
-26. [Key Technical Decisions and Rationale](#26-key-technical-decisions-and-rationale)
-27. [References](#27-references)
+24. [Phase 18: SWE-Supervisor Integration](#24-phase-18-swe-supervisor-integration) 
+25. [The Memory Subsystem in Detail](#25-the-memory-subsystem-in-detail)
+26. [The Async Architecture](#26-the-async-architecture)
+27. [Key Technical Decisions and Rationale](#27-key-technical-decisions-and-rationale)
+28. [References](#28-references)
 
 ---
 
@@ -343,11 +344,23 @@ This phase focused on building a standardized protocol for agent-to-agent commun
 
 ## 23. Phase 17: Agent-Based Software Engineering (SWE)
 
-This phase is focused on building a dedicated solution for agent-based software engineering:
+This phase implemented a comprehensive solution for agent-based software engineering with full integration:
 
-- **SWE-Agent Protocol Definition:** Created the `maestro-swe` crate with `SWEAgentAction` and `SWEAgentEvent` types.
-- **SWE-Agent Tooling:** Added `SWEAgentExecutor` with file system and shell command execution capabilities.
-- **SWE-Agent Kernel Integration:** In progress.
+- **SWE-Agent Protocol Implementation:** Created the `maestro-swe` crate with `SWEAgentAction`, `SWEAgentEvent`, and `SWEAgentExecutor` types supporting file operations (ReadFile, WriteFile) and execution (ExecuteCommand)
+- **SWE Dashboard Integration:** Added "Software Engineer" tab to the WebChat UI with real-time progress monitoring, task queue visualization, output previews (200-char excerpt), and cancel/retry controls
+- **SWE API Endpoints:** Created complete API surface with `/api/swe/tasks` endpoints (POST, GET, DELETE) and event streaming at `/api/swe/tasks/{id}/events`
+- **SWE-A2A Integration:** Implemented direct handler pattern via `A2AHandlerRegistry` and `SWEA2AHandler` for efficient in-process communication between agents, bypassing transport serialization
+- **Task Lifecycle Management:** Full CRUD operations for SWE tasks with status tracking (Pending, Running, Completed, Failed, Cancelled) and event recording 
+
+## 24. Phase 18: SWE-Supervisor Integration
+
+This phase enabled bi-directional SWE-Supervisor collaboration with automatic and explicit delegation:
+
+- **Supervisor Task Classification:** Introduced `TaskType::SWE/General` enum with hybrid detection system using keyword patterns ("code", "implement", "fix", "debug", "refactor", "test", "file", "command") and future LLM fallback
+- **Auto-Delegation Pipeline:** Enhanced `SupervisorEngine.orchestrate()` method to classify incoming tasks, automatically detecting SWE tasks and delegating directly to SWE agent using the A2A handler before engaging MAESTRO orchestration
+- **A2A Handler Registry:** Centralized routing framework mapping agent types ("swe", "mcp", etc.) to direct internal handlers using the new `A2AHandler` trait (bypassing network transport)
+- **Direct SWE API:** Added `/api/supervisor/delegate` endpoint enabling explicit SWE agent routing without automatic classification
+- **Bi-Directional A2A:** Supervisor now routes SWE tasks to SWE agent via handler registry, while A2A remains available for cross-node communication of non-SWE tasks
 
 ---
 

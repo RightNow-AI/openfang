@@ -752,7 +752,7 @@ pub async fn build_router(
         // ── Supervisor orchestration routes ──
         .route(
             "/api/supervisor/status",
-            axum::routing::get(crate::supervisor_routes::supervisor_status),
+            axum::routing::get(crate::supervisor_routes::status),
         )
         .route(
             "/api/supervisor/orchestrate",

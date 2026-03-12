@@ -6,7 +6,7 @@
 <h3 align="center">The Agent Operating System</h3>
 
 <p align="center">
-  Open-source Agent OS built in Rust. 143K LOC. 26 crates. 2,010+ tests. Zero clippy warnings.<br/>
+  Open-source Agent OS built in Rust. 143K+ LOC. 26+ crates. 2,010+ tests. Zero clippy warnings.<br/>
   <strong>One binary. Battle-tested. Agents that actually work for you.</strong>
 </p>
 
@@ -19,8 +19,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-v0.3.33-green?style=flat-square" alt="v0.3.33" />
-  <img src="https://img.shields.io/badge/phase-10%20🟡%20in%20progress-blue?style=flat-square" alt="Phase 10 In Progress" />
+  <img src="https://img.shields.io/badge/version-v0.3.40-green?style=flat-square" alt="v0.3.40" />
+  <img src="https://img.shields.io/badge/phase-18%20✅%20complete-blue?style=flat-square" alt="Phase 18 Complete" />
   <img src="https://img.shields.io/badge/tests-2,010%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
   <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
@@ -28,9 +28,9 @@
 
 ---
 
-> **v0.3.33 — Phase 10 In Progress (March 2026)**
+> **v0.3.40 — Phase 18 (SWE Agent Framework) Complete (March 2026)**
 >
-> Phase 10 (Production Hardening) is underway. The system now has a comprehensive integration test suite (44 tests), a new Hand scheduler, and is fully async. See [ROADMAP.md](ROADMAP.md) for full details.
+> Phase 18 implemented a complete Software Engineering (SWE) Agent framework with dashboard visualization, APIs, and A2A (Agent-to-Agent) integration. The system now supports automated software development tasks through a new SWE Agent that can perform file operations, execute commands, write code, and collaborate with the supervisor engine. See [ROADMAP.md](ROADMAP.md) for full details.
 
 ---
 
@@ -38,7 +38,7 @@
 
 OpenFang is an **open-source Agent Operating System** — not a chatbot framework, not a Python wrapper around an LLM, not a "multi-agent orchestrator." It is a full operating system for autonomous agents, built from scratch in Rust.
 
-Traditional agent frameworks wait for you to type something. OpenFang runs **autonomous agents that work for you** — on schedules, 24/7, building knowledge graphs, monitoring targets, generating leads, managing your social media, and reporting results to your dashboard.
+Traditional agent frameworks wait for you to type something. OpenFang runs **autonomous agents that work for you** — on schedules, 24/7, building knowledge graphs, monitoring targets, generating leads, managing your social media, writing code, and reporting results to your dashboard.
 
 The entire system compiles to a **single ~38MB binary**. One install, one command, your agents are live.
 
@@ -66,7 +66,7 @@ openfang start
 
 <p align="center"><em>"Traditional agents wait for you to type. Hands work <strong>for</strong> you."</em></p>
 
-**Hands** are OpenFang's core innovation — pre-built autonomous capability packages that run independently, on schedules, without you having to prompt them. This is not a chatbot. This is an agent that wakes up at 6 AM, researches your competitors, builds a knowledge graph, scores the findings, and delivers a report to your Telegram before you've had coffee.
+**Hands** are OpenFang's core innovation — pre-built autonomous capability packages that run independently, on schedules, without you having to prompt them. This is not a chatbot. This is an agent that wakes up at 6 AM, researches your competitors, builds a knowledge graph, scores the findings, writes some code to automate the process, and delivers a report to your dashboard and Telegram before you've had coffee.
 
 Each Hand bundles:
 - **HAND.toml** — Manifest declaring tools, settings, requirements, and dashboard metrics
@@ -83,8 +83,8 @@ All compiled into the binary. No downloading, no pip install, no Docker pull.
 | **Clip** | Takes a YouTube URL, downloads it, identifies the best moments, cuts them into vertical shorts with captions and thumbnails, optionally adds AI voice-over, and publishes to Telegram and WhatsApp. 8-phase pipeline. FFmpeg + yt-dlp + 5 STT backends. |
 | **Lead** | Runs daily. Discovers prospects matching your ICP, enriches them with web research, scores 0-100, deduplicates against your existing database, and delivers qualified leads in CSV/JSON/Markdown. Builds ICP profiles over time. |
 | **Collector** | OSINT-grade intelligence. You give it a target (company, person, topic). It monitors continuously — change detection, sentiment tracking, knowledge graph construction, and critical alerts when something important shifts. |
-| **Predictor** | Superforecasting engine. Collects signals from multiple sources, builds calibrated reasoning chains, makes predictions with confidence intervals, and tracks its own accuracy using Brier scores. Has a contrarian mode that deliberately argues against consensus. |
-| **Researcher** | Deep autonomous researcher. Cross-references multiple sources, evaluates credibility using CRAAP criteria (Currency, Relevance, Authority, Accuracy, Purpose), generates cited reports with APA formatting, supports multiple languages. |
+| **Predictor** | Superforecasting engine. Collects signals from multiple sources, makes predictions with confidence intervals, and tracks its own accuracy using Brier scores. |
+| **Researcher** | Deep autonomous researcher. Cross-references multiple sources, evaluates credibility using CRAAP criteria, generates cited reports with APA formatting, supports multiple languages. |
 | **Twitter** | Autonomous Twitter/X account manager. Creates content in 7 rotating formats, schedules posts for optimal engagement, responds to mentions, tracks performance metrics. Has an approval queue — nothing posts without your OK. |
 | **Browser** | Web automation agent. Navigates sites, fills forms, clicks buttons, handles multi-step workflows. Uses Playwright bridge with session persistence. **Mandatory purchase approval gate** — it will never spend your money without explicit confirmation. |
 
@@ -98,9 +98,6 @@ openfang hand status researcher
 # Activate lead generation on a daily schedule
 openfang hand activate lead
 
-# Pause without losing state
-openfang hand pause lead
-
 # See all available Hands
 openfang hand list
 ```
@@ -109,30 +106,81 @@ openfang hand list
 
 ---
 
+## Software Engineering (SWE) Agent
+
+<p align="center"><em>"Write code while your other assistants write code."</em></p>
+
+**SWE Agent** is OpenFang's specialized software engineering agent — capable of autonomous code generation, debugging, file manipulation, command execution, and system administration. Unlike traditional code assistants that wait for prompts, the SWE Agent processes software engineering tasks scheduled via the API or triggered by the Supervisor Engine.
+
+The SWE Agent features:
+- **File Operations** — Read/write files with safety checks and content preview
+- **Command Execution** — Execute shell commands with restricted privileges
+- **IDE Integration** — Can integrate with development environments
+- **Task Chaining** — Multiple file operations and commands chained into coherent workflows
+- **Status Tracking** — Full task lifecycle tracking with event streaming
+
+### Dashboard Integration
+The new "Software Engineer" tab in the dashboard provides:
+- Task queue visualization
+- Real-time progress monitoring  
+- Output preview with 200-character content previews
+- Command execution results with exit codes
+- Cancel and retry capabilities
+
+```bash
+# Submit a SWE task to the API
+curl -X POST http://localhost:4200/api/swe/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "Debug deployment script",
+    "actions": [
+      { "type": "ReadFile", "path": "/deploy.sh" },
+      { "type": "ExecuteCommand", "command": "bash -n /deploy.sh" },
+      { "type": "WriteFile", "path": "/deploy_debugged.sh", "content": "..." }
+    ]
+  }'
+
+# Or delegate through the Supervisor (automatic classification)
+curl -X POST http://localhost:4200/api/supervisor/delegate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "Implement a function to download and archive files in Rust"
+  }'
+```
+
+### A2A Integration
+The SWE Agent participates in Agent-to-Agent communication via the new A2A Registry system:
+- Supervisor engine automatically detects and routes software engineering tasks
+- Direct internal handler communication bypassing transport overhead
+- Event streaming and progress tracking
+- Collaborative task processing between multiple agents
+
 ## Architecture
 
-26 Rust crates. 143,528 lines of code. Modular kernel design.
+26+ Rust crates. 143,500+ lines of code. Modular kernel design.
 
 ```
 openfang-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget tracking
-openfang-runtime     Agent loop, 3 LLM drivers, 53 tools, WASM sandbox, MCP, A2A
-openfang-api         140+ REST/WS/SSE endpoints, OpenAI-compatible API, dashboard
-openfang-channels    40 messaging adapters with rate limiting, DM/group policies
-openfang-memory       SurrealDB v3 persistence, vector embeddings, knowledge graph, canonical sessions
+openfang-runtime     Agent loop, 3 LLM drivers, 53+ tools, WASM sandbox, MCP, A2A
+openfang-api         150+ REST/WS/SSE endpoints, OpenAI-compatible API, dashboard
+openfang-channels    40+ messaging adapters with rate limiting, DM/group policies
+openfang-memory       SurrealDB v3 persistence, vector embeddings, knowledge graph
 maestro-cache        L1 (Moka) + L2 (Redis) caching layer for memory, models, and skills
-maestro-algorithm    The core MAESTRO algorithm: PLAN, EXECUTE, LEARN, EVALUATE
+maestro-algorithm    The core MAESTRO algorithm: PLAN, EXECUTE, LEARN, EVALUATE  
 maestro-observability OpenTelemetry traces, metrics, cost tracking, alerts, audit log
 maestro-guardrails   PII scanner, prompt injection detector, topic control, custom regex
-maestro-model-hub    Capability-aware model router, 11 pre-configured models, circuit breakers
-maestro-knowledge    SurrealDB-backed RAG pipeline, HNSW vector search, chunking strategies
-maestro-eval         ScoringEngine, SuiteRunner, RegressionTracker, BenchmarkRunner, ABTester
+maestro-model-hub    Capability-aware model router, 11+ pre-configured models
+maestro-knowledge    SurrealDB-backed RAG pipeline, HNSW vector search, chunking
+maestro-eval         ScoringEngine, SuiteRunner, RegressionTracker, BenchmarkRunner
 maestro-sdk          Rust embedding SDK for OpenFang agents (AgentHandle, SessionHandle)
 maestro-marketplace  Local agent marketplace (install, search, publish, update_all)
 maestro-pai          Self-evolution engine (hooks, patterns, telos, wisdom)
-maestro-rlm          Recursive Language Model (RLM) for long-context processing via PyO3
+maestro-rlm          Recursive Language Model (RLM) via PyO3 for long-context processing
+maestro-swe          Software Engineering Agent core (file ops, code gen, command exec)
+openfang-a2a         Agent-to-agent communication protocols and direct handlers
 maestro-integration-tests  Black-box integration test suite (44+ tests)
 openfang-types       Core types, taint tracking, Ed25519 manifest signing, model catalog
-openfang-skills      60 bundled skills, SKILL.md parser, FangHub marketplace
+openfang-skills      60+ bundled skills, SKILL.md parser, FangHub marketplace
 openfang-cli         CLI with daemon management, TUI dashboard, MCP server mode
 openfang-desktop     Tauri 2.0 native app (system tray, notifications, global shortcuts)
 xtask                Build automation
@@ -154,7 +202,7 @@ curl -X POST localhost:4200/v1/chat/completions \
   }'
 ```
 
-140+ REST/WS/SSE endpoints covering agents, memory, workflows, channels, models, skills, A2A, Hands, and more.
+150+ REST/WS/SSE endpoints covering agents, memory, workflows, channels, models, skills, A2A, SWE, Hands, mesh networking, and more.
 
 ---
 
@@ -178,11 +226,11 @@ cargo fmt --all -- --check
 
 ## Stability Notice
 
-OpenFang v0.3.33 is a significant update. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
+OpenFang v0.3.40 is the culmination of Phase 18 implementation, adding a complete Software Engineering Agent framework. The architecture is solid, the test suite is comprehensive, and the security model is robust. That said:
 
-- **Breaking changes** may occur between minor versions until v1.0
-- **Some Hands** are more mature than others (Browser and Researcher are the most battle-tested)
-- **Edge cases** exist — if you find one, [open an issue](https://github.com/RightNow-AI/openfang/issues)
+- **Breaking changes** in the SWE-specific APIs may occur between minor versions until v1.0
+- **SWE Agent maturity** varies — file operations are the most battle-tested, command execution requires proper sandboxing
+- **Edge cases** with file system operations exist — always test in development first
 - **Pin to a specific commit** for production deployments until v1.0
 
 We ship fast and fix fast. The goal is a rock-solid v1.0 by mid-2026.
@@ -228,3 +276,6 @@ MIT — use it however you want.
 <p align="center">
   <strong>Built with Rust. Secured with 16 layers. Agents that actually work for you.</strong>
 </p>
+</p>
+</pre>
+</string>

@@ -5274,7 +5274,7 @@ pub async fn migrate_detect() -> impl IntoResponse {
 }
 
 /// POST /api/migrate/scan — Scan a specific directory for OpenClaw workspace.
-pub async fn migrate_scan(Json(req): Json<MigrateScanRequest>) -> impl IntoResponse {
+pub async fn migrate_scan(Json(req): Json<MigrationScanRequest>) -> impl IntoResponse {
     let path = std::path::PathBuf::from(&req.path);
     if !path.exists() {
         return (
