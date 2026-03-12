@@ -226,6 +226,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "VENICE_API_KEY",
             key_required: true,
         }),
+        "unigpt" => Some(ProviderDefaults {
+            base_url: UNIGPT_BASE_URL,
+            api_key_env: "UNIGPT_API_KEY",
+            key_required: true,
+        }),
         _ => None,
     }
 }
@@ -256,6 +261,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
 /// - Any custom provider with `base_url` set uses OpenAI-compatible format
 pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmError> {
     let provider = config.provider.as_str();
+    tracing::debug!("Creating driver for provider: {:?}", provider);
 
     // Anthropic uses a different API format — special case
     if provider == "anthropic" {
@@ -358,6 +364,12 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
     }
 
     if provider == "unigpt" {
+        tracing::debug!(
+            "Using UniGPT driver: {:?} - {:?} {:?}",
+            config.api_key,
+            config,
+            std::env::var("UNIGPT_API_KEY")
+        );
         let api_key = config
             .api_key
             .clone()

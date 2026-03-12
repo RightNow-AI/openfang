@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 13:50:06
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-12 09:23:07
+ * @LastEditTime       : 2026-03-12 15:04:11
  */
 //! UniGPT-compatible API driver.
 //!
@@ -889,7 +889,6 @@ impl LlmDriver for UniGPTDriver {
                 .send()
                 .await
                 .map_err(|e| LlmError::Http(e.to_string()))?;
-
             let status = resp.status().as_u16();
             if status == 429 {
                 if attempt < max_retries {
