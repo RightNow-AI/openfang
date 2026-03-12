@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Path Traversal Prevention:** Added path validation with sandboxing to working directory, normalization of `.` and `..` components, blocking of absolute paths outside sandbox
   - **Error Handling:** Fixed silent error swallowing in `WriteFile` action, added `FileReadFailed`, `FileWriteFailed`, `CommandBlocked`, `CommandTimedOut`, `PathBlocked` event variants
   - **Channel Safety:** Replaced `.unwrap()` with proper error handling in A2A engine, added `A2AError` enum with descriptive error variants
-  - **CVE Fixes:** Updated `quinn-proto` to 0.11.14 (fixes RUSTSEC-2026-0037), updated `pyo3` to 0.24.2 (fixes RUSTSEC-2025-0020)
+  - **CVE Fixes:** Updated `quinn-proto` to 0.11.14 (fixes RUSTSEC-2026-0037), updated `pyo3` to 0.24.2 (fixes RUSTSEC-2025-0020), updated `wasmtime` to 41.0.4 (multiple CVE fixes)
 
 ### Changed
 - **Async I/O Migration:** Migrated `SWEAgentExecutor` from `std::fs` to `tokio::fs` for async file operations

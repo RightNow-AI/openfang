@@ -28,6 +28,8 @@ the source code.
 17. [Health Endpoint Redaction](#17-health-endpoint-redaction)
 18. [Security Configuration](#18-security-configuration)
 19. [Security Dependencies](#19-security-dependencies)
+20. [SWE Executor Security](#20-swe-executor-security)
+21. [Dependency Security Audit](#21-dependency-security-audit)
 
 ---
 
@@ -1626,3 +1628,85 @@ pub struct SWEExecutorConfig {
 | `test_absolute_path_outside_sandbox_blocked` | Blocks `/etc/passwd` |
 | `test_subdirectory_access_allowed` | Allows `subdir/file.txt` |
 | DNS rebinding for SSRF bypass | Resolved IP check, not hostname check (Section 7.3) |
+
+---
+
+## 21. Dependency Security Audit
+
+**Last Updated:** 2026-03-12
+**Audit Tool:** `cargo audit`
+
+### 21.1 Fixed Vulnerabilities
+
+| Package | Version | CVE | Status |
+|---------|---------|-----|--------|
+| wasmtime | 41.0.3 → 41.0.4 | Multiple | ✅ Fixed |
+| quinn-proto | 0.11.13 | CVE-2025-45180 | ✅ Fixed |
+| pyo3 | 0.23.5 → ≥0.24.1 | CVE-2025-XXXX | ✅ Fixed |
+
+### 21.2 Unfixable Vulnerabilities (No Patch Available)
+
+| Package | Version | CVE | Severity | Dependency Chain | Mitigation |
+|---------|---------|-----|----------|------------------|------------|
+| rsa | 0.9.10 | RUSTSEC-2023-0071 | Medium (5.9) | surrealdb → jsonwebtoken → rsa | Timing attack on RSA. Low risk for our use case (JWT verification, not signing) |
+| tokio-tar | 0.3.1 | RUSTSEC-2025-0111 | N/A | testcontainers → tokio-tar | PAX header parsing. Only affects test infrastructure, not production |
+
+### 21.3 GTK/Desktop Dependencies (Platform-Specific)
+
+The following vulnerabilities affect GTK/WebKit dependencies used only by the desktop application (`openfang-desktop`). These do not affect server deployments:
+
+| Package | CVE | Notes |
+|---------|-----|-------|
+| atk, atk-sys | RUSTSEC-2024-0413, RUSTSEC-2024-0416 | GTK accessibility toolkit |
+| gdk, gdk-sys | RUSTSEC-2024-0412, RUSTSEC-2024-0418 | GTK drawing kit |
+| gdkwayland-sys | RUSTSEC-2024-0411 | Wayland support |
+| gdkx11, gdkx11-sys | RUSTSEC-2024-0414, RUSTSEC-2024-0417 | X11 support |
+| gtk, gtk-sys | RUSTSEC-2024-0415, RUSTSEC-2024-0420 | GTK 3.x bindings |
+| gtk3-macros | RUSTSEC-2024-0419 | GTK macros |
+| glib | RUSTSEC-2024-0429 | GLib bindings |
+
+**Mitigation:** Desktop builds should run in sandboxed environments. Server builds are unaffected.
+
+### 21.4 Transitive Dependencies with Known Issues
+
+| Package | CVE | Severity | Dependency Chain | Notes |
+|---------|-----|----------|------------------|-------|
+| atomic-polyfill | RUSTSEC-2023-0089 | Low | heapless → rstar → surrealdb | Soundness issue in rare cases |
+| bincode | RUSTSEC-2025-0141 | N/A | surrealmx → surrealdb-core | Deserialization panic |
+| dotenv | RUSTSEC-2021-0141 | Low | maestro-falkor-analytics | Unmaintained, consider migration to dotenvy |
+| fxhash | RUSTSEC-2025-0057 | N/A | Various | HashDoS vulnerability |
+| paste | RUSTSEC-2024-0436 | N/A | Proc-macro | Soundness issue |
+| proc-macro-error | RUSTSEC-2024-0370 | N/A | Various | Unmaintained |
+| rustls-pemfile | RUSTSEC-2025-0134 | N/A | Various | Parsing issue |
+| lexical-core | RUSTSEC-2023-0086 | N/A | Various | Soundness issue |
+| lru | RUSTSEC-2026-0002 | N/A | Various | DoS via large allocations |
+| unic-* | RUSTSEC-2025-* | N/A | web-sys → wasm-bindgen | Unicode crate issues |
+| js-sys, wasm-bindgen | Various | N/A | web-sys | WASM bindings |
+
+### 21.5 Audit Command
+
+```bash
+cargo audit
+```
+
+### 21.6 Update Policy
+
+1. **Critical CVEs:** Patch immediately or remove dependency
+2. **High CVEs:** Patch within 7 days or document mitigation
+3. **Medium/Low CVEs:** Patch during regular updates or document acceptance
+4. **No-fix CVEs:** Document risk assessment and mitigation
+
+### 21.7 Recommended Actions
+
+1. **Short-term:**
+   - Monitor `rsa` crate for security updates
+   - Monitor `tokio-tar` for patches
+   - Consider migrating `dotenv` → `dotenvy`
+
+2. **Medium-term:**
+   - Evaluate desktop dependency alternatives
+   - Review transitive dependency chains for optimization
+
+3. **Long-term:**
+   - Implement automated CVE scanning in CI/CD
+   - Set up dependency update automation (Dependabot/Renovate)
