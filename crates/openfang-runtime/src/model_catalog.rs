@@ -1762,6 +1762,20 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec![],
         },
+        ModelCatalogEntry {
+            id: "openrouter/hunter-alpha".into(),
+            display_name: "Hunter Alpha (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["hunter-alpha".into()],
+        },
         // ══════════════════════════════════════════════════════════════
         // Mistral (6)
         // ══════════════════════════════════════════════════════════════

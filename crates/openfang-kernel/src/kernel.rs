@@ -3530,6 +3530,49 @@ impl OpenFangKernel {
         Ok((run_id, output))
     }
 
+    /// Auto-load workflow definitions from a directory.
+    ///
+    /// Scans the given directory for `.json` files, deserializes each as a
+    /// `Workflow`, and registers it. Invalid files are skipped with a warning.
+    pub async fn load_workflows_from_dir(&self, dir: &std::path::Path) -> usize {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(path = ?dir, error = %e, "Failed to read workflows directory");
+                }
+                return 0;
+            }
+        };
+
+        let mut count = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(path = ?path, error = %e, "Failed to read workflow file");
+                    continue;
+                }
+            };
+            match serde_json::from_str::<Workflow>(&content) {
+                Ok(wf) => {
+                    let name = wf.name.clone();
+                    let wf_id = self.register_workflow(wf).await;
+                    tracing::info!(path = ?path, id = %wf_id, name = %name, "Auto-loaded workflow");
+                    count += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(path = ?path, error = %e, "Invalid workflow JSON, skipping");
+                }
+            }
+        }
+        count
+    }
+
     /// Start background loops for all non-reactive agents.
     ///
     /// Must be called after the kernel is wrapped in `Arc` (e.g., from the daemon).
@@ -3755,6 +3798,24 @@ impl OpenFangKernel {
             });
         }
 
+        // Auto-load workflow definitions from configured directory
+        {
+            let wf_dir = self
+                .config
+                .workflows_dir
+                .clone()
+                .unwrap_or_else(|| self.config.home_dir.join("workflows"));
+            if wf_dir.exists() {
+                let kernel = Arc::clone(self);
+                tokio::spawn(async move {
+                    let count = kernel.load_workflows_from_dir(&wf_dir).await;
+                    if count > 0 {
+                        info!("Auto-loaded {count} workflow(s) from {}", wf_dir.display());
+                    }
+                });
+            }
+        }
+
         // Cron scheduler tick loop — fires due jobs every 15 seconds
         {
             let kernel = Arc::clone(self);
@@ -3833,6 +3894,64 @@ impl OpenFangKernel {
                                         kernel.cron_scheduler.record_failure(
                                             job_id,
                                             &format!("timed out after {timeout_s}s"),
+                                        );
+                                    }
+                                }
+                            }
+                            openfang_types::scheduler::CronAction::WorkflowRun {
+                                workflow_id,
+                                input,
+                                timeout_secs,
+                            } => {
+                                tracing::debug!(job = %job_name, workflow = %workflow_id, "Cron: firing workflow run");
+                                let wf_input = input.clone().unwrap_or_default();
+                                let timeout_s = timeout_secs.unwrap_or(120);
+                                let timeout = std::time::Duration::from_secs(timeout_s);
+                                let delivery = job.delivery.clone();
+
+                                // Resolve workflow: try UUID first, then name
+                                let wf_id = match uuid::Uuid::parse_str(workflow_id) {
+                                    Ok(uuid) => crate::workflow::WorkflowId(uuid),
+                                    Err(_) => {
+                                        let all_wfs = kernel.workflows.list_workflows().await;
+                                        if let Some(wf) = all_wfs.iter().find(|w| w.name == *workflow_id) {
+                                            wf.id
+                                        } else {
+                                            let err_msg = format!("workflow not found: {workflow_id}");
+                                            tracing::warn!(job = %job_name, %err_msg);
+                                            kernel.cron_scheduler.record_failure(job_id, &err_msg);
+                                            continue;
+                                        }
+                                    }
+                                };
+
+                                match tokio::time::timeout(
+                                    timeout,
+                                    kernel.run_workflow(wf_id, wf_input),
+                                )
+                                .await
+                                {
+                                    Ok(Ok((_run_id, output))) => {
+                                        tracing::info!(job = %job_name, "Cron workflow completed");
+                                        kernel.cron_scheduler.record_success(job_id);
+                                        cron_deliver_response(
+                                            &kernel,
+                                            agent_id,
+                                            &output,
+                                            &delivery,
+                                        )
+                                        .await;
+                                    }
+                                    Ok(Err(e)) => {
+                                        let err_msg = format!("{e}");
+                                        tracing::warn!(job = %job_name, error = %err_msg, "Cron workflow failed");
+                                        kernel.cron_scheduler.record_failure(job_id, &err_msg);
+                                    }
+                                    Err(_) => {
+                                        tracing::warn!(job = %job_name, timeout_s, "Cron workflow timed out");
+                                        kernel.cron_scheduler.record_failure(
+                                            job_id,
+                                            &format!("workflow timed out after {timeout_s}s"),
                                         );
                                     }
                                 }
@@ -5634,6 +5753,14 @@ impl KernelHandle for OpenFangKernel {
             .iter()
             .find(|(_, card)| card.name.to_lowercase() == name_lower)
             .map(|(_, card)| card.url.clone())
+    }
+
+    async fn get_channel_default_recipient(&self, channel: &str) -> Option<String> {
+        match channel {
+            "telegram" => self.config.channels.telegram.as_ref()?.default_chat_id.clone(),
+            "discord" => self.config.channels.discord.as_ref()?.default_channel_id.clone(),
+            _ => None,
+        }
     }
 
     async fn send_channel_message(

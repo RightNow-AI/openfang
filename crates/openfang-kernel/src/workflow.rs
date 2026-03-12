@@ -237,6 +237,24 @@ impl WorkflowEngine {
         self.workflows.write().await.remove(&id).is_some()
     }
 
+    /// Update an existing workflow definition.
+    ///
+    /// Preserves the original `id` and `created_at`. Replaces `name`,
+    /// `description`, and `steps`. Returns `true` if the workflow was
+    /// found and updated.
+    pub async fn update_workflow(&self, id: WorkflowId, updated: Workflow) -> bool {
+        let mut workflows = self.workflows.write().await;
+        if let Some(existing) = workflows.get_mut(&id) {
+            existing.name = updated.name;
+            existing.description = updated.description;
+            existing.steps = updated.steps;
+            info!(workflow_id = %id, "Workflow updated");
+            true
+        } else {
+            false
+        }
+    }
+
     /// Maximum number of retained workflow runs. Oldest completed/failed
     /// runs are evicted when this limit is exceeded.
     const MAX_RETAINED_RUNS: usize = 200;

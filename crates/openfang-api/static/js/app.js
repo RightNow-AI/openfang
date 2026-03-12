@@ -104,6 +104,8 @@ document.addEventListener('alpine:init', function() {
     focusMode: localStorage.getItem('openfang-focus') === 'true',
     showOnboarding: false,
     showAuthPrompt: false,
+    authMode: 'apikey',
+    sessionUser: null,
 
     toggleFocusMode() {
       this.focusMode = !this.focusMode;
@@ -155,16 +157,33 @@ document.addEventListener('alpine:init', function() {
 
     async checkAuth() {
       try {
-        // Use a protected endpoint (not in the public allowlist) to detect
-        // whether the server requires an API key.
+        // First check if session-based auth is configured
+        var authInfo = await OpenFangAPI.get('/api/auth/check');
+        if (authInfo.mode === 'none') {
+          // No session auth — fall back to API key detection
+          this.authMode = 'apikey';
+          this.sessionUser = null;
+        } else if (authInfo.mode === 'session') {
+          this.authMode = 'session';
+          if (authInfo.authenticated) {
+            this.sessionUser = authInfo.username;
+            this.showAuthPrompt = false;
+            return;
+          }
+          // Session auth enabled but not authenticated — show login prompt
+          this.showAuthPrompt = true;
+          return;
+        }
+      } catch(e) { /* ignore — fall through to API key check */ }
+
+      // API key mode detection
+      try {
         await OpenFangAPI.get('/api/tools');
         this.showAuthPrompt = false;
       } catch(e) {
         if (e.message && (e.message.indexOf('Not authorized') >= 0 || e.message.indexOf('401') >= 0 || e.message.indexOf('Missing Authorization') >= 0 || e.message.indexOf('Unauthorized') >= 0)) {
-          // Only show prompt if we don't already have a saved key
           var saved = localStorage.getItem('openfang-api-key');
           if (saved) {
-            // Saved key might be stale — clear it and show prompt
             OpenFangAPI.setAuthToken('');
             localStorage.removeItem('openfang-api-key');
           }
@@ -179,6 +198,29 @@ document.addEventListener('alpine:init', function() {
       localStorage.setItem('openfang-api-key', key.trim());
       this.showAuthPrompt = false;
       this.refreshAgents();
+    },
+
+    async sessionLogin(username, password) {
+      try {
+        var result = await OpenFangAPI.post('/api/auth/login', { username: username, password: password });
+        if (result.status === 'ok') {
+          this.sessionUser = result.username;
+          this.showAuthPrompt = false;
+          this.refreshAgents();
+        } else {
+          OpenFangToast.error(result.error || 'Login failed');
+        }
+      } catch(e) {
+        OpenFangToast.error(e.message || 'Login failed');
+      }
+    },
+
+    async sessionLogout() {
+      try {
+        await OpenFangAPI.post('/api/auth/logout');
+      } catch(e) { /* ignore */ }
+      this.sessionUser = null;
+      this.showAuthPrompt = true;
     },
 
     clearApiKey() {

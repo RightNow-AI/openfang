@@ -79,7 +79,14 @@ impl TelegramAdapter {
 
         if resp["ok"].as_bool() != Some(true) {
             let desc = resp["description"].as_str().unwrap_or("unknown error");
-            return Err(format!("Telegram getMe failed: {desc}").into());
+            let hint = if desc.to_lowercase().contains("unauthorized") {
+                " (Check that the bot token is correct. Get it from @BotFather on Telegram.)"
+            } else if desc.to_lowercase().contains("not found") {
+                " (The bot token format may be invalid. Expected format: 123456789:ABCdefGHI...)"
+            } else {
+                ""
+            };
+            return Err(format!("Telegram getMe failed: {desc}{hint}").into());
         }
 
         let bot_name = resp["result"]["username"]
@@ -808,6 +815,36 @@ async fn parse_telegram_update(
         return None;
     };
 
+    // Extract reply_to_message context — when the user replies to a previous message,
+    // Telegram includes the original message in this field. Prepend the quoted context
+    // so the agent knows what is being replied to.
+    let content = if let Some(reply_msg) = message.get("reply_to_message") {
+        let reply_text = reply_msg["text"]
+            .as_str()
+            .or_else(|| reply_msg["caption"].as_str());
+        let reply_sender = reply_msg["from"]["first_name"].as_str();
+
+        if let Some(quoted_text) = reply_text {
+            let sender_label = reply_sender.unwrap_or("Unknown");
+            let prefix = format!("[Replying to {sender_label}: {quoted_text}]\n\n");
+            match content {
+                ChannelContent::Text(t) => ChannelContent::Text(format!("{prefix}{t}")),
+                ChannelContent::Command { name, args } => {
+                    // Commands keep their structure — prepend context to first arg
+                    // so the agent sees the reply context without breaking command parsing.
+                    let mut new_args = vec![format!("{prefix}{}", args.join(" "))];
+                    new_args.retain(|a| !a.trim().is_empty());
+                    ChannelContent::Command { name, args: new_args }
+                }
+                other => other, // Image/File/Voice/Location — no text to prepend
+            }
+        } else {
+            content
+        }
+    } else {
+        content
+    };
+
     // Extract forum topic thread_id (Telegram sends this as `message_thread_id`
     // for messages inside forum topics / reply threads).
     let thread_id = message["message_thread_id"]
@@ -816,6 +853,16 @@ async fn parse_telegram_update(
 
     // Detect @mention of the bot in entities / caption_entities for MentionOnly group policy.
     let mut metadata = HashMap::new();
+
+    // Store reply_to_message_id in metadata for downstream consumers.
+    if let Some(reply_msg) = message.get("reply_to_message") {
+        if let Some(reply_id) = reply_msg["message_id"].as_i64() {
+            metadata.insert(
+                "reply_to_message_id".to_string(),
+                serde_json::json!(reply_id),
+            );
+        }
+    }
     if is_group {
         if let Some(bot_uname) = bot_username {
             let was_mentioned = check_mention_entities(message, bot_uname);
@@ -1505,5 +1552,171 @@ mod tests {
         let output = sanitize_telegram_html(input);
         assert!(output.contains("<b>bold</b>"));
         assert!(output.contains("&lt;thinking&gt;"));
+    }
+
+    #[tokio::test]
+    async fn test_reply_to_message_text_prepended() {
+        // When a user replies to a message, the quoted context should be prepended.
+        let update = serde_json::json!({
+            "update_id": 700,
+            "message": {
+                "message_id": 100,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "text": "I agree with that",
+                "reply_to_message": {
+                    "message_id": 99,
+                    "from": { "id": 456, "first_name": "Bob" },
+                    "chat": { "id": 123, "type": "private" },
+                    "date": 1699999990,
+                    "text": "We should use Rust"
+                }
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
+        match &msg.content {
+            ChannelContent::Text(t) => {
+                assert!(t.starts_with("[Replying to Bob: We should use Rust]\n\n"));
+                assert!(t.ends_with("I agree with that"));
+            }
+            other => panic!("Expected Text, got {other:?}"),
+        }
+        // reply_to_message_id should be stored in metadata
+        assert_eq!(
+            msg.metadata.get("reply_to_message_id").and_then(|v| v.as_i64()),
+            Some(99)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reply_to_message_with_caption() {
+        // reply_to_message that has a caption (e.g. photo) instead of text.
+        let update = serde_json::json!({
+            "update_id": 701,
+            "message": {
+                "message_id": 101,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "text": "Nice photo!",
+                "reply_to_message": {
+                    "message_id": 98,
+                    "from": { "id": 456, "first_name": "Carol" },
+                    "chat": { "id": 123, "type": "private" },
+                    "date": 1699999980,
+                    "photo": [{ "file_id": "x", "file_unique_id": "y", "width": 100, "height": 100 }],
+                    "caption": "Sunset view"
+                }
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
+        match &msg.content {
+            ChannelContent::Text(t) => {
+                assert!(t.starts_with("[Replying to Carol: Sunset view]\n\n"));
+                assert!(t.ends_with("Nice photo!"));
+            }
+            other => panic!("Expected Text, got {other:?}"),
+        }
+        assert_eq!(
+            msg.metadata.get("reply_to_message_id").and_then(|v| v.as_i64()),
+            Some(98)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reply_to_message_no_text_no_prepend() {
+        // reply_to_message with no text or caption (e.g. sticker) — no prepend, but
+        // reply_to_message_id is still stored in metadata.
+        let update = serde_json::json!({
+            "update_id": 702,
+            "message": {
+                "message_id": 102,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "text": "What was that?",
+                "reply_to_message": {
+                    "message_id": 97,
+                    "from": { "id": 456, "first_name": "Dave" },
+                    "chat": { "id": 123, "type": "private" },
+                    "date": 1699999970,
+                    "sticker": { "file_id": "stk", "file_unique_id": "z" }
+                }
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
+        match &msg.content {
+            ChannelContent::Text(t) => {
+                assert_eq!(t, "What was that?");
+            }
+            other => panic!("Expected Text, got {other:?}"),
+        }
+        assert_eq!(
+            msg.metadata.get("reply_to_message_id").and_then(|v| v.as_i64()),
+            Some(97)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reply_to_message_unknown_sender() {
+        // reply_to_message without a `from` field — sender should default to "Unknown".
+        let update = serde_json::json!({
+            "update_id": 703,
+            "message": {
+                "message_id": 103,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "text": "Interesting",
+                "reply_to_message": {
+                    "message_id": 96,
+                    "chat": { "id": 123, "type": "private" },
+                    "date": 1699999960,
+                    "text": "Anonymous message"
+                }
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
+        match &msg.content {
+            ChannelContent::Text(t) => {
+                assert!(t.starts_with("[Replying to Unknown: Anonymous message]\n\n"));
+                assert!(t.ends_with("Interesting"));
+            }
+            other => panic!("Expected Text, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_reply_to_message_unchanged() {
+        // Messages without reply_to_message should be unaffected.
+        let update = serde_json::json!({
+            "update_id": 704,
+            "message": {
+                "message_id": 104,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "text": "Just a normal message"
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await.unwrap();
+        match &msg.content {
+            ChannelContent::Text(t) => {
+                assert_eq!(t, "Just a normal message");
+            }
+            other => panic!("Expected Text, got {other:?}"),
+        }
+        assert!(!msg.metadata.contains_key("reply_to_message_id"));
     }
 }
