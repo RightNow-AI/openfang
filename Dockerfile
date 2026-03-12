@@ -7,6 +7,12 @@ COPY crates ./crates
 COPY xtask ./xtask
 COPY agents ./agents
 COPY packages ./packages
+# Optional build args for dev environments to speed up compilation
+# Example: docker build --build-arg LTO=false --build-arg CODEGEN_UNITS=16 .
+ARG LTO=true
+ARG CODEGEN_UNITS=1
+ENV CARGO_PROFILE_RELEASE_LTO=${LTO} \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CODEGEN_UNITS}
 RUN cargo build --release --bin openfang
 
 FROM debian:bookworm-slim
