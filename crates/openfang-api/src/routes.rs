@@ -4153,15 +4153,25 @@ pub async fn hand_stats(
         }
     };
 
-    // Read dashboard metrics from agent's structured memory
+    // Read dashboard metrics from shared structured memory (memory_store uses shared namespace)
+    let shared_id = openfang_kernel::kernel::shared_memory_agent_id();
     let mut metrics = serde_json::Map::new();
     for metric in &def.dashboard.metrics {
+        // Try shared memory first (where memory_store tool writes), fall back to agent-specific
         let value = state
             .kernel
             .memory
-            .structured_get(agent_id, &metric.memory_key)
+            .structured_get(shared_id, &metric.memory_key)
             .ok()
             .flatten()
+            .or_else(|| {
+                state
+                    .kernel
+                    .memory
+                    .structured_get(agent_id, &metric.memory_key)
+                    .ok()
+                    .flatten()
+            })
             .unwrap_or(serde_json::Value::Null);
         metrics.insert(
             metric.label.clone(),
