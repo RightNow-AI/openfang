@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.41] - 2026-03-12
+### Fixed
+- **Critical Security Fixes**
+  - **Command Injection Prevention:** Implemented command whitelist (`ALLOWED_COMMANDS`) with 30+ safe commands, blocked command list for dangerous operations (`rm`, `curl`, `sudo`, etc.), validation for shell operators (`&&`, `||`, `|`, `;`) and output redirection (`>`, `>>`)
+  - **Path Traversal Prevention:** Added path validation with sandboxing to working directory, normalization of `.` and `..` components, blocking of absolute paths outside sandbox
+  - **Error Handling:** Fixed silent error swallowing in `WriteFile` action, added `FileReadFailed`, `FileWriteFailed`, `CommandBlocked`, `CommandTimedOut`, `PathBlocked` event variants
+  - **Channel Safety:** Replaced `.unwrap()` with proper error handling in A2A engine, added `A2AError` enum with descriptive error variants
+  - **CVE Fixes:** Updated `quinn-proto` to 0.11.14 (fixes RUSTSEC-2026-0037), updated `pyo3` to 0.24.2 (fixes RUSTSEC-2025-0020)
+
+### Changed
+- **Async I/O Migration:** Migrated `SWEAgentExecutor` from `std::fs` to `tokio::fs` for async file operations
+- **Executor API:** Added `execute()` async method and `execute_sync()` wrapper for backwards compatibility
+- **A2A Protocol:** Extended `SWEAgentEvent` enum with error variants for proper error propagation
+
+### Security
+- Added 17 new security tests covering command injection, path traversal, and error handling scenarios
+- Zero clippy warnings after security fixes
+- Risk score reduced from 32/100 (MEDIUM-HIGH) to ~15/100 (LOW)
+
 ## [0.3.40] - 2026-03-11
 ### Added
 - **SWE Agent Framework (Phase 17-18)**

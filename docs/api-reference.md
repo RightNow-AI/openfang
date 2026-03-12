@@ -19,6 +19,7 @@ All responses include security headers (CSP, X-Frame-Options, X-Content-Type-Opt
 - [Skills & Marketplace Endpoints](#skills--marketplace-endpoints)
 - [ClawHub Endpoints](#clawhub-endpoints)
 - [MCP & A2A Protocol Endpoints](#mcp--a2a-protocol-endpoints)
+- [SWE Agent Endpoints](#swe-agent-endpoints)
 - [Audit & Security Endpoints](#audit--security-endpoints)
 - [Usage & Analytics Endpoints](#usage--analytics-endpoints)
 - [Migration Endpoints](#migration-endpoints)
@@ -1438,6 +1439,265 @@ Cancel a running A2A task.
   "status": "cancelled"
 }
 ```
+
+---
+
+## SWE Agent Endpoints
+
+The Software Engineering (SWE) Agent provides task-based execution of file operations and commands with security sandboxing.
+
+### POST /api/swe/tasks
+
+Create a new SWE task and auto-start execution.
+
+**Request Body**:
+
+```json
+{
+  "description": "Read and modify config file",
+  "actions": [
+    {"type": "ReadFile", "path": "config.toml"},
+    {"type": "WriteFile", "path": "config.toml", "content": "new content"},
+    {"type": "ExecuteCommand", "command": "cargo check"}
+  ]
+}
+```
+
+**Action Types**:
+
+| Type | Parameters | Description |
+|------|------------|-------------|
+| `ReadFile` | `path: string` | Read file contents (sandboxed) |
+| `WriteFile` | `path: string`, `content: string` | Write to file (sandboxed) |
+| `ExecuteCommand` | `command: string` | Execute whitelisted command |
+
+**Response** `200 OK`:
+
+```json
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "Pending",
+  "created_at": "2026-03-12T10:30:00Z"
+}
+```
+
+**Error Responses**:
+
+| Status | Error |
+|--------|-------|
+| 400 | Task description is required |
+| 400 | At least one action is required |
+
+### GET /api/swe/tasks
+
+List all SWE tasks.
+
+**Response** `200 OK`:
+
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "description": "Read and modify config file",
+    "status": "Completed",
+    "created_at": "2026-03-12T10:30:00Z",
+    "action_count": 3,
+    "event_count": 3
+  }
+]
+```
+
+### GET /api/swe/tasks/{id}
+
+Get details of a specific SWE task.
+
+**Response** `200 OK`:
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "description": "Read and modify config file",
+  "status": "Completed",
+  "created_at": "2026-03-12T10:30:00Z",
+  "started_at": "2026-03-12T10:30:01Z",
+  "completed_at": "2026-03-12T10:30:05Z",
+  "actions": [
+    {"type": "ReadFile", "path": "config.toml"},
+    {"type": "WriteFile", "path": "config.toml", "content": "..."},
+    {"type": "ExecuteCommand", "command": "cargo check"}
+  ],
+  "events": [
+    {"type": "FileRead", "path": "config.toml", "content_preview": "..."},
+    {"type": "FileWritten", "path": "config.toml"},
+    {"type": "CommandExecuted", "command": "cargo check", "exit_code": 0}
+  ],
+  "error": null
+}
+```
+
+**Task Status**:
+
+| Status | Description |
+|--------|-------------|
+| `Pending` | Task created, not yet started |
+| `Running` | Task is executing actions |
+| `Completed` | All actions completed successfully |
+| `Failed` | One or more actions failed |
+| `Cancelled` | Task was cancelled by user |
+
+### DELETE /api/swe/tasks/{id}
+
+Delete a SWE task.
+
+**Response** `200 OK`:
+
+```json
+{
+  "message": "Task deleted"
+}
+```
+
+### POST /api/swe/tasks/{id}/cancel
+
+Cancel a running SWE task.
+
+**Response** `200 OK`:
+
+```json
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "Cancelled"
+}
+```
+
+### GET /api/swe/tasks/{id}/events
+
+Get all events for a specific task.
+
+**Response** `200 OK`:
+
+```json
+[
+  {
+    "type": "FileRead",
+    "path": "config.toml",
+    "content_preview": "first 200 chars..."
+  },
+  {
+    "type": "FileWritten",
+    "path": "config.toml"
+  },
+  {
+    "type": "CommandExecuted",
+    "command": "cargo check",
+    "output_preview": "first 500 chars...",
+    "exit_code": 0
+  }
+]
+```
+
+**Event Types**:
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `FileRead` | `path`, `content_preview` | File read successfully |
+| `FileWritten` | `path` | File written successfully |
+| `FileReadFailed` | `path`, `error` | File read failed |
+| `FileWriteFailed` | `path`, `error` | File write failed |
+| `CommandExecuted` | `command`, `output_preview`, `exit_code` | Command executed |
+| `CommandBlocked` | `command`, `reason` | Command blocked by security policy |
+| `CommandTimedOut` | `command`, `timeout_secs` | Command exceeded timeout |
+| `PathBlocked` | `path`, `reason` | Path blocked by sandbox |
+
+### GET /api/swe/evaluate
+
+Run an evaluation suite against the SWE agent.
+
+**Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `suite` | string | `basic` | Test suite to run |
+
+**Available Suites**:
+
+| Suite | Tests | Description |
+|-------|-------|-------------|
+| `basic` | 5 | File read/write, command execution |
+| `intermediate` | 5 | Multi-file operations, code generation |
+| `advanced` | 4 | Code generation, bug fixing, refactoring |
+| `expert` | 3 | Project setup, trait implementation |
+
+**Response** `200 OK`:
+
+```json
+{
+  "suite_id": "basic-v1",
+  "suite_name": "Basic Suite",
+  "run_id": "run-1234-...",
+  "results": [
+    {
+      "test_case_id": "tc-001",
+      "test_case_name": "Read README file",
+      "passed": true,
+      "score": 1.0,
+      "duration_ms": 150,
+      "message": null
+    }
+  ],
+  "total": 5,
+  "passed": 4,
+  "failed": 1,
+  "pass_rate": 0.8,
+  "avg_score": 0.85,
+  "total_duration_ms": 2500,
+  "run_at": "2026-03-12T10:30:00Z"
+}
+```
+
+### GET /api/swe/evaluate/suites
+
+List available evaluation suites.
+
+**Response** `200 OK`:
+
+```json
+[
+  {
+    "id": "basic-v1",
+    "name": "Basic Suite",
+    "version": "1.0.0",
+    "description": "Basic file operations and command execution",
+    "test_count": 5,
+    "difficulty": "basic"
+  },
+  {
+    "id": "intermediate-v1",
+    "name": "Intermediate Suite",
+    "version": "1.0.0",
+    "description": "Multi-file operations and code generation",
+    "test_count": 5,
+    "difficulty": "intermediate"
+  }
+]
+```
+
+### Security Constraints
+
+The SWE executor enforces strict security:
+
+**Command Whitelist**: Only these commands are allowed:
+- File inspection: `cat`, `head`, `tail`, `less`, `more`, `wc`, `file`, `stat`
+- Directory: `ls`, `find`, `tree`, `pwd`
+- Text: `grep`, `rg`, `sed`, `awk`, `cut`, `sort`, `uniq`, `diff`
+- Development: `cargo`, `rustc`, `rustfmt`, `clippy`, `rustup`, `git`
+- Utilities: `echo`, `printf`, `basename`, `dirname`, `realpath`, `which`, `env`
+
+**Blocked Commands**: `rm`, `curl`, `wget`, `sudo`, `ssh`, `docker`, etc.
+
+**Path Sandboxing**: All file operations are confined to the working directory. Path traversal (`../`) and absolute paths outside the sandbox are blocked.
+
+**Command Timeout**: Commands are terminated after 30 seconds by default.
 
 ---
 

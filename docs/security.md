@@ -1487,4 +1487,142 @@ defaults) will be inherited.
 | Information leakage from health endpoint | Redacted public endpoint (Section 17) |
 | Timing attacks on HMAC verification | subtle::ConstantTimeEq (Section 9.2) |
 | Shell injection via metacharacters | Command::new (no shell) + env_clear (Section 13.4) |
+| **Command injection in SWE executor** | **Command whitelist + blocked list + shell operator validation (Section 20)** |
+| **Path traversal in SWE file ops** | **Path normalization + working directory sandbox (Section 20)** |
+
+---
+
+## 20. SWE Executor Security
+
+The SWE (Software Engineering) Agent Executor implements defense-in-depth security
+for file operations and command execution.
+
+### 20.1 Command Whitelist
+
+Only explicitly allowed commands can be executed:
+
+```rust
+const ALLOWED_COMMANDS: &[&str] = &[
+    // File inspection (read-only)
+    "cat", "head", "tail", "less", "more", "wc", "file", "stat",
+    // Directory navigation
+    "ls", "find", "tree", "pwd",
+    // Text processing
+    "grep", "rg", "sed", "awk", "cut", "sort", "uniq", "diff",
+    // Development tools
+    "cargo", "rustc", "rustfmt", "clippy", "rustup", "git",
+    // Safe utilities
+    "echo", "printf", "basename", "dirname", "realpath", "which",
+    "env", "printenv",
+];
+```
+
+### 20.2 Blocked Command List
+
+Dangerous commands are explicitly blocked regardless of whitelist:
+
+```rust
+const BLOCKED_COMMANDS: &[&str] = &[
+    "rm", "rmdir", "dd", "shred", "wipe",           // File destruction
+    "curl", "wget", "nc", "netcat",                  // Network exfiltration
+    "ssh", "scp", "rsync", "sftp",                   // Remote access
+    "sudo", "su", "doas", "pkexec",                  // Privilege escalation
+    "chmod", "chown", "chgrp",                       // Permission changes
+    "mkfs", "fdisk", "parted",                       // Disk operations
+    "shutdown", "reboot", "poweroff",                // System control
+    "kill", "killall", "pkill",                      // Process control
+    "iptables", "ip6tables", "nft",                  // Firewall
+    "docker", "podman", "kubectl",                   // Container orchestration
+];
+```
+
+### 20.3 Shell Operator Blocking
+
+Commands containing shell metacharacters are blocked:
+
+```rust
+// Blocked patterns:
+// && - Command chaining
+// || - Conditional execution
+// |  - Pipe to another command
+// ;  - Command separator
+// &  - Background execution
+// `  - Command substitution
+// $( - Command substitution
+// >  - Output redirection
+// >> - Append redirection
+```
+
+### 20.4 Path Traversal Prevention
+
+All file operations are sandboxed to a working directory:
+
+```rust
+fn validate_path(&self, path: &str) -> Result<PathBuf, SWEError> {
+    // 1. Check for null bytes (security issue)
+    // 2. Check for absolute paths outside sandbox
+    // 3. Normalize path (resolve . and .. without requiring existence)
+    // 4. Verify normalized path starts with working directory
+}
+```
+
+**Blocked patterns:**
+- `../../etc/passwd` - Traversal to parent directories
+- `/etc/passwd` - Absolute paths outside sandbox
+- `./subdir/../../../etc/passwd` - Mixed traversal
+
+**Allowed patterns:**
+- `file.txt` - Relative file in working directory
+- `subdir/file.txt` - Relative file in subdirectory
+- `./file.txt` - Explicit relative path
+
+### 20.5 Error Handling
+
+All errors are properly propagated, never silently swallowed:
+
+```rust
+pub enum SWEAgentEvent {
+    // Success events
+    FileRead(String, String),
+    FileWritten(String),
+    CommandExecuted(String, String, i32),
+
+    // Error events
+    FileReadFailed(String, String),    // (path, error)
+    FileWriteFailed(String, String),   // (path, error)
+    CommandBlocked(String, String),    // (command, reason)
+    CommandTimedOut(String, u64),      // (command, timeout_secs)
+    PathBlocked(String, String),       // (path, reason)
+}
+```
+
+### 20.6 Configuration
+
+```rust
+pub struct SWEExecutorConfig {
+    /// Working directory sandbox for file operations
+    pub working_dir: PathBuf,
+
+    /// Timeout for command execution (default: 30 seconds)
+    pub command_timeout_secs: u64,
+
+    /// Allow all commands (testing only - never enable in production)
+    pub allow_all_commands: bool,
+}
+```
+
+### 20.7 Security Tests
+
+17 tests verify security properties:
+
+| Test | Purpose |
+|------|---------|
+| `test_blocked_command_rm` | Blocks `rm -rf /` |
+| `test_blocked_command_curl` | Blocks `curl | sh` |
+| `test_disallowed_command` | Blocks non-whitelisted commands |
+| `test_shell_operators_blocked` | Blocks `&&`, `||`, `|`, `;` |
+| `test_pipe_blocked` | Blocks pipe operations |
+| `test_path_traversal_blocked` | Blocks `../../etc/passwd` |
+| `test_absolute_path_outside_sandbox_blocked` | Blocks `/etc/passwd` |
+| `test_subdirectory_access_allowed` | Allows `subdir/file.txt` |
 | DNS rebinding for SSRF bypass | Resolved IP check, not hostname check (Section 7.3) |
