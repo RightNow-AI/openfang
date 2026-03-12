@@ -24,7 +24,7 @@ This document describes the internal architecture of OpenFang, the open-source A
 
 ## Crate Structure
 
-OpenFang is organized as a Cargo workspace with 14 crates (13 code crates + xtask). Dependencies flow downward (lower crates depend on nothing above them).
+OpenFang is organized as a Cargo workspace with 30 crates (16 openfang-* + 14 maestro-*). Dependencies flow downward (lower crates depend on nothing above them).
 
 ```
 openfang-cli            CLI interface, daemon auto-detect, MCP server
@@ -40,8 +40,28 @@ openfang-kernel         Kernel: assembles all subsystems, workflow engine, RBAC,
     +-- openfang-wire       OFP peer-to-peer networking with HMAC-SHA256 auth
     +-- openfang-migrate    Migration engine (OpenClaw YAML->TOML)
     +-- openfang-skills     60 bundled skills, FangHub marketplace, ClawHub client
+    +-- openfang-a2a        Agent-to-Agent protocol engine, task routing, handler registry
+    +-- openfang-auth       Authentication, RBAC, session management
+    +-- openfang-extensions Plugin/extension system for custom capabilities
+    +-- openfang-hands      Pre-built autonomous agent hands (Clip, Lead, Collector, etc.)
+    +-- openfang-mesh       Distributed agent mesh networking
     |
 maestro-surreal-memory  SurrealDB graph database substrate, sessions, knowledge graph, semantic search, usage tracking
+    |
+    +-- maestro-algorithm   MAESTRO orchestration algorithm (7-phase pipeline)
+    +-- maestro-swe         Software Engineering Agent executor, protocol, security sandbox
+    +-- maestro-eval        SWE evaluation framework, test runner, scoring engine
+    +-- maestro-knowledge   RAG knowledge integration, document processing
+    +-- maestro-cache       Multi-tier caching (memory, disk, distributed)
+    +-- maestro-observability Metrics, tracing, logging infrastructure
+    +-- maestro-pai         Prompt-AI interface, prompt templates
+    +-- maestro-rlm         Retrieval-Language Model integration
+    +-- maestro-sdk         SDK for building MAESTRO-compatible agents
+    +-- maestro-guardrails  Safety guardrails, approval gates, policy enforcement
+    +-- maestro-model-hub   Model registry, routing, fallback chains
+    +-- maestro-marketplace Agent marketplace integration (FangHub, ClawHub)
+    +-- maestro-falkor-analytics Falkor analytics integration
+    +-- maestro-integration-tests End-to-end integration test suite
     |
 openfang-types          Shared types: Agent, Capability, Event, Memory, Message, Tool, Config,
                         Taint, ManifestSigning, ModelCatalog, MCP/A2A config, Web config
@@ -62,6 +82,25 @@ openfang-types          Shared types: Agent, Capability, Event, Memory, Message,
 | **openfang-desktop** | Tauri 2.0 native desktop application. Boots the kernel in-process, runs the axum server on a background thread, and points a WebView at `http://127.0.0.1:{random_port}`. Features: system tray (Show/Browser/Status/Quit), single-instance enforcement, desktop notifications, hide-to-tray on close. IPC commands: `get_port`, `get_status`. Mobile-ready with `#[cfg(desktop)]` guards. |
 | **openfang-migrate** | Migration engine. Supports OpenClaw (`~/.openclaw/`). Converts YAML configs to TOML, maps tool names, maps provider names, imports agent manifests, copies memory files, converts channel configs. Produces a `MigrationReport` with imported items, skipped items, and warnings. |
 | **openfang-skills** | Skill system for pluggable tool bundles. 60 bundled skills compiled via `include_str!()`. Skills are `skill.toml` + Python/WASM/Node.js/PromptOnly code. `SkillManifest` defines metadata, runtime config, provided tools, and requirements. `SkillRegistry` manages installed and bundled skills. `FangHubClient` connects to FangHub marketplace. `ClawHubClient` connects to clawhub.ai for cross-ecosystem skill discovery. `SKILL.md` parser for OpenClaw compatibility (YAML frontmatter + Markdown body). `SkillVerifier` with SHA256 verification. Prompt injection scanner (`scan_prompt_content()`) detects override attempts, data exfiltration, and shell references. |
+| **openfang-a2a** | Agent-to-Agent protocol implementation. `A2AEngine` manages task lifecycle with JSON-RPC-style messaging. `A2AHandlerRegistry` maps agent types to handlers. `SweA2AHandler` and `McpA2AHandler` provide direct dispatch bypassing network serialization. Supports both local (in-process) and remote (HTTP) agent communication. |
+| **openfang-auth** | Authentication and authorization layer. RBAC with `UserRole` hierarchy. Session management with secure token generation. Channel identity resolution for multi-platform authentication. |
+| **openfang-extensions** | Plugin/extension system. Dynamic loading of custom capabilities. Extension manifest parsing and validation. |
+| **openfang-hands** | Pre-built autonomous agent hands. Clip (video processing), Lead (lead generation), Collector (OSINT), Predictor (forecasting), Researcher (deep research), Twitter (social media), Browser (web automation). Each hand bundles manifest, system prompt, skills, and guardrails. |
+| **openfang-mesh** | Distributed agent mesh networking. Peer discovery, health monitoring, task distribution across nodes. |
+| **maestro-algorithm** | MAESTRO 7-phase orchestration algorithm (PLAN > OBSERVE > ORIENT > DECIDE > EXECUTE > EVALUATE > LEARN). `AlgorithmExecutor` with configurable phase thresholds, adaptive parameter tuning, parallel step execution. Dynamic phase adaptation based on historical performance. |
+| **maestro-swe** | Software Engineering Agent framework. `SWEAgentExecutor` with secure command execution (whitelist + blocklist), path sandboxing, async I/O. `SWEAgentAction` (ReadFile, WriteFile, ExecuteCommand) and `SWEAgentEvent` types. 30+ whitelisted commands, comprehensive security tests. |
+| **maestro-eval** | SWE evaluation framework. `SWETestRunner` executes test cases with validation logic. Four difficulty suites (basic, intermediate, advanced, expert). `SWESuiteReport` generation with scoring. Validation for file creation, content patterns, command outputs, compilation checks. |
+| **maestro-knowledge** | RAG knowledge integration. Document processing, chunking, embedding generation. Knowledge graph construction and querying. Integration with ORIENT phase for contextual awareness. |
+| **maestro-cache** | Multi-tier caching system. Memory cache (LRU), disk cache, distributed cache support. Cache invalidation strategies. Integration with surreal-memory for persistence. |
+| **maestro-observability** | Observability infrastructure. Metrics collection (Prometheus format), distributed tracing, structured logging. Integration with health monitoring and alerting. |
+| **maestro-pai** | Prompt-AI interface. Prompt template management, versioning, A/B testing. Prompt optimization and analysis. |
+| **maestro-rlm** | Retrieval-Language Model integration. Hybrid search combining lexical and semantic retrieval. Re-ranking and filtering. |
+| **maestro-sdk** | SDK for building MAESTRO-compatible agents. Builder patterns, trait definitions, common utilities. Documentation and examples. |
+| **maestro-guardrails** | Safety guardrails and policy enforcement. Approval gates for sensitive actions. Content filtering, rate limiting, policy DSL. |
+| **maestro-model-hub** | Model registry and routing. Model metadata, capability detection, fallback chains. Cost optimization through model selection. |
+| **maestro-marketplace** | Agent marketplace integration. FangHub and ClawHub clients. Agent discovery, installation, publishing. |
+| **maestro-falkor-analytics** | FalkorDB analytics integration. Graph analytics, pattern detection, insight generation. |
+| **maestro-integration-tests** | End-to-end integration test suite. Multi-crate test scenarios. Performance benchmarks. |
 | **xtask** | Build automation tasks (cargo-xtask pattern). |
 
 ---
