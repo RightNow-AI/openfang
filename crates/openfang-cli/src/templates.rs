@@ -13,27 +13,10 @@ pub struct AgentTemplate {
 }
 
 /// Discover template directories. Checks:
-/// 1. The repo `agents/` dir (for dev builds)
-/// 2. `~/.openfang/agents/` (installed templates)
-/// 3. `OPENFANG_AGENTS_DIR` env var
+/// 1. `~/.openfang/agents/` (installed templates)
+/// 2. `OPENFANG_AGENTS_DIR` env var
 pub fn discover_template_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-
-    // Dev: repo agents/ directory (relative to the binary)
-    if let Ok(exe) = std::env::current_exe() {
-        // Walk up from the binary to find the workspace root
-        let mut dir = exe.as_path();
-        for _ in 0..5 {
-            if let Some(parent) = dir.parent() {
-                let agents = parent.join("agents");
-                if agents.is_dir() {
-                    dirs.push(agents);
-                    break;
-                }
-                dir = parent;
-            }
-        }
-    }
 
     // Installed templates (respects OPENFANG_HOME)
     let of_home = if let Ok(h) = std::env::var("OPENFANG_HOME") {
@@ -61,7 +44,7 @@ pub fn discover_template_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Load all templates from discovered directories, falling back to bundled templates.
+/// Load all templates from discovered filesystem directories.
 pub fn load_all_templates() -> Vec<AgentTemplate> {
     let mut templates = Vec::new();
     let mut seen_names = std::collections::HashSet::new();
@@ -91,18 +74,6 @@ pub fn load_all_templates() -> Vec<AgentTemplate> {
                     });
                 }
             }
-        }
-    }
-
-    // Fallback: load bundled templates for any not found on disk
-    for (name, content) in crate::bundled_agents::bundled_agents() {
-        if seen_names.insert(name.to_string()) {
-            let description = extract_description(content);
-            templates.push(AgentTemplate {
-                name: name.to_string(),
-                description,
-                content: content.to_string(),
-            });
         }
     }
 

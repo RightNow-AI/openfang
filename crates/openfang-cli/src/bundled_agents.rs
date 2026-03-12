@@ -1,56 +1,71 @@
-//! Compile-time embedded agent templates.
+//! Filesystem-backed agent template seeding.
 //!
-//! All 30 bundled agent templates are embedded into the binary via `include_str!`.
-//! This ensures `openfang agent new` works immediately after install — no filesystem
-//! discovery needed.
+//! Agent templates are no longer compiled into the binary.
+//! Instead, templates live under `~/.openfang/agents/` and can be customized
+//! freely by users.
 
-/// Returns all bundled agent templates as `(name, toml_content)` pairs.
-pub fn bundled_agents() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("analyst", include_str!("../../../agents/analyst/agent.toml")),
-        ("architect", include_str!("../../../agents/architect/agent.toml")),
-        ("assistant", include_str!("../../../agents/assistant/agent.toml")),
-        ("coder", include_str!("../../../agents/coder/agent.toml")),
-        ("code-reviewer", include_str!("../../../agents/code-reviewer/agent.toml")),
-        ("customer-support", include_str!("../../../agents/customer-support/agent.toml")),
-        ("data-scientist", include_str!("../../../agents/data-scientist/agent.toml")),
-        ("debugger", include_str!("../../../agents/debugger/agent.toml")),
-        ("devops-lead", include_str!("../../../agents/devops-lead/agent.toml")),
-        ("doc-writer", include_str!("../../../agents/doc-writer/agent.toml")),
-        ("email-assistant", include_str!("../../../agents/email-assistant/agent.toml")),
-        ("health-tracker", include_str!("../../../agents/health-tracker/agent.toml")),
-        ("hello-world", include_str!("../../../agents/hello-world/agent.toml")),
-        ("home-automation", include_str!("../../../agents/home-automation/agent.toml")),
-        ("legal-assistant", include_str!("../../../agents/legal-assistant/agent.toml")),
-        ("meeting-assistant", include_str!("../../../agents/meeting-assistant/agent.toml")),
-        ("ops", include_str!("../../../agents/ops/agent.toml")),
-        ("orchestrator", include_str!("../../../agents/orchestrator/agent.toml")),
-        ("personal-finance", include_str!("../../../agents/personal-finance/agent.toml")),
-        ("planner", include_str!("../../../agents/planner/agent.toml")),
-        ("recruiter", include_str!("../../../agents/recruiter/agent.toml")),
-        ("researcher", include_str!("../../../agents/researcher/agent.toml")),
-        ("sales-assistant", include_str!("../../../agents/sales-assistant/agent.toml")),
-        ("security-auditor", include_str!("../../../agents/security-auditor/agent.toml")),
-        ("social-media", include_str!("../../../agents/social-media/agent.toml")),
-        ("test-engineer", include_str!("../../../agents/test-engineer/agent.toml")),
-        ("translator", include_str!("../../../agents/translator/agent.toml")),
-        ("travel-planner", include_str!("../../../agents/travel-planner/agent.toml")),
-        ("tutor", include_str!("../../../agents/tutor/agent.toml")),
-        ("writer", include_str!("../../../agents/writer/agent.toml")),
-    ]
+use std::path::{Path, PathBuf};
+
+fn discover_seed_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Ok(env_dir) = std::env::var("OPENFANG_AGENT_SEED_DIR") {
+        let p = PathBuf::from(env_dir);
+        if p.is_dir() {
+            dirs.push(p);
+        }
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.as_path();
+        for _ in 0..6 {
+            if let Some(parent) = dir.parent() {
+                let agents = parent.join("agents");
+                if agents.is_dir() {
+                    dirs.push(agents);
+                    break;
+                }
+                dir = parent;
+            }
+        }
+    }
+
+    dirs
 }
 
-/// Install bundled agent templates to `~/.openfang/agents/`.
-/// Skips any template that already exists on disk (user customization preserved).
-pub fn install_bundled_agents(agents_dir: &std::path::Path) {
-    for (name, content) in bundled_agents() {
-        let dest_dir = agents_dir.join(name);
-        let dest_file = dest_dir.join("agent.toml");
-        if dest_file.exists() {
-            continue; // Preserve user customization
+fn copy_seed_tree(src_root: &Path, dest_agents_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(src_root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let src_dir = entry.path();
+        if !src_dir.is_dir() {
+            continue;
         }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let src_manifest = src_dir.join("agent.toml");
+        if !src_manifest.exists() {
+            continue;
+        }
+
+        let dest_dir = dest_agents_dir.join(&name);
+        let dest_manifest = dest_dir.join("agent.toml");
+        if dest_manifest.exists() {
+            continue;
+        }
+
         if std::fs::create_dir_all(&dest_dir).is_ok() {
-            let _ = std::fs::write(&dest_file, content);
+            let _ = std::fs::copy(&src_manifest, &dest_manifest);
         }
+    }
+}
+
+/// Seed `~/.openfang/agents/` from discovered filesystem seed directories.
+///
+/// This only copies missing templates and never overwrites user content.
+pub fn install_seed_agents(agents_dir: &Path) {
+    for seed_dir in discover_seed_dirs() {
+        copy_seed_tree(&seed_dir, agents_dir);
     }
 }
