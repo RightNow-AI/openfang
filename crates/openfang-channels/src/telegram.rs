@@ -825,6 +825,33 @@ async fn parse_telegram_update(
         }
     }
 
+    // Extract reply_to_message context so agents can see what the user is replying to.
+    if let Some(reply_msg) = message.get("reply_to_message") {
+        if let Some(reply_text) = reply_msg["text"].as_str() {
+            metadata.insert("reply_to_text".to_string(), serde_json::json!(reply_text));
+        }
+        if let Some(reply_caption) = reply_msg["caption"].as_str() {
+            metadata.insert(
+                "reply_to_caption".to_string(),
+                serde_json::json!(reply_caption),
+            );
+        }
+        if let Some(reply_id) = reply_msg["message_id"].as_i64() {
+            metadata.insert(
+                "reply_to_message_id".to_string(),
+                serde_json::json!(reply_id),
+            );
+        }
+        // Sender of the quoted message
+        let reply_sender = reply_msg["from"]["first_name"]
+            .as_str()
+            .unwrap_or("Unknown");
+        metadata.insert(
+            "reply_to_sender".to_string(),
+            serde_json::json!(reply_sender),
+        );
+    }
+
     Some(ChannelMessage {
         channel: ChannelType::Telegram,
         platform_message_id: message_id.to_string(),

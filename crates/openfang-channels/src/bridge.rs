@@ -434,6 +434,29 @@ async fn send_lifecycle_reaction(
     let _ = adapter.send_reaction(user, message_id, &reaction).await;
 }
 
+/// Build a contextual prefix when the user is replying to a previous message.
+///
+/// Returns `Some("[Replying to <sender>: <text>]\n\n")` if reply metadata exists.
+fn build_reply_context(metadata: &std::collections::HashMap<String, serde_json::Value>) -> Option<String> {
+    // Need at least some quoted content
+    let quoted = metadata
+        .get("reply_to_text")
+        .and_then(|v| v.as_str())
+        .or_else(|| metadata.get("reply_to_caption").and_then(|v| v.as_str()));
+    let quoted = quoted?;
+    let sender = metadata
+        .get("reply_to_sender")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown");
+    // Truncate very long quoted messages to keep context manageable
+    let truncated = if quoted.len() > 500 {
+        format!("{}…", &quoted[..500])
+    } else {
+        quoted.to_string()
+    };
+    Some(format!("[Replying to {sender}: {truncated}]\n\n"))
+}
+
 /// Dispatch a single incoming message — handles bot commands or routes to an agent.
 ///
 /// Applies per-channel policies (DM/group filtering, rate limiting, formatting, threading).
@@ -533,6 +556,13 @@ async fn dispatch_message(
     // many providers (DashScope/Qwen, OpenAI) prefer or require direct URLs.
     if let ChannelContent::Image { ref url, ref caption } = message.content {
         let mut blocks = Vec::new();
+        // Prepend reply context if this is a reply to a previous message
+        if let Some(reply_ctx) = build_reply_context(&message.metadata) {
+            blocks.push(ContentBlock::Text {
+                text: reply_ctx,
+                provider_metadata: None,
+            });
+        }
         if let Some(cap) = caption {
             if !cap.is_empty() {
                 blocks.push(ContentBlock::Text {
@@ -580,6 +610,12 @@ async fn dispatch_message(
         ChannelContent::FileData { ref filename, .. } => {
             format!("[User sent a local file: {filename}]")
         }
+    };
+
+    // Prepend reply context if this is a reply to a previous message
+    let text = match build_reply_context(&message.metadata) {
+        Some(ctx) => format!("{ctx}{text}"),
+        None => text,
     };
 
     // Check if it's a slash command embedded in text (e.g. "/agents")
