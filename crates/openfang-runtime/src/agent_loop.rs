@@ -1832,6 +1832,10 @@ pub async fn run_agent_loop_streaming(
 /// 7. `<tool_call>{"name":"tool","arguments":{...}}</tool_call>` — Qwen3, issue #332
 /// 8. Bare JSON `{"name":"tool","arguments":{...}}` objects (last resort, only if no tags found)
 /// 9. `<function name="tool" parameters="{...}" />` — XML attribute style (Groq/Llama)
+/// 10. `<|plugin|>...<|endofblock|>` — Qwen/ChatGLM thinking-model format
+/// 11. `Action: tool\nAction Input: {"key":"value"}` — ReAct-style (LM Studio, GPT-OSS)
+/// 12. `tool_name\n{"key":"value"}` — bare name + JSON on next line (Llama 4 Scout)
+/// 13. `<tool_use>{"name":"tool","arguments":{...}}</tool_use>` — Llama 3.1+ variant
 ///
 /// Validates tool names against available tools and returns synthetic `ToolCall` entries.
 fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Vec<ToolCall> {
@@ -2211,6 +2215,121 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
                 name: tool_name.to_string(),
                 input,
             });
+        }
+    }
+
+    // Pattern 10: <|plugin|>...<|endofblock|> (Qwen/ChatGLM thinking-model format)
+    search_from = 0;
+    while let Some(start) = text[search_from..].find("<|plugin|>") {
+        let abs_start = search_from + start;
+        let after_tag = abs_start + "<|plugin|>".len();
+
+        let close_tag = "<|endofblock|>";
+        let Some(close_offset) = text[after_tag..].find(close_tag) else {
+            search_from = after_tag;
+            continue;
+        };
+        let inner = text[after_tag..after_tag + close_offset].trim();
+        search_from = after_tag + close_offset + close_tag.len();
+
+        if let Some((tool_name, input)) = parse_json_tool_call_object(inner, &tool_names) {
+            if !calls.iter().any(|c| c.name == tool_name && c.input == input) {
+                info!(tool = tool_name.as_str(), "Recovered tool call from <|plugin|> block");
+                calls.push(ToolCall {
+                    id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                    name: tool_name,
+                    input,
+                });
+            }
+        }
+    }
+
+    // Pattern 11: Action: tool_name\nAction Input: {JSON} (ReAct-style, LM Studio / GPT-OSS)
+    {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut i = 0;
+        while i < lines.len() {
+            let line = lines[i].trim();
+            if let Some(tool_part) = line.strip_prefix("Action:").or_else(|| line.strip_prefix("action:")) {
+                let tool_name = tool_part.trim();
+                if tool_names.contains(&tool_name) {
+                    // Look for "Action Input:" on the next line(s)
+                    if i + 1 < lines.len() {
+                        let next = lines[i + 1].trim();
+                        if let Some(json_part) = next.strip_prefix("Action Input:").or_else(|| next.strip_prefix("action input:")).or_else(|| next.strip_prefix("action_input:")) {
+                            let json_str = json_part.trim();
+                            if let Ok(input) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                if !calls.iter().any(|c| c.name == tool_name && c.input == input) {
+                                    info!(tool = tool_name, "Recovered tool call from Action/Action Input pattern");
+                                    calls.push(ToolCall {
+                                        id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                                        name: tool_name.to_string(),
+                                        input,
+                                    });
+                                }
+                            }
+                            i += 2;
+                            continue;
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+
+    // Pattern 12: tool_name\n{"key":"value"} — bare name + JSON on next line (Llama 4 Scout)
+    {
+        let lines: Vec<&str> = text.lines().collect();
+        for i in 0..lines.len().saturating_sub(1) {
+            let name_line = lines[i].trim();
+            // Tool name must be a single word matching a known tool
+            if name_line.contains(' ') || name_line.contains('{') || name_line.is_empty() {
+                continue;
+            }
+            if !tool_names.contains(&name_line) {
+                continue;
+            }
+            // Next line must be valid JSON
+            let json_line = lines[i + 1].trim();
+            if !json_line.starts_with('{') {
+                continue;
+            }
+            if let Ok(input) = serde_json::from_str::<serde_json::Value>(json_line) {
+                if !calls.iter().any(|c| c.name == name_line && c.input == input) {
+                    info!(tool = name_line, "Recovered tool call from name+JSON line pair");
+                    calls.push(ToolCall {
+                        id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                        name: name_line.to_string(),
+                        input,
+                    });
+                }
+            }
+        }
+    }
+
+    // Pattern 13: <tool_use>JSON</tool_use> (Llama 3.1+ variant)
+    search_from = 0;
+    while let Some(start) = text[search_from..].find("<tool_use>") {
+        let abs_start = search_from + start;
+        let after_tag = abs_start + "<tool_use>".len();
+
+        let Some(close_offset) = text[after_tag..].find("</tool_use>") else {
+            search_from = after_tag;
+            continue;
+        };
+        let inner = text[after_tag..after_tag + close_offset].trim();
+        search_from = after_tag + close_offset + "</tool_use>".len();
+
+        if let Some((tool_name, input)) = parse_json_tool_call_object(inner, &tool_names) {
+            if !calls.iter().any(|c| c.name == tool_name && c.input == input) {
+                info!(tool = tool_name.as_str(), "Recovered tool call from <tool_use> block");
+                calls.push(ToolCall {
+                    id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                    name: tool_name,
+                    input,
+                });
+            }
         }
     }
 
@@ -3678,6 +3797,117 @@ mod tests {
         let calls = recover_text_tool_calls(text, &tools);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "shell_exec");
+    }
+
+    // --- Pattern 10: <|plugin|>...<|endofblock|> tests ---
+
+    #[test]
+    fn test_recover_plugin_block() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<|plugin|>\n{\"name\": \"web_search\", \"arguments\": {\"query\": \"rust\"}}\n<|endofblock|>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "web_search");
+        assert_eq!(calls[0].input["query"], "rust");
+    }
+
+    #[test]
+    fn test_recover_plugin_block_unknown_tool() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<|plugin|>\n{\"name\": \"hack\", \"arguments\": {\"cmd\": \"rm\"}}\n<|endofblock|>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    // --- Pattern 11: Action/Action Input tests ---
+
+    #[test]
+    fn test_recover_action_input() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "Action: web_search\nAction Input: {\"query\": \"rust programming\"}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "web_search");
+        assert_eq!(calls[0].input["query"], "rust programming");
+    }
+
+    #[test]
+    fn test_recover_action_input_unknown_tool() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "Action: unknown_tool\nAction Input: {\"key\": \"value\"}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    // --- Pattern 12: name + JSON on next line tests ---
+
+    #[test]
+    fn test_recover_name_json_nextline() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "shell_exec\n{\"command\": \"ls -la\"}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell_exec");
+        assert_eq!(calls[0].input["command"], "ls -la");
+    }
+
+    #[test]
+    fn test_recover_name_json_nextline_unknown() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "unknown_tool\n{\"command\": \"ls\"}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    // --- Pattern 13: <tool_use> tests ---
+
+    #[test]
+    fn test_recover_tool_use_block() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<tool_use>{\"name\": \"web_search\", \"arguments\": {\"query\": \"test\"}}</tool_use>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "web_search");
+    }
+
+    #[test]
+    fn test_recover_tool_use_block_unknown() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<tool_use>{\"name\": \"hack\", \"arguments\": {\"cmd\": \"rm\"}}</tool_use>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
     }
 
     // --- Helper function tests ---

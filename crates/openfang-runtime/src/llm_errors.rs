@@ -177,6 +177,18 @@ const FORMAT_PATTERNS: &[&str] = &[
     "bad_request",
 ];
 
+/// Empty response / truncated body patterns.
+/// These indicate the provider returned an empty or truncated response body,
+/// almost always due to transient load issues or dropped connections.
+const EMPTY_RESPONSE_PATTERNS: &[&str] = &[
+    "eof while parsing a value",
+    "eof while parsing",
+    "provider returned empty response",
+    "empty response body",
+    "unexpected end of json",
+    "unexpected eof",
+];
+
 /// Overloaded patterns.
 const OVERLOADED_PATTERNS: &[&str] = &[
     "overloaded",
@@ -330,6 +342,10 @@ pub fn classify_error(message: &str, status: Option<u16>) -> ClassifiedError {
     }
 
     // 6. Format / bad request (before overloaded, since 400 is more specific)
+    // But first: empty response / truncated body is retryable, not a format error
+    if matches_any(&lower, EMPTY_RESPONSE_PATTERNS) {
+        return build(LlmErrorCategory::Overloaded);
+    }
     if matches_any(&lower, FORMAT_PATTERNS) {
         return build(LlmErrorCategory::Format);
     }

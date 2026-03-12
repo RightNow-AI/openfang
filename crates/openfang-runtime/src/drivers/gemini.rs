@@ -73,6 +73,19 @@ struct GeminiContent {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 enum GeminiPart {
+    /// Thinking/reasoning part emitted by Gemini 2.5+ thinking models.
+    /// JSON shape: `{ "text": "...", "thought": true }`.
+    /// Must be listed **before** `Text` so `serde(untagged)` matches it first.
+    Thought {
+        text: String,
+        thought: bool,
+        #[serde(
+            rename = "thoughtSignature",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        thought_signature: Option<String>,
+    },
     /// Text part, optionally carrying a thought signature.
     Text {
         text: String,
@@ -432,6 +445,14 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
                             input: function_call.args,
                         });
                     }
+                    GeminiPart::Thought { text, .. } => {
+                        // Gemini 2.5+ thinking parts — internal reasoning.
+                        // Store as Thinking content block so the UI can
+                        // optionally display it (like <think> blocks).
+                        if !text.is_empty() {
+                            content.push(ContentBlock::Thinking { thinking: text });
+                        }
+                    }
                     GeminiPart::InlineData { .. } | GeminiPart::FunctionResponse { .. } => {
                         // Shouldn't normally appear in responses, ignore
                     }
@@ -725,6 +746,18 @@ impl LlmDriver for GeminiDriver {
                                             function_call.args.clone(),
                                             thought_signature.clone(),
                                         ));
+                                    }
+                                    GeminiPart::Thought { ref text, .. } => {
+                                        // Gemini 2.5+ thinking chunk — emit as
+                                        // thinking delta so UIs can optionally
+                                        // show it; do NOT mix into text_content.
+                                        if !text.is_empty() {
+                                            let _ = tx
+                                                .send(StreamEvent::ThinkingDelta {
+                                                    text: text.clone(),
+                                                })
+                                                .await;
+                                        }
                                     }
                                     GeminiPart::InlineData { .. }
                                     | GeminiPart::FunctionResponse { .. } => {}
@@ -1602,5 +1635,96 @@ mod tests {
             serialized["functionCall"].get("thoughtSignature").is_none(),
             "thoughtSignature must be at part level, NOT inside functionCall"
         );
+    }
+
+    #[test]
+    fn test_thought_part_deserialization() {
+        // Gemini 2.5+ thinking models emit { "text": "...", "thought": true }
+        let json = r#"{"text": "Let me think about this...", "thought": true}"#;
+        let part: GeminiPart = serde_json::from_str(json).unwrap();
+        match part {
+            GeminiPart::Thought { text, thought, .. } => {
+                assert_eq!(text, "Let me think about this...");
+                assert!(thought);
+            }
+            _ => panic!("Expected Thought variant, got {:?}", part),
+        }
+    }
+
+    #[test]
+    fn test_thought_part_with_signature() {
+        let json =
+            r#"{"text": "reasoning...", "thought": true, "thoughtSignature": "sig_abc123"}"#;
+        let part: GeminiPart = serde_json::from_str(json).unwrap();
+        match part {
+            GeminiPart::Thought {
+                text,
+                thought,
+                thought_signature,
+            } => {
+                assert_eq!(text, "reasoning...");
+                assert!(thought);
+                assert_eq!(thought_signature.as_deref(), Some("sig_abc123"));
+            }
+            _ => panic!("Expected Thought variant"),
+        }
+    }
+
+    #[test]
+    fn test_text_part_still_works_without_thought() {
+        // Regular text parts (no `thought` field) must still deserialize as Text
+        let json = r#"{"text": "Hello world"}"#;
+        let part: GeminiPart = serde_json::from_str(json).unwrap();
+        match part {
+            GeminiPart::Text { text, .. } => assert_eq!(text, "Hello world"),
+            // Thought variant with thought=false would also be acceptable
+            GeminiPart::Thought { text, thought, .. } => {
+                assert_eq!(text, "Hello world");
+                assert!(!thought);
+            }
+            _ => panic!("Expected Text or Thought variant"),
+        }
+    }
+
+    #[test]
+    fn test_thought_part_in_response_produces_thinking_block() {
+        let resp = GeminiResponse {
+            candidates: vec![GeminiCandidate {
+                content: Some(GeminiContent {
+                    role: Some("model".to_string()),
+                    parts: vec![
+                        GeminiPart::Thought {
+                            text: "Let me reason...".to_string(),
+                            thought: true,
+                            thought_signature: None,
+                        },
+                        GeminiPart::Text {
+                            text: "Here is my answer.".to_string(),
+                            thought_signature: None,
+                        },
+                    ],
+                }),
+                finish_reason: Some("STOP".to_string()),
+            }],
+            usage_metadata: Some(GeminiUsageMetadata {
+                prompt_token_count: 10,
+                candidates_token_count: 20,
+            }),
+        };
+        let completion = convert_response(resp).unwrap();
+        // Should have a Thinking block and a Text block
+        assert_eq!(completion.content.len(), 2);
+        match &completion.content[0] {
+            ContentBlock::Thinking { thinking } => {
+                assert_eq!(thinking, "Let me reason...");
+            }
+            _ => panic!("Expected Thinking block, got {:?}", completion.content[0]),
+        }
+        match &completion.content[1] {
+            ContentBlock::Text { text, .. } => {
+                assert_eq!(text, "Here is my answer.");
+            }
+            _ => panic!("Expected Text block"),
+        }
     }
 }

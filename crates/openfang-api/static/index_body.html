@@ -2645,9 +2645,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <!-- ═══ Step 1: Dependencies ═══ -->
                   <div class="hand-wizard-body" x-show="setupStep === 1">
                     <template x-for="req in (setupWizard.requirements || [])" :key="req.key">
-                      <div class="dep-card" :class="req.satisfied ? 'dep-met' : 'dep-missing'">
+                      <div class="dep-card" :class="(req.satisfied || (req.type === 'ApiKey' && apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== '')) ? 'dep-met' : 'dep-missing'">
                         <div class="dep-card-header">
-                          <div class="dep-status-icon" :class="[req.satisfied ? 'met' : 'missing', setupChecking ? 'checking' : '']" x-text="req.satisfied ? '\u2713' : '\u2717'"></div>
+                          <div class="dep-status-icon" :class="[(req.satisfied || (req.type === 'ApiKey' && apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== '')) ? 'met' : 'missing', setupChecking ? 'checking' : '']" x-text="(req.satisfied || (req.type === 'ApiKey' && apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== '')) ? '\u2713' : '\u2717'"></div>
                           <span class="dep-card-title" x-text="req.label"></span>
                           <template x-if="req.install && req.install.estimated_time">
                             <span class="dep-time-badge" x-text="req.install.estimated_time"></span>
@@ -2690,24 +2690,32 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                               </ol>
                             </template>
 
-                            <!-- API Key: numbered steps + signup link -->
+                            <!-- API Key: input field + numbered steps + signup link -->
                             <template x-if="req.type === 'ApiKey' && req.install">
                               <div>
-                                <template x-if="req.install.steps && req.install.steps.length">
-                                  <ol class="api-key-steps">
-                                    <template x-for="step in req.install.steps" :key="step">
-                                      <li x-text="step"></li>
-                                    </template>
-                                  </ol>
-                                </template>
-                                <template x-if="req.install.env_example">
-                                  <div class="install-block" style="margin-top:8px">
-                                    <div class="install-cmd">
-                                      <code x-text="req.install.env_example"></code>
-                                      <button class="copy-btn" :class="{ copied: clipboardMsg === req.install.env_example }" @click="copyToClipboard(req.install.env_example)" x-text="clipboardMsg === req.install.env_example ? 'Copied!' : 'Copy'"></button>
+                                <div style="margin-bottom:10px">
+                                  <label class="text-xs text-dim" style="display:block;margin-bottom:4px" x-text="'Paste your ' + req.label + ':'"></label>
+                                  <input type="password" class="form-input" x-model="apiKeyInputs[req.key]" :placeholder="req.label" style="width:100%;font-family:var(--font-mono);font-size:12px">
+                                  <div class="text-xs" style="margin-top:4px;color:var(--green)" x-show="apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== ''">&check; Token entered</div>
+                                </div>
+                                <details style="margin-bottom:8px">
+                                  <summary class="text-xs text-dim" style="cursor:pointer;user-select:none">Or set as environment variable</summary>
+                                  <template x-if="req.install.steps && req.install.steps.length">
+                                    <ol class="api-key-steps">
+                                      <template x-for="step in req.install.steps" :key="step">
+                                        <li x-text="step"></li>
+                                      </template>
+                                    </ol>
+                                  </template>
+                                  <template x-if="req.install.env_example">
+                                    <div class="install-block" style="margin-top:8px">
+                                      <div class="install-cmd">
+                                        <code x-text="req.install.env_example"></code>
+                                        <button class="copy-btn" :class="{ copied: clipboardMsg === req.install.env_example }" @click="copyToClipboard(req.install.env_example)" x-text="clipboardMsg === req.install.env_example ? 'Copied!' : 'Copy'"></button>
+                                      </div>
                                     </div>
-                                  </div>
-                                </template>
+                                  </template>
+                                </details>
                                 <div class="flex gap-2 mt-2">
                                   <template x-if="req.install.signup_url">
                                     <a :href="req.install.signup_url" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Get API Key &rarr;</a>

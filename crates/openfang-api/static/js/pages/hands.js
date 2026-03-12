@@ -36,6 +36,7 @@ function handsPage() {
     _clipboardTimer: null,
     detectedPlatform: 'linux',
     installPlatforms: {},
+    apiKeyInputs: {},
 
     async loadData() {
       this.loading = true;
@@ -110,11 +111,15 @@ function handsPage() {
         } else {
           this._detectClientPlatform();
         }
-        // Initialize per-requirement platform selections
+        // Initialize per-requirement platform selections and API key inputs
         this.installPlatforms = {};
+        this.apiKeyInputs = {};
         if (data.requirements) {
           for (var j = 0; j < data.requirements.length; j++) {
             this.installPlatforms[data.requirements[j].key] = this.detectedPlatform;
+            if (data.requirements[j].type === 'ApiKey') {
+              this.apiKeyInputs[data.requirements[j].key] = '';
+            }
           }
         }
         this.setupWizard = data;
@@ -283,7 +288,10 @@ function handsPage() {
       if (!this.setupWizard || !this.setupWizard.requirements) return 0;
       var count = 0;
       for (var i = 0; i < this.setupWizard.requirements.length; i++) {
-        if (this.setupWizard.requirements[i].satisfied) count++;
+        var req = this.setupWizard.requirements[i];
+        if (req.satisfied) { count++; continue; }
+        // Count API key reqs as met if user entered a value
+        if (req.type === 'ApiKey' && this.apiKeyInputs[req.key] && this.apiKeyInputs[req.key].trim() !== '') count++;
       }
       return count;
     },
@@ -294,7 +302,34 @@ function handsPage() {
     },
 
     get setupAllReqsMet() {
-      return this.setupReqsTotal > 0 && this.setupReqsMet === this.setupReqsTotal;
+      if (!this.setupWizard || !this.setupWizard.requirements) return false;
+      if (this.setupReqsTotal === 0) return false;
+      for (var i = 0; i < this.setupWizard.requirements.length; i++) {
+        var req = this.setupWizard.requirements[i];
+        if (req.satisfied) continue;
+        // API key reqs are satisfied if the user entered a value in the input
+        if (req.type === 'ApiKey' && this.apiKeyInputs[req.key] && this.apiKeyInputs[req.key].trim() !== '') continue;
+        return false;
+      }
+      return true;
+    },
+
+    getSettingKeyForReq(req) {
+      // Find the matching setting key for an API key requirement.
+      // Convention: setting key is the lowercase version of the requirement key.
+      if (!this.setupWizard || !this.setupWizard.settings) return null;
+      var lowerKey = req.key.toLowerCase();
+      for (var i = 0; i < this.setupWizard.settings.length; i++) {
+        if (this.setupWizard.settings[i].key === lowerKey) return lowerKey;
+      }
+      // Fallback: try matching by check_value lowercased
+      if (req.check_value) {
+        var lowerCheck = req.check_value.toLowerCase();
+        for (var j = 0; j < this.setupWizard.settings.length; j++) {
+          if (this.setupWizard.settings[j].key === lowerCheck) return lowerCheck;
+        }
+      }
+      return null;
     },
 
     get setupHasReqs() {
@@ -306,12 +341,29 @@ function handsPage() {
     },
 
     setupNextStep() {
+      // When leaving step 1, sync API key inputs into settings values
+      if (this.setupStep === 1) {
+        this._syncApiKeysToSettings();
+      }
       if (this.setupStep === 1 && this.setupHasSettings) {
         this.setupStep = 2;
       } else if (this.setupStep === 1) {
         this.setupStep = 3;
       } else if (this.setupStep === 2) {
         this.setupStep = 3;
+      }
+    },
+
+    _syncApiKeysToSettings() {
+      if (!this.setupWizard || !this.setupWizard.requirements) return;
+      for (var i = 0; i < this.setupWizard.requirements.length; i++) {
+        var req = this.setupWizard.requirements[i];
+        if (req.type === 'ApiKey' && this.apiKeyInputs[req.key] && this.apiKeyInputs[req.key].trim() !== '') {
+          var settingKey = this.getSettingKeyForReq(req);
+          if (settingKey) {
+            this.settingsValues[settingKey] = this.apiKeyInputs[req.key].trim();
+          }
+        }
       }
     },
 
@@ -332,11 +384,24 @@ function handsPage() {
       this.setupChecking = false;
       this.clipboardMsg = null;
       this.installPlatforms = {};
+      this.apiKeyInputs = {};
     },
 
     async launchHand() {
       if (!this.setupWizard) return;
       var handId = this.setupWizard.id;
+      // Sync API key inputs from step 1 into settings values
+      if (this.setupWizard.requirements) {
+        for (var i = 0; i < this.setupWizard.requirements.length; i++) {
+          var req = this.setupWizard.requirements[i];
+          if (req.type === 'ApiKey' && this.apiKeyInputs[req.key] && this.apiKeyInputs[req.key].trim() !== '') {
+            var settingKey = this.getSettingKeyForReq(req);
+            if (settingKey) {
+              this.settingsValues[settingKey] = this.apiKeyInputs[req.key].trim();
+            }
+          }
+        }
+      }
       var config = {};
       for (var key in this.settingsValues) {
         config[key] = this.settingsValues[key];
