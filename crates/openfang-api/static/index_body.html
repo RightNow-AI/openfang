@@ -5133,6 +5133,60 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               </div>
             </div>
 
+            <!-- Evaluation Suite -->
+            <div class="card" style="margin-bottom:20px">
+              <div class="card-header">Run Evaluation</div>
+              <div style="margin-top:12px">
+                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                  <select class="input" x-model="selectedSuite" style="width:180px">
+                    <option value="basic">Basic Suite</option>
+                    <option value="intermediate">Intermediate Suite</option>
+                    <option value="advanced">Advanced Suite</option>
+                    <option value="expert">Expert Suite</option>
+                  </select>
+                  <button class="btn btn-primary" @click="runEvaluation()" :disabled="evaluating">
+                    <span x-text="evaluating ? 'Running...' : 'Run Evaluation'"></span>
+                  </button>
+                </div>
+                <div x-show="evalError" class="error-state" style="margin-top:12px"><span class="error-icon">!</span><p x-text="evalError"></p></div>
+                <div x-show="evaluationReport" style="margin-top:16px">
+                  <div class="stats-row" style="margin-bottom:16px">
+                    <div class="stat-card">
+                      <div class="stat-value" x-text="evaluationReport?.passed || 0"></div>
+                      <div class="stat-label">Passed</div>
+                    </div>
+                    <div class="stat-card">
+                      <div class="stat-value" x-text="evaluationReport?.failed || 0"></div>
+                      <div class="stat-label">Failed</div>
+                    </div>
+                    <div class="stat-card">
+                      <div class="stat-value" x-text="(evaluationReport?.pass_rate * 100 || 0).toFixed(1) + '%'"></div>
+                      <div class="stat-label">Pass Rate</div>
+                    </div>
+                    <div class="stat-card">
+                      <div class="stat-value" x-text="(evaluationReport?.avg_score * 100 || 0).toFixed(1) + '%'"></div>
+                      <div class="stat-label">Avg Score</div>
+                    </div>
+                  </div>
+                  <div x-show="evaluationReport?.results?.length > 0" class="table-wrap">
+                    <table class="table">
+                      <thead><tr><th>Test</th><th>Status</th><th>Score</th><th>Duration</th></tr></thead>
+                      <tbody>
+                        <template x-for="result in evaluationReport.results" :key="result.test_case_id">
+                          <tr>
+                            <td x-text="result.test_case_name"></td>
+                            <td><span class="badge" :class="result.passed ? 'badge-success' : 'badge-error'" x-text="result.passed ? 'Passed' : 'Failed'"></span></td>
+                            <td x-text="(result.score * 100).toFixed(0) + '%'"></td>
+                            <td x-text="result.duration_ms + 'ms'"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <!-- Active Tasks -->
             <div class="card" style="margin-bottom:20px">
               <div class="card-header">Active Tasks</div>

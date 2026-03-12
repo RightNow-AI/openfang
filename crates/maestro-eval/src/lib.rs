@@ -10,6 +10,17 @@
 //!                ↓
 //!          ScoringEngine (ExactMatch | Contains | Semantic | LlmAsJudge)
 //! ```
+//!
+//! ## SWE Evaluation
+//!
+//! The `swe` module provides specialized test types for evaluating SWE (Software
+//! Engineering) agents:
+//!
+//! ```text
+//! SWETestSuite → SWETestRunner → SWESuiteReport
+//!      ↓
+//! SWETestCase (FileRead | FileWrite | CodeGeneration | BugFix | Refactoring)
+//! ```
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -20,6 +31,18 @@ use std::time::Instant;
 use thiserror::Error;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+// SWE evaluation module
+pub mod swe;
+pub mod swe_runner;
+pub mod swe_suites;
+
+pub use swe::{SWEDifficulty, SWESuiteReport, SWETestCase, SWETestResult, SWETestSuite, SWETaskType};
+pub use swe_runner::SWETestRunner;
+pub use swe_suites::{
+    create_advanced_suite, create_basic_suite, create_expert_suite, create_full_suite,
+    create_intermediate_suite, get_suite_by_name,
+};
 
 // ---------------------------------------------------------------------------
 // Error type

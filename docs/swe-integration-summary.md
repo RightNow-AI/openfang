@@ -12,7 +12,11 @@ Complete Software Engineering Agent framework with supervisor integration and A2
 - **SWE-Supervisor Integration**: Supervisor automatically routes detected SWE tasks to SWE agent  
 - **Explicit Delegation**: Manual `/api/supervisor/delegate` API route for direct task routing  
 - **A2A Handler Registry**: Direct in-process routing with handler registry bypassing transport serialization
-- **SWE Evaluation Suite**: Complete test suite assessing code generation, debugging, multi-file operations  
+- **SWE Evaluation Suite**: Complete test suite assessing code generation, debugging, multi-file operations
+  - Four difficulty-based test suites: basic (5), intermediate (5), advanced (4), expert (3)
+  - `SWETestRunner` validates file creation, content patterns, command outputs, and compilation
+  - Evaluation API: `GET /api/swe/evaluate?suite=basic|intermediate|advanced|expert`
+  - Dashboard UI: Suite selector, run button, results display with pass/fail/score/duration  
 - **Security**: Restricted file operations, sandboxed command execution, path traversal prevention
 
 ## Architecture
@@ -46,12 +50,14 @@ Instead of serializing through transport, SWE tasks use direct internal handler 
 ## API Surface
 
 ### SWE Agent API
-- `GET /api/swe/tasks` - List all SWE tasks with status and previews  
+- `GET /api/swe/tasks` - List all SWE tasks with status and previews
 - `POST /api/swe/tasks` - Create new SWE task with file/command actions
 - `GET /api/swe/tasks/{id}` - Get detailed task information
-- `DELETE /api/swe/tasks/{id}` - Cancel and delete task  
+- `DELETE /api/swe/tasks/{id}` - Cancel and delete task
 - `GET /api/swe/tasks/{id}/events` - Stream task execution events
 - `POST /api/swe/tasks/{id}/cancel` - Cancel a running task
+- `GET /api/swe/evaluate?suite=...` - Run evaluation suite (basic/intermediate/advanced/expert)
+- `GET /api/swe/evaluate/suites` - List available evaluation suites
 
 ### Supervisor Integration API  
 - `POST /api/supervisor/delegate` - Explicit task delegation to appropriate agent
@@ -87,6 +93,6 @@ Instead of serializing through transport, SWE tasks use direct internal handler 
 ## Next Phases
 
 - Phase 19: Advanced SWE task chaining and dependency management
-- Phase 20: SWE evaluation and performance benchmarking
-- Phase 21: Cross-language support and IDE integration  
+- Phase 20: SWE evaluation and performance benchmarking (evaluation suite complete, benchmarking pending)
+- Phase 21: Cross-language support and IDE integration
 - Phase 22: Collaborative software development workflows

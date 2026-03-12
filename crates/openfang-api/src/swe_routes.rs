@@ -7,13 +7,15 @@
 //! - Create and auto-start SWE tasks
 //! - List, get, and cancel tasks
 //! - In-memory storage with RwLock for thread safety
+//! - Evaluation suite for benchmarking SWE agent performance
 
 use crate::routes::AppState;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{DateTime, Utc};
+use maestro_eval::{get_suite_by_name, SWETestRunner};
 use maestro_swe::{SWEAgentAction, SWEAgentEvent, SWEAgentExecutor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -377,4 +379,92 @@ pub async fn get_task_events(
         }
         None => err_response(StatusCode::NOT_FOUND, "Task not found").into_response(),
     }
+}
+
+// ── Evaluation Endpoints ─────────────────────────────────────────────────────
+
+/// Query parameters for running evaluation.
+#[derive(Debug, Deserialize)]
+pub struct EvaluationQuery {
+    /// Name of the test suite to run: basic, intermediate, advanced, expert
+    pub suite: Option<String>,
+}
+
+/// GET /api/swe/evaluate
+///
+/// Run an evaluation suite against the SWE agent.
+///
+/// Query params:
+/// - `suite`: Test suite to run (basic, intermediate, advanced, expert). Default: basic
+///
+/// Returns a detailed report of test results.
+pub async fn run_evaluation(
+    State(_state): State<Arc<AppState>>,
+    Query(params): Query<EvaluationQuery>,
+) -> impl IntoResponse {
+    let suite_name = params.suite.as_deref().unwrap_or("basic");
+
+    // Get the requested test suite
+    let suite = match get_suite_by_name(suite_name) {
+        Some(s) => s,
+        None => {
+            return err_response(
+                StatusCode::BAD_REQUEST,
+                &format!(
+                    "Unknown suite '{}'. Available: basic, intermediate, advanced, expert",
+                    suite_name
+                ),
+            )
+            .into_response();
+        }
+    };
+
+    // Run the evaluation
+    let runner = SWETestRunner::new();
+    let report = runner.run_suite(&suite);
+
+    (StatusCode::OK, Json(report)).into_response()
+}
+
+/// GET /api/swe/evaluate/suites
+///
+/// List available evaluation suites.
+pub async fn list_evaluation_suites() -> impl IntoResponse {
+    let suites = vec![
+        SuiteInfo {
+            name: "basic".to_string(),
+            description: "Fundamental file operations and command execution tests".to_string(),
+            test_count: 5,
+            difficulty: "beginner".to_string(),
+        },
+        SuiteInfo {
+            name: "intermediate".to_string(),
+            description: "Multi-file operations, code generation, and error handling".to_string(),
+            test_count: 5,
+            difficulty: "intermediate".to_string(),
+        },
+        SuiteInfo {
+            name: "advanced".to_string(),
+            description: "Code generation, bug fixing, and refactoring challenges".to_string(),
+            test_count: 4,
+            difficulty: "advanced".to_string(),
+        },
+        SuiteInfo {
+            name: "expert".to_string(),
+            description: "Complex multi-step tasks requiring architectural decisions".to_string(),
+            test_count: 3,
+            difficulty: "expert".to_string(),
+        },
+    ];
+
+    (StatusCode::OK, Json(suites)).into_response()
+}
+
+/// Information about an evaluation suite.
+#[derive(Debug, Serialize)]
+pub struct SuiteInfo {
+    pub name: String,
+    pub description: String,
+    pub test_count: usize,
+    pub difficulty: String,
 }

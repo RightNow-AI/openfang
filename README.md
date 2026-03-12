@@ -155,6 +155,23 @@ The SWE Agent participates in Agent-to-Agent communication via the new A2A Regis
 - Event streaming and progress tracking
 - Collaborative task processing between multiple agents
 
+### Evaluation Suite
+The SWE Agent includes a comprehensive evaluation framework for testing agent capabilities:
+- **Four Difficulty Levels:** Beginner, Intermediate, Advanced, Expert
+- **Task Types:** FileRead, FileWrite, CommandExecution, CodeGeneration, BugFix, Refactoring, MultiStep
+- **Validation:** Automatic checking of file creation, content patterns, command outputs, and compilation
+- **Scoring:** 0.0-1.0 score based on validation checks, with 0.8 pass threshold
+
+```bash
+# Run the basic evaluation suite
+curl "http://localhost:4200/api/swe/evaluate?suite=basic"
+
+# List available evaluation suites
+curl http://localhost:4200/api/swe/evaluate/suites
+```
+
+The dashboard includes an evaluation UI for running suites and viewing results with pass/fail counts, scores, and detailed validation output.
+
 ## Architecture
 
 26+ Rust crates. 143,500+ lines of code. Modular kernel design.

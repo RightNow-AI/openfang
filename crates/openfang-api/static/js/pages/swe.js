@@ -6,6 +6,12 @@ function swePage() {
     submitting: false,
     submitError: null,
 
+    // Evaluation state
+    selectedSuite: 'basic',
+    evaluating: false,
+    evaluationReport: null,
+    evalError: null,
+
     get activeTasks() {
       return this.sweTasks.filter(t => t.status === 'running' || t.status === 'pending');
     },
@@ -23,7 +29,7 @@ function swePage() {
     },
 
     get historyTasks() {
-      return this.sweTasks.filter(t => 
+      return this.sweTasks.filter(t =>
         t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'
       );
     },
@@ -100,10 +106,32 @@ function swePage() {
     },
 
     async clearHistory() {
-      this.sweTasks = this.sweTasks.filter(t => 
+      this.sweTasks = this.sweTasks.filter(t =>
         t.status !== 'completed' && t.status !== 'failed' && t.status !== 'cancelled'
       );
       window.showToast?.('History cleared', 'info');
+    },
+
+    // Evaluation methods
+    async runEvaluation() {
+      if (this.evaluating) return;
+      this.evaluating = true;
+      this.evalError = null;
+      this.evaluationReport = null;
+      try {
+        const resp = await fetch(`/api/swe/evaluate?suite=${encodeURIComponent(this.selectedSuite)}`);
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.error || `HTTP ${resp.status}`);
+        }
+        this.evaluationReport = await resp.json();
+        window.showToast?.(`Evaluation complete: ${this.evaluationReport.passed}/${this.evaluationReport.total} passed`, 'success');
+      } catch (e) {
+        this.evalError = e.message;
+        window.showToast?.(`Evaluation failed: ${e.message}`, 'error');
+      } finally {
+        this.evaluating = false;
+      }
     },
 
     statusBadgeClass(status) {

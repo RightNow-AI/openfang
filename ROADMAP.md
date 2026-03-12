@@ -20,8 +20,8 @@ This document outlines the official, evolved roadmap for the Maestro-OpenFang pr
 | **18.1** | v0.3.40 | ✅ Done | **SWE Dashboard Tab:** "Software Engineer" dashboard with task status, progress tracking, and event streaming via Alpine.js components |
 | **18.2** | v0.3.40 | ✅ Done | **SWE API Endpoints:** `/api/swe/tasks`, `/api/swe/tasks/{id}`, `/api/swe/tasks/{id}/events`, etc. with full CRUD and event streaming using Server-Sent Events |
 | **18.3** | v0.3.40 | ✅ Done | **A2A-Supervisor Integration:** Auto-classification system routing SWE tasks from Supervisor to SWE agent via new `A2AHandlerRegistry` bypassing transport serializer |
-| **18.4** | v0.3.40 | ✅ Done | **Explicit Delegation:** `/api/supervisor/delegate` endpoint enabling manual SWE agent routing bypassing auto-classification |
-| **18.5** | v0.3.40 | ✅ Done | **Documentation & Release:** Completion of SWE documentation and preparation for release |
+| **18.4** | v0.3.40 | ✅ Done | **SWE Evaluation Suite:** Test types (`SWETestCase`, `SWETaskType`, `SWEDifficulty`), `SWETestRunner`, four difficulty-based test suites (basic/intermediate/advanced/expert), and `/api/swe/evaluate` endpoints |
+| **18.5** | v0.3.40 | ✅ Done | **Documentation & Release:** README, CHANGELOG, and ROADMAP updates for Phase 18 completion |
 
 ---
 

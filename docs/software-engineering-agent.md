@@ -46,8 +46,47 @@ The SWE Agent integrates with the OpenFang A2A (Agent-to-Agent) system:
 - Full MAESTRO pipeline orchestration continues for non-SWE tasks
 
 ### Direct Delegation
-- Use `/api/supervisor/delegate` to explicitly route tasks to the SWE Agent 
+- Use `/api/supervisor/delegate` to explicitly route tasks to the SWE Agent
 - The API endpoint bypasses automatic detection in favor of intentional SWE processing
+
+## Evaluation Suite
+
+The SWE Agent includes a comprehensive evaluation framework for testing agent capabilities across difficulty levels.
+
+### Test Types
+- **FileRead**: Read file contents and validate data extraction
+- **FileWrite**: Create or modify files with content validation
+- **CommandExecution**: Execute shell commands and verify outputs
+- **CodeGeneration**: Generate code from natural language descriptions
+- **BugFix**: Identify and fix bugs in existing code
+- **Refactoring**: Restructure code while preserving behavior
+- **MultiStep**: Complex workflows involving multiple operations
+
+### Difficulty Levels
+| Level | Tests | Focus |
+|-------|-------|-------|
+| Beginner | 5 | Basic file read/write, simple commands |
+| Intermediate | 5 | Multi-file operations, code generation basics |
+| Advanced | 4 | Code generation, bug fixing, refactoring |
+| Expert | 3 | Project setup, trait implementation, lifetime fixes |
+
+### Evaluation API
+```bash
+# Run a specific evaluation suite
+curl "http://localhost:4200/api/swe/evaluate?suite=basic"
+
+# List available evaluation suites
+curl http://localhost:4200/api/swe/evaluate/suites
+```
+
+### Validation
+Each test validates:
+- Files created/modified as expected
+- Content patterns match requirements
+- Command outputs contain expected data
+- Code compiles (for code generation tasks)
+
+Scores range from 0.0-1.0, with 0.8 required to pass.
 
 ## Task Life Cycle
 

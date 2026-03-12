@@ -31,13 +31,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SupervisorEngine orchestrate flow now checks `self.classify_task(task, capabilities)` before MAESTRO pipeline for SWE detection
 - `a2a_engine: None` field supplemented with new `a2a_handler_registry: None` field in kernel
 
-### Added  
-- **SWE evaluation framework:** Test suites covering code generation, file operations, shell command execution, debugging and refactoring workflows
+### Added
+- **SWE Evaluation Suite (Phase 18.4)**
+  - **SWE Test Types:** New `SWETestCase`, `SWETaskType`, `SWEDifficulty`, `SWETestInput`, `SWETestExpectedOutput`, `SWETestResult`, `SWETestSuite`, `SWESuiteReport` types in `maestro-eval/src/swe.rs`
+  - **SWE Test Runner:** `SWETestRunner` in `maestro-eval/src/swe_runner.rs` executes test cases using `SWEAgentExecutor` with validation logic for file creation, content patterns, command outputs, and compilation checks
+  - **Pre-defined Test Suites:** Four difficulty-based suites in `maestro-eval/src/swe_suites.rs`:
+    - `basic` (5 tests): File read/write, command execution
+    - `intermediate` (5 tests): Multi-file operations, code generation basics
+    - `advanced` (4 tests): Code generation, bug fixing, refactoring
+    - `expert` (3 tests): Project setup, trait implementation, lifetime fixes
+  - **Evaluation API Endpoints:** New `GET /api/swe/evaluate?suite=basic|intermediate|advanced|expert` and `GET /api/swe/evaluate/suites` endpoints
+  - **Dashboard Evaluation UI:** Suite selector dropdown, run button with loading state, results display (passed/failed/score/duration), and test results table in SWE page
+  - **Validation-based Scoring:** Score calculated from passed validation checks (0.0-1.0), with 0.8 threshold for pass
+  - **Setup/Cleanup Commands:** Each test case can define shell commands for environment setup/teardown
 - **Integration tests:** SWE ↔ Supervisor Engine communication, A2A message passing with event streaming
-- **Documentation:** SWE usage guide, API reference for SWE task formats, evaluation best practices
-- **Dashboard UI:** SWE task progress with detailed event logs and action-by-action reporting
-
-### Added  
 - **Security:** Proper sandboxing for ExecuteCommand actions, read/write file path sanitization, command execution whitelisting
 - **Monitoring:** SWE task metrics in observability stack, cost accounting for file/command operations
 

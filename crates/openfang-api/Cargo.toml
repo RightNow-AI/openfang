@@ -19,6 +19,7 @@ openfang-migrate = { path = "../openfang-migrate" }
 maestro-falkor-analytics = { path = "../maestro-falkor-analytics" }
 maestro-algorithm = { path = "../maestro-algorithm" }
 maestro-swe = { path = "../maestro-swe" }
+maestro-eval = { path = "../maestro-eval" }
 dashmap = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

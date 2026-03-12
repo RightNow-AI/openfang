@@ -796,6 +796,15 @@ pub async fn build_router(
             "/api/swe/tasks/{id}/events",
             axum::routing::get(crate::swe_routes::get_task_events),
         )
+        // SWE Evaluation routes
+        .route(
+            "/api/swe/evaluate",
+            axum::routing::get(crate::swe_routes::run_evaluation),
+        )
+        .route(
+            "/api/swe/evaluate/suites",
+            axum::routing::get(crate::swe_routes::list_evaluation_suites),
+        )
         // MCP HTTP endpoint (exposes MCP protocol over HTTP)
         .route("/mcp", axum::routing::post(routes::mcp_http))
         // OpenAI-compatible API
