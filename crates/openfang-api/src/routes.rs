@@ -6636,11 +6636,7 @@ pub async fn set_model(
             )
         }
     };
-    let explicit_provider = body["provider"].as_str();
-    match state
-        .kernel
-        .set_agent_model(agent_id, model, explicit_provider)
-    {
+    match state.kernel.set_agent_model(agent_id, model, None) {
         Ok(()) => {
             // Return the resolved model+provider so frontend stays in sync.
             // The model name may have been normalized (provider prefix stripped),
