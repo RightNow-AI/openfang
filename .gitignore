@@ -46,3 +46,10 @@ Thumbs.db
 
 # Local staging area
 .maestro-staging/
+
+# Terminal task instructions
+terminal_tasks/
+
+# Handoff documents and plans
+handoff_docs/
+.kilo/plans/

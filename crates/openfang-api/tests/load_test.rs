@@ -62,6 +62,7 @@ async fn start_test_server() -> TestServer {
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
+        swe_tasks: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     let app = Router::new()

@@ -104,6 +104,22 @@
         </template>
       </div>
 
+      <!-- Software Engineer -->
+      <div class="nav-section" x-data="{ collapsed: false }" aria-label="Software Engineer">
+        <div class="nav-section-title" @click="collapsed = !collapsed">
+          <span class="nav-label">Software Engineer</span>
+          <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
+        </div>
+        <template x-if="!collapsed">
+          <div x-transition>
+            <a class="nav-item" :class="{ active: page === 'swe' }" @click="navigate('swe')" :aria-current="page === 'swe' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></span>
+              <span class="nav-label">Tasks</span>
+            </a>
+          </div>
+        </template>
+      </div>
+
       <!-- Automation -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Automation">
         <div class="nav-section-title" @click="collapsed = !collapsed">
@@ -5073,6 +5089,100 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                         <td style="font-size:12px" x-text="entry.target"></td>
                         <td style="font-size:12px" x-text="entry.duration_ms ? entry.duration_ms + 'ms' : '-'"></td>
                         <td><span class="badge" :class="entry.status === 'ok' ? 'badge-success' : 'badge-error'" x-text="entry.status"></span></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ─── Software Engineer page ─── -->
+    <template x-if="page === 'swe'">
+      <div x-data="swePage()">
+        <div class="page-header">
+          <h2>Software Engineer</h2>
+          <div class="page-header-actions">
+            <button class="btn btn-ghost btn-sm" @click="fetchSWETasks()">&#8635; Refresh</button>
+          </div>
+        </div>
+        <div class="page-body" x-init="fetchSWETasks()">
+          <div x-show="loading" class="loading-state"><div class="spinner"></div><span>Loading tasks...</span></div>
+          <div x-show="!loading">
+            <!-- Stats summary -->
+            <div class="stats-row" style="margin-bottom:20px">
+              <div class="stat-card"><div class="stat-value" x-text="activeTasks.length"></div><div class="stat-label">Active Tasks</div></div>
+              <div class="stat-card"><div class="stat-value" x-text="queuedTasks.length"></div><div class="stat-label">Queued</div></div>
+              <div class="stat-card"><div class="stat-value" x-text="completedTasks.length"></div><div class="stat-label">Completed</div></div>
+              <div class="stat-card"><div class="stat-value" x-text="failedTasks.length"></div><div class="stat-label">Failed</div></div>
+            </div>
+
+            <!-- New Task Input -->
+            <div class="card" style="margin-bottom:20px">
+              <div class="card-header">New Task</div>
+              <div style="margin-top:12px">
+                <textarea class="input" x-model="newTask" placeholder="Describe a coding task (e.g., 'Add error handling to the authentication module')" style="width:100%;min-height:80px;resize:vertical;font-family:inherit" @keydown.enter.ctrl="submitTask()"></textarea>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+                  <span style="font-size:12px;color:var(--text-dim)">Ctrl+Enter to submit</span>
+                  <button class="btn btn-primary" :disabled="!newTask.trim() || submitting" @click="submitTask()" x-text="submitting ? 'Creating...' : 'Create Task'"></button>
+                </div>
+                <div x-show="submitError" class="error-state" style="margin-top:8px"><span class="error-icon">!</span><p x-text="submitError"></p></div>
+              </div>
+            </div>
+
+            <!-- Active Tasks -->
+            <div class="card" style="margin-bottom:20px">
+              <div class="card-header">Active Tasks</div>
+              <div x-show="activeTasks.length === 0" class="empty-state" style="padding:24px"><p>No active tasks. Create a new task above to get started.</p></div>
+              <div class="table-wrap" x-show="activeTasks.length > 0">
+                <table class="table">
+                  <thead><tr><th>Task</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+                  <tbody>
+                    <template x-for="task in activeTasks" :key="task.id">
+                      <tr>
+                        <td style="max-width:400px">
+                          <div style="font-weight:500" x-text="task.title || task.description?.substring(0,80) || 'Untitled'"></div>
+                          <div x-show="task.description" style="font-size:12px;color:var(--text-dim);margin-top:4px" x-text="task.description?.substring(0,120) + (task.description?.length > 120 ? '...' : '')"></div>
+                        </td>
+                        <td><span class="badge" :class="statusBadgeClass(task.status)" x-text="task.status"></span></td>
+                        <td style="font-size:12px" x-text="formatTime(task.created_at)"></td>
+                        <td>
+                          <button class="btn btn-ghost btn-sm" @click="cancelTask(task.id)" x-show="task.status === 'running'">Cancel</button>
+                          <button class="btn btn-ghost btn-sm" @click="viewTask(task.id)">View</button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Task History -->
+            <div class="card">
+              <div class="card-header" style="display:flex;justify-content:space-between">
+                <span>Task History</span>
+                <button class="btn btn-ghost btn-sm" @click="clearHistory()" x-show="historyTasks.length > 0">Clear History</button>
+              </div>
+              <div x-show="historyTasks.length === 0" class="empty-state" style="padding:24px"><p>No task history yet.</p></div>
+              <div class="table-wrap" x-show="historyTasks.length > 0">
+                <table class="table">
+                  <thead><tr><th>Task</th><th>Status</th><th>Created</th><th>Completed</th><th>Actions</th></tr></thead>
+                  <tbody>
+                    <template x-for="task in historyTasks" :key="task.id">
+                      <tr>
+                        <td style="max-width:300px">
+                          <div style="font-weight:500" x-text="task.title || task.description?.substring(0,60) || 'Untitled'"></div>
+                        </td>
+                        <td><span class="badge" :class="statusBadgeClass(task.status)" x-text="task.status"></span></td>
+                        <td style="font-size:12px" x-text="formatTime(task.created_at)"></td>
+                        <td style="font-size:12px" x-text="task.completed_at ? formatTime(task.completed_at) : '-'"></td>
+                        <td>
+                          <button class="btn btn-ghost btn-sm" @click="viewTask(task.id)">View</button>
+                          <button class="btn btn-ghost btn-sm" @click="retryTask(task.id)" x-show="task.status === 'failed'">Retry</button>
+                        </td>
                       </tr>
                     </template>
                   </tbody>

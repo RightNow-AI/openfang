@@ -81,6 +81,7 @@ async fn start_test_server_with_provider(
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
+        swe_tasks: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     let app = Router::new()
@@ -119,14 +120,6 @@ async fn start_test_server_with_provider(
             "/api/workflows/{id}/run",
             axum::routing::post(routes::run_workflow),
         )
-        .route(
-            "/api/workflows/{id}/runs",
-            axum::routing::get(routes::list_workflow_runs),
-        )
-        .route("/api/shutdown", axum::routing::post(routes::shutdown))
-        .layer(axum::middleware::from_fn(middleware::request_logging))
-        .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -709,6 +702,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
+        swe_tasks: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     let api_key_state = state.kernel.config.api_key.clone();

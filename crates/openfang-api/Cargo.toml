@@ -18,6 +18,7 @@ openfang-extensions = { path = "../openfang-extensions" }
 openfang-migrate = { path = "../openfang-migrate" }
 maestro-falkor-analytics = { path = "../maestro-falkor-analytics" }
 maestro-algorithm = { path = "../maestro-algorithm" }
+maestro-swe = { path = "../maestro-swe" }
 dashmap = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

@@ -6137,6 +6137,7 @@ dependencies = [
  "governor",
  "maestro-algorithm",
  "maestro-falkor-analytics",
+ "maestro-swe",
  "openfang-channels",
  "openfang-extensions",
  "openfang-hands",

@@ -50,6 +50,7 @@ pub async fn build_router(
         channels_config: tokio::sync::RwLock::new(channels_config),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
+        swe_tasks: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     // CORS: allow localhost origins by default. If API key is set, the API
@@ -773,6 +774,23 @@ pub async fn build_router(
             "/api/supervisor/config",
             axum::routing::get(crate::supervisor_routes::get_config)
                 .put(crate::supervisor_routes::update_config),
+        )
+        // ── SWE Agent task routes ──
+        .route(
+            "/api/swe/tasks",
+            axum::routing::get(crate::swe_routes::list_tasks).post(crate::swe_routes::create_task),
+        )
+        .route(
+            "/api/swe/tasks/{id}",
+            axum::routing::get(crate::swe_routes::get_task).delete(crate::swe_routes::delete_task),
+        )
+        .route(
+            "/api/swe/tasks/{id}/cancel",
+            axum::routing::post(crate::swe_routes::cancel_task),
+        )
+        .route(
+            "/api/swe/tasks/{id}/events",
+            axum::routing::get(crate::swe_routes::get_task_events),
         )
         // MCP HTTP endpoint (exposes MCP protocol over HTTP)
         .route("/mcp", axum::routing::post(routes::mcp_http))

@@ -11,6 +11,7 @@ pub mod rate_limiter;
 pub mod routes;
 pub mod server;
 pub mod supervisor_routes;
+pub mod swe_routes;
 pub mod stream_chunker;
 pub mod stream_dedup;
 pub mod types;

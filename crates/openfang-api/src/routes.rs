@@ -1,5 +1,6 @@
 //! Route handlers for the OpenFang API.
 
+use crate::swe_routes::SWETaskStore;
 use crate::types::*;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -36,6 +37,8 @@ pub struct AppState {
     /// ClawHub response cache — prevents 429 rate limiting on rapid dashboard refreshes.
     /// Maps cache key → (fetched_at, response_json) with 120s TTL.
     pub clawhub_cache: DashMap<String, (Instant, serde_json::Value)>,
+    /// SWE agent task store — in-memory storage for SWE tasks.
+    pub swe_tasks: SWETaskStore,
 }
 
 /// POST /api/agents — Spawn a new agent.
