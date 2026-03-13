@@ -1124,6 +1124,8 @@ pub async fn get_agent(
             "tool_allowlist": entry.manifest.tool_allowlist,
             "tool_blocklist": entry.manifest.tool_blocklist,
             "workspace": entry.manifest.workspace,
+            "vibe": entry.identity.vibe,
+            "archetype": entry.identity.archetype,
         })),
     )
 }
