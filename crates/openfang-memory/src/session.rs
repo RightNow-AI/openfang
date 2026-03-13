@@ -557,10 +557,10 @@ impl SessionStore {
                 MessageContent::Blocks(blocks) => {
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text } => {
+                            ContentBlock::Text { text, .. } => {
                                 text_parts.push(text.clone());
                             }
-                            ContentBlock::ToolUse { id, name, input } => {
+                            ContentBlock::ToolUse { id, name, input, .. } => {
                                 tool_parts.push(serde_json::json!({
                                     "type": "tool_use",
                                     "id": id,
@@ -587,7 +587,7 @@ impl SessionStore {
                             ContentBlock::Thinking { thinking } => {
                                 text_parts.push(format!(
                                     "[thinking: {}]",
-                                    &thinking[..thinking.len().min(200)]
+                                    openfang_types::truncate_str(thinking, 200)
                                 ));
                             }
                             ContentBlock::Unknown => {}

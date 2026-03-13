@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.12"
+version = "0.4.0"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
@@ -49,6 +49,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 
 # IDs
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -61,7 +62,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 
 # HTTP client (for LLM drivers)
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "gzip", "deflate", "brotli"] }
 
 # Async trait
 async-trait = "0.1"
@@ -119,8 +120,14 @@ colored = "3"
 aes-gcm = "0.10"
 argon2 = "0.5"
 
+# HTML entity decoding
+html-escape = "0.2"
+
 # Lightweight regex
 regex-lite = "0.1"
+
+# Socket options (SO_REUSEADDR)
+socket2 = "0.5"
 
 # Zip archive extraction
 zip = { version = "2", default-features = false, features = ["deflate"] }

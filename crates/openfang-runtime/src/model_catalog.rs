@@ -1,16 +1,18 @@
 //! Model catalog — registry of known models with metadata, pricing, and auth detection.
 //!
-//! Provides a comprehensive catalog of 130+ builtin models across 27 providers,
+//! Provides a comprehensive catalog of 130+ builtin models across 28 providers,
 //! with alias resolution, auth status detection, and pricing lookups.
 
 use openfang_types::model_catalog::{
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
-    BEDROCK_BASE_URL, CEREBRAS_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL,
-    GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
-    LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
-    XAI_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL,
+    FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
+    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
+    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
+    OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
+    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
+    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
+    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -25,8 +27,16 @@ impl ModelCatalog {
     /// Create a new catalog populated with builtin models and providers.
     pub fn new() -> Self {
         let models = builtin_models();
-        let aliases = builtin_aliases();
+        let mut aliases = builtin_aliases();
         let mut providers = builtin_providers();
+
+        // Auto-register aliases defined on model entries
+        for model in &models {
+            for alias in &model.aliases {
+                let lower = alias.to_lowercase();
+                aliases.entry(lower).or_insert_with(|| model.id.clone());
+            }
+        }
 
         // Set model counts on providers
         for provider in &mut providers {
@@ -46,6 +56,27 @@ impl ModelCatalog {
     /// Only checks presence — never reads or stores the actual secret.
     pub fn detect_auth(&mut self) {
         for provider in &mut self.providers {
+            // Claude Code is special: no API key needed, but we probe for CLI
+            // installation so the dashboard shows "Configured" vs "Not Installed".
+            if provider.id == "claude-code" {
+                provider.auth_status =
+                    if crate::drivers::claude_code::claude_code_available() {
+                        AuthStatus::Configured
+                    } else {
+                        AuthStatus::Missing
+                    };
+                continue;
+            }
+            if provider.id == "qwen-code" {
+                provider.auth_status =
+                    if crate::drivers::qwen_code::qwen_code_available() {
+                        AuthStatus::Configured
+                    } else {
+                        AuthStatus::Missing
+                    };
+                continue;
+            }
+
             if !provider.key_required {
                 provider.auth_status = AuthStatus::NotRequired;
                 continue;
@@ -61,7 +92,7 @@ impl ModelCatalog {
                     std::env::var("OPENAI_API_KEY").is_ok()
                         || read_codex_credential().is_some()
                 }
-                "claude-code" => crate::drivers::claude_code::claude_code_available(),
+                // claude-code is handled above (before key_required check)
                 _ => false,
             };
 
@@ -161,17 +192,39 @@ impl ModelCatalog {
             p.base_url = url.to_string();
             true
         } else {
-            false
+            // Custom provider — add a new entry so it appears in /api/providers
+            let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
+            self.providers.push(ProviderInfo {
+                id: provider.to_string(),
+                display_name: provider.to_string(),
+                api_key_env: env_var,
+                base_url: url.to_string(),
+                key_required: true,
+                auth_status: AuthStatus::Missing,
+                model_count: 0,
+            });
+            // Re-detect auth for the newly added provider
+            self.detect_auth();
+            true
         }
     }
 
     /// Apply a batch of provider URL overrides from config.
     ///
     /// Each entry maps a provider ID to a custom base URL.
-    /// Unknown providers are silently skipped.
+    /// Unknown providers are automatically added as custom OpenAI-compatible entries.
+    /// Providers with explicit URL overrides are marked as configured since
+    /// the user intentionally set them up (e.g. local proxies, custom endpoints).
     pub fn apply_url_overrides(&mut self, overrides: &HashMap<String, String>) {
         for (provider, url) in overrides {
-            self.set_provider_url(provider, url);
+            if self.set_provider_url(provider, url) {
+                // Mark as configured so models from this provider show as available
+                if let Some(p) = self.providers.iter_mut().find(|p| p.id == *provider) {
+                    if p.auth_status == AuthStatus::Missing {
+                        p.auth_status = AuthStatus::Configured;
+                    }
+                }
+            }
         }
     }
 
@@ -230,11 +283,16 @@ impl ModelCatalog {
 
     /// Add a custom model at runtime.
     ///
-    /// Returns `true` if the model was added, `false` if a model with that ID
-    /// already exists (case-insensitive).
+    /// Returns `true` if the model was added, `false` if a model with the same
+    /// ID **and** provider already exists (case-insensitive).
     pub fn add_custom_model(&mut self, entry: ModelCatalogEntry) -> bool {
-        let lower = entry.id.to_lowercase();
-        if self.models.iter().any(|m| m.id.to_lowercase() == lower) {
+        let lower_id = entry.id.to_lowercase();
+        let lower_provider = entry.provider.to_lowercase();
+        if self
+            .models
+            .iter()
+            .any(|m| m.id.to_lowercase() == lower_id && m.provider.to_lowercase() == lower_provider)
+        {
             return false;
         }
         let provider = entry.provider.clone();
@@ -463,6 +521,15 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::NotRequired,
             model_count: 0,
         },
+        ProviderInfo {
+            id: "lemonade".into(),
+            display_name: "Lemonade".into(),
+            api_key_env: "LEMONADE_API_KEY".into(),
+            base_url: LEMONADE_BASE_URL.into(),
+            key_required: false,
+            auth_status: AuthStatus::NotRequired,
+            model_count: 0,
+        },
         // ── New providers (8) ──────────────────────────────────────
         ProviderInfo {
             id: "perplexity".into(),
@@ -546,6 +613,26 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::Missing,
             model_count: 0,
         },
+        // ── Chutes.ai ───────────────────────────────────────────────
+        ProviderInfo {
+            id: "chutes".into(),
+            display_name: "Chutes.ai".into(),
+            api_key_env: "CHUTES_API_KEY".into(),
+            base_url: CHUTES_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        // ── Venice.ai ────────────────────────────────────────────────
+        ProviderInfo {
+            id: "venice".into(),
+            display_name: "Venice.ai".into(),
+            api_key_env: "VENICE_API_KEY".into(),
+            base_url: VENICE_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
         // ── Chinese providers (5) ────────────────────────────────────
         ProviderInfo {
             id: "qwen".into(),
@@ -584,10 +671,37 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             model_count: 0,
         },
         ProviderInfo {
+            id: "zai".into(),
+            display_name: "Z.AI".into(),
+            api_key_env: "ZHIPU_API_KEY".into(),
+            base_url: ZAI_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
+            id: "zai_coding".into(),
+            display_name: "Z.AI Coding".into(),
+            api_key_env: "ZHIPU_API_KEY".into(),
+            base_url: ZAI_CODING_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
             id: "moonshot".into(),
             display_name: "Moonshot (Kimi)".into(),
             api_key_env: "MOONSHOT_API_KEY".into(),
             base_url: MOONSHOT_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
+            id: "kimi_coding".into(),
+            display_name: "Kimi for Code".into(),
+            api_key_env: "KIMI_API_KEY".into(),
+            base_url: KIMI_CODING_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -607,6 +721,15 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             display_name: "Volcano Engine (Doubao)".into(),
             api_key_env: "VOLCENGINE_API_KEY".into(),
             base_url: VOLCENGINE_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
+            id: "volcengine_coding".into(),
+            display_name: "Volcano Engine Coding Plan".into(),
+            api_key_env: "VOLCENGINE_API_KEY".into(),
+            base_url: VOLCENGINE_CODING_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -635,6 +758,16 @@ fn builtin_providers() -> Vec<ProviderInfo> {
         ProviderInfo {
             id: "claude-code".into(),
             display_name: "Claude Code".into(),
+            api_key_env: String::new(),
+            base_url: String::new(),
+            key_required: false,
+            auth_status: AuthStatus::NotRequired,
+            model_count: 0,
+        },
+        // ── Qwen Code CLI ──────────────────────────────────────────
+        ProviderInfo {
+            id: "qwen-code".into(),
+            display_name: "Qwen Code".into(),
             api_key_env: String::new(),
             base_url: String::new(),
             key_required: false,
@@ -693,22 +826,32 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("copilot-gpt4", "copilot/gpt-4"),
         // Chinese model aliases
         ("qwen", "qwen-plus"),
-        ("glm", "glm-4-plus"),
+        ("glm", "glm-5-20250605"),
         ("ernie", "ernie-4.5-8k"),
-        ("kimi", "moonshot-v1-128k"),
+        ("kimi", "kimi-k2"),
+        ("moonshot", "moonshot-v1-128k"),
         ("minimax", "MiniMax-M2.5"),
         ("minimax-m2.5", "MiniMax-M2.5"),
+        ("minimax-m2.5-highspeed", "MiniMax-M2.5-highspeed"),
+        ("minimax-highspeed", "MiniMax-M2.5-highspeed"),
         ("minimax-m2.1", "MiniMax-M2.1"),
         ("codegeex", "codegeex-4"),
         // Codex aliases
         ("codex", "codex/gpt-4.1"),
         ("codex-4.1", "codex/gpt-4.1"),
         ("codex-o4", "codex/o4-mini"),
+        // Venice aliases
+        ("venice", "venice-uncensored"),
         // Claude Code aliases
         ("claude-code", "claude-code/sonnet"),
         ("claude-code-opus", "claude-code/opus"),
         ("claude-code-sonnet", "claude-code/sonnet"),
         ("claude-code-haiku", "claude-code/haiku"),
+        // Qwen Code aliases
+        ("qwen-code", "qwen-code/qwen3-coder"),
+        ("qwen-coder", "qwen-code/qwen3-coder"),
+        ("qwen-coder-plus", "qwen-code/qwen-coder-plus"),
+        ("qwq", "qwen-code/qwq-32b"),
     ];
     pairs
         .into_iter()
@@ -1392,47 +1535,19 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
-        // OpenRouter (11)
+        // OpenRouter (10) — pass-through models using real upstream IDs
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
-            id: "openrouter/auto".into(),
-            display_name: "OpenRouter Auto".into(),
+            id: "openrouter/google/gemini-2.5-flash".into(),
+            display_name: "Gemini 2.5 Flash (OpenRouter)".into(),
             provider: "openrouter".into(),
             tier: ModelTier::Smart,
-            context_window: 200_000,
-            max_output_tokens: 32_000,
-            input_cost_per_m: 1.0,
-            output_cost_per_m: 3.0,
-            supports_tools: true,
-            supports_vision: true,
-            supports_streaming: true,
-            aliases: vec![],
-        },
-        ModelCatalogEntry {
-            id: "openrouter/optimus".into(),
-            display_name: "OpenRouter Optimus".into(),
-            provider: "openrouter".into(),
-            tier: ModelTier::Balanced,
-            context_window: 200_000,
-            max_output_tokens: 32_000,
-            input_cost_per_m: 0.50,
-            output_cost_per_m: 1.50,
-            supports_tools: true,
-            supports_vision: false,
-            supports_streaming: true,
-            aliases: vec![],
-        },
-        ModelCatalogEntry {
-            id: "openrouter/nitro".into(),
-            display_name: "OpenRouter Nitro".into(),
-            provider: "openrouter".into(),
-            tier: ModelTier::Fast,
-            context_window: 128_000,
-            max_output_tokens: 16_000,
-            input_cost_per_m: 0.20,
+            context_window: 1_048_576,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.15,
             output_cost_per_m: 0.60,
             supports_tools: true,
-            supports_vision: false,
+            supports_vision: true,
             supports_streaming: true,
             aliases: vec![],
         },
@@ -1451,50 +1566,92 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "openrouter/google/gemini-2.5-flash".into(),
-            display_name: "Gemini 2.5 Flash (OpenRouter)".into(),
+            id: "openrouter/openai/gpt-4o".into(),
+            display_name: "GPT-4o (OpenRouter)".into(),
             provider: "openrouter".into(),
             tier: ModelTier::Smart,
-            context_window: 1_048_576,
-            max_output_tokens: 65_536,
-            input_cost_per_m: 0.15,
-            output_cost_per_m: 0.60,
+            context_window: 128_000,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 2.5,
+            output_cost_per_m: 10.0,
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
             aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "openrouter/meta-llama/llama-3.3-70b-instruct".into(),
-            display_name: "Llama 3.3 70B (OpenRouter, free)".into(),
+            id: "openrouter/deepseek/deepseek-chat".into(),
+            display_name: "DeepSeek V3 (OpenRouter)".into(),
             provider: "openrouter".into(),
-            tier: ModelTier::Balanced,
+            tier: ModelTier::Smart,
             context_window: 128_000,
             max_output_tokens: 32_768,
-            input_cost_per_m: 0.0,
-            output_cost_per_m: 0.0,
+            input_cost_per_m: 0.14,
+            output_cost_per_m: 0.28,
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
             aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "openrouter/mistralai/mistral-7b-instruct".into(),
-            display_name: "Mistral 7B (OpenRouter, free)".into(),
+            id: "openrouter/meta-llama/llama-3.3-70b-instruct".into(),
+            display_name: "Llama 3.3 70B (OpenRouter)".into(),
             provider: "openrouter".into(),
-            tier: ModelTier::Fast,
-            context_window: 32_768,
+            tier: ModelTier::Balanced,
+            context_window: 128_000,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.39,
+            output_cost_per_m: 0.39,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "openrouter/qwen/qwen-2.5-72b-instruct".into(),
+            display_name: "Qwen 2.5 72B (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Balanced,
+            context_window: 128_000,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.36,
+            output_cost_per_m: 0.36,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "openrouter/google/gemini-2.5-pro".into(),
+            display_name: "Gemini 2.5 Pro (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_048_576,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 1.25,
+            output_cost_per_m: 10.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "openrouter/mistralai/mistral-large-latest".into(),
+            display_name: "Mistral Large (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
             max_output_tokens: 8_192,
-            input_cost_per_m: 0.0,
-            output_cost_per_m: 0.0,
-            supports_tools: false,
+            input_cost_per_m: 2.0,
+            output_cost_per_m: 6.0,
+            supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
             aliases: vec![],
         },
         ModelCatalogEntry {
             id: "openrouter/google/gemma-2-9b-it".into(),
-            display_name: "Gemma 2 9B (OpenRouter, free)".into(),
+            display_name: "Gemma 2 9B (OpenRouter)".into(),
             provider: "openrouter".into(),
             tier: ModelTier::Fast,
             context_window: 8_192,
@@ -1507,12 +1664,41 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "openrouter/qwen/qwen-2.5-72b-instruct".into(),
-            display_name: "Qwen 2.5 72B (OpenRouter, free)".into(),
+            id: "openrouter/deepseek/deepseek-r1".into(),
+            display_name: "DeepSeek R1 (OpenRouter)".into(),
             provider: "openrouter".into(),
-            tier: ModelTier::Balanced,
+            tier: ModelTier::Frontier,
             context_window: 128_000,
             max_output_tokens: 32_768,
+            input_cost_per_m: 0.55,
+            output_cost_per_m: 2.19,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // OpenRouter free models
+        ModelCatalogEntry {
+            id: "openrouter/google/gemma-2-9b-it:free".into(),
+            display_name: "Gemma 2 9B Free (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Fast,
+            context_window: 8_192,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "openrouter/meta-llama/llama-3.1-8b-instruct:free".into(),
+            display_name: "Llama 3.1 8B Free (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Fast,
+            context_window: 131_072,
+            max_output_tokens: 4_096,
             input_cost_per_m: 0.0,
             output_cost_per_m: 0.0,
             supports_tools: true,
@@ -1521,18 +1707,74 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "openrouter/deepseek/deepseek-chat-v3-0324".into(),
-            display_name: "DeepSeek V3 0324 (OpenRouter)".into(),
+            id: "openrouter/qwen/qwen-2.5-7b-instruct:free".into(),
+            display_name: "Qwen 2.5 7B Free (OpenRouter)".into(),
             provider: "openrouter".into(),
-            tier: ModelTier::Smart,
-            context_window: 128_000,
-            max_output_tokens: 32_768,
-            input_cost_per_m: 0.14,
-            output_cost_per_m: 0.28,
+            tier: ModelTier::Fast,
+            context_window: 32_768,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
             aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "openrouter/mistralai/mistral-7b-instruct:free".into(),
+            display_name: "Mistral 7B Free (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Fast,
+            context_window: 32_768,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "openrouter/huggingfaceh4/zephyr-7b-beta:free".into(),
+            display_name: "Zephyr 7B Free (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Fast,
+            context_window: 4_096,
+            max_output_tokens: 2_048,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "openrouter/deepseek/deepseek-r1:free".into(),
+            display_name: "DeepSeek R1 Free (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "openrouter/hunter-alpha".into(),
+            display_name: "Hunter Alpha (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["hunter-alpha".into()],
         },
         // ══════════════════════════════════════════════════════════════
         // Mistral (6)
@@ -2534,8 +2776,78 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec![],
         },
+        ModelCatalogEntry {
+            id: "qwen3-235b-a22b".into(),
+            display_name: "Qwen3 235B".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Frontier,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 4.00,
+            output_cost_per_m: 12.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["qwen3".into()],
+        },
+        ModelCatalogEntry {
+            id: "qwen3-30b-a3b".into(),
+            display_name: "Qwen3 30B".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Fast,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.30,
+            output_cost_per_m: 0.60,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "qwen-coder-plus-latest".into(),
+            display_name: "Qwen Coder Plus (Latest)".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.80,
+            output_cost_per_m: 2.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["qwen-coder".into()],
+        },
+        ModelCatalogEntry {
+            id: "qwen2.5-coder-32b-instruct".into(),
+            display_name: "Qwen 2.5 Coder 32B".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Balanced,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.80,
+            output_cost_per_m: 2.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "qwen-vl-max".into(),
+            display_name: "Qwen VL Max".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Frontier,
+            context_window: 32_768,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 3.00,
+            output_cost_per_m: 9.00,
+            supports_tools: false,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
         // ══════════════════════════════════════════════════════════════
-        // MiniMax (4)
+        // MiniMax (6)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
             id: "minimax-text-01".into(),
@@ -2566,6 +2878,20 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["minimax-m2.5".into()],
         },
         ModelCatalogEntry {
+            id: "MiniMax-M2.5-highspeed".into(),
+            display_name: "MiniMax M2.5 Highspeed".into(),
+            provider: "minimax".into(),
+            tier: ModelTier::Smart,
+            context_window: 1_048_576,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.80,
+            output_cost_per_m: 3.20,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["minimax-m2.5-highspeed".into(), "m2.5-highspeed".into()],
+        },
+        ModelCatalogEntry {
             id: "MiniMax-M2.1".into(),
             display_name: "MiniMax M2.1".into(),
             provider: "minimax".into(),
@@ -2593,8 +2919,22 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec![],
         },
+        ModelCatalogEntry {
+            id: "abab7-chat".into(),
+            display_name: "ABAB 7 Chat".into(),
+            provider: "minimax".into(),
+            tier: ModelTier::Smart,
+            context_window: 524_288,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.80,
+            output_cost_per_m: 2.40,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["abab7".into()],
+        },
         // ══════════════════════════════════════════════════════════════
-        // Zhipu AI / GLM (4)
+        // Zhipu AI / GLM (6)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
             id: "glm-4-plus".into(),
@@ -2603,8 +2943,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             tier: ModelTier::Smart,
             context_window: 131_072,
             max_output_tokens: 8_192,
-            input_cost_per_m: 1.50,
-            output_cost_per_m: 5.00,
+            input_cost_per_m: 0.60,
+            output_cost_per_m: 2.20,
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
@@ -2617,8 +2957,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             tier: ModelTier::Fast,
             context_window: 131_072,
             max_output_tokens: 8_192,
-            input_cost_per_m: 0.10,
-            output_cost_per_m: 0.10,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
@@ -2631,8 +2971,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             tier: ModelTier::Smart,
             context_window: 8_192,
             max_output_tokens: 4_096,
-            input_cost_per_m: 2.00,
-            output_cost_per_m: 5.00,
+            input_cost_per_m: 0.60,
+            output_cost_per_m: 2.20,
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
@@ -2649,6 +2989,34 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             output_cost_per_m: 0.10,
             supports_tools: true,
             supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "glm-5-20250605".into(),
+            display_name: "GLM-5".into(),
+            provider: "zhipu".into(),
+            tier: ModelTier::Frontier,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 1.00,
+            output_cost_per_m: 3.20,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["glm-5".into()],
+        },
+        ModelCatalogEntry {
+            id: "glm-4.7".into(),
+            display_name: "GLM-4.7".into(),
+            provider: "zhipu".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.60,
+            output_cost_per_m: 2.20,
+            supports_tools: true,
+            supports_vision: true,
             supports_streaming: true,
             aliases: vec![],
         },
@@ -2670,7 +3038,38 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["codegeex".into()],
         },
         // ══════════════════════════════════════════════════════════════
-        // Moonshot / Kimi (3)
+        // Z.AI Coding / GLM Coding Models (2)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "glm-5-coding".into(),
+            display_name: "GLM-5 Coding".into(),
+            provider: "zai_coding".into(),
+            tier: ModelTier::Frontier,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 2.00,
+            output_cost_per_m: 8.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["glm-5-code".into(), "glm-coding".into()],
+        },
+        ModelCatalogEntry {
+            id: "glm-4.7-coding".into(),
+            display_name: "GLM-4.7 Coding".into(),
+            provider: "zai_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 1.50,
+            output_cost_per_m: 5.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["glm-4.7-code".into()],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // Moonshot / Kimi (5)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
             id: "moonshot-v1-128k".into(),
@@ -2684,7 +3083,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec!["kimi".into()],
+            aliases: vec![],
         },
         ModelCatalogEntry {
             id: "moonshot-v1-32k".into(),
@@ -2711,6 +3110,51 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             output_cost_per_m: 0.10,
             supports_tools: true,
             supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "kimi-k2".into(),
+            display_name: "Kimi K2".into(),
+            provider: "moonshot".into(),
+            tier: ModelTier::Frontier,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 2.00,
+            output_cost_per_m: 8.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "kimi-k2.5".into(),
+            display_name: "Kimi K2.5".into(),
+            provider: "moonshot".into(),
+            tier: ModelTier::Frontier,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 2.00,
+            output_cost_per_m: 8.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["kimi-k2.5-0711".into()],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // Kimi for Code (1)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "kimi-for-coding".into(),
+            display_name: "Kimi For Coding".into(),
+            provider: "kimi_coding".into(),
+            tier: ModelTier::Frontier,
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
             supports_streaming: true,
             aliases: vec![],
         },
@@ -3009,6 +3453,169 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec!["claude-code-haiku".into()],
         },
+        // ══════════════════════════════════════════════════════════════
+        // Qwen Code CLI (3) — subprocess-based, free via Qwen OAuth
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "qwen-code/qwen-coder-plus".into(),
+            display_name: "Qwen Coder Plus (CLI)".into(),
+            provider: "qwen-code".into(),
+            tier: ModelTier::Frontier,
+            context_window: 131_072,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["qwen-coder-plus".into()],
+        },
+        ModelCatalogEntry {
+            id: "qwen-code/qwen3-coder".into(),
+            display_name: "Qwen3 Coder (CLI)".into(),
+            provider: "qwen-code".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["qwen-code".into(), "qwen-coder".into()],
+        },
+        ModelCatalogEntry {
+            id: "qwen-code/qwq-32b".into(),
+            display_name: "QwQ 32B (CLI)".into(),
+            provider: "qwen-code".into(),
+            tier: ModelTier::Balanced,
+            context_window: 131_072,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["qwq".into()],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // Chutes.ai (5)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "chutes/deepseek-ai/DeepSeek-V3".into(),
+            display_name: "DeepSeek V3 (Chutes)".into(),
+            provider: "chutes".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.25,
+            output_cost_per_m: 0.35,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["chutes-deepseek-v3".into()],
+        },
+        ModelCatalogEntry {
+            id: "chutes/deepseek-ai/DeepSeek-R1".into(),
+            display_name: "DeepSeek R1 (Chutes)".into(),
+            provider: "chutes".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.55,
+            output_cost_per_m: 2.19,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["chutes-deepseek-r1".into()],
+        },
+        ModelCatalogEntry {
+            id: "chutes/meta-llama/Llama-4-Maverick-17B-128E-Instruct".into(),
+            display_name: "Llama 4 Maverick (Chutes)".into(),
+            provider: "chutes".into(),
+            tier: ModelTier::Balanced,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.20,
+            output_cost_per_m: 0.30,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["chutes-llama-maverick".into()],
+        },
+        ModelCatalogEntry {
+            id: "chutes/Qwen/Qwen3-235B-A22B".into(),
+            display_name: "Qwen3 235B (Chutes)".into(),
+            provider: "chutes".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.25,
+            output_cost_per_m: 0.35,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["chutes-qwen3".into()],
+        },
+        ModelCatalogEntry {
+            id: "chutes/meta-llama/Llama-3.3-70B-Instruct".into(),
+            display_name: "Llama 3.3 70B (Chutes)".into(),
+            provider: "chutes".into(),
+            tier: ModelTier::Balanced,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.10,
+            output_cost_per_m: 0.15,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["chutes-llama-70b".into()],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // Venice.ai (3)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "venice-uncensored".into(),
+            display_name: "Venice Uncensored".into(),
+            provider: "venice".into(),
+            tier: ModelTier::Fast,
+            context_window: 32_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.20,
+            output_cost_per_m: 0.90,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["venice".into()],
+        },
+        ModelCatalogEntry {
+            id: "llama-3.3-70b".into(),
+            display_name: "Llama 3.3 70B (Venice)".into(),
+            provider: "venice".into(),
+            tier: ModelTier::Balanced,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.20,
+            output_cost_per_m: 0.90,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "qwen3-235b-a22b-instruct-2507".into(),
+            display_name: "Qwen3 235B A22B (Venice)".into(),
+            provider: "venice".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.20,
+            output_cost_per_m: 0.90,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
     ]
 }
 
@@ -3025,7 +3632,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 31);
+        assert_eq!(catalog.list_providers().len(), 39);
     }
 
     #[test]
@@ -3270,6 +3877,18 @@ mod tests {
         // Default "minimax" alias now points to M2.5
         let default = catalog.find_model("minimax").unwrap();
         assert_eq!(default.id, "MiniMax-M2.5");
+        // MiniMax M2.5 Highspeed — by exact ID and aliases
+        let hs = catalog.find_model("MiniMax-M2.5-highspeed").unwrap();
+        assert_eq!(hs.provider, "minimax");
+        assert_eq!(hs.tier, ModelTier::Smart);
+        assert!(hs.supports_vision);
+        assert!(hs.supports_tools);
+        assert!(catalog.find_model("minimax-m2.5-highspeed").is_some());
+        assert!(catalog.find_model("minimax-highspeed").is_some());
+        // abab7-chat
+        let abab7 = catalog.find_model("abab7-chat").unwrap();
+        assert_eq!(abab7.provider, "minimax");
+        assert!(abab7.supports_vision);
     }
 
     #[test]
@@ -3296,8 +3915,15 @@ mod tests {
     #[test]
     fn test_set_provider_url_unknown() {
         let mut catalog = ModelCatalog::new();
-        let updated = catalog.set_provider_url("nonexistent", "http://localhost:9999");
-        assert!(!updated);
+        let initial_count = catalog.list_providers().len();
+        let updated = catalog.set_provider_url("my-custom-llm", "http://localhost:9999");
+        // Unknown providers are now auto-registered as custom entries
+        assert!(updated);
+        assert_eq!(catalog.list_providers().len(), initial_count + 1);
+        assert_eq!(
+            catalog.get_provider("my-custom-llm").unwrap().base_url,
+            "http://localhost:9999"
+        );
     }
 
     #[test]
@@ -3373,5 +3999,30 @@ mod tests {
         let catalog = ModelCatalog::new();
         let entry = catalog.find_model("claude-code").unwrap();
         assert_eq!(entry.id, "claude-code/sonnet");
+    }
+
+    #[test]
+    fn test_qwen_code_provider() {
+        let catalog = ModelCatalog::new();
+        let qc = catalog.get_provider("qwen-code").unwrap();
+        assert_eq!(qc.display_name, "Qwen Code");
+        assert!(!qc.key_required);
+    }
+
+    #[test]
+    fn test_qwen_code_models() {
+        let catalog = ModelCatalog::new();
+        let models = catalog.models_by_provider("qwen-code");
+        assert_eq!(models.len(), 3);
+        assert!(models.iter().any(|m| m.id == "qwen-code/qwen3-coder"));
+        assert!(models.iter().any(|m| m.id == "qwen-code/qwen-coder-plus"));
+        assert!(models.iter().any(|m| m.id == "qwen-code/qwq-32b"));
+    }
+
+    #[test]
+    fn test_qwen_code_aliases() {
+        let catalog = ModelCatalog::new();
+        let entry = catalog.find_model("qwen-code").unwrap();
+        assert_eq!(entry.id, "qwen-code/qwen3-coder");
     }
 }

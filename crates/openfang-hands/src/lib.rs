@@ -29,6 +29,8 @@ pub enum HandError {
     TomlParse(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Config error: {0}")]
+    Config(String),
 }
 
 pub type HandResult<T> = Result<T, HandError>;
@@ -115,6 +117,13 @@ pub struct HandRequirement {
     /// Human-readable description of why this is needed.
     #[serde(default)]
     pub description: Option<String>,
+    /// Whether this requirement is optional (non-critical).
+    ///
+    /// Optional requirements do not block activation. When an active hand has
+    /// unmet optional requirements it is reported as "degraded" rather than
+    /// "requirements not met".
+    #[serde(default)]
+    pub optional: bool,
     /// Platform-specific installation instructions.
     #[serde(default)]
     pub install: Option<HandInstallInfo>,

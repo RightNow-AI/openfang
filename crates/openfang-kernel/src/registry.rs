@@ -177,6 +177,21 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Update an agent's fallback model chain.
+    pub fn update_fallback_models(
+        &self,
+        id: AgentId,
+        fallback_models: Vec<openfang_types::agent::FallbackModel>,
+    ) -> OpenFangResult<()> {
+        let mut entry = self
+            .agents
+            .get_mut(&id)
+            .ok_or_else(|| OpenFangError::AgentNotFound(id.to_string()))?;
+        entry.manifest.fallback_models = fallback_models;
+        entry.last_active = chrono::Utc::now();
+        Ok(())
+    }
+
     /// Update an agent's skill allowlist.
     pub fn update_skills(&self, id: AgentId, skills: Vec<String>) -> OpenFangResult<()> {
         let mut entry = self
@@ -269,6 +284,7 @@ impl AgentRegistry {
         hourly: Option<f64>,
         daily: Option<f64>,
         monthly: Option<f64>,
+        tokens_per_hour: Option<u64>,
     ) -> OpenFangResult<()> {
         let mut entry = self
             .agents
@@ -282,6 +298,9 @@ impl AgentRegistry {
         }
         if let Some(v) = monthly {
             entry.manifest.resources.max_cost_per_month_usd = v;
+        }
+        if let Some(v) = tokens_per_hour {
+            entry.manifest.resources.max_llm_tokens_per_hour = v;
         }
         entry.last_active = chrono::Utc::now();
         Ok(())

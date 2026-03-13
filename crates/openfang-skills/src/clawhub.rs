@@ -17,7 +17,20 @@ use crate::SkillError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+
+// ---------------------------------------------------------------------------
+// Retry constants for ClawHub API rate-limit handling
+// ---------------------------------------------------------------------------
+
+/// Maximum number of retry attempts for ClawHub API calls (including the first try).
+const MAX_RETRIES: u32 = 5;
+
+/// Base delay in milliseconds for exponential backoff (doubles each attempt).
+const BASE_DELAY_MS: u64 = 1_500;
+
+/// Maximum delay cap in milliseconds.
+const MAX_DELAY_MS: u64 = 30_000;
 
 // ---------------------------------------------------------------------------
 // API response types (matching actual ClawHub v1 API — verified Feb 2026)
@@ -123,7 +136,7 @@ pub struct ClawHubSearchEntry {
     #[serde(default)]
     pub summary: String,
     #[serde(default)]
-    pub version: String,
+    pub version: Option<String>,
     /// Unix ms timestamp.
     #[serde(default)]
     pub updated_at: i64,
@@ -251,6 +264,130 @@ impl ClawHubClient {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Private: HTTP GET with retry on 429 / 5xx
+    // -----------------------------------------------------------------------
+
+    /// Issue a GET request with automatic retry on rate-limit (429) and
+    /// server-error (5xx) responses. Respects the `Retry-After` header
+    /// when present, otherwise uses exponential backoff with jitter.
+    ///
+    /// Returns the successful `reqwest::Response` or a `SkillError`.
+    async fn get_with_retry(
+        &self,
+        url: &str,
+        context: &str,
+    ) -> Result<reqwest::Response, SkillError> {
+        let mut last_status: Option<u16> = None;
+
+        for attempt in 0..MAX_RETRIES {
+            if attempt > 0 {
+                // Compute delay: use Retry-After from previous response if we
+                // saved it, otherwise exponential backoff with jitter.
+                let base = BASE_DELAY_MS.saturating_mul(1u64 << attempt.min(5));
+                let delay_ms = base.min(MAX_DELAY_MS);
+                // Add light jitter (0-25%) using system clock nanos.
+                let jitter = {
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .subsec_nanos();
+                    let frac = (nanos.wrapping_mul(2654435761) as f64) / (u32::MAX as f64);
+                    (delay_ms as f64 * frac * 0.25) as u64
+                };
+                let total = delay_ms + jitter;
+                debug!(
+                    attempt,
+                    delay_ms = total,
+                    context,
+                    "retrying ClawHub request after rate limit / server error"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(total)).await;
+            }
+
+            let result = self
+                .client
+                .get(url)
+                .header("User-Agent", "OpenFang/0.1")
+                .send()
+                .await;
+
+            match result {
+                Ok(resp) => {
+                    let status = resp.status();
+
+                    if status.is_success() {
+                        return Ok(resp);
+                    }
+
+                    // Rate-limited or server error — retryable.
+                    if status.as_u16() == 429 || status.is_server_error() {
+                        last_status = Some(status.as_u16());
+
+                        // If the server sent Retry-After, respect it (capped).
+                        if let Some(ra) = resp
+                            .headers()
+                            .get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.parse::<u64>().ok())
+                        {
+                            let capped = (ra * 1000).min(MAX_DELAY_MS);
+                            if attempt + 1 < MAX_RETRIES {
+                                debug!(
+                                    retry_after_secs = ra,
+                                    "ClawHub sent Retry-After, sleeping {capped}ms"
+                                );
+                                tokio::time::sleep(std::time::Duration::from_millis(capped))
+                                    .await;
+                            }
+                        }
+
+                        let is_last = attempt + 1 >= MAX_RETRIES;
+                        if is_last {
+                            if status.as_u16() == 429 {
+                                return Err(SkillError::RateLimited(format!(
+                                    "{context} returned 429 Too Many Requests after {MAX_RETRIES} attempts \
+                                     — the ClawHub API rate limit has been exceeded, \
+                                     please wait a few seconds and try again"
+                                )));
+                            }
+                            return Err(SkillError::Network(format!(
+                                "{context} returned {status} after {MAX_RETRIES} attempts"
+                            )));
+                        }
+                        // Loop around to retry.
+                        continue;
+                    }
+
+                    // Non-retryable HTTP error (4xx other than 429).
+                    return Err(SkillError::Network(format!(
+                        "{context} returned {status}"
+                    )));
+                }
+                Err(e) => {
+                    // Network / timeout error — retryable.
+                    last_status = None;
+                    let is_last = attempt + 1 >= MAX_RETRIES;
+                    if is_last {
+                        return Err(SkillError::Network(format!(
+                            "{context} failed after {MAX_RETRIES} attempts: {e}"
+                        )));
+                    }
+                    warn!(attempt, context, error = %e, "ClawHub request failed, will retry");
+                }
+            }
+        }
+
+        // Should be unreachable, but handle gracefully.
+        Err(SkillError::Network(format!(
+            "{context} failed (status: {last_status:?}) after {MAX_RETRIES} attempts"
+        )))
+    }
+
+    // -----------------------------------------------------------------------
+    // Public API methods — all use get_with_retry
+    // -----------------------------------------------------------------------
+
     /// Search for skills on ClawHub using vector/semantic search.
     ///
     /// Uses `GET /api/v1/search?q=...&limit=...`.
@@ -267,20 +404,7 @@ impl ClawHubClient {
             limit.min(50)
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .header("User-Agent", "OpenFang/0.1")
-            .send()
-            .await
-            .map_err(|e| SkillError::Network(format!("ClawHub search failed: {e}")))?;
-
-        if !response.status().is_success() {
-            return Err(SkillError::Network(format!(
-                "ClawHub API returned {}",
-                response.status()
-            )));
-        }
+        let response = self.get_with_retry(&url, "ClawHub search").await?;
 
         let results: ClawHubSearchResponse = response
             .json()
@@ -310,20 +434,7 @@ impl ClawHubClient {
             url.push_str(&format!("&cursor={}", urlencoded(c)));
         }
 
-        let response = self
-            .client
-            .get(&url)
-            .header("User-Agent", "OpenFang/0.1")
-            .send()
-            .await
-            .map_err(|e| SkillError::Network(format!("ClawHub browse failed: {e}")))?;
-
-        if !response.status().is_success() {
-            return Err(SkillError::Network(format!(
-                "ClawHub browse returned {}",
-                response.status()
-            )));
-        }
+        let response = self.get_with_retry(&url, "ClawHub browse").await?;
 
         let results: ClawHubBrowseResponse = response
             .json()
@@ -340,20 +451,7 @@ impl ClawHubClient {
     pub async fn get_skill(&self, slug: &str) -> Result<ClawHubSkillDetail, SkillError> {
         let url = format!("{}/skills/{}", self.base_url, urlencoded(slug));
 
-        let response = self
-            .client
-            .get(&url)
-            .header("User-Agent", "OpenFang/0.1")
-            .send()
-            .await
-            .map_err(|e| SkillError::Network(format!("ClawHub detail failed: {e}")))?;
-
-        if !response.status().is_success() {
-            return Err(SkillError::Network(format!(
-                "ClawHub detail returned {}",
-                response.status()
-            )));
-        }
+        let response = self.get_with_retry(&url, "ClawHub skill detail").await?;
 
         let detail: ClawHubSkillDetail = response
             .json()
@@ -384,20 +482,7 @@ impl ClawHubClient {
             urlencoded(path)
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .header("User-Agent", "OpenFang/0.1")
-            .send()
-            .await
-            .map_err(|e| SkillError::Network(format!("ClawHub file fetch failed: {e}")))?;
-
-        if !response.status().is_success() {
-            return Err(SkillError::Network(format!(
-                "ClawHub file returned {}",
-                response.status()
-            )));
-        }
+        let response = self.get_with_retry(&url, "ClawHub file fetch").await?;
 
         let text = response
             .text()
@@ -427,25 +512,13 @@ impl ClawHubClient {
 
         info!(slug, "Downloading skill from ClawHub");
 
-        let response = self
-            .client
-            .get(&url)
-            .header("User-Agent", "OpenFang/0.1")
-            .send()
-            .await
-            .map_err(|e| SkillError::Network(format!("ClawHub download failed: {e}")))?;
-
-        if !response.status().is_success() {
-            return Err(SkillError::Network(format!(
-                "ClawHub download returned {}",
-                response.status()
-            )));
-        }
-
+        // Use get_with_retry for the download — same 429/5xx handling as all
+        // other endpoints, with 5 attempts and exponential backoff.
+        let response = self.get_with_retry(&url, "ClawHub download").await?;
         let bytes = response
             .bytes()
             .await
-            .map_err(|e| SkillError::Network(format!("Failed to read download: {e}")))?;
+            .map_err(|e| SkillError::Network(format!("Failed to read download body: {e}")))?;
 
         // Step 1: SHA256 of downloaded content
         let sha256 = {
@@ -593,14 +666,25 @@ impl ClawHubClient {
     }
 }
 
-/// Minimal URL-encoding for query parameters.
+/// RFC 3986 percent-encoding for query parameters.
+/// Unreserved characters pass through, space becomes `+`, everything else is `%XX`.
 fn urlencoded(s: &str) -> String {
-    s.replace(' ', "+")
-        .replace('&', "%26")
-        .replace('=', "%3D")
-        .replace('?', "%3F")
-        .replace('#', "%23")
-        .replace('/', "%2F")
+    const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
+    let mut result = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(b as char);
+            }
+            b' ' => result.push('+'),
+            _ => {
+                result.push('%');
+                result.push(HEX_UPPER[(b >> 4) as usize] as char);
+                result.push(HEX_UPPER[(b & 0xf) as usize] as char);
+            }
+        }
+    }
+    result
 }
 
 /// Check if a binary is available on PATH.
@@ -698,7 +782,7 @@ mod tests {
         assert_eq!(entry.slug, "github");
         assert_eq!(entry.display_name, "Github");
         assert!(entry.score > 3.0);
-        assert_eq!(entry.version, "1.0.0");
+        assert_eq!(entry.version.as_deref(), Some("1.0.0"));
         assert_eq!(entry.updated_at, 1771777539580);
     }
 
@@ -786,6 +870,11 @@ mod tests {
         assert_eq!(urlencoded("hello world"), "hello+world");
         assert_eq!(urlencoded("a&b=c"), "a%26b%3Dc");
         assert_eq!(urlencoded("path/to#frag"), "path%2Fto%23frag");
+        // Previously missed characters
+        assert_eq!(urlencoded("100%"), "100%25");
+        assert_eq!(urlencoded("a+b"), "a%2Bb");
+        // Unreserved chars pass through
+        assert_eq!(urlencoded("hello-world_2.0~test"), "hello-world_2.0~test");
     }
 
     #[test]

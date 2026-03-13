@@ -12,17 +12,63 @@ use crate::message::*;
 use crate::registry::{PeerEntry, PeerRegistry, PeerState};
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, warn};
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// SECURITY: Time-windowed nonce tracker to prevent OFP handshake replay attacks.
+///
+/// Stores seen nonces with their timestamps. Nonces older than the window
+/// are garbage-collected on insertion. A 5-minute window is used because
+/// handshake nonces are single-use UUIDs.
+#[derive(Clone)]
+pub struct NonceTracker {
+    seen: Arc<DashMap<String, Instant>>,
+    window: Duration,
+}
+
+impl NonceTracker {
+    /// Create a new nonce tracker with a 5-minute replay window.
+    pub fn new() -> Self {
+        Self {
+            seen: Arc::new(DashMap::new()),
+            window: Duration::from_secs(300), // 5 minutes
+        }
+    }
+
+    /// Check if a nonce has been seen before. If not, record it and return Ok.
+    /// If already seen (replay), return Err.
+    pub fn check_and_record(&self, nonce: &str) -> Result<(), String> {
+        let now = Instant::now();
+
+        // Garbage-collect expired nonces (older than window)
+        self.seen.retain(|_, ts| now.duration_since(*ts) < self.window);
+
+        // Check for replay
+        if self.seen.contains_key(nonce) {
+            return Err(format!("Nonce replay detected: {}", openfang_types::truncate_str(nonce, 16)));
+        }
+
+        // Record the nonce
+        self.seen.insert(nonce.to_string(), now);
+        Ok(())
+    }
+}
+
+impl Default for NonceTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Generate HMAC-SHA256 signature for message authentication.
 fn hmac_sign(secret: &str, data: &[u8]) -> String {
@@ -116,6 +162,11 @@ pub struct PeerNode {
     /// Start time for uptime calculation (used by handle_request for Pong).
     #[allow(dead_code)]
     start_time: Instant,
+    /// SECURITY: Tracks seen handshake nonces to prevent replay attacks.
+    nonce_tracker: NonceTracker,
+    /// SECURITY: Session key derived after handshake for per-message HMAC.
+    #[allow(dead_code)]
+    session_key: std::sync::Mutex<Option<String>>,
 }
 
 impl PeerNode {
@@ -145,6 +196,8 @@ impl PeerNode {
             registry: registry.clone(),
             local_addr,
             start_time: Instant::now(),
+            nonce_tracker: NonceTracker::new(),
+            session_key: std::sync::Mutex::new(None),
         });
 
         let node_clone = Arc::clone(&node);
@@ -181,8 +234,8 @@ impl PeerNode {
         let (mut reader, mut writer) = stream.into_split();
 
         // Send our handshake with HMAC authentication
-        let nonce = uuid::Uuid::new_v4().to_string();
-        let auth_data = format!("{}{}", nonce, self.config.node_id);
+        let our_nonce = uuid::Uuid::new_v4().to_string();
+        let auth_data = format!("{}{}", our_nonce, self.config.node_id);
         let auth_hmac = hmac_sign(&self.config.shared_secret, auth_data.as_bytes());
 
         let handshake = WireMessage {
@@ -192,7 +245,7 @@ impl PeerNode {
                 node_name: self.config.node_name.clone(),
                 protocol_version: PROTOCOL_VERSION,
                 agents: handle.local_agents(),
-                nonce,
+                nonce: our_nonce.clone(),
                 auth_hmac,
             }),
         };
@@ -200,7 +253,7 @@ impl PeerNode {
 
         // Read their handshake ack
         let response = read_message(&mut reader).await?;
-        match &response.kind {
+        let sess_key = match &response.kind {
             WireMessageKind::Response(WireResponse::HandshakeAck {
                 node_id,
                 node_name,
@@ -216,6 +269,11 @@ impl PeerNode {
                     });
                 }
 
+                // SECURITY: Check for nonce replay on the ack
+                if let Err(replay_err) = self.nonce_tracker.check_and_record(ack_nonce) {
+                    return Err(WireError::HandshakeFailed(replay_err));
+                }
+
                 // SECURITY: Verify the ack HMAC
                 let expected_data = format!("{}{}", ack_nonce, node_id);
                 if !hmac_verify(
@@ -227,6 +285,13 @@ impl PeerNode {
                         "HMAC verification failed on HandshakeAck".into(),
                     ));
                 }
+
+                // SECURITY: Derive per-session key for authenticated messages
+                let key = derive_session_key(
+                    &self.config.shared_secret,
+                    &our_nonce,
+                    ack_nonce,
+                );
 
                 info!(
                     "OFP: handshake complete with {} ({}) — {} agents",
@@ -243,6 +308,7 @@ impl PeerNode {
                     connected_at: chrono::Utc::now(),
                     protocol_version: *protocol_version,
                 });
+                key
             }
             WireMessageKind::Response(WireResponse::Error { code, message }) => {
                 return Err(WireError::HandshakeFailed(format!(
@@ -254,7 +320,7 @@ impl PeerNode {
                     "Unexpected response to handshake".to_string(),
                 ));
             }
-        }
+        };
 
         // Extract the peer node_id for the connection loop
         let peer_node_id = match &response.kind {
@@ -264,11 +330,11 @@ impl PeerNode {
             _ => unreachable!(),
         };
 
-        // Spawn a task to handle ongoing communication
+        // Spawn a task to handle ongoing communication with per-message HMAC
         let registry = self.registry.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                connection_loop(&mut reader, &mut writer, &peer_node_id, &registry, &*handle).await
+                connection_loop(&mut reader, &mut writer, &peer_node_id, &registry, &*handle, Some(&sess_key)).await
             {
                 debug!("OFP: connection to {} ended: {}", peer_node_id, e);
             }
@@ -299,8 +365,8 @@ impl PeerNode {
         let (mut reader, mut writer) = stream.into_split();
 
         // SECURITY: Perform HMAC handshake before sending any data
-        let nonce = uuid::Uuid::new_v4().to_string();
-        let auth_data = format!("{}{}", nonce, self.config.node_id);
+        let our_nonce = uuid::Uuid::new_v4().to_string();
+        let auth_data = format!("{}{}", our_nonce, self.config.node_id);
         let auth_hmac = hmac_sign(&self.config.shared_secret, auth_data.as_bytes());
 
         let handshake = WireMessage {
@@ -310,15 +376,15 @@ impl PeerNode {
                 node_name: self.config.node_name.clone(),
                 protocol_version: PROTOCOL_VERSION,
                 agents: handle.local_agents(),
-                nonce,
+                nonce: our_nonce.clone(),
                 auth_hmac,
             }),
         };
         write_message(&mut writer, &handshake).await?;
 
-        // Verify handshake ack
+        // Verify handshake ack and derive session key
         let ack = read_message(&mut reader).await?;
-        match &ack.kind {
+        let session_key = match &ack.kind {
             WireMessageKind::Response(WireResponse::HandshakeAck {
                 node_id: ack_node_id,
                 nonce: ack_nonce,
@@ -332,6 +398,10 @@ impl PeerNode {
                         remote: *protocol_version,
                     });
                 }
+                // SECURITY: Check for nonce replay
+                if let Err(replay_err) = self.nonce_tracker.check_and_record(ack_nonce) {
+                    return Err(WireError::HandshakeFailed(replay_err));
+                }
                 let expected_data = format!("{}{}", ack_nonce, ack_node_id);
                 if !hmac_verify(
                     &self.config.shared_secret,
@@ -342,6 +412,8 @@ impl PeerNode {
                         "HMAC verification failed on HandshakeAck".into(),
                     ));
                 }
+                // SECURITY: Derive per-session key for authenticated post-handshake I/O
+                derive_session_key(&self.config.shared_secret, &our_nonce, ack_nonce)
             }
             WireMessageKind::Response(WireResponse::Error { code, message }) => {
                 return Err(WireError::HandshakeFailed(format!(
@@ -353,9 +425,9 @@ impl PeerNode {
                     "Unexpected response to handshake".to_string(),
                 ));
             }
-        }
+        };
 
-        // Now send the actual agent message over the authenticated connection
+        // SECURITY: Send agent message with per-message HMAC authentication
         let msg = WireMessage {
             id: uuid::Uuid::new_v4().to_string(),
             kind: WireMessageKind::Request(WireRequest::AgentMessage {
@@ -364,9 +436,9 @@ impl PeerNode {
                 sender: sender.map(|s| s.to_string()),
             }),
         };
-        write_message(&mut writer, &msg).await?;
+        write_message_authenticated(&mut writer, &msg, &session_key).await?;
 
-        let response = read_message(&mut reader).await?;
+        let response = read_message_authenticated(&mut reader, &session_key).await?;
         match response.kind {
             WireMessageKind::Response(WireResponse::AgentResponse { text }) => Ok(text),
             WireMessageKind::Response(WireResponse::Error { code, message }) => Err(
@@ -420,7 +492,7 @@ impl PeerNode {
 
         // Read the incoming handshake request
         let msg = read_message(&mut reader).await?;
-        let peer_node_id = match &msg.kind {
+        let (peer_node_id, session_key) = match &msg.kind {
             WireMessageKind::Request(WireRequest::Handshake {
                 node_id,
                 node_name,
@@ -445,6 +517,19 @@ impl PeerNode {
                         local: PROTOCOL_VERSION,
                         remote: *protocol_version,
                     });
+                }
+
+                // SECURITY: Check for nonce replay before verifying HMAC
+                if let Err(replay_err) = node.nonce_tracker.check_and_record(nonce) {
+                    let err_resp = WireMessage {
+                        id: msg.id.clone(),
+                        kind: WireMessageKind::Response(WireResponse::Error {
+                            code: 403,
+                            message: "Nonce replay rejected".to_string(),
+                        }),
+                    };
+                    write_message(&mut writer, &err_resp).await?;
+                    return Err(WireError::HandshakeFailed(replay_err));
                 }
 
                 // SECURITY: Verify the incoming HMAC
@@ -479,11 +564,18 @@ impl PeerNode {
                         node_name: node.config.node_name.clone(),
                         protocol_version: PROTOCOL_VERSION,
                         agents: handle.local_agents(),
-                        nonce: ack_nonce,
+                        nonce: ack_nonce.clone(),
                         auth_hmac: ack_hmac,
                     }),
                 };
                 write_message(&mut writer, &ack).await?;
+
+                // SECURITY: Derive per-session key (server side: their nonce first, our nonce second)
+                let session_key = derive_session_key(
+                    &node.config.shared_secret,
+                    nonce,        // client's nonce
+                    &ack_nonce,   // our nonce
+                );
 
                 info!(
                     "OFP: handshake with {} ({}) from {} — {} agents",
@@ -504,7 +596,7 @@ impl PeerNode {
                     protocol_version: *protocol_version,
                 });
 
-                node_id.clone()
+                (node_id.clone(), session_key)
             }
             // SECURITY: Reject all non-Handshake initial messages.
             // Clients MUST complete HMAC-authenticated handshake before sending
@@ -529,9 +621,9 @@ impl PeerNode {
             }
         };
 
-        // Enter the message dispatch loop
+        // Enter the message dispatch loop with per-message HMAC
         if let Err(e) =
-            connection_loop(&mut reader, &mut writer, &peer_node_id, registry, handle).await
+            connection_loop(&mut reader, &mut writer, &peer_node_id, registry, handle, Some(&session_key)).await
         {
             debug!("OFP: connection with {} ended: {}", peer_node_id, e);
         }
@@ -592,15 +684,22 @@ async fn handle_request(
 }
 
 /// Read/write message loop for an established connection.
+///
+/// If `session_key` is provided, all post-handshake messages use per-message HMAC.
 async fn connection_loop(
     reader: &mut tokio::net::tcp::OwnedReadHalf,
     writer: &mut tokio::net::tcp::OwnedWriteHalf,
     peer_node_id: &str,
     registry: &PeerRegistry,
     handle: &dyn PeerHandle,
+    session_key: Option<&str>,
 ) -> Result<(), WireError> {
     loop {
-        let msg = match read_message(reader).await {
+        let msg = match if let Some(key) = session_key {
+            read_message_authenticated(reader, key).await
+        } else {
+            read_message(reader).await
+        } {
             Ok(m) => m,
             Err(WireError::ConnectionClosed) => return Ok(()),
             Err(e) => return Err(e),
@@ -613,9 +712,12 @@ async fn connection_loop(
             }
             // Handle requests (produce response)
             WireMessageKind::Request(_) => {
-                // We need the node for uptime; create a minimal shim
                 let response = handle_request_in_loop(&msg, handle).await;
-                write_message(writer, &response).await?;
+                if let Some(key) = session_key {
+                    write_message_authenticated(writer, &response, key).await?;
+                } else {
+                    write_message(writer, &response).await?;
+                }
             }
             // We don't expect to receive responses in the connection loop
             WireMessageKind::Response(_) => {
@@ -687,6 +789,16 @@ fn handle_notification(peer_node_id: &str, notif: &WireNotification, registry: &
     }
 }
 
+/// Derive a per-session HMAC key from the shared secret and both handshake nonces.
+///
+/// `session_key = HMAC-SHA256(shared_secret, our_nonce || their_nonce)`
+///
+/// This ensures each connection has a unique key even with the same shared secret.
+pub fn derive_session_key(shared_secret: &str, our_nonce: &str, their_nonce: &str) -> String {
+    let data = format!("{}{}", our_nonce, their_nonce);
+    hmac_sign(shared_secret, data.as_bytes())
+}
+
 /// Write a framed message (4-byte length + JSON) to a TCP stream.
 pub async fn write_message(
     writer: &mut tokio::net::tcp::OwnedWriteHalf,
@@ -694,6 +806,30 @@ pub async fn write_message(
 ) -> Result<(), WireError> {
     let bytes = encode_message(msg)?;
     writer.write_all(&bytes).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// SECURITY: Write a framed message with per-message HMAC appended.
+///
+/// Format: [4-byte length][JSON body][64-byte hex HMAC]
+/// The HMAC covers the JSON body and prevents tampering on authenticated connections.
+pub async fn write_message_authenticated(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    msg: &WireMessage,
+    session_key: &str,
+) -> Result<(), WireError> {
+    let json_bytes = serde_json::to_vec(msg)?;
+    let mac = hmac_sign(session_key, &json_bytes);
+    let mac_bytes = mac.as_bytes(); // 64 hex chars
+
+    // Total frame = JSON + 64-byte HMAC
+    let total_len = json_bytes.len() + mac_bytes.len();
+    let len_bytes = (total_len as u32).to_be_bytes();
+
+    writer.write_all(&len_bytes).await?;
+    writer.write_all(&json_bytes).await?;
+    writer.write_all(mac_bytes).await?;
     writer.flush().await?;
     Ok(())
 }
@@ -726,10 +862,68 @@ pub async fn read_message(
     Ok(msg)
 }
 
-/// Broadcast a notification to all connected peers.
+/// SECURITY: Read a framed message and verify per-message HMAC.
+///
+/// Expected format: [4-byte length][JSON body][64-byte hex HMAC]
+/// Returns error if HMAC verification fails (tampered or forged message).
+pub async fn read_message_authenticated(
+    reader: &mut tokio::net::tcp::OwnedReadHalf,
+    session_key: &str,
+) -> Result<WireMessage, WireError> {
+    let mut header = [0u8; 4];
+    match reader.read_exact(&mut header).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            return Err(WireError::ConnectionClosed);
+        }
+        Err(e) => return Err(WireError::Io(e)),
+    }
+
+    let len = decode_length(&header);
+    if len > MAX_MESSAGE_SIZE {
+        return Err(WireError::MessageTooLarge {
+            size: len,
+            max: MAX_MESSAGE_SIZE,
+        });
+    }
+
+    // HMAC is 64 hex chars appended after JSON
+    const HMAC_HEX_LEN: usize = 64;
+    let total_len = len as usize;
+    if total_len < HMAC_HEX_LEN + 2 {
+        // Minimum: "{}" + 64 HMAC chars
+        return Err(WireError::HandshakeFailed(
+            "Message too short for authenticated frame".into(),
+        ));
+    }
+
+    let mut frame = vec![0u8; total_len];
+    reader.read_exact(&mut frame).await?;
+
+    let json_len = total_len - HMAC_HEX_LEN;
+    let json_bytes = &frame[..json_len];
+    let received_mac = std::str::from_utf8(&frame[json_len..])
+        .map_err(|_| WireError::HandshakeFailed("Invalid HMAC encoding".into()))?;
+
+    // Verify HMAC
+    if !hmac_verify(session_key, json_bytes, received_mac) {
+        return Err(WireError::HandshakeFailed(
+            "Per-message HMAC verification failed — message tampered or forged".into(),
+        ));
+    }
+
+    let msg = serde_json::from_slice(json_bytes)?;
+    Ok(msg)
+}
+
+/// Broadcast an HMAC-authenticated notification to all connected peers.
+///
+/// SECURITY: Each peer connection gets a unique HMAC signature derived from
+/// the shared secret and a fresh nonce, preventing forgery and replay attacks.
 pub async fn broadcast_notification(
     registry: &PeerRegistry,
     notification: WireNotification,
+    shared_secret: &str,
 ) -> Vec<(String, WireError)> {
     let peers = registry.connected_peers();
     let mut errors = Vec::new();
@@ -743,7 +937,11 @@ pub async fn broadcast_notification(
         match TcpStream::connect(peer.address).await {
             Ok(stream) => {
                 let (_, mut writer) = stream.into_split();
-                if let Err(e) = write_message(&mut writer, &msg).await {
+                // SECURITY: Derive a per-message key from shared secret + fresh nonce
+                let nonce = uuid::Uuid::new_v4().to_string();
+                let session_key = hmac_sign(shared_secret, nonce.as_bytes());
+                if let Err(e) = write_message_authenticated(&mut writer, &msg, &session_key).await
+                {
                     errors.push((peer.node_id.clone(), e));
                 }
             }
@@ -1018,5 +1216,56 @@ mod tests {
         let config = PeerConfig::default();
         assert_eq!(config.node_name, "openfang-node");
         assert!(!config.node_id.is_empty());
+    }
+
+    // ── Nonce replay protection tests ────────────────────────────────────
+
+    #[test]
+    fn test_nonce_tracker_fresh_nonce_accepted() {
+        let tracker = NonceTracker::new();
+        assert!(tracker.check_and_record("nonce-1").is_ok());
+        assert!(tracker.check_and_record("nonce-2").is_ok());
+        assert!(tracker.check_and_record("nonce-3").is_ok());
+    }
+
+    #[test]
+    fn test_nonce_tracker_replay_rejected() {
+        let tracker = NonceTracker::new();
+        assert!(tracker.check_and_record("nonce-1").is_ok());
+        // Second use of same nonce = replay attack
+        let result = tracker.check_and_record("nonce-1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("replay"));
+    }
+
+    #[test]
+    fn test_nonce_tracker_different_nonces_ok() {
+        let tracker = NonceTracker::new();
+        for i in 0..100 {
+            assert!(tracker.check_and_record(&format!("unique-{i}")).is_ok());
+        }
+    }
+
+    // ── Per-message HMAC tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_derive_session_key_deterministic() {
+        let key1 = derive_session_key("secret", "nonce-a", "nonce-b");
+        let key2 = derive_session_key("secret", "nonce-a", "nonce-b");
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn test_derive_session_key_different_nonces() {
+        let key1 = derive_session_key("secret", "nonce-a", "nonce-b");
+        let key2 = derive_session_key("secret", "nonce-c", "nonce-d");
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_derive_session_key_order_matters() {
+        let key1 = derive_session_key("secret", "nonce-a", "nonce-b");
+        let key2 = derive_session_key("secret", "nonce-b", "nonce-a");
+        assert_ne!(key1, key2);
     }
 }

@@ -265,9 +265,9 @@ impl Default for ResourceQuota {
             max_memory_bytes: 256 * 1024 * 1024, // 256 MB
             max_cpu_time_ms: 30_000,             // 30 seconds
             max_tool_calls_per_minute: 60,
-            max_llm_tokens_per_hour: 1_000_000,
+            max_llm_tokens_per_hour: 0, // unlimited by default
             max_network_bytes_per_hour: 100 * 1024 * 1024, // 100 MB
-            max_cost_per_hour_usd: 1.0,
+            max_cost_per_hour_usd: 0.0, // unlimited by default
             max_cost_per_day_usd: 0.0,   // unlimited
             max_cost_per_month_usd: 0.0, // unlimited
         }
@@ -367,6 +367,7 @@ pub struct ModelConfig {
     /// LLM provider name.
     pub provider: String,
     /// Model identifier.
+    #[serde(alias = "name")]
     pub model: String,
     /// Maximum tokens for completion.
     pub max_tokens: u32,
@@ -474,7 +475,8 @@ pub struct AgentManifest {
     #[serde(default = "default_true")]
     pub generate_identity_files: bool,
     /// Per-agent exec policy override. If None, uses global exec_policy.
-    #[serde(default)]
+    /// Accepts string shorthand ("allow", "deny", "full", "allowlist") or full table.
+    #[serde(default, deserialize_with = "crate::serde_compat::exec_policy_lenient")]
     pub exec_policy: Option<crate::config::ExecPolicy>,
     /// Tool allowlist — only these tools are available (empty = all tools).
     #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
@@ -1142,5 +1144,156 @@ mod tests {
         let json = r#"{"name":"test"}"#;
         let manifest: AgentManifest = serde_json::from_str(json).unwrap();
         assert!(manifest.generate_identity_files);
+    }
+
+    // ----- ModelConfig alias tests -----
+
+    #[test]
+    fn test_model_config_name_alias_toml() {
+        let toml_str = r#"
+name = "llama-3.3-70b-versatile"
+provider = "groq"
+"#;
+        let cfg: ModelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.model, "llama-3.3-70b-versatile");
+        assert_eq!(cfg.provider, "groq");
+    }
+
+    #[test]
+    fn test_model_config_model_field_still_works() {
+        let toml_str = r#"
+model = "gpt-4o"
+provider = "openai"
+"#;
+        let cfg: ModelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.model, "gpt-4o");
+        assert_eq!(cfg.provider, "openai");
+    }
+
+    // ----- Multi-line system_prompt TOML tests (wizard generateToml output) -----
+
+    #[test]
+    fn test_manifest_multiline_system_prompt_toml() {
+        // This is the exact TOML format the dashboard wizard generateToml() now produces
+        let toml_str = r#"
+name = "brand-guardian"
+module = "builtin:chat"
+
+[model]
+provider = "google"
+model = "gemini-3-flash-preview"
+system_prompt = """
+You are Brand Guardian, an expert brand strategist.
+
+Your Core Mission:
+- Develop brand strategy including purpose, vision, mission, values
+- Design complete visual identity systems
+- Establish brand voice and messaging architecture
+
+Critical Rules:
+- Establish comprehensive brand foundation before tactical implementation
+- Ensure all brand elements work as a cohesive system
+"""
+"#;
+        let manifest: AgentManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.name, "brand-guardian");
+        assert_eq!(manifest.model.provider, "google");
+        assert_eq!(manifest.model.model, "gemini-3-flash-preview");
+        assert!(manifest.model.system_prompt.contains("Brand Guardian"));
+        assert!(manifest.model.system_prompt.contains("Critical Rules:"));
+        // Verify newlines are preserved
+        assert!(manifest.model.system_prompt.contains('\n'));
+    }
+
+    #[test]
+    fn test_manifest_multiline_system_prompt_with_quotes() {
+        // System prompt containing double quotes (common in persona prompts)
+        let toml_str = r#"
+name = "test-agent"
+
+[model]
+provider = "groq"
+model = "llama-3.3-70b-versatile"
+system_prompt = """
+You are a "helpful" assistant.
+When users say "hello", respond warmly.
+"""
+"#;
+        let manifest: AgentManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.model.system_prompt.contains("\"helpful\""));
+        assert!(manifest.model.system_prompt.contains("\"hello\""));
+    }
+
+    #[test]
+    fn test_manifest_multiline_system_prompt_with_code_blocks() {
+        // System prompt containing markdown-style code blocks
+        let toml_str = r#"
+name = "coder"
+
+[model]
+provider = "deepseek"
+model = "deepseek-chat"
+system_prompt = """
+You are a coding assistant.
+
+Example output format:
+```python
+def hello():
+    print("world")
+```
+
+Always use proper indentation.
+"""
+"#;
+        let manifest: AgentManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.model.system_prompt.contains("```python"));
+        assert!(manifest.model.system_prompt.contains("def hello()"));
+    }
+
+    #[test]
+    fn test_manifest_single_line_system_prompt_still_works() {
+        // Ensure the old single-line format still parses fine
+        let toml_str = r#"
+name = "simple"
+
+[model]
+provider = "groq"
+model = "llama-3.3-70b-versatile"
+system_prompt = "You are a helpful assistant."
+"#;
+        let manifest: AgentManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            manifest.model.system_prompt,
+            "You are a helpful assistant."
+        );
+    }
+
+    #[test]
+    fn test_manifest_wizard_custom_profile_with_capabilities() {
+        // Full wizard output when profile=custom with capabilities block
+        let toml_str = r#"
+name = "brand-guardian"
+module = "builtin:chat"
+
+[model]
+provider = "google"
+model = "gemini-3-flash-preview"
+system_prompt = """
+You are Brand Guardian.
+Protect brand consistency across all touchpoints.
+"""
+
+[capabilities]
+memory_read = ["*"]
+memory_write = ["self.*"]
+"#;
+        let manifest: AgentManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.name, "brand-guardian");
+        assert!(manifest.model.system_prompt.contains("Brand Guardian"));
+        assert_eq!(manifest.capabilities.memory_read, vec!["*".to_string()]);
+        assert_eq!(
+            manifest.capabilities.memory_write,
+            vec!["self.*".to_string()]
+        );
     }
 }

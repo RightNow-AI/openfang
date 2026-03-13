@@ -4,6 +4,7 @@
 //! Pipeline: SSRF check → cache lookup → HTTP GET → detect HTML →
 //! html_to_markdown() → truncate → wrap_external_content() → cache → return
 
+use crate::str_utils::safe_truncate_str;
 use crate::web_cache::WebCache;
 use crate::web_content::{html_to_markdown, wrap_external_content};
 use openfang_types::config::WebFetchConfig;
@@ -22,7 +23,11 @@ impl WebFetchEngine {
     /// Create a new fetch engine from config with a shared cache.
     pub fn new(config: WebFetchConfig, cache: Arc<WebCache>) -> Self {
         let client = reqwest::Client::builder()
+            .user_agent(crate::USER_AGENT)
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .gzip(true)
+            .deflate(true)
+            .brotli(true)
             .build()
             .unwrap_or_default();
         Self {
@@ -67,7 +72,7 @@ impl WebFetchEngine {
             "DELETE" => self.client.delete(url),
             _ => self.client.get(url),
         };
-        req = req.header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)");
+        req = req.header("User-Agent", format!("Mozilla/5.0 (compatible; {})", crate::USER_AGENT));
 
         // Add custom headers
         if let Some(hdrs) = headers {
@@ -132,11 +137,11 @@ impl WebFetchEngine {
             resp_body
         };
 
-        // Step 5: Truncate
+        // Step 5: Truncate (char-boundary-safe to avoid panics on multi-byte UTF-8)
         let truncated = if processed.len() > self.config.max_chars {
             format!(
                 "{}... [truncated, {} total chars]",
-                &processed[..self.config.max_chars],
+                safe_truncate_str(&processed, self.config.max_chars),
                 processed.len()
             )
         } else {
@@ -277,6 +282,28 @@ fn extract_host(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::str_utils::safe_truncate_str;
+
+    #[test]
+    fn test_truncate_multibyte_no_panic() {
+        // Simulate a gzip-decoded response containing multi-byte UTF-8
+        // (Chinese, Japanese, emoji — common on international finance sites).
+        // Old code: &s[..max] panics when max lands inside a multi-byte char.
+        let content = "\u{4f60}\u{597d}\u{4e16}\u{754c}!"; // "你好世界!" = 13 bytes
+        // Truncate at byte 7 — lands inside the 3rd Chinese char (bytes 6..9).
+        // safe_truncate_str walks back to byte 6, returning "你好".
+        let truncated = safe_truncate_str(content, 7);
+        assert_eq!(truncated, "\u{4f60}\u{597d}");
+        assert!(truncated.len() <= 7);
+    }
+
+    #[test]
+    fn test_truncate_emoji_no_panic() {
+        let content = "\u{1f4b0}\u{1f4c8}\u{1f4b9}"; // 💰📈💹 = 12 bytes
+        // Truncate at byte 5 — lands inside the 2nd emoji (bytes 4..8).
+        let truncated = safe_truncate_str(content, 5);
+        assert_eq!(truncated, "\u{1f4b0}"); // 4 bytes
+    }
 
     #[test]
     fn test_ssrf_blocks_localhost() {

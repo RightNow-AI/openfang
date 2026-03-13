@@ -61,19 +61,15 @@ fn validate_image_name(image: &str) -> Result<(), String> {
 }
 
 /// SECURITY: Sanitize command — reject dangerous shell metacharacters.
+/// Delegates to the comprehensive subprocess_sandbox check.
 fn validate_command(command: &str) -> Result<(), String> {
     if command.is_empty() {
         return Err("Command cannot be empty".into());
     }
-    // Reject backticks and $() which could enable command injection
-    let dangerous = ["`", "$(", "${"];
-    for pattern in &dangerous {
-        if command.contains(pattern) {
-            return Err(format!(
-                "Command contains disallowed pattern '{}' — potential injection",
-                pattern
-            ));
-        }
+    if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
+        return Err(format!(
+            "Command blocked: contains {reason} — potential injection"
+        ));
     }
     Ok(())
 }
@@ -104,7 +100,7 @@ pub async fn create_sandbox(
     let container_name = sanitize_container_name(&format!(
         "{}-{}",
         config.container_prefix,
-        &agent_id[..agent_id.len().min(8)]
+        crate::str_utils::safe_truncate_str(agent_id, 8)
     ))?;
 
     let mut cmd = tokio::process::Command::new("docker");
@@ -205,21 +201,23 @@ pub async fn exec_in_sandbox(
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let exit_code = output.status.code().unwrap_or(-1);
 
-    // Truncate large outputs
+    // Truncate large outputs (char-boundary safe to avoid UTF-8 panics)
     let max_output = 50_000;
     let stdout = if stdout.len() > max_output {
+        let safe_end = crate::str_utils::safe_truncate_str(&stdout, max_output);
         format!(
             "{}... [truncated, {} total bytes]",
-            &stdout[..max_output],
+            safe_end,
             stdout.len()
         )
     } else {
         stdout
     };
     let stderr = if stderr.len() > max_output {
+        let safe_end = crate::str_utils::safe_truncate_str(&stderr, max_output);
         format!(
             "{}... [truncated, {} total bytes]",
-            &stderr[..max_output],
+            safe_end,
             stderr.len()
         )
     } else {
@@ -489,7 +487,12 @@ mod tests {
     fn test_validate_command_valid() {
         assert!(validate_command("python script.py").is_ok());
         assert!(validate_command("ls -la /workspace").is_ok());
-        assert!(validate_command("echo hello | grep h").is_ok());
+    }
+
+    #[test]
+    fn test_validate_command_pipe_blocked() {
+        // SECURITY: Pipes now blocked by comprehensive metacharacter check
+        assert!(validate_command("echo hello | grep h").is_err());
     }
 
     #[test]

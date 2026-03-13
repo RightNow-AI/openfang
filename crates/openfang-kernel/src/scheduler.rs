@@ -100,6 +100,15 @@ impl AgentScheduler {
         Ok(())
     }
 
+    /// Reset usage tracking for an agent (e.g. on session reset).
+    pub fn reset_usage(&self, agent_id: AgentId) {
+        if let Some(mut tracker) = self.usage.get_mut(&agent_id) {
+            tracker.total_tokens = 0;
+            tracker.tool_calls = 0;
+            tracker.window_start = Instant::now();
+        }
+    }
+
     /// Abort an agent's active task.
     pub fn abort_task(&self, agent_id: AgentId) {
         if let Some((_, handle)) = self.tasks.remove(&agent_id) {

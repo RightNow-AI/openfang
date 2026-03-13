@@ -8,7 +8,7 @@ tags = ["chat", "messaging", "community", "gaming", "voice"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-discord"]
+args = ["-y", "mcp-discord"]
 
 [[required_env]]
 name = "DISCORD_BOT_TOKEN"

@@ -72,7 +72,7 @@ const PROVIDERS: &[ProviderInfo] = &[
         name: "openrouter",
         display: "OpenRouter",
         env_var: "OPENROUTER_API_KEY",
-        default_model: "openrouter/auto",
+        default_model: "openrouter/google/gemini-2.5-flash",
         needs_key: true,
         hint: "",
     },
@@ -101,6 +101,102 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "xai",
+        display: "xAI (Grok)",
+        env_var: "XAI_API_KEY",
+        default_model: "grok-4-0709",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "perplexity",
+        display: "Perplexity",
+        env_var: "PERPLEXITY_API_KEY",
+        default_model: "sonar-pro",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "cohere",
+        display: "Cohere",
+        env_var: "COHERE_API_KEY",
+        default_model: "command-a-03-2025",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "cerebras",
+        display: "Cerebras",
+        env_var: "CEREBRAS_API_KEY",
+        default_model: "llama-4-scout-17b-16e-instruct",
+        needs_key: true,
+        hint: "fast inference",
+    },
+    ProviderInfo {
+        name: "sambanova",
+        display: "SambaNova",
+        env_var: "SAMBANOVA_API_KEY",
+        default_model: "DeepSeek-R1",
+        needs_key: true,
+        hint: "fast inference",
+    },
+    ProviderInfo {
+        name: "qwen",
+        display: "Qwen (Alibaba)",
+        env_var: "QWEN_API_KEY",
+        default_model: "qwen-plus",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "huggingface",
+        display: "Hugging Face",
+        env_var: "HUGGINGFACE_API_KEY",
+        default_model: "meta-llama/Llama-3.3-70B-Instruct",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "github-copilot",
+        display: "GitHub Copilot",
+        env_var: "GITHUB_TOKEN",
+        default_model: "gpt-4o",
+        needs_key: true,
+        hint: "via PAT",
+    },
+    ProviderInfo {
+        name: "replicate",
+        display: "Replicate",
+        env_var: "REPLICATE_API_KEY",
+        default_model: "meta/meta-llama-3-70b-instruct",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "venice",
+        display: "Venice.ai",
+        env_var: "VENICE_API_KEY",
+        default_model: "venice-uncensored",
+        needs_key: true,
+        hint: "uncensored",
+    },
+    ProviderInfo {
+        name: "ai21",
+        display: "AI21",
+        env_var: "AI21_API_KEY",
+        default_model: "jamba-1.5-large",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "claude-code",
+        display: "Claude Code",
+        env_var: "",
+        default_model: "claude-code/sonnet",
+        needs_key: false,
+        hint: "no API key",
+    },
+    ProviderInfo {
         name: "ollama",
         display: "Ollama",
         env_var: "OLLAMA_API_KEY",
@@ -112,6 +208,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         name: "lmstudio",
         display: "LM Studio",
         env_var: "LMSTUDIO_API_KEY",
+        default_model: "local-model",
+        needs_key: false,
+        hint: "local",
+    },
+    ProviderInfo {
+        name: "vllm",
+        display: "vLLM",
+        env_var: "VLLM_API_KEY",
         default_model: "local-model",
         needs_key: false,
         hint: "local",
@@ -287,15 +391,23 @@ impl State {
         self.provider_order.clear();
         let gemini_via_google = std::env::var("GOOGLE_API_KEY").is_ok();
         for (i, p) in PROVIDERS.iter().enumerate() {
-            let detected =
-                std::env::var(p.env_var).is_ok() || (p.name == "gemini" && gemini_via_google);
+            let detected = if p.name == "claude-code" {
+                openfang_runtime::drivers::claude_code::claude_code_available()
+            } else {
+                (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
+                    || (p.name == "gemini" && gemini_via_google)
+            };
             if detected {
                 self.provider_order.push(i);
             }
         }
         for (i, p) in PROVIDERS.iter().enumerate() {
-            let detected =
-                std::env::var(p.env_var).is_ok() || (p.name == "gemini" && gemini_via_google);
+            let detected = if p.name == "claude-code" {
+                openfang_runtime::drivers::claude_code::claude_code_available()
+            } else {
+                (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
+                    || (p.name == "gemini" && gemini_via_google)
+            };
             if !detected {
                 self.provider_order.push(i);
             }
@@ -334,7 +446,10 @@ impl State {
 
     fn is_provider_detected(&self, prov_idx: usize) -> bool {
         let p = &PROVIDERS[prov_idx];
-        std::env::var(p.env_var).is_ok()
+        if p.name == "claude-code" {
+            return openfang_runtime::drivers::claude_code::claude_code_available();
+        }
+        (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
             || (p.name == "gemini" && std::env::var("GOOGLE_API_KEY").is_ok())
     }
 
@@ -468,6 +583,13 @@ fn tier_label(tier: ModelTier) -> &'static str {
 // ── Entry point ────────────────────────────────────────────────────────────
 
 pub fn run() -> InitResult {
+    // Guard against non-TTY environments (Docker, piped, CI/CD)
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin())
+        || !std::io::IsTerminal::is_terminal(&std::io::stdout())
+    {
+        return InitResult::Cancelled;
+    }
+
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         ratatui::restore();
@@ -988,6 +1110,12 @@ complex_threshold = 500
     };
 
     let config_path = openfang_dir.join("config.toml");
+    let api_key_line = if p.env_var.is_empty() {
+        String::new()
+    } else {
+        format!("api_key_env = \"{}\"", p.env_var)
+    };
+
     let config = format!(
         r#"# OpenFang Agent OS configuration
 # See https://github.com/RightNow-AI/openfang for documentation
@@ -997,13 +1125,12 @@ api_listen = "127.0.0.1:4200"
 [default_model]
 provider = "{provider}"
 model = "{model}"
-api_key_env = "{env_var}"
+{api_key_line}
 
 [memory]
 decay_rate = 0.05
 {routing_section}"#,
         provider = p.name,
-        env_var = p.env_var,
     );
 
     match std::fs::write(&config_path, &config) {
@@ -1600,7 +1727,13 @@ fn draw_provider(f: &mut Frame, area: Rect, state: &mut State) {
                 Span::styled("  ", Style::default())
             };
             let name_span = Span::raw(format!("{:<14}", p.display));
-            let hint_text = if detected {
+            let hint_text = if p.name == "claude-code" {
+                if detected {
+                    "CLI detected".to_string()
+                } else {
+                    "no API key needed".to_string()
+                }
+            } else if detected {
                 format!("{} detected", p.env_var)
             } else if !p.needs_key {
                 "local, no key needed".to_string()
@@ -1918,11 +2051,7 @@ fn draw_routing_pick(f: &mut Frame, area: Rect, state: &mut State, tier: usize) 
                 .split('/')
                 .next_back()
                 .unwrap_or(&state.routing_models[t]);
-            let display = if short.len() > 14 {
-                &short[..14]
-            } else {
-                short
-            };
+            let display = openfang_types::truncate_str(short, 14);
             summary_spans.push(Span::styled(
                 format!("{name}:{display}"),
                 Style::default().fg(*c),

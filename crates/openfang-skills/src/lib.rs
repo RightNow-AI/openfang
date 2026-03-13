@@ -35,6 +35,8 @@ pub enum SkillError {
     Io(#[from] std::io::Error),
     #[error("Network error: {0}")]
     Network(String),
+    #[error("Rate limited by ClawHub — please wait a moment and try again: {0}")]
+    RateLimited(String),
     #[error("TOML parse error: {0}")]
     TomlParse(#[from] toml::de::Error),
     #[error("YAML parse error: {0}")]

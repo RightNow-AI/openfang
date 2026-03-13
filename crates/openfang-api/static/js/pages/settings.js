@@ -26,6 +26,11 @@ function settingsPage() {
     providerTesting: {},
     providerTestResults: {},
     copilotOAuth: { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 },
+    customProviderName: '',
+    customProviderUrl: '',
+    customProviderKey: '',
+    customProviderStatus: '',
+    addingCustomProvider: false,
     loading: true,
     loadError: '',
 
@@ -290,11 +295,14 @@ function settingsPage() {
 
     async saveConfigField(section, field, value) {
       var key = section + '.' + field;
+      // Root-level fields (api_key, api_listen, log_level) use just the field name
+      var sectionMeta = this.configSchema && this.configSchema[section];
+      var path = (sectionMeta && sectionMeta.root_level) ? field : key;
       this.configSaving[key] = true;
       try {
-        await OpenFangAPI.post('/api/config/set', { path: key, value: value });
+        await OpenFangAPI.post('/api/config/set', { path: path, value: value });
         this.configDirty[key] = false;
-        OpenFangToast.success('Saved ' + key);
+        OpenFangToast.success('Saved ' + field);
       } catch(e) {
         OpenFangToast.error('Failed to save: ' + e.message);
       }
@@ -344,7 +352,10 @@ function settingsPage() {
 
     providerAuthText(p) {
       if (p.auth_status === 'configured') return 'Configured';
-      if (p.auth_status === 'not_set' || p.auth_status === 'missing') return 'Not Set';
+      if (p.auth_status === 'not_set' || p.auth_status === 'missing') {
+        if (p.id === 'claude-code') return 'Not Installed';
+        return 'Not Set';
+      }
       return 'No Key Needed';
     },
 
@@ -497,6 +508,34 @@ function settingsPage() {
         OpenFangToast.error('Failed to save URL: ' + e.message);
       }
       this.providerUrlSaving[provider.id] = false;
+    },
+
+    async addCustomProvider() {
+      var name = this.customProviderName.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
+      if (!name) { OpenFangToast.error('Please enter a provider name'); return; }
+      var url = this.customProviderUrl.trim();
+      if (!url) { OpenFangToast.error('Please enter a base URL'); return; }
+      if (url.indexOf('http://') !== 0 && url.indexOf('https://') !== 0) {
+        OpenFangToast.error('URL must start with http:// or https://'); return;
+      }
+      this.addingCustomProvider = true;
+      this.customProviderStatus = '';
+      try {
+        var result = await OpenFangAPI.put('/api/providers/' + encodeURIComponent(name) + '/url', { base_url: url });
+        if (this.customProviderKey.trim()) {
+          await OpenFangAPI.post('/api/providers/' + encodeURIComponent(name) + '/key', { key: this.customProviderKey.trim() });
+        }
+        this.customProviderName = '';
+        this.customProviderUrl = '';
+        this.customProviderKey = '';
+        this.customProviderStatus = '';
+        OpenFangToast.success('Provider "' + name + '" added' + (result.reachable ? ' (reachable)' : ' (not reachable yet)'));
+        await this.loadProviders();
+      } catch(e) {
+        this.customProviderStatus = 'Error: ' + (e.message || 'Failed');
+        OpenFangToast.error('Failed to add provider: ' + e.message);
+      }
+      this.addingCustomProvider = false;
     },
 
     // -- Security methods --

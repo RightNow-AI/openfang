@@ -24,8 +24,29 @@ pub fn map_tool_name(openclaw_name: &str) -> Option<&'static str> {
         "sessions_send" | "agent_message" => Some("agent_send"),
         "sessions_list" | "agents_list" | "agent_list" => Some("agent_list"),
         "sessions_spawn" => Some("agent_send"),
+
+        // LLM-hallucinated aliases (fs-* style names)
+        "fs-read" | "fs_read" | "fsRead" | "readFile" => Some("file_read"),
+        "fs-write" | "fs_write" | "fsWrite" | "writeFile" => Some("file_write"),
+        "fs-list" | "fs_list" | "fsList" | "listFiles" | "list_dir" | "ls" => Some("file_list"),
+        "fs-exec" | "run" | "run_command" | "runCommand" | "execute" | "shell" => {
+            Some("shell_exec")
+        }
+
         _ => None,
     }
+}
+
+/// Normalize a tool name to its canonical OpenFang form.
+///
+/// If the name is already a known OpenFang tool, returns it as-is.
+/// Otherwise, tries to map it through [`map_tool_name`].
+/// Returns the original name if no mapping is found.
+pub fn normalize_tool_name(name: &str) -> &str {
+    if is_known_openfang_tool(name) {
+        return name;
+    }
+    map_tool_name(name).unwrap_or(name)
 }
 
 /// Check if a tool name is a known OpenFang built-in tool.
@@ -104,9 +125,52 @@ mod tests {
         assert_eq!(map_tool_name("agent_list"), Some("agent_list"));
         assert_eq!(map_tool_name("sessions_spawn"), Some("agent_send"));
 
+        // LLM-hallucinated fs-* aliases
+        assert_eq!(map_tool_name("fs-read"), Some("file_read"));
+        assert_eq!(map_tool_name("fs_read"), Some("file_read"));
+        assert_eq!(map_tool_name("fsRead"), Some("file_read"));
+        assert_eq!(map_tool_name("readFile"), Some("file_read"));
+        assert_eq!(map_tool_name("fs-write"), Some("file_write"));
+        assert_eq!(map_tool_name("fs_write"), Some("file_write"));
+        assert_eq!(map_tool_name("fsWrite"), Some("file_write"));
+        assert_eq!(map_tool_name("writeFile"), Some("file_write"));
+        assert_eq!(map_tool_name("fs-list"), Some("file_list"));
+        assert_eq!(map_tool_name("fs_list"), Some("file_list"));
+        assert_eq!(map_tool_name("fsList"), Some("file_list"));
+        assert_eq!(map_tool_name("listFiles"), Some("file_list"));
+        assert_eq!(map_tool_name("list_dir"), Some("file_list"));
+        assert_eq!(map_tool_name("ls"), Some("file_list"));
+        assert_eq!(map_tool_name("fs-exec"), Some("shell_exec"));
+        assert_eq!(map_tool_name("run"), Some("shell_exec"));
+        assert_eq!(map_tool_name("run_command"), Some("shell_exec"));
+        assert_eq!(map_tool_name("runCommand"), Some("shell_exec"));
+        assert_eq!(map_tool_name("execute"), Some("shell_exec"));
+        assert_eq!(map_tool_name("shell"), Some("shell_exec"));
+
         // Unknown
         assert_eq!(map_tool_name("unknown_tool"), None);
         assert_eq!(map_tool_name(""), None);
+    }
+
+    #[test]
+    fn test_normalize_tool_name() {
+        // Known OpenFang tools pass through unchanged
+        assert_eq!(normalize_tool_name("file_read"), "file_read");
+        assert_eq!(normalize_tool_name("file_write"), "file_write");
+        assert_eq!(normalize_tool_name("shell_exec"), "shell_exec");
+        assert_eq!(normalize_tool_name("web_search"), "web_search");
+
+        // Aliases get normalized to canonical names
+        assert_eq!(normalize_tool_name("fs-read"), "file_read");
+        assert_eq!(normalize_tool_name("fs-write"), "file_write");
+        assert_eq!(normalize_tool_name("fs-list"), "file_list");
+        assert_eq!(normalize_tool_name("fs-exec"), "shell_exec");
+        assert_eq!(normalize_tool_name("Read"), "file_read");
+        assert_eq!(normalize_tool_name("Bash"), "shell_exec");
+
+        // Unknown names pass through unchanged
+        assert_eq!(normalize_tool_name("my_custom_tool"), "my_custom_tool");
+        assert_eq!(normalize_tool_name("mcp_server_tool"), "mcp_server_tool");
     }
 
     #[test]

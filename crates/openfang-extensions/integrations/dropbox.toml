@@ -8,7 +8,7 @@ tags = ["files", "storage", "cloud-storage", "sync", "sharing"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-dropbox"]
+args = ["-y", "@microagents/mcp-server-dropbox"]
 
 [[required_env]]
 name = "DROPBOX_ACCESS_TOKEN"

@@ -8,7 +8,7 @@ tags = ["chat", "messaging", "team", "channels", "collaboration"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-slack"]
+args = ["-y", "@modelcontextprotocol/server-slack"]
 
 [[required_env]]
 name = "SLACK_BOT_TOKEN"

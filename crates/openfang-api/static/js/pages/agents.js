@@ -1,6 +1,21 @@
 // OpenFang Agents Page — Multi-step spawn wizard, detail view with tabs, file editor, personality presets
 'use strict';
 
+/** Escape a string for use inside TOML triple-quoted strings ("""\n...\n""").
+ *  Backslashes are escaped, and runs of 3+ consecutive double-quotes are
+ *  broken up so the TOML parser never sees an unintended closing delimiter.
+ */
+function tomlMultilineEscape(s) {
+  return s.replace(/\\/g, '\\\\').replace(/"""/g, '""\\"');
+}
+
+/** Escape a string for use inside a TOML basic (single-line) string ("...").
+ *  Backslashes, double-quotes, and common control chars are escaped.
+ */
+function tomlBasicEscape(s) {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+}
+
 function agentsPage() {
   return {
     tab: 'agents',
@@ -63,6 +78,9 @@ function agentsPage() {
     editingModel: false,
     newModelValue: '',
     modelSaving: false,
+    // -- Fallback chain --
+    editingFallback: false,
+    newFallbackValue: '',
 
     // -- Templates state --
     tplTemplates: [],
@@ -316,12 +334,15 @@ function agentsPage() {
       OpenFangAPI.wsDisconnect();
     },
 
-    showDetail(agent) {
+    async showDetail(agent) {
       this.detailAgent = agent;
+      this.detailAgent._fallbacks = [];
       this.detailTab = 'info';
       this.agentFiles = [];
       this.editingFile = null;
       this.fileContent = '';
+      this.editingFallback = false;
+      this.newFallbackValue = '';
       this.configForm = {
         name: agent.name || '',
         system_prompt: agent.system_prompt || '',
@@ -331,6 +352,11 @@ function agentsPage() {
         vibe: (agent.identity && agent.identity.vibe) || ''
       };
       this.showDetailModal = true;
+      // Fetch full agent detail to get fallback_models
+      try {
+        var full = await OpenFangAPI.get('/api/agents/' + agent.id);
+        this.detailAgent._fallbacks = full.fallback_models || [];
+      } catch(e) { /* ignore */ }
     },
 
     killAgent(agent) {
@@ -400,7 +426,7 @@ function agentsPage() {
       var f = this.spawnForm;
       var si = this.spawnIdentity;
       var lines = [
-        'name = "' + f.name + '"',
+        'name = "' + tomlBasicEscape(f.name) + '"',
         'module = "builtin:chat"'
       ];
       if (f.profile && f.profile !== 'custom') {
@@ -409,7 +435,7 @@ function agentsPage() {
       lines.push('', '[model]');
       lines.push('provider = "' + f.provider + '"');
       lines.push('model = "' + f.model + '"');
-      lines.push('system_prompt = "' + f.systemPrompt.replace(/"/g, '\\"') + '"');
+      lines.push('system_prompt = """\n' + tomlMultilineEscape(f.systemPrompt) + '\n"""');
       if (f.profile === 'custom') {
         lines.push('', '[capabilities]');
         if (f.caps.memory_read) lines.push('memory_read = ["*"]');
@@ -586,8 +612,9 @@ function agentsPage() {
       if (!this.detailAgent || !this.newModelValue.trim()) return;
       this.modelSaving = true;
       try {
-        await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: this.newModelValue.trim() });
-        OpenFangToast.success('Model changed (memory reset)');
+        var resp = await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: this.newModelValue.trim() });
+        var providerInfo = (resp && resp.provider) ? ' (provider: ' + resp.provider + ')' : '';
+        OpenFangToast.success('Model changed' + providerInfo + ' (memory reset)');
         this.editingModel = false;
         await Alpine.store('app').refreshAgents();
         // Refresh detailAgent
@@ -599,6 +626,41 @@ function agentsPage() {
         OpenFangToast.error('Failed to change model: ' + e.message);
       }
       this.modelSaving = false;
+    },
+
+    // ── Fallback model chain ──
+    async addFallback() {
+      if (!this.detailAgent || !this.newFallbackValue.trim()) return;
+      var parts = this.newFallbackValue.trim().split('/');
+      var provider = parts.length > 1 ? parts[0] : this.detailAgent.model_provider;
+      var model = parts.length > 1 ? parts.slice(1).join('/') : parts[0];
+      if (!this.detailAgent._fallbacks) this.detailAgent._fallbacks = [];
+      this.detailAgent._fallbacks.push({ provider: provider, model: model });
+      try {
+        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', {
+          fallback_models: this.detailAgent._fallbacks
+        });
+        OpenFangToast.success('Fallback added: ' + provider + '/' + model);
+      } catch(e) {
+        OpenFangToast.error('Failed to save fallbacks: ' + e.message);
+        this.detailAgent._fallbacks.pop();
+      }
+      this.editingFallback = false;
+      this.newFallbackValue = '';
+    },
+
+    async removeFallback(idx) {
+      if (!this.detailAgent || !this.detailAgent._fallbacks) return;
+      var removed = this.detailAgent._fallbacks.splice(idx, 1);
+      try {
+        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', {
+          fallback_models: this.detailAgent._fallbacks
+        });
+        OpenFangToast.success('Fallback removed');
+      } catch(e) {
+        OpenFangToast.error('Failed to save fallbacks: ' + e.message);
+        this.detailAgent._fallbacks.splice(idx, 0, removed[0]);
+      }
     },
 
     // ── Tool filters ──
@@ -651,12 +713,12 @@ function agentsPage() {
     },
 
     async spawnBuiltin(t) {
-      var toml = 'name = "' + t.name + '"\n';
-      toml += 'description = "' + t.description.replace(/"/g, '\\"') + '"\n';
+      var toml = 'name = "' + tomlBasicEscape(t.name) + '"\n';
+      toml += 'description = "' + tomlBasicEscape(t.description) + '"\n';
       toml += 'module = "builtin:chat"\n';
       toml += 'profile = "' + t.profile + '"\n\n';
       toml += '[model]\nprovider = "' + t.provider + '"\nmodel = "' + t.model + '"\n';
-      toml += 'system_prompt = """\n' + t.system_prompt + '\n"""\n';
+      toml += 'system_prompt = """\n' + tomlMultilineEscape(t.system_prompt) + '\n"""\n';
 
       try {
         var res = await OpenFangAPI.post('/api/agents', { manifest_toml: toml });

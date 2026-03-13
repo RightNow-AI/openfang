@@ -8,7 +8,7 @@ tags = ["git", "vcs", "code", "merge-requests", "ci", "devops"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-gitlab"]
+args = ["-y", "@modelcontextprotocol/server-gitlab"]
 
 [[required_env]]
 name = "GITLAB_PERSONAL_ACCESS_TOKEN"

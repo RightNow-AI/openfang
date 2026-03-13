@@ -13,6 +13,8 @@ function workflowsPage() {
     loading: true,
     loadError: '',
     newWf: { name: '', description: '', steps: [{ name: '', agent_name: '', mode: 'sequential', prompt: '{{input}}' }] },
+    editModal: null,
+    editWf: { name: '', description: '', steps: [] },
 
     // -- Workflows methods --
     async loadWorkflows() {
@@ -73,6 +75,57 @@ function workflowsPage() {
         this.runModal = wf;
       } catch(e) {
         OpenFangToast.error('Failed to load run history: ' + e.message);
+      }
+    },
+
+    async deleteWorkflow(wf) {
+      if (!confirm('Delete workflow "' + wf.name + '"? This cannot be undone.')) return;
+      try {
+        await OpenFangAPI.delete('/api/workflows/' + wf.id);
+        OpenFangToast.success('Workflow "' + wf.name + '" deleted');
+        await this.loadWorkflows();
+      } catch(e) {
+        OpenFangToast.error('Failed to delete workflow: ' + e.message);
+      }
+    },
+
+    async showEditModal(wf) {
+      try {
+        var full = await OpenFangAPI.get('/api/workflows/' + wf.id);
+        this.editWf = {
+          name: full.name || '',
+          description: full.description || '',
+          steps: (full.steps || []).map(function(s) {
+            return {
+              name: s.name || '',
+              agent_name: (s.agent && s.agent.name) || '',
+              mode: s.mode || 'sequential',
+              prompt: s.prompt_template || '{{input}}'
+            };
+          })
+        };
+        if (this.editWf.steps.length === 0) {
+          this.editWf.steps.push({ name: '', agent_name: '', mode: 'sequential', prompt: '{{input}}' });
+        }
+        this.editModal = wf;
+      } catch(e) {
+        OpenFangToast.error('Failed to load workflow: ' + e.message);
+      }
+    },
+
+    async saveWorkflow() {
+      if (!this.editModal) return;
+      var steps = this.editWf.steps.map(function(s) {
+        return { name: s.name || 'step', agent_name: s.agent_name, mode: s.mode, prompt: s.prompt || '{{input}}' };
+      });
+      try {
+        var wfName = this.editWf.name;
+        await OpenFangAPI.put('/api/workflows/' + this.editModal.id, { name: wfName, description: this.editWf.description, steps: steps });
+        this.editModal = null;
+        OpenFangToast.success('Workflow "' + wfName + '" updated');
+        await this.loadWorkflows();
+      } catch(e) {
+        OpenFangToast.error('Failed to update workflow: ' + e.message);
       }
     }
   };

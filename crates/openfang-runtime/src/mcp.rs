@@ -8,6 +8,7 @@
 
 use openfang_types::tool::ToolDefinition;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, info};
@@ -59,6 +60,10 @@ pub struct McpConnection {
     config: McpServerConfig,
     /// Tools discovered from the server via tools/list.
     tools: Vec<ToolDefinition>,
+    /// Map from namespaced tool name → original tool name from the server.
+    /// Needed because `normalize_name` replaces hyphens with underscores,
+    /// but the server expects the original name (e.g. "list-connections").
+    original_names: HashMap<String, String>,
     /// Transport handle for sending requests.
     transport: McpTransportHandle,
     /// Next JSON-RPC request ID.
@@ -134,6 +139,7 @@ impl McpConnection {
         let mut conn = Self {
             config,
             tools: Vec::new(),
+            original_names: HashMap::new(),
             transport,
             next_id: 1,
         };
@@ -194,10 +200,27 @@ impl McpConnection {
                     let input_schema = tool
                         .get("inputSchema")
                         .cloned()
+                        .and_then(|v| {
+                            // Ensure input_schema is a JSON object. MCP servers may
+                            // return it as a string, null, or omit it entirely.
+                            match &v {
+                                serde_json::Value::Object(_) => Some(v),
+                                serde_json::Value::String(s) => {
+                                    serde_json::from_str::<serde_json::Value>(s)
+                                        .ok()
+                                        .filter(|p| p.is_object())
+                                }
+                                _ => None,
+                            }
+                        })
                         .unwrap_or(serde_json::json!({"type": "object"}));
 
                     // Namespace: mcp_{server}_{tool}
                     let namespaced = format_mcp_tool_name(server_name, raw_name);
+
+                    // Store original name so we can send it back to the server
+                    self.original_names
+                        .insert(namespaced.clone(), raw_name.to_string());
 
                     self.tools.push(ToolDefinition {
                         name: namespaced,
@@ -219,8 +242,13 @@ impl McpConnection {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, String> {
-        // Strip the namespace prefix to get the original tool name
-        let raw_name = strip_mcp_prefix(&self.config.name, name).unwrap_or(name);
+        // Look up the original tool name from the server (preserves hyphens etc.)
+        let raw_name = self
+            .original_names
+            .get(name)
+            .map(|s| s.as_str())
+            .or_else(|| strip_mcp_prefix(&self.config.name, name))
+            .unwrap_or(name);
 
         let params = serde_json::json!({
             "name": raw_name,
@@ -569,6 +597,25 @@ mod tests {
         assert!(is_mcp_tool("mcp_github_create_issue"));
         assert!(!is_mcp_tool("file_read"));
         assert!(!is_mcp_tool(""));
+    }
+
+    #[test]
+    fn test_hyphenated_tool_name_preserved() {
+        // Tool names with hyphens get normalized to underscores for namespacing,
+        // but original_names map preserves the original for call_tool dispatch.
+        let namespaced = format_mcp_tool_name("sqlcl", "list-connections");
+        assert_eq!(namespaced, "mcp_sqlcl_list_connections");
+
+        // Simulate what discover_tools does
+        let mut original_names = HashMap::new();
+        original_names.insert(namespaced.clone(), "list-connections".to_string());
+
+        // call_tool should resolve to original hyphenated name
+        let raw = original_names
+            .get(&namespaced)
+            .map(|s| s.as_str())
+            .unwrap_or("list_connections");
+        assert_eq!(raw, "list-connections");
     }
 
     #[test]
