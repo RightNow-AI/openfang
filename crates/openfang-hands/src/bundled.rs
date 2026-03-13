@@ -48,14 +48,57 @@ pub fn bundled_hands() -> Vec<(&'static str, &'static str, &'static str)> {
     ]
 }
 
+/// Normalize HAND.toml content to support both formats:
+/// - Direct format (existing): `id = "xxx"`
+/// - Documented format (new): `[hand] id = "xxx"`
+fn normalize_toml(toml_content: &str) -> String {
+    // Check if content is wrapped in [hand] table
+    if toml_content.contains("[hand]") {
+        // Remove the [hand] wrapper and un-indent the content
+        let lines: Vec<&str> = toml_content.lines().collect();
+        let mut in_hand_section = false;
+        let mut result = Vec::new();
+
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed.starts_with("[hand]") {
+                in_hand_section = true;
+                continue;
+            }
+            if in_hand_section && trimmed.starts_with('[') && !trimmed.starts_with("[[") {
+                // Exited the [hand] section
+                in_hand_section = false;
+            }
+            if in_hand_section {
+                // Remove leading indentation (2-4 spaces)
+                let unindented = if line.starts_with("    ") {
+                    &line[4..]
+                } else if line.starts_with("  ") {
+                    &line[2..]
+                } else {
+                    line
+                };
+                result.push(unindented);
+            } else {
+                result.push(line);
+            }
+        }
+
+        result.join("\n")
+    } else {
+        toml_content.to_string()
+    }
+}
+
 /// Parse a bundled HAND.toml into a HandDefinition with its skill content attached.
 pub fn parse_bundled(
     _id: &str,
     toml_content: &str,
     skill_content: &str,
 ) -> Result<HandDefinition, HandError> {
+    let normalized = normalize_toml(toml_content);
     let mut def: HandDefinition =
-        toml::from_str(toml_content).map_err(|e| HandError::TomlParse(e.to_string()))?;
+        toml::from_str(&normalized).map_err(|e| HandError::TomlParse(e.to_string()))?;
     if !skill_content.is_empty() {
         def.skill_content = Some(skill_content.to_string());
     }
@@ -309,3 +352,31 @@ mod tests {
         }
     }
 }
+
+    #[test]
+    fn parse_hand_wrapped_format() {
+        // Test the documented format with [hand] wrapper
+        let toml_content = r#"
+[hand]
+id = "test-hand"
+name = "Test Hand"
+description = "A test hand with [hand] wrapper format"
+category = "content"
+icon = "🤖"
+tools = ["web_fetch", "file_read"]
+
+[agent]
+name = "test-agent"
+description = "Test agent"
+system_prompt = "You are a test agent."
+
+[dashboard]
+metrics = []
+"#;
+        let result = parse_bundled("test-hand", toml_content, "");
+        assert!(result.is_ok(), "Failed to parse wrapped format: {:?}", result.err());
+        let def = result.unwrap();
+        assert_eq!(def.id, "test-hand");
+        assert_eq!(def.name, "Test Hand");
+        assert_eq!(def.category, crate::HandCategory::Content);
+    }
