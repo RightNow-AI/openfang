@@ -274,14 +274,29 @@ pub fn build_canonical_context_message(ctx: &PromptContext) -> Option<String> {
 /// Build the memory section (Section 4).
 ///
 /// Also used by `agent_loop.rs` to append recalled memories after DB lookup.
+///
+/// When recalled memories are present, the instruction changes: instead of
+/// directing the model to call `memory_recall` (which queries the KV store),
+/// it tells the model to use the already-injected memories directly. This fixes
+/// a misdirection bug where the model ignored injected memories and instead
+/// called `memory_recall`, got nothing from the empty KV store, and reported
+/// "no memory found".
 pub fn build_memory_section(memories: &[(String, String)]) -> String {
-    let mut out = String::from(
-        "## Memory\n\
-         - When the user asks about something from a previous conversation, use memory_recall first.\n\
-         - Store important preferences, decisions, and context with memory_store for future use.",
-    );
-    if !memories.is_empty() {
-        out.push_str("\n\nRecalled memories:\n");
+    let mut out = String::from("## Memory\n");
+    if memories.is_empty() {
+        // No recalled memories — direct model to use memory tools
+        out.push_str(
+            "- When the user asks about something from a previous conversation, use memory_recall first.\n\
+             - Store important preferences, decisions, and context with memory_store for future use.",
+        );
+    } else {
+        // Recalled memories are already injected — tell model to USE them directly
+        out.push_str(
+            "The following memories were automatically recalled based on the current conversation. \
+             Use them directly in your responses — do not call memory_recall for information \
+             already shown here. Only use memory_recall for specific key lookups not covered below.\n\n\
+             Recalled memories:\n",
+        );
         for (key, content) in memories.iter().take(5) {
             let capped = cap_str(content, 500);
             if key.is_empty() {
@@ -730,6 +745,7 @@ mod tests {
         assert!(section.contains("## Memory"));
         assert!(section.contains("memory_recall"));
         assert!(!section.contains("Recalled memories"));
+        assert!(!section.contains("Use them directly"));
     }
 
     #[test]
@@ -740,6 +756,8 @@ mod tests {
         ];
         let section = build_memory_section(&memories);
         assert!(section.contains("Recalled memories"));
+        assert!(section.contains("Use them directly"));
+        assert!(!section.contains("use memory_recall first"));
         assert!(section.contains("[pref] User likes dark mode"));
         assert!(section.contains("[ctx] Working on Rust project"));
     }
