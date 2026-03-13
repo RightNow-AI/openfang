@@ -67,12 +67,11 @@ impl ModelCatalog {
                 continue;
             }
             if provider.id == "qwen-code" {
-                provider.auth_status =
-                    if crate::drivers::qwen_code::qwen_code_available() {
-                        AuthStatus::Configured
-                    } else {
-                        AuthStatus::Missing
-                    };
+                provider.auth_status = if crate::drivers::qwen_code::qwen_code_available() {
+                    AuthStatus::Configured
+                } else {
+                    AuthStatus::Missing
+                };
                 continue;
             }
 
@@ -902,6 +901,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             key_required: false,
             auth_status: AuthStatus::NotRequired,
             model_count: 0,
+            is_local: false,
         },
     ]
 }
