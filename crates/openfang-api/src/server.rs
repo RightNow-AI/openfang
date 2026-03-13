@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 09:16:01
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-13 16:01:49
+ * @LastEditTime       : 2026-03-13 16:52:56
  */
 //! OpenFang daemon server — boots the kernel and serves the HTTP API.
 
@@ -191,7 +191,7 @@ pub async fn build_router(
         )
         .route(
             "/api/agents/{id}/config",
-            axum::routing::patch(routes::patch_agent_config),
+            axum::routing::patch(uni_agent::patch_agent_config),
         )
         .route(
             "/api/agents/{id}/workspace",

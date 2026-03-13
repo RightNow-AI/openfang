@@ -1,7 +1,11 @@
+use crate::{
+    routes::{self, AppState, PatchAgentConfigRequest},
+    types::{SpawnRequest, SpawnResponse},
+};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use openfang_runtime::tool_runner::builtin_tool_definitions;
@@ -9,11 +13,6 @@ use openfang_types::agent::{AgentId, AgentManifest, ModelConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-
-use crate::{
-    routes::AppState,
-    types::{SpawnRequest, SpawnResponse},
-};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BuiltinToolInfo {
@@ -65,6 +64,15 @@ pub struct SetWorkspaceRequest {
 pub struct SetMcpResponse {
     pub status: String,
     pub servers: Vec<String>,
+}
+#[derive(serde::Deserialize)]
+pub struct AgentConfigRequest {
+    pub mcp_servers: Option<Vec<String>>,
+    pub skills: Option<Vec<String>>,
+    pub tool_allowlist: Option<Vec<String>>,
+    pub tool_blocklist: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub patch: Option<PatchAgentConfigRequest>,
 }
 
 /// POST /api/agents — Spawn a new agent.
@@ -157,6 +165,72 @@ pub async fn spawn_agent(
             )
         }
     }
+}
+
+pub async fn patch_agent_config(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(mut req): Json<AgentConfigRequest>,
+) -> Response {
+    let agent_not_found = || {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Agent not found"})),
+        )
+            .into_response()
+    };
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return agent_not_found();
+        }
+    };
+    if let Some(ref mcp_servers) = req.mcp_servers {
+        if state
+            .kernel
+            .registry
+            .update_mcp_servers(agent_id, mcp_servers.clone())
+            .is_err()
+        {
+            return agent_not_found();
+        }
+    }
+    if let Some(ref skills) = req.skills {
+        if state
+            .kernel
+            .registry
+            .update_skills(agent_id, skills.clone())
+            .is_err()
+        {
+            return agent_not_found();
+        }
+    }
+    if req.tool_allowlist.is_some() || req.tool_blocklist.is_some() {
+        if state
+            .kernel
+            .registry
+            .update_tool_filters(
+                agent_id,
+                req.tool_allowlist.take(),
+                req.tool_blocklist.take(),
+            )
+            .is_err()
+        {
+            return agent_not_found();
+        }
+    }
+
+    if let Some(request) = req.patch.take() {
+        return routes::patch_agent_config(State(state), Path(id.clone()), Json(request))
+            .await
+            .into_response();
+    }
+
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"error": "Invalid Patch Agent Config Request"})),
+    )
+        .into_response()
 }
 
 pub async fn get_agent_builtin_tools_config(
