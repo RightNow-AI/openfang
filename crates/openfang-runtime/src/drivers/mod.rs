@@ -17,7 +17,7 @@ use openfang_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
     DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
     KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL,
-    MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
+    MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
     OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
     REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
     VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
@@ -214,6 +214,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "venice" => Some(ProviderDefaults {
             base_url: VENICE_BASE_URL,
             api_key_env: "VENICE_API_KEY",
+            key_required: true,
+        }),
+        "nvidia" | "nvidia-nim" => Some(ProviderDefaults {
+            base_url: NVIDIA_NIM_BASE_URL,
+            api_key_env: "NVIDIA_API_KEY",
             key_required: true,
         }),
         _ => None,
@@ -494,6 +499,8 @@ pub fn known_providers() -> &'static [&'static str] {
         "volcengine",
         "chutes",
         "venice",
+        "nvidia",
+        "nvidia-nim",
         "codex",
         "claude-code",
         "qwen-code",
@@ -599,7 +606,9 @@ mod tests {
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
         assert!(providers.contains(&"qwen-code"));
-        assert_eq!(providers.len(), 35);
+        assert!(providers.contains(&"nvidia"));
+        assert!(providers.contains(&"nvidia-nim"));
+        assert_eq!(providers.len(), 37);
     }
 
     #[test]
@@ -661,7 +670,7 @@ mod tests {
     fn test_custom_provider_no_key_no_url_errors() {
         // Custom provider with neither API key nor base_url should error.
         let config = DriverConfig {
-            provider: "nvidia".to_string(),
+            provider: "unknown-test-provider".to_string(),
             api_key: None,
             base_url: None,
             skip_permissions: true,
@@ -673,10 +682,10 @@ mod tests {
     #[test]
     fn test_custom_provider_key_no_url_helpful_error() {
         // Custom provider with key set (via env) but no base_url should give helpful error.
-        let unique_key = "test-nvidia-key-67890";
-        std::env::set_var("NVIDIA_API_KEY", unique_key);
+        let unique_key = "test-unknown-key-67890";
+        std::env::set_var("UNKNOWN_TEST_PROVIDER_API_KEY", unique_key);
         let config = DriverConfig {
-            provider: "nvidia".to_string(),
+            provider: "unknown-test-provider".to_string(),
             api_key: None,
             base_url: None,
             skip_permissions: true,
@@ -685,7 +694,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap().to_string();
         assert!(err.contains("base_url"), "Error should mention base_url: {}", err);
-        std::env::remove_var("NVIDIA_API_KEY");
+        std::env::remove_var("UNKNOWN_TEST_PROVIDER_API_KEY");
     }
 
     #[test]

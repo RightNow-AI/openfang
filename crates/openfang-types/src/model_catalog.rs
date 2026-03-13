@@ -51,6 +51,9 @@ pub const VOLCENGINE_CODING_BASE_URL: &str = "https://ark.cn-beijing.volces.com/
 // ── Chutes.ai ────────────────────────────────────────────────────
 pub const CHUTES_BASE_URL: &str = "https://llm.chutes.ai/v1";
 
+// ── NVIDIA NIM ────────────────────────────────────────────────────
+pub const NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
+
 // ── AWS Bedrock ───────────────────────────────────────────────────
 pub const BEDROCK_BASE_URL: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";
 
