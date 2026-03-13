@@ -1,0 +1,49 @@
+{
+  "task_id": "task-04-qa-smoke",
+  "parent_task_id": null,
+  "owner_agent_id": "team/qa",
+  "goal": "Create a smoke test matrix that verifies the example app is fully integrated and shippable.",
+  "scope": [
+    ".tasks/smoke/SMOKE-MATRIX.md",
+    ".tasks/smoke/build-check.sh"
+  ],
+  "inputs": [
+    "task-02-ui-wiring output — all pages wired",
+    "task-03-backend-contracts output — contract docs",
+    ".tasks/contracts-lock.json — all decisions"
+  ],
+  "dependencies": ["task-02-ui-wiring", "task-03-backend-contracts"],
+  "constraints": [
+    "Smoke matrix must cover every route defined in app/(shell)/",
+    "Build check script must be runnable with: bash .tasks/smoke/build-check.sh",
+    "Manual smoke path must not require a human to know internal agent IDs — derive from /api/agents",
+    "SSE test must verify that at least one delta event arrives within 10 s"
+  ],
+  "tools_allowed": [
+    "file_create",
+    "file_edit",
+    "build_check",
+    "shell_exec"
+  ],
+  "done_criteria": [
+    ".tasks/smoke/SMOKE-MATRIX.md exists with rows for: build, every route render, mobile nav at 375px, chat send, SSE connect/disconnect, empty state (no history), error state (daemon offline)",
+    ".tasks/smoke/build-check.sh exists and exits 0 on a clean repo",
+    "Manual smoke path is documented step-by-step and executable without code knowledge",
+    "All rows have PASS/FAIL/SKIP status filled in for the current build"
+  ],
+  "escalation_rules": [
+    "Escalate to coordinator if any route returns 500 or blank page during smoke run",
+    "Escalate if mobile nav bottom bar is not visible at 375 px after UI wiring changes",
+    "Escalate if SSE stream never emits delta — this is a blocker for the merge"
+  ],
+  "output_contract": {
+    "format": "Markdown matrix + bash script",
+    "location": [
+      "sdk/javascript/examples/nextjs-dashboard/.tasks/smoke/SMOKE-MATRIX.md",
+      "sdk/javascript/examples/nextjs-dashboard/.tasks/smoke/build-check.sh"
+    ],
+    "reviewer": "team/coordinator"
+  },
+  "priority": "normal",
+  "created_at": "2026-03-12T00:00:00Z"
+}

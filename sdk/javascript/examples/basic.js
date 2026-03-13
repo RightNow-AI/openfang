@@ -8,7 +8,11 @@
 const { OpenFang } = require("../index");
 
 async function main() {
-  const client = new OpenFang("http://localhost:3000");
+  const client = new OpenFang(process.env.OPENFANG_BASE_URL || "http://127.0.0.1:50051", {
+    headers: process.env.OPENFANG_API_KEY
+      ? { Authorization: `Bearer ${process.env.OPENFANG_API_KEY}` }
+      : {},
+  });
 
   // Check server health
   const health = await client.health();

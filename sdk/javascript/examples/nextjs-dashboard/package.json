@@ -1,0 +1,20 @@
+{
+  "name": "@openfang/nextjs-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "node --no-webstorage ./node_modules/next/dist/bin/next dev",
+    "build": "node --no-webstorage ./node_modules/next/dist/bin/next build",
+    "start": "node --no-webstorage ./node_modules/next/dist/bin/next start"
+  },
+  "dependencies": {
+    "next": "^16.1.6",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17"
+  }
+}

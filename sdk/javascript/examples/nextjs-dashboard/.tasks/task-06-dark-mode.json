@@ -1,0 +1,55 @@
+{
+  "task_id": "task-06-dark-mode",
+  "parent_task_id": "nextjs-dashboard-phase-1",
+  "owner_agent_id": "team/ui",
+  "goal": "Add app-wide dark mode with persisted preference, system default, and no-flash shell behavior.",
+  "scope": [
+    "app/layout.js",
+    "app/globals.css",
+    "tailwind.config.js",
+    "components/shell/Topbar.js",
+    "components/cards/ActionCard.js",
+    "components/cards/SectionCard.js",
+    "components/health/StatusBadge.js",
+    "components/chat/ChatWindow.js",
+    "components/theme/ThemeProvider.js",
+    "components/theme/ThemeToggle.js"
+  ],
+  "inputs": [
+    "Existing shell and design token scaffold",
+    "Current status badge and card components"
+  ],
+  "dependencies": [],
+  "constraints": [
+    "Do not add external theme libraries",
+    "Use CSS variables and a tiny client provider",
+    "Keep shell layout unchanged apart from the theme toggle"
+  ],
+  "tools_allowed": [
+    "edit_files",
+    "run_build"
+  ],
+  "done_criteria": [
+    "Light and dark themes both render cleanly",
+    "Theme persists across reloads",
+    "System theme is respected when user preference is system",
+    "No flash of incorrect theme on first paint",
+    "Build passes"
+  ],
+  "escalation_rules": [
+    "Escalate only if a shared shell file needs broader redesign"
+  ],
+  "output_contract": {
+    "expected_artifacts": [
+      "ThemeProvider.js",
+      "ThemeToggle.js",
+      "Token-based globals.css update"
+    ],
+    "expected_summary": true,
+    "expected_tests": [
+      "npm run build"
+    ],
+    "expected_handoff_to": "team/qa"
+  },
+  "priority": "normal"
+}

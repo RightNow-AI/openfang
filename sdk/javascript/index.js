@@ -3,7 +3,11 @@
  *
  * Usage:
  *   const { OpenFang } = require("@openfang/sdk");
- *   const client = new OpenFang("http://localhost:3000");
+ *   const client = new OpenFang(process.env.OPENFANG_BASE_URL || "http://127.0.0.1:50051", {
+ *     headers: {
+ *       Authorization: `Bearer ${process.env.OPENFANG_API_KEY}`,
+ *     },
+ *   });
  *
  *   const agent = await client.agents.create({ template: "assistant" });
  *   const reply = await client.agents.message(agent.id, "Hello!");
@@ -28,7 +32,7 @@ class OpenFangError extends Error {
 
 class OpenFang {
   /**
-   * @param {string} baseUrl - OpenFang server URL (e.g. "http://localhost:3000")
+  * @param {string} baseUrl - OpenFang server URL (e.g. "http://127.0.0.1:50051")
    * @param {object} [opts]
    * @param {Record<string, string>} [opts.headers] - Extra headers for every request
    */
@@ -159,7 +163,11 @@ class AgentResource {
    * @param {object} opts - e.g. { template: "assistant", name: "My Agent" }
    */
   async create(opts) {
-    return this._c._request("POST", "/api/agents", opts);
+    var created = await this._c._request("POST", "/api/agents", opts);
+    if (created && typeof created === "object" && !created.id && created.agent_id) {
+      created.id = created.agent_id;
+    }
+    return created;
   }
 
   /** Delete (kill) an agent. */

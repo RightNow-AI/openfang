@@ -1,0 +1,54 @@
+{
+  "task_id": "task-05-coordinator-merge",
+  "parent_task_id": null,
+  "owner_agent_id": "team/coordinator",
+  "goal": "Accept all worker outputs, verify the integration order is correct, and declare the example app ready for review.",
+  "scope": [
+    "CHANGELOG.md (example entry only)"
+  ],
+  "inputs": [
+    "task-01-sdk-client — Done signal from team/sdk",
+    "task-02-ui-wiring — Done signal from team/ui",
+    "task-03-backend-contracts — Done signal from team/backend-contract",
+    "task-04-qa-smoke — Done signal from team/qa + clean smoke matrix"
+  ],
+  "dependencies": [
+    "task-01-sdk-client",
+    "task-02-ui-wiring",
+    "task-03-backend-contracts",
+    "task-04-qa-smoke"
+  ],
+  "constraints": [
+    "Do not merge if any task is in Blocked state",
+    "Do not merge if npm run build exits non-zero",
+    "Do not merge if smoke matrix has any FAIL rows without a documented waiver",
+    "Do not merge if team/sdk and team/ui are both listed as last-writer on any single file",
+    "Track 1 (Capacitor mobile shell) is a separate PR — do not include its changes here"
+  ],
+  "tools_allowed": [
+    "build_check",
+    "git_diff",
+    "file_read"
+  ],
+  "done_criteria": [
+    "All four worker tasks are in Done state in the task registry",
+    "npm run build passes with 0 errors and 0 warnings",
+    "Zero MOCK_ constants in app/ or components/ (grep check)",
+    "Zero raw fetch() calls in pages (grep check)",
+    "Smoke matrix is fully green or has explicit waivers",
+    "No file owned by frozen shell list was modified",
+    "No Track 1 files are included in the diff"
+  ],
+  "escalation_rules": [
+    "Escalate to human reviewer if any task is still Blocked after 2 coordinator ticks",
+    "Escalate if the grep checks find MOCK_ or inline fetch in unexpected locations",
+    "Escalate if Track 1 and Track 2 files have overlapping changes"
+  ],
+  "output_contract": {
+    "format": "Ready-to-review branch with passing build and clean smoke",
+    "location": ["sdk/javascript/examples/nextjs-dashboard/"],
+    "reviewer": "human"
+  },
+  "priority": "normal",
+  "created_at": "2026-03-12T00:00:00Z"
+}

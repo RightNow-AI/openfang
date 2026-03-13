@@ -11,6 +11,13 @@ export interface AgentCreateOpts {
   [key: string]: unknown;
 }
 
+export interface AgentCreateResponse {
+  id: string;
+  agent_id?: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
 export interface MessageOpts {
   attachments?: string[];
   [key: string]: unknown;
@@ -51,7 +58,7 @@ export class OpenFang {
 export class AgentResource {
   list(): Promise<unknown[]>;
   get(id: string): Promise<unknown>;
-  create(opts: AgentCreateOpts): Promise<{ id: string; [key: string]: unknown }>;
+  create(opts: AgentCreateOpts): Promise<AgentCreateResponse>;
   delete(id: string): Promise<unknown>;
   stop(id: string): Promise<unknown>;
   clone(id: string): Promise<unknown>;

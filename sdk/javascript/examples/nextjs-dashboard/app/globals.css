@@ -1,0 +1,193 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Design tokens ─────────────────────────────────────────────────────────── */
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --muted: #eef2ff;
+  --muted-foreground: #64748b;
+  --border: rgba(15, 23, 42, 0.10);
+  --accent: #4f46e5;
+  --accent-foreground: #ffffff;
+  --accent-soft: rgba(79, 70, 229, 0.10);
+  --success: #16a34a;
+  --warning: #ca8a04;
+  --danger: #dc2626;
+  --shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.dark {
+  --background: #0b1220;
+  --foreground: #e5eefc;
+  --card: #111827;
+  --card-foreground: #e5eefc;
+  --muted: #182235;
+  --muted-foreground: #94a3b8;
+  --border: rgba(148, 163, 184, 0.18);
+  --accent: #6366f1;
+  --accent-foreground: #ffffff;
+  --accent-soft: rgba(99, 102, 241, 0.18);
+  --success: #22c55e;
+  --warning: #eab308;
+  --danger: #f87171;
+  --shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+body {
+  min-height: 100vh;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    border-color: var(--border);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* Eliminate 300ms tap delay on mobile */
+  a, button, [role="button"], input, textarea, select, label {
+    touch-action: manipulation;
+  }
+
+  /* Prevent iOS auto-zoom when tapping inputs (requires font-size ≥ 16px) */
+  @media screen and (max-width: 767px) {
+    .input-field,
+    input[type="text"],
+    input[type="email"],
+    input[type="search"],
+    textarea {
+      font-size: 1rem; /* 16px — iOS won't zoom at this size */
+    }
+  }
+
+  /* Smooth scrolling for message lists */
+  .scroll-smooth {
+    scroll-behavior: smooth;
+  }
+
+  /* Hide scrollbar on mobile nav overflow */
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@layer components {
+  /* Shell main layout: bottom padding = mobile nav + iPhone home bar */
+  .shell-main-pb {
+    padding-bottom: max(5rem, calc(4rem + env(safe-area-inset-bottom, 0px)));
+  }
+  @media (min-width: 768px) {
+    .shell-main-pb {
+      padding-bottom: 0;
+    }
+  }
+
+  /* Surface — primary token-based building block */
+  .surface {
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+  }
+
+  /* Card — alias for surface, keeps existing usages working */
+  .card {
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    @apply rounded-2xl;
+  }
+
+  /* Nav item base */
+  .nav-item {
+    @apply flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium
+           transition-colors duration-150 cursor-pointer select-none;
+  }
+
+  .nav-item-active {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .nav-item-inactive {
+    color: var(--muted-foreground);
+  }
+  .nav-item-inactive:hover {
+    background: var(--muted);
+    color: var(--foreground);
+  }
+
+  /* Primary button */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl
+           px-4 py-2.5 text-sm font-medium text-white
+           active:scale-[0.98]
+           transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+    background: var(--accent);
+  }
+  .btn-primary:hover {
+    opacity: 0.9;
+  }
+
+  /* Secondary button */
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl
+           px-4 py-2.5 text-sm font-medium
+           active:scale-[0.98]
+           transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+    background: var(--card);
+    color: var(--foreground);
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover {
+    background: var(--muted);
+  }
+
+  /* Ghost button */
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl
+           px-4 py-2.5 text-sm font-medium
+           active:scale-[0.98]
+           transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+    color: var(--muted-foreground);
+  }
+  .btn-ghost:hover {
+    background: var(--muted);
+    color: var(--foreground);
+  }
+
+  /* Input field */
+  .input-field {
+    @apply w-full rounded-xl px-4 py-2.5 text-sm
+           focus:outline-none focus:ring-2 focus:ring-accent-600/20
+           transition-colors duration-150;
+    background: var(--card);
+    color: var(--foreground);
+    border: 1px solid var(--border);
+  }
+  .input-field::placeholder {
+    color: var(--muted-foreground);
+  }
+  .input-field:focus {
+    border-color: var(--accent);
+  }
+}

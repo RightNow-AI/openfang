@@ -1,23 +1,21 @@
 #!/usr/bin/env node
+'use strict';
 
-import http from 'node:http';
-import { randomUUID } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
-import QRCode from 'qrcode';
-import pino from 'pino';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const http = require('node:http');
+const https = require('node:https');
+const { randomUUID } = require('node:crypto');
 
 // ---------------------------------------------------------------------------
 // Config from environment
 // ---------------------------------------------------------------------------
 const PORT = parseInt(process.env.WHATSAPP_GATEWAY_PORT || '3009', 10);
-const OPENFANG_URL = (process.env.OPENFANG_URL || 'http://127.0.0.1:4200').replace(/\/+$/, '');
-const DEFAULT_AGENT = process.env.OPENFANG_DEFAULT_AGENT || 'assistant';
+const OPENFANG_BASE_URL = (
+  process.env.OPENFANG_BASE_URL
+  || process.env.OPENFANG_URL
+  || 'http://127.0.0.1:50051'
+).replace(/\/+$/, '');
+const OPENFANG_API_KEY = process.env.OPENFANG_API_KEY || '';
+const DEFAULT_AGENT = process.env.OPENFANG_DEFAULT_MODEL || process.env.OPENFANG_DEFAULT_AGENT || 'assistant';
 
 // ---------------------------------------------------------------------------
 // State
@@ -28,17 +26,23 @@ let qrDataUrl = '';       // latest QR code as data:image/png;base64,...
 let connStatus = 'disconnected'; // disconnected | qr_ready | connected
 let qrExpired = false;
 let statusMessage = 'Not started';
-let reconnectAttempt = 0; // exponential backoff counter
-const MAX_RECONNECT_DELAY = 60_000; // cap at 60s
 
 // ---------------------------------------------------------------------------
 // Baileys connection
 // ---------------------------------------------------------------------------
 async function startConnection() {
-  const logger = pino({ level: 'warn' });
-  const authDir = path.join(__dirname, 'auth_store');
+  // Dynamic imports — Baileys is ESM-only in v6+
+  const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } =
+    await import('@whiskeysockets/baileys');
+  const QRCode = (await import('qrcode')).default || await import('qrcode');
+  const pino = (await import('pino')).default || await import('pino');
 
-  const { state, saveCreds } = await useMultiFileAuthState(authDir);
+  const logger = pino({ level: 'warn' });
+  const authDir = require('node:path').join(__dirname, 'auth_store');
+
+  const { state, saveCreds } = await useMultiFileAuthState(
+    require('node:path').join(__dirname, 'auth_store')
+  );
   const { version } = await fetchLatestBaileysVersion();
 
   sessionId = randomUUID();
@@ -81,27 +85,30 @@ async function startConnection() {
       console.log(`[gateway] Connection closed: ${reason} (${statusCode})`);
 
       if (statusCode === DisconnectReason.loggedOut) {
-        // User logged out from phone — clear auth and stop (truly non-recoverable)
+        // User logged out from phone — clear auth and stop
         connStatus = 'disconnected';
         statusMessage = 'Logged out. Generate a new QR code to reconnect.';
         qrDataUrl = '';
         sock = null;
-        reconnectAttempt = 0;
         // Remove auth store so next connect gets a fresh QR
+        const fs = require('node:fs');
+        const path = require('node:path');
         const authPath = path.join(__dirname, 'auth_store');
         if (fs.existsSync(authPath)) {
           fs.rmSync(authPath, { recursive: true, force: true });
         }
+      } else if (statusCode === DisconnectReason.restartRequired ||
+                 statusCode === DisconnectReason.timedOut) {
+        // Recoverable — reconnect automatically
+        console.log('[gateway] Reconnecting...');
+        statusMessage = 'Reconnecting...';
+        setTimeout(() => startConnection(), 2000);
       } else {
-        // All other disconnect reasons are recoverable — reconnect with backoff
-        // Covers: restartRequired(515), timedOut(408), connectionClosed(428),
-        // connectionLost(408), connectionReplaced(440), badSession(500), etc.
-        reconnectAttempt++;
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempt - 1), MAX_RECONNECT_DELAY);
-        console.log(`[gateway] Reconnecting in ${delay}ms (attempt ${reconnectAttempt})...`);
-        statusMessage = `Reconnecting (attempt ${reconnectAttempt})...`;
+        // QR expired or other non-recoverable close
+        qrExpired = true;
         connStatus = 'disconnected';
-        setTimeout(() => startConnection(), delay);
+        statusMessage = 'QR code expired. Click "Generate New QR" to retry.';
+        qrDataUrl = '';
       }
     }
 
@@ -109,7 +116,6 @@ async function startConnection() {
       connStatus = 'connected';
       qrExpired = false;
       qrDataUrl = '';
-      reconnectAttempt = 0;
       statusMessage = 'Connected to WhatsApp';
       console.log('[gateway] Connected to WhatsApp!');
     }
@@ -167,17 +173,19 @@ function forwardToOpenFang(text, phone, pushName) {
       },
     });
 
-    const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(DEFAULT_AGENT)}/message`);
+    const url = new URL(`${OPENFANG_BASE_URL}/api/agents/${encodeURIComponent(DEFAULT_AGENT)}/message`);
 
-    const req = http.request(
+    const transport = url.protocol === 'https:' ? https : http;
+    const req = transport.request(
       {
         hostname: url.hostname,
-        port: url.port || 4200,
-        path: url.pathname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: `${url.pathname}${url.search}`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(payload),
+          ...(OPENFANG_API_KEY ? { Authorization: `Bearer ${OPENFANG_API_KEY}` } : {}),
         },
         timeout: 120_000, // LLM calls can be slow
       },
@@ -260,11 +268,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
-  const pathname = url.pathname;
+  const path = url.pathname;
 
   try {
     // POST /login/start — start Baileys connection, return QR
-    if (req.method === 'POST' && pathname === '/login/start') {
+    if (req.method === 'POST' && path === '/login/start') {
       // If already connected, just return success
       if (connStatus === 'connected') {
         return jsonResponse(res, 200, {
@@ -294,7 +302,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // GET /login/status — poll for connection status
-    if (req.method === 'GET' && pathname === '/login/status') {
+    if (req.method === 'GET' && path === '/login/status') {
       return jsonResponse(res, 200, {
         connected: connStatus === 'connected',
         message: statusMessage,
@@ -303,7 +311,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // POST /message/send — send outgoing message via Baileys
-    if (req.method === 'POST' && pathname === '/message/send') {
+    if (req.method === 'POST' && path === '/message/send') {
       const body = await parseBody(req);
       const { to, text } = body;
 
@@ -316,7 +324,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // GET /health — health check
-    if (req.method === 'GET' && pathname === '/health') {
+    if (req.method === 'GET' && path === '/health') {
       return jsonResponse(res, 200, {
         status: 'ok',
         connected: connStatus === 'connected',
@@ -327,27 +335,16 @@ const server = http.createServer(async (req, res) => {
     // 404
     jsonResponse(res, 404, { error: 'Not found' });
   } catch (err) {
-    console.error(`[gateway] ${req.method} ${pathname} error:`, err.message);
+    console.error(`[gateway] ${req.method} ${path} error:`, err.message);
     jsonResponse(res, 500, { error: err.message });
   }
 });
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[gateway] WhatsApp Web gateway listening on http://127.0.0.1:${PORT}`);
-  console.log(`[gateway] OpenFang URL: ${OPENFANG_URL}`);
+  console.log(`[gateway] OpenFang URL: ${OPENFANG_BASE_URL}`);
   console.log(`[gateway] Default agent: ${DEFAULT_AGENT}`);
-
-  // Auto-connect if credentials already exist from a previous session
-  const credsPath = path.join(__dirname, 'auth_store', 'creds.json');
-  if (fs.existsSync(credsPath)) {
-    console.log('[gateway] Found existing credentials — auto-connecting...');
-    startConnection().catch((err) => {
-      console.error('[gateway] Auto-connect failed:', err.message);
-      statusMessage = 'Auto-connect failed. Use POST /login/start to retry.';
-    });
-  } else {
-    console.log('[gateway] No credentials found. Waiting for POST /login/start to begin QR flow...');
-  }
+  console.log('[gateway] Waiting for POST /login/start to begin QR flow...');
 });
 
 // Graceful shutdown

@@ -5,7 +5,7 @@
   "bin": {
     "openfang-whatsapp-gateway": "./index.js"
   },
-  "type": "module",
+  "type": "commonjs",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"

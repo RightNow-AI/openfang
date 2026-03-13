@@ -1,0 +1,54 @@
+{
+  "task_id": "task-01-sdk-client",
+  "parent_task_id": null,
+  "owner_agent_id": "team/sdk",
+  "goal": "Create one shared API client layer for the example app so no page does raw fetch inline.",
+  "scope": [
+    "lib/openfang-client.js",
+    "lib/openfang-events.js",
+    "lib/platform-meta.js"
+  ],
+  "inputs": [
+    ".tasks/contracts-lock.json — decisions.base_url",
+    ".tasks/contracts-lock.json — decisions.chat_transport",
+    ".tasks/contracts-lock.json — decisions.health",
+    ".tasks/contracts-lock.json — decisions.history",
+    ".tasks/contracts-lock.json — decisions.connect",
+    "process.env.NEXT_PUBLIC_OPENFANG_BASE_URL"
+  ],
+  "dependencies": ["contracts-lock"],
+  "constraints": [
+    "Base URL must come from process.env.NEXT_PUBLIC_OPENFANG_BASE_URL with fallback http://127.0.0.1:50051",
+    "No lib file may import from app/ or components/",
+    "No default export — named exports only",
+    "All functions must be async and return { data, error } — never throw to the caller",
+    "SSE helpers must return an AbortController so callers can cancel the stream"
+  ],
+  "tools_allowed": [
+    "file_create",
+    "file_edit",
+    "build_check"
+  ],
+  "done_criteria": [
+    "lib/openfang-client.js exports: getBaseUrl(), fetchHealth(), listAgents(), getAgent(id), sendMessage(agentId, text, stream), getHistory(agentId, limit), listChannels()",
+    "lib/openfang-events.js exports: streamChat(agentId, message, onDelta, onDone, onError) returning { abort }",
+    "lib/platform-meta.js exports: PLATFORMS array with { id, label, icon, steps[] } for each of the 5 platforms in contracts-lock",
+    "npm run build passes with 0 errors",
+    "No raw fetch() inside app/ or components/ (grep check)"
+  ],
+  "escalation_rules": [
+    "Escalate to coordinator if OpenFang endpoint shapes differ from contract decisions",
+    "Escalate if SSE transport requires auth headers not yet defined in contracts-lock"
+  ],
+  "output_contract": {
+    "format": "JavaScript ESM modules, no bundler transformation required",
+    "location": [
+      "sdk/javascript/examples/nextjs-dashboard/lib/openfang-client.js",
+      "sdk/javascript/examples/nextjs-dashboard/lib/openfang-events.js",
+      "sdk/javascript/examples/nextjs-dashboard/lib/platform-meta.js"
+    ],
+    "reviewer": "team/coordinator"
+  },
+  "priority": "high",
+  "created_at": "2026-03-12T00:00:00Z"
+}

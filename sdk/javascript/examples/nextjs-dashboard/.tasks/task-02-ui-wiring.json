@@ -1,0 +1,63 @@
+{
+  "task_id": "task-02-ui-wiring",
+  "parent_task_id": null,
+  "owner_agent_id": "team/ui",
+  "goal": "Replace every static page placeholder with loading, empty, success, and error states driven by the shared client layer.",
+  "scope": [
+    "app/(shell)/page.js",
+    "app/(shell)/chat/page.js",
+    "app/(shell)/history/page.js",
+    "app/(shell)/connect/page.js",
+    "app/(shell)/connect/[platform]/page.js",
+    "app/(shell)/health/page.js",
+    "components/chat/ChatWindow.js",
+    "components/connect/SetupWizard.js",
+    "components/health/StatusBadge.js"
+  ],
+  "inputs": [
+    "lib/openfang-client.js (task-01 output)",
+    "lib/openfang-events.js (task-01 output)",
+    "lib/platform-meta.js (task-01 output)",
+    ".tasks/contracts-lock.json — all decisions"
+  ],
+  "dependencies": ["task-01-sdk-client"],
+  "constraints": [
+    "Do NOT edit any file in the frozen shell list (ShellClient.js, Sidebar.js, Topbar.js, MobileNav.js)",
+    "Do NOT edit app/globals.css or tailwind.config.js",
+    "Every user-visible async path must have: loading skeleton OR spinner, empty state, error message with retry",
+    "Chat send must be non-blocking — UI stays responsive during stream",
+    "No dead buttons: every button must either do something or be explicitly disabled with a visible reason",
+    "Mobile layout must not regress — test at 375 px and 768 px viewports"
+  ],
+  "tools_allowed": [
+    "file_edit",
+    "build_check",
+    "browser_preview"
+  ],
+  "done_criteria": [
+    "Home page: status hero card reflects live fetchHealth() result with loading + error states",
+    "Chat page: ChatWindow sends via streamChat(), renders delta tokens as they arrive, shows error on failure",
+    "History page: list from getHistory() with loading skeleton, empty state for zero turns, error state with retry",
+    "Connect page: platform cards show live listChannels() connected state, not static mock",
+    "Connect/[platform] page: SetupWizard uses PLATFORMS from platform-meta.js, completion writes to listChannels",
+    "Health page: all diagnostic rows populated from fetchHealth() response, no MOCK_HEALTH remaining",
+    "npm run build passes with 0 errors",
+    "No MOCK_ prefixed constants remain in app/ or components/ (grep check)"
+  ],
+  "escalation_rules": [
+    "Escalate to coordinator if a page needs to own a file listed in SDK agent scope",
+    "Escalate if chat stream produces layout scroll-jump at > 50 tokens that cannot be fixed without editing ShellClient.js",
+    "Escalate if health endpoint returns a field not in contracts-lock decisions.health",
+    "Escalate to backend-contract agent if any endpoint returns an unexpected schema"
+  ],
+  "output_contract": {
+    "format": "React Server Components and Client Components in Next.js App Router",
+    "location": [
+      "sdk/javascript/examples/nextjs-dashboard/app/**",
+      "sdk/javascript/examples/nextjs-dashboard/components/**"
+    ],
+    "reviewer": "team/coordinator"
+  },
+  "priority": "high",
+  "created_at": "2026-03-12T00:00:00Z"
+}

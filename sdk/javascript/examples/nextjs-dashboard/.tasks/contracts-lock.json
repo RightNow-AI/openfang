@@ -1,0 +1,81 @@
+{
+  "task_id": "contracts-lock",
+  "parent_task_id": null,
+  "owner_agent_id": "team/coordinator",
+  "goal": "Lock the five interface contracts that all workers depend on before any API wiring begins.",
+  "scope": [
+    ".tasks/contracts-lock.json"
+  ],
+  "inputs": [
+    "OpenFang API: GET /api/health",
+    "OpenFang API: POST /api/agents/{id}/message",
+    "OpenFang API: GET /api/agents/{id}/history",
+    "OpenFang API: GET /api/network/status",
+    "OpenFang API: GET /api/a2a/agents"
+  ],
+  "dependencies": [],
+  "constraints": [
+    "No worker starts API wiring until this task is Done",
+    "Contracts must be written as JSON in this file under the key matching each contract name",
+    "Decisions are binding — reopen only via a Blocked escalation with coordinator approval"
+  ],
+  "tools_allowed": [
+    "file_edit",
+    "api_probe"
+  ],
+  "done_criteria": [
+    "base_url contract locked: env var name, fallback value, and precedence rule written",
+    "chat_transport contract locked: send endpoint, stream endpoint, message schema, reconnect rule written",
+    "health contract locked: four status values and their conditions written",
+    "history contract locked: list shape, limit param, item summary fields written",
+    "connect contract locked: supported platform list, per-platform content source, completion state written"
+  ],
+  "escalation_rules": [
+    "Escalate to human if OpenFang API is unreachable and contract cannot be verified empirically",
+    "Escalate if any two workers dispute ownership of the same field in the same contract"
+  ],
+  "output_contract": {
+    "format": "JSON document embedded in this file under key 'decisions'",
+    "location": [".tasks/contracts-lock.json"],
+    "reviewer": "team/coordinator"
+  },
+  "priority": "critical",
+  "created_at": "2026-03-12T00:00:00Z",
+  "decisions": {
+    "base_url": {
+      "env_var": "NEXT_PUBLIC_OPENFANG_BASE_URL",
+      "fallback": "http://127.0.0.1:50051",
+      "note": "All client calls use this single source of truth.  Never hardcode the host."
+    },
+    "chat_transport": {
+      "send_endpoint": "POST /api/agents/{agentId}/message",
+      "stream_endpoint": "POST /api/agents/{agentId}/message  (Accept: text/event-stream)",
+      "message_schema": {
+        "message": "string — user content",
+        "stream": "boolean — true triggers SSE"
+      },
+      "sse_event_shape": {
+        "event": "delta | done | error",
+        "data": "string (delta content) or null"
+      },
+      "reconnect_rule": "Retry after 2 s on network error.  Stop after 3 consecutive failures.  Surface error state to UI."
+    },
+    "health": {
+      "connected": "API reachable AND at least one agent responds within 5 s",
+      "degraded": "API reachable BUT last agent call failed or timed out",
+      "offline": "API not reachable (connection refused or timeout at network layer)",
+      "unknown": "Health check not yet attempted or result is stale (> 30 s old)"
+    },
+    "history": {
+      "list_endpoint": "GET /api/agents/{agentId}/history?limit=50",
+      "default_limit": 50,
+      "item_fields": ["id", "role", "content", "status", "created_at", "request_id"],
+      "pagination": "limit-only for v1; no cursor needed"
+    },
+    "connect": {
+      "supported_platforms": ["slack", "whatsapp", "email", "sms", "discord"],
+      "content_source": "Static JSON per platform in lib/platform-meta.js",
+      "completion_state": "Platform is 'connected' when its entry exists in GET /api/channels"
+    }
+  }
+}

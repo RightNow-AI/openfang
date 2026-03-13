@@ -1,0 +1,58 @@
+{
+  "task_id": "task-03-backend-contracts",
+  "parent_task_id": null,
+  "owner_agent_id": "team/backend-contract",
+  "goal": "Map existing OpenFang API routes to example-app data needs and surface any mismatches to the coordinator.",
+  "scope": [
+    "docs/contracts/chat.md",
+    "docs/contracts/history.md",
+    "docs/contracts/health.md",
+    "docs/contracts/connect.md"
+  ],
+  "inputs": [
+    "GET  http://127.0.0.1:50051/api/health",
+    "GET  http://127.0.0.1:50051/api/agents",
+    "POST http://127.0.0.1:50051/api/agents/{id}/message",
+    "GET  http://127.0.0.1:50051/api/agents/{id}/history",
+    "GET  http://127.0.0.1:50051/api/channels",
+    "GET  http://127.0.0.1:50051/api/network/status",
+    ".tasks/contracts-lock.json — all decisions"
+  ],
+  "dependencies": ["contracts-lock"],
+  "constraints": [
+    "This agent does NOT edit app/, components/, or lib/ without coordinator approval",
+    "Each contract doc must specify: HTTP method, path, request schema, response schema, error codes",
+    "Every mismatch between contracts-lock decision and live endpoint behavior must be logged under 'mismatches' in the doc",
+    "Do not change the live endpoint behavior — only document it"
+  ],
+  "tools_allowed": [
+    "api_probe",
+    "file_create",
+    "file_edit"
+  ],
+  "done_criteria": [
+    "docs/contracts/chat.md exists: documents POST /api/agents/{id}/message request + SSE event schema",
+    "docs/contracts/history.md exists: documents GET /api/agents/{id}/history response shape with all item fields",
+    "docs/contracts/health.md exists: documents GET /api/health response shape, maps to four status values in contracts-lock",
+    "docs/contracts/connect.md exists: documents GET /api/channels response shape and per-channel fields",
+    "Each doc has a 'mismatches' section (may be empty if no mismatches found)",
+    "Any blocking mismatch has been escalated to coordinator via a Blocked message before task is marked Done"
+  ],
+  "escalation_rules": [
+    "Escalate immediately if /api/agents/{id}/history does not exist or returns 404",
+    "Escalate immediately if SSE stream does not emit 'event: delta' lines matching contracts-lock schema",
+    "Escalate if /api/health response fields do not map cleanly to connected/degraded/offline/unknown"
+  ],
+  "output_contract": {
+    "format": "Markdown contract documents",
+    "location": [
+      "sdk/javascript/examples/nextjs-dashboard/docs/contracts/chat.md",
+      "sdk/javascript/examples/nextjs-dashboard/docs/contracts/history.md",
+      "sdk/javascript/examples/nextjs-dashboard/docs/contracts/health.md",
+      "sdk/javascript/examples/nextjs-dashboard/docs/contracts/connect.md"
+    ],
+    "reviewer": "team/coordinator"
+  },
+  "priority": "normal",
+  "created_at": "2026-03-12T00:00:00Z"
+}
