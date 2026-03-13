@@ -415,12 +415,7 @@ fn check_requirement(req: &HandRequirement) -> bool {
                 return true;
             }
             if req.check_value == "chromium" {
-                // Try common Chromium/Chrome binary names across platforms
-                return which_binary("chromium-browser")
-                    || which_binary("google-chrome")
-                    || which_binary("google-chrome-stable")
-                    || which_binary("chrome")
-                    || std::env::var("CHROME_PATH").map(|v| !v.is_empty()).unwrap_or(false);
+                return check_chromium_available();
             }
             false
         }
@@ -469,6 +464,93 @@ fn run_returns_python3(cmd: &str) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// Check if Chromium (or Chrome) is available anywhere on the system.
+///
+/// Checks in order:
+/// 1. CHROME_PATH / CHROMIUM_PATH env vars
+/// 2. Common binary names on PATH (chromium, chromium-browser, google-chrome, etc.)
+/// 3. Well-known install paths (Windows Program Files, macOS Applications, Linux /usr)
+/// 4. Playwright cache (~/.cache/ms-playwright/chromium-*)
+fn check_chromium_available() -> bool {
+    // 1. Env vars
+    for var in &["CHROME_PATH", "CHROMIUM_PATH"] {
+        if let Ok(p) = std::env::var(var) {
+            if !p.is_empty() && std::path::Path::new(&p).exists() {
+                return true;
+            }
+        }
+    }
+
+    // 2. Common binary names on PATH
+    let names = [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "chrome",
+    ];
+    for name in &names {
+        if which_binary(name) {
+            return true;
+        }
+    }
+
+    // 3. Well-known install paths
+    let known_paths: Vec<std::path::PathBuf> = if cfg!(windows) {
+        let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+        let pf86 =
+            std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".into());
+        let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        vec![
+            std::path::PathBuf::from(&pf).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf86).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&local).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf).join(r"Chromium\Application\chrome.exe"),
+            std::path::PathBuf::from(&local).join(r"Chromium\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf).join(r"Microsoft\Edge\Application\msedge.exe"),
+        ]
+    } else if cfg!(target_os = "macos") {
+        vec![
+            std::path::PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            std::path::PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ]
+    } else {
+        vec![
+            std::path::PathBuf::from("/usr/bin/chromium"),
+            std::path::PathBuf::from("/usr/bin/chromium-browser"),
+            std::path::PathBuf::from("/usr/bin/google-chrome"),
+            std::path::PathBuf::from("/usr/bin/google-chrome-stable"),
+            std::path::PathBuf::from("/snap/bin/chromium"),
+        ]
+    };
+    for p in &known_paths {
+        if p.exists() {
+            return true;
+        }
+    }
+
+    // 4. Playwright cache
+    if let Some(home) = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+    {
+        let pw_cache = std::path::Path::new(&home).join(".cache/ms-playwright");
+        if pw_cache.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&pw_cache) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with("chromium-") && entry.path().is_dir() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Check if a binary is on PATH (cross-platform).

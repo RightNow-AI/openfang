@@ -34,6 +34,9 @@ tokio-stream = { workspace = true }
 subtle = { workspace = true }
 base64 = { workspace = true }
 regex = "1.10"
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
 socket2 = { workspace = true }
 reqwest = { workspace = true }
 
