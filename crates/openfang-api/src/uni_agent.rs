@@ -425,43 +425,84 @@ pub async fn set_agent_workspace(
         );
     }
 
-    // Prevent moving a workspace into one of its own subdirectories —
-    // move_dir_recursive would encounter the destination while iterating
-    // the source, causing infinite directory creation.
-    if let Some(ref old) = old_path {
-        if new_path.starts_with(old) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "New workspace path cannot be inside the current workspace"
-                })),
-            );
-        }
-    }
-
     let files_moved: usize = if let Some(ref old) = old_path {
         if old.exists() {
-            let file_count = count_files_recursive(old);
+            // Define specific items to move
+            let items_to_move = vec![
+                "memory",
+                "sessions",
+                "logs",
+                "skills",
+                "output",
+                "data",
+                "AGENT.json",
+                "IDENTITY.md",
+                "BOOTSTRAP.md",
+                "AGENTS.md",
+                "MEMORY.md",
+                "TOOLS.md",
+                "USER.md",
+                "SOUL.md",
+            ];
 
-            // Prefer atomic rename of the whole tree (same filesystem, zero
-            // copies). On cross-device failure, move each entry individually:
-            // rename per file, only copy+remove_file when rename is unavailable.
-            if std::fs::rename(old, &new_path).is_err() {
-                if let Err(e) = move_dir_recursive(old, &new_path) {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(
-                            serde_json::json!({"error": format!("Failed to move workspace: {e}")}),
-                        ),
-                    );
+            // Ensure target directory exists
+            if let Err(e) = std::fs::create_dir_all(&new_path) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("Failed to create target directory: {e}")})),
+                );
+            }
+
+            let mut total_files_moved = 0;
+
+            // Move each specified item
+            for item in items_to_move {
+                let source = old.join(item);
+                let target = new_path.join(item);
+
+                // Skip if source doesn't exist
+                if !source.exists() {
+                    tracing::debug!("Skipping non-existent item: {}", source.display());
+                    continue;
                 }
-                // Source root is now empty; remove it.
-                if let Err(e) = std::fs::remove_dir(old) {
-                    tracing::warn!("Failed to remove old workspace {}: {e}", old.display());
+
+                // Count files before moving
+                if source.is_file() {
+                    total_files_moved += 1;
+                } else if source.is_dir() {
+                    total_files_moved += count_files_recursive(&source);
+                }
+
+                // Try atomic rename first
+                if let Err(_) = std::fs::rename(&source, &target) {
+                    // If rename fails (cross-device or other reasons), use recursive move
+                    if source.is_dir() {
+                        if let Err(e) = move_dir_recursive(&source, &target) {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({"error": format!("Failed to move {}: {e}", item)})),
+                            );
+                        }
+                        // Remove the now-empty source directory
+                        if let Err(e) = std::fs::remove_dir_all(&source) {
+                            tracing::warn!("Failed to remove source directory {}: {e}", source.display());
+                        }
+                    } else {
+                        // For files, copy then remove
+                        if let Err(e) = std::fs::copy(&source, &target) {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({"error": format!("Failed to copy file {}: {e}", item)})),
+                            );
+                        }
+                        if let Err(e) = std::fs::remove_file(&source) {
+                            tracing::warn!("Failed to remove source file {}: {e}", source.display());
+                        }
+                    }
                 }
             }
 
-            file_count
+            total_files_moved
         } else {
             // Old path recorded but missing on disk — just create the new dir
             if let Err(e) = std::fs::create_dir_all(&new_path) {
