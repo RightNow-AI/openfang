@@ -7187,6 +7187,7 @@ pub async fn test_provider(
             Some(base_url)
         },
         skip_permissions: true,
+        profiles: vec![],
     };
 
     match openfang_runtime::drivers::create_driver(&driver_config) {

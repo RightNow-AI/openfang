@@ -7,6 +7,7 @@
 pub mod anthropic;
 pub mod claude_code;
 pub mod copilot;
+pub mod multi_profile;
 pub mod fallback;
 pub mod gemini;
 pub mod openai;
@@ -306,9 +307,18 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
     }
 
-    // Claude Code CLI — subprocess-based, no API key needed
+    // Claude Code CLI — subprocess-based, no API key needed.
+    // When multiple profiles are configured, use the multi-profile driver
+    // for automatic rotation on rate-limit errors.
     if provider == "claude-code" {
         let cli_path = config.base_url.clone();
+        if config.profiles.len() > 1 {
+            return Ok(Arc::new(multi_profile::MultiProfileDriver::new(
+                cli_path,
+                config.skip_permissions,
+                config.profiles.clone(),
+            )));
+        }
         return Ok(Arc::new(claude_code::ClaudeCodeDriver::new(
             cli_path,
             config.skip_permissions,
@@ -542,6 +552,7 @@ mod tests {
             api_key: Some("test".to_string()),
             base_url: Some("http://localhost:9999/v1".to_string()),
             skip_permissions: true,
+            profiles: vec![],
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok());
@@ -554,6 +565,7 @@ mod tests {
             api_key: None,
             base_url: None,
             skip_permissions: true,
+            profiles: vec![],
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
@@ -656,6 +668,7 @@ mod tests {
             api_key: None, // not explicitly passed
             base_url: Some("https://integrate.api.nvidia.com/v1".to_string()),
             skip_permissions: true,
+            profiles: vec![],
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok(), "Custom provider with env var convention should succeed");
@@ -670,6 +683,7 @@ mod tests {
             api_key: None,
             base_url: None,
             skip_permissions: true,
+            profiles: vec![],
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
@@ -685,6 +699,7 @@ mod tests {
             api_key: None,
             base_url: None,
             skip_permissions: true,
+            profiles: vec![],
         };
         let result = create_driver(&config);
         assert!(result.is_err());
@@ -709,6 +724,7 @@ mod tests {
             api_key: Some("explicit-key".to_string()),
             base_url: Some("https://api.example.com/v1".to_string()),
             skip_permissions: true,
+            profiles: vec![],
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok());

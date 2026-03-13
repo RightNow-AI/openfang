@@ -94,7 +94,7 @@ impl ClaudeCodeDriver {
     ///
     /// Image content blocks are referenced using Claude Code's `@path` syntax,
     /// which tells the CLI to read the local file directly.
-    fn build_prompt(request: &CompletionRequest, image_files: &[PathBuf]) -> String {
+    pub fn build_prompt(request: &CompletionRequest, image_files: &[PathBuf]) -> String {
         let mut parts = Vec::new();
         let mut img_idx = 0;
 
@@ -151,7 +151,7 @@ impl ClaudeCodeDriver {
     ///
     /// Returns the list of temp file paths. The caller is responsible for
     /// cleaning them up after the CLI finishes.
-    async fn extract_images_to_temp(request: &CompletionRequest) -> Vec<PathBuf> {
+    pub async fn extract_images_to_temp(request: &CompletionRequest) -> Vec<PathBuf> {
         use base64::Engine;
 
         let mut paths = Vec::new();
@@ -228,14 +228,14 @@ impl ClaudeCodeDriver {
     }
 
     /// Clean up temporary image files.
-    fn cleanup_temp_images(paths: &[PathBuf]) {
+    pub fn cleanup_temp_images(paths: &[PathBuf]) {
         for p in paths {
             let _ = std::fs::remove_file(p);
         }
     }
 
     /// Map a model ID like "claude-code/opus" to CLI --model flag value.
-    fn model_flag(model: &str) -> Option<String> {
+    pub fn model_flag(model: &str) -> Option<String> {
         let stripped = model
             .strip_prefix("claude-code/")
             .unwrap_or(model);
@@ -252,7 +252,7 @@ impl ClaudeCodeDriver {
     /// Exposed as a testable method so unit tests can verify that
     /// `--dangerously-skip-permissions`, `--model`, and output format flags
     /// are set correctly.
-    fn build_args(
+    pub fn build_args(
         &self,
         prompt: &str,
         model_flag: Option<&str>,
@@ -288,7 +288,7 @@ impl ClaudeCodeDriver {
     /// Instead of `env_clear()` (which breaks Node.js, NVM, SSL, proxies),
     /// we keep the full environment and only remove known sensitive API keys
     /// from other LLM providers.
-    fn apply_env_filter(cmd: &mut tokio::process::Command) {
+    pub fn apply_env_filter(cmd: &mut tokio::process::Command) {
         for key in SENSITIVE_ENV_EXACT {
             cmd.env_remove(key);
         }

@@ -176,6 +176,12 @@ pub struct DriverConfig {
     /// restricts what agents can do, making this safe.
     #[serde(default = "default_skip_permissions")]
     pub skip_permissions: bool,
+    /// Optional list of config directory paths for CLI-based providers
+    /// (claude-code, qwen-code).  Each directory contains its own OAuth
+    /// credentials.  When multiple profiles are provided the driver
+    /// automatically rotates to the next profile on rate-limit errors.
+    #[serde(default)]
+    pub profiles: Vec<String>,
 }
 
 fn default_skip_permissions() -> bool {
@@ -190,6 +196,7 @@ impl std::fmt::Debug for DriverConfig {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("base_url", &self.base_url)
             .field("skip_permissions", &self.skip_permissions)
+            .field("profiles", &self.profiles)
             .finish()
     }
 }
