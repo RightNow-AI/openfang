@@ -2,10 +2,11 @@
 //!
 //! Creates all tables needed by the memory substrate on first boot.
 
-use rusqlite::Connection;
+use chrono::Utc;
+use rusqlite::{params, Connection};
 
 /// Current schema version.
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 13;
 
 /// Run all migrations to bring the database up to date.
 pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -41,6 +42,26 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
 
     if current_version < 8 {
         migrate_v8(conn)?;
+    }
+
+    if current_version < 9 {
+        migrate_v9(conn)?;
+    }
+
+    if current_version < 10 {
+        migrate_v10(conn)?;
+    }
+
+    if current_version < 11 {
+        migrate_v11(conn)?;
+    }
+
+    if current_version < 12 {
+        migrate_v12(conn)?;
+    }
+
+    if current_version < 13 {
+        migrate_v13(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -328,9 +349,219 @@ fn migrate_v8(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+/// Version 9: Add planner tables for the Personal Chief of Staff slice.
+fn migrate_v9(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS planner_inbox_items (
+            id TEXT PRIMARY KEY,
+            text TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            clarified_at TEXT,
+            task_id TEXT,
+            project_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_planner_inbox_created ON planner_inbox_items(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_planner_inbox_status ON planner_inbox_items(status);
+
+        CREATE TABLE IF NOT EXISTS planner_projects (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS planner_tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            effort_minutes INTEGER,
+            energy TEXT NOT NULL,
+            project_id TEXT,
+            due_at TEXT,
+            scheduled_for TEXT,
+            blocked_by TEXT NOT NULL DEFAULT '[]',
+            next_action TEXT NOT NULL,
+            source_inbox_item_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_planner_tasks_status ON planner_tasks(status);
+        CREATE INDEX IF NOT EXISTS idx_planner_tasks_schedule ON planner_tasks(scheduled_for);
+
+        CREATE TABLE IF NOT EXISTS planner_today_plans (
+            date TEXT PRIMARY KEY,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS planner_routines (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            thread_label TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            last_run_at TEXT,
+            next_run_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS planner_reviews (
+            id TEXT PRIMARY KEY,
+            scope TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            wins TEXT NOT NULL DEFAULT '[]',
+            misses TEXT NOT NULL DEFAULT '[]',
+            adjustments TEXT NOT NULL DEFAULT '[]'
+        );
+
+        INSERT OR IGNORE INTO migrations (version, applied_at, description)
+        VALUES (9, datetime('now'), 'Add planner tables for Personal Chief of Staff');
+        ",
+    )?;
+    Ok(())
+}
+
+/// Version 10: Add planner agent preference persistence.
+fn migrate_v10(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS planner_agent_preferences (
+            agent_id TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL
+        );
+
+        INSERT OR IGNORE INTO migrations (version, applied_at, description)
+        VALUES (10, datetime('now'), 'Add planner agent preference persistence');
+        ",
+    )?;
+    Ok(())
+}
+
+/// Version 11: Strip persisted planner recommendation fields from saved today plans.
+fn migrate_v11(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT date, payload FROM planner_today_plans")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+
+    let mut updates = Vec::new();
+    for row in rows {
+        let (date, payload) = row?;
+        if let Some(cleaned_payload) = strip_persisted_planner_recommendations(&payload) {
+            updates.push((date, cleaned_payload));
+        }
+    }
+
+    for (date, payload) in updates {
+        conn.execute(
+            "UPDATE planner_today_plans SET payload = ?2, updated_at = ?3 WHERE date = ?1",
+            params![date, payload, Utc::now().to_rfc3339()],
+        )?;
+    }
+
+    conn.execute(
+        "INSERT OR IGNORE INTO migrations (version, applied_at, description) VALUES (11, datetime('now'), 'Strip persisted planner recommendation fields from today plans')",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Version 12: Add agency profile persistence for imported profile catalog entries.
+fn migrate_v12(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS agent_profiles (
+            id TEXT PRIMARY KEY,
+            source_path TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_profiles_updated ON agent_profiles(updated_at DESC);
+
+        INSERT OR IGNORE INTO migrations (version, applied_at, description)
+        VALUES (12, datetime('now'), 'Add agency profile persistence for imported profiles');
+        ",
+    )?;
+    Ok(())
+}
+
+/// Version 13: Add persisted OAuth users and revocable JWT-backed sessions.
+fn migrate_v13(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS auth_users (
+            id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            provider_user_id TEXT NOT NULL,
+            login TEXT,
+            name TEXT,
+            email TEXT,
+            avatar_url TEXT,
+            role TEXT NOT NULL DEFAULT 'user',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_login_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_provider_subject
+            ON auth_users(provider, provider_user_id);
+
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+
+        INSERT OR IGNORE INTO migrations (version, applied_at, description)
+        VALUES (13, datetime('now'), 'Add persisted OAuth users and revocable auth sessions');
+        ",
+    )?;
+    Ok(())
+}
+
+fn strip_persisted_planner_recommendations(payload: &str) -> Option<String> {
+    let mut value = serde_json::from_str::<serde_json::Value>(payload).ok()?;
+    if !remove_agent_recommendations(&mut value) {
+        return None;
+    }
+    serde_json::to_string(&value).ok()
+}
+
+fn remove_agent_recommendations(value: &mut serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut changed = map.remove("agent_recommendation").is_some();
+            for child in map.values_mut() {
+                changed |= remove_agent_recommendations(child);
+            }
+            changed
+        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |changed, child| changed | remove_agent_recommendations(child)),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
 
     #[test]
     fn test_migration_creates_tables() {
@@ -352,6 +583,9 @@ mod tests {
         assert!(tables.contains(&"memories".to_string()));
         assert!(tables.contains(&"entities".to_string()));
         assert!(tables.contains(&"relations".to_string()));
+        assert!(tables.contains(&"agent_profiles".to_string()));
+        assert!(tables.contains(&"auth_users".to_string()));
+        assert!(tables.contains(&"auth_sessions".to_string()));
     }
 
     #[test]
@@ -359,5 +593,64 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         run_migrations(&conn).unwrap(); // Should not error
+    }
+
+    #[test]
+    fn test_migration_strips_persisted_planner_recommendations() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let payload = serde_json::json!({
+            "date": "2026-03-10",
+            "daily_outcome": "Ship auth update",
+            "must_do": [{
+                "id": "task-1",
+                "title": "Need a security review of auth flow",
+                "status": "todo",
+                "priority": "high",
+                "effort_minutes": 30,
+                "energy": "high",
+                "project_id": null,
+                "due_at": null,
+                "scheduled_for": null,
+                "blocked_by": [],
+                "next_action": "Need a security review of auth flow",
+                "source_inbox_item_id": "inbox-1",
+                "agent_recommendation": {
+                    "agent_id": "assistant",
+                    "name": "Assistant",
+                    "reason": "Legacy fallback",
+                    "confidence": "low"
+                },
+                "created_at": "2026-03-10T09:00:00Z",
+                "updated_at": "2026-03-10T09:00:00Z"
+            }],
+            "should_do": [],
+            "could_do": [],
+            "blockers": [],
+            "focus_suggestion": null,
+            "rebuilt_at": "2026-03-10T09:00:00Z"
+        })
+        .to_string();
+
+        conn.execute(
+            "INSERT INTO planner_today_plans (date, payload, updated_at) VALUES (?1, ?2, ?3)",
+            params!["2026-03-10", payload, "2026-03-10T09:00:00Z"],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 10).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let updated_payload: String = conn
+            .query_row(
+                "SELECT payload FROM planner_today_plans WHERE date = ?1",
+                params!["2026-03-10"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(!updated_payload.contains("assistant"));
+        assert!(!updated_payload.contains("agent_recommendation"));
     }
 }

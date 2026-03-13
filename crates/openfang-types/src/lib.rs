@@ -3,11 +3,16 @@
 //! This crate defines all shared data structures used across the OpenFang kernel,
 //! runtime, memory substrate, and wire protocol. It contains no business logic.
 
+pub mod agent_profile;
 pub mod agent;
+pub mod ai;
 pub mod approval;
 pub mod capability;
+pub mod capabilities;
 pub mod comms;
 pub mod config;
+pub mod deliverable;
+pub mod escalation;
 pub mod error;
 pub mod event;
 pub mod manifest_signing;
@@ -15,12 +20,14 @@ pub mod media;
 pub mod memory;
 pub mod message;
 pub mod model_catalog;
+pub mod planner;
 pub mod scheduler;
 pub mod serde_compat;
 pub mod taint;
 pub mod tool;
 pub mod tool_compat;
 pub mod webhook;
+pub mod workflow_template;
 
 /// Safely truncate a string to at most `max_bytes`, never splitting a UTF-8 char.
 pub fn truncate_str(s: &str, max_bytes: usize) -> &str {

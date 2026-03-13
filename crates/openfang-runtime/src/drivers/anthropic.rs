@@ -27,10 +27,7 @@ impl AnthropicDriver {
         Self {
             api_key: Zeroizing::new(api_key),
             base_url,
-            client: reqwest::Client::builder()
-                .user_agent(crate::USER_AGENT)
-                .build()
-                .unwrap_or_default(),
+            client: reqwest::Client::new(),
         }
     }
 }
@@ -507,7 +504,7 @@ impl LlmDriver for AnthropicDriver {
             for block in blocks {
                 match block {
                     ContentBlockAccum::Text(text) => {
-                        content.push(ContentBlock::Text { text, provider_metadata: None });
+                        content.push(ContentBlock::Text { text });
                     }
                     ContentBlockAccum::Thinking(thinking) => {
                         content.push(ContentBlock::Thinking { thinking });
@@ -523,7 +520,6 @@ impl LlmDriver for AnthropicDriver {
                             id: id.clone(),
                             name: name.clone(),
                             input: input.clone(),
-                            provider_metadata: None,
                         });
                         tool_calls.push(ToolCall { id, name, input });
                     }
@@ -563,7 +559,7 @@ fn convert_message(msg: &Message) -> ApiMessage {
             let api_blocks: Vec<ApiContentBlock> = blocks
                 .iter()
                 .filter_map(|block| match block {
-                    ContentBlock::Text { text, .. } => {
+                    ContentBlock::Text { text } => {
                         Some(ApiContentBlock::Text { text: text.clone() })
                     }
                     ContentBlock::Image { media_type, data } => Some(ApiContentBlock::Image {
@@ -573,7 +569,7 @@ fn convert_message(msg: &Message) -> ApiMessage {
                             data: data.clone(),
                         },
                     }),
-                    ContentBlock::ToolUse { id, name, input, .. } => Some(ApiContentBlock::ToolUse {
+                    ContentBlock::ToolUse { id, name, input } => Some(ApiContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
                         input: input.clone(),
@@ -610,14 +606,13 @@ fn convert_response(api: ApiResponse) -> CompletionResponse {
     for block in api.content {
         match block {
             ResponseContentBlock::Text { text } => {
-                content.push(ContentBlock::Text { text, provider_metadata: None });
+                content.push(ContentBlock::Text { text });
             }
             ResponseContentBlock::ToolUse { id, name, input } => {
                 content.push(ContentBlock::ToolUse {
                     id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
-                    provider_metadata: None,
                 });
                 tool_calls.push(ToolCall { id, name, input });
             }

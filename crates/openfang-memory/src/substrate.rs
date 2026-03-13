@@ -3,20 +3,32 @@
 //! Composes the structured store, semantic store, knowledge store,
 //! session store, and consolidation engine behind a single async API.
 
+use crate::agency_profiles::AgencyProfileStore;
 use crate::consolidation::ConsolidationEngine;
 use crate::knowledge::KnowledgeStore;
 use crate::migration::run_migrations;
+use crate::planner::{
+    clarify_inbox_item as planner_clarify_inbox_item,
+    hydrate_today_plan_recommendations, inbox_items_with_recommendations, list_agent_catalog,
+    rebuild_today_plan, set_agent_catalog_enabled, PlannerStore,
+};
 use crate::semantic::SemanticStore;
 use crate::session::{Session, SessionStore};
 use crate::structured::StructuredStore;
 use crate::usage::UsageStore;
 
 use async_trait::async_trait;
+use openfang_agency_import::import_profile_from_path;
 use openfang_types::agent::{AgentEntry, AgentId, SessionId};
+use openfang_types::agent_profile::AgentProfile;
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::{
     ConsolidationReport, Entity, ExportFormat, GraphMatch, GraphPattern, ImportReport, Memory,
     MemoryFilter, MemoryFragment, MemoryId, MemorySource, Relation,
+};
+use openfang_types::planner::{
+    PlannerAgentCatalogEntry, PlannerInboxItem, PlannerProject, PlannerRoutine, PlannerTask,
+    PlannerTodayPlan,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -30,6 +42,8 @@ pub struct MemorySubstrate {
     structured: StructuredStore,
     semantic: SemanticStore,
     knowledge: KnowledgeStore,
+    agency_profiles: AgencyProfileStore,
+    planner: PlannerStore,
     sessions: SessionStore,
     consolidation: ConsolidationEngine,
     usage: UsageStore,
@@ -49,6 +63,8 @@ impl MemorySubstrate {
             structured: StructuredStore::new(Arc::clone(&shared)),
             semantic: SemanticStore::new(Arc::clone(&shared)),
             knowledge: KnowledgeStore::new(Arc::clone(&shared)),
+            agency_profiles: AgencyProfileStore::new(Arc::clone(&shared)),
+            planner: PlannerStore::new(Arc::clone(&shared)),
             sessions: SessionStore::new(Arc::clone(&shared)),
             usage: UsageStore::new(Arc::clone(&shared)),
             consolidation: ConsolidationEngine::new(shared, decay_rate),
@@ -67,6 +83,8 @@ impl MemorySubstrate {
             structured: StructuredStore::new(Arc::clone(&shared)),
             semantic: SemanticStore::new(Arc::clone(&shared)),
             knowledge: KnowledgeStore::new(Arc::clone(&shared)),
+            agency_profiles: AgencyProfileStore::new(Arc::clone(&shared)),
+            planner: PlannerStore::new(Arc::clone(&shared)),
             sessions: SessionStore::new(Arc::clone(&shared)),
             usage: UsageStore::new(Arc::clone(&shared)),
             consolidation: ConsolidationEngine::new(shared, decay_rate),
@@ -81,6 +99,111 @@ impl MemorySubstrate {
     /// Get the shared database connection (for constructing stores from outside).
     pub fn usage_conn(&self) -> Arc<Mutex<Connection>> {
         Arc::clone(&self.conn)
+    }
+
+    /// List planner inbox items.
+    pub fn planner_list_inbox(&self) -> OpenFangResult<Vec<PlannerInboxItem>> {
+        self.planner.list_inbox()
+    }
+
+    /// List planner inbox items along with clarified tasks and recommendations.
+    pub fn planner_list_inbox_with_recommendations(
+        &self,
+    ) -> OpenFangResult<Vec<(PlannerInboxItem, Vec<PlannerTask>)>> {
+        inbox_items_with_recommendations(&self.planner)
+    }
+
+    /// Create a planner inbox item.
+    pub fn planner_create_inbox_item(&self, text: &str) -> OpenFangResult<PlannerInboxItem> {
+        self.planner.create_inbox_item(text)
+    }
+
+    /// Clarify a planner inbox item into a structured planner task and optional project.
+    pub fn planner_clarify_inbox_item(
+        &self,
+        inbox_item_id: &str,
+    ) -> OpenFangResult<(PlannerInboxItem, Option<PlannerProject>, PlannerTask, Vec<PlannerTask>)> {
+        planner_clarify_inbox_item(&self.planner, inbox_item_id)
+    }
+
+    /// Get an existing today plan for the given date or build one if missing.
+    pub fn planner_get_or_rebuild_today_plan(
+        &self,
+        date: chrono::NaiveDate,
+    ) -> OpenFangResult<PlannerTodayPlan> {
+        match self.planner.get_today_plan(date)? {
+            Some(plan) => hydrate_today_plan_recommendations(&self.planner, plan),
+            None => rebuild_today_plan(&self.planner, date),
+        }
+    }
+
+    /// Force a rebuild of the planner today plan for the given date.
+    pub fn planner_rebuild_today_plan(
+        &self,
+        date: chrono::NaiveDate,
+    ) -> OpenFangResult<PlannerTodayPlan> {
+        rebuild_today_plan(&self.planner, date)
+    }
+
+    /// List planner routines.
+    pub fn planner_list_routines(&self) -> OpenFangResult<Vec<PlannerRoutine>> {
+        self.planner.list_routines()
+    }
+
+    /// Load a planner project by id.
+    pub fn planner_get_project(&self, project_id: &str) -> OpenFangResult<Option<PlannerProject>> {
+        self.planner.get_project(project_id)
+    }
+
+    /// List planner catalog entries and enabled state.
+    pub fn planner_list_agent_catalog(&self) -> OpenFangResult<Vec<PlannerAgentCatalogEntry>> {
+        list_agent_catalog(&self.planner)
+    }
+
+    /// Update enabled state for a planner catalog agent entry.
+    pub fn planner_set_agent_enabled(
+        &self,
+        agent_id: &str,
+        enabled: bool,
+    ) -> OpenFangResult<PlannerAgentCatalogEntry> {
+        set_agent_catalog_enabled(&self.planner, agent_id, enabled)
+    }
+
+    /// Import an agency profile from markdown and persist it.
+    pub fn agency_import_profile_from_path(&self, path: &Path) -> OpenFangResult<AgentProfile> {
+        let profile = import_profile_from_path(path).map_err(|error| {
+            let details = error
+                .errors
+                .iter()
+                .map(|entry| format!("{}: {}", entry.section, entry.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            OpenFangError::InvalidInput(format!(
+                "Agency profile import failed for {}: {}",
+                error.source_path, details
+            ))
+        })?;
+
+        self.agency_profiles.upsert_profile(&profile, path)
+    }
+
+    /// List all persisted agency profiles.
+    pub fn agency_list_profiles(&self) -> OpenFangResult<Vec<AgentProfile>> {
+        self.agency_profiles.list_profiles()
+    }
+
+    /// Load a persisted agency profile by id.
+    pub fn agency_get_profile(&self, profile_id: &str) -> OpenFangResult<Option<AgentProfile>> {
+        self.agency_profiles.get_profile(profile_id)
+    }
+
+    /// Update enabled state for a persisted agency profile.
+    pub fn agency_set_profile_enabled(
+        &self,
+        profile_id: &str,
+        enabled: bool,
+    ) -> OpenFangResult<AgentProfile> {
+        self.agency_profiles.set_profile_enabled(profile_id, enabled)
     }
 
     /// Save an agent entry to persistent storage.
@@ -673,6 +796,7 @@ impl Memory for MemorySubstrate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[tokio::test]
     async fn test_substrate_kv() {
@@ -762,5 +886,56 @@ mod tests {
         let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
         let claimed = substrate.task_claim("nobody").await.unwrap();
         assert!(claimed.is_none());
+    }
+
+    #[test]
+    fn test_agency_import_and_toggle_round_trip() {
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let profile_dir = temp_dir.path().join("support");
+        fs::create_dir_all(&profile_dir).unwrap();
+        let profile_path = profile_dir.join("support-support-responder.md");
+        fs::write(
+            &profile_path,
+            "# Support Responder Agent Personality\n\n## 🧠 Your Identity & Memory\n- **Role**: Customer support specialist\n- **Personality**: Empathetic, precise\n- **Memory**: Successful support patterns\n\n## 🎯 Your Core Mission\n### Resolve customer issues\n- Keep response quality high\n\n## 🔄 Your Workflow Process\n### Step 1: Intake\n- Review context\n\n## 📋 Your Deliverable Template\n```markdown\n# Support Report\n## Summary\n```\n",
+        )
+        .unwrap();
+
+        let imported = substrate
+            .agency_import_profile_from_path(&profile_path)
+            .unwrap();
+        assert_eq!(imported.id, "support-responder");
+
+        let listed = substrate.agency_list_profiles().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "support-responder");
+
+        let updated = substrate
+            .agency_set_profile_enabled("support-responder", false)
+            .unwrap();
+        assert!(!updated.enabled);
+
+        let fetched = substrate
+            .agency_get_profile("support-responder")
+            .unwrap()
+            .unwrap();
+        assert!(!fetched.enabled);
+    }
+
+    #[test]
+    fn test_agency_import_rejects_invalid_markdown() {
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let profile_dir = temp_dir.path().join("support");
+        fs::create_dir_all(&profile_dir).unwrap();
+        let profile_path = profile_dir.join("support-bad-profile.md");
+        fs::write(&profile_path, "# Broken Profile\n\n## 🎯 Your Core Mission\n- Help users\n")
+            .unwrap();
+
+        let error = substrate
+            .agency_import_profile_from_path(&profile_path)
+            .unwrap_err();
+        assert!(matches!(error, OpenFangError::InvalidInput(_)));
+        assert!(error.to_string().contains("Role section is required"));
     }
 }

@@ -2,7 +2,9 @@
 resolver = "2"
 members = [
     "crates/openfang-types",
+    "crates/openfang-agency-import",
     "crates/openfang-memory",
+    "crates/openfang-orchestrator",
     "crates/openfang-runtime",
     "crates/openfang-wire",
     "crates/openfang-api",
@@ -18,7 +20,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.3.35"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
@@ -62,7 +64,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 
 # HTTP client (for LLM drivers)
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "gzip", "deflate", "brotli"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls"] }
 
 # Async trait
 async-trait = "0.1"
@@ -103,6 +105,7 @@ walkdir = "2"
 # Security
 sha2 = "0.10"
 hmac = "0.12"
+jsonwebtoken = "9"
 hex = "0.4"
 subtle = "2"
 ed25519-dalek = { version = "2", features = ["rand_core"] }

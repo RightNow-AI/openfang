@@ -17,10 +17,10 @@ pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
 pub const TOGETHER_BASE_URL: &str = "https://api.together.xyz/v1";
 pub const FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
-pub const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
-pub const VLLM_BASE_URL: &str = "http://localhost:8000/v1";
-pub const LMSTUDIO_BASE_URL: &str = "http://localhost:1234/v1";
-pub const LEMONADE_BASE_URL: &str = "http://localhost:8888/api/v1";
+pub const OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
+pub const VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
+pub const LMSTUDIO_BASE_URL: &str = "http://127.0.0.1:1234/v1";
+pub const LEMONADE_BASE_URL: &str = "http://127.0.0.1:8888/api/v1";
 pub const PERPLEXITY_BASE_URL: &str = "https://api.perplexity.ai";
 pub const COHERE_BASE_URL: &str = "https://api.cohere.com/v2";
 pub const AI21_BASE_URL: &str = "https://api.ai21.com/studio/v1";
@@ -36,20 +36,16 @@ pub const GITHUB_COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 
 // ── Chinese providers ─────────────────────────────────────────────
 pub const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-pub const MINIMAX_BASE_URL: &str = "https://api.minimaxi.chat/v1";
+pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 pub const ZHIPU_CODING_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
 /// Z.AI domain aliases (same API, different domain).
 pub const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
 pub const ZAI_CODING_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
-pub const MOONSHOT_BASE_URL: &str = "https://api.moonshot.ai/v1";
-pub const KIMI_CODING_BASE_URL: &str = "https://api.kimi.com/coding";
+pub const MOONSHOT_BASE_URL: &str = "https://api.moonshot.cn/v1";
 pub const QIANFAN_BASE_URL: &str = "https://qianfan.baidubce.com/v2";
 pub const VOLCENGINE_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/v3";
 pub const VOLCENGINE_CODING_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/coding/v3";
-
-// ── Chutes.ai ────────────────────────────────────────────────────
-pub const CHUTES_BASE_URL: &str = "https://llm.chutes.ai/v1";
 
 // ── AWS Bedrock ───────────────────────────────────────────────────
 pub const BEDROCK_BASE_URL: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";

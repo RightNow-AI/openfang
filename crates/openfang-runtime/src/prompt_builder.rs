@@ -4,6 +4,41 @@
 //! Replaces the scattered `push_str` prompt injection throughout the codebase
 //! with a single, testable, ordered prompt builder.
 
+use openfang_types::memory::{MemoryFragment, MemorySource};
+use tracing;
+
+// ---------------------------------------------------------------------------
+// H6: Prompt injection detection
+// ---------------------------------------------------------------------------
+
+/// Check if `content` contains common prompt injection patterns.
+///
+/// This is an in-process defense-in-depth measure, not a complete solution.
+/// It catches obvious injection attempts in user-sourced data (memories,
+/// USER.md, canonical context) before they reach the assembled system prompt.
+///
+/// Patterns are intentionally kept simple to avoid false positives on
+/// legitimate user content. Callers should log when this returns `true`.
+fn contains_injection_pattern(content: &str) -> bool {
+    let lower = content.to_lowercase();
+    // Common prompt injection phrases. Add new ones conservatively \u2014
+    // false positives corrupt legitimate context.
+    const PATTERNS: &[&str] = &[
+        "ignore previous instructions",
+        "ignore all previous",
+        "disregard previous",
+        "disregard all previous",
+        "forget your instructions",
+        "new instructions:",
+        "system prompt override",
+        "ignore the above",
+        "override system",
+        "you are now",
+        "act as if",
+    ];
+    PATTERNS.iter().any(|p| lower.contains(p))
+}
+
 /// All the context needed to build a system prompt for an agent.
 #[derive(Debug, Clone, Default)]
 pub struct PromptContext {
@@ -15,8 +50,8 @@ pub struct PromptContext {
     pub base_system_prompt: String,
     /// Tool names this agent has access to.
     pub granted_tools: Vec<String>,
-    /// Recalled memories as (key, content) pairs.
-    pub recalled_memories: Vec<(String, String)>,
+    /// Recalled memories.
+    pub recalled_memories: Vec<MemoryFragment>,
     /// Skill summary text (from kernel.build_skill_summary()).
     pub skill_summary: String,
     /// Prompt context from prompt-only skills.
@@ -55,6 +90,83 @@ pub struct PromptContext {
     pub peer_agents: Vec<(String, String, String)>,
     /// Current date/time string for temporal awareness.
     pub current_date: Option<String>,
+    /// True when the current request is a developer-facing coding task.
+    pub is_developer_task: bool,
+    /// True when the current flow explicitly requires hardening guidance.
+    pub requires_hardening: bool,
+    /// True when the current flow explicitly requires security review guidance.
+    pub requires_security_review: bool,
+    /// Maximum characters to include per recalled memory item. Zero = default.
+    pub memory_content_limit: usize,
+    /// Maximum number of memory items. Zero = default.
+    pub memory_item_limit: usize,
+    /// Maximum characters to include from canonical context. Zero = default.
+    pub canonical_context_limit: usize,
+    /// Maximum number of peer agents to render. Zero = default.
+    pub peer_list_limit: usize,
+}
+
+const DEFAULT_MEMORY_CONTENT_LIMIT: usize = 500;
+const DEFAULT_MEMORY_ITEM_LIMIT: usize = 5;
+const DEFAULT_CANONICAL_CONTEXT_LIMIT: usize = 500;
+const DEFAULT_PEER_LIST_LIMIT: usize = 10;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptTelemetry {
+    pub total_chars: usize,
+    pub estimated_tokens: usize,
+    pub sections: Vec<PromptSectionTelemetry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptSectionTelemetry {
+    pub name: &'static str,
+    pub chars: usize,
+    pub estimated_tokens: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PromptSection {
+    name: &'static str,
+    content: String,
+}
+
+impl PromptContext {
+    fn include_hardening_section(&self) -> bool {
+        self.requires_hardening || self.requires_security_review || self.is_developer_task
+    }
+
+    fn effective_memory_content_limit(&self) -> usize {
+        if self.memory_content_limit == 0 {
+            DEFAULT_MEMORY_CONTENT_LIMIT
+        } else {
+            self.memory_content_limit
+        }
+    }
+
+    fn effective_memory_item_limit(&self) -> usize {
+        if self.memory_item_limit == 0 {
+            DEFAULT_MEMORY_ITEM_LIMIT
+        } else {
+            self.memory_item_limit
+        }
+    }
+
+    fn effective_canonical_context_limit(&self) -> usize {
+        if self.canonical_context_limit == 0 {
+            DEFAULT_CANONICAL_CONTEXT_LIMIT
+        } else {
+            self.canonical_context_limit
+        }
+    }
+
+    fn effective_peer_list_limit(&self) -> usize {
+        if self.peer_list_limit == 0 {
+            DEFAULT_PEER_LIST_LIMIT
+        } else {
+            self.peer_list_limit
+        }
+    }
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -63,51 +175,93 @@ pub struct PromptContext {
 /// omitted entirely (no empty headers). Subagent mode skips sections that
 /// add unnecessary context overhead.
 pub fn build_system_prompt(ctx: &PromptContext) -> String {
-    let mut sections: Vec<String> = Vec::with_capacity(12);
+    collect_prompt_sections(ctx)
+        .into_iter()
+        .map(|section| section.content)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+pub fn build_prompt_telemetry(ctx: &PromptContext) -> PromptTelemetry {
+    let sections = collect_prompt_sections(ctx);
+    let prompt = sections
+        .iter()
+        .map(|section| section.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let telemetry_sections = sections
+        .into_iter()
+        .map(|section| PromptSectionTelemetry {
+            name: section.name,
+            chars: section.content.chars().count(),
+            estimated_tokens: estimate_token_count(&section.content),
+        })
+        .collect();
+
+    PromptTelemetry {
+        total_chars: prompt.chars().count(),
+        estimated_tokens: estimate_token_count(&prompt),
+        sections: telemetry_sections,
+    }
+}
+
+pub fn estimate_token_count(text: &str) -> usize {
+    text.chars().count().div_ceil(4)
+}
+
+fn collect_prompt_sections(ctx: &PromptContext) -> Vec<PromptSection> {
+    let mut sections: Vec<PromptSection> = Vec::with_capacity(16);
 
     // Section 1 — Agent Identity (always present)
-    sections.push(build_identity_section(ctx));
+    push_section(&mut sections, "Agent Identity", build_identity_section(ctx));
 
     // Section 1.5 — Current Date/Time (always present when set)
     if let Some(ref date) = ctx.current_date {
-        sections.push(format!("## Current Date\nToday is {date}."));
+        push_section(
+            &mut sections,
+            "Current Date",
+            format!("## Current Date\nToday is {date}."),
+        );
     }
 
     // Section 2 — Tool Call Behavior (skip for subagents)
     if !ctx.is_subagent {
-        sections.push(TOOL_CALL_BEHAVIOR.to_string());
+        push_section(
+            &mut sections,
+            "Tool Call Behavior",
+            TOOL_CALL_BEHAVIOR.to_string(),
+        );
     }
 
     // Section 2.5 — Agent Behavioral Guidelines (skip for subagents)
     if !ctx.is_subagent {
         if let Some(ref agents) = ctx.agents_md {
             if !agents.trim().is_empty() {
-                sections.push(cap_str(agents, 2000));
+                push_section(&mut sections, "Agent Behavioral Guidelines", cap_str(agents, 2000));
             }
         }
     }
 
     // Section 3 — Available Tools (always present if tools exist)
     let tools_section = build_tools_section(&ctx.granted_tools);
-    if !tools_section.is_empty() {
-        sections.push(tools_section);
-    }
+    push_section(&mut sections, "Available Tools", tools_section);
 
     // Section 4 — Memory Protocol (always present)
-    let mem_section = build_memory_section(&ctx.recalled_memories);
-    sections.push(mem_section);
+    let mem_section = build_memory_section(ctx);
+    push_section(&mut sections, "Memory Protocol", mem_section);
 
     // Section 5 — Skills (only if skills available)
     if !ctx.skill_summary.is_empty() || !ctx.skill_prompt_context.is_empty() {
-        sections.push(build_skills_section(
-            &ctx.skill_summary,
-            &ctx.skill_prompt_context,
-        ));
+        push_section(
+            &mut sections,
+            "Skills",
+            build_skills_section(&ctx.skill_summary, &ctx.skill_prompt_context),
+        );
     }
 
     // Section 6 — MCP Servers (only if summary present)
     if !ctx.mcp_summary.is_empty() {
-        sections.push(build_mcp_section(&ctx.mcp_summary));
+        push_section(&mut sections, "MCP Servers", build_mcp_section(&ctx.mcp_summary));
     }
 
     // Section 7 — Persona / Identity files (skip for subagents)
@@ -119,47 +273,71 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
             ctx.memory_md.as_deref(),
             ctx.workspace_path.as_deref(),
         );
-        if !persona.is_empty() {
-            sections.push(persona);
-        }
+        push_section(&mut sections, "Persona", persona);
     }
 
     // Section 7.5 — Heartbeat checklist (only for autonomous agents)
     if !ctx.is_subagent && ctx.is_autonomous {
         if let Some(ref heartbeat) = ctx.heartbeat_md {
             if !heartbeat.trim().is_empty() {
-                sections.push(format!(
-                    "## Heartbeat Checklist\n{}",
-                    cap_str(heartbeat, 1000)
-                ));
+                push_section(
+                    &mut sections,
+                    "Heartbeat Checklist",
+                    format!("## Heartbeat Checklist\n{}", cap_str(heartbeat, 1000)),
+                );
             }
         }
     }
 
     // Section 8 — User Personalization (skip for subagents)
     if !ctx.is_subagent {
-        sections.push(build_user_section(ctx.user_name.as_deref()));
+        push_section(
+            &mut sections,
+            "User Personalization",
+            build_user_section(ctx.user_name.as_deref()),
+        );
     }
 
     // Section 9 — Channel Awareness (skip for subagents)
     if !ctx.is_subagent {
         if let Some(ref channel) = ctx.channel_type {
-            sections.push(build_channel_section(channel));
+            push_section(&mut sections, "Channel Awareness", build_channel_section(channel));
         }
     }
 
     // Section 9.5 — Peer Agent Awareness (skip for subagents)
     if !ctx.is_subagent && !ctx.peer_agents.is_empty() {
-        sections.push(build_peer_agents_section(&ctx.agent_name, &ctx.peer_agents));
+        push_section(
+            &mut sections,
+            "Peer Agent Awareness",
+            build_peer_agents_section(
+                &ctx.agent_name,
+                &ctx.peer_agents,
+                ctx.effective_peer_list_limit(),
+            ),
+        );
     }
 
     // Section 10 — Safety & Oversight (skip for subagents)
     if !ctx.is_subagent {
-        sections.push(SAFETY_SECTION.to_string());
+        push_section(&mut sections, "Safety & Oversight", SAFETY_SECTION.to_string());
     }
 
     // Section 11 — Operational Guidelines (always present)
-    sections.push(OPERATIONAL_GUIDELINES.to_string());
+    push_section(
+        &mut sections,
+        "Operational Guidelines",
+        OPERATIONAL_GUIDELINES.to_string(),
+    );
+
+    // Section 11.5 — Production hardening and security enforcement
+    if ctx.include_hardening_section() {
+        push_section(
+            &mut sections,
+            "Production Hardening",
+            build_hardening_section(ctx),
+        );
+    }
 
     // Section 12 — Canonical Context moved to build_canonical_context_message()
     // to keep the system prompt stable across turns for provider prompt caching.
@@ -169,12 +347,13 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
         if let Some(ref bootstrap) = ctx.bootstrap_md {
             if !bootstrap.trim().is_empty() {
                 // Only inject if no user_name memory exists (first-run heuristic)
-                let has_user_name = ctx.recalled_memories.iter().any(|(k, _)| k == "user_name");
+                let has_user_name = ctx.recalled_memories.iter().any(|m| m.content.contains("user_name:") || m.scope == "user_name");
                 if !has_user_name && ctx.user_name.is_none() {
-                    sections.push(format!(
-                        "## First-Run Protocol\n{}",
-                        cap_str(bootstrap, 1500)
-                    ));
+                    push_section(
+                        &mut sections,
+                        "Bootstrap Protocol",
+                        format!("## First-Run Protocol\n{}", cap_str(bootstrap, 1500)),
+                    );
                 }
             }
         }
@@ -184,12 +363,18 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
     if !ctx.is_subagent {
         if let Some(ref ws_ctx) = ctx.workspace_context {
             if !ws_ctx.trim().is_empty() {
-                sections.push(cap_str(ws_ctx, 1000));
+                push_section(&mut sections, "Workspace Context", cap_str(ws_ctx, 1000));
             }
         }
     }
 
-    sections.join("\n\n")
+    sections
+}
+
+fn push_section(sections: &mut Vec<PromptSection>, name: &'static str, content: String) {
+    if !content.trim().is_empty() {
+        sections.push(PromptSection { name, content });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +397,8 @@ const TOOL_CALL_BEHAVIOR: &str = "\
 ## Tool Call Behavior
 - When you need to use a tool, call it immediately. Do not narrate or explain routine tool calls.
 - Only explain tool calls when the action is destructive, unusual, or the user explicitly asked for an explanation.
-- Prefer action over narration. If you can answer by using a tool, do it.
+- Prefer action over narration.
+- Use tools when they improve accuracy, freshness, or task completion.
 - When executing multiple sequential tool calls, batch them — don't output reasoning between each call.
 - If a tool returns useful results, present the KEY information, not the raw output.
 - When web_fetch or web_search returns content, you MUST include the relevant data in your response. \
@@ -268,30 +454,185 @@ pub fn build_canonical_context_message(ctx: &PromptContext) -> Option<String> {
     ctx.canonical_context
         .as_ref()
         .filter(|c| !c.is_empty())
-        .map(|c| format!("[Previous conversation context]\n{}", cap_str(c, 500)))
+        .map(|c| {
+            let capped = cap_str(c, ctx.effective_canonical_context_limit());
+            // H6: Scan canonical context for injection patterns.
+            if contains_injection_pattern(&capped) {
+                tracing::warn!(
+                    "Possible prompt injection detected in canonical context — content redacted"
+                );
+                return "[Previous conversation context]\n[Context redacted by safety filter]"
+                    .to_string();
+            }
+            format!("[Previous conversation context]\n{}", capped)
+        })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemoryRank {
+    pinned_rank: u8,
+    kind_rank: u8,
+    relevance_rank: i32,
+    updated_at_rank: i64,
+    stable_id: openfang_types::memory::MemoryId,
+}
+
+impl MemoryRank {
+    fn from_memory(memory: &MemoryFragment) -> Self {
+        let is_pinned = memory.metadata.get("is_pinned")
+            .and_then(|v| v.as_bool()).unwrap_or(false);
+
+        Self {
+            pinned_rank: u8::from(is_pinned),
+            kind_rank: memory_kind_rank(memory),
+            relevance_rank: relevance_rank(memory.confidence),
+            updated_at_rank: memory.accessed_at.timestamp().max(memory.created_at.timestamp()),
+            stable_id: memory.id,
+        }
+    }
+}
+
+fn memory_source_rank(source: &MemorySource) -> u8 {
+    match source {
+        MemorySource::UserProvided => 50,
+        MemorySource::Observation => 30,
+        MemorySource::Document => 20,
+        MemorySource::System => 10,
+        MemorySource::Conversation => 0,
+        MemorySource::Inference => 5,
+    }
+}
+
+fn memory_kind_rank(memory: &MemoryFragment) -> u8 {
+    let normalized_kind = memory
+        .metadata
+        .get("kind")
+        .or_else(|| memory.metadata.get("memory_kind"))
+        .or_else(|| memory.metadata.get("memory_type"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_ascii_lowercase());
+
+    match normalized_kind.as_deref() {
+        Some("user_identity") | Some("useridentity") => 50,
+        Some("user_preference") | Some("userpreference") => 40,
+        Some("long_term_constraint") | Some("longtermconstraint") => 35,
+        Some("canonical_context") | Some("canonicalcontext") => 30,
+        Some("task_context") | Some("taskcontext") => 20,
+        Some("note") => 0,
+        Some(_) => 10,
+        None => infer_memory_kind_rank(memory),
+    }
+}
+
+fn infer_memory_kind_rank(memory: &MemoryFragment) -> u8 {
+    let scope = memory.scope.to_ascii_lowercase();
+    let content = memory.content.to_ascii_lowercase();
+
+    if scope == "user_name"
+        || scope.contains("identity")
+        || content.starts_with("user_name:")
+        || content.starts_with("name:")
+    {
+        50
+    } else if scope.contains("preference") || content.contains("prefers") {
+        40
+    } else if scope.contains("constraint")
+        || content.contains("must always")
+        || content.contains("never ")
+    {
+        35
+    } else if scope.contains("canonical") {
+        30
+    } else if scope.contains("task") {
+        20
+    } else {
+        memory_source_rank(&memory.source)
+    }
+}
+
+fn relevance_rank(score: f32) -> i32 {
+    let clamped = score.clamp(0.0, 1.0);
+    (clamped * 1_000.0).round() as i32
+}
+
+fn compare_recalled_memories(a: &MemoryFragment, b: &MemoryFragment) -> std::cmp::Ordering {
+    let a_rank = MemoryRank::from_memory(a);
+    let b_rank = MemoryRank::from_memory(b);
+
+    b_rank
+        .pinned_rank
+        .cmp(&a_rank.pinned_rank)
+        .then_with(|| b_rank.kind_rank.cmp(&a_rank.kind_rank))
+        .then_with(|| b_rank.relevance_rank.cmp(&a_rank.relevance_rank))
+        .then_with(|| b_rank.updated_at_rank.cmp(&a_rank.updated_at_rank))
+        .then_with(|| {
+            let a_str = a_rank.stable_id.0.to_string();
+            let b_str = b_rank.stable_id.0.to_string();
+            a_str.cmp(&b_str)
+        })
+}
+
+fn rank_recalled_memories(memories: &mut [MemoryFragment]) {
+    memories.sort_by(compare_recalled_memories);
+}
+
+fn omitted_memories_text(count: usize) -> String {
+    match count {
+        1 => "_And 1 more memory omitted._".to_string(),
+        n => format!("_And {} more memories omitted._", n),
+    }
 }
 
 /// Build the memory section (Section 4).
-///
-/// Also used by `agent_loop.rs` to append recalled memories after DB lookup.
-pub fn build_memory_section(memories: &[(String, String)]) -> String {
-    let mut out = String::from(
+pub fn build_memory_section(prompt_ctx: &PromptContext) -> String {
+    let mut section = String::from(
         "## Memory\n\
          - When the user asks about something from a previous conversation, use memory_recall first.\n\
          - Store important preferences, decisions, and context with memory_store for future use.",
     );
-    if !memories.is_empty() {
-        out.push_str("\n\nRecalled memories:\n");
-        for (key, content) in memories.iter().take(5) {
-            let capped = cap_str(content, 500);
-            if key.is_empty() {
-                out.push_str(&format!("- {capped}\n"));
+
+    if prompt_ctx.recalled_memories.is_empty() {
+        return section;
+    }
+
+    let mut memories = prompt_ctx.recalled_memories.clone();
+    rank_recalled_memories(&mut memories);
+
+    let total_count = memories.len();
+    let item_limit = prompt_ctx.effective_memory_item_limit().max(1);
+    let selected: Vec<_> = memories.into_iter().take(item_limit).collect();
+
+    let mut lines = Vec::with_capacity(selected.len());
+    for memory in selected {
+        let content = cap_str(memory.content.trim(), prompt_ctx.effective_memory_content_limit());
+        if !content.is_empty() {
+            // H6: Scan recalled memory for injection patterns before injecting into prompt.
+            if contains_injection_pattern(&content) {
+                tracing::warn!(
+                    memory_id = %memory.id.0,
+                    scope = %memory.scope,
+                    "Possible prompt injection detected in recalled memory — content omitted"
+                );
+                lines.push("- [memory content flagged by safety filter]".to_string());
             } else {
-                out.push_str(&format!("- [{key}] {capped}\n"));
+                lines.push(format!("- {}", content));
             }
         }
     }
-    out
+
+    if lines.is_empty() {
+        return section;
+    }
+
+    section.push_str("\n\nRecalled memories:\n");
+    section.push_str(&lines.join("\n"));
+
+    let omitted_count = total_count.saturating_sub(lines.len());
+    if omitted_count > 0 {
+        section.push_str(&format!("\n\n{}", omitted_memories_text(omitted_count)));
+    }
+
+    section
 }
 
 fn build_skills_section(skill_summary: &str, prompt_context: &str) -> String {
@@ -345,7 +686,14 @@ fn build_persona_section(
 
     if let Some(user) = user_md {
         if !user.trim().is_empty() {
-            parts.push(format!("## User Context\n{}", cap_str(user, 500)));
+            // H6: Scan USER.md content for injection patterns.
+            let capped = cap_str(user, 500);
+            if contains_injection_pattern(&capped) {
+                tracing::warn!("Possible prompt injection detected in USER.md content — using placeholder");
+                parts.push("## User Context\n[User context flagged by safety filter]".to_string());
+            } else {
+                parts.push(format!("## User Context\n{}", capped));
+            }
         }
     }
 
@@ -368,11 +716,7 @@ fn build_user_section(user_name: Option<&str>) -> String {
             )
         }
         None => "## User Profile\n\
-             You don't know the user's name yet. On your FIRST reply in this conversation, \
-             warmly introduce yourself by your agent name and ask what they'd like to be called. \
-             Once they tell you, immediately use the `memory_store` tool with \
-             key \"user_name\" and their name as the value so you remember it for future sessions. \
-             Keep the introduction brief — don't let it overshadow their actual request."
+             If you don't know the user's name, ask for it in your first reply and store it immediately with `memory_store` using key \"user_name\"."
             .to_string(),
     }
 }
@@ -413,16 +757,33 @@ fn build_channel_section(channel: &str) -> String {
     )
 }
 
-fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]) -> String {
+fn build_peer_agents_section(
+    self_name: &str,
+    peers: &[(String, String, String)],
+    max_visible: usize,
+) -> String {
+    let visible_limit = max_visible.max(1);
+    let active_peers: Vec<&(String, String, String)> = peers
+        .iter()
+        .filter(|(name, state, _)| {
+            name != self_name && state.eq_ignore_ascii_case("running")
+        })
+        .collect();
+
+    if active_peers.is_empty() {
+        return String::new();
+    }
+
     let mut out = String::from(
         "## Peer Agents\n\
-         You are part of a multi-agent system. These agents are running alongside you:\n",
+         You are part of a multi-agent system. These active agents are running alongside you:\n",
     );
-    for (name, state, model) in peers {
-        if name == self_name {
-            continue; // Don't list yourself
-        }
-        out.push_str(&format!("- **{}** ({}) — model: {}\n", name, state, model));
+    for (name, _state, model) in active_peers.iter().take(visible_limit) {
+        out.push_str(&format!("- **{}** — model: {}\n", name, model));
+    }
+    let overflow = active_peers.len().saturating_sub(visible_limit);
+    if overflow > 0 {
+        out.push_str(&format!("- …and {overflow} more active peers\n"));
     }
     out.push_str(
         "\nYou can communicate with them using `agent_send` (by name) and see all agents with `agent_list`. \
@@ -450,6 +811,165 @@ const OPERATIONAL_GUIDELINES: &str = "\
 - If you cannot accomplish a task after a few attempts, explain what went wrong instead of looping.
 - Never call the same tool more than 3 times with the same parameters.
 - If a message requires no response (simple acknowledgments, reactions, messages not directed at you), respond with exactly NO_REPLY.";
+
+const HARDENING_INTRO: &str = "\
+## AI Production Hardening and Security Enforcement
+Apply this section only for developer tasks, explicit hardening passes, or security review flows.
+
+You are acting as a senior software architect and security engineer. Your job is to eliminate technical debt, remove dead code, enforce strict security, improve architecture, and validate stability before deployment.";
+
+const DEVELOPER_PROMPT_ADDON: &str = "\
+### Non-Negotiable Rules — Code Hygiene
+- Tree shake unused imports and exports.
+- Detect and remove orphaned files, components, utilities, and endpoints.
+- Eliminate duplicate logic and commented-out code.
+- Avoid circular dependencies.
+- Enforce strict typing and eliminate unchecked type gaps.
+- Run lint checks and fix violations.
+- Validate API contracts against schemas or typed interfaces.
+- Run spell check on identifiers, comments, README content, and UI strings.
+- Ensure naming conventions remain consistent.
+
+### Error Handling
+- Replace weak try/catch patterns with structured error handling.
+- Refactor fragile if/else chains into guard clauses, early returns, and explicit error types.
+- Do not allow silent failures.
+- Every error should use the project's standard structured format where supported, including a stable error code, a human-readable message, optional details, and server-side logging.
+
+### Dependencies
+- Remove unused dependencies.
+- Prefer actively maintained packages.
+- Avoid abandoned libraries.
+- Run vulnerability audits after dependency changes.
+- Lock versions explicitly according to project policy.
+
+### API Smoke Testing
+- Generate or maintain smoke tests for every affected endpoint.
+- Cover health checks, auth validation, invalid payloads, unauthorized access, and response-shape validation.
+- Ensure CI fails if an endpoint contract breaks.
+
+### Documentation
+- Regenerate or rewrite README and setup documentation to reflect the real architecture.
+- Document project overview, architecture summary, local development, security practices, CI/CD, deployment, known limitations, model loading, and smoke testing.";
+
+const SECURITY_PROMPT_ADDON: &str = "\
+### Security
+#### Authentication
+- Never invent custom authentication when a vetted provider is required.
+- Prefer established auth systems and conservative session handling.
+- Require secure token lifecycle management when refresh tokens exist.
+
+#### API Protection
+- Protect every endpoint with the appropriate authentication and authorization middleware.
+- Add rate limiting where exposure warrants it.
+- Validate all inputs with strict schemas.
+- Use parameterized queries only.
+- Block mass assignment.
+- Validate redirect URLs with an allow-list.
+- Restrict CORS to approved production origins.
+
+#### Database
+- Enforce row-level or ownership checks server-side where applicable.
+- Never trust client-supplied user identifiers.
+
+#### File Handling
+- Validate MIME type and file signature.
+- Enforce file size limits.
+- Store uploads outside the public root unless intentionally public.
+- Use signed URLs or equivalent controlled access when needed.
+
+#### Webhooks and Payments
+- Verify webhook signatures.
+- Log all financial actions.
+- Reject unsigned or replayed requests.
+
+#### Infrastructure
+- Separate test and production environments.
+- Ensure test integrations never hit live systems.
+- Remove console-log style debugging from production paths.
+- Add audit logs for deletions, role changes, payments, and data exports.
+- Prefer edge protections such as DDoS mitigation where relevant.";
+
+const VALIDATION_PROMPT_ADDON: &str = "\
+### Validation Pipeline
+Before approval, require clean lint, type, schema, and spell-check results; no unused files or imports; protected endpoints; standardized errors; and passing smoke tests.
+
+### Final Validation Hard Stop
+- Do not report success if only module-level tests pass.
+- Do not report success if workspace-wide build, test, or lint fails.
+- Treat pre-existing errors as blocking production readiness.
+- After every code change, run workspace build, workspace tests, and workspace clippy with warnings denied.
+- If any command fails, identify whether the failure is new or pre-existing, show the exact file and symbol causing it, and do not mark the task complete.
+- Mark remediation complete only when workspace build passes, workspace tests pass, workspace clippy passes, prompt-builder tests pass, and no critical security or schema issues remain.
+
+### Problem Backlog Enforcement
+- Do not ignore large issue counts.
+- Summarize current problems by category and count.
+- Separate pre-existing issues, issues introduced by the current change, auto-fixable issues, and manual-review items.
+- Resolve issues in batches with validation after each batch.
+- Do not mix security fixes with broad refactors in one commit unless required.
+
+### Rust Module and Visibility Enforcement
+- Do not publicly re-export crate-private symbols.
+- Match re-export visibility to source item visibility.
+- Prefer narrower visibility by default.
+- Use `pub(crate)` for internal helpers and `pub` only for deliberate external APIs.
+- When fixing visibility errors, decide whether the symbol is an internal helper or a true public API before changing visibility.
+- Do not widen visibility unless cross-crate use requires it.
+- After visibility changes, rerun workspace build, workspace tests, and workspace clippy with warnings denied.";
+
+const MODEL_LOADING_PROMPT_ADDON: &str = "\
+### Architecture Refactor
+- Rebuild onboarding and other complex flows as modular steps with isolated state and explicit validation.
+- Break monolithic upload or ingestion paths into maintainable units.
+- Do not bundle heavyweight model artifacts when local loading is the better architecture.
+- Support local Ollama detection, model selection, model presence validation, and graceful fallback messaging.
+
+### Onboarding and Model Loading Enforcement
+- Do not ship large bundled local model assets inside the main app by default.
+- Move local model setup into onboarding.
+- Detect Ollama availability during onboarding.
+- Let the client choose the model provider and model name.
+- Validate local model presence before first use.
+- Show actionable setup guidance when a model is missing.
+- Keep fallback behavior explicit and logged.
+- Document all model setup steps in README.";
+
+const HARDENING_GENERAL_PRINCIPLE: &str = "\
+### General Principle
+Assume malicious input.
+Assume future scale.
+Assume another developer will maintain this.
+Optimize for long-term stability over short-term speed.
+If uncertain, choose the more restrictive option.
+
+### Execution Plan
+- Run dependency analysis and remove dead code.
+- Standardize error formats across the backend.
+- Enforce auth and rate limiting globally where applicable.
+- Build smoke tests before adding features.
+- Rebuild onboarding modularly.
+- Replace bundled model strategies with client-side local model loading when appropriate.
+- Regenerate README from the actual architecture.
+- Clean first, secure second, scale third.";
+
+fn build_hardening_section(ctx: &PromptContext) -> String {
+    let mut modules = vec![HARDENING_INTRO.to_string()];
+
+    if ctx.is_developer_task || ctx.requires_hardening {
+        modules.push(DEVELOPER_PROMPT_ADDON.to_string());
+    }
+
+    if ctx.requires_security_review || ctx.requires_hardening {
+        modules.push(SECURITY_PROMPT_ADDON.to_string());
+    }
+
+    modules.push(VALIDATION_PROMPT_ADDON.to_string());
+    modules.push(MODEL_LOADING_PROMPT_ADDON.to_string());
+    modules.push(HARDENING_GENERAL_PRINCIPLE.to_string());
+
+    modules.join("\n\n")
+}
 
 // ---------------------------------------------------------------------------
 // Tool metadata helpers
@@ -619,6 +1139,11 @@ fn capitalize(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Duration, Utc};
+    use openfang_types::agent::AgentId;
+    use openfang_types::memory::{MemoryId, MemorySource};
+    use std::collections::HashMap;
+    use uuid::Uuid;
 
     fn basic_ctx() -> PromptContext {
         PromptContext {
@@ -637,9 +1162,55 @@ mod tests {
         }
     }
 
+    fn mk_test_memory(
+        id_seed: u128,
+        content: &str,
+        scope: &str,
+        source: MemorySource,
+        confidence: f32,
+        accessed_at_days_ago: i64,
+        metadata: &[(&str, serde_json::Value)],
+    ) -> MemoryFragment {
+        let created_at = Utc::now() - Duration::days(accessed_at_days_ago + 1);
+        let accessed_at = Utc::now() - Duration::days(accessed_at_days_ago);
+        let mut memory_metadata = HashMap::new();
+        for (key, value) in metadata {
+            memory_metadata.insert((*key).to_string(), value.clone());
+        }
+
+        MemoryFragment {
+            id: MemoryId(Uuid::from_u128(id_seed)),
+            agent_id: AgentId(Uuid::from_u128(9_000 + id_seed)),
+            content: content.to_string(),
+            embedding: None,
+            metadata: memory_metadata,
+            source,
+            confidence,
+            created_at,
+            accessed_at,
+            access_count: 0,
+            scope: scope.to_string(),
+        }
+    }
+
+    fn pos(haystack: &str, needle: &str) -> usize {
+        haystack
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing expected substring: {needle}"))
+    }
+
+    #[test]
+    fn test_hardening_omitted_by_default() {
+        let prompt = build_system_prompt(&basic_ctx());
+        assert!(!prompt.contains("## AI Production Hardening and Security Enforcement"));
+    }
+
     #[test]
     fn test_full_prompt_has_all_sections() {
-        let prompt = build_system_prompt(&basic_ctx());
+        let mut ctx = basic_ctx();
+        ctx.is_developer_task = true;
+        ctx.requires_security_review = true;
+        let prompt = build_system_prompt(&ctx);
         assert!(prompt.contains("You are Researcher"));
         assert!(prompt.contains("## Tool Call Behavior"));
         assert!(prompt.contains("## Your Tools"));
@@ -647,21 +1218,32 @@ mod tests {
         assert!(prompt.contains("## User Profile"));
         assert!(prompt.contains("## Safety"));
         assert!(prompt.contains("## Operational Guidelines"));
+        assert!(prompt.contains("## AI Production Hardening and Security Enforcement"));
+        assert!(prompt.contains("### Final Validation Hard Stop"));
+        assert!(prompt.contains("### Onboarding and Model Loading Enforcement"));
+        assert!(prompt.contains("### Problem Backlog Enforcement"));
+        assert!(prompt.contains("### Rust Module and Visibility Enforcement"));
     }
 
     #[test]
     fn test_section_ordering() {
-        let prompt = build_system_prompt(&basic_ctx());
+        let mut ctx = basic_ctx();
+        ctx.requires_hardening = true;
+        let prompt = build_system_prompt(&ctx);
         let tool_behavior_pos = prompt.find("## Tool Call Behavior").unwrap();
         let tools_pos = prompt.find("## Your Tools").unwrap();
         let memory_pos = prompt.find("## Memory").unwrap();
         let safety_pos = prompt.find("## Safety").unwrap();
         let guidelines_pos = prompt.find("## Operational Guidelines").unwrap();
+        let remediation_pos = prompt
+            .find("## AI Production Hardening and Security Enforcement")
+            .unwrap();
 
         assert!(tool_behavior_pos < tools_pos);
         assert!(tools_pos < memory_pos);
         assert!(memory_pos < safety_pos);
         assert!(safety_pos < guidelines_pos);
+        assert!(guidelines_pos < remediation_pos);
     }
 
     #[test]
@@ -674,10 +1256,22 @@ mod tests {
         assert!(!prompt.contains("## User Profile"));
         assert!(!prompt.contains("## Channel"));
         assert!(!prompt.contains("## Safety"));
+        assert!(!prompt.contains("## AI Production Hardening and Security Enforcement"));
         // Subagents still get tools and guidelines
         assert!(prompt.contains("## Your Tools"));
         assert!(prompt.contains("## Operational Guidelines"));
         assert!(prompt.contains("## Memory"));
+    }
+
+    #[test]
+    fn test_subagent_hardening_opt_in() {
+        let mut ctx = basic_ctx();
+        ctx.is_subagent = true;
+        ctx.requires_security_review = true;
+        let prompt = build_system_prompt(&ctx);
+
+        assert!(prompt.contains("## AI Production Hardening and Security Enforcement"));
+        assert!(prompt.contains("### Security"));
     }
 
     #[test]
@@ -725,8 +1319,27 @@ mod tests {
     }
 
     #[test]
+    fn test_tool_behavior_uses_softened_wording() {
+        assert!(TOOL_CALL_BEHAVIOR.contains(
+            "Use tools when they improve accuracy, freshness, or task completion."
+        ));
+        assert!(!TOOL_CALL_BEHAVIOR.contains(
+            "If you can answer by using a tool, do it."
+        ));
+    }
+
+    #[test]
+    fn no_reply_instruction_uses_exact_token() {
+        let prompt = build_system_prompt(&basic_ctx());
+        assert!(prompt.contains("NO_REPLY"));
+        assert!(
+            prompt.contains("output only the token") || prompt.contains("exactly NO_REPLY")
+        );
+    }
+
+    #[test]
     fn test_memory_section_empty() {
-        let section = build_memory_section(&[]);
+        let section = build_memory_section(&basic_ctx());
         assert!(section.contains("## Memory"));
         assert!(section.contains("memory_recall"));
         assert!(!section.contains("Recalled memories"));
@@ -734,35 +1347,274 @@ mod tests {
 
     #[test]
     fn test_memory_section_with_items() {
-        let memories = vec![
-            ("pref".to_string(), "User likes dark mode".to_string()),
-            ("ctx".to_string(), "Working on Rust project".to_string()),
+        let mut ctx = basic_ctx();
+        ctx.recalled_memories = vec![
+            mk_test_memory(
+                1,
+                "User likes dark mode",
+                "preference",
+                MemorySource::UserProvided,
+                0.8,
+                2,
+                &[("kind", serde_json::json!("user_preference"))],
+            ),
+            mk_test_memory(
+                2,
+                "Working on Rust project",
+                "task_context",
+                MemorySource::Conversation,
+                0.5,
+                1,
+                &[("kind", serde_json::json!("task_context"))],
+            ),
         ];
-        let section = build_memory_section(&memories);
+        let section = build_memory_section(&ctx);
         assert!(section.contains("Recalled memories"));
-        assert!(section.contains("[pref] User likes dark mode"));
-        assert!(section.contains("[ctx] Working on Rust project"));
+        assert!(section.contains("User likes dark mode"));
+        assert!(section.contains("Working on Rust project"));
     }
 
     #[test]
-    fn test_memory_cap_at_5() {
-        let memories: Vec<(String, String)> = (0..10)
-            .map(|i| (format!("k{i}"), format!("value {i}")))
-            .collect();
-        let section = build_memory_section(&memories);
-        assert!(section.contains("[k0]"));
-        assert!(section.contains("[k4]"));
-        assert!(!section.contains("[k5]"));
+    fn ranks_pinned_memory_above_recent_generic_memory() {
+        let mut ctx = basic_ctx();
+        ctx.memory_item_limit = 1;
+        ctx.recalled_memories = vec![
+            mk_test_memory(
+                1,
+                "low value recent note",
+                "notes",
+                MemorySource::Conversation,
+                0.05,
+                0,
+                &[],
+            ),
+            mk_test_memory(
+                2,
+                "user_name: Dean",
+                "user_name",
+                MemorySource::UserProvided,
+                0.10,
+                90,
+                &[
+                    ("is_pinned", serde_json::json!(true)),
+                    ("kind", serde_json::json!("user_identity")),
+                ],
+            ),
+        ];
+
+        let section = build_memory_section(&ctx);
+        assert!(section.contains("user_name: Dean"));
+        assert!(!section.contains("low value recent note"));
+    }
+
+    #[test]
+    fn ranks_user_identity_above_low_value_note() {
+        let mut ctx = basic_ctx();
+        ctx.memory_item_limit = 1;
+        ctx.recalled_memories = vec![
+            mk_test_memory(
+                1,
+                "misc meeting note with no durable value",
+                "notes",
+                MemorySource::Conversation,
+                0.20,
+                1,
+                &[],
+            ),
+            mk_test_memory(
+                2,
+                "user_name: Dean",
+                "user_name",
+                MemorySource::UserProvided,
+                0.20,
+                30,
+                &[("kind", serde_json::json!("user_identity"))],
+            ),
+        ];
+
+        let section = build_memory_section(&ctx);
+        assert!(section.contains("user_name: Dean"));
+        assert!(!section.contains("misc meeting note with no durable value"));
+    }
+
+    #[test]
+    fn uses_recency_as_tiebreaker() {
+        let mut ctx = basic_ctx();
+        ctx.memory_item_limit = 1;
+        ctx.recalled_memories = vec![
+            mk_test_memory(
+                1,
+                "prefers concise answers",
+                "preferences",
+                MemorySource::UserProvided,
+                0.70,
+                10,
+                &[("kind", serde_json::json!("user_preference"))],
+            ),
+            mk_test_memory(
+                2,
+                "prefers short code comments",
+                "preferences",
+                MemorySource::UserProvided,
+                0.70,
+                1,
+                &[("kind", serde_json::json!("user_preference"))],
+            ),
+        ];
+
+        let section = build_memory_section(&ctx);
+        assert!(section.contains("prefers short code comments"));
+        assert!(!section.contains("prefers concise answers"));
+    }
+
+    #[test]
+    fn truncates_after_ranking_not_before() {
+        let mut ctx = basic_ctx();
+        ctx.memory_item_limit = 2;
+        ctx.recalled_memories = vec![
+            mk_test_memory(
+                1,
+                "low value recent note",
+                "notes",
+                MemorySource::Conversation,
+                0.05,
+                0,
+                &[],
+            ),
+            mk_test_memory(
+                2,
+                "user_name: Dean",
+                "user_name",
+                MemorySource::UserProvided,
+                0.10,
+                90,
+                &[
+                    ("is_pinned", serde_json::json!(true)),
+                    ("kind", serde_json::json!("user_identity")),
+                ],
+            ),
+            mk_test_memory(
+                3,
+                "prefers concise answers",
+                "preferences",
+                MemorySource::UserProvided,
+                0.95,
+                20,
+                &[("kind", serde_json::json!("user_preference"))],
+            ),
+        ];
+
+        let section = build_memory_section(&ctx);
+        assert!(section.contains("user_name: Dean"));
+        assert!(section.contains("prefers concise answers"));
+        assert!(!section.contains("low value recent note"));
+    }
+
+    #[test]
+    fn preserves_deterministic_order_for_equal_scores() {
+        let mut ctx = basic_ctx();
+        ctx.memory_item_limit = 2;
+        ctx.recalled_memories = vec![
+            mk_test_memory(
+                2,
+                "prefers compact layouts",
+                "preferences",
+                MemorySource::UserProvided,
+                0.50,
+                3,
+                &[("kind", serde_json::json!("user_preference"))],
+            ),
+            mk_test_memory(
+                1,
+                "prefers dark mode",
+                "preferences",
+                MemorySource::UserProvided,
+                0.50,
+                3,
+                &[("kind", serde_json::json!("user_preference"))],
+            ),
+        ];
+
+        let section = build_memory_section(&ctx);
+        assert!(pos(&section, "prefers dark mode") < pos(&section, "prefers compact layouts"));
+    }
+
+    #[test]
+    fn memory_section_includes_omitted_count_when_truncated() {
+        let mut ctx = basic_ctx();
+        ctx.memory_item_limit = 2;
+        ctx.recalled_memories = vec![
+            mk_test_memory(
+                1,
+                "user_name: Dean",
+                "user_name",
+                MemorySource::UserProvided,
+                1.0,
+                10,
+                &[
+                    ("is_pinned", serde_json::json!(true)),
+                    ("kind", serde_json::json!("user_identity")),
+                ],
+            ),
+            mk_test_memory(
+                2,
+                "prefers concise answers",
+                "preferences",
+                MemorySource::UserProvided,
+                0.9,
+                5,
+                &[("kind", serde_json::json!("user_preference"))],
+            ),
+            mk_test_memory(
+                3,
+                "low value note",
+                "notes",
+                MemorySource::Conversation,
+                0.1,
+                1,
+                &[],
+            ),
+        ];
+
+        let section = build_memory_section(&ctx);
+        assert!(section.contains("user_name: Dean"));
+        assert!(section.contains("prefers concise answers"));
+        assert!(!section.contains("low value note"));
+        assert!(section.contains("And 1 more memory omitted"));
     }
 
     #[test]
     fn test_memory_content_capped() {
-        let long_content = "x".repeat(1000);
-        let memories = vec![("k".to_string(), long_content)];
-        let section = build_memory_section(&memories);
-        // Should be capped at 500 + "..."
+        let mut ctx = basic_ctx();
+        ctx.recalled_memories = vec![mk_test_memory(
+            1,
+            &"x".repeat(1000),
+            "notes",
+            MemorySource::Conversation,
+            0.1,
+            1,
+            &[],
+        )];
+        let section = build_memory_section(&ctx);
         assert!(section.contains("..."));
         assert!(section.len() < 1200);
+    }
+
+    #[test]
+    fn test_memory_limit_override() {
+        let mut ctx = basic_ctx();
+        ctx.memory_content_limit = 12;
+        ctx.recalled_memories = vec![mk_test_memory(
+            1,
+            &"abcdefghij".repeat(10),
+            "notes",
+            MemorySource::Conversation,
+            0.1,
+            1,
+            &[],
+        )];
+        let section = build_memory_section(&ctx);
+        assert!(section.contains("abcdefghijab..."));
     }
 
     #[test]
@@ -844,6 +1696,14 @@ mod tests {
     }
 
     #[test]
+    fn test_unknown_name_instruction_is_compact() {
+        let section = build_user_section(None);
+        assert!(section.contains("ask for it in your first reply"));
+        assert!(section.contains("memory_store"));
+        assert!(!section.contains("warmly introduce yourself"));
+    }
+
+    #[test]
     fn test_user_name_known() {
         let mut ctx = basic_ctx();
         ctx.user_name = Some("Alice".to_string());
@@ -872,6 +1732,16 @@ mod tests {
         let msg = build_canonical_context_message(&ctx);
         assert!(msg.is_some());
         assert!(msg.unwrap().contains("Rust async patterns"));
+    }
+
+    #[test]
+    fn test_canonical_context_limit_override() {
+        let mut ctx = basic_ctx();
+        ctx.canonical_context = Some("abcdefghij".repeat(20));
+        ctx.canonical_context_limit = 12;
+
+        let msg = build_canonical_context_message(&ctx).unwrap();
+        assert!(msg.contains("abcdefghijab..."));
     }
 
     #[test]
@@ -904,6 +1774,99 @@ mod tests {
         let prompt = build_system_prompt(&ctx);
         assert!(prompt.contains("## Workspace"));
         assert!(prompt.contains("/home/user/project"));
+    }
+
+    #[test]
+    fn test_peer_section_excludes_inactive_peers() {
+        let peers = vec![
+            ("self".to_string(), "Running".to_string(), "m1".to_string()),
+            (
+                "active-peer".to_string(),
+                "Running".to_string(),
+                "m2".to_string(),
+            ),
+            (
+                "inactive-peer".to_string(),
+                "Suspended".to_string(),
+                "m3".to_string(),
+            ),
+        ];
+        let section = build_peer_agents_section("self", &peers, 10);
+        assert!(section.contains("active-peer"));
+        assert!(!section.contains("inactive-peer"));
+    }
+
+    #[test]
+    fn test_peer_section_caps_visible_peers() {
+        let peers: Vec<(String, String, String)> = (0..12)
+            .map(|i| (format!("peer-{i}"), "Running".to_string(), "model-x".to_string()))
+            .collect();
+        let section = build_peer_agents_section("self", &peers, 3);
+        assert!(section.contains("peer-0"));
+        assert!(section.contains("peer-2"));
+        assert!(!section.contains("peer-11"));
+        assert!(section.contains("and 9 more active peers"));
+    }
+
+    #[test]
+    fn test_prompt_size_regression_bound() {
+        let mut ctx = basic_ctx();
+        ctx.is_developer_task = true;
+        ctx.requires_security_review = true;
+        ctx.is_autonomous = true;
+        ctx.current_date = Some("Wednesday, March 11, 2026 (2026-03-11 12:00 UTC)".to_string());
+        ctx.user_name = Some("Alice".to_string());
+        ctx.channel_type = Some("discord".to_string());
+        ctx.memory_item_limit = 5;
+        ctx.recalled_memories = (0..12)
+            .map(|i| {
+                mk_test_memory(
+                    i as u128 + 1,
+                    &"memory ".repeat(120),
+                    "notes",
+                    MemorySource::Conversation,
+                    0.2,
+                    i as i64,
+                    &[],
+                )
+            })
+            .collect();
+        ctx.skill_summary = "skill summary ".repeat(150);
+        ctx.skill_prompt_context = "prompt context ".repeat(150);
+        ctx.mcp_summary = "mcp server summary ".repeat(120);
+        ctx.workspace_path = Some("/workspace/project".to_string());
+        ctx.soul_md = Some("persona ".repeat(220));
+        ctx.user_md = Some("user context ".repeat(120));
+        ctx.memory_md = Some("long-term memory ".repeat(120));
+        ctx.canonical_context = Some("canonical context ".repeat(180));
+        ctx.agents_md = Some("behavior guidance ".repeat(160));
+        ctx.bootstrap_md = Some("bootstrap guidance ".repeat(120));
+        ctx.workspace_context = Some("workspace context ".repeat(120));
+        ctx.identity_md = Some("identity ".repeat(120));
+        ctx.heartbeat_md = Some("heartbeat ".repeat(120));
+        ctx.peer_agents = (0..25)
+            .map(|i| {
+                (
+                    format!("peer-{i}"),
+                    "Running".to_string(),
+                    "model-x".to_string(),
+                )
+            })
+            .collect();
+
+        let telemetry = build_prompt_telemetry(&ctx);
+        assert!(
+            telemetry.estimated_tokens < 8_000,
+            "prompt too large: {} tokens, sections: {:?}",
+            telemetry.estimated_tokens,
+            telemetry.sections
+        );
+        assert!(
+            telemetry
+                .sections
+                .iter()
+                .any(|section| section.name == "Production Hardening")
+        );
     }
 
     #[test]

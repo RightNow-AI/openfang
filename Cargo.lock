@@ -3085,6 +3085,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "9.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
+dependencies = [
+ "base64 0.22.1",
+ "js-sys",
+ "pem",
+ "ring",
+ "serde",
+ "serde_json",
+ "simple_asn1",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3286,9 +3301,9 @@ checksum = "c41e0c4fef86961ac6d6f8a82609f55f31b05e4fce149ac5710e439df7619ba4"
 
 [[package]]
 name = "mac-notification-sys"
-version = "0.6.11"
+version = "0.6.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c889829df2867fd6a043c5932c641fcf7fe9d4329317326af08df14747ab9a97"
+checksum = "29a16783dd1a47849b8c8133c9cd3eb2112cfbc6901670af3dba47c8bbfb07d3"
 dependencies = [
  "cc",
  "objc2",
@@ -3576,10 +3591,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "num-conv"
-version = "0.1.0"
+name = "num-bigint"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51d515d32fb182ee37cda2ccdcb92950d6a3c2893aa280e540671c2cd0f3b1d9"
+checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-conv"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf97ec579c3c42f953ef76dbf8d55ac91fb219dde70e49aa4a6b7d74e9919050"
+
+[[package]]
+name = "num-integer"
+version = "0.1.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "num-traits"
@@ -3791,8 +3825,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "openfang-agency-import"
+version = "0.3.35"
+dependencies = [
+ "openfang-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "openfang-api"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "async-trait",
  "axum",
@@ -3801,14 +3844,14 @@ dependencies = [
  "dashmap",
  "futures",
  "governor",
- "hex",
- "hmac",
+ "jsonwebtoken",
  "openfang-channels",
  "openfang-extensions",
  "openfang-hands",
  "openfang-kernel",
  "openfang-memory",
  "openfang-migrate",
+ "openfang-orchestrator",
  "openfang-runtime",
  "openfang-skills",
  "openfang-types",
@@ -3816,7 +3859,6 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "sha2",
  "socket2 0.5.10",
  "subtle",
  "tempfile",
@@ -3832,7 +3874,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-channels"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "async-trait",
  "axum",
@@ -3864,7 +3906,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-cli"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3891,7 +3933,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-desktop"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "axum",
  "open",
@@ -3917,7 +3959,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-extensions"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3945,7 +3987,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-hands"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "chrono",
  "dashmap",
@@ -3962,7 +4004,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-kernel"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3999,10 +4041,11 @@ dependencies = [
 
 [[package]]
 name = "openfang-memory"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "async-trait",
  "chrono",
+ "openfang-agency-import",
  "openfang-types",
  "rmp-serde",
  "rusqlite",
@@ -4018,7 +4061,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-migrate"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -4036,8 +4079,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "openfang-orchestrator"
+version = "0.3.35"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dashmap",
+ "openfang-kernel",
+ "openfang-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "openfang-runtime"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4071,7 +4130,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-skills"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "chrono",
  "hex",
@@ -4094,7 +4153,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-types"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4113,7 +4172,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-wire"
-version = "0.4.0"
+version = "0.3.35"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4293,6 +4352,16 @@ name = "pathdiff"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
+
+[[package]]
+name = "pem"
+version = "3.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
+dependencies = [
+ "base64 0.22.1",
+ "serde_core",
+]
 
 [[package]]
 name = "percent-encoding"
@@ -5893,6 +5962,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
 
 [[package]]
+name = "simple_asn1"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
+dependencies = [
+ "num-bigint",
+ "num-traits",
+ "thiserror 2.0.18",
+ "time",
+]
+
+[[package]]
 name = "siphasher"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6723,9 +6804,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.45"
+version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9e442fc33d7fdb45aa9bfeb312c095964abdf596f7567261062b2a7107aaabd"
+checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
  "itoa",
@@ -6738,15 +6819,15 @@ dependencies = [
 
 [[package]]
 name = "time-core"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b36ee98fd31ec7426d599183e8fe26932a8dc1fb76ddb6214d05493377d34ca"
+checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
 
 [[package]]
 name = "time-macros"
-version = "0.2.25"
+version = "0.2.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71e552d1249bf61ac2a52db88179fd0673def1e1ad8243a00d9ec9ed71fee3dd"
+checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
 dependencies = [
  "num-conv",
  "time-core",
@@ -7012,7 +7093,6 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
- "http-body-util",
  "iri-string",
  "pin-project-lite",
  "tokio",
@@ -8776,7 +8856,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.4.0"
+version = "0.3.35"
 
 [[package]]
 name = "yoke"

@@ -7,9 +7,12 @@
 //!
 //! Agents interact with a single `Memory` trait that abstracts over all three stores.
 
+pub mod auth;
+pub mod agency_profiles;
 pub mod consolidation;
 pub mod knowledge;
 pub mod migration;
+pub mod planner;
 pub mod semantic;
 pub mod session;
 pub mod structured;

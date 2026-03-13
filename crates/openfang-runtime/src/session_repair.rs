@@ -492,7 +492,7 @@ fn is_empty_or_blank_content(content: &MessageContent) -> bool {
         MessageContent::Blocks(blocks) => {
             blocks.is_empty()
                 || blocks.iter().all(|b| match b {
-                    ContentBlock::Text { text, .. } => text.trim().is_empty(),
+                    ContentBlock::Text { text } => text.trim().is_empty(),
                     ContentBlock::Unknown => true,
                     _ => false,
                 })
@@ -630,7 +630,7 @@ pub fn prune_heartbeat_turns(messages: &mut Vec<Message>, keep_recent: usize) {
                 }
                 MessageContent::Blocks(blocks) => {
                     blocks.len() == 1
-                        && matches!(&blocks[0], ContentBlock::Text { text, .. } if {
+                        && matches!(&blocks[0], ContentBlock::Text { text } if {
                             let t = text.trim();
                             t == "NO_REPLY" || t == "[no reply needed]"
                         })
@@ -675,7 +675,7 @@ fn merge_content(dst: &mut MessageContent, src: MessageContent) {
 /// Convert MessageContent to a Vec<ContentBlock>.
 fn content_to_blocks(content: MessageContent) -> Vec<ContentBlock> {
     match content {
-        MessageContent::Text(s) => vec![ContentBlock::Text { text: s, provider_metadata: None }],
+        MessageContent::Text(s) => vec![ContentBlock::Text { text: s }],
         MessageContent::Blocks(blocks) => blocks,
     }
 }
@@ -758,7 +758,6 @@ mod tests {
                     id: "tu-1".to_string(),
                     name: "web_search".to_string(),
                     input: serde_json::json!({"query": "rust"}),
-                    provider_metadata: None,
                 }]),
             },
             Message {
@@ -790,7 +789,6 @@ mod tests {
                     id: "tu-reorder".to_string(),
                     name: "web_search".to_string(),
                     input: serde_json::json!({"query": "rust"}),
-                    provider_metadata: None,
                 }]),
             },
             Message::user("While you search, I have another question"),
@@ -844,7 +842,6 @@ mod tests {
                     id: "tu-orphan".to_string(),
                     name: "file_read".to_string(),
                     input: serde_json::json!({"path": "/etc/hosts"}),
-                    provider_metadata: None,
                 }]),
             },
             Message::assistant("I tried to read the file"),
@@ -882,7 +879,6 @@ mod tests {
                     id: "tu-dup".to_string(),
                     name: "search".to_string(),
                     input: serde_json::json!({}),
-                    provider_metadata: None,
                 }]),
             },
             Message {
@@ -1017,7 +1013,6 @@ mod tests {
                 role: Role::Assistant,
                 content: MessageContent::Blocks(vec![ContentBlock::Text {
                     text: String::new(),
-                    provider_metadata: None,
                 }]),
             },
             Message::user("Never mind"),
@@ -1056,13 +1051,11 @@ mod tests {
                         id: "tu-a".to_string(),
                         name: "search".to_string(),
                         input: serde_json::json!({}),
-                        provider_metadata: None,
                     },
                     ContentBlock::ToolUse {
                         id: "tu-b".to_string(),
                         name: "fetch".to_string(),
                         input: serde_json::json!({}),
-                        provider_metadata: None,
                     },
                 ]),
             },

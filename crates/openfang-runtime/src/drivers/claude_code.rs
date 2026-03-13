@@ -12,64 +12,20 @@ use serde::Deserialize;
 use tokio::io::AsyncBufReadExt;
 use tracing::{debug, warn};
 
-/// Environment variable names (and suffixes) to strip from the subprocess
-/// to prevent leaking API keys from other providers. We keep the full env
-/// intact (so Node.js, NVM, SSL, proxies, etc. all work) and only remove
-/// secrets that belong to other LLM providers.
-const SENSITIVE_ENV_EXACT: &[&str] = &[
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "GROQ_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "MISTRAL_API_KEY",
-    "TOGETHER_API_KEY",
-    "FIREWORKS_API_KEY",
-    "OPENROUTER_API_KEY",
-    "PERPLEXITY_API_KEY",
-    "COHERE_API_KEY",
-    "AI21_API_KEY",
-    "CEREBRAS_API_KEY",
-    "SAMBANOVA_API_KEY",
-    "HUGGINGFACE_API_KEY",
-    "XAI_API_KEY",
-    "REPLICATE_API_TOKEN",
-    "BRAVE_API_KEY",
-    "TAVILY_API_KEY",
-    "ELEVENLABS_API_KEY",
-];
-
-/// Suffixes that indicate a secret — remove any env var ending with these
-/// unless it starts with `CLAUDE_`.
-const SENSITIVE_SUFFIXES: &[&str] = &["_SECRET", "_TOKEN", "_PASSWORD"];
-
 /// LLM driver that delegates to the Claude Code CLI.
 pub struct ClaudeCodeDriver {
     cli_path: String,
-    skip_permissions: bool,
 }
 
 impl ClaudeCodeDriver {
     /// Create a new Claude Code driver.
     ///
     /// `cli_path` overrides the CLI binary path; defaults to `"claude"` on PATH.
-    /// `skip_permissions` adds `--dangerously-skip-permissions` to the spawned
-    /// command so that the CLI runs non-interactively (required for daemon mode).
-    pub fn new(cli_path: Option<String>, skip_permissions: bool) -> Self {
-        if skip_permissions {
-            warn!(
-                "Claude Code driver: --dangerously-skip-permissions enabled. \
-                 The CLI will not prompt for tool approvals. \
-                 OpenFang's own capability/RBAC system enforces access control."
-            );
-        }
-
+    pub fn new(cli_path: Option<String>) -> Self {
         Self {
             cli_path: cli_path
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "claude".to_string()),
-            skip_permissions,
         }
     }
 
@@ -122,30 +78,6 @@ impl ClaudeCodeDriver {
             "sonnet" => Some("sonnet".to_string()),
             "haiku" => Some("haiku".to_string()),
             _ => Some(stripped.to_string()),
-        }
-    }
-
-    /// Apply security env filtering to a command.
-    ///
-    /// Instead of `env_clear()` (which breaks Node.js, NVM, SSL, proxies),
-    /// we keep the full environment and only remove known sensitive API keys
-    /// from other LLM providers.
-    fn apply_env_filter(cmd: &mut tokio::process::Command) {
-        for key in SENSITIVE_ENV_EXACT {
-            cmd.env_remove(key);
-        }
-        // Remove any env var with a sensitive suffix, unless it's CLAUDE_*
-        for (key, _) in std::env::vars() {
-            if key.starts_with("CLAUDE_") {
-                continue;
-            }
-            let upper = key.to_uppercase();
-            for suffix in SENSITIVE_SUFFIXES {
-                if upper.ends_with(suffix) {
-                    cmd.env_remove(&key);
-                    break;
-                }
-            }
         }
     }
 }
@@ -202,62 +134,30 @@ impl LlmDriver for ClaudeCodeDriver {
         let mut cmd = tokio::process::Command::new(&self.cli_path);
         cmd.arg("-p")
             .arg(&prompt)
+            .arg("--dangerously-skip-permissions")
             .arg("--output-format")
             .arg("json");
-
-        if self.skip_permissions {
-            cmd.arg("--dangerously-skip-permissions");
-        }
 
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);
         }
 
-        Self::apply_env_filter(&mut cmd);
-
+        // SECURITY: Don't inherit all env vars — only safe ones
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, "Spawning Claude Code CLI");
+        debug!(cli = %self.cli_path, "Spawning Claude Code CLI");
 
         let output = cmd
             .output()
             .await
-            .map_err(|e| LlmError::Http(format!(
-                "Claude Code CLI not found or failed to start ({}). \
-                 Install: npm install -g @anthropic-ai/claude-code && claude auth",
-                e
-            )))?;
+            .map_err(|e| LlmError::Http(format!("Failed to spawn claude CLI: {e}")))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let detail = if !stderr.is_empty() { &stderr } else { &stdout };
-            let code = output.status.code().unwrap_or(1);
-
-            // Provide actionable error messages
-            let message = if detail.contains("not authenticated")
-                || detail.contains("auth")
-                || detail.contains("login")
-                || detail.contains("credentials")
-            {
-                format!(
-                    "Claude Code CLI is not authenticated. Run: claude auth\nDetail: {detail}"
-                )
-            } else if detail.contains("permission")
-                || detail.contains("--dangerously-skip-permissions")
-            {
-                format!(
-                    "Claude Code CLI requires permissions acceptance. \
-                     Run: claude --dangerously-skip-permissions (once to accept)\nDetail: {detail}"
-                )
-            } else {
-                format!("Claude Code CLI exited with code {code}: {detail}")
-            };
-
+            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(LlmError::Api {
-                status: code as u16,
-                message,
+                status: output.status.code().unwrap_or(1) as u16,
+                message: format!("Claude CLI failed: {stderr}"),
             });
         }
 
@@ -271,7 +171,7 @@ impl LlmDriver for ClaudeCodeDriver {
                 .unwrap_or_default();
             let usage = parsed.usage.unwrap_or_default();
             return Ok(CompletionResponse {
-                content: vec![ContentBlock::Text { text: text.clone(), provider_metadata: None }],
+                content: vec![ContentBlock::Text { text: text.clone() }],
                 stop_reason: StopReason::EndTurn,
                 tool_calls: Vec::new(),
                 usage: TokenUsage {
@@ -284,7 +184,7 @@ impl LlmDriver for ClaudeCodeDriver {
         // Fallback: treat entire stdout as plain text
         let text = stdout.trim().to_string();
         Ok(CompletionResponse {
-            content: vec![ContentBlock::Text { text, provider_metadata: None }],
+            content: vec![ContentBlock::Text { text }],
             stop_reason: StopReason::EndTurn,
             tool_calls: Vec::new(),
             usage: TokenUsage {
@@ -305,32 +205,23 @@ impl LlmDriver for ClaudeCodeDriver {
         let mut cmd = tokio::process::Command::new(&self.cli_path);
         cmd.arg("-p")
             .arg(&prompt)
+            .arg("--dangerously-skip-permissions")
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose");
-
-        if self.skip_permissions {
-            cmd.arg("--dangerously-skip-permissions");
-        }
 
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);
         }
 
-        Self::apply_env_filter(&mut cmd);
-
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, "Spawning Claude Code CLI (streaming)");
+        debug!(cli = %self.cli_path, "Spawning Claude Code CLI (streaming)");
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| LlmError::Http(format!(
-                "Claude Code CLI not found or failed to start ({}). \
-                 Install: npm install -g @anthropic-ai/claude-code && claude auth",
-                e
-            )))?;
+            .map_err(|e| LlmError::Http(format!("Failed to spawn claude CLI: {e}")))?;
 
         let stdout = child
             .stdout
@@ -424,7 +315,7 @@ impl LlmDriver for ClaudeCodeDriver {
             .await;
 
         Ok(CompletionResponse {
-            content: vec![ContentBlock::Text { text: full_text, provider_metadata: None }],
+            content: vec![ContentBlock::Text { text: full_text }],
             stop_reason: StopReason::EndTurn,
             tool_calls: Vec::new(),
             usage: final_usage,
@@ -438,16 +329,10 @@ pub fn claude_code_available() -> bool {
         || claude_credentials_exist()
 }
 
-/// Check if Claude credentials file exists.
-///
-/// Different Claude CLI versions store credentials at different paths:
-/// - `~/.claude/.credentials.json` (older versions)
-/// - `~/.claude/credentials.json` (newer versions)
+/// Check if Claude credentials file exists (~/.claude/.credentials.json).
 fn claude_credentials_exist() -> bool {
     if let Some(home) = home_dir() {
-        let claude_dir = home.join(".claude");
-        claude_dir.join(".credentials.json").exists()
-            || claude_dir.join("credentials.json").exists()
+        home.join(".claude").join(".credentials.json").exists()
     } else {
         false
     }
@@ -515,36 +400,19 @@ mod tests {
 
     #[test]
     fn test_new_defaults_to_claude() {
-        let driver = ClaudeCodeDriver::new(None, true);
+        let driver = ClaudeCodeDriver::new(None);
         assert_eq!(driver.cli_path, "claude");
-        assert!(driver.skip_permissions);
     }
 
     #[test]
     fn test_new_with_custom_path() {
-        let driver = ClaudeCodeDriver::new(Some("/usr/local/bin/claude".to_string()), true);
+        let driver = ClaudeCodeDriver::new(Some("/usr/local/bin/claude".to_string()));
         assert_eq!(driver.cli_path, "/usr/local/bin/claude");
     }
 
     #[test]
     fn test_new_with_empty_path() {
-        let driver = ClaudeCodeDriver::new(Some(String::new()), true);
+        let driver = ClaudeCodeDriver::new(Some(String::new()));
         assert_eq!(driver.cli_path, "claude");
-    }
-
-    #[test]
-    fn test_skip_permissions_disabled() {
-        let driver = ClaudeCodeDriver::new(None, false);
-        assert!(!driver.skip_permissions);
-    }
-
-    #[test]
-    fn test_sensitive_env_list_coverage() {
-        // Ensure all major provider keys are in the strip list
-        assert!(SENSITIVE_ENV_EXACT.contains(&"OPENAI_API_KEY"));
-        assert!(SENSITIVE_ENV_EXACT.contains(&"ANTHROPIC_API_KEY"));
-        assert!(SENSITIVE_ENV_EXACT.contains(&"GEMINI_API_KEY"));
-        assert!(SENSITIVE_ENV_EXACT.contains(&"GROQ_API_KEY"));
-        assert!(SENSITIVE_ENV_EXACT.contains(&"DEEPSEEK_API_KEY"));
     }
 }

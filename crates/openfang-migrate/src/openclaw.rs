@@ -1191,7 +1191,7 @@ fn migrate_config_from_json(
         },
         memory: OpenFangMemorySection { decay_rate: 0.05 },
         network: OpenFangNetworkSection {
-            listen_addr: "127.0.0.1:4200".to_string(),
+            listen_addr: "127.0.0.1:50051".to_string(),
         },
         channels,
     };
@@ -2411,7 +2411,7 @@ fn migrate_legacy_config(
                 .unwrap_or(0.05),
         },
         network: OpenFangNetworkSection {
-            listen_addr: "127.0.0.1:4200".to_string(),
+            listen_addr: "127.0.0.1:50051".to_string(),
         },
         channels,
     };

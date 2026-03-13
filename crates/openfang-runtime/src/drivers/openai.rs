@@ -3,7 +3,6 @@
 //! Works with OpenAI, Ollama, vLLM, and any other OpenAI-compatible endpoint.
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
-use crate::think_filter::{FilterAction, StreamingThinkFilter};
 use async_trait::async_trait;
 use futures::StreamExt;
 use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
@@ -26,17 +25,9 @@ impl OpenAIDriver {
         Self {
             api_key: Zeroizing::new(api_key),
             base_url,
-            client: reqwest::Client::builder()
-                .user_agent(crate::USER_AGENT)
-                .build()
-                .unwrap_or_default(),
+            client: reqwest::Client::new(),
             extra_headers: Vec::new(),
         }
-    }
-
-    /// True if this provider is Moonshot/Kimi and requires reasoning_content on assistant messages with tool_calls.
-    fn kimi_needs_reasoning_content(&self, model: &str) -> bool {
-        self.base_url.contains("moonshot") || model.to_lowercase().contains("kimi")
     }
 
     /// Create a driver with additional HTTP headers (e.g. for Copilot IDE auth).
@@ -44,6 +35,310 @@ impl OpenAIDriver {
         self.extra_headers = headers;
         self
     }
+
+    fn should_use_ollama_native_api(&self, request: &CompletionRequest) -> bool {
+        request.tools.is_empty() && self.base_url.contains(":11434")
+    }
+
+    fn build_ollama_messages(&self, request: &CompletionRequest) -> Vec<OllamaMessage> {
+        let mut messages = Vec::new();
+
+        if let Some(ref system) = request.system {
+            messages.push(OllamaMessage {
+                role: "system".to_string(),
+                content: system.clone(),
+            });
+        }
+
+        for msg in &request.messages {
+            let role = match msg.role {
+                Role::System => {
+                    if request.system.is_some() {
+                        continue;
+                    }
+                    "system"
+                }
+                Role::User => "user",
+                Role::Assistant => "assistant",
+            };
+
+            let content = match &msg.content {
+                MessageContent::Text(text) => text.clone(),
+                MessageContent::Blocks(blocks) => blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            };
+
+            if content.is_empty() {
+                continue;
+            }
+
+            messages.push(OllamaMessage {
+                role: role.to_string(),
+                content,
+            });
+        }
+
+        messages
+    }
+
+    async fn complete_via_ollama_native(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, LlmError> {
+        let url = format!("{}/api/chat", self.base_url.trim_end_matches("/v1"));
+        let messages = self.build_ollama_messages(&request);
+        let req = OllamaChatRequest {
+            model: request.model,
+            messages,
+            stream: false,
+            think: Some(false),
+            options: Some(OllamaOptions {
+                temperature: Some(request.temperature),
+                num_predict: Some(request.max_tokens),
+            }),
+        };
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("content-type", "application/json")
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Api {
+                status,
+                message: body,
+            });
+        }
+
+        let response: OllamaChatResponse = resp
+            .json()
+            .await
+            .map_err(|e| LlmError::Parse(e.to_string()))?;
+
+        let mut content = Vec::new();
+        if let Some(thinking) = response.message.thinking.filter(|t| !t.is_empty()) {
+            content.push(ContentBlock::Thinking { thinking });
+        }
+        if !response.message.content.is_empty() {
+            content.push(ContentBlock::Text {
+                text: response.message.content,
+            });
+        }
+
+        Ok(CompletionResponse {
+            content,
+            stop_reason: match response.done_reason.as_deref() {
+                Some("stop") | None => StopReason::EndTurn,
+                _ => StopReason::EndTurn,
+            },
+            tool_calls: vec![],
+            usage: TokenUsage {
+                input_tokens: response.prompt_eval_count.unwrap_or(0),
+                output_tokens: response.eval_count.unwrap_or(0),
+            },
+        })
+    }
+
+    async fn stream_via_ollama_native(
+        &self,
+        request: CompletionRequest,
+        tx: tokio::sync::mpsc::Sender<StreamEvent>,
+    ) -> Result<CompletionResponse, LlmError> {
+        let url = format!("{}/api/chat", self.base_url.trim_end_matches("/v1"));
+        let messages = self.build_ollama_messages(&request);
+        let req = OllamaChatRequest {
+            model: request.model,
+            messages,
+            stream: true,
+            think: Some(false),
+            options: Some(OllamaOptions {
+                temperature: Some(request.temperature),
+                num_predict: Some(request.max_tokens),
+            }),
+        };
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("content-type", "application/json")
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Api {
+                status,
+                message: body,
+            });
+        }
+
+        let mut stream = resp.bytes_stream();
+        let mut buffer = String::new();
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut usage = TokenUsage::default();
+        let mut stop_reason = StopReason::EndTurn;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| LlmError::Http(e.to_string()))?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(newline_index) = buffer.find('\n') {
+                let line = buffer[..newline_index].trim().to_string();
+                buffer.drain(..=newline_index);
+
+                if line.is_empty() {
+                    continue;
+                }
+
+                let response: OllamaChatResponse =
+                    serde_json::from_str(&line).map_err(|e| LlmError::Parse(e.to_string()))?;
+
+                if let Some(delta_thinking) = response.message.thinking.filter(|t| !t.is_empty()) {
+                    thinking.push_str(&delta_thinking);
+                    let _ = tx
+                        .send(StreamEvent::ThinkingDelta {
+                            text: delta_thinking,
+                        })
+                        .await;
+                }
+
+                if !response.message.content.is_empty() {
+                    text.push_str(&response.message.content);
+                    let _ = tx
+                        .send(StreamEvent::TextDelta {
+                            text: response.message.content,
+                        })
+                        .await;
+                }
+
+                if response.done {
+                    usage = TokenUsage {
+                        input_tokens: response.prompt_eval_count.unwrap_or(0),
+                        output_tokens: response.eval_count.unwrap_or(0),
+                    };
+                    stop_reason = match response.done_reason.as_deref() {
+                        Some("stop") | None => StopReason::EndTurn,
+                        _ => StopReason::EndTurn,
+                    };
+                }
+            }
+        }
+
+        if !buffer.trim().is_empty() {
+            let response: OllamaChatResponse =
+                serde_json::from_str(buffer.trim()).map_err(|e| LlmError::Parse(e.to_string()))?;
+
+            if let Some(delta_thinking) = response.message.thinking.filter(|t| !t.is_empty()) {
+                thinking.push_str(&delta_thinking);
+                let _ = tx
+                    .send(StreamEvent::ThinkingDelta {
+                        text: delta_thinking,
+                    })
+                    .await;
+            }
+
+            if !response.message.content.is_empty() {
+                text.push_str(&response.message.content);
+                let _ = tx
+                    .send(StreamEvent::TextDelta {
+                        text: response.message.content,
+                    })
+                    .await;
+            }
+
+            if response.done {
+                usage = TokenUsage {
+                    input_tokens: response.prompt_eval_count.unwrap_or(0),
+                    output_tokens: response.eval_count.unwrap_or(0),
+                };
+                stop_reason = match response.done_reason.as_deref() {
+                    Some("stop") | None => StopReason::EndTurn,
+                    _ => StopReason::EndTurn,
+                };
+            }
+        }
+
+        let mut content = Vec::new();
+        if !thinking.is_empty() {
+            content.push(ContentBlock::Thinking { thinking });
+        }
+        if !text.is_empty() {
+            content.push(ContentBlock::Text { text });
+        }
+
+        let _ = tx
+            .send(StreamEvent::ContentComplete {
+                stop_reason,
+                usage,
+            })
+            .await;
+
+        Ok(CompletionResponse {
+            content,
+            stop_reason,
+            tool_calls: vec![],
+            usage,
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaChatRequest {
+    model: String,
+    messages: Vec<OllamaMessage>,
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<OllamaOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_predict: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaChatResponse {
+    message: OllamaResponseMessage,
+    #[serde(default)]
+    done: bool,
+    done_reason: Option<String>,
+    prompt_eval_count: Option<u64>,
+    eval_count: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaResponseMessage {
+    content: String,
+    #[serde(default)]
+    thinking: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,9 +362,6 @@ struct OaiRequest {
     /// Request usage stats in streaming responses (OpenAI extension, supported by Groq et al).
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<serde_json::Value>,
-    /// Moonshot Kimi K2.5: disable thinking so multi-turn with tool_calls works without preserving reasoning_content.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<serde_json::Value>,
 }
 
 /// Returns true if a model uses `max_completion_tokens` instead of `max_tokens`.
@@ -84,26 +376,13 @@ fn uses_completion_tokens(model: &str) -> bool {
 
 /// Returns true if a model rejects the `temperature` parameter.
 ///
-/// OpenAI's o-series reasoning models and GPT-5-mini variants only accept
-/// `temperature=1` (the default). Sending any other value causes a 400 error.
-/// We proactively omit `temperature` for these models to avoid wasting a retry.
+/// OpenAI's o-series reasoning models and some GPT-5 variants do not support
+/// temperature and return 400 if it is included.
 fn rejects_temperature(model: &str) -> bool {
     let m = model.to_lowercase();
-    // o-series reasoning models: o1, o1-mini, o1-preview, o3, o3-mini, o3-pro, o4-mini, etc.
     m.starts_with("o1")
         || m.starts_with("o3")
         || m.starts_with("o4")
-        // GPT-5-mini is a reasoning model that rejects temperature
-        || m.starts_with("gpt-5-mini")
-        || m.starts_with("gpt5-mini")
-        // Catch any model explicitly tagged as "reasoning"
-        || m.contains("-reasoning")
-}
-
-/// Returns true if a model only accepts temperature = 1 (e.g. Moonshot Kimi K2/K2.5).
-fn temperature_must_be_one(model: &str) -> bool {
-    let m = model.to_lowercase();
-    m.starts_with("kimi-k2") || m == "kimi-k2.5" || m == "kimi-k2.5-0711"
 }
 
 #[derive(Debug, Serialize)]
@@ -115,9 +394,6 @@ struct OaiMessage {
     tool_calls: Option<Vec<OaiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
-    /// Moonshot Kimi: sent as empty string on assistant messages with tool_calls when using Kimi (thinking is disabled for multi-turn compatibility).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_content: Option<String>,
 }
 
 /// Content can be a plain string or an array of content parts (for images).
@@ -187,9 +463,6 @@ struct OaiChoice {
 struct OaiResponseMessage {
     content: Option<String>,
     tool_calls: Option<Vec<OaiToolCall>>,
-    /// Reasoning/thinking content returned by some models (DeepSeek-R1, Qwen3, etc.)
-    /// via LM Studio, Ollama, and other local inference servers.
-    reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,6 +474,10 @@ struct OaiUsage {
 #[async_trait]
 impl LlmDriver for OpenAIDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        if self.should_use_ollama_native_api(&request) {
+            return self.complete_via_ollama_native(request).await;
+        }
+
         let mut oai_messages: Vec<OaiMessage> = Vec::new();
 
         // Add system message if present
@@ -210,7 +487,6 @@ impl LlmDriver for OpenAIDriver {
                 content: Some(OaiMessageContent::Text(system.clone())),
                 tool_calls: None,
                 tool_call_id: None,
-                reasoning_content: None,
             });
         }
 
@@ -224,7 +500,6 @@ impl LlmDriver for OpenAIDriver {
                             content: Some(OaiMessageContent::Text(text.clone())),
                             tool_calls: None,
                             tool_call_id: None,
-                            reasoning_content: None,
                         });
                     }
                 }
@@ -234,7 +509,6 @@ impl LlmDriver for OpenAIDriver {
                         content: Some(OaiMessageContent::Text(text.clone())),
                         tool_calls: None,
                         tool_call_id: None,
-                        reasoning_content: None,
                     });
                 }
                 (Role::Assistant, MessageContent::Text(text)) => {
@@ -243,7 +517,6 @@ impl LlmDriver for OpenAIDriver {
                         content: Some(OaiMessageContent::Text(text.clone())),
                         tool_calls: None,
                         tool_call_id: None,
-                        reasoning_content: None,
                     });
                 }
                 (Role::User, MessageContent::Blocks(blocks)) => {
@@ -265,10 +538,9 @@ impl LlmDriver for OpenAIDriver {
                                     )),
                                     tool_calls: None,
                                     tool_call_id: Some(tool_use_id.clone()),
-                                    reasoning_content: None,
                                 });
                             }
-                            ContentBlock::Text { text, .. } => {
+                            ContentBlock::Text { text } => {
                                 parts.push(OaiContentPart::Text { text: text.clone() });
                             }
                             ContentBlock::Image { media_type, data } => {
@@ -288,7 +560,6 @@ impl LlmDriver for OpenAIDriver {
                             content: Some(OaiMessageContent::Parts(parts)),
                             tool_calls: None,
                             tool_call_id: None,
-                            reasoning_content: None,
                         });
                     }
                 }
@@ -297,8 +568,8 @@ impl LlmDriver for OpenAIDriver {
                     let mut tool_calls = Vec::new();
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
-                            ContentBlock::ToolUse { id, name, input, .. } => {
+                            ContentBlock::Text { text } => text_parts.push(text.clone()),
+                            ContentBlock::ToolUse { id, name, input } => {
                                 tool_calls.push(OaiToolCall {
                                     id: id.clone(),
                                     call_type: "function".to_string(),
@@ -334,11 +605,6 @@ impl LlmDriver for OpenAIDriver {
                             Some(tool_calls)
                         },
                         tool_call_id: None,
-                        reasoning_content: if has_tool_calls && self.kimi_needs_reasoning_content(&request.model) {
-                            Some(String::new())
-                        } else {
-                            None
-                        },
                     });
                 }
                 _ => {}
@@ -377,25 +643,11 @@ impl LlmDriver for OpenAIDriver {
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
-            temperature: if self.kimi_needs_reasoning_content(&request.model) {
-                // Kimi with thinking disabled uses fixed 0.6 for multi-turn compatibility.
-                Some(0.6)
-            } else if temperature_must_be_one(&request.model) {
-                Some(1.0)
-            } else if rejects_temperature(&request.model) {
-                None
-            } else {
-                Some(request.temperature)
-            },
+            temperature: if rejects_temperature(&request.model) { None } else { Some(request.temperature) },
             tools: oai_tools,
             tool_choice,
             stream: false,
             stream_options: None,
-            thinking: if self.kimi_needs_reasoning_content(&request.model) {
-                Some(serde_json::json!({"type": "disabled"}))
-            } else {
-                None
-            },
         };
 
         let max_retries = 3;
@@ -538,50 +790,10 @@ impl LlmDriver for OpenAIDriver {
             let mut content = Vec::new();
             let mut tool_calls = Vec::new();
 
-            // Capture reasoning_content from models that use a separate field
-            // (DeepSeek-R1, Qwen3, etc. via LM Studio/Ollama)
-            if let Some(ref reasoning) = choice.message.reasoning_content {
-                if !reasoning.is_empty() {
-                    debug!(len = reasoning.len(), "Captured reasoning_content from response");
-                    content.push(ContentBlock::Thinking {
-                        thinking: reasoning.clone(),
-                    });
-                }
-            }
-
             if let Some(text) = choice.message.content {
                 if !text.is_empty() {
-                    // Extract <think>...</think> blocks that some local models
-                    // embed directly in the content field.
-                    let (cleaned, thinking) = extract_think_tags(&text);
-                    if let Some(think_text) = thinking {
-                        // Only add if we didn't already get reasoning_content
-                        if choice.message.reasoning_content.is_none() {
-                            content.push(ContentBlock::Thinking {
-                                thinking: think_text,
-                            });
-                        }
-                    }
-                    if !cleaned.is_empty() {
-                        content.push(ContentBlock::Text { text: cleaned, provider_metadata: None });
-                    }
+                    content.push(ContentBlock::Text { text });
                 }
-            }
-
-            // If we have reasoning but no text content and no tool calls,
-            // synthesize a brief text block so the agent loop doesn't treat
-            // this as an empty response.
-            let has_text = content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
-            let has_thinking = content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. }));
-            if has_thinking && !has_text && choice.message.tool_calls.is_none() {
-                // Extract the last sentence or line from the thinking as a response
-                let thinking_text = content.iter().find_map(|b| match b {
-                    ContentBlock::Thinking { thinking } => Some(thinking.as_str()),
-                    _ => None,
-                }).unwrap_or("");
-                let summary = extract_thinking_summary(thinking_text);
-                debug!(summary_len = summary.len(), "Synthesizing text from thinking-only response");
-                content.push(ContentBlock::Text { text: summary, provider_metadata: None });
             }
 
             if let Some(calls) = choice.message.tool_calls {
@@ -592,7 +804,6 @@ impl LlmDriver for OpenAIDriver {
                         id: call.id.clone(),
                         name: call.function.name.clone(),
                         input: input.clone(),
-                        provider_metadata: None,
                     });
                     tool_calls.push(ToolCall {
                         id: call.id,
@@ -615,22 +826,13 @@ impl LlmDriver for OpenAIDriver {
                 }
             };
 
-            let mut usage = oai_response
+            let usage = oai_response
                 .usage
                 .map(|u| TokenUsage {
                     input_tokens: u.prompt_tokens,
                     output_tokens: u.completion_tokens,
                 })
                 .unwrap_or_default();
-
-            // Guard: if the model returned content but usage is missing/zero
-            // (common with local LLMs like LM Studio, Ollama), set a synthetic
-            // non-zero output_tokens so the agent loop doesn't misclassify
-            // this as a "silent failure" and loop unnecessarily.
-            if !content.is_empty() && usage.input_tokens == 0 && usage.output_tokens == 0 {
-                debug!("Response has content but no usage stats — setting synthetic output_tokens=1");
-                usage.output_tokens = 1;
-            }
 
             return Ok(CompletionResponse {
                 content,
@@ -651,6 +853,10 @@ impl LlmDriver for OpenAIDriver {
         request: CompletionRequest,
         tx: tokio::sync::mpsc::Sender<StreamEvent>,
     ) -> Result<CompletionResponse, LlmError> {
+        if self.should_use_ollama_native_api(&request) {
+            return self.stream_via_ollama_native(request, tx).await;
+        }
+
         // Build request (same as complete but with stream: true)
         let mut oai_messages: Vec<OaiMessage> = Vec::new();
 
@@ -660,7 +866,6 @@ impl LlmDriver for OpenAIDriver {
                 content: Some(OaiMessageContent::Text(system.clone())),
                 tool_calls: None,
                 tool_call_id: None,
-                reasoning_content: None,
             });
         }
 
@@ -673,7 +878,6 @@ impl LlmDriver for OpenAIDriver {
                             content: Some(OaiMessageContent::Text(text.clone())),
                             tool_calls: None,
                             tool_call_id: None,
-                            reasoning_content: None,
                         });
                     }
                 }
@@ -683,7 +887,6 @@ impl LlmDriver for OpenAIDriver {
                         content: Some(OaiMessageContent::Text(text.clone())),
                         tool_calls: None,
                         tool_call_id: None,
-                        reasoning_content: None,
                     });
                 }
                 (Role::Assistant, MessageContent::Text(text)) => {
@@ -692,7 +895,6 @@ impl LlmDriver for OpenAIDriver {
                         content: Some(OaiMessageContent::Text(text.clone())),
                         tool_calls: None,
                         tool_call_id: None,
-                        reasoning_content: None,
                     });
                 }
                 (Role::User, MessageContent::Blocks(blocks)) => {
@@ -710,7 +912,6 @@ impl LlmDriver for OpenAIDriver {
                                 )),
                                 tool_calls: None,
                                 tool_call_id: Some(tool_use_id.clone()),
-                                reasoning_content: None,
                             });
                         }
                     }
@@ -720,8 +921,8 @@ impl LlmDriver for OpenAIDriver {
                     let mut tool_calls_out = Vec::new();
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
-                            ContentBlock::ToolUse { id, name, input, .. } => {
+                            ContentBlock::Text { text } => text_parts.push(text.clone()),
+                            ContentBlock::ToolUse { id, name, input } => {
                                 tool_calls_out.push(OaiToolCall {
                                     id: id.clone(),
                                     call_type: "function".to_string(),
@@ -753,11 +954,6 @@ impl LlmDriver for OpenAIDriver {
                             Some(tool_calls_out)
                         },
                         tool_call_id: None,
-                        reasoning_content: if has_tool_calls && self.kimi_needs_reasoning_content(&request.model) {
-                            Some(String::new())
-                        } else {
-                            None
-                        },
                     });
                 }
                 _ => {}
@@ -796,24 +992,11 @@ impl LlmDriver for OpenAIDriver {
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
-            temperature: if self.kimi_needs_reasoning_content(&request.model) {
-                Some(0.6)
-            } else if temperature_must_be_one(&request.model) {
-                Some(1.0)
-            } else if rejects_temperature(&request.model) {
-                None
-            } else {
-                Some(request.temperature)
-            },
+            temperature: if rejects_temperature(&request.model) { None } else { Some(request.temperature) },
             tools: oai_tools,
             tool_choice,
             stream: true,
             stream_options: Some(serde_json::json!({"include_usage": true})),
-            thinking: if self.kimi_needs_reasoning_content(&request.model) {
-                Some(serde_json::json!({"type": "disabled"}))
-            } else {
-                None
-            },
         };
 
         // Retry loop for the initial HTTP request
@@ -957,10 +1140,6 @@ impl LlmDriver for OpenAIDriver {
             // Parse the SSE stream
             let mut buffer = String::new();
             let mut text_content = String::new();
-            let mut reasoning_content = String::new();
-            // Filter <think>...</think> tags from streaming text deltas so they
-            // don't leak through to the client as visible text.
-            let mut think_filter = StreamingThinkFilter::new();
             // Track tool calls: index -> (id, name, arguments)
             let mut tool_accum: Vec<(String, String, String)> = Vec::new();
             let mut finish_reason: Option<String> = None;
@@ -1016,37 +1195,13 @@ impl LlmDriver for OpenAIDriver {
                     for choice in choices {
                         let delta = &choice["delta"];
 
-                        // Text content delta — route through think filter to
-                        // strip <think>...</think> tags before they reach the client.
+                        // Text content delta
                         if let Some(text) = delta["content"].as_str() {
                             if !text.is_empty() {
                                 text_content.push_str(text);
-                                for action in think_filter.process(text) {
-                                    match action {
-                                        FilterAction::EmitText(t) => {
-                                            let _ = tx
-                                                .send(StreamEvent::TextDelta { text: t })
-                                                .await;
-                                        }
-                                        FilterAction::EmitThinking(t) => {
-                                            // Route think content the same way as
-                                            // reasoning_content deltas.
-                                            let _ = tx
-                                                .send(StreamEvent::ThinkingDelta { text: t })
-                                                .await;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Reasoning/thinking content delta (DeepSeek-R1, Qwen3 via LM Studio/Ollama)
-                        if let Some(reasoning) = delta["reasoning_content"].as_str() {
-                            if !reasoning.is_empty() {
-                                reasoning_content.push_str(reasoning);
                                 let _ = tx
-                                    .send(StreamEvent::ThinkingDelta {
-                                        text: reasoning.to_string(),
+                                    .send(StreamEvent::TextDelta {
+                                        text: text.to_string(),
                                     })
                                     .await;
                             }
@@ -1102,90 +1257,25 @@ impl LlmDriver for OpenAIDriver {
                 }
             }
 
-            // Flush any remaining buffered content from the think filter
-            // (e.g. partial tag at stream end, or unclosed think block).
-            for action in think_filter.flush() {
-                match action {
-                    FilterAction::EmitText(t) => {
-                        let _ = tx.send(StreamEvent::TextDelta { text: t }).await;
-                    }
-                    FilterAction::EmitThinking(t) => {
-                        let _ = tx
-                            .send(StreamEvent::ThinkingDelta { text: t })
-                            .await;
-                    }
-                }
-            }
-
             // Log stream summary for diagnostics
-            let is_empty_stream = text_content.is_empty()
-                && reasoning_content.is_empty()
-                && tool_accum.is_empty()
-                && usage.input_tokens == 0
-                && usage.output_tokens == 0;
-            if is_empty_stream {
-                warn!(
-                    chunks = chunk_count,
-                    sse_lines = sse_line_count,
-                    finish = ?finish_reason,
-                    buffer_remaining = buffer.len(),
-                    "SSE stream returned empty: 0 content, 0 tokens — likely a silently failed request"
-                );
-            } else {
-                debug!(
-                    chunks = chunk_count,
-                    sse_lines = sse_line_count,
-                    text_len = text_content.len(),
-                    reasoning_len = reasoning_content.len(),
-                    tool_count = tool_accum.len(),
-                    finish = ?finish_reason,
-                    input_tokens = usage.input_tokens,
-                    output_tokens = usage.output_tokens,
-                    buffer_remaining = buffer.len(),
-                    "SSE stream completed"
-                );
-            }
+            debug!(
+                chunks = chunk_count,
+                sse_lines = sse_line_count,
+                text_len = text_content.len(),
+                tool_count = tool_accum.len(),
+                finish = ?finish_reason,
+                input_tokens = usage.input_tokens,
+                output_tokens = usage.output_tokens,
+                buffer_remaining = buffer.len(),
+                "SSE stream completed"
+            );
 
             // Build the final response
             let mut content = Vec::new();
             let mut tool_calls = Vec::new();
 
-            // Add reasoning/thinking content if present
-            if !reasoning_content.is_empty() {
-                content.push(ContentBlock::Thinking {
-                    thinking: reasoning_content.clone(),
-                });
-            }
-
             if !text_content.is_empty() {
-                // Extract <think>...</think> blocks from streamed text content
-                let (cleaned, thinking) = extract_think_tags(&text_content);
-                if let Some(think_text) = thinking {
-                    // Only add if we didn't already get reasoning_content
-                    if reasoning_content.is_empty() {
-                        content.push(ContentBlock::Thinking {
-                            thinking: think_text,
-                        });
-                    }
-                }
-                if !cleaned.is_empty() {
-                    content.push(ContentBlock::Text { text: cleaned, provider_metadata: None });
-                }
-            }
-
-            // If we have reasoning but no text content and no tool calls,
-            // synthesize a brief text block so the agent loop doesn't treat
-            // this as an empty response.
-            let has_text = content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
-            let has_thinking = content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. }));
-            if has_thinking && !has_text && tool_accum.is_empty() {
-                let thinking_text = content.iter().find_map(|b| match b {
-                    ContentBlock::Thinking { thinking } => Some(thinking.as_str()),
-                    _ => None,
-                }).unwrap_or("");
-                let summary = extract_thinking_summary(thinking_text);
-                debug!(summary_len = summary.len(), "Synthesizing text from thinking-only stream response");
-                content.push(ContentBlock::Text { text: summary, provider_metadata: None });
+                content.push(ContentBlock::Text { text: text_content });
             }
 
             for (id, name, arguments) in &tool_accum {
@@ -1194,7 +1284,6 @@ impl LlmDriver for OpenAIDriver {
                     id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
-                    provider_metadata: None,
                 });
                 tool_calls.push(ToolCall {
                     id: id.clone(),
@@ -1224,15 +1313,6 @@ impl LlmDriver for OpenAIDriver {
                 }
             };
 
-            // Guard: if the model returned content but usage is missing/zero
-            // (common with local LLMs like LM Studio, Ollama), set a synthetic
-            // non-zero output_tokens so the agent loop doesn't misclassify
-            // this as a "silent failure" and loop unnecessarily.
-            if !content.is_empty() && usage.input_tokens == 0 && usage.output_tokens == 0 {
-                debug!("Stream has content but no usage stats — setting synthetic output_tokens=1");
-                usage.output_tokens = 1;
-            }
-
             let _ = tx
                 .send(StreamEvent::ContentComplete { stop_reason, usage })
                 .await;
@@ -1249,85 +1329,6 @@ impl LlmDriver for OpenAIDriver {
             status: 0,
             message: "Max retries exceeded".to_string(),
         })
-    }
-}
-
-/// Extract `<think>...</think>` blocks from content text.
-///
-/// Some local LLMs (Qwen3, DeepSeek-R1) embed their reasoning directly in the
-/// content field wrapped in `<think>` tags. This function separates the thinking
-/// from the actual response text.
-///
-/// Returns `(cleaned_text, Option<thinking_text>)`.
-fn extract_think_tags(text: &str) -> (String, Option<String>) {
-    let mut thinking_parts = Vec::new();
-    let mut cleaned = text.to_string();
-
-    // Extract all <think>...</think> blocks (greedy within each block)
-    while let Some(start) = cleaned.find("<think>") {
-        if let Some(end) = cleaned.find("</think>") {
-            let think_start = start + "<think>".len();
-            if think_start <= end {
-                let thought = cleaned[think_start..end].trim().to_string();
-                if !thought.is_empty() {
-                    thinking_parts.push(thought);
-                }
-                // Remove the entire <think>...</think> block
-                cleaned = format!(
-                    "{}{}",
-                    &cleaned[..start],
-                    &cleaned[end + "</think>".len()..]
-                );
-            } else {
-                break;
-            }
-        } else {
-            // Unclosed <think> tag — treat everything after as thinking
-            let thought = cleaned[start + "<think>".len()..].trim().to_string();
-            if !thought.is_empty() {
-                thinking_parts.push(thought);
-            }
-            cleaned = cleaned[..start].to_string();
-            break;
-        }
-    }
-
-    let cleaned = cleaned.trim().to_string();
-    if thinking_parts.is_empty() {
-        (cleaned, None)
-    } else {
-        (cleaned, Some(thinking_parts.join("\n\n")))
-    }
-}
-
-/// Extract a usable summary from thinking-only output.
-///
-/// When a local model returns only thinking/reasoning with no actual response text,
-/// we extract the last meaningful paragraph as a synthesized response rather than
-/// showing "empty response" to the user.
-fn extract_thinking_summary(thinking: &str) -> String {
-    let trimmed = thinking.trim();
-    if trimmed.is_empty() {
-        return "[The model produced reasoning but no final answer. Try rephrasing your question.]".to_string();
-    }
-
-    // Take the last non-empty paragraph (models usually conclude with their answer)
-    let paragraphs: Vec<&str> = trimmed
-        .split("\n\n")
-        .map(|p| p.trim())
-        .filter(|p| !p.is_empty())
-        .collect();
-
-    if let Some(last) = paragraphs.last() {
-        // If the last paragraph is reasonably short, use it directly
-        if last.len() <= 2000 {
-            last.to_string()
-        } else {
-            // Take the last 2000 chars
-            last[last.len() - 2000..].to_string()
-        }
-    } else {
-        "[The model produced reasoning but no final answer. Try rephrasing your question.]".to_string()
     }
 }
 
@@ -1410,7 +1411,6 @@ fn parse_groq_failed_tool_call(body: &str) -> Option<CompletionResponse> {
             return Some(CompletionResponse {
                 content: vec![ContentBlock::Text {
                     text: failed.to_string(),
-                    provider_metadata: None,
                 }],
                 tool_calls: vec![],
                 stop_reason: StopReason::EndTurn,
@@ -1465,186 +1465,5 @@ mod tests {
         assert!(result.is_some());
         let resp = result.unwrap();
         assert_eq!(resp.tool_calls[0].name, "shell_exec");
-    }
-
-    // ----- rejects_temperature tests -----
-
-    #[test]
-    fn test_rejects_temperature_o1_models() {
-        assert!(rejects_temperature("o1"));
-        assert!(rejects_temperature("o1-mini"));
-        assert!(rejects_temperature("o1-mini-2024-09-12"));
-        assert!(rejects_temperature("o1-preview"));
-        assert!(rejects_temperature("o1-preview-2024-09-12"));
-    }
-
-    #[test]
-    fn test_rejects_temperature_o3_models() {
-        assert!(rejects_temperature("o3"));
-        assert!(rejects_temperature("o3-mini"));
-        assert!(rejects_temperature("o3-mini-2025-01-31"));
-        assert!(rejects_temperature("o3-pro"));
-    }
-
-    #[test]
-    fn test_rejects_temperature_o4_models() {
-        assert!(rejects_temperature("o4-mini"));
-        assert!(rejects_temperature("o4-mini-2025-04-16"));
-    }
-
-    #[test]
-    fn test_rejects_temperature_gpt5_mini() {
-        assert!(rejects_temperature("gpt-5-mini"));
-        assert!(rejects_temperature("gpt-5-mini-2025-08-07"));
-        assert!(rejects_temperature("gpt5-mini"));
-        assert!(rejects_temperature("GPT-5-MINI-2025-08-07"));
-    }
-
-    #[test]
-    fn test_rejects_temperature_reasoning_suffix() {
-        assert!(rejects_temperature("some-model-reasoning"));
-        assert!(rejects_temperature("deepseek-r1-reasoning"));
-    }
-
-    #[test]
-    fn test_does_not_reject_temperature_normal_models() {
-        assert!(!rejects_temperature("gpt-4o"));
-        assert!(!rejects_temperature("gpt-4o-mini"));
-        assert!(!rejects_temperature("gpt-5"));
-        assert!(!rejects_temperature("gpt-5-2025-06-01"));
-        assert!(!rejects_temperature("claude-sonnet-4-20250514"));
-        assert!(!rejects_temperature("llama-3.3-70b-versatile"));
-        assert!(!rejects_temperature("deepseek-chat"));
-    }
-
-    // ----- uses_completion_tokens tests -----
-
-    #[test]
-    fn test_uses_completion_tokens_gpt5() {
-        assert!(uses_completion_tokens("gpt-5"));
-        assert!(uses_completion_tokens("gpt-5-mini"));
-        assert!(uses_completion_tokens("gpt-5-mini-2025-08-07"));
-        assert!(uses_completion_tokens("gpt5-mini"));
-    }
-
-    #[test]
-    fn test_uses_completion_tokens_o_series() {
-        assert!(uses_completion_tokens("o1"));
-        assert!(uses_completion_tokens("o1-mini"));
-        assert!(uses_completion_tokens("o3"));
-        assert!(uses_completion_tokens("o3-mini"));
-        assert!(uses_completion_tokens("o3-pro"));
-        assert!(uses_completion_tokens("o4-mini"));
-    }
-
-    #[test]
-    fn test_does_not_use_completion_tokens_normal_models() {
-        assert!(!uses_completion_tokens("gpt-4o"));
-        assert!(!uses_completion_tokens("gpt-4o-mini"));
-        assert!(!uses_completion_tokens("llama-3.3-70b"));
-    }
-
-    // ----- extract_max_tokens_limit tests -----
-
-    #[test]
-    fn test_extract_max_tokens_limit() {
-        let body = r#"max_tokens must be less than or equal to `8192`"#;
-        assert_eq!(extract_max_tokens_limit(body), Some(8192));
-    }
-
-    #[test]
-    fn test_extract_max_tokens_limit_no_match() {
-        assert_eq!(extract_max_tokens_limit("some random error"), None);
-    }
-
-    // ----- extract_think_tags tests -----
-
-    #[test]
-    fn test_extract_think_tags_no_tags() {
-        let (cleaned, thinking) = extract_think_tags("Hello world");
-        assert_eq!(cleaned, "Hello world");
-        assert!(thinking.is_none());
-    }
-
-    #[test]
-    fn test_extract_think_tags_with_thinking() {
-        let input = "<think>Let me reason about this...</think>The answer is 42.";
-        let (cleaned, thinking) = extract_think_tags(input);
-        assert_eq!(cleaned, "The answer is 42.");
-        assert_eq!(thinking.unwrap(), "Let me reason about this...");
-    }
-
-    #[test]
-    fn test_extract_think_tags_only_thinking() {
-        let input = "<think>I need to think about this carefully.\n\nThe user wants to know about Rust.</think>";
-        let (cleaned, thinking) = extract_think_tags(input);
-        assert_eq!(cleaned, "");
-        assert!(thinking.is_some());
-        assert!(thinking.unwrap().contains("think about this carefully"));
-    }
-
-    #[test]
-    fn test_extract_think_tags_multiple_blocks() {
-        let input = "<think>First thought</think>Middle text<think>Second thought</think>Final text";
-        let (cleaned, thinking) = extract_think_tags(input);
-        assert_eq!(cleaned, "Middle textFinal text");
-        let t = thinking.unwrap();
-        assert!(t.contains("First thought"));
-        assert!(t.contains("Second thought"));
-    }
-
-    #[test]
-    fn test_extract_think_tags_unclosed() {
-        let input = "Some text<think>unclosed thinking content";
-        let (cleaned, thinking) = extract_think_tags(input);
-        assert_eq!(cleaned, "Some text");
-        assert_eq!(thinking.unwrap(), "unclosed thinking content");
-    }
-
-    // ----- extract_thinking_summary tests -----
-
-    #[test]
-    fn test_extract_thinking_summary_empty() {
-        let summary = extract_thinking_summary("");
-        assert!(summary.contains("no final answer"));
-    }
-
-    #[test]
-    fn test_extract_thinking_summary_single_paragraph() {
-        let summary = extract_thinking_summary("The answer is 42.");
-        assert_eq!(summary, "The answer is 42.");
-    }
-
-    #[test]
-    fn test_extract_thinking_summary_multiple_paragraphs() {
-        let input = "First I need to consider X.\n\nThen I should check Y.\n\nThe answer is 42.";
-        let summary = extract_thinking_summary(input);
-        assert_eq!(summary, "The answer is 42.");
-    }
-
-    // ----- reasoning_content deserialization test -----
-
-    #[test]
-    fn test_oai_response_message_with_reasoning_content() {
-        let json = r#"{"content": null, "reasoning_content": "Let me think...", "tool_calls": null}"#;
-        let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
-        assert!(msg.content.is_none());
-        assert_eq!(msg.reasoning_content.as_deref(), Some("Let me think..."));
-    }
-
-    #[test]
-    fn test_oai_response_message_without_reasoning_content() {
-        let json = r#"{"content": "Hello", "tool_calls": null}"#;
-        let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
-        assert_eq!(msg.content.as_deref(), Some("Hello"));
-        assert!(msg.reasoning_content.is_none());
-    }
-
-    #[test]
-    fn test_oai_response_message_null_content_null_reasoning() {
-        let json = r#"{"content": null, "tool_calls": null}"#;
-        let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
-        assert!(msg.content.is_none());
-        assert!(msg.reasoning_content.is_none());
     }
 }

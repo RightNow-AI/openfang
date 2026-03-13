@@ -3,6 +3,7 @@
 //! Supports config includes: the `include` field specifies additional TOML files
 //! to load and deep-merge before the root config (root overrides includes).
 
+use openfang_types::agent::AgentManifest;
 use openfang_types::config::KernelConfig;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -10,6 +11,15 @@ use tracing::info;
 
 /// Maximum include nesting depth.
 const MAX_INCLUDE_DEPTH: u32 = 10;
+
+/// Loaded agent configuration from a template directory.
+#[derive(Debug, Clone)]
+pub struct LoadedAgentConfig {
+    pub path: PathBuf,
+    pub manifest_path: PathBuf,
+    pub manifest_toml: String,
+    pub manifest: AgentManifest,
+}
 
 /// Load kernel configuration from a TOML file, with defaults.
 ///
@@ -261,6 +271,129 @@ pub fn openfang_home() -> PathBuf {
         .join(".openfang")
 }
 
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !path.exists() {
+        return;
+    }
+    if paths.iter().any(|existing| existing == &path) {
+        return;
+    }
+    paths.push(path);
+}
+
+fn executable_agents_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.as_path();
+
+    for _ in 0..5 {
+        let parent = dir.parent()?;
+        let agents = parent.join("agents");
+        if agents.is_dir() {
+            return Some(agents);
+        }
+        dir = parent;
+    }
+
+    None
+}
+
+fn validate_agent_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Agent name cannot be empty".to_string());
+    }
+
+    let path = Path::new(name);
+    let mut components = path.components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(()),
+        _ => Err(format!("Invalid agent name '{name}'")),
+    }
+}
+
+fn manifest_path(path: &Path) -> PathBuf {
+    path.join("agent.toml")
+}
+
+/// Return agent template search paths in precedence order.
+///
+/// Priority: `OPENFANG_AGENTS_DIR` > `OPENFANG_HOME/agents` > `./agents`
+/// > agents discovered relative to the current executable > repo `agents/`.
+pub fn agent_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Ok(env_dir) = std::env::var("OPENFANG_AGENTS_DIR") {
+        push_unique_path(&mut paths, PathBuf::from(env_dir));
+    }
+
+    push_unique_path(&mut paths, openfang_home().join("agents"));
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        push_unique_path(&mut paths, current_dir.join("agents"));
+    }
+
+    if let Some(agents) = executable_agents_dir() {
+        push_unique_path(&mut paths, agents);
+    }
+
+    let repo_agents = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agents");
+    push_unique_path(&mut paths, repo_agents);
+
+    paths
+}
+
+/// Resolve an agent template name to an absolute template directory path.
+pub fn resolve_agent_path(name: &str) -> Result<PathBuf, String> {
+    validate_agent_name(name)?;
+
+    for base_dir in agent_search_paths() {
+        let candidate = base_dir.join(name);
+        if let Ok(path) = validate_agent_path(&candidate) {
+            return Ok(path);
+        }
+    }
+
+    Err(format!("Agent template '{name}' not found"))
+}
+
+/// Validate that a path points to an agent template directory with `agent.toml`.
+pub fn validate_agent_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.exists() {
+        return Err(format!("Agent path does not exist: {}", path.display()));
+    }
+    if !path.is_dir() {
+        return Err(format!("Agent path is not a directory: {}", path.display()));
+    }
+
+    let manifest_path = manifest_path(path);
+    if !manifest_path.is_file() {
+        return Err(format!("Agent manifest not found: {}", manifest_path.display()));
+    }
+
+    std::fs::canonicalize(path).map_err(|e| {
+        format!(
+            "Failed to canonicalize agent path '{}': {e}",
+            path.display()
+        )
+    })
+}
+
+/// Load and parse an agent template manifest from a validated template directory.
+pub fn load_agent_config(path: &Path) -> Result<LoadedAgentConfig, String> {
+    let path = validate_agent_path(path)?;
+    let manifest_path = manifest_path(&path);
+    let manifest_toml = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("Failed to read manifest '{}': {e}", manifest_path.display()))?;
+    let manifest = toml::from_str::<AgentManifest>(&manifest_toml)
+        .map_err(|e| format!("Invalid manifest TOML '{}': {e}", manifest_path.display()))?;
+
+    Ok(LoadedAgentConfig {
+        path,
+        manifest_path,
+        manifest_toml,
+        manifest,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,7 +416,7 @@ mod tests {
         let mut base: toml::Value = toml::from_str(
             r#"
             log_level = "debug"
-            api_listen = "0.0.0.0:4200"
+            api_listen = "0.0.0.0:50051"
         "#,
         )
         .unwrap();
@@ -296,7 +429,7 @@ mod tests {
         .unwrap();
         deep_merge_toml(&mut base, &overlay);
         assert_eq!(base["log_level"].as_str(), Some("info"));
-        assert_eq!(base["api_listen"].as_str(), Some("0.0.0.0:4200"));
+        assert_eq!(base["api_listen"].as_str(), Some("0.0.0.0:50051"));
         assert_eq!(base["network_enabled"].as_bool(), Some(true));
     }
 
@@ -321,6 +454,44 @@ mod tests {
         let mem = base["memory"].as_table().unwrap();
         assert_eq!(mem["decay_rate"].as_float(), Some(0.5));
         assert_eq!(mem["consolidation_threshold"].as_integer(), Some(10000));
+    }
+
+    #[test]
+    fn test_validate_agent_path_requires_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("assistant");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+
+        let error = validate_agent_path(&agent_dir).unwrap_err();
+        assert!(error.contains("Agent manifest not found"));
+    }
+
+    #[test]
+    fn test_load_agent_config_reads_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("assistant");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("agent.toml"),
+            r#"
+name = "assistant"
+description = "Test assistant"
+
+[model]
+provider = "ollama"
+model = "qwen3.5:9b"
+system_prompt = "Be exact"
+
+[capabilities]
+tools = []
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_agent_config(&agent_dir).unwrap();
+        assert_eq!(loaded.manifest.name, "assistant");
+        assert_eq!(loaded.manifest.description, "Test assistant");
+        assert!(loaded.manifest_path.ends_with("agent.toml"));
     }
 
     #[test]
