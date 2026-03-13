@@ -28,20 +28,11 @@ fn check_taint_shell_exec(command: &str) -> Option<String> {
     // Layer 1: Block shell metacharacters that enable command injection.
     // Uses the same validator as subprocess_sandbox and docker_sandbox.
     if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
-        return Some(format!(
-            "Shell metacharacter injection blocked: {reason}"
-        ));
+        return Some(format!("Shell metacharacter injection blocked: {reason}"));
     }
 
     // Layer 2: Heuristic patterns for injected external URLs / base64 payloads
-    let suspicious_patterns = [
-        "curl ",
-        "wget ",
-        "| sh",
-        "| bash",
-        "base64 -d",
-        "eval ",
-    ];
+    let suspicious_patterns = ["curl ", "wget ", "| sh", "| bash", "base64 -d", "eval "];
     for pattern in &suspicious_patterns {
         if command.contains(pattern) {
             let mut labels = HashSet::new();
@@ -202,7 +193,9 @@ pub async fn execute_tool(
             let headers = input.get("headers").and_then(|v| v.as_object());
             let body = input["body"].as_str();
             if let Some(ctx) = web_ctx {
-                ctx.fetch.fetch_with_options(url, method, headers, body).await
+                ctx.fetch
+                    .fetch_with_options(url, method, headers, body)
+                    .await
             } else {
                 tool_web_fetch_legacy(input).await
             }
@@ -223,7 +216,8 @@ pub async fn execute_tool(
 
             // SECURITY: Always check for shell metacharacters, even in Full mode.
             // These enable command injection regardless of exec policy.
-            if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
+            if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command)
+            {
                 return ToolResult {
                     tool_use_id: tool_use_id.to_string(),
                     content: format!(
@@ -300,7 +294,7 @@ pub async fn execute_tool(
         "knowledge_query" => tool_knowledge_query(input, kernel).await,
 
         // Image analysis tool
-        "image_analyze" => tool_image_analyze(input).await,
+        "image_analyze" => tool_image_analyze(input, workspace_root).await,
 
         // Media understanding tools
         "media_describe" => tool_media_describe(input, media_engine).await,
@@ -365,8 +359,7 @@ pub async fn execute_tool(
                     crate::browser::tool_browser_navigate(input, mgr, aid).await
                 }
                 None => Err(
-                    "Browser tools not available. Ensure Chrome/Chromium is installed."
-                        .to_string(),
+                    "Browser tools not available. Ensure Chrome/Chromium is installed.".to_string(),
                 ),
             }
         }
@@ -375,63 +368,81 @@ pub async fn execute_tool(
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_click(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_type" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_type(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_screenshot" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_screenshot(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_read_page" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_read_page(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_close" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_close(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_scroll" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_scroll(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_wait" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_wait(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_run_js" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_run_js(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_back" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_back(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
 
         // Canvas / A2UI tool
@@ -1474,21 +1485,10 @@ async fn tool_shell_exec(
     } else {
         // UNSAFE PATH: Full mode — user explicitly opted in to shell interpretation.
         // Shell resolution: prefer sh (Git Bash/MSYS2) on Windows.
-        #[cfg(windows)]
-        let git_sh: Option<&str> = {
-            const SH_PATHS: &[&str] = &[
-                "C:\\Program Files\\Git\\usr\\bin\\sh.exe",
-                "C:\\Program Files (x86)\\Git\\usr\\bin\\sh.exe",
-            ];
-            SH_PATHS
-                .iter()
-                .copied()
-                .find(|p| std::path::Path::new(p).exists())
-        };
         let (shell, shell_arg) = if cfg!(windows) {
             #[cfg(windows)]
             {
-                if let Some(sh) = git_sh {
+                if let Some(sh) = get_git_sh_path().await {
                     (sh, "-c")
                 } else {
                     ("cmd", "/C")
@@ -1529,6 +1529,7 @@ async fn tool_shell_exec(
         Ok(Ok(output)) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::debug!("Command output: stdout={stdout}, stderr={stderr}");
             let exit_code = output.status.code().unwrap_or(-1);
 
             // Truncate very long outputs to prevent memory issues
@@ -2196,10 +2197,12 @@ async fn tool_channel_send(
         let default_id = kh.get_channel_default_recipient(&channel).await;
         match default_id {
             Some(id) => id,
-            None => return Err(format!(
+            None => {
+                return Err(format!(
                 "Missing 'recipient' parameter. Set default_chat_id in [channels.{channel}] config \
                  or pass recipient explicitly."
-            )),
+            ))
+            }
         }
     } else {
         recipient_input
@@ -2224,7 +2227,9 @@ async fn tool_channel_send(
         let caption = input["message"].as_str().filter(|s| !s.is_empty());
         let filename = input["filename"].as_str();
         return kh
-            .send_channel_media(&channel, recipient, "file", url, caption, filename, thread_id)
+            .send_channel_media(
+                &channel, recipient, "file", url, caption, filename, thread_id,
+            )
             .await;
     }
 
@@ -2279,9 +2284,7 @@ async fn tool_channel_send(
         };
 
         return kh
-            .send_channel_file_data(
-                &channel, recipient, data, &filename, mime_type, thread_id,
-            )
+            .send_channel_file_data(&channel, recipient, data, &filename, mime_type, thread_id)
             .await;
     }
 
@@ -2474,13 +2477,19 @@ async fn tool_a2a_send(
 // Image analysis tool
 // ---------------------------------------------------------------------------
 
-async fn tool_image_analyze(input: &serde_json::Value) -> Result<String, String> {
+async fn tool_image_analyze(
+    input: &serde_json::Value,
+    workspace_root: Option<&Path>,
+) -> Result<String, String> {
     let path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
     let prompt = input["prompt"].as_str().unwrap_or("");
 
-    let data = tokio::fs::read(path)
+    // Resolve relative path against workspace root if provided
+    let path = resolve_file_path(path, workspace_root)?;
+
+    let data = tokio::fs::read(&path)
         .await
-        .map_err(|e| format!("Failed to read image '{path}': {e}"))?;
+        .map_err(|e| format!("Failed to read image '{path:?}': {e}"))?;
 
     let file_size = data.len();
 
@@ -3218,7 +3227,10 @@ async fn tool_canvas_present(
     let _ = tokio::fs::create_dir_all(&output_dir).await;
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let filename = format!("canvas_{timestamp}_{}.html", crate::str_utils::safe_truncate_str(&canvas_id, 8));
+    let filename = format!(
+        "canvas_{timestamp}_{}.html",
+        crate::str_utils::safe_truncate_str(&canvas_id, 8)
+    );
     let filepath = output_dir.join(&filename);
 
     // Write the full HTML document
@@ -3237,6 +3249,49 @@ async fn tool_canvas_present(
     });
 
     serde_json::to_string_pretty(&response).map_err(|e| format!("Serialize error: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+async fn get_git_sh_path() -> Option<&'static str> {
+    use tokio::process::Command;
+
+    let output = Command::new("where.exe").arg("git").output().await.ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let path = std::path::PathBuf::from(line);
+
+        if let Some(parent) = path.parent() {
+            let parent_str = parent.to_string_lossy();
+
+            let sh_path = if parent_str.ends_with("cmd") {
+                let parent_dir = parent.parent()?;
+                parent_dir.join("usr").join("bin").join("sh.exe")
+            } else if parent_str.ends_with("mingw64") || parent_str.ends_with("mingw32") {
+                let parent_dir = parent.parent()?;
+                parent_dir.join("usr").join("bin").join("sh.exe")
+            } else {
+                continue;
+            };
+
+            if sh_path.exists() {
+                let sh_path_str = sh_path.to_string_lossy().replace('\\', "/");
+                return Some(Box::leak(sh_path_str.into_boxed_str()));
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -3364,7 +3419,11 @@ mod tests {
             None, // process_manager
         )
         .await;
-        assert!(result.is_error, "Expected error but got: {}", result.content);
+        assert!(
+            result.is_error,
+            "Expected error but got: {}",
+            result.content
+        );
     }
 
     #[tokio::test]
@@ -3578,10 +3637,17 @@ mod tests {
         )
         .await;
         // Should fail for file-not-found, NOT for permission denied
-        assert!(result.is_error, "Expected error but got: {}", result.content);
         assert!(
-            result.content.contains("Failed to read") || result.content.contains("not found") || result.content.contains("No such file"),
-            "Unexpected error: {}", result.content
+            result.is_error,
+            "Expected error but got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("Failed to read")
+                || result.content.contains("not found")
+                || result.content.contains("No such file"),
+            "Unexpected error: {}",
+            result.content
         );
     }
 
@@ -3952,5 +4018,21 @@ mod tests {
         assert_eq!(output["title"], "Test");
         // Cleanup
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_get_git_sh_path() {
+        let output = tokio::process::Command::new("where.exe")
+            .arg("git")
+            .output()
+            .await
+            .expect("Failed to execute where.exe");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        if stdout.contains("git") {
+            let path = get_git_sh_path().await.unwrap();
+            assert!(PathBuf::from(path).exists());
+        }
     }
 }
