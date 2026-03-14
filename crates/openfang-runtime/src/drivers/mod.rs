@@ -379,34 +379,19 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         return Ok(Arc::new(anthropic::AnthropicDriver::new(api_key, base_url)));
     }
     if provider == "coding_plan" {
-        let api_key = config
-            .api_key
-            .clone()
-            .or_else(|| std::env::var("CODING_PLAN_API_KEY").ok())
-            .ok_or_else(|| {
-                LlmError::MissingApiKey("Set CODING_PLAN_API_KEY environment variable".to_string())
-            })?;
-        let base_url = config
-            .base_url
-            .clone()
-            .unwrap_or_else(|| CODING_PLAN_BASE_URL.to_string());
-        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
+        let api_key = std::env::var("CODING_PLAN_API_KEY").ok().ok_or_else(|| {
+            LlmError::MissingApiKey("Set CODING_PLAN_API_KEY environment variable".to_string())
+        })?;
+        return Ok(Arc::new(openai::OpenAIDriver::new(
+            api_key,
+            CODING_PLAN_BASE_URL.to_string(),
+        )));
     }
 
     if provider == "unigpt" {
-        tracing::debug!(
-            "Using UniGPT driver: {:?} - {:?} {:?}",
-            config.api_key,
-            config,
-            std::env::var("UNIGPT_API_KEY")
-        );
-        let api_key = config
-            .api_key
-            .clone()
-            .or_else(|| std::env::var("UNIGPT_API_KEY").ok())
-            .ok_or_else(|| {
-                LlmError::MissingApiKey("Set UNIGPT_API_KEY environment variable".to_string())
-            })?;
+        let api_key = std::env::var("UNIGPT_API_KEY").ok().ok_or_else(|| {
+            LlmError::MissingApiKey("Set UNIGPT_API_KEY environment variable".to_string())
+        })?;
         let base_url = config
             .base_url
             .clone()
