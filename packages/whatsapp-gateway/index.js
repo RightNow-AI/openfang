@@ -17,7 +17,8 @@ const __dirname = path.dirname(__filename);
 // ---------------------------------------------------------------------------
 const PORT = parseInt(process.env.WHATSAPP_GATEWAY_PORT || '3009', 10);
 const OPENFANG_URL = (process.env.OPENFANG_URL || 'http://127.0.0.1:4200').replace(/\/+$/, '');
-const DEFAULT_AGENT = process.env.OPENFANG_DEFAULT_AGENT || 'assistant';
+const DEFAULT_AGENT_NAME = process.env.OPENFANG_DEFAULT_AGENT || 'ambrogio';
+let resolvedAgentId = null; // will be resolved on first use
 
 // ---------------------------------------------------------------------------
 // State
@@ -124,7 +125,9 @@ async function startConnection() {
       if (msg.key.fromMe) continue;
       if (msg.key.remoteJid === 'status@broadcast') continue;
 
-      const sender = msg.key.remoteJid || '';
+      const remoteJid = msg.key.remoteJid || '';
+      const isGroup = remoteJid.endsWith('@g.us');
+
       const text = msg.message?.conversation
         || msg.message?.extendedTextMessage?.text
         || msg.message?.imageMessage?.caption
@@ -132,19 +135,35 @@ async function startConnection() {
 
       if (!text) continue;
 
-      // Extract phone number from JID (e.g. "1234567890@s.whatsapp.net" → "+1234567890")
-      const phone = '+' + sender.replace(/@.*$/, '');
+      // For groups: real sender is in participant; for DMs: it's remoteJid
+      const senderJid = isGroup ? (msg.key.participant || '') : remoteJid;
+      const phone = '+' + senderJid.replace(/@.*$/, '');
       const pushName = msg.pushName || phone;
 
-      console.log(`[gateway] Incoming from ${pushName} (${phone}): ${text.substring(0, 80)}`);
+      // Build metadata with group context
+      const metadata = {
+        channel: 'whatsapp',
+        sender: phone,
+        sender_name: pushName,
+      };
+
+      if (isGroup) {
+        metadata.group_jid = remoteJid;
+        metadata.group_name = msg.key.remoteJid; // basic group ID
+        metadata.is_group = true;
+        console.log(`[gateway] Group msg from ${pushName} (${phone}) in ${remoteJid}: ${text.substring(0, 80)}`);
+      } else {
+        console.log(`[gateway] Incoming from ${pushName} (${phone}): ${text.substring(0, 80)}`);
+      }
 
       // Forward to OpenFang agent
       try {
-        const response = await forwardToOpenFang(text, phone, pushName);
+        const response = await forwardToOpenFang(text, phone, pushName, metadata);
         if (response && sock) {
-          // Send agent response back to WhatsApp
-          await sock.sendMessage(sender, { text: response });
-          console.log(`[gateway] Replied to ${pushName}`);
+          // Reply in the same context: group → group, DM → DM
+          const replyJid = isGroup ? remoteJid : senderJid.replace(/@.*$/, '') + '@s.whatsapp.net';
+          await sock.sendMessage(replyJid, { text: response });
+          console.log(`[gateway] Replied to ${pushName}${isGroup ? ' in group ' + remoteJid : ' privately'}`);
         }
       } catch (err) {
         console.error(`[gateway] Forward/reply failed:`, err.message);
@@ -154,20 +173,59 @@ async function startConnection() {
 }
 
 // ---------------------------------------------------------------------------
+// Resolve agent name to UUID via OpenFang API
+// ---------------------------------------------------------------------------
+async function resolveAgentId(agentName) {
+  if (resolvedAgentId) return resolvedAgentId;
+
+  return new Promise((resolve, reject) => {
+    const url = new URL(`${OPENFANG_URL}/api/agents`);
+    const req = http.request(
+      { hostname: url.hostname, port: url.port || 4200, path: url.pathname, method: 'GET', timeout: 10_000 },
+      (res) => {
+        let body = '';
+        res.on('data', (chunk) => (body += chunk));
+        res.on('end', () => {
+          try {
+            const agents = JSON.parse(body);
+            const list = Array.isArray(agents) ? agents : agents.agents || [];
+            const match = list.find((a) => a.name === agentName || a.id === agentName);
+            if (match) {
+              resolvedAgentId = match.id;
+              console.log(`[gateway] Resolved agent "${agentName}" → ${match.id}`);
+              resolve(match.id);
+            } else {
+              reject(new Error(`Agent "${agentName}" not found`));
+            }
+          } catch (e) {
+            reject(new Error('Failed to parse agents list'));
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Agent resolve timeout')); });
+    req.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Forward incoming message to OpenFang API, return agent response
 // ---------------------------------------------------------------------------
-function forwardToOpenFang(text, phone, pushName) {
+async function forwardToOpenFang(text, phone, pushName, metadata) {
+  const agentId = await resolveAgentId(DEFAULT_AGENT_NAME);
+
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
       message: text,
-      metadata: {
+      metadata: metadata || {
         channel: 'whatsapp',
         sender: phone,
         sender_name: pushName,
       },
     });
 
-    const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(DEFAULT_AGENT)}/message`);
+    const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(agentId)}/message`);
 
     const req = http.request(
       {
@@ -214,8 +272,13 @@ async function sendMessage(to, text) {
     throw new Error('WhatsApp not connected');
   }
 
-  // Normalize phone → JID: "+1234567890" → "1234567890@s.whatsapp.net"
-  const jid = to.replace(/^\+/, '').replace(/@.*$/, '') + '@s.whatsapp.net';
+  // If already a full JID (group or user), use as-is; otherwise normalize phone → JID
+  let jid;
+  if (to.includes('@')) {
+    jid = to;
+  } else {
+    jid = to.replace(/^\+/, '') + '@s.whatsapp.net';
+  }
 
   await sock.sendMessage(jid, { text });
 }
@@ -335,7 +398,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[gateway] WhatsApp Web gateway listening on http://127.0.0.1:${PORT}`);
   console.log(`[gateway] OpenFang URL: ${OPENFANG_URL}`);
-  console.log(`[gateway] Default agent: ${DEFAULT_AGENT}`);
+  console.log(`[gateway] Default agent: ${DEFAULT_AGENT_NAME}`);
 
   // Auto-connect if credentials already exist from a previous session
   const credsPath = path.join(__dirname, 'auth_store', 'creds.json');
