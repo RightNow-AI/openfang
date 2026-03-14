@@ -5183,6 +5183,13 @@ fn infer_provider_from_model(model: &str) -> Option<String> {
         (lower.as_str(), false)
     };
     if has_delim {
+        // If there are two or more slashes (e.g. "mlx-lm-lg/mlx-community/Qwen3-4B"),
+        // the first segment is unambiguously a provider prefix — HuggingFace repo IDs
+        // only ever have one slash (namespace/model), so any extra slash means the
+        // leading token was typed explicitly as a provider.
+        if lower.chars().filter(|&c| c == '/').count() >= 2 {
+            return Some(prefix.to_string());
+        }
         match prefix {
             "minimax" | "gemini" | "anthropic" | "openai" | "groq" | "deepseek" | "mistral"
             | "cohere" | "xai" | "ollama" | "together" | "fireworks" | "perplexity"
