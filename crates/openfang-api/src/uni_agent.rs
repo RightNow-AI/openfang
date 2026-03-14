@@ -519,6 +519,15 @@ pub async fn set_agent_workspace(
                 "SOUL.md",
             ];
 
+            // Check if old directory is under .openfang/workspace
+            let is_under_openfang_workspace = old
+                .components()
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|w| {
+                    w[0].as_os_str() == ".openfang" && w[1].as_os_str() == "workspace"
+                });
+
             // Ensure target directory exists
             if let Err(e) = std::fs::create_dir_all(&new_path) {
                 return (
@@ -573,6 +582,13 @@ pub async fn set_agent_workspace(
                             tracing::warn!("Failed to remove source file {}: {e}", source.display());
                         }
                     }
+                }
+            }
+
+            // If old directory is under .openfang/workspace, remove it after moving files
+            if is_under_openfang_workspace {
+                if let Err(e) = std::fs::remove_dir_all(old) {
+                    tracing::warn!("Failed to remove old workspace directory {}: {e}", old.display());
                 }
             }
 
