@@ -9,6 +9,7 @@ pub mod channel_bridge;
 pub mod local_inference;
 pub mod middleware;
 pub mod openai_compat;
+pub mod openapi;
 pub mod rate_limiter;
 pub mod request_context;
 pub mod routes;

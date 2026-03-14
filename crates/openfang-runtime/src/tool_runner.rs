@@ -327,6 +327,15 @@ pub async fn execute_tool(
         // Channel send tool (proactive outbound messaging)
         "channel_send" => tool_channel_send(input, kernel).await,
 
+        // Named channel tools — ergonomic wrappers that route to channel_send
+        // Each normalises channel-specific parameters into the generic payload.
+        "telegram_send" | "email_send" | "slack_send" | "discord_send"
+        | "whatsapp_send" | "sms_send" => {
+            // Build the channel_send-compatible payload from the named-tool parameters
+            let send_input = build_channel_send_input(tool_name, input);
+            tool_channel_send(&send_input, kernel).await
+        }
+
         // Persistent process tools
         "process_start" => tool_process_start(input, process_manager, caller_agent_id).await,
         "process_poll" => tool_process_poll(input, process_manager).await,
@@ -1032,6 +1041,86 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "filename": { "type": "string", "description": "Filename for file attachments (defaults to 'file')" }
                 },
                 "required": ["channel", "recipient"]
+            }),
+        },
+        // --- Named channel tools (ergonomic wrappers over channel_send) ---
+        ToolDefinition {
+            name: "telegram_send".to_string(),
+            description: "Send a Telegram message to a chat or user. Requires TELEGRAM_BOT_TOKEN env var. \
+                          'chat_id' is the numeric Telegram chat ID or @username.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": { "type": "string", "description": "Telegram chat ID or @username" },
+                    "message": { "type": "string", "description": "Message text (supports HTML)" },
+                    "image_url": { "type": "string", "description": "Optional image URL to send alongside the message" }
+                },
+                "required": ["chat_id", "message"]
+            }),
+        },
+        ToolDefinition {
+            name: "email_send".to_string(),
+            description: "Send an email via the configured SMTP adapter. Requires EMAIL_USERNAME and EMAIL_PASSWORD env vars.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "to": { "type": "string", "description": "Recipient email address" },
+                    "subject": { "type": "string", "description": "Email subject line" },
+                    "body": { "type": "string", "description": "Email body (plain text or HTML)" },
+                    "cc": { "type": "string", "description": "Optional CC email address" }
+                },
+                "required": ["to", "subject", "body"]
+            }),
+        },
+        ToolDefinition {
+            name: "slack_send".to_string(),
+            description: "Post a message to a Slack channel. Requires SLACK_BOT_TOKEN env var.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "channel": { "type": "string", "description": "Slack channel (e.g. #general) or user ID" },
+                    "message": { "type": "string", "description": "Message text (supports Slack mrkdwn)" },
+                    "thread_ts": { "type": "string", "description": "Optional parent message timestamp for threaded replies" }
+                },
+                "required": ["channel", "message"]
+            }),
+        },
+        ToolDefinition {
+            name: "discord_send".to_string(),
+            description: "Send a message to a Discord channel. Requires DISCORD_TOKEN env var.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "channel_id": { "type": "string", "description": "Discord channel ID (numeric snowflake)" },
+                    "content": { "type": "string", "description": "Message content (max 2000 chars)" },
+                    "embed_title": { "type": "string", "description": "Optional embed card title" },
+                    "embed_description": { "type": "string", "description": "Optional embed card description" }
+                },
+                "required": ["channel_id", "content"]
+            }),
+        },
+        ToolDefinition {
+            name: "whatsapp_send".to_string(),
+            description: "Send a WhatsApp message. Requires WHATSAPP_API_KEY env var. 'to' must be E.164 format (e.g. +12025551234).".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "to": { "type": "string", "description": "Recipient phone number in E.164 format" },
+                    "message": { "type": "string", "description": "Message text" }
+                },
+                "required": ["to", "message"]
+            }),
+        },
+        ToolDefinition {
+            name: "sms_send".to_string(),
+            description: "Send an SMS. Requires SMS_API_KEY env var. 'to' must be E.164 format.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "to": { "type": "string", "description": "Recipient phone number in E.164 format" },
+                    "body": { "type": "string", "description": "SMS body text (max 160 chars per segment)" }
+                },
+                "required": ["to", "body"]
             }),
         },
         // --- Hand tools (curated autonomous capability packages) ---
@@ -2166,6 +2255,93 @@ async fn tool_cron_cancel(
 // ---------------------------------------------------------------------------
 // Channel send tool (proactive outbound messaging via configured adapters)
 // ---------------------------------------------------------------------------
+
+/// Normalise a named channel tool's input parameters into a `channel_send`-compatible payload.
+///
+/// Named tools (`telegram_send`, `email_send`, etc.) use channel-specific parameter names.
+/// This function remaps them to the `{ channel, recipient, message, ... }` shape that
+/// `tool_channel_send` expects.
+fn build_channel_send_input(tool_name: &str, input: &serde_json::Value) -> serde_json::Value {
+    match tool_name {
+        "telegram_send" => {
+            let chat_id = input["chat_id"].as_str().unwrap_or("");
+            let message = input["message"].as_str().unwrap_or("");
+            let mut payload = serde_json::json!({
+                "channel": "telegram",
+                "recipient": chat_id,
+                "message": message,
+            });
+            if let Some(img) = input["image_url"].as_str().filter(|s| !s.is_empty()) {
+                payload["image_url"] = serde_json::Value::String(img.to_string());
+            }
+            payload
+        }
+        "email_send" => {
+            let to = input["to"].as_str().unwrap_or("");
+            let subject = input["subject"].as_str().unwrap_or("");
+            let body = input["body"].as_str().unwrap_or("");
+            let mut payload = serde_json::json!({
+                "channel": "email",
+                "recipient": to,
+                "message": body,
+                "subject": subject,
+            });
+            if let Some(cc) = input["cc"].as_str().filter(|s| !s.is_empty()) {
+                payload["cc"] = serde_json::Value::String(cc.to_string());
+            }
+            payload
+        }
+        "slack_send" => {
+            let channel = input["channel"].as_str().unwrap_or("");
+            let message = input["message"].as_str().unwrap_or("");
+            let mut payload = serde_json::json!({
+                "channel": "slack",
+                "recipient": channel,
+                "message": message,
+            });
+            if let Some(ts) = input["thread_ts"].as_str().filter(|s| !s.is_empty()) {
+                payload["thread_ts"] = serde_json::Value::String(ts.to_string());
+            }
+            payload
+        }
+        "discord_send" => {
+            let channel_id = input["channel_id"].as_str().unwrap_or("");
+            let content = input["content"].as_str().unwrap_or("");
+            let mut payload = serde_json::json!({
+                "channel": "discord",
+                "recipient": channel_id,
+                "message": content,
+            });
+            if let Some(t) = input["embed_title"].as_str().filter(|s| !s.is_empty()) {
+                payload["embed_title"] = serde_json::Value::String(t.to_string());
+            }
+            if let Some(d) = input["embed_description"].as_str().filter(|s| !s.is_empty()) {
+                payload["embed_description"] = serde_json::Value::String(d.to_string());
+            }
+            payload
+        }
+        "whatsapp_send" => {
+            let to = input["to"].as_str().unwrap_or("");
+            let message = input["message"].as_str().unwrap_or("");
+            serde_json::json!({
+                "channel": "whatsapp",
+                "recipient": to,
+                "message": message,
+            })
+        }
+        "sms_send" => {
+            let to = input["to"].as_str().unwrap_or("");
+            let body = input["body"].as_str().unwrap_or("");
+            serde_json::json!({
+                "channel": "sms",
+                "recipient": to,
+                "message": body,
+            })
+        }
+        // Fallback — pass through unchanged (shouldn't happen given the match arm above)
+        _ => input.clone(),
+    }
+}
 
 async fn tool_channel_send(
     input: &serde_json::Value,

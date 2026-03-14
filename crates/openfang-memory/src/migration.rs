@@ -6,7 +6,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 
 /// Current schema version.
-const SCHEMA_VERSION: u32 = 13;
+const SCHEMA_VERSION: u32 = 15;
 
 /// Run all migrations to bring the database up to date.
 pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -62,6 +62,14 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
 
     if current_version < 13 {
         migrate_v13(conn)?;
+    }
+
+    if current_version < 14 {
+        migrate_v14(conn)?;
+    }
+
+    if current_version < 15 {
+        migrate_v15(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -529,6 +537,95 @@ fn migrate_v13(conn: &Connection) -> Result<(), rusqlite::Error> {
 
         INSERT OR IGNORE INTO migrations (version, applied_at, description)
         VALUES (13, datetime('now'), 'Add persisted OAuth users and revocable auth sessions');
+        ",
+    )?;
+    Ok(())
+}
+
+/// Version 14: Work items — canonical unit-of-work foundation.
+fn migrate_v14(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS work_items (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            work_type TEXT NOT NULL DEFAULT 'agent_task',
+            source TEXT NOT NULL DEFAULT 'api',
+            status TEXT NOT NULL DEFAULT 'pending',
+            approval_status TEXT NOT NULL DEFAULT 'not_required',
+            assigned_agent_id TEXT,
+            assigned_agent_name TEXT,
+            result TEXT,
+            error TEXT,
+            iterations INTEGER NOT NULL DEFAULT 0,
+            priority INTEGER NOT NULL DEFAULT 128,
+            scheduled_at TEXT,
+            started_at TEXT,
+            completed_at TEXT,
+            deadline TEXT,
+            requires_approval INTEGER NOT NULL DEFAULT 0,
+            approved_by TEXT,
+            approved_at TEXT,
+            approval_note TEXT,
+            payload TEXT NOT NULL DEFAULT '{}',
+            tags TEXT NOT NULL DEFAULT '[]',
+            created_by TEXT,
+            idempotency_key TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            max_retries INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
+        CREATE INDEX IF NOT EXISTS idx_work_items_agent ON work_items(assigned_agent_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_idempotency
+            ON work_items(idempotency_key)
+            WHERE idempotency_key IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS work_events (
+            id TEXT PRIMARY KEY,
+            work_item_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            from_status TEXT,
+            to_status TEXT,
+            actor TEXT,
+            detail TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (work_item_id) REFERENCES work_items(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_work_events_item ON work_events(work_item_id);
+
+        CREATE TABLE IF NOT EXISTS approval_records (
+            id TEXT PRIMARY KEY,
+            work_item_id TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            note TEXT,
+            decided_at TEXT NOT NULL,
+            FOREIGN KEY (work_item_id) REFERENCES work_items(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_approval_records_item ON approval_records(work_item_id);
+
+        INSERT OR IGNORE INTO migrations (version, applied_at, description)
+        VALUES (14, datetime('now'), 'Add work_items, work_events, approval_records tables');
+        ",
+    )?;
+    Ok(())
+}
+
+/// Version 15: Add parent_id to work_items for subagent delegation chains.
+fn migrate_v15(conn: &Connection) -> Result<(), rusqlite::Error> {
+    if !column_exists(conn, "work_items", "parent_id") {
+        conn.execute_batch("ALTER TABLE work_items ADD COLUMN parent_id TEXT;")?;
+    }
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_work_items_parent
+            ON work_items(parent_id)
+            WHERE parent_id IS NOT NULL;
+        INSERT OR IGNORE INTO migrations (version, applied_at, description)
+        VALUES (15, datetime('now'), 'Add parent_id to work_items for subagent delegation');
         ",
     )?;
     Ok(())

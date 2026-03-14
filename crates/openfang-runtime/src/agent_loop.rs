@@ -1302,11 +1302,48 @@ pub async fn run_agent_loop_streaming(
         let first_token_started_at = request_started_at;
         let forwarder = tokio::spawn(async move {
             let mut first_token_logged = false;
+            // Buffer TextDelta events while the accumulated text is still a prefix of
+            // "NO_REPLY". If the text diverges we flush and switch to pass-through.
+            // If the stream ends while still buffered the caller decides whether to replay.
+            const NO_REPLY_TOKEN: &str = "NO_REPLY";
+            let mut prefix_buf: Vec<StreamEvent> = Vec::new();
+            let mut accumulated = String::new();
+            let mut prefix_mode = true;
+
             while let Some(event) = forward_rx.recv().await {
+                let is_text_delta = matches!(event, StreamEvent::TextDelta { .. });
                 let should_log_first_token = matches!(
                     event,
                     StreamEvent::TextDelta { .. } | StreamEvent::ThinkingDelta { .. }
                 );
+
+                if is_text_delta && prefix_mode {
+                    if let StreamEvent::TextDelta { ref text } = event {
+                        accumulated.push_str(text);
+                    }
+                    let still_prefix = NO_REPLY_TOKEN.starts_with(accumulated.as_str())
+                        && accumulated.len() <= NO_REPLY_TOKEN.len();
+                    if still_prefix {
+                        if should_log_first_token && !first_token_logged {
+                            first_token_logged = true;
+                            info!(
+                                agent = %agent_name,
+                                elapsed_ms = first_token_started_at.elapsed().as_millis(),
+                                "runtime.first_token_received"
+                            );
+                        }
+                        prefix_buf.push(event);
+                        continue;
+                    }
+                    // Text diverged — not NO_REPLY. Flush held events then pass through.
+                    prefix_mode = false;
+                    for held in prefix_buf.drain(..) {
+                        if stream_tx_clone.send(held).await.is_err() {
+                            return Vec::new();
+                        }
+                    }
+                }
+
                 if should_log_first_token && !first_token_logged {
                     first_token_logged = true;
                     info!(
@@ -1319,6 +1356,8 @@ pub async fn run_agent_loop_streaming(
                     break;
                 }
             }
+            // Return any still-buffered events so the caller can replay if not NO_REPLY.
+            prefix_buf
         });
         let mut response = stream_with_retry(
             &*driver,
@@ -1328,7 +1367,7 @@ pub async fn run_agent_loop_streaming(
             None,
         )
         .await?;
-        let _ = forwarder.await;
+        let held_prefix_events = forwarder.await.unwrap_or_default();
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
@@ -1368,8 +1407,13 @@ pub async fn run_agent_loop_streaming(
                     crate::reply_directives::parse_directives(&text);
                 let text = cleaned_text_s;
                 let suppress_visible_text = text.trim() == "NO_REPLY" || parsed_directives_s.silent;
-                if suppress_visible_text {
-                    debug!(agent = %manifest.name, "Visible text was already streamed before silent directive resolution");
+
+                // Replay any prefix-buffered events that weren't forwarded during streaming.
+                // These are suppressed for NO_REPLY/silent; flushed to the client otherwise.
+                if !suppress_visible_text {
+                    for event in held_prefix_events {
+                        let _ = stream_tx.send(event).await;
+                    }
                 }
 
                 // NO_REPLY: agent intentionally chose not to reply

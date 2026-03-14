@@ -3,6 +3,7 @@
 use crate::tool::ToolDefinition;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -179,7 +180,7 @@ pub enum AgentState {
 }
 
 /// Permission-based operational mode for an agent.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
     /// Read-only: agent can observe but cannot call any tools.
@@ -315,7 +316,19 @@ impl ToolProfile {
                 "web_fetch",
             ],
             Self::Research => vec!["web_fetch", "web_search", "file_read", "file_write"],
-            Self::Messaging => vec!["agent_send", "agent_list", "memory_store", "memory_recall"],
+            Self::Messaging => vec![
+                "agent_send",
+                "agent_list",
+                "memory_store",
+                "memory_recall",
+                "channel_send",
+                "telegram_send",
+                "email_send",
+                "slack_send",
+                "discord_send",
+                "whatsapp_send",
+                "sms_send",
+            ],
             Self::Automation => vec![
                 "file_read",
                 "file_write",
@@ -484,6 +497,11 @@ pub struct AgentManifest {
     /// Tool blocklist — these tools are excluded (applied after allowlist).
     #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
     pub tool_blocklist: Vec<String>,
+    /// Optional persona ID — binds this agent to an `AgentPersona` from the persona registry.
+    /// When set, `available_tools()` automatically injects the persona's required channel tools
+    /// and a `PersonaToolHook` is registered for lifecycle observability and advisory enforcement.
+    #[serde(default)]
+    pub persona_id: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -518,6 +536,7 @@ impl Default for AgentManifest {
             exec_policy: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            persona_id: None,
         }
     }
 }
@@ -775,6 +794,7 @@ mod tests {
             exec_policy: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            persona_id: None,
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let deserialized: AgentManifest = serde_json::from_str(&json).unwrap();
@@ -812,7 +832,10 @@ mod tests {
         let tools = ToolProfile::Messaging.tools();
         assert!(tools.contains(&"agent_send".to_string()));
         assert!(tools.contains(&"memory_recall".to_string()));
-        assert_eq!(tools.len(), 4);
+        assert!(tools.contains(&"channel_send".to_string()));
+        assert!(tools.contains(&"telegram_send".to_string()));
+        assert!(tools.contains(&"email_send".to_string()));
+        assert_eq!(tools.len(), 11);
     }
 
     #[test]

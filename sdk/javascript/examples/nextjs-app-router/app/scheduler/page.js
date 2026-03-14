@@ -1,14 +1,13 @@
-import { ComingSoon } from '../components/ComingSoon';
+import { api } from '../../lib/api-server';
+import SchedulerClient from './SchedulerClient';
 
-export default function SchedulerPage() {
-  return (
-    <ComingSoon
-      title="Scheduler"
-      description="Schedule recurring agent tasks, reminders, and automated workflows. Set cron-style triggers or event-based conditions."
-      links={[
-        { href: '/workflows', label: 'Workflows' },
-        { href: '/today', label: 'Today plan' },
-      ]}
-    />
-  );
+export default async function SchedulerPage() {
+  let items = [];
+  try {
+    const data = await api.get('/api/work?scheduled=true');
+    items = Array.isArray(data?.items) ? data.items : [];
+  } catch {
+    // handled by client error state
+  }
+  return <SchedulerClient initialItems={items} />;
 }

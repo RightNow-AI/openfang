@@ -1,14 +1,18 @@
-import { ComingSoon } from '../components/ComingSoon';
+import { api } from '../../lib/api-server';
+import CommsClient from './CommsClient';
 
-export default function CommsPage() {
-  return (
-    <ComingSoon
-      title="Comms"
-      description="Agent-to-agent and agent-to-human communication threads. Monitor cross-agent conversations, A2A task exchanges, and outbound messages."
-      links={[
-        { href: '/channels', label: 'Channels' },
-        { href: '/logs', label: 'Audit logs' },
-      ]}
-    />
-  );
+export default async function CommsPage() {
+  let topology = { nodes: [], edges: [] };
+  let events = [];
+  try {
+    const [topoData, eventsData] = await api.gather([
+      '/api/comms/topology',
+      '/api/comms/events?limit=50',
+    ]);
+    if (topoData) topology = topoData;
+    if (Array.isArray(eventsData)) events = eventsData;
+  } catch {
+    // handled by client error state
+  }
+  return <CommsClient initialTopology={topology} initialEvents={events} />;
 }

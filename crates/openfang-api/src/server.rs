@@ -103,6 +103,7 @@ pub async fn build_router(
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         user_rate_limiter,
+        orchestrator_runs: tokio::sync::RwLock::new(Vec::new()),
     });
 
     // H1: Restrict CORS to explicit headers and methods rather than Any.
@@ -180,10 +181,23 @@ pub async fn build_router(
 
     let gcra_limiter = rate_limiter::create_rate_limiter();
 
+    // OpenAPI spec handler — served unauthenticated (schema is public contract)
+    let openapi_json = {
+        use utoipa::OpenApi as _;
+        crate::openapi::ApiDoc::openapi()
+    };
+
     let app = Router::new()
         .route("/", axum::routing::get(webchat::webchat_page))
         .route("/logo.png", axum::routing::get(webchat::logo_png))
         .route("/favicon.ico", axum::routing::get(webchat::favicon_ico))
+        .route(
+            "/api-doc/openapi.json",
+            axum::routing::get({
+                let spec = openapi_json.clone();
+                move || async move { axum::Json(spec) }
+            }),
+        )
         .route(
             "/api/metrics",
             axum::routing::get(routes::prometheus_metrics),
@@ -840,6 +854,82 @@ pub async fn build_router(
         .route(
             "/api/pairing/notify",
             axum::routing::post(routes::pairing_notify),
+        )
+        // WorkItem endpoints
+        .route(
+            "/api/work",
+            axum::routing::get(routes::list_work_items).post(routes::create_work_item),
+        )
+        // summary must be before /{id} to avoid "summary" matching as an ID
+        .route(
+            "/api/work/summary",
+            axum::routing::get(routes::get_work_summary),
+        )
+        .route(
+            "/api/work/{id}",
+            axum::routing::get(routes::get_work_item),
+        )
+        .route(
+            "/api/work/{id}/run",
+            axum::routing::post(routes::run_work_item),
+        )
+        .route(
+            "/api/work/{id}/approve",
+            axum::routing::post(routes::approve_work_item),
+        )
+        .route(
+            "/api/work/{id}/reject",
+            axum::routing::post(routes::reject_work_item),
+        )
+        .route(
+            "/api/work/{id}/cancel",
+            axum::routing::post(routes::cancel_work_item),
+        )
+        .route(
+            "/api/work/{id}/retry",
+            axum::routing::post(routes::retry_work_item),
+        )
+        .route(
+            "/api/work/{id}/events",
+            axum::routing::get(routes::list_work_events),
+        )
+        .route(
+            "/api/work/{id}/delegate",
+            axum::routing::post(routes::delegate_work_item),
+        )
+        // Swarm manifest and planning endpoints
+        .route(
+            "/api/agents/{id}/manifest",
+            axum::routing::get(routes::get_agent_swarm_manifest),
+        )
+        .route(
+            "/api/agents/{id}/manifest/validate",
+            axum::routing::get(routes::validate_agent_swarm_manifest),
+        )
+        .route(
+            "/api/swarm/plan/{work_id}",
+            axum::routing::get(routes::get_swarm_plan),
+        )
+        .route(
+            "/api/work/{id}/swarm",
+            axum::routing::get(routes::get_work_swarm),
+        )
+        .route(
+            "/api/swarm/agents",
+            axum::routing::get(routes::list_swarm_agents),
+        )
+        // Orchestrator endpoints
+        .route(
+            "/api/orchestrator/status",
+            axum::routing::get(routes::get_orchestrator_status),
+        )
+        .route(
+            "/api/orchestrator/runs",
+            axum::routing::get(routes::get_orchestrator_runs),
+        )
+        .route(
+            "/api/orchestrator/heartbeat",
+            axum::routing::post(routes::post_orchestrator_heartbeat),
         )
         // MCP HTTP endpoint (exposes MCP protocol over HTTP)
         .route("/mcp", axum::routing::post(routes::mcp_http))

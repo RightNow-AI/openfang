@@ -156,6 +156,10 @@ pub struct OpenFangKernel {
     pub default_model_override: std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
+    /// Swarm manifest registry — validated manifests for automated swarm composition.
+    pub swarm_registry: Arc<crate::swarm_registry::SwarmRegistry>,
+    /// Central tool contract registry — contracts, adapters, permissions, health.
+    pub tool_registry: Arc<crate::tool_registry::ToolRegistry>,
 }
 
 /// Bounded in-memory delivery receipt tracker.
@@ -1047,6 +1051,8 @@ impl OpenFangKernel {
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
             self_handle: OnceLock::new(),
+            swarm_registry: Arc::new(crate::swarm_registry::SwarmRegistry::new()),
+            tool_registry: Arc::new(crate::tool_registry::ToolRegistry::new().with_builtin_contracts()),
         };
 
         // Restore persisted agents from SQLite
@@ -1225,7 +1231,146 @@ impl OpenFangKernel {
         }
 
         info!("OpenFang kernel booted successfully");
+
+        // Load swarm manifests from SWARM.toml files in agent directories
+        kernel.load_swarm_manifests();
+
         Ok(kernel)
+    }
+
+    /// Scan all agent directories for `SWARM.toml` and register manifests.
+    /// Falls back to synthesizing a minimal manifest from the agent's TOML capabilities.
+    pub fn load_swarm_manifests(&self) {
+        use openfang_types::swarm::{AgentSwarmManifest, CapabilityTag};
+
+        let agents_dir = self.config.home_dir.join("agents");
+        if !agents_dir.exists() {
+            return;
+        }
+
+        let entries = match std::fs::read_dir(&agents_dir) {
+            Ok(e) => e,
+            Err(err) => {
+                warn!("swarm_registry: cannot read agents dir: {err}");
+                return;
+            }
+        };
+
+        let known_tools: std::collections::HashSet<String> = {
+            let tools = builtin_tool_definitions();
+            tools.iter().map(|t| t.name.clone()).collect()
+        };
+
+        let mut loaded = 0usize;
+        let mut synthesized = 0usize;
+
+        for dir_entry in entries.flatten() {
+            let agent_dir = dir_entry.path();
+            if !agent_dir.is_dir() {
+                continue;
+            }
+
+            let swarm_toml = agent_dir.join("SWARM.toml");
+            if swarm_toml.exists() {
+                match std::fs::read_to_string(&swarm_toml) {
+                    Ok(s) => match toml::from_str::<AgentSwarmManifest>(&s) {
+                        Ok(manifest) => {
+                            let result =
+                                self.swarm_registry.register(manifest, &known_tools);
+                            if result.valid {
+                                loaded += 1;
+                            } else {
+                                let errs: Vec<&str> = result
+                                    .findings
+                                    .iter()
+                                    .filter(|f| {
+                                        f.level
+                                            == openfang_types::swarm::ValidationLevel::Error
+                                    })
+                                    .map(|f| f.message.as_str())
+                                    .collect();
+                                warn!(
+                                    path = %swarm_toml.display(),
+                                    "SWARM.toml invalid: {:?}", errs
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            warn!(path = %swarm_toml.display(), "Failed to parse SWARM.toml: {e}");
+                        }
+                    },
+                    Err(e) => {
+                        warn!(path = %swarm_toml.display(), "Failed to read SWARM.toml: {e}");
+                    }
+                }
+                continue;
+            }
+
+            // Fallback: synthesize a minimal swarm manifest from agent.toml capabilities
+            let agent_toml = agent_dir.join("agent.toml");
+            if !agent_toml.exists() {
+                continue;
+            }
+            if let Ok(s) = std::fs::read_to_string(&agent_toml) {
+                if let Ok(agent_manifest) =
+                    toml::from_str::<openfang_types::agent::AgentManifest>(&s)
+                {
+                    // Derive capability tags from agent's tool list
+                    let capability_tags: Vec<CapabilityTag> = agent_manifest
+                        .capabilities
+                        .tools
+                        .iter()
+                        .filter_map(|t| CapabilityTag::parse(t))
+                        .collect();
+
+                    // Skip agents with no parseable capability tags — they won't be
+                    // useful as swarm candidates anyway
+                    if capability_tags.is_empty() {
+                        continue;
+                    }
+
+                    let synth = AgentSwarmManifest {
+                        id: agent_manifest.name.clone(),
+                        name: agent_manifest.name.clone(),
+                        description: agent_manifest.description.clone(),
+                        version: "0.0.0-synthesized".into(),
+                        author: "openfang-kernel".into(),
+                        division: openfang_types::swarm::SwarmDivision::Execution,
+                        risk_level: openfang_types::swarm::ManifestRiskLevel::Low,
+                        capability_tags,
+                        input_types: vec![],
+                        output_types: vec![],
+                        required_tools: agent_manifest.capabilities.tools.clone(),
+                        required_services: vec![],
+                        optional_services: vec![],
+                        max_concurrency: 1,
+                        supports_subtasks: false,
+                        expected_runtime_class: openfang_types::swarm::RuntimeClass::Medium,
+                        produces_artifact: false,
+                        artifact_schema: None,
+                        requires_approval: false,
+                        approval_policy: openfang_types::swarm::ApprovalGatePolicy::None,
+                        cost_sensitivity: openfang_types::swarm::CostSensitivity::Low,
+                        requires_external_network: false,
+                        safe_for_auto_run: true,
+                        emits_events: false,
+                        logs_artifacts: false,
+                        trace_level: openfang_types::swarm::TraceLevel::Minimal,
+                        compatible_with: vec![],
+                        incompatible_with: vec![],
+                    };
+                    self.swarm_registry.register_unchecked(synth);
+                    synthesized += 1;
+                }
+            }
+        }
+
+        if loaded > 0 || synthesized > 0 {
+            info!(
+                "swarm_registry: loaded {loaded} SWARM.toml manifest(s), \
+                 synthesized {synthesized} from agent.toml"
+            );
+        }
     }
 
     /// Spawn a new agent from a manifest, optionally linking to a parent agent.
@@ -1771,6 +1916,17 @@ impl OpenFangKernel {
         } else {
             message.to_string()
         };
+
+        // Register PersonaToolHook for agents with an assigned persona (streaming path).
+        if let Some(ref persona_id) = manifest.persona_id {
+            let hook = Arc::new(crate::persona_tools::PersonaToolHook::new(
+                persona_id.clone(),
+                manifest.name.clone(),
+            ));
+            self.hooks.register(HookEvent::BeforeToolCall, hook.clone());
+            self.hooks.register(HookEvent::AfterToolCall, hook);
+        }
+
         let kernel_clone = Arc::clone(self);
 
         let handle = tokio::spawn(async move {
@@ -2325,6 +2481,18 @@ impl OpenFangKernel {
         } else {
             message.to_string()
         };
+
+        // Register PersonaToolHook for agents with an assigned persona.
+        // The hook filters by agent_name so it only fires for this specific agent
+        // even though self.hooks is the kernel-global registry.
+        if let Some(ref persona_id) = manifest.persona_id {
+            let hook = Arc::new(crate::persona_tools::PersonaToolHook::new(
+                persona_id.clone(),
+                manifest.name.clone(),
+            ));
+            self.hooks.register(HookEvent::BeforeToolCall, hook.clone());
+            self.hooks.register(HookEvent::AfterToolCall, hook);
+        }
 
         let result = run_agent_loop(
             &manifest,
@@ -4478,6 +4646,21 @@ impl OpenFangKernel {
             .map(|e| (e.manifest.tool_allowlist.clone(), e.manifest.tool_blocklist.clone()))
             .unwrap_or_default();
 
+        // Inject persona-required channel tools (e.g. "channel:telegram_send" → ToolDefinition)
+        if let Some(ref persona_id) = entry.as_ref().and_then(|e| e.manifest.persona_id.clone()) {
+            let persona_tools = crate::persona_tools::resolve_tools_for_persona(persona_id);
+            for pt in persona_tools {
+                if !all_tools.iter().any(|t| t.name == pt.name) {
+                    all_tools.push(pt);
+                }
+            }
+            let available_names: Vec<String> = all_tools.iter().map(|t| t.name.clone()).collect();
+            let missing = crate::persona_tools::check_required_tools(persona_id, &available_names);
+            if !missing.is_empty() {
+                tracing::warn!(persona_id, ?missing, "Persona has unsatisfied required tools");
+            }
+        }
+
         if !tool_allowlist.is_empty() {
             all_tools.retain(|t| tool_allowlist.iter().any(|a| a == &t.name));
         }
@@ -5657,6 +5840,7 @@ mod tests {
             exec_policy: None,
             tool_allowlist: vec![],
             tool_blocklist: vec![],
+            persona_id: None,
         };
         manifest.capabilities.tools = vec!["file_read".to_string(), "web_fetch".to_string()];
         manifest.capabilities.agent_spawn = true;
@@ -5694,6 +5878,7 @@ mod tests {
             exec_policy: None,
             tool_allowlist: vec![],
             tool_blocklist: vec![],
+            persona_id: None,
         }
     }
 

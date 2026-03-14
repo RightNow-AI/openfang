@@ -5,12 +5,27 @@
   "scripts": {
     "dev": "node --no-webstorage ./node_modules/next/dist/bin/next dev",
     "build": "node --no-webstorage ./node_modules/next/dist/bin/next build",
-    "start": "node --no-webstorage ./node_modules/next/dist/bin/next start"
+    "start": "node --no-webstorage ./node_modules/next/dist/bin/next start",
+    "cy:open": "cypress open",
+    "cy:run": "cypress run --e2e",
+    "cy:run:headless": "cypress run --e2e --headless",
+    "heartbeat": "node ../../../../scripts/heartbeat.js",
+    "heartbeat:verbose": "node ../../../../scripts/heartbeat.js --verbose",
+    "heartbeat:dry-run": "node ../../../../scripts/heartbeat.js --dry-run",
+    "generate:types": "openapi-typescript http://localhost:50051/api-doc/openapi.json -o src/types/api.ts",
+    "generate:types:file": "openapi-typescript ../../../../openapi.json -o src/types/api.ts",
+    "check:drift": "npm run generate:types:file && git diff --exit-code src/types/api.ts"
   },
   "dependencies": {
     "@openfang/sdk": "file:../..",
     "next": "15.3.1",
     "react": "19.1.0",
     "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "cypress": "^13.17.0",
+    "openapi-typescript": "^7",
+    "typescript": "5.9.3"
   }
 }

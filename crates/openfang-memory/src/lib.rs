@@ -17,6 +17,7 @@ pub mod semantic;
 pub mod session;
 pub mod structured;
 pub mod usage;
+pub mod work_item;
 
 mod substrate;
 pub use substrate::MemorySubstrate;

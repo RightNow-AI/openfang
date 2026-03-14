@@ -122,6 +122,8 @@ pub struct AppState {
     /// Per-user GCRA rate limiter for LLM-heavy endpoints (message, run).
     /// Keyed on user_id (String). 100 LLM tokens per minute per user.
     pub user_rate_limiter: Arc<rate_limiter::UserRateLimiter>,
+    /// In-memory ring buffer of recent orchestrator heartbeat runs (max 50).
+    pub orchestrator_runs: tokio::sync::RwLock<Vec<openfang_types::work_item::OrchestratorRun>>,
 }
 
 /// GET /api/local/policy — Return the local inference planner policy.
@@ -12348,3 +12350,871 @@ fn remove_toml_section(content: &str, section: &str) -> String {
     }
     result
 }
+
+// =============================================================================
+// WorkItem endpoints
+// =============================================================================
+
+/// GET /api/work — list work items with optional filters.
+pub async fn list_work_items(
+    State(state): State<Arc<AppState>>,
+    Query(filter): Query<openfang_types::work_item::WorkItemFilter>,
+) -> impl IntoResponse {
+    match state.kernel.memory.work_items().list(&filter) {
+        Ok(items) => {
+            let total = items.len();
+            Json(serde_json::json!({"items": items, "total": total})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/work/{id} — fetch a single work item.
+pub async fn get_work_item(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.kernel.memory.work_items().get_by_id(&id) {
+        Ok(Some(item)) => Json(item).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("work item {id} not found")})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/work — create a new work item.
+pub async fn create_work_item(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<openfang_types::work_item::CreateWorkItemRequest>,
+) -> impl IntoResponse {
+    let now = chrono::Utc::now();
+    let item = openfang_types::work_item::WorkItem {
+        id: uuid::Uuid::new_v4().to_string(),
+        title: body.title,
+        description: body.description,
+        work_type: body.work_type,
+        source: body.source,
+        status: openfang_types::work_item::WorkStatus::Pending,
+        approval_status: if body.requires_approval {
+            openfang_types::work_item::ApprovalStatus::Pending
+        } else {
+            openfang_types::work_item::ApprovalStatus::NotRequired
+        },
+        assigned_agent_id: body.assigned_agent_id,
+        assigned_agent_name: None,
+        result: None,
+        error: None,
+        iterations: 0,
+        priority: body.priority.unwrap_or(128),
+        scheduled_at: body.scheduled_at,
+        started_at: None,
+        completed_at: None,
+        deadline: body.deadline,
+        requires_approval: body.requires_approval,
+        approved_by: None,
+        approved_at: None,
+        approval_note: None,
+        payload: body.payload,
+        tags: body.tags,
+        created_by: body.created_by,
+        idempotency_key: body.idempotency_key,
+        created_at: now,
+        updated_at: now,
+        retry_count: 0,
+        max_retries: body.max_retries,
+        parent_id: body.parent_id,
+    };
+
+    match state.kernel.memory.work_items().create(&item) {
+        Ok(created) => (StatusCode::CREATED, Json(created)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/work/{id}/run — transition to Running (or WaitingApproval if swarm requires pre-execute gate).
+pub async fn run_work_item(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    _body: Option<Json<openfang_types::work_item::RunWorkItemRequest>>,
+) -> impl IntoResponse {
+    use openfang_kernel::swarm_planner::{plan_to_work_events, SwarmPlanRequest, SwarmPlanner};
+    use openfang_types::swarm::ApprovalGatePolicy;
+
+    // Fetch item first so we can run swarm planning before transitioning.
+    let item = match state.kernel.memory.work_items().get_by_id(&id) {
+        Ok(Some(i)) => i,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("work item {id} not found")})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    // Run swarm selection planning.
+    let no_extra_tags: Vec<openfang_types::swarm::CapabilityTag> = vec![];
+    let planner = SwarmPlanner::new(state.kernel.swarm_registry.clone());
+    let plan = planner.plan(SwarmPlanRequest {
+        work_item: item.clone(),
+        max_swarm_size: Some(8),
+        require_auto_run: false,
+        extra_required_tags: no_extra_tags,
+    });
+
+    // Persist the planning events (swarm_planned or swarm_selection_failed).
+    for event in plan_to_work_events(&plan) {
+        let _ = state.kernel.memory.work_items().append_event(&event);
+    }
+
+    // If the plan mandates pre-execute approval, gate here instead of running.
+    if plan.approval_gating_required
+        && plan.approval_gate_policy == ApprovalGatePolicy::PreExecute
+    {
+        return match state.kernel.memory.work_items().transition(
+            &id,
+            openfang_types::work_item::WorkStatus::WaitingApproval,
+            Some("swarm_planner"),
+            Some("swarm plan requires pre-execute approval"),
+            None,
+        ) {
+            Ok(updated) => (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({
+                    "status": "waiting_approval",
+                    "plan_id": plan.id,
+                    "work_item": updated
+                })),
+            )
+                .into_response(),
+            Err(e) => {
+                let status = if e.to_string().contains("not found") {
+                    StatusCode::NOT_FOUND
+                } else if e.to_string().contains("invalid transition") {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                (status, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+            }
+        };
+    }
+
+    // Normal path — transition to Running.
+    match state
+        .kernel
+        .memory
+        .work_items()
+        .transition(&id, openfang_types::work_item::WorkStatus::Running, Some("api"), Some("started via API"), None)
+    {
+        Ok(item) => Json(item).into_response(),
+        Err(e) => {
+            let status = if e.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if e.to_string().contains("invalid transition") {
+                StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// POST /api/work/{id}/approve — approve a waiting work item.
+pub async fn approve_work_item(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let actor = body.get("actor").and_then(|v| v.as_str()).unwrap_or("api");
+    let note = body.get("note").and_then(|v| v.as_str()).map(String::from);
+    let now = chrono::Utc::now();
+
+    let extra = openfang_memory::work_item::TransitionExtra {
+        approval_status: Some(openfang_types::work_item::ApprovalStatus::Approved),
+        approved_by: Some(actor.to_string()),
+        approved_at: Some(now),
+        approval_note: note.clone(),
+        result: None,
+        error: None,
+        iterations: None,
+    };
+
+    match state.kernel.memory.work_items().transition(
+        &id,
+        openfang_types::work_item::WorkStatus::Approved,
+        Some(actor),
+        note.as_deref(),
+        Some(extra),
+    ) {
+        Ok(item) => Json(item).into_response(),
+        Err(e) => {
+            let status = if e.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if e.to_string().contains("invalid transition") {
+                StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// POST /api/work/{id}/reject — reject a waiting work item.
+pub async fn reject_work_item(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let actor = body.get("actor").and_then(|v| v.as_str()).unwrap_or("api");
+    let note = body.get("note").and_then(|v| v.as_str()).map(String::from);
+    let now = chrono::Utc::now();
+
+    let extra = openfang_memory::work_item::TransitionExtra {
+        approval_status: Some(openfang_types::work_item::ApprovalStatus::Rejected),
+        approved_by: Some(actor.to_string()),
+        approved_at: Some(now),
+        approval_note: note.clone(),
+        result: None,
+        error: None,
+        iterations: None,
+    };
+
+    match state.kernel.memory.work_items().transition(
+        &id,
+        openfang_types::work_item::WorkStatus::Rejected,
+        Some(actor),
+        note.as_deref(),
+        Some(extra),
+    ) {
+        Ok(item) => Json(item).into_response(),
+        Err(e) => {
+            let status = if e.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if e.to_string().contains("invalid transition") {
+                StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// POST /api/work/{id}/cancel — cancel a work item.
+pub async fn cancel_work_item(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Option<Json<serde_json::Value>>,
+) -> impl IntoResponse {
+    let reason = body
+        .as_ref()
+        .and_then(|b| b.get("reason"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("cancelled via API");
+
+    match state.kernel.memory.work_items().transition(
+        &id,
+        openfang_types::work_item::WorkStatus::Cancelled,
+        Some("api"),
+        Some(reason),
+        None,
+    ) {
+        Ok(item) => Json(item).into_response(),
+        Err(e) => {
+            let status = if e.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if e.to_string().contains("invalid transition") {
+                StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// POST /api/work/{id}/retry — retry a failed work item.
+pub async fn retry_work_item(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Validate max_retries before transitioning
+    match state.kernel.memory.work_items().get_by_id(&id) {
+        Ok(Some(item)) => {
+            if item.retry_count >= item.max_retries && item.max_retries > 0 {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(serde_json::json!({
+                        "error": format!(
+                            "retry limit reached ({}/{})",
+                            item.retry_count, item.max_retries
+                        )
+                    })),
+                )
+                    .into_response();
+            }
+        }
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("work item {id} not found")})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    }
+
+    match state.kernel.memory.work_items().transition(
+        &id,
+        openfang_types::work_item::WorkStatus::Pending,
+        Some("api"),
+        Some("manual retry"),
+        None,
+    ) {
+        Ok(item) => Json(item).into_response(),
+        Err(e) => {
+            let status = if e.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if e.to_string().contains("invalid transition") {
+                StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// GET /api/work/{id}/events — list the audit trail for a work item.
+pub async fn list_work_events(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Verify the item exists first
+    match state.kernel.memory.work_items().get_by_id(&id) {
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("work item {id} not found")})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+        Ok(Some(_)) => {}
+    }
+
+    match state.kernel.memory.work_items().list_events(&id) {
+        Ok(events) => {
+            let total = events.len();
+            Json(serde_json::json!({"events": events, "total": total})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/work/summary — operator dashboard status counts.
+pub async fn get_work_summary(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let store = state.kernel.memory.work_items();
+    let counts = match store.count_by_status() {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    let scheduled = store.count_scheduled().unwrap_or(0);
+
+    let pending = *counts.get("pending").unwrap_or(&0);
+    let ready = *counts.get("ready").unwrap_or(&0);
+    let running = *counts.get("running").unwrap_or(&0);
+    let waiting_approval = *counts.get("waiting_approval").unwrap_or(&0);
+    let approved = *counts.get("approved").unwrap_or(&0);
+    let rejected = *counts.get("rejected").unwrap_or(&0);
+    let completed = *counts.get("completed").unwrap_or(&0);
+    let failed = *counts.get("failed").unwrap_or(&0);
+    let cancelled = *counts.get("cancelled").unwrap_or(&0);
+    let total = pending + ready + running + waiting_approval + approved + rejected + completed + failed + cancelled;
+
+    let summary = openfang_types::work_item::WorkSummary {
+        pending,
+        ready,
+        running,
+        waiting_approval,
+        approved,
+        rejected,
+        completed,
+        failed,
+        cancelled,
+        total,
+        scheduled,
+        generated_at: chrono::Utc::now(),
+    };
+    Json(summary).into_response()
+}
+
+/// POST /api/work/{id}/delegate — spawn a child work item linked to a parent.
+pub async fn delegate_work_item(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<openfang_types::work_item::DelegateWorkItemRequest>,
+) -> impl IntoResponse {
+    let parent = match state.kernel.memory.work_items().get_by_id(&id) {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("work item {id} not found")})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let now = chrono::Utc::now();
+    let child_id = uuid::Uuid::new_v4().to_string();
+    let child_title = body
+        .title
+        .unwrap_or_else(|| format!("[sub] {}", parent.title));
+    let child_agent = body.agent_id.or(parent.assigned_agent_id.clone());
+
+    let child = openfang_types::work_item::WorkItem {
+        id: child_id.clone(),
+        title: child_title,
+        description: parent.description.clone(),
+        work_type: parent.work_type.clone(),
+        source: openfang_types::work_item::WorkSource::AgentSpawned,
+        status: openfang_types::work_item::WorkStatus::Pending,
+        approval_status: openfang_types::work_item::ApprovalStatus::NotRequired,
+        assigned_agent_id: child_agent,
+        assigned_agent_name: None,
+        result: None,
+        error: None,
+        iterations: 0,
+        priority: parent.priority,
+        scheduled_at: None,
+        started_at: None,
+        completed_at: None,
+        deadline: parent.deadline,
+        requires_approval: false,
+        approved_by: None,
+        approved_at: None,
+        approval_note: None,
+        payload: body.payload,
+        tags: parent.tags.clone(),
+        created_by: Some(format!("parent:{}", parent.id)),
+        idempotency_key: None,
+        created_at: now,
+        updated_at: now,
+        retry_count: 0,
+        max_retries: 3,
+        parent_id: Some(id.clone()),
+    };
+
+    match state.kernel.memory.work_items().create(&child) {
+        Ok(created) => {
+            // Build a structured DelegationRecord for full audit trail.
+            let delegation = openfang_types::swarm::DelegationRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                parent_work_item_id: id.clone(),
+                child_work_item_id: child_id.clone(),
+                reason: body.reason.clone().unwrap_or_else(|| "delegated via API".to_string()),
+                delegating_agent_id: parent.assigned_agent_id.clone().unwrap_or_default(),
+                assigned_child_agent_id: created.assigned_agent_id.clone(),
+                created_at: now,
+            };
+            let detail = serde_json::to_string(&delegation)
+                .unwrap_or_else(|_| format!("spawned child {}", child_id));
+            let event = openfang_types::work_item::WorkEvent {
+                id: uuid::Uuid::new_v4().to_string(),
+                work_item_id: id.clone(),
+                event_type: "delegated_to_subagent".to_string(),
+                from_status: None,
+                to_status: None,
+                actor: Some("api".to_string()),
+                detail: Some(detail),
+                created_at: now,
+            };
+            let _ = state.kernel.memory.work_items().append_event(&event);
+            (StatusCode::CREATED, Json(created)).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/orchestrator/status — current orchestrator snapshot.
+pub async fn get_orchestrator_status(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let store = state.kernel.memory.work_items();
+    let counts = store.count_by_status().unwrap_or_default();
+    let queued_count = counts.get("pending").copied().unwrap_or(0)
+        + counts.get("ready").copied().unwrap_or(0);
+    let running_count = counts.get("running").copied().unwrap_or(0);
+    let pending_approval_count = counts.get("waiting_approval").copied().unwrap_or(0);
+
+    let uptime_secs = state.started_at.elapsed().as_secs();
+
+    let status = openfang_types::work_item::OrchestratorStatus {
+        running: true,
+        last_heartbeat_at: None,
+        queued_count,
+        running_count,
+        pending_approval_count,
+        scheduler_version: env!("CARGO_PKG_VERSION").to_string(),
+        uptime_secs,
+    };
+    Json(status).into_response()
+}
+
+/// GET /api/orchestrator/runs — list recent heartbeat run records (in-memory, last 50).
+pub async fn get_orchestrator_runs(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let runs = state.orchestrator_runs.read().await;
+    Json(serde_json::json!({"runs": *runs, "total": runs.len()})).into_response()
+}
+
+/// POST /api/orchestrator/heartbeat — claim pending/ready items, kick off scheduled items.
+pub async fn post_orchestrator_heartbeat(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    use openfang_types::work_item::{WorkItemFilter, WorkStatus};
+
+    let triggered_at = chrono::Utc::now();
+    let t0 = std::time::Instant::now();
+    let store = state.kernel.memory.work_items();
+
+    // Claim pending items → running
+    let pending = store
+        .list(&WorkItemFilter {
+            status: Some("pending".into()),
+            limit: Some(20),
+            ..Default::default()
+        })
+        .unwrap_or_default();
+
+    let mut items_claimed = 0u32;
+    for item in &pending {
+        if store
+            .transition(&item.id, WorkStatus::Running, Some("orchestrator"), Some("heartbeat claimed"), None)
+            .is_ok()
+        {
+            items_claimed += 1;
+        }
+    }
+
+    // Claim ready items → running
+    let ready = store
+        .list(&WorkItemFilter {
+            status: Some("ready".into()),
+            limit: Some(20),
+            ..Default::default()
+        })
+        .unwrap_or_default();
+    for item in &ready {
+        if store
+            .transition(&item.id, WorkStatus::Running, Some("orchestrator"), Some("heartbeat claimed ready"), None)
+            .is_ok()
+        {
+            items_claimed += 1;
+        }
+    }
+
+    // Promote scheduled items whose scheduled_at is past due
+    let _now_str = triggered_at.to_rfc3339();
+    let scheduled = store
+        .list(&WorkItemFilter {
+            scheduled: Some(true),
+            status: Some("pending".into()),
+            limit: Some(50),
+            ..Default::default()
+        })
+        .unwrap_or_default();
+
+    let mut items_scheduled_started = 0u32;
+    for item in &scheduled {
+        if let Some(scheduled_at) = item.scheduled_at {
+            if scheduled_at <= triggered_at
+                && store
+                    .transition(&item.id, WorkStatus::Running, Some("scheduler"), Some("scheduled trigger"), None)
+                    .is_ok()
+            {
+                items_scheduled_started += 1;
+            }
+        }
+    }
+
+    let duration_ms = t0.elapsed().as_millis() as u64;
+    let run = openfang_types::work_item::OrchestratorRun {
+        id: uuid::Uuid::new_v4().to_string(),
+        triggered_at,
+        triggered_by: "api".to_string(),
+        items_claimed,
+        items_scheduled_started,
+        items_delegated: 0,
+        duration_ms,
+        note: Some(format!(
+            "claimed={items_claimed} scheduled={items_scheduled_started} dur={}ms",
+            duration_ms
+        )),
+    };
+
+    // Store in ring buffer (max 50 runs)
+    {
+        let mut runs = state.orchestrator_runs.write().await;
+        runs.push(run.clone());
+        if runs.len() > 50 {
+            runs.remove(0);
+        }
+    }
+
+    Json(run).into_response()
+}
+
+// ============================================================================
+// Swarm Manifest API
+// ============================================================================
+
+/// GET /api/agents/{id}/manifest
+///
+/// Returns the validated swarm manifest for a specific agent.
+/// 404 if no manifest is registered (e.g. agent has no SWARM.toml and no synthesised manifest).
+pub async fn get_agent_swarm_manifest(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+) -> impl IntoResponse {
+
+    // Resolve agent_id — could be UUID or name
+    let resolved_id = resolve_agent_id(&state, &agent_id);
+
+    match state.kernel.swarm_registry.get(&resolved_id) {
+        Some(entry) => Json(entry).into_response(),
+        None => ApiError::not_found(format!("No swarm manifest for agent '{agent_id}'"), None)
+            .into_response(),
+    }
+}
+
+/// GET /api/agents/{id}/manifest/validate
+///
+/// Runs manifest validation on the agent's swarm manifest.
+/// Returns the full `ManifestValidationResult` including any warnings/errors.
+pub async fn validate_agent_swarm_manifest(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+) -> impl IntoResponse {
+    let resolved_id = resolve_agent_id(&state, &agent_id);
+
+    match state.kernel.swarm_registry.get(&resolved_id) {
+        Some(entry) => {
+            // Re-run full validation (includes known tool check)
+            use openfang_runtime::tool_runner::builtin_tool_definitions;
+            let known_tools: HashSet<String> = builtin_tool_definitions()
+                .iter()
+                .map(|t| t.name.clone())
+                .collect();
+            let result =
+                openfang_kernel::swarm_registry::validate_manifest(&entry.manifest, &known_tools);
+            Json(result).into_response()
+        }
+        None => ApiError::not_found(format!("No swarm manifest for agent '{agent_id}'"), None)
+            .into_response(),
+    }
+}
+
+/// GET /api/swarm/plan/{work_id}
+///
+/// Runs the swarm planner on-demand for a specific WorkItem and returns the resulting `SwarmPlan`.
+/// The plan is **not** persisted to WorkEvents here — call this for inspection/debugging.
+/// To persist the plan, include it in a worker execution pipeline.
+pub async fn get_swarm_plan(
+    State(state): State<Arc<AppState>>,
+    Path(work_id): Path<String>,
+) -> impl IntoResponse {
+    use openfang_kernel::swarm_planner::{SwarmPlanRequest, SwarmPlanner};
+
+    // Load work item
+    let item = match state.kernel.memory.work_items().get_by_id(&work_id) {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            return ApiError::not_found(format!("Work item '{work_id}' not found"), None).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(work_id = %work_id, "Failed to load work item: {e}");
+            return ApiError::internal("Failed to load work item", None).into_response();
+        }
+    };
+
+    let planner = SwarmPlanner::new(state.kernel.swarm_registry.clone());
+    let plan = planner.plan(SwarmPlanRequest {
+        work_item: item,
+        max_swarm_size: None,
+        require_auto_run: false,
+        extra_required_tags: vec![],
+    });
+
+    Json(plan).into_response()
+}
+
+/// GET /api/work/{id}/swarm
+///
+/// Returns the observable swarm state for a WorkItem: the most recently recorded
+/// swarm plan (if any), delegation records, and child work item IDs.
+pub async fn get_work_swarm(
+    State(state): State<Arc<AppState>>,
+    Path(work_id): Path<String>,
+) -> impl IntoResponse {
+    use openfang_types::swarm::{DelegationRecord, WorkSwarmState};
+    use openfang_types::work_item::ApprovalStatus;
+
+    // Verify the work item exists
+    let item = match state.kernel.memory.work_items().get_by_id(&work_id) {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            return ApiError::not_found(format!("Work item '{work_id}' not found"), None).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(work_id = %work_id, "Failed to load work item: {e}");
+            return ApiError::internal("Failed to load work item", None).into_response();
+        }
+    };
+
+    // Load WorkEvents to extract swarm plan
+    let events = match state.kernel.memory.work_items().list_events(&work_id) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(work_id = %work_id, "Failed to load events: {e}");
+            vec![]
+        }
+    };
+
+    // Extract most recent swarm_planned event
+    let swarm_plan = events
+        .iter()
+        .rev()
+        .find(|e| e.event_type == "swarm_planned")
+        .and_then(|e| e.detail.as_ref())
+        .and_then(|d| serde_json::from_str(d).ok());
+
+    // Extract delegation records from delegated_to_subagent events
+    let delegations: Vec<DelegationRecord> = events
+        .iter()
+        .filter(|e| e.event_type == "delegated_to_subagent")
+        .filter_map(|e| e.detail.as_ref().and_then(|d| serde_json::from_str(d).ok()))
+        // If the detail isn't a full DelegationRecord, synthesize a minimal one
+        .collect();
+
+    // Find child work item IDs by scanning for work items with this parent
+    let child_ids: Vec<String> = match state.kernel.memory.work_items().list_children(&work_id) {
+        Ok(children) => children.into_iter().map(|c| c.id).collect(),
+        Err(_) => vec![],
+    };
+
+    let approval_gating_required = item.requires_approval
+        || swarm_plan
+            .as_ref()
+            .map(|p: &openfang_types::swarm::SwarmPlan| p.approval_gating_required)
+            .unwrap_or(false);
+
+    let approval_gate_status = match item.approval_status {
+        ApprovalStatus::NotRequired => "not_required",
+        ApprovalStatus::Pending => "pending",
+        ApprovalStatus::Approved => "approved",
+        ApprovalStatus::Rejected => "rejected",
+    };
+
+    let response = WorkSwarmState {
+        work_item_id: work_id,
+        swarm_plan,
+        delegations,
+        child_work_item_ids: child_ids,
+        approval_gating_required,
+        approval_gate_status: approval_gate_status.to_string(),
+    };
+
+    Json(response).into_response()
+}
+
+/// GET /api/swarm/agents
+///
+/// Lists all agents registered in the swarm manifest registry.
+pub async fn list_swarm_agents(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    Json(state.kernel.swarm_registry.list()).into_response()
+}
+
+/// Helper: resolve an agent_id that may be a UUID or a name.
+fn resolve_agent_id(state: &AppState, id_or_name: &str) -> String {
+    // Try to parse as UUID first
+    if uuid::Uuid::parse_str(id_or_name).is_ok() {
+        return id_or_name.to_string();
+    }
+    // Fall back: look up by name
+    if let Some(entry) = state
+        .kernel
+        .registry
+        .list()
+        .into_iter()
+        .find(|e| e.name == id_or_name)
+    {
+        return entry.id.to_string();
+    }
+    id_or_name.to_string()
+}
+

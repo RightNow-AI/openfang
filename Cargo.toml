@@ -85,6 +85,9 @@ url = "2"
 # WASM sandbox
 wasmtime = "41"
 
+# OpenAPI schema generation
+utoipa = { version = "5", features = ["uuid", "chrono"] }
+
 # HTTP server (for API daemon)
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"

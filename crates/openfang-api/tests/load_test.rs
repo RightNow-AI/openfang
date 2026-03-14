@@ -68,6 +68,7 @@ async fn start_test_server() -> TestServer {
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         user_rate_limiter: openfang_api::rate_limiter::create_user_rate_limiter(),
+        orchestrator_runs: tokio::sync::RwLock::new(Vec::new()),
     });
 
     let app = Router::new()

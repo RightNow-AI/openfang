@@ -37,6 +37,7 @@ jsonwebtoken = { workspace = true }
 base64 = { workspace = true }
 socket2 = { workspace = true }
 reqwest = { workspace = true }
+utoipa = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

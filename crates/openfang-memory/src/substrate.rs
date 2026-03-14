@@ -16,6 +16,7 @@ use crate::semantic::SemanticStore;
 use crate::session::{Session, SessionStore};
 use crate::structured::StructuredStore;
 use crate::usage::UsageStore;
+use crate::work_item::WorkItemStore;
 
 use async_trait::async_trait;
 use openfang_agency_import::import_profile_from_path;
@@ -47,6 +48,7 @@ pub struct MemorySubstrate {
     sessions: SessionStore,
     consolidation: ConsolidationEngine,
     usage: UsageStore,
+    work_items: WorkItemStore,
 }
 
 impl MemorySubstrate {
@@ -67,6 +69,7 @@ impl MemorySubstrate {
             planner: PlannerStore::new(Arc::clone(&shared)),
             sessions: SessionStore::new(Arc::clone(&shared)),
             usage: UsageStore::new(Arc::clone(&shared)),
+            work_items: WorkItemStore::new(Arc::clone(&shared)),
             consolidation: ConsolidationEngine::new(shared, decay_rate),
         })
     }
@@ -87,6 +90,7 @@ impl MemorySubstrate {
             planner: PlannerStore::new(Arc::clone(&shared)),
             sessions: SessionStore::new(Arc::clone(&shared)),
             usage: UsageStore::new(Arc::clone(&shared)),
+            work_items: WorkItemStore::new(Arc::clone(&shared)),
             consolidation: ConsolidationEngine::new(shared, decay_rate),
         })
     }
@@ -94,6 +98,11 @@ impl MemorySubstrate {
     /// Get a reference to the usage store.
     pub fn usage(&self) -> &UsageStore {
         &self.usage
+    }
+
+    /// Get a reference to the work item store.
+    pub fn work_items(&self) -> &WorkItemStore {
+        &self.work_items
     }
 
     /// Get the shared database connection (for constructing stores from outside).

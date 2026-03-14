@@ -1,14 +1,13 @@
-import { ComingSoon } from '../components/ComingSoon';
+import { api } from '../../lib/api-server';
+import InboxClient from './InboxClient';
 
-export default function InboxPage() {
-  return (
-    <ComingSoon
-      title="Inbox"
-      description="Your agent inbox collects tasks, messages, and notifications that need your attention. Items routed here become inputs for today's plan."
-      links={[
-        { href: '/today', label: 'View today plan' },
-        { href: '/sessions', label: 'View agents' },
-      ]}
-    />
-  );
+export default async function InboxPage() {
+  let items = [];
+  try {
+    const data = await api.get('/api/work?status=pending');
+    items = Array.isArray(data?.items) ? data.items : [];
+  } catch {
+    // handled by client error state
+  }
+  return <InboxClient initialItems={items} />;
 }

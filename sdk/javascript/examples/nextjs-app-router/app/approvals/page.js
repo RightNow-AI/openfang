@@ -1,14 +1,13 @@
-import { ComingSoon } from '../components/ComingSoon';
+import { api } from '../../lib/api-server';
+import ApprovalsClient from './ApprovalsClient';
 
-export default function ApprovalsPage() {
-  return (
-    <ComingSoon
-      title="Approvals"
-      description="Human-in-the-loop tasks waiting for your decision. When agents request permission to take a consequential action, approval requests appear here."
-      links={[
-        { href: '/sessions', label: 'View agent sessions' },
-        { href: '/logs', label: 'Audit logs' },
-      ]}
-    />
-  );
+export default async function ApprovalsPage() {
+  let approvals = [];
+  try {
+    const data = await api.get('/api/work?approval_status=pending');
+    approvals = Array.isArray(data?.items) ? data.items : [];
+  } catch {
+    // handled by client error state
+  }
+  return <ApprovalsClient initialApprovals={approvals} />;
 }
