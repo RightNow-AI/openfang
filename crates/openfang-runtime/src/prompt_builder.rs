@@ -37,6 +37,10 @@ pub struct PromptContext {
     pub user_name: Option<String>,
     /// Channel type (telegram, discord, web, etc.).
     pub channel_type: Option<String>,
+    /// Platform-specific sender ID (e.g. phone number) — from channel gateway metadata.
+    pub sender_id: Option<String>,
+    /// Human-readable sender display name — from channel gateway metadata.
+    pub sender_name: Option<String>,
     /// Whether this agent was spawned as a subagent.
     pub is_subagent: bool,
     /// Whether this agent has autonomous config.
@@ -144,7 +148,21 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
     // Section 9 — Channel Awareness (skip for subagents)
     if !ctx.is_subagent {
         if let Some(ref channel) = ctx.channel_type {
-            sections.push(build_channel_section(channel));
+            let mut section = build_channel_section(channel);
+            // Append sender identity when available (from channel gateway metadata)
+            if ctx.sender_id.is_some() || ctx.sender_name.is_some() {
+                section.push_str("\n\n### Current Message Sender\n");
+                if let Some(ref name) = ctx.sender_name {
+                    section.push_str(&format!("- **Name**: {name}\n"));
+                }
+                if let Some(ref id) = ctx.sender_id {
+                    section.push_str(&format!("- **Platform ID**: {id}\n"));
+                }
+                section.push_str("\nIMPORTANT: Check this sender identity against your USER.md to determine \
+                    if this is your owner/master or someone else. If it is NOT your owner, \
+                    read and follow PRIVACY-RULES.md before responding.");
+            }
+            sections.push(section);
         }
     }
 

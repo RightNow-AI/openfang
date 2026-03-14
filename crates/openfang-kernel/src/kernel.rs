@@ -1396,6 +1396,27 @@ impl OpenFangKernel {
             .await
     }
 
+    /// Send a message with channel sender context (from external gateways like WhatsApp).
+    ///
+    /// The sender context is injected into the agent's system prompt so the agent
+    /// can identify who is writing and apply appropriate privacy rules.
+    pub async fn send_message_with_sender_context(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        sender_context: openfang_types::message::SenderContext,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+    ) -> KernelResult<AgentLoopResult> {
+        self.send_message_with_handle_and_blocks(
+            agent_id,
+            message,
+            kernel_handle,
+            None,
+            Some(sender_context),
+        )
+        .await
+    }
+
     /// Send a multimodal message (text + images) to an agent and get a response.
     ///
     /// Used by channel bridges when a user sends a photo — the image is downloaded,
@@ -1411,7 +1432,7 @@ impl OpenFangKernel {
             .get()
             .and_then(|w| w.upgrade())
             .map(|arc| arc as Arc<dyn KernelHandle>);
-        self.send_message_with_handle_and_blocks(agent_id, message, handle, Some(blocks))
+        self.send_message_with_handle_and_blocks(agent_id, message, handle, Some(blocks), None)
             .await
     }
 
@@ -1422,7 +1443,7 @@ impl OpenFangKernel {
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
     ) -> KernelResult<AgentLoopResult> {
-        self.send_message_with_handle_and_blocks(agent_id, message, kernel_handle, None)
+        self.send_message_with_handle_and_blocks(agent_id, message, kernel_handle, None, None)
             .await
     }
 
@@ -1431,6 +1452,9 @@ impl OpenFangKernel {
     /// When `content_blocks` is `Some`, the LLM agent loop receives structured
     /// multimodal content (text + images) instead of just a text string. This
     /// enables vision models to process images sent from channels like Telegram.
+    ///
+    /// When `sender_context` is `Some`, the sender identity is injected into the
+    /// agent's system prompt so it can distinguish between its owner and other users.
     ///
     /// Per-agent locking ensures that concurrent messages for the same agent
     /// are serialized (preventing session corruption), while messages for
@@ -1441,6 +1465,7 @@ impl OpenFangKernel {
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        sender_context: Option<openfang_types::message::SenderContext>,
     ) -> KernelResult<AgentLoopResult> {
         // Acquire per-agent lock to serialize concurrent messages for the same agent.
         // This prevents session corruption when multiple messages arrive in quick
@@ -1470,7 +1495,7 @@ impl OpenFangKernel {
             self.execute_python_agent(&entry, agent_id, message).await
         } else {
             // Default: LLM agent loop (builtin:chat or any unrecognized module)
-            self.execute_llm_agent(&entry, agent_id, message, kernel_handle, content_blocks)
+            self.execute_llm_agent(&entry, agent_id, message, kernel_handle, content_blocks, sender_context)
                 .await
         };
 
@@ -1713,6 +1738,8 @@ impl OpenFangKernel {
                     .and_then(|(s, _)| s),
                 user_name,
                 channel_type: None,
+                sender_id: None,
+                sender_name: None,
                 is_subagent: manifest
                     .metadata
                     .get("is_subagent")
@@ -2079,6 +2106,7 @@ impl OpenFangKernel {
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        sender_context: Option<openfang_types::message::SenderContext>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2183,7 +2211,9 @@ impl OpenFangKernel {
                     .ok()
                     .and_then(|(s, _)| s),
                 user_name,
-                channel_type: None,
+                channel_type: sender_context.as_ref().and_then(|sc| sc.channel.clone()),
+                sender_id: sender_context.as_ref().and_then(|sc| sc.sender_id.clone()),
+                sender_name: sender_context.as_ref().and_then(|sc| sc.sender_name.clone()),
                 is_subagent: manifest
                     .metadata
                     .get("is_subagent")

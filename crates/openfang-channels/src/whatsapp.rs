@@ -162,8 +162,8 @@ impl WhatsAppAdapter {
     }
 
     /// Check if a phone number is allowed.
-    #[allow(dead_code)]
-    fn is_allowed(&self, phone: &str) -> bool {
+    /// Returns true if allowed_users is empty (open mode) or phone is in the list.
+    pub fn is_allowed(&self, phone: &str) -> bool {
         self.allowed_users.is_empty() || self.allowed_users.iter().any(|u| u == phone)
     }
 

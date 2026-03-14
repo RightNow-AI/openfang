@@ -358,10 +358,45 @@ pub async fn send_message(
         }
     }
 
+    // Convert metadata from the gateway into a SenderContext for the kernel
+    let sender_context = req.metadata.as_ref().map(|meta| {
+        openfang_types::message::SenderContext {
+            channel: meta.get("channel").and_then(|v| v.as_str().map(String::from)),
+            sender_id: meta.get("sender").and_then(|v| v.as_str().map(String::from)),
+            sender_name: meta.get("sender_name").and_then(|v| v.as_str().map(String::from)),
+        }
+    });
+
+    // SECURITY: Check allowed_users for channel-based messages (WhatsApp, etc.)
+    // If allowed_users is empty, all senders are permitted (open mode).
+    if let Some(ref ctx) = sender_context {
+        if let Some(ref sender_id) = ctx.sender_id {
+            if let Some(ref channel) = ctx.channel {
+                let channels_config = state.channels_config.read().await;
+                let blocked = match channel.as_str() {
+                    "whatsapp" => channels_config.whatsapp.as_ref().map_or(false, |wa| {
+                        !wa.allowed_users.is_empty()
+                            && !wa.allowed_users.iter().any(|u| u == sender_id)
+                    }),
+                    _ => false,
+                };
+                if blocked {
+                    tracing::warn!(
+                        "Rejected message from unlisted {channel} user {sender_id}"
+                    );
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(serde_json::json!({"error": "Sender not in allowed_users list"})),
+                    );
+                }
+            }
+        }
+    }
+
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(agent_id, &req.message, Some(kernel_handle))
+        .send_message_with_handle_and_blocks(agent_id, &req.message, Some(kernel_handle), None, sender_context)
         .await
     {
         Ok(result) => {

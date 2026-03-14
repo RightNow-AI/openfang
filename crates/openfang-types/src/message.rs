@@ -2,6 +2,20 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Sender context forwarded from channel gateways (e.g. WhatsApp, Telegram).
+///
+/// Carries the identity of the person who sent the message so the agent
+/// can distinguish between its owner and other users.
+#[derive(Debug, Clone, Default)]
+pub struct SenderContext {
+    /// Channel name (e.g. "whatsapp", "telegram").
+    pub channel: Option<String>,
+    /// Platform-specific sender ID (e.g. phone number, Telegram user ID).
+    pub sender_id: Option<String>,
+    /// Human-readable sender display name.
+    pub sender_name: Option<String>,
+}
+
 /// A message in an LLM conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
