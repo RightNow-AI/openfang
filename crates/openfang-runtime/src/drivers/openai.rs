@@ -855,7 +855,10 @@ impl LlmDriver for OpenAIDriver {
                 None
             },
         };
-
+        tracing::debug!(
+            "OpenAI request: {:?}",
+            serde_json::to_string(&oai_request).unwrap_or_default()
+        );
         // Retry loop for the initial HTTP request
         let max_retries = 3;
         for attempt in 0..=max_retries {

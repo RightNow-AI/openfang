@@ -534,7 +534,9 @@ pub async fn set_agent_workspace(
             if let Err(e) = std::fs::create_dir_all(&new_path) {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": format!("Failed to create target directory: {e}")})),
+                    Json(
+                        serde_json::json!({"error": format!("Failed to create target directory: {e}")}),
+                    ),
                 );
             }
 
@@ -565,23 +567,33 @@ pub async fn set_agent_workspace(
                         if let Err(e) = move_dir_recursive(&source, &target) {
                             return (
                                 StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(serde_json::json!({"error": format!("Failed to move {}: {e}", item)})),
+                                Json(
+                                    serde_json::json!({"error": format!("Failed to move {}: {e}", item)}),
+                                ),
                             );
                         }
                         // Remove the now-empty source directory
                         if let Err(e) = std::fs::remove_dir_all(&source) {
-                            tracing::warn!("Failed to remove source directory {}: {e}", source.display());
+                            tracing::warn!(
+                                "Failed to remove source directory {}: {e}",
+                                source.display()
+                            );
                         }
                     } else {
                         // For files, copy then remove
                         if let Err(e) = std::fs::copy(&source, &target) {
                             return (
                                 StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(serde_json::json!({"error": format!("Failed to copy file {}: {e}", item)})),
+                                Json(
+                                    serde_json::json!({"error": format!("Failed to copy file {}: {e}", item)}),
+                                ),
                             );
                         }
                         if let Err(e) = std::fs::remove_file(&source) {
-                            tracing::warn!("Failed to remove source file {}: {e}", source.display());
+                            tracing::warn!(
+                                "Failed to remove source file {}: {e}",
+                                source.display()
+                            );
                         }
                     }
                 }
@@ -591,12 +603,21 @@ pub async fn set_agent_workspace(
             if is_under_openfang_workspace {
                 tracing::info!("Removing old workspace directory: {}", old.display());
                 if let Err(e) = std::fs::remove_dir_all(old) {
-                    tracing::warn!("Failed to remove old workspace directory {}: {e}", old.display());
+                    tracing::warn!(
+                        "Failed to remove old workspace directory {}: {e}",
+                        old.display()
+                    );
                 } else {
-                    tracing::info!("Successfully removed old workspace directory: {}", old.display());
+                    tracing::info!(
+                        "Successfully removed old workspace directory: {}",
+                        old.display()
+                    );
                 }
             } else {
-                tracing::info!("Keeping old workspace directory (not under .openfang/workspace): {}", old.display());
+                tracing::info!(
+                    "Keeping old workspace directory (not under .openfang/workspace): {}",
+                    old.display()
+                );
             }
 
             total_files_moved
@@ -682,4 +703,57 @@ fn move_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
         }
     }
     Ok(())
+}
+
+pub async fn get_agent_skills(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            )
+        }
+    };
+    let entry = match state.kernel.registry.get(agent_id) {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            )
+        }
+    };
+    let available = state
+        .kernel
+        .skill_registry
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .list()
+        .into_iter()
+        .filter(|s| s.enabled)
+        .map(|s| {
+            serde_json::json!({
+                "name": s.manifest.skill.name,
+                "description": s.manifest.skill.description,
+                "enabled": s.enabled,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mode = if entry.manifest.skills.is_empty() {
+        "all"
+    } else {
+        "allowlist"
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "assigned": entry.manifest.skills,
+            "available": available,
+            "mode": mode,
+        })),
+    )
 }

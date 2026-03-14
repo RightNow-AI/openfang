@@ -179,7 +179,7 @@ pub async fn build_router(
         )
         .route(
             "/api/agents/{id}/skills",
-            axum::routing::get(routes::get_agent_skills).put(routes::set_agent_skills),
+            axum::routing::get(uni_agent::get_agent_skills).put(routes::set_agent_skills),
         )
         .route(
             "/api/agents/{id}/mcp_servers",
