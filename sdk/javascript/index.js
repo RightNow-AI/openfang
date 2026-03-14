@@ -458,6 +458,18 @@ class SkillResource {
       "/api/marketplace/search?q=" + encodeURIComponent(query)
     );
   }
+
+  async getClawHubBrowse(query) {
+    return this._c._request(
+      "GET",
+      "/api/clawhub/browse?sort=" + query.sort + "&limit=" + query.limit
+    );
+  }
+
+  // install ClawHub
+  async installClawHub(query) {
+    return this._c._request("POST", "/api/clawhub/install", query);
+  }
 }
 
 // ── Channel Resource ────────────────────────────────────────────
