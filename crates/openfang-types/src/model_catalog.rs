@@ -35,6 +35,7 @@ pub const VENICE_BASE_URL: &str = "https://api.venice.ai/api/v1";
 pub const GITHUB_COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 
 // ── Chinese providers ─────────────────────────────────────────────
+pub const CODING_PLAN_BASE_URL: &str = "https://coding.dashscope.aliyuncs.com/v1";
 pub const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 pub const MINIMAX_BASE_URL: &str = "https://api.minimaxi.chat/v1";
 pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";

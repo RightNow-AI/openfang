@@ -5,8 +5,8 @@
 
 use openfang_types::model_catalog::{
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
-    BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL,
-    FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
+    BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, CODING_PLAN_BASE_URL, COHERE_BASE_URL,
+    DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
     HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
     MINIMAX_BASE_URL, MISTRAL_BASE_URL, MODELSCOPE_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL,
     OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
@@ -900,6 +900,16 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             base_url: String::new(),
             key_required: false,
             auth_status: AuthStatus::NotRequired,
+            model_count: 0,
+            is_local: false,
+        },
+        ProviderInfo {
+            id: "coding_plan".into(),
+            display_name: "Coding Plan".into(),
+            api_key_env: "CODING_PLAN_API_KEY".into(),
+            base_url: CODING_PLAN_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
             model_count: 0,
             is_local: false,
         },
@@ -3746,12 +3756,12 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
-        // ModelScope
+        // coding_plan
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
-            id: "Qwen/Qwen3.5-397B-A17B".into(),
-            display_name: "Qwen3.5-397B-A17B".into(),
-            provider: "modelscope".into(),
+            id: "glm-5".into(),
+            display_name: "GLM-5".into(),
+            provider: "coding_plan".into(),
             tier: ModelTier::Fast,
             context_window: 248320,
             max_output_tokens: 248320,
@@ -3760,7 +3770,35 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
-            aliases: vec!["Qwen3.5-397B-A17B".into()],
+            aliases: vec!["glm-5".into()],
+        },
+        ModelCatalogEntry {
+            id: "MiniMax-M2.5".into(),
+            display_name: "MiniMax-M2.5".into(),
+            provider: "coding_plan".into(),
+            tier: ModelTier::Fast,
+            context_window: 248320,
+            max_output_tokens: 248320,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "qwen3.5-plus".into(),
+            display_name: "Qwen3.5-Plus".into(),
+            provider: "coding_plan".into(),
+            tier: ModelTier::Fast,
+            context_window: 248320,
+            max_output_tokens: 248320,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["qwen3.5-plus".into()],
         },
     ]
 }

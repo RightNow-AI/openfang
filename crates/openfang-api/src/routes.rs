@@ -6814,7 +6814,11 @@ pub async fn set_model(
             )
         }
     };
-    match state.kernel.set_agent_model(agent_id, model, None) {
+    match state.kernel.set_agent_model(
+        agent_id,
+        model,
+        body.get("provider").and_then(|v| v.as_str()),
+    ) {
         Ok(()) => {
             // Return the resolved model+provider so frontend stays in sync.
             // The model name may have been normalized (provider prefix stripped),

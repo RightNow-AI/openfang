@@ -188,7 +188,7 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
             }
         }
     }
-
+    tracing::info!("system_prompt: {}", sections.join("\n\n"));
     sections.join("\n\n")
 }
 
