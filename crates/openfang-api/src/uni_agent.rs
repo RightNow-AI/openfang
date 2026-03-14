@@ -520,13 +520,15 @@ pub async fn set_agent_workspace(
             ];
 
             // Check if old directory is under .openfang/workspace
-            let is_under_openfang_workspace = old
-                .components()
-                .collect::<Vec<_>>()
-                .windows(2)
-                .any(|w| {
-                    w[0].as_os_str() == ".openfang" && w[1].as_os_str() == "workspace"
-                });
+            let path_str = old.to_string_lossy();
+            let is_under_openfang_workspace = path_str.contains(".openfang/workspace")
+                || path_str.contains(".openfang\\workspace");
+
+            tracing::debug!(
+                "Workspace move: old={}, is_under_openfang_workspace={}",
+                old.display(),
+                is_under_openfang_workspace
+            );
 
             // Ensure target directory exists
             if let Err(e) = std::fs::create_dir_all(&new_path) {
@@ -587,9 +589,14 @@ pub async fn set_agent_workspace(
 
             // If old directory is under .openfang/workspace, remove it after moving files
             if is_under_openfang_workspace {
+                tracing::info!("Removing old workspace directory: {}", old.display());
                 if let Err(e) = std::fs::remove_dir_all(old) {
                     tracing::warn!("Failed to remove old workspace directory {}: {e}", old.display());
+                } else {
+                    tracing::info!("Successfully removed old workspace directory: {}", old.display());
                 }
+            } else {
+                tracing::info!("Keeping old workspace directory (not under .openfang/workspace): {}", old.display());
             }
 
             total_files_moved
