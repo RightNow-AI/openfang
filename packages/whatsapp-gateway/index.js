@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import pino from 'pino';
 
@@ -128,12 +128,26 @@ async function startConnection() {
       const remoteJid = msg.key.remoteJid || '';
       const isGroup = remoteJid.endsWith('@g.us');
 
+      // Detect media messages
+      const mediaInfo = msg.message?.imageMessage
+        ? { type: 'image', mime: msg.message.imageMessage.mimetype || 'image/jpeg', caption: msg.message.imageMessage.caption || '' }
+        : msg.message?.videoMessage
+        ? { type: 'video', mime: msg.message.videoMessage.mimetype || 'video/mp4', caption: msg.message.videoMessage.caption || '' }
+        : msg.message?.audioMessage
+        ? { type: 'audio', mime: msg.message.audioMessage.mimetype || 'audio/ogg', caption: '' }
+        : msg.message?.documentMessage
+        ? { type: 'document', mime: msg.message.documentMessage.mimetype || 'application/octet-stream', caption: msg.message.documentMessage.caption || '', filename: msg.message.documentMessage.fileName || 'document' }
+        : msg.message?.stickerMessage
+        ? { type: 'sticker', mime: msg.message.stickerMessage.mimetype || 'image/webp', caption: '' }
+        : null;
+
       const text = msg.message?.conversation
         || msg.message?.extendedTextMessage?.text
-        || msg.message?.imageMessage?.caption
+        || mediaInfo?.caption
         || '';
 
-      if (!text) continue;
+      // Skip if no text AND no media
+      if (!text && !mediaInfo) continue;
 
       // For groups: real sender is in participant; for DMs: it's remoteJid
       const senderJid = isGroup ? (msg.key.participant || '') : remoteJid;
@@ -151,14 +165,36 @@ async function startConnection() {
         metadata.group_jid = remoteJid;
         metadata.group_name = msg.key.remoteJid; // basic group ID
         metadata.is_group = true;
-        console.log(`[gateway] Group msg from ${pushName} (${phone}) in ${remoteJid}: ${text.substring(0, 80)}`);
+      }
+
+      // Download and upload media if present
+      let attachments = [];
+      if (mediaInfo) {
+        try {
+          const buffer = await downloadMediaMessage(msg, 'buffer', {});
+          const ext = mediaInfo.mime.split('/').pop()?.split(';')[0] || 'bin';
+          const filename = mediaInfo.filename || `${mediaInfo.type}.${ext}`;
+          const agentId = await resolveAgentId(DEFAULT_AGENT_NAME);
+          const fileId = await uploadToOpenFang(agentId, buffer, mediaInfo.mime, filename);
+          attachments.push({ file_id: fileId, filename, content_type: mediaInfo.mime });
+          console.log(`[gateway] Uploaded ${mediaInfo.type} (${(buffer.length / 1024).toFixed(1)}KB) → ${fileId}`);
+        } catch (err) {
+          console.error(`[gateway] Media download/upload failed:`, err.message);
+          // Still forward the text/caption if available
+        }
+      }
+
+      const logText = text ? text.substring(0, 80) : `[${mediaInfo?.type || 'media'}]`;
+      if (isGroup) {
+        console.log(`[gateway] Group msg from ${pushName} (${phone}) in ${remoteJid}: ${logText}`);
       } else {
-        console.log(`[gateway] Incoming from ${pushName} (${phone}): ${text.substring(0, 80)}`);
+        console.log(`[gateway] Incoming from ${pushName} (${phone}): ${logText}`);
       }
 
       // Forward to OpenFang agent
+      const messageText = text || `[${mediaInfo?.type || 'media'} received]`;
       try {
-        const response = await forwardToOpenFang(text, phone, pushName, metadata);
+        const response = await forwardToOpenFang(messageText, phone, pushName, metadata, attachments);
         if (response && sock) {
           // Reply in the same context: group → group, DM → DM
           const replyJid = isGroup ? remoteJid : senderJid.replace(/@.*$/, '') + '@s.whatsapp.net';
@@ -210,20 +246,69 @@ async function resolveAgentId(agentName) {
 }
 
 // ---------------------------------------------------------------------------
+// Upload media to OpenFang API, return file_id
+// ---------------------------------------------------------------------------
+async function uploadToOpenFang(agentId, buffer, contentType, filename) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(agentId)}/upload`);
+
+    const req = http.request(
+      {
+        hostname: url.hostname,
+        port: url.port || 4200,
+        path: url.pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': buffer.length,
+          'X-Filename': filename,
+        },
+        timeout: 30_000,
+      },
+      (res) => {
+        let body = '';
+        res.on('data', (chunk) => (body += chunk));
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            if (res.statusCode >= 400) {
+              reject(new Error(`Upload failed (${res.statusCode}): ${data.error || body}`));
+            } else {
+              resolve(data.file_id || data.id || '');
+            }
+          } catch {
+            reject(new Error(`Upload parse error: ${body}`));
+          }
+        });
+      },
+    );
+
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Upload timeout')); });
+    req.write(buffer);
+    req.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Forward incoming message to OpenFang API, return agent response
 // ---------------------------------------------------------------------------
-async function forwardToOpenFang(text, phone, pushName, metadata) {
+async function forwardToOpenFang(text, phone, pushName, metadata, attachments) {
   const agentId = await resolveAgentId(DEFAULT_AGENT_NAME);
 
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({
+    const body = {
       message: text,
       metadata: metadata || {
         channel: 'whatsapp',
         sender: phone,
         sender_name: pushName,
       },
-    });
+    };
+    if (attachments && attachments.length > 0) {
+      body.attachments = attachments;
+    }
+    const payload = JSON.stringify(body);
 
     const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(agentId)}/message`);
 
