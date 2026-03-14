@@ -168,9 +168,28 @@ impl HandRegistry {
         Ok(def)
     }
 
+    /// Install or update a hand from raw TOML + skill content.
+    ///
+    /// Unlike `install_from_content`, this overwrites an existing definition
+    /// with the same ID.  Active instances are NOT automatically restarted —
+    /// the caller should deactivate + reactivate to pick up the new definition.
+    pub fn upsert_from_content(
+        &self,
+        toml_content: &str,
+        skill_content: &str,
+    ) -> HandResult<HandDefinition> {
+        let def = bundled::parse_bundled("custom", toml_content, skill_content)?;
+        let existed = self.definitions.contains_key(&def.id);
+        let verb = if existed { "Updated" } else { "Installed" };
+        info!(hand = %def.id, name = %def.name, "{verb} hand from content");
+        self.definitions.insert(def.id.clone(), def.clone());
+        Ok(def)
+    }
+
     /// List all known hand definitions.
     pub fn list_definitions(&self) -> Vec<HandDefinition> {
-        let mut defs: Vec<HandDefinition> = self.definitions.iter().map(|r| r.value().clone()).collect();
+        let mut defs: Vec<HandDefinition> =
+            self.definitions.iter().map(|r| r.value().clone()).collect();
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
     }
@@ -363,9 +382,10 @@ impl HandRegistry {
         let requirements_met = reqs.iter().all(|(_, ok)| *ok);
 
         // A hand is active if at least one instance is in Active status.
-        let active = self.instances.iter().any(|entry| {
-            entry.hand_id == hand_id && entry.status == HandStatus::Active
-        });
+        let active = self
+            .instances
+            .iter()
+            .any(|entry| entry.hand_id == hand_id && entry.status == HandStatus::Active);
 
         // Degraded: active, but at least one non-optional requirement is unmet
         // OR any optional requirement is unmet. In practice, the most useful
@@ -513,7 +533,9 @@ fn check_chromium_available() -> bool {
         ]
     } else if cfg!(target_os = "macos") {
         vec![
-            std::path::PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            std::path::PathBuf::from(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
             std::path::PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
         ]
     } else {

@@ -4122,6 +4122,46 @@ pub async fn install_hand(
     }
 }
 
+/// POST /api/hands/upsert — Install or update a hand definition.
+///
+/// Like `install_hand` but overwrites an existing definition with the same ID.
+/// Active instances are NOT automatically restarted — deactivate + reactivate
+/// to pick up the new definition.
+pub async fn upsert_hand(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let toml_content = body["toml_content"].as_str().unwrap_or("");
+    let skill_content = body["skill_content"].as_str().unwrap_or("");
+
+    if toml_content.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Missing toml_content field"})),
+        );
+    }
+
+    match state
+        .kernel
+        .hand_registry
+        .upsert_from_content(toml_content, skill_content)
+    {
+        Ok(def) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "id": def.id,
+                "name": def.name,
+                "description": def.description,
+                "category": format!("{:?}", def.category),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
 /// POST /api/hands/{hand_id}/activate — Activate a hand (spawns agent).
 pub async fn activate_hand(
     State(state): State<Arc<AppState>>,

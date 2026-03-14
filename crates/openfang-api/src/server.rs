@@ -353,6 +353,10 @@ pub async fn build_router(
             axum::routing::post(routes::install_hand),
         )
         .route(
+            "/api/hands/upsert",
+            axum::routing::post(routes::upsert_hand),
+        )
+        .route(
             "/api/hands/active",
             axum::routing::get(routes::list_active_hands),
         )
