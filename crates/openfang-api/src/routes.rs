@@ -3972,9 +3972,7 @@ pub async fn install_hand_deps(
         } else {
             // On Windows, winget may return non-zero even on success (e.g., already installed)
             let combined = format!("{stdout}{stderr}");
-            let likely_ok = combined.contains("already installed")
-                || combined.contains("No applicable update")
-                || combined.contains("No available upgrade");
+            let likely_ok = install_command_effectively_succeeded(&combined);
             results.push(serde_json::json!({
                 "key": req.key,
                 "status": if likely_ok { "installed" } else { "error" },
@@ -4073,6 +4071,13 @@ pub async fn install_hand_deps(
             }).collect::<Vec<_>>(),
         })),
     )
+}
+
+fn install_command_effectively_succeeded(output: &str) -> bool {
+    output.contains("already installed")
+        || output.contains("No applicable update")
+        || output.contains("No available upgrade")
+        || output.contains("already an App at")
 }
 
 /// POST /api/hands/install — Install a hand from TOML content.
@@ -10864,4 +10869,23 @@ fn remove_toml_section(content: &str, section: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_command_effectively_succeeded_detects_existing_cask_app() {
+        let output = "Error: It seems there is already an App at '/Applications/Google Chrome.app'.";
+        assert!(install_command_effectively_succeeded(output));
+    }
+
+    #[test]
+    fn remove_toml_section_strips_target_block() {
+        let input = "a = 1\n[foo]\nx = 1\n[bar]\ny = 2\n";
+        let result = remove_toml_section(input, "foo");
+        assert!(!result.contains("[foo]"));
+        assert!(result.contains("[bar]"));
+    }
 }
