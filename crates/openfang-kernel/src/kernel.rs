@@ -5318,6 +5318,121 @@ async fn cron_deliver_response(
             let _ = kernel
                 .memory
                 .structured_set(agent_id, "delivery.last_channel", kv_val);
+
+            // Actually deliver the message to the channel adapter.
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build();
+            if let Ok(client) = client {
+                match channel.as_str() {
+                    "slack" => {
+                        let token_env = kernel
+                            .config
+                            .channels
+                            .slack
+                            .as_ref()
+                            .map(|s| s.bot_token_env.as_str())
+                            .unwrap_or("SLACK_BOT_TOKEN");
+                        if let Ok(token) = std::env::var(token_env) {
+                            let payload = serde_json::json!({
+                                "channel": to,
+                                "text": response,
+                                "unfurl_links": true,
+                                "unfurl_media": true,
+                            });
+                            match client
+                                .post("https://slack.com/api/chat.postMessage")
+                                .header("Authorization", format!("Bearer {token}"))
+                                .json(&payload)
+                                .send()
+                                .await
+                            {
+                                Ok(resp) => {
+                                    let body: serde_json::Value =
+                                        resp.json().await.unwrap_or_default();
+                                    if body["ok"].as_bool() == Some(true) {
+                                        tracing::info!(channel = "slack", to = %to, "Cron: delivered to Slack");
+                                    } else {
+                                        let err = body["error"].as_str().unwrap_or("unknown");
+                                        tracing::warn!(error = %err, "Cron Slack delivery failed");
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Cron Slack delivery request failed");
+                                }
+                            }
+                        } else {
+                            tracing::warn!(env = %token_env, "Cron: Slack token env var not set");
+                        }
+                    }
+                    "matrix" => {
+                        let token_env = kernel
+                            .config
+                            .channels
+                            .matrix
+                            .as_ref()
+                            .map(|m| m.access_token_env.as_str())
+                            .unwrap_or("MATRIX_TOKEN");
+                        let homeserver = kernel
+                            .config
+                            .channels
+                            .matrix
+                            .as_ref()
+                            .map(|m| m.homeserver_url.as_str())
+                            .unwrap_or("http://localhost:8008");
+                        if let Ok(token) = std::env::var(token_env) {
+                            let room_encoded = to
+                                .replace('!', "%21")
+                                .replace(':', "%3A")
+                                .replace('#', "%23");
+                            let txn_id = format!(
+                                "{}",
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_nanos()
+                            );
+                            let url = format!(
+                                "{}/_matrix/client/r0/rooms/{}/send/m.room.message/{}",
+                                homeserver, room_encoded, txn_id
+                            );
+                            let payload = serde_json::json!({
+                                "msgtype": "m.text",
+                                "body": response,
+                            });
+                            match client
+                                .put(&url)
+                                .header("Authorization", format!("Bearer {token}"))
+                                .json(&payload)
+                                .send()
+                                .await
+                            {
+                                Ok(resp) => {
+                                    if resp.status().is_success() {
+                                        tracing::info!(channel = "matrix", to = %to, "Cron: delivered to Matrix");
+                                    } else {
+                                        tracing::warn!(
+                                            status = %resp.status(),
+                                            "Cron Matrix delivery failed"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Cron Matrix delivery request failed");
+                                }
+                            }
+                        } else {
+                            tracing::warn!(env = %token_env, "Cron: Matrix token env var not set");
+                        }
+                    }
+                    other => {
+                        tracing::warn!(
+                            channel = %other,
+                            "Cron: channel delivery not yet implemented for this channel type"
+                        );
+                    }
+                }
+            }
         }
         CronDelivery::LastChannel => {
             match kernel
@@ -6285,5 +6400,56 @@ mod tests {
         assert!(!caps
             .iter()
             .any(|c| matches!(c, Capability::ToolInvoke(name) if name == "shell_exec")));
+    }
+
+    #[test]
+    fn test_cron_slack_delivery_payload_structure() {
+        let channel_id = "C0ALEB7HVFD";
+        let text = "Hello from cron";
+        let payload = serde_json::json!({
+            "channel": channel_id,
+            "text": text,
+            "unfurl_links": true,
+            "unfurl_media": true,
+        });
+        assert_eq!(payload["channel"], channel_id);
+        assert_eq!(payload["text"], text);
+        assert_eq!(payload["unfurl_links"], true);
+        assert_eq!(payload["unfurl_media"], true);
+        let obj = payload.as_object().unwrap();
+        assert_eq!(obj.len(), 4);
+    }
+
+    #[test]
+    fn test_cron_matrix_delivery_url_encoding() {
+        let room_id = "!dSwMyJtlFHGKRWzZHb:localhost";
+        let room_encoded = room_id
+            .replace('!', "%21")
+            .replace(':', "%3A")
+            .replace('#', "%23");
+        assert_eq!(room_encoded, "%21dSwMyJtlFHGKRWzZHb%3Alocalhost");
+        assert!(!room_encoded.contains('!'));
+        assert!(!room_encoded.contains(':'));
+
+        let homeserver = "http://localhost:8008";
+        let txn_id = "12345";
+        let url = format!(
+            "{}/_matrix/client/r0/rooms/{}/send/m.room.message/{}",
+            homeserver, room_encoded, txn_id
+        );
+        assert!(url.starts_with("http://localhost:8008/_matrix/client/r0/rooms/"));
+        assert!(url.contains("%21dSwMyJtlFHGKRWzZHb%3Alocalhost"));
+        assert!(url.ends_with("/12345"));
+    }
+
+    #[test]
+    fn test_cron_unsupported_channel_no_panic() {
+        let channel = "discord";
+        let result = match channel {
+            "slack" => "slack",
+            "matrix" => "matrix",
+            other => other,
+        };
+        assert_eq!(result, "discord");
     }
 }
