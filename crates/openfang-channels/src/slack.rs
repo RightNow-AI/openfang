@@ -39,6 +39,8 @@ pub struct SlackAdapter {
     thread_ttl: Duration,
     /// Whether auto-thread-reply is enabled.
     auto_thread_reply: bool,
+    /// Whether to unfurl (expand previews for) links in posted messages.
+    unfurl_links: bool,
 }
 
 impl SlackAdapter {
@@ -48,6 +50,7 @@ impl SlackAdapter {
         allowed_channels: Vec<String>,
         auto_thread_reply: bool,
         thread_ttl_hours: u64,
+        unfurl_links: bool,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
@@ -61,6 +64,7 @@ impl SlackAdapter {
             active_threads: Arc::new(DashMap::new()),
             thread_ttl: Duration::from_secs(thread_ttl_hours * 3600),
             auto_thread_reply,
+            unfurl_links,
         }
     }
 
@@ -100,6 +104,8 @@ impl SlackAdapter {
             let mut body = serde_json::json!({
                 "channel": channel_id,
                 "text": chunk,
+                "unfurl_links": self.unfurl_links,
+                "unfurl_media": self.unfurl_links,
             });
             if let Some(ts) = thread_ts {
                 body["thread_ts"] = serde_json::json!(ts);
@@ -691,8 +697,35 @@ mod tests {
             vec!["C123".to_string()],
             true,
             24,
+            true,
         );
         assert_eq!(adapter.name(), "slack");
         assert_eq!(adapter.channel_type(), ChannelType::Slack);
+    }
+
+    #[test]
+    fn test_slack_adapter_unfurl_links_enabled() {
+        let adapter = SlackAdapter::new(
+            "xapp-test".to_string(),
+            "xoxb-test".to_string(),
+            vec![],
+            true,
+            24,
+            true,
+        );
+        assert!(adapter.unfurl_links);
+    }
+
+    #[test]
+    fn test_slack_adapter_unfurl_links_disabled() {
+        let adapter = SlackAdapter::new(
+            "xapp-test".to_string(),
+            "xoxb-test".to_string(),
+            vec![],
+            true,
+            24,
+            false,
+        );
+        assert!(!adapter.unfurl_links);
     }
 }

@@ -1150,6 +1150,7 @@ pub async fn start_channel_bridge_with_config(
                     sl_config.allowed_channels.clone(),
                     sl_config.auto_thread_reply,
                     sl_config.thread_ttl_hours,
+                    sl_config.unfurl_links,
                 ));
                 adapters.push((adapter, sl_config.default_agent.clone()));
             }

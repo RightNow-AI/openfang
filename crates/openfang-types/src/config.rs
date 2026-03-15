@@ -1752,6 +1752,9 @@ pub struct SlackConfig {
     /// Hours to track a thread after last interaction (default: 24).
     #[serde(default = "default_thread_ttl")]
     pub thread_ttl_hours: u64,
+    /// Whether to unfurl (expand previews for) links in messages (default: true).
+    #[serde(default = "default_true")]
+    pub unfurl_links: bool,
 }
 
 impl Default for SlackConfig {
@@ -1764,6 +1767,7 @@ impl Default for SlackConfig {
             overrides: ChannelOverrides::default(),
             auto_thread_reply: true,
             thread_ttl_hours: 24,
+            unfurl_links: true,
         }
     }
 }
@@ -3871,5 +3875,23 @@ mod tests {
             config.provider_api_keys.get("azure").unwrap(),
             "AZURE_OPENAI_KEY"
         );
+    }
+
+    #[test]
+    fn test_slack_config_unfurl_links_defaults_true() {
+        let config: SlackConfig = toml::from_str("").unwrap();
+        assert!(config.unfurl_links);
+    }
+
+    #[test]
+    fn test_slack_config_unfurl_links_explicit_false() {
+        let config: SlackConfig = toml::from_str("unfurl_links = false").unwrap();
+        assert!(!config.unfurl_links);
+    }
+
+    #[test]
+    fn test_slack_config_unfurl_links_explicit_true() {
+        let config: SlackConfig = toml::from_str("unfurl_links = true").unwrap();
+        assert!(config.unfurl_links);
     }
 }

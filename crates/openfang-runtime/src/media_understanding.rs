@@ -75,6 +75,11 @@ impl MediaEngine {
 
         let _permit = self.semaphore.acquire().await.map_err(|e| e.to_string())?;
 
+        // Parakeet MLX — local transcription via uv + Python
+        if provider == "parakeet-mlx" {
+            return transcribe_with_parakeet_mlx(attachment).await;
+        }
+
         // Derive a proper filename with extension from mime_type
         // (Whisper APIs require an extension to detect format)
         let ext = match attachment.mime_type.as_str() {
@@ -251,8 +256,94 @@ fn detect_vision_provider() -> Option<&'static str> {
     None
 }
 
+/// Transcribe audio using Parakeet MLX (local, via uv + Python).
+async fn transcribe_with_parakeet_mlx(
+    attachment: &MediaAttachment,
+) -> Result<MediaUnderstanding, String> {
+    use tokio::time::{timeout, Duration};
+
+    // Materialize audio to a temp file if needed
+    let (audio_path, is_temp) = match &attachment.source {
+        MediaSource::FilePath { path } => (std::path::PathBuf::from(path), false),
+        MediaSource::Base64 { data, mime_type } => {
+            use base64::Engine;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|e| format!("Failed to decode base64 audio: {e}"))?;
+            let ext = match mime_type.as_str() {
+                "audio/wav" | "audio/x-wav" => "wav",
+                "audio/mpeg" | "audio/mp3" => "mp3",
+                "audio/ogg" => "ogg",
+                "audio/webm" => "webm",
+                "audio/mp4" | "audio/m4a" => "m4a",
+                "audio/flac" => "flac",
+                _ => "wav",
+            };
+            let path = std::env::temp_dir()
+                .join(format!("openfang_parakeet_{}.{}", uuid::Uuid::new_v4(), ext));
+            tokio::fs::write(&path, decoded)
+                .await
+                .map_err(|e| format!("Failed to write temp audio: {e}"))?;
+            (path, true)
+        }
+        MediaSource::Url { url } => {
+            return Err(format!(
+                "URL audio not supported for parakeet-mlx: {url}"
+            ));
+        }
+    };
+
+    let script = r#"
+import json, sys
+from parakeet_mlx import from_pretrained
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe(sys.argv[1])
+print(json.dumps({"text": result.text, "model": "mlx-community/parakeet-tdt-0.6b-v3"}))
+"#;
+
+    let mut cmd = tokio::process::Command::new("uv");
+    cmd.args(["run", "--with", "parakeet-mlx", "python3", "-c", script, &audio_path.to_string_lossy()]);
+    cmd.env("PYTHONUNBUFFERED", "1");
+    cmd.kill_on_drop(true);
+
+    let output = timeout(Duration::from_secs(900), cmd.output())
+        .await
+        .map_err(|_| "parakeet-mlx timed out after 15 minutes".to_string())?
+        .map_err(|e| format!("Failed to launch parakeet-mlx: {e}"))?;
+
+    if is_temp {
+        let _ = tokio::fs::remove_file(&audio_path).await;
+    }
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("parakeet-mlx failed: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|e| format!("parakeet-mlx non-UTF8: {e}"))?;
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .map_err(|e| format!("parakeet-mlx parse failed: {e}"))?;
+
+    let text = parsed["text"].as_str().ok_or("missing text field")?.trim().to_string();
+    if text.is_empty() {
+        return Err("parakeet-mlx returned empty transcription".into());
+    }
+
+    Ok(MediaUnderstanding {
+        media_type: MediaType::Audio,
+        description: text,
+        provider: "parakeet-mlx".to_string(),
+        model: parsed["model"].as_str().unwrap_or("parakeet-tdt-0.6b-v3").to_string(),
+    })
+}
+
 /// Detect which audio transcription provider is available.
 fn detect_audio_provider() -> Option<&'static str> {
+    // Explicit opt-in for local Parakeet MLX transcription
+    if std::env::var("OPENFANG_ENABLE_PARAKEET_MLX").is_ok() {
+        return Some("parakeet-mlx");
+    }
     if std::env::var("GROQ_API_KEY").is_ok() {
         return Some("groq");
     }
@@ -275,6 +366,7 @@ fn default_vision_model(provider: &str) -> &str {
 /// Get the default audio model for a provider.
 fn default_audio_model(provider: &str) -> &str {
     match provider {
+        "parakeet-mlx" => "mlx-community/parakeet-tdt-0.6b-v3",
         "groq" => "whisper-large-v3-turbo",
         "openai" => "whisper-1",
         _ => "unknown",
