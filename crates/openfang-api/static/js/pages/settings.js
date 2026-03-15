@@ -26,6 +26,11 @@ function settingsPage() {
     providerTesting: {},
     providerTestResults: {},
     copilotOAuth: { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 },
+    customProviderName: '',
+    customProviderUrl: '',
+    customProviderKey: '',
+    customProviderStatus: '',
+    addingCustomProvider: false,
     loading: true,
     loadError: '',
 
@@ -219,8 +224,13 @@ function settingsPage() {
         this.providers = data.providers || [];
         for (var i = 0; i < this.providers.length; i++) {
           var p = this.providers[i];
-          if (p.is_local && p.base_url && !this.providerUrlInputs[p.id]) {
-            this.providerUrlInputs[p.id] = p.base_url;
+          if (p.is_local) {
+            if (!this.providerUrlInputs[p.id]) {
+              this.providerUrlInputs[p.id] = p.base_url || '';
+            }
+            if (this.providerUrlSaving[p.id] === undefined) {
+              this.providerUrlSaving[p.id] = false;
+            }
           }
         }
       } catch(e) { this.providers = []; }
@@ -253,6 +263,17 @@ function settingsPage() {
       }
     },
 
+    async deleteCustomModel(modelId) {
+      if (!confirm('Delete custom model "' + modelId + '"?')) return;
+      try {
+        await OpenFangAPI.del('/api/models/custom/' + encodeURIComponent(modelId));
+        OpenFangToast.success('Model deleted');
+        await this.loadModels();
+      } catch(e) {
+        OpenFangToast.error('Failed to delete: ' + (e.message || 'Unknown error'));
+      }
+    },
+
     async loadConfigSchema() {
       try {
         var results = await Promise.all([
@@ -274,11 +295,14 @@ function settingsPage() {
 
     async saveConfigField(section, field, value) {
       var key = section + '.' + field;
+      // Root-level fields (api_key, api_listen, log_level) use just the field name
+      var sectionMeta = this.configSchema && this.configSchema[section];
+      var path = (sectionMeta && sectionMeta.root_level) ? field : key;
       this.configSaving[key] = true;
       try {
-        await OpenFangAPI.post('/api/config/set', { path: key, value: value });
+        await OpenFangAPI.post('/api/config/set', { path: path, value: value });
         this.configDirty[key] = false;
-        OpenFangToast.success('Saved ' + key);
+        OpenFangToast.success('Saved ' + field);
       } catch(e) {
         OpenFangToast.error('Failed to save: ' + e.message);
       }
@@ -328,7 +352,10 @@ function settingsPage() {
 
     providerAuthText(p) {
       if (p.auth_status === 'configured') return 'Configured';
-      if (p.auth_status === 'not_set' || p.auth_status === 'missing') return 'Not Set';
+      if (p.auth_status === 'not_set' || p.auth_status === 'missing') {
+        if (p.id === 'claude-code') return 'Not Installed';
+        return 'Not Set';
+      }
       return 'No Key Needed';
     },
 
@@ -374,8 +401,12 @@ function settingsPage() {
       var key = this.providerKeyInputs[provider.id];
       if (!key || !key.trim()) { OpenFangToast.error('Please enter an API key'); return; }
       try {
-        await OpenFangAPI.post('/api/providers/' + encodeURIComponent(provider.id) + '/key', { key: key.trim() });
-        OpenFangToast.success('API key saved for ' + provider.display_name);
+        var resp = await OpenFangAPI.post('/api/providers/' + encodeURIComponent(provider.id) + '/key', { key: key.trim() });
+        if (resp && resp.switched_default) {
+          OpenFangToast.warning(resp.message || 'Default provider was switched to ' + provider.display_name);
+        } else {
+          OpenFangToast.success('API key saved for ' + provider.display_name);
+        }
         this.providerKeyInputs[provider.id] = '';
         await this.loadProviders();
         await this.loadModels();
@@ -481,6 +512,34 @@ function settingsPage() {
         OpenFangToast.error('Failed to save URL: ' + e.message);
       }
       this.providerUrlSaving[provider.id] = false;
+    },
+
+    async addCustomProvider() {
+      var name = this.customProviderName.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
+      if (!name) { OpenFangToast.error('Please enter a provider name'); return; }
+      var url = this.customProviderUrl.trim();
+      if (!url) { OpenFangToast.error('Please enter a base URL'); return; }
+      if (url.indexOf('http://') !== 0 && url.indexOf('https://') !== 0) {
+        OpenFangToast.error('URL must start with http:// or https://'); return;
+      }
+      this.addingCustomProvider = true;
+      this.customProviderStatus = '';
+      try {
+        var result = await OpenFangAPI.put('/api/providers/' + encodeURIComponent(name) + '/url', { base_url: url });
+        if (this.customProviderKey.trim()) {
+          await OpenFangAPI.post('/api/providers/' + encodeURIComponent(name) + '/key', { key: this.customProviderKey.trim() });
+        }
+        this.customProviderName = '';
+        this.customProviderUrl = '';
+        this.customProviderKey = '';
+        this.customProviderStatus = '';
+        OpenFangToast.success('Provider "' + name + '" added' + (result.reachable ? ' (reachable)' : ' (not reachable yet)'));
+        await this.loadProviders();
+      } catch(e) {
+        this.customProviderStatus = 'Error: ' + (e.message || 'Failed');
+        OpenFangToast.error('Failed to add provider: ' + e.message);
+      }
+      this.addingCustomProvider = false;
     },
 
     // -- Security methods --

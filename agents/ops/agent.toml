@@ -5,8 +5,8 @@ author = "openfang"
 module = "builtin:chat"
 
 [model]
-provider = "groq"
-model = "llama-3.1-8b-instant"
+provider = "default"
+model = "default"
 max_tokens = 2048
 temperature = 0.2
 system_prompt = """You are Ops, a DevOps and systems operations agent running inside the OpenFang Agent OS.

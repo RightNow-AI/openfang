@@ -43,6 +43,7 @@ use openfang_channels::webex::WebexAdapter;
 // Wave 5
 use async_trait::async_trait;
 use openfang_channels::dingtalk::DingTalkAdapter;
+use openfang_channels::dingtalk_stream::DingTalkStreamAdapter;
 use openfang_channels::discourse::DiscourseAdapter;
 use openfang_channels::gitter::GitterAdapter;
 use openfang_channels::gotify::GotifyAdapter;
@@ -50,11 +51,14 @@ use openfang_channels::linkedin::LinkedInAdapter;
 use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
+use openfang_channels::wecom::WeComAdapter;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::agent::AgentId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
+
+use openfang_runtime::str_utils::safe_truncate_str;
 
 /// Wraps `OpenFangKernel` to implement `ChannelBridgeHandle`.
 pub struct KernelBridgeAdapter {
@@ -68,6 +72,37 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         let result = self
             .kernel
             .send_message(agent_id, message)
+            .await
+            .map_err(|e| format!("{e}"))?;
+        // Silent/NO_REPLY responses should not be forwarded to channels
+        if result.silent {
+            return Ok(String::new());
+        }
+        Ok(result.response)
+    }
+
+    async fn send_message_with_blocks(
+        &self,
+        agent_id: AgentId,
+        blocks: Vec<openfang_types::message::ContentBlock>,
+    ) -> Result<String, String> {
+        // Extract text for the message parameter (used for memory recall / logging)
+        let text: String = blocks
+            .iter()
+            .filter_map(|b| match b {
+                openfang_types::message::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = if text.is_empty() {
+            "[Image]".to_string()
+        } else {
+            text
+        };
+        let result = self
+            .kernel
+            .send_message_with_blocks(agent_id, &text, blocks)
             .await
             .map_err(|e| format!("{e}"))?;
         Ok(result.response)
@@ -351,7 +386,8 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                 .map(|e| e.name.clone())
                 .unwrap_or_else(|| t.agent_id.to_string());
             let status = if t.enabled { "on" } else { "off" };
-            let id_short = &t.id.0.to_string()[..8];
+            let id_str = t.id.0.to_string();
+            let id_short = safe_truncate_str(&id_str, 8);
             msg.push_str(&format!(
                 "  [{}] {} -> {} ({:?}) fires:{} [{}]\n",
                 id_short,
@@ -390,7 +426,8 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .kernel
             .triggers
             .register(agent.id, pattern, prompt.to_string(), 0);
-        let id_short = &trigger_id.0.to_string()[..8];
+        let id_str = trigger_id.0.to_string();
+        let id_short = safe_truncate_str(&id_str, 8);
         format!("Trigger created [{id_short}] for agent '{agent_name}'.")
     }
 
@@ -405,7 +442,8 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             1 => {
                 let t = matched[0];
                 if self.kernel.triggers.remove(t.id) {
-                    format!("Trigger [{}] removed.", &t.id.0.to_string()[..8])
+                    let id_str = t.id.0.to_string();
+                    format!("Trigger [{}] removed.", safe_truncate_str(&id_str, 8))
                 } else {
                     "Failed to remove trigger.".to_string()
                 }
@@ -428,7 +466,8 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                 .map(|e| e.name.clone())
                 .unwrap_or_else(|| job.agent_id.to_string());
             let status = if job.enabled { "on" } else { "off" };
-            let id_short = &job.id.0.to_string()[..8];
+            let id_str = job.id.0.to_string();
+            let id_short = safe_truncate_str(&id_str, 8);
             let sched = match &job.schedule {
                 openfang_types::scheduler::CronSchedule::Cron { expr, .. } => expr.clone(),
                 openfang_types::scheduler::CronSchedule::Every { every_secs } => {
@@ -450,6 +489,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         msg
     }
 
+    #[allow(dead_code)]
     async fn manage_schedule_text(&self, action: &str, args: &[String]) -> String {
         match action {
             "add" => {
@@ -488,7 +528,8 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
 
                 match self.kernel.cron_scheduler.add_job(job, false) {
                     Ok(id) => {
-                        let id_short = &id.0.to_string()[..8];
+                        let id_str = id.0.to_string();
+                        let id_short = safe_truncate_str(&id_str, 8);
                         format!("Job [{id_short}] created: '{cron_expr}' -> {agent_name}: \"{message}\"")
                     }
                     Err(e) => format!("Failed to create job: {e}"),
@@ -510,7 +551,12 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                         let j = matched[0];
                         match self.kernel.cron_scheduler.remove_job(j.id) {
                             Ok(_) => {
-                                format!("Job [{}] '{}' removed.", &j.id.0.to_string()[..8], j.name)
+                                let id_str = j.id.0.to_string();
+                                format!(
+                                    "Job [{}] '{}' removed.",
+                                    safe_truncate_str(&id_str, 8),
+                                    j.name
+                                )
                             }
                             Err(e) => format!("Failed to remove job: {e}"),
                         }
@@ -539,10 +585,24 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                             openfang_types::scheduler::CronAction::SystemEvent { text } => {
                                 text.clone()
                             }
+                            openfang_types::scheduler::CronAction::WorkflowRun {
+                                workflow_id,
+                                input,
+                                ..
+                            } => {
+                                format!(
+                                    "Run workflow {workflow_id}{}",
+                                    input
+                                        .as_deref()
+                                        .map(|i| format!(" with input: {i}"))
+                                        .unwrap_or_default()
+                                )
+                            }
                         };
                         match self.kernel.send_message(j.agent_id, &message).await {
                             Ok(result) => {
-                                let id_short = &j.id.0.to_string()[..8];
+                                let id_str = j.id.0.to_string();
+                                let id_short = safe_truncate_str(&id_str, 8);
                                 format!("Job [{id_short}] ran:\n{}", result.response)
                             }
                             Err(e) => format!("Failed to run job: {e}"),
@@ -562,7 +622,8 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         }
         let mut msg = format!("Pending approvals ({}):\n", pending.len());
         for req in &pending {
-            let id_short = &req.id.to_string()[..8];
+            let id_str = req.id.to_string();
+            let id_short = safe_truncate_str(&id_str, 8);
             let age_secs = (chrono::Utc::now() - req.requested_at).num_seconds();
             let age = if age_secs >= 60 {
                 format!("{}m", age_secs / 60)
@@ -603,10 +664,11 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                 ) {
                     Ok(_) => {
                         let verb = if approve { "Approved" } else { "Rejected" };
+                        let id_str = req.id.to_string();
                         format!(
                             "{} [{}] {} — {}",
                             verb,
-                            &req.id.to_string()[..8],
+                            safe_truncate_str(&id_str, 8),
                             req.tool_name,
                             req.agent_id
                         )
@@ -646,9 +708,18 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             ));
         }
         self.kernel
-            .set_agent_model(agent_id, model)
+            .set_agent_model(agent_id, model, None)
             .map_err(|e| format!("{e}"))?;
-        Ok(format!("Model switched to: {model}"))
+        // Read back resolved model+provider from registry
+        let entry = self
+            .kernel
+            .registry
+            .get(agent_id)
+            .ok_or_else(|| "Agent not found after model switch".to_string())?;
+        Ok(format!(
+            "Model switched to: {} (provider: {})",
+            entry.manifest.model.model, entry.manifest.model.provider
+        ))
     }
 
     async fn stop_run(&self, agent_id: AgentId) -> Result<String, String> {
@@ -727,12 +798,17 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             // Wave 5
             "mumble" => channels.mumble.as_ref().map(|c| c.overrides.clone()),
             "dingtalk" => channels.dingtalk.as_ref().map(|c| c.overrides.clone()),
+            "dingtalk_stream" => channels
+                .dingtalk_stream
+                .as_ref()
+                .map(|c| c.overrides.clone()),
             "discourse" => channels.discourse.as_ref().map(|c| c.overrides.clone()),
             "gitter" => channels.gitter.as_ref().map(|c| c.overrides.clone()),
             "ntfy" => channels.ntfy.as_ref().map(|c| c.overrides.clone()),
             "gotify" => channels.gotify.as_ref().map(|c| c.overrides.clone()),
             "webhook" => channels.webhook.as_ref().map(|c| c.overrides.clone()),
             "linkedin" => channels.linkedin.as_ref().map(|c| c.overrides.clone()),
+            "wecom" => channels.wecom.as_ref().map(|c| c.overrides.clone()),
             _ => None,
         }
     }
@@ -774,6 +850,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         recipient: &str,
         success: bool,
         error: Option<&str>,
+        thread_id: Option<&str>,
     ) {
         let receipt = if success {
             openfang_kernel::DeliveryTracker::sent_receipt(channel, recipient)
@@ -786,9 +863,13 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         };
         self.kernel.delivery_tracker.record(agent_id, receipt);
 
-        // Persist last channel for cron CronDelivery::LastChannel
+        // Persist last channel for cron CronDelivery::LastChannel.
+        // Include thread_id when present so forum-topic context survives restarts.
         if success {
-            let kv_val = serde_json::json!({"channel": channel, "recipient": recipient});
+            let mut kv_val = serde_json::json!({"channel": channel, "recipient": recipient});
+            if let Some(tid) = thread_id {
+                kv_val["thread_id"] = serde_json::json!(tid);
+            }
             let _ = self
                 .kernel
                 .memory
@@ -859,7 +940,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             return "OFP peer network is disabled. Set network_enabled = true in config.toml."
                 .to_string();
         }
-        match &self.kernel.peer_registry {
+        match self.kernel.peer_registry.get() {
             Some(registry) => {
                 let peers = registry.all_peers();
                 if peers.is_empty() {
@@ -934,40 +1015,38 @@ fn parse_trigger_pattern(s: &str) -> Option<openfang_kernel::triggers::TriggerPa
     }
 }
 
-/// Resolve a default agent by name — find running or spawn from manifest.
-async fn resolve_default_agent(
-    handle: &KernelBridgeAdapter,
-    name: &str,
-    router: &mut AgentRouter,
-    adapter_name: &str,
-) {
-    match handle.find_agent_by_name(name).await {
-        Ok(Some(agent_id)) => {
-            router.set_default(agent_id);
-            info!("{adapter_name} default agent: {name} ({agent_id})");
-        }
-        _ => match handle.spawn_agent_by_name(name).await {
-            Ok(agent_id) => {
-                router.set_default(agent_id);
-                info!("{adapter_name}: spawned default agent {name} ({agent_id})");
-            }
-            Err(e) => {
-                warn!("{adapter_name}: could not find or spawn default agent '{name}': {e}");
-            }
-        },
-    }
-}
+/// Resolve a token: if the value looks like an actual secret (contains `:`,
+/// starts with `xoxb-`, `xapp-`, `sk-`, etc.), use it directly.
+/// Otherwise treat it as an env var name and look it up.
+fn read_token(env_var_or_token: &str, adapter_name: &str) -> Option<String> {
+    // Heuristic: actual tokens contain `:` (Telegram, Discord) or start with
+    // known prefixes. Env var names are uppercase ASCII identifiers.
+    let looks_like_token = env_var_or_token.contains(':')
+        || env_var_or_token.starts_with("xoxb-")
+        || env_var_or_token.starts_with("xapp-")
+        || env_var_or_token.starts_with("sk-")
+        || env_var_or_token.starts_with("Bearer ");
 
-/// Read a token from an env var, returning None with a warning if missing/empty.
-fn read_token(env_var: &str, adapter_name: &str) -> Option<String> {
-    match std::env::var(env_var) {
+    if looks_like_token {
+        warn!(
+            "{adapter_name}: config field contains what looks like an actual token \
+             rather than an env var name — using it directly. \
+             Tip: store the token in an env var and use the var name instead for security."
+        );
+        return Some(env_var_or_token.to_string());
+    }
+
+    match std::env::var(env_var_or_token) {
         Ok(t) if !t.is_empty() => Some(t),
         Ok(_) => {
-            warn!("{adapter_name} bot token env var '{env_var}' is empty, skipping");
+            warn!("{adapter_name} token env var '{env_var_or_token}' is set but empty, skipping");
             None
         }
         Err(_) => {
-            warn!("{adapter_name} bot token env var '{env_var}' not set, skipping");
+            warn!(
+                "{adapter_name} token env var '{env_var_or_token}' not set, skipping. \
+                 Set it with: export {env_var_or_token}=<your-token>"
+            );
             None
         }
     }
@@ -1027,6 +1106,7 @@ pub async fn start_channel_bridge_with_config(
         // Wave 5
         || config.mumble.is_some()
         || config.dingtalk.is_some()
+        || config.dingtalk_stream.is_some()
         || config.discourse.is_some()
         || config.gitter.is_some()
         || config.ntfy.is_some()
@@ -1054,6 +1134,7 @@ pub async fn start_channel_bridge_with_config(
                 token,
                 tg_config.allowed_users.clone(),
                 poll_interval,
+                tg_config.api_url.clone(),
             ));
             adapters.push((adapter, tg_config.default_agent.clone()));
         }
@@ -1065,6 +1146,8 @@ pub async fn start_channel_bridge_with_config(
             let adapter = Arc::new(DiscordAdapter::new(
                 token,
                 dc_config.allowed_guilds.clone(),
+                dc_config.allowed_users.clone(),
+                dc_config.ignore_bots,
                 dc_config.intents,
             ));
             adapters.push((adapter, dc_config.default_agent.clone()));
@@ -1079,6 +1162,9 @@ pub async fn start_channel_bridge_with_config(
                     app_token,
                     bot_token,
                     sl_config.allowed_channels.clone(),
+                    sl_config.auto_thread_reply,
+                    sl_config.thread_ttl_hours,
+                    sl_config.unfurl_links,
                 ));
                 adapters.push((adapter, sl_config.default_agent.clone()));
             }
@@ -1088,7 +1174,9 @@ pub async fn start_channel_bridge_with_config(
     // WhatsApp — supports Cloud API mode (access token) or Web/QR mode (gateway URL)
     if let Some(ref wa_config) = config.whatsapp {
         let cloud_token = read_token(&wa_config.access_token_env, "WhatsApp");
-        let gateway_url = std::env::var(&wa_config.gateway_url_env).ok().filter(|u| !u.is_empty());
+        let gateway_url = std::env::var(&wa_config.gateway_url_env)
+            .ok()
+            .filter(|u| !u.is_empty());
 
         if cloud_token.is_some() || gateway_url.is_some() {
             let token = cloud_token.unwrap_or_default();
@@ -1336,10 +1424,20 @@ pub async fn start_channel_bridge_with_config(
     // Feishu/Lark
     if let Some(ref fs_config) = config.feishu {
         if let Some(secret) = read_token(&fs_config.app_secret_env, "Feishu") {
-            let adapter = Arc::new(FeishuAdapter::new(
+            let region = openfang_channels::feishu::FeishuRegion::parse_region(&fs_config.region);
+            let encrypt_key = fs_config
+                .encrypt_key_env
+                .as_ref()
+                .and_then(|env| read_token(env, "Feishu encrypt_key"));
+            let adapter = Arc::new(FeishuAdapter::with_config(
                 fs_config.app_id.clone(),
                 secret,
                 fs_config.webhook_port,
+                region,
+                Some(fs_config.webhook_path.clone()),
+                fs_config.verification_token.clone(),
+                encrypt_key,
+                fs_config.bot_names.clone(),
             ));
             adapters.push((adapter, fs_config.default_agent.clone()));
         }
@@ -1350,6 +1448,21 @@ pub async fn start_channel_bridge_with_config(
         if let Some(token) = read_token(&rv_config.bot_token_env, "Revolt") {
             let adapter = Arc::new(RevoltAdapter::new(token));
             adapters.push((adapter, rv_config.default_agent.clone()));
+        }
+    }
+
+    // WeCom/WeChat Work
+    if let Some(ref wc_config) = config.wecom {
+        if let Some(secret) = read_token(&wc_config.secret_env, "WeCom") {
+            let adapter = Arc::new(WeComAdapter::with_verification(
+                wc_config.corp_id.clone(),
+                wc_config.agent_id.clone(),
+                secret,
+                wc_config.webhook_port,
+                wc_config.encoding_aes_key.clone(),
+                wc_config.token.clone(),
+            ));
+            adapters.push((adapter, wc_config.default_agent.clone()));
         }
     }
 
@@ -1459,12 +1572,27 @@ pub async fn start_channel_bridge_with_config(
         }
     }
 
-    // DingTalk
+    // DingTalk (webhook mode)
     if let Some(ref dt_config) = config.dingtalk {
         if let Some(token) = read_token(&dt_config.access_token_env, "DingTalk") {
             let secret = read_token(&dt_config.secret_env, "DingTalk (secret)").unwrap_or_default();
             let adapter = Arc::new(DingTalkAdapter::new(token, secret, dt_config.webhook_port));
             adapters.push((adapter, dt_config.default_agent.clone()));
+        }
+    }
+
+    // DingTalk (stream mode)
+    if let Some(ref ds_config) = config.dingtalk_stream {
+        if let Some(app_key) = read_token(&ds_config.app_key_env, "DingTalk Stream (app_key)") {
+            if let Some(app_secret) =
+                read_token(&ds_config.app_secret_env, "DingTalk Stream (app_secret)")
+            {
+                let robot_code =
+                    read_token(&ds_config.robot_code_env, "DingTalk Stream (robot_code)")
+                        .unwrap_or_else(|| app_key.clone());
+                let adapter = Arc::new(DingTalkStreamAdapter::new(app_key, app_secret, robot_code));
+                adapters.push((adapter, ds_config.default_agent.clone()));
+            }
         }
     }
 
@@ -1545,12 +1673,40 @@ pub async fn start_channel_bridge_with_config(
         return (None, Vec::new());
     }
 
-    // Resolve default agent from first adapter that has one configured
+    // Resolve per-channel default agents AND set the first one as system-wide fallback
     let mut router = AgentRouter::new();
-    for (_, default_agent) in &adapters {
+    let mut system_default_set = false;
+    for (adapter, default_agent) in &adapters {
         if let Some(ref name) = default_agent {
-            resolve_default_agent(&handle, name, &mut router, "Channel bridge").await;
-            break; // Only need one default
+            // Resolve agent name to ID
+            let agent_id = match handle.find_agent_by_name(name).await {
+                Ok(Some(id)) => Some(id),
+                _ => match handle.spawn_agent_by_name(name).await {
+                    Ok(id) => Some(id),
+                    Err(e) => {
+                        warn!(
+                            "{}: could not find or spawn default agent '{}': {e}",
+                            adapter.name(),
+                            name
+                        );
+                        None
+                    }
+                },
+            };
+            if let Some(agent_id) = agent_id {
+                // Register per-channel default
+                let channel_key = format!("{:?}", adapter.channel_type());
+                info!(
+                    "{} default agent: {name} ({agent_id}) [channel: {channel_key}]",
+                    adapter.name()
+                );
+                router.set_channel_default_with_name(channel_key, agent_id, name.clone());
+                // First configured default also becomes system-wide fallback
+                if !system_default_set {
+                    router.set_default(agent_id);
+                    system_default_set = true;
+                }
+            }
         }
     }
 
@@ -1614,6 +1770,35 @@ pub async fn reload_channels_from_disk(
             bridge.stop().await;
         }
         *guard = None;
+    }
+
+    // Re-read secrets.env so new API tokens are available in std::env
+    let secrets_path = state.kernel.config.home_dir.join("secrets.env");
+    if secrets_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&secrets_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some(eq_pos) = trimmed.find('=') {
+                    let key = trimmed[..eq_pos].trim();
+                    let mut value = trimmed[eq_pos + 1..].trim().to_string();
+                    if !key.is_empty() {
+                        // Strip matching quotes
+                        if ((value.starts_with('"') && value.ends_with('"'))
+                            || (value.starts_with('\'') && value.ends_with('\'')))
+                            && value.len() >= 2
+                        {
+                            value = value[1..value.len() - 1].to_string();
+                        }
+                        // Always overwrite — the file is the source of truth after dashboard edits
+                        std::env::set_var(key, &value);
+                    }
+                }
+            }
+            info!("Reloaded secrets.env for channel hot-reload");
+        }
     }
 
     // Re-read config from disk

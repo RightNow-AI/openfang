@@ -102,12 +102,16 @@ pub fn recover_from_overflow(
             for block in blocks.iter_mut() {
                 if let ContentBlock::ToolResult { content, .. } = block {
                     if content.len() > tool_truncation_limit {
-                        let keep = tool_truncation_limit.saturating_sub(80);
+                        let mut safe_keep = tool_truncation_limit.saturating_sub(80);
+                        // Walk back to a valid char boundary
+                        while safe_keep > 0 && !content.is_char_boundary(safe_keep) {
+                            safe_keep -= 1;
+                        }
                         *content = format!(
                             "{}\n\n[OVERFLOW RECOVERY: truncated from {} to {} chars]",
-                            &content[..keep],
+                            &content[..safe_keep],
                             content.len(),
-                            keep
+                            safe_keep
                         );
                         truncated += 1;
                     }
@@ -202,6 +206,7 @@ mod tests {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
+                    tool_name: String::new(),
                     content: big_result.clone(),
                     is_error: false,
                 }]),
@@ -210,6 +215,7 @@ mod tests {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "t2".to_string(),
+                    tool_name: String::new(),
                     content: big_result,
                     is_error: false,
                 }]),
@@ -234,6 +240,28 @@ mod tests {
         let stage = recover_from_overflow(&mut msgs, "system prompt", &[], 2000);
         // With 50 messages of 500 chars each (25000 chars), context of 2000 tokens (8000 chars),
         // we should cascade through stages
+        assert_ne!(stage, RecoveryStage::None);
+    }
+
+    #[test]
+    fn test_stage3_multibyte_tool_truncation() {
+        // Chinese text (3 bytes per char) in tool results must not panic
+        let chinese_result: String = "\u{4f60}\u{597d}\u{4e16}\u{754c}".repeat(1250); // 5000 chars, 15000 bytes
+        let mut msgs = vec![
+            Message::user("hi"),
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".to_string(),
+                    tool_name: String::new(),
+                    content: chinese_result,
+                    is_error: false,
+                }]),
+            },
+        ];
+        // Tiny context window to force stage 3 tool truncation
+        let stage = recover_from_overflow(&mut msgs, "system", &[], 500);
+        // Must not panic — the truncation at byte boundaries could split a 3-byte char
         assert_ne!(stage, RecoveryStage::None);
     }
 }

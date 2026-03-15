@@ -370,6 +370,7 @@ fn insert_synthetic_results(messages: &mut Vec<Message>) -> usize {
             .or_default()
             .push(ContentBlock::ToolResult {
                 tool_use_id,
+                tool_name: String::new(),
                 content: "[Tool execution was interrupted or lost]".to_string(),
                 is_error: true,
             });
@@ -491,7 +492,7 @@ fn is_empty_or_blank_content(content: &MessageContent) -> bool {
         MessageContent::Blocks(blocks) => {
             blocks.is_empty()
                 || blocks.iter().all(|b| match b {
-                    ContentBlock::Text { text } => text.trim().is_empty(),
+                    ContentBlock::Text { text, .. } => text.trim().is_empty(),
                     ContentBlock::Unknown => true,
                     _ => false,
                 })
@@ -629,7 +630,7 @@ pub fn prune_heartbeat_turns(messages: &mut Vec<Message>, keep_recent: usize) {
                 }
                 MessageContent::Blocks(blocks) => {
                     blocks.len() == 1
-                        && matches!(&blocks[0], ContentBlock::Text { text } if {
+                        && matches!(&blocks[0], ContentBlock::Text { text, .. } if {
                             let t = text.trim();
                             t == "NO_REPLY" || t == "[no reply needed]"
                         })
@@ -674,7 +675,10 @@ fn merge_content(dst: &mut MessageContent, src: MessageContent) {
 /// Convert MessageContent to a Vec<ContentBlock>.
 fn content_to_blocks(content: MessageContent) -> Vec<ContentBlock> {
     match content {
-        MessageContent::Text(s) => vec![ContentBlock::Text { text: s }],
+        MessageContent::Text(s) => vec![ContentBlock::Text {
+            text: s,
+            provider_metadata: None,
+        }],
         MessageContent::Blocks(blocks) => blocks,
     }
 }
@@ -702,6 +706,7 @@ mod tests {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "orphan-id".to_string(),
+                    tool_name: String::new(),
                     content: "some result".to_string(),
                     is_error: false,
                 }]),
@@ -756,12 +761,14 @@ mod tests {
                     id: "tu-1".to_string(),
                     name: "web_search".to_string(),
                     input: serde_json::json!({"query": "rust"}),
+                    provider_metadata: None,
                 }]),
             },
             Message {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "tu-1".to_string(),
+                    tool_name: String::new(),
                     content: "Results found".to_string(),
                     is_error: false,
                 }]),
@@ -786,6 +793,7 @@ mod tests {
                     id: "tu-reorder".to_string(),
                     name: "web_search".to_string(),
                     input: serde_json::json!({"query": "rust"}),
+                    provider_metadata: None,
                 }]),
             },
             Message::user("While you search, I have another question"),
@@ -793,6 +801,7 @@ mod tests {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "tu-reorder".to_string(),
+                    tool_name: String::new(),
                     content: "Search results".to_string(),
                     is_error: false,
                 }]),
@@ -838,6 +847,7 @@ mod tests {
                     id: "tu-orphan".to_string(),
                     name: "file_read".to_string(),
                     input: serde_json::json!({"path": "/etc/hosts"}),
+                    provider_metadata: None,
                 }]),
             },
             Message::assistant("I tried to read the file"),
@@ -875,12 +885,14 @@ mod tests {
                     id: "tu-dup".to_string(),
                     name: "search".to_string(),
                     input: serde_json::json!({}),
+                    provider_metadata: None,
                 }]),
             },
             Message {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "tu-dup".to_string(),
+                    tool_name: String::new(),
                     content: "First result".to_string(),
                     is_error: false,
                 }]),
@@ -889,6 +901,7 @@ mod tests {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "tu-dup".to_string(),
+                    tool_name: String::new(),
                     content: "Duplicate result".to_string(),
                     is_error: false,
                 }]),
@@ -978,6 +991,7 @@ mod tests {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "orphan".to_string(),
+                    tool_name: String::new(),
                     content: "lost".to_string(),
                     is_error: false,
                 }]),
@@ -1006,6 +1020,7 @@ mod tests {
                 role: Role::Assistant,
                 content: MessageContent::Blocks(vec![ContentBlock::Text {
                     text: String::new(),
+                    provider_metadata: None,
                 }]),
             },
             Message::user("Never mind"),
@@ -1044,11 +1059,13 @@ mod tests {
                         id: "tu-a".to_string(),
                         name: "search".to_string(),
                         input: serde_json::json!({}),
+                        provider_metadata: None,
                     },
                     ContentBlock::ToolUse {
                         id: "tu-b".to_string(),
                         name: "fetch".to_string(),
                         input: serde_json::json!({}),
+                        provider_metadata: None,
                     },
                 ]),
             },
@@ -1057,6 +1074,7 @@ mod tests {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "tu-a".to_string(),
+                    tool_name: String::new(),
                     content: "search result".to_string(),
                     is_error: false,
                 }]),
@@ -1066,6 +1084,7 @@ mod tests {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "tu-ghost".to_string(),
+                    tool_name: String::new(),
                     content: "ghost result".to_string(),
                     is_error: false,
                 }]),
@@ -1114,11 +1133,13 @@ mod tests {
                 content: MessageContent::Blocks(vec![
                     ContentBlock::ToolResult {
                         tool_use_id: "orphan-1".to_string(),
+                        tool_name: String::new(),
                         content: "lost 1".to_string(),
                         is_error: false,
                     },
                     ContentBlock::ToolResult {
                         tool_use_id: "orphan-2".to_string(),
+                        tool_name: String::new(),
                         content: "lost 2".to_string(),
                         is_error: false,
                     },

@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["general", "assistant", "default", "multipurpose", "conversation", "productivity"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 8192
 temperature = 0.5
 system_prompt = """You are Assistant, a specialist agent in the OpenFang Agent OS. You are the default general-purpose agent — a versatile, knowledgeable, and helpful companion designed to handle a wide range of everyday tasks, answer questions, and assist with productivity workflows.
@@ -61,7 +61,7 @@ TOOLS AVAILABLE:
 You are reliable, adaptable, and genuinely helpful. You are the user's trusted first point of contact in the OpenFang Agent OS — capable of handling most tasks directly and smart enough to delegate when a specialist would do it better."""
 
 [[fallback_models]]
-provider = "gemini"
+provider = "default"
 model = "gemini-2.0-flash"
 api_key_env = "GEMINI_API_KEY"
 

@@ -251,7 +251,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &mut SessionsState) {
             .map(|&idx| {
                 let s = &state.sessions[idx];
                 let id_short = if s.id.len() > 12 {
-                    format!("{}\u{2026}", &s.id[..12])
+                    format!("{}\u{2026}", openfang_types::truncate_str(&s.id, 12))
                 } else {
                     s.id.clone()
                 };
@@ -308,6 +308,9 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}\u{2026}", openfang_types::truncate_str(s, max.saturating_sub(1)))
+        format!(
+            "{}\u{2026}",
+            openfang_types::truncate_str(s, max.saturating_sub(1))
+        )
     }
 }

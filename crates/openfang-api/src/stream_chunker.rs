@@ -102,9 +102,15 @@ impl StreamChunker {
             }
         }
 
-        // Priority 4: Forced break at max_chunk_chars
+        // Priority 4: Forced break at max_chunk_chars (char-boundary safe)
         if self.buffer.len() >= self.max_chunk_chars {
-            let break_at = self.max_chunk_chars;
+            let mut break_at = self.max_chunk_chars;
+            while break_at > 0 && !self.buffer.is_char_boundary(break_at) {
+                break_at -= 1;
+            }
+            if break_at == 0 {
+                break_at = self.buffer.len();
+            }
             let chunk = self.buffer[..break_at].to_string();
             self.buffer = self.buffer[break_at..].to_string();
             return Some(chunk);
@@ -134,9 +140,23 @@ impl StreamChunker {
 }
 
 /// Find the last occurrence of a pattern within a byte range.
+///
+/// Both `range.start` and `range.end` are clamped to the nearest valid UTF-8
+/// char boundary so that slicing never panics on multi-byte content.
 fn find_last_in_range(text: &str, pattern: &str, range: &std::ops::Range<usize>) -> Option<usize> {
-    let search_text = &text[range.start..range.end.min(text.len())];
-    search_text.rfind(pattern).map(|pos| range.start + pos)
+    let len = text.len();
+    // Clamp end to text length and walk back to a char boundary
+    let mut end = range.end.min(len);
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    // Walk start forward to the nearest char boundary (never past end)
+    let mut start = range.start.min(end);
+    while start < end && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    let search_text = &text[start..end];
+    search_text.rfind(pattern).map(|pos| start + pos)
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@
 
 use openfang_types::tool::ToolDefinition;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, info};
@@ -32,7 +33,7 @@ pub struct McpServerConfig {
 }
 
 fn default_timeout() -> u64 {
-    30
+    60
 }
 
 /// Transport type for MCP server connections.
@@ -59,6 +60,10 @@ pub struct McpConnection {
     config: McpServerConfig,
     /// Tools discovered from the server via tools/list.
     tools: Vec<ToolDefinition>,
+    /// Map from namespaced tool name → original tool name from the server.
+    /// Needed because `normalize_name` replaces hyphens with underscores,
+    /// but the server expects the original name (e.g. "list-connections").
+    original_names: HashMap<String, String>,
     /// Transport handle for sending requests.
     transport: McpTransportHandle,
     /// Next JSON-RPC request ID.
@@ -134,6 +139,7 @@ impl McpConnection {
         let mut conn = Self {
             config,
             tools: Vec::new(),
+            original_names: HashMap::new(),
             transport,
             next_id: 1,
         };
@@ -194,10 +200,27 @@ impl McpConnection {
                     let input_schema = tool
                         .get("inputSchema")
                         .cloned()
+                        .and_then(|v| {
+                            // Ensure input_schema is a JSON object. MCP servers may
+                            // return it as a string, null, or omit it entirely.
+                            match &v {
+                                serde_json::Value::Object(_) => Some(v),
+                                serde_json::Value::String(s) => {
+                                    serde_json::from_str::<serde_json::Value>(s)
+                                        .ok()
+                                        .filter(|p| p.is_object())
+                                }
+                                _ => None,
+                            }
+                        })
                         .unwrap_or(serde_json::json!({"type": "object"}));
 
                     // Namespace: mcp_{server}_{tool}
                     let namespaced = format_mcp_tool_name(server_name, raw_name);
+
+                    // Store original name so we can send it back to the server
+                    self.original_names
+                        .insert(namespaced.clone(), raw_name.to_string());
 
                     self.tools.push(ToolDefinition {
                         name: namespaced,
@@ -219,8 +242,13 @@ impl McpConnection {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, String> {
-        // Strip the namespace prefix to get the original tool name
-        let raw_name = strip_mcp_prefix(&self.config.name, name).unwrap_or(name);
+        // Look up the original tool name from the server (preserves hyphens etc.)
+        let raw_name = self
+            .original_names
+            .get(name)
+            .map(|s| s.as_str())
+            .or_else(|| strip_mcp_prefix(&self.config.name, name))
+            .unwrap_or(name);
 
         let params = serde_json::json!({
             "name": raw_name,
@@ -393,7 +421,29 @@ impl McpConnection {
             return Err("MCP command path contains '..': rejected".to_string());
         }
 
-        let mut cmd = tokio::process::Command::new(command);
+        // On Windows, npm/npx install as .cmd batch wrappers. Detect and adapt.
+        let resolved_command: String = if cfg!(windows) {
+            // If the user already specified .cmd/.bat, use as-is
+            if command.ends_with(".cmd") || command.ends_with(".bat") {
+                command.to_string()
+            } else {
+                // Check if the .cmd variant exists on PATH
+                let cmd_variant = format!("{command}.cmd");
+                let has_cmd = std::env::var("PATH")
+                    .unwrap_or_default()
+                    .split(';')
+                    .any(|dir| std::path::Path::new(dir).join(&cmd_variant).exists());
+                if has_cmd {
+                    cmd_variant
+                } else {
+                    command.to_string()
+                }
+            }
+        } else {
+            command.to_string()
+        };
+
+        let mut cmd = tokio::process::Command::new(&resolved_command);
         cmd.args(args);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
@@ -410,10 +460,41 @@ impl McpConnection {
         if let Ok(path) = std::env::var("PATH") {
             cmd.env("PATH", path);
         }
+        // On Windows, npm/node need APPDATA, USERPROFILE, LOCALAPPDATA, and SystemRoot
+        if cfg!(windows) {
+            for var in &[
+                "APPDATA",
+                "LOCALAPPDATA",
+                "USERPROFILE",
+                "SystemRoot",
+                "TEMP",
+                "TMP",
+                "HOME",
+                "HOMEDRIVE",
+                "HOMEPATH",
+            ] {
+                if let Ok(val) = std::env::var(var) {
+                    cmd.env(var, val);
+                }
+            }
+        }
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn MCP server '{command}': {e}"))?;
+            .map_err(|e| format!("Failed to spawn MCP server '{resolved_command}': {e}"))?;
+
+        // Log stderr in background for debugging MCP server issues
+        if let Some(stderr) = child.stderr.take() {
+            let cmd_name = resolved_command.clone();
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let reader = tokio::io::BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::debug!(mcp_server = %cmd_name, "stderr: {line}");
+                }
+            });
+        }
 
         let stdin = child
             .stdin
@@ -474,12 +555,40 @@ pub fn is_mcp_tool(name: &str) -> bool {
 }
 
 /// Extract server name from an MCP tool name.
+///
+/// Falls back to first-underscore heuristic, but prefer
+/// `extract_mcp_server_from_known()` which handles server names containing
+/// hyphens (normalized to underscores) correctly.
 pub fn extract_mcp_server(tool_name: &str) -> Option<&str> {
     if !tool_name.starts_with("mcp_") {
         return None;
     }
     let rest = &tool_name[4..];
     rest.find('_').map(|pos| &rest[..pos])
+}
+
+/// Extract the original server name by matching against known server names.
+///
+/// This handles server names with hyphens (e.g. "bocha-search") correctly —
+/// the normalized prefix "mcp_bocha_search_" is matched against each known
+/// server's normalized name, returning the original (unhyphenated) name.
+pub fn extract_mcp_server_from_known<'a>(
+    tool_name: &str,
+    server_names: &[&'a str],
+) -> Option<&'a str> {
+    if !tool_name.starts_with("mcp_") {
+        return None;
+    }
+    // Sort by length descending so longer (more specific) names match first
+    let mut sorted: Vec<&&str> = server_names.iter().collect();
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.len()));
+    for name in sorted {
+        let prefix = format!("mcp_{}_", normalize_name(name));
+        if tool_name.starts_with(&prefix) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// Strip the MCP namespace prefix from a tool name.
@@ -517,12 +626,63 @@ mod tests {
     }
 
     #[test]
+    fn test_hyphenated_tool_name_preserved() {
+        // Tool names with hyphens get normalized to underscores for namespacing,
+        // but original_names map preserves the original for call_tool dispatch.
+        let namespaced = format_mcp_tool_name("sqlcl", "list-connections");
+        assert_eq!(namespaced, "mcp_sqlcl_list_connections");
+
+        // Simulate what discover_tools does
+        let mut original_names = HashMap::new();
+        original_names.insert(namespaced.clone(), "list-connections".to_string());
+
+        // call_tool should resolve to original hyphenated name
+        let raw = original_names
+            .get(&namespaced)
+            .map(|s| s.as_str())
+            .unwrap_or("list_connections");
+        assert_eq!(raw, "list-connections");
+    }
+
+    #[test]
     fn test_extract_mcp_server() {
         assert_eq!(
             extract_mcp_server("mcp_github_create_issue"),
             Some("github")
         );
         assert_eq!(extract_mcp_server("file_read"), None);
+    }
+
+    #[test]
+    fn test_extract_mcp_server_from_known_with_hyphens() {
+        // Server "bocha-search" normalized to "bocha_search" in tool prefix
+        let servers = vec!["bocha-search", "github"];
+        let tool = "mcp_bocha_search_bocha_web_search";
+        assert_eq!(
+            extract_mcp_server_from_known(tool, &servers),
+            Some("bocha-search")
+        );
+        // Simple server name still works
+        assert_eq!(
+            extract_mcp_server_from_known("mcp_github_create_issue", &servers),
+            Some("github")
+        );
+        // Non-MCP tool returns None
+        assert_eq!(extract_mcp_server_from_known("file_read", &servers), None);
+    }
+
+    #[test]
+    fn test_extract_mcp_server_from_known_longest_match() {
+        // "my-api" and "my-api-v2" — should match the longer one
+        let servers = vec!["my-api", "my-api-v2"];
+        assert_eq!(
+            extract_mcp_server_from_known("mcp_my_api_v2_get_users", &servers),
+            Some("my-api-v2")
+        );
+        assert_eq!(
+            extract_mcp_server_from_known("mcp_my_api_list_items", &servers),
+            Some("my-api")
+        );
     }
 
     #[test]

@@ -128,6 +128,20 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Delete the canonical (cross-channel) session for an agent.
+    pub fn delete_canonical_session(&self, agent_id: AgentId) -> OpenFangResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM canonical_sessions WHERE agent_id = ?1",
+            rusqlite::params![agent_id.0.to_string()],
+        )
+        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        Ok(())
+    }
+
     /// List all sessions with metadata (session_id, agent_id, message_count, created_at).
     pub fn list_sessions(&self) -> OpenFangResult<Vec<serde_json::Value>> {
         let conn = self
@@ -543,10 +557,12 @@ impl SessionStore {
                 MessageContent::Blocks(blocks) => {
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text } => {
+                            ContentBlock::Text { text, .. } => {
                                 text_parts.push(text.clone());
                             }
-                            ContentBlock::ToolUse { id, name, input } => {
+                            ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => {
                                 tool_parts.push(serde_json::json!({
                                     "type": "tool_use",
                                     "id": id,
@@ -556,6 +572,7 @@ impl SessionStore {
                             }
                             ContentBlock::ToolResult {
                                 tool_use_id,
+                                tool_name: _,
                                 content,
                                 is_error,
                             } => {
@@ -572,7 +589,7 @@ impl SessionStore {
                             ContentBlock::Thinking { thinking } => {
                                 text_parts.push(format!(
                                     "[thinking: {}]",
-                                    &thinking[..thinking.len().min(200)]
+                                    openfang_types::truncate_str(thinking, 200)
                                 ));
                             }
                             ContentBlock::Unknown => {}

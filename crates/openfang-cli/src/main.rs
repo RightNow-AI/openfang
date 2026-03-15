@@ -73,6 +73,7 @@ const AFTER_HELP: &str = "\
   openfang doctor               Run diagnostic health checks
   openfang channel setup        Interactive channel setup wizard
   openfang cron list            List scheduled jobs
+  openfang uninstall            Completely remove OpenFang from your system
 
 \x1b[1;36mQuick Start:\x1b[0m
   1. openfang init              Set up config + API key
@@ -112,7 +113,11 @@ enum Commands {
         quick: bool,
     },
     /// Start the OpenFang kernel daemon (API server + kernel).
-    Start,
+    Start {
+        /// Auto-approve all tool calls (no confirmation prompts).
+        #[arg(long)]
+        yolo: bool,
+    },
     /// Stop the running daemon.
     Stop,
     /// Manage agents (new, list, chat, kill, spawn) [*].
@@ -132,6 +137,9 @@ enum Commands {
     /// Manage channel integrations (setup, test, enable, disable) [*].
     #[command(subcommand)]
     Channel(ChannelCommands),
+    /// Manage hands (list, activate, deactivate, info) [*].
+    #[command(subcommand)]
+    Hand(HandCommands),
     /// Show or edit configuration (show, edit, get, set, keys) [*].
     #[command(subcommand)]
     Config(ConfigCommands),
@@ -276,6 +284,15 @@ enum Commands {
         #[arg(long)]
         confirm: bool,
     },
+    /// Completely uninstall OpenFang from your system.
+    Uninstall {
+        /// Skip confirmation prompt (also --yes).
+        #[arg(long, alias = "yes")]
+        confirm: bool,
+        /// Keep config files (config.toml, .env, secrets.env).
+        #[arg(long)]
+        keep_config: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -372,6 +389,54 @@ enum ChannelCommands {
 }
 
 #[derive(Subcommand)]
+enum HandCommands {
+    /// List all available hands.
+    List,
+    /// Show currently active hand instances.
+    Active,
+    /// Install a hand from a local directory containing HAND.toml.
+    Install {
+        /// Path to the hand directory (must contain HAND.toml).
+        path: String,
+    },
+    /// Activate a hand by ID.
+    Activate {
+        /// Hand ID (e.g. "clip", "lead", "researcher").
+        id: String,
+    },
+    /// Deactivate an active hand instance.
+    Deactivate {
+        /// Hand ID.
+        id: String,
+    },
+    /// Show detailed info about a hand.
+    Info {
+        /// Hand ID.
+        id: String,
+    },
+    /// Check dependency status for a hand.
+    CheckDeps {
+        /// Hand ID.
+        id: String,
+    },
+    /// Install missing dependencies for a hand.
+    InstallDeps {
+        /// Hand ID.
+        id: String,
+    },
+    /// Pause a running hand instance.
+    Pause {
+        /// Instance ID (from `hand active`).
+        id: String,
+    },
+    /// Resume a paused hand instance.
+    Resume {
+        /// Instance ID (from `hand active`).
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum ConfigCommands {
     /// Show the current configuration.
     Show,
@@ -439,6 +504,15 @@ enum AgentCommands {
         /// Agent ID (UUID).
         agent_id: String,
     },
+    /// Set an agent property (e.g., model).
+    Set {
+        /// Agent ID (UUID).
+        agent_id: String,
+        /// Field to set (model).
+        field: String,
+        /// New value.
+        value: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -449,6 +523,23 @@ enum WorkflowCommands {
     Create {
         /// Path to a JSON file describing the workflow.
         file: PathBuf,
+    },
+    /// Get a workflow by ID.
+    Get {
+        /// Workflow ID (UUID).
+        workflow_id: String,
+    },
+    /// Update a workflow from a JSON file.
+    Update {
+        /// Workflow ID (UUID).
+        workflow_id: String,
+        /// Path to a JSON file with the updated workflow definition.
+        file: PathBuf,
+    },
+    /// Delete a workflow by ID.
+    Delete {
+        /// Workflow ID (UUID).
+        workflow_id: String,
     },
     /// Run a workflow by ID.
     Run {
@@ -567,6 +658,9 @@ enum CronCommands {
         spec: String,
         /// Prompt to send when the job fires.
         prompt: String,
+        /// Optional job name (auto-generated if omitted).
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Delete a scheduled job.
     Delete {
@@ -704,20 +798,53 @@ enum SystemCommands {
     },
 }
 
+fn config_log_level() -> String {
+    let config_path = if let Ok(home) = std::env::var("OPENFANG_HOME") {
+        std::path::PathBuf::from(home).join("config.toml")
+    } else {
+        dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(".openfang")
+            .join("config.toml")
+    };
+    if let Ok(content) = std::fs::read_to_string(config_path) {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("log_level") {
+                if let Some(val) = trimmed.split('=').nth(1) {
+                    let level = val.trim().trim_matches('"').trim_matches('\'');
+                    if !level.is_empty() {
+                        return level.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "info".to_string()
+}
+
 fn init_tracing_stderr() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(config_log_level())),
         )
         .init();
 }
 
+/// Get the OpenFang home directory, respecting OPENFANG_HOME env var.
+fn cli_openfang_home() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("OPENFANG_HOME") {
+        return std::path::PathBuf::from(home);
+    }
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".openfang")
+}
+
 /// Redirect tracing to a log file so it doesn't corrupt the ratatui TUI.
 fn init_tracing_file() {
-    let log_dir = dirs::home_dir()
-        .map(|h| h.join(".openfang"))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let log_dir = cli_openfang_home();
     let _ = std::fs::create_dir_all(&log_dir);
     let log_path = log_dir.join("tui.log");
 
@@ -726,7 +853,7 @@ fn init_tracing_file() {
             tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(config_log_level())),
                 )
                 .with_writer(std::sync::Mutex::new(file))
                 .with_ansi(false)
@@ -795,7 +922,7 @@ fn main() {
         }
         Some(Commands::Tui) => tui::run(cli.config),
         Some(Commands::Init { quick }) => cmd_init(quick),
-        Some(Commands::Start) => cmd_start(cli.config),
+        Some(Commands::Start { yolo }) => cmd_start(cli.config, yolo),
         Some(Commands::Stop) => cmd_stop(),
         Some(Commands::Agent(sub)) => match sub {
             AgentCommands::New { template } => cmd_agent_new(cli.config, template),
@@ -803,10 +930,20 @@ fn main() {
             AgentCommands::List { json } => cmd_agent_list(cli.config, json),
             AgentCommands::Chat { agent_id } => cmd_agent_chat(cli.config, &agent_id),
             AgentCommands::Kill { agent_id } => cmd_agent_kill(cli.config, &agent_id),
+            AgentCommands::Set {
+                agent_id,
+                field,
+                value,
+            } => cmd_agent_set(&agent_id, &field, &value),
         },
         Some(Commands::Workflow(sub)) => match sub {
             WorkflowCommands::List => cmd_workflow_list(),
             WorkflowCommands::Create { file } => cmd_workflow_create(file),
+            WorkflowCommands::Get { workflow_id } => cmd_workflow_get(&workflow_id),
+            WorkflowCommands::Update { workflow_id, file } => {
+                cmd_workflow_update(&workflow_id, file)
+            }
+            WorkflowCommands::Delete { workflow_id } => cmd_workflow_delete(&workflow_id),
             WorkflowCommands::Run { workflow_id, input } => cmd_workflow_run(&workflow_id, &input),
         },
         Some(Commands::Trigger(sub)) => match sub {
@@ -833,6 +970,18 @@ fn main() {
             ChannelCommands::Test { channel } => cmd_channel_test(&channel),
             ChannelCommands::Enable { channel } => cmd_channel_toggle(&channel, true),
             ChannelCommands::Disable { channel } => cmd_channel_toggle(&channel, false),
+        },
+        Some(Commands::Hand(sub)) => match sub {
+            HandCommands::List => cmd_hand_list(),
+            HandCommands::Active => cmd_hand_active(),
+            HandCommands::Install { path } => cmd_hand_install(&path),
+            HandCommands::Activate { id } => cmd_hand_activate(&id),
+            HandCommands::Deactivate { id } => cmd_hand_deactivate(&id),
+            HandCommands::Info { id } => cmd_hand_info(&id),
+            HandCommands::CheckDeps { id } => cmd_hand_check_deps(&id),
+            HandCommands::InstallDeps { id } => cmd_hand_install_deps(&id),
+            HandCommands::Pause { id } => cmd_hand_pause(&id),
+            HandCommands::Resume { id } => cmd_hand_resume(&id),
         },
         Some(Commands::Config(sub)) => match sub {
             ConfigCommands::Show => cmd_config_show(),
@@ -868,7 +1017,7 @@ fn main() {
             ModelsCommands::Set { model } => cmd_models_set(model),
         },
         Some(Commands::Gateway(sub)) => match sub {
-            GatewayCommands::Start => cmd_start(cli.config),
+            GatewayCommands::Start => cmd_start(cli.config, false),
             GatewayCommands::Stop => cmd_stop(),
             GatewayCommands::Status { json } => cmd_status(cli.config, json),
         },
@@ -883,7 +1032,8 @@ fn main() {
                 agent,
                 spec,
                 prompt,
-            } => cmd_cron_create(&agent, &spec, &prompt),
+                name,
+            } => cmd_cron_create(&agent, &spec, &prompt, name.as_deref()),
             CronCommands::Delete { id } => cmd_cron_delete(&id),
             CronCommands::Enable { id } => cmd_cron_toggle(&id, true),
             CronCommands::Disable { id } => cmd_cron_toggle(&id, false),
@@ -922,6 +1072,10 @@ fn main() {
             SystemCommands::Version { json } => cmd_system_version(json),
         },
         Some(Commands::Reset { confirm }) => cmd_reset(confirm),
+        Some(Commands::Uninstall {
+            confirm,
+            keep_config,
+        }) => cmd_uninstall(confirm, keep_config),
     }
 }
 
@@ -951,7 +1105,7 @@ pub(crate) fn restrict_dir_permissions(path: &std::path::Path) {
 pub(crate) fn restrict_dir_permissions(_path: &std::path::Path) {}
 
 pub(crate) fn find_daemon() -> Option<String> {
-    let home_dir = dirs::home_dir()?.join(".openfang");
+    let home_dir = cli_openfang_home();
     let info = read_daemon_info(&home_dir)?;
 
     // Normalize listen address: replace 0.0.0.0 with 127.0.0.1 to avoid
@@ -973,11 +1127,23 @@ pub(crate) fn find_daemon() -> Option<String> {
 }
 
 /// Build an HTTP client for daemon calls.
+///
+/// When api_key is configured in config.toml, the client automatically
+/// includes a `Authorization: Bearer <key>` header on every request.
+/// When api_key is empty or missing, no auth header is sent.
 pub(crate) fn daemon_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .expect("Failed to build HTTP client")
+    let mut builder =
+        reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(120));
+
+    if let Some(key) = read_api_key() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {key}")) {
+            headers.insert(reqwest::header::AUTHORIZATION, val);
+        }
+        builder = builder.default_headers(headers);
+    }
+
+    builder.build().expect("Failed to build HTTP client")
 }
 
 /// Helper: send a request to the daemon and parse the JSON body.
@@ -1033,7 +1199,7 @@ fn cmd_init(quick: bool) {
         }
     };
 
-    let openfang_dir = home.join(".openfang");
+    let openfang_dir = cli_openfang_home();
 
     // --- Ensure directories exist ---
     if !openfang_dir.exists() {
@@ -1062,6 +1228,12 @@ fn cmd_init(quick: bool) {
     bundled_agents::install_bundled_agents(&openfang_dir.join("agents"));
 
     if quick {
+        cmd_init_quick(&openfang_dir);
+    } else if !std::io::IsTerminal::is_terminal(&std::io::stdin())
+        || !std::io::IsTerminal::is_terminal(&std::io::stdout())
+    {
+        ui::hint("Non-interactive terminal detected — running in quick mode");
+        ui::hint("For the interactive wizard, run: openfang init (in a terminal)");
         cmd_init_quick(&openfang_dir);
     } else {
         cmd_init_interactive(&openfang_dir);
@@ -1184,8 +1356,17 @@ fn launch_desktop_app(_openfang_dir: &std::path::Path) {
             if let Some(base) = find_daemon() {
                 let url = format!("{base}/");
                 if !open_in_browser(&url) {
-                    ui::hint(&format!("Visit: {url}"));
+                    // Browser launch failed entirely (e.g., sandbox EPERM,
+                    // no display server, container environment).
+                    ui::hint("Could not open a browser automatically.");
                 }
+                // Always print the URL so the user can open it manually,
+                // even when open_in_browser reported success — the spawned
+                // opener may still fail asynchronously.
+                ui::hint(&format!("Dashboard: {url}"));
+            } else {
+                ui::hint("Daemon is not running. Start it with: openfang start");
+                ui::hint("Then open: http://127.0.0.1:4200");
             }
         }
     }
@@ -1206,8 +1387,14 @@ fn detect_best_provider() -> (&'static str, &'static str, &'static str) {
         ui::success("Detected Gemini (GOOGLE_API_KEY)");
         return ("gemini", "GOOGLE_API_KEY", "gemini-2.5-flash");
     }
+    // Check if Ollama is running locally (no API key needed)
+    if check_ollama_available() {
+        ui::success("Detected Ollama running locally (no API key needed)");
+        return ("ollama", "OLLAMA_API_KEY", "llama3.2");
+    }
     ui::hint("No LLM provider API keys found");
     ui::hint("Groq offers a free tier: https://console.groq.com");
+    ui::hint("Or install Ollama for local models: https://ollama.com");
     ("groq", "GROQ_API_KEY", "llama-3.3-70b-versatile")
 }
 
@@ -1227,10 +1414,19 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
         (
             "openrouter",
             "OPENROUTER_API_KEY",
-            "openrouter/auto",
+            "openrouter/google/gemini-2.5-flash",
             "OpenRouter",
         ),
     ]
+}
+
+/// Quick probe to check if Ollama is running on localhost.
+fn check_ollama_available() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], 11434)),
+        std::time::Duration::from_millis(500),
+    )
+    .is_ok()
 }
 
 /// Write config.toml if it doesn't already exist.
@@ -1269,7 +1465,7 @@ decay_rate = 0.05
     }
 }
 
-fn cmd_start(config: Option<PathBuf>) {
+fn cmd_start(config: Option<PathBuf>, yolo: bool) {
     if let Some(base) = find_daemon() {
         ui::error_with_fix(
             &format!("Daemon already running at {base}"),
@@ -1285,7 +1481,12 @@ fn cmd_start(config: Option<PathBuf>) {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let kernel = match OpenFangKernel::boot(config.as_deref()) {
+        let mut kernel_config = openfang_kernel::config::load_config(config.as_deref());
+        if yolo {
+            kernel_config.approval.auto_approve = true;
+            kernel_config.approval.apply_shorthands();
+        }
+        let kernel = match OpenFangKernel::boot_with_config(kernel_config) {
             Ok(k) => k,
             Err(e) => {
                 boot_kernel_error(&e);
@@ -1333,6 +1534,33 @@ fn cmd_start(config: Option<PathBuf>) {
     });
 }
 
+/// Read the api_key from ~/.openfang/config.toml (if any).
+///
+/// Returns `None` when the key is missing, empty, or whitespace-only —
+/// meaning the daemon is running in public (unauthenticated) mode.
+fn read_api_key() -> Option<String> {
+    // 1. Config file takes precedence
+    let config_path = cli_openfang_home().join("config.toml");
+    if let Ok(text) = std::fs::read_to_string(config_path) {
+        if let Ok(table) = text.parse::<toml::Value>() {
+            if let Some(key) = table.get("api_key").and_then(|v| v.as_str()) {
+                let key = key.trim();
+                if !key.is_empty() {
+                    return Some(key.to_string());
+                }
+            }
+        }
+    }
+    // 2. Fall back to OPENFANG_API_KEY env var
+    if let Ok(key) = std::env::var("OPENFANG_API_KEY") {
+        let key = key.trim().to_string();
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+    None
+}
+
 fn cmd_stop() {
     match find_daemon() {
         Some(base) => {
@@ -1348,8 +1576,8 @@ fn cmd_stop() {
                         }
                     }
                     // Still alive — force kill via PID
-                    if let Some(home) = dirs::home_dir() {
-                        let of_dir = home.join(".openfang");
+                    {
+                        let of_dir = cli_openfang_home();
                         if let Some(info) = read_daemon_info(&of_dir) {
                             force_kill_pid(info.pid);
                             let _ = std::fs::remove_file(of_dir.join("daemon.json"));
@@ -1584,6 +1812,38 @@ fn cmd_agent_kill(config: Option<PathBuf>, agent_id_str: &str) {
     }
 }
 
+fn cmd_agent_set(agent_id_str: &str, field: &str, value: &str) {
+    match field {
+        "model" => {
+            if let Some(base) = find_daemon() {
+                let client = daemon_client();
+                let body = daemon_json(
+                    client
+                        .put(format!("{base}/api/agents/{agent_id_str}/model"))
+                        .json(&serde_json::json!({"model": value}))
+                        .send(),
+                );
+                if body.get("status").is_some() {
+                    println!("Agent {agent_id_str} model set to {value}.");
+                } else {
+                    eprintln!(
+                        "Failed to set model: {}",
+                        body["error"].as_str().unwrap_or("Unknown error")
+                    );
+                    std::process::exit(1);
+                }
+            } else {
+                eprintln!("No running daemon found. Start one with: openfang start");
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            eprintln!("Unknown field: {field}. Supported fields: model");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn cmd_agent_new(config: Option<PathBuf>, template_name: Option<String>) {
     let all_templates = templates::load_all_templates();
     if all_templates.is_empty() {
@@ -1792,8 +2052,8 @@ fn cmd_doctor(json: bool, repair: bool) {
     }
 
     let home = dirs::home_dir();
-    if let Some(h) = &home {
-        let openfang_dir = h.join(".openfang");
+    if let Some(_h) = &home {
+        let openfang_dir = cli_openfang_home();
 
         // --- Check 1: OpenFang directory ---
         if openfang_dir.exists() {
@@ -1911,20 +2171,23 @@ fn cmd_doctor(json: bool, repair: bool) {
             }
             let answer = prompt_input("    Create default config? [Y/n] ");
             if answer.is_empty() || answer.starts_with('y') || answer.starts_with('Y') {
-                let default_config = r#"# OpenFang Agent OS configuration
+                let (provider, api_key_env, model) = detect_best_provider();
+                let default_config = format!(
+                    r#"# OpenFang Agent OS configuration
 # See https://github.com/RightNow-AI/openfang for documentation
 
 # For Docker, change to "0.0.0.0:4200" or set OPENFANG_LISTEN env var.
 api_listen = "127.0.0.1:4200"
 
 [default_model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
-api_key_env = "GROQ_API_KEY"
+provider = "{provider}"
+model = "{model}"
+api_key_env = "{api_key_env}"
 
 [memory]
 decay_rate = 0.05
-"#;
+"#
+                );
                 let _ = std::fs::create_dir_all(&openfang_dir);
                 if std::fs::write(&config_path, default_config).is_ok() {
                     restrict_file_permissions(&config_path);
@@ -1950,7 +2213,20 @@ decay_rate = 0.05
             all_ok = false;
         }
 
-        // --- Check 4: Port 4200 availability ---
+        // --- Check 4: Port availability ---
+        // Read api_listen from config (default: 127.0.0.1:4200)
+        let api_listen = {
+            let cfg_path = openfang_dir.join("config.toml");
+            if cfg_path.exists() {
+                std::fs::read_to_string(&cfg_path)
+                    .ok()
+                    .and_then(|s| toml::from_str::<openfang_types::config::KernelConfig>(&s).ok())
+                    .map(|c| c.api_listen)
+                    .unwrap_or_else(|| "127.0.0.1:4200".to_string())
+            } else {
+                "127.0.0.1:4200".to_string()
+            }
+        };
         if !json {
             println!();
         }
@@ -1966,19 +2242,26 @@ decay_rate = 0.05
             }
             checks.push(serde_json::json!({"check": "daemon", "status": "warn"}));
 
-            // Check if port 4200 is available
-            match std::net::TcpListener::bind("127.0.0.1:4200") {
+            // Check if the configured port is available
+            let bind_addr = if api_listen.starts_with("0.0.0.0") {
+                api_listen.replacen("0.0.0.0", "127.0.0.1", 1)
+            } else {
+                api_listen.clone()
+            };
+            match std::net::TcpListener::bind(&bind_addr) {
                 Ok(_) => {
                     if !json {
-                        ui::check_ok("Port 4200 is available");
+                        ui::check_ok(&format!("Port {api_listen} is available"));
                     }
-                    checks.push(serde_json::json!({"check": "port_4200", "status": "ok"}));
+                    checks.push(
+                        serde_json::json!({"check": "port", "status": "ok", "address": api_listen}),
+                    );
                 }
                 Err(_) => {
                     if !json {
-                        ui::check_warn("Port 4200 is in use by another process");
+                        ui::check_warn(&format!("Port {api_listen} is in use by another process"));
                     }
-                    checks.push(serde_json::json!({"check": "port_4200", "status": "warn"}));
+                    checks.push(serde_json::json!({"check": "port", "status": "warn", "address": api_listen}));
                 }
             }
         }
@@ -2198,8 +2481,8 @@ decay_rate = 0.05
     }
 
     // --- Check 11: .env keys vs config api_key_env consistency ---
-    if let Some(ref h) = home {
-        let openfang_dir = h.join(".openfang");
+    {
+        let openfang_dir = cli_openfang_home();
         let config_path = openfang_dir.join("config.toml");
         if config_path.exists() {
             let config_str = std::fs::read_to_string(&config_path).unwrap_or_default();
@@ -2224,8 +2507,8 @@ decay_rate = 0.05
     }
 
     // --- Check 12: Config deserialization into KernelConfig ---
-    if let Some(ref h) = home {
-        let openfang_dir = h.join(".openfang");
+    {
+        let openfang_dir = cli_openfang_home();
         let config_path = openfang_dir.join("config.toml");
         if config_path.exists() {
             if !json {
@@ -2329,10 +2612,7 @@ decay_rate = 0.05
         if !json {
             println!("\n  Skills:");
         }
-        let skills_dir = home
-            .as_ref()
-            .map(|h| h.join(".openfang").join("skills"))
-            .unwrap_or_else(|| std::path::PathBuf::from("skills"));
+        let skills_dir = cli_openfang_home().join("skills");
         let mut skill_reg = openfang_skills::registry::SkillRegistry::new(skills_dir.clone());
         skill_reg.load_bundled();
         let bundled_count = skill_reg.count();
@@ -2366,12 +2646,20 @@ decay_rate = 0.05
         }
 
         // Check for prompt injection issues in skill definitions
+        // Only flag Critical-severity warnings (Warning-level hits are expected
+        // in bundled skills that mention shell commands in educational context).
         let skills = skill_reg.list();
         let mut injection_warnings = 0;
         for skill in &skills {
             if let Some(ref prompt) = skill.manifest.prompt_context {
                 let warnings = openfang_skills::verify::SkillVerifier::scan_prompt_content(prompt);
-                if !warnings.is_empty() {
+                let has_critical = warnings.iter().any(|w| {
+                    matches!(
+                        w.severity,
+                        openfang_skills::verify::WarningSeverity::Critical
+                    )
+                });
+                if has_critical {
                     injection_warnings += 1;
                     if !json {
                         ui::check_warn(&format!(
@@ -2393,11 +2681,11 @@ decay_rate = 0.05
     }
 
     // --- Check 14: Extension registry health ---
-    if let Some(ref h) = home {
+    {
         if !json {
             println!("\n  Extensions:");
         }
-        let openfang_dir = h.join(".openfang");
+        let openfang_dir = cli_openfang_home();
         let mut ext_registry =
             openfang_extensions::registry::IntegrationRegistry::new(&openfang_dir);
         ext_registry.load_bundled();
@@ -2438,7 +2726,7 @@ decay_rate = 0.05
                         checks.push(serde_json::json!({"check": "daemon_uptime", "status": "ok", "secs": uptime}));
                     }
                     if let Some(db_status) = body.get("database").and_then(|v| v.as_str()) {
-                        if db_status == "ok" {
+                        if db_status == "connected" || db_status == "ok" {
                             if !json {
                                 ui::check_ok("Database connectivity: OK");
                             }
@@ -2512,12 +2800,18 @@ decay_rate = 0.05
         match client.get(format!("{base}/api/integrations/health")).send() {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(body) = resp.json::<serde_json::Value>() {
-                    if let Some(obj) = body.as_object() {
-                        let healthy = obj
-                            .values()
-                            .filter(|v| v.get("healthy").and_then(|h| h.as_bool()).unwrap_or(false))
+                    let entries = body.get("health").and_then(|h| h.as_array());
+                    if let Some(arr) = entries {
+                        let healthy = arr
+                            .iter()
+                            .filter(|v| {
+                                v.get("status")
+                                    .and_then(|s| s.as_str())
+                                    .map(|s| s.eq_ignore_ascii_case("ready"))
+                                    .unwrap_or(false)
+                            })
                             .count();
-                        let total = obj.len();
+                        let total = arr.len();
                         if healthy == total {
                             if !json {
                                 ui::check_ok(&format!(
@@ -2760,10 +3054,31 @@ pub(crate) fn open_in_browser(url: &str) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .is_ok()
+        // Try multiple openers in order. xdg-open is the standard, but it
+        // (or the browser it launches) can fail with EPERM in sandboxed
+        // environments (containers, Snap, Flatpak, user-namespace
+        // restrictions). Fall through to alternatives if any opener fails.
+        let openers = [
+            "xdg-open",
+            "sensible-browser",
+            "x-www-browser",
+            "firefox",
+            "google-chrome",
+            "chromium",
+            "chromium-browser",
+        ];
+        for opener in &openers {
+            let result = std::process::Command::new(opener)
+                .arg(url)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            if result.is_ok() {
+                return true;
+            }
+        }
+        false
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
@@ -2862,6 +3177,104 @@ fn cmd_workflow_run(workflow_id: &str, input: &str) {
     } else {
         eprintln!(
             "Workflow failed: {}",
+            body["error"].as_str().unwrap_or("Unknown error")
+        );
+        std::process::exit(1);
+    }
+}
+
+fn cmd_workflow_get(workflow_id: &str) {
+    let base = require_daemon("workflow get");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .get(format!("{base}/api/workflows/{workflow_id}"))
+            .send(),
+    );
+
+    if body.get("error").is_some() {
+        eprintln!(
+            "Workflow not found: {}",
+            body["error"].as_str().unwrap_or("Unknown error")
+        );
+        std::process::exit(1);
+    }
+
+    println!("Workflow: {}", body["name"].as_str().unwrap_or("?"));
+    println!("  ID:          {}", body["id"].as_str().unwrap_or("?"));
+    println!(
+        "  Description: {}",
+        body["description"].as_str().unwrap_or("")
+    );
+    println!(
+        "  Created:     {}",
+        body["created_at"].as_str().unwrap_or("?")
+    );
+
+    if let Some(steps) = body["steps"].as_array() {
+        println!("  Steps ({}):", steps.len());
+        for (i, s) in steps.iter().enumerate() {
+            let name = s["name"].as_str().unwrap_or("step");
+            let agent = s["agent"]
+                .get("name")
+                .or_else(|| s["agent"].get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            println!("    #{}: {} -> {}", i + 1, name, agent);
+        }
+    }
+}
+
+fn cmd_workflow_update(workflow_id: &str, file: PathBuf) {
+    let base = require_daemon("workflow update");
+    if !file.exists() {
+        eprintln!("Workflow file not found: {}", file.display());
+        std::process::exit(1);
+    }
+    let contents = std::fs::read_to_string(&file).unwrap_or_else(|e| {
+        eprintln!("Error reading workflow file: {e}");
+        std::process::exit(1);
+    });
+    let json_body: serde_json::Value = serde_json::from_str(&contents).unwrap_or_else(|e| {
+        eprintln!("Invalid JSON: {e}");
+        std::process::exit(1);
+    });
+
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .put(format!("{base}/api/workflows/{workflow_id}"))
+            .json(&json_body)
+            .send(),
+    );
+
+    if body["status"].as_str() == Some("updated") {
+        println!("Workflow updated successfully!");
+        println!("  ID: {}", body["workflow_id"].as_str().unwrap_or("?"));
+    } else {
+        eprintln!(
+            "Failed to update workflow: {}",
+            body["error"].as_str().unwrap_or("Unknown error")
+        );
+        std::process::exit(1);
+    }
+}
+
+fn cmd_workflow_delete(workflow_id: &str) {
+    let base = require_daemon("workflow delete");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .delete(format!("{base}/api/workflows/{workflow_id}"))
+            .send(),
+    );
+
+    if body["status"].as_str() == Some("removed") {
+        println!("Workflow deleted successfully!");
+        println!("  ID: {}", body["workflow_id"].as_str().unwrap_or("?"));
+    } else {
+        eprintln!(
+            "Failed to delete workflow: {}",
             body["error"].as_str().unwrap_or("Unknown error")
         );
         std::process::exit(1);
@@ -3008,12 +3421,7 @@ fn cmd_migrate(args: MigrateArgs) {
         }
     });
 
-    let target_dir = dirs::home_dir()
-        .unwrap_or_else(|| {
-            eprintln!("Error: Could not determine home directory");
-            std::process::exit(1);
-        })
-        .join(".openfang");
+    let target_dir = cli_openfang_home();
 
     println!("Migrating from {} ({})...", source, source_dir.display());
     if args.dry_run {
@@ -3701,6 +4109,294 @@ fn cmd_channel_toggle(channel: &str, enable: bool) {
 }
 
 // ---------------------------------------------------------------------------
+// Hand commands
+// ---------------------------------------------------------------------------
+
+fn cmd_hand_install(path: &str) {
+    let base = require_daemon("hand install");
+    let dir = std::path::Path::new(path);
+    let toml_path = dir.join("HAND.toml");
+    let skill_path = dir.join("SKILL.md");
+
+    if !toml_path.exists() {
+        eprintln!(
+            "Error: No HAND.toml found in {}",
+            dir.canonicalize()
+                .unwrap_or_else(|_| dir.to_path_buf())
+                .display()
+        );
+        std::process::exit(1);
+    }
+
+    let toml_content = std::fs::read_to_string(&toml_path).unwrap_or_else(|e| {
+        eprintln!("Error reading {}: {e}", toml_path.display());
+        std::process::exit(1);
+    });
+    let skill_content = std::fs::read_to_string(&skill_path).unwrap_or_default();
+
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/install"))
+            .json(&serde_json::json!({
+                "toml_content": toml_content,
+                "skill_content": skill_content,
+            }))
+            .send(),
+    );
+
+    if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
+        eprintln!("Error: {err}");
+        std::process::exit(1);
+    }
+
+    println!(
+        "Installed hand: {} ({})",
+        body["name"].as_str().unwrap_or("?"),
+        body["id"].as_str().unwrap_or("?"),
+    );
+    println!(
+        "Use `openfang hand activate {}` to start it.",
+        body["id"].as_str().unwrap_or("?")
+    );
+}
+
+fn cmd_hand_list() {
+    let base = require_daemon("hand list");
+    let client = daemon_client();
+    let body = daemon_json(client.get(format!("{base}/api/hands")).send());
+    // API returns {"hands": [...]} or a bare array
+    let arr_val;
+    if let Some(arr) = body.get("hands").and_then(|v| v.as_array()) {
+        arr_val = arr.clone();
+    } else if let Some(arr) = body.as_array() {
+        arr_val = arr.clone();
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&body).unwrap_or_default()
+        );
+        return;
+    }
+    if let Some(arr) = Some(&arr_val) {
+        if arr.is_empty() {
+            println!("No hands available.");
+            return;
+        }
+        println!("{:<14} {:<20} {:<10} DESCRIPTION", "ID", "NAME", "CATEGORY");
+        println!("{}", "-".repeat(72));
+        for h in arr {
+            println!(
+                "{:<14} {:<20} {:<10} {}",
+                h["id"].as_str().unwrap_or("?"),
+                h["name"].as_str().unwrap_or("?"),
+                h["category"].as_str().unwrap_or("?"),
+                h["description"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(40)
+                    .collect::<String>(),
+            );
+        }
+        println!("\nUse `openfang hand activate <id>` to activate a hand.");
+    }
+}
+
+fn cmd_hand_active() {
+    let base = require_daemon("hand active");
+    let client = daemon_client();
+    let body = daemon_json(client.get(format!("{base}/api/hands/active")).send());
+    // API returns {"instances": [...]} or bare array
+    let arr = body
+        .get("instances")
+        .and_then(|v| v.as_array())
+        .or_else(|| body.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if arr.is_empty() {
+        println!("No active hands.");
+        return;
+    }
+    println!("{:<38} {:<14} {:<10} AGENT", "INSTANCE", "HAND", "STATUS");
+    println!("{}", "-".repeat(72));
+    for i in &arr {
+        println!(
+            "{:<38} {:<14} {:<10} {}",
+            i["instance_id"].as_str().unwrap_or("?"),
+            i["hand_id"].as_str().unwrap_or("?"),
+            i["status"].as_str().unwrap_or("?"),
+            i["agent_name"].as_str().unwrap_or("?"),
+        );
+    }
+}
+
+fn cmd_hand_activate(id: &str) {
+    let base = require_daemon("hand activate");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/{id}/activate"))
+            .header("content-type", "application/json")
+            .body("{}")
+            .send(),
+    );
+    if body.get("instance_id").is_some() {
+        println!(
+            "Hand '{}' activated (instance: {}, agent: {})",
+            id,
+            body["instance_id"].as_str().unwrap_or("?"),
+            body["agent_name"].as_str().unwrap_or("?"),
+        );
+    } else {
+        eprintln!(
+            "Failed to activate hand '{}': {}",
+            id,
+            body["error"].as_str().unwrap_or("Unknown error")
+        );
+        std::process::exit(1);
+    }
+}
+
+fn cmd_hand_deactivate(id: &str) {
+    let base = require_daemon("hand deactivate");
+    let client = daemon_client();
+    // First find the instance ID for this hand
+    let active = daemon_json(client.get(format!("{base}/api/hands/active")).send());
+    let arr = active
+        .get("instances")
+        .and_then(|v| v.as_array())
+        .or_else(|| active.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let instance_id = arr.iter().find_map(|i| {
+        if i["hand_id"].as_str() == Some(id) {
+            i["instance_id"].as_str().map(|s| s.to_string())
+        } else {
+            None
+        }
+    });
+
+    match instance_id {
+        Some(iid) => {
+            let body = daemon_json(
+                client
+                    .delete(format!("{base}/api/hands/instances/{iid}"))
+                    .send(),
+            );
+            if body.get("status").is_some() {
+                println!("Hand '{id}' deactivated.");
+            } else {
+                eprintln!(
+                    "Failed: {}",
+                    body["error"].as_str().unwrap_or("Unknown error")
+                );
+                std::process::exit(1);
+            }
+        }
+        None => {
+            eprintln!("No active instance found for hand '{id}'.");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_hand_info(id: &str) {
+    let base = require_daemon("hand info");
+    let client = daemon_client();
+    let body = daemon_json(client.get(format!("{base}/api/hands/{id}")).send());
+    if body.get("error").is_some() {
+        eprintln!("Hand not found: {}", body["error"].as_str().unwrap_or(id));
+        std::process::exit(1);
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&body).unwrap_or_default()
+    );
+}
+
+fn cmd_hand_check_deps(id: &str) {
+    let base = require_daemon("hand check-deps");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/{id}/check-deps"))
+            .send(),
+    );
+    if body.get("error").is_some() {
+        ui::error(&format!(
+            "Failed: {}",
+            body["error"].as_str().unwrap_or("?")
+        ));
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&body).unwrap_or_default()
+        );
+    }
+}
+
+fn cmd_hand_install_deps(id: &str) {
+    let base = require_daemon("hand install-deps");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/{id}/install-deps"))
+            .send(),
+    );
+    if body.get("error").is_some() {
+        ui::error(&format!(
+            "Failed: {}",
+            body["error"].as_str().unwrap_or("?")
+        ));
+    } else {
+        ui::success(&format!("Dependencies installed for hand '{id}'."));
+        if let Some(results) = body.get("results") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(results).unwrap_or_default()
+            );
+        }
+    }
+}
+
+fn cmd_hand_pause(id: &str) {
+    let base = require_daemon("hand pause");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/instances/{id}/pause"))
+            .send(),
+    );
+    if body.get("error").is_some() {
+        ui::error(&format!(
+            "Failed: {}",
+            body["error"].as_str().unwrap_or("?")
+        ));
+    } else {
+        ui::success(&format!("Hand instance '{id}' paused."));
+    }
+}
+
+fn cmd_hand_resume(id: &str) {
+    let base = require_daemon("hand resume");
+    let client = daemon_client();
+    let body = daemon_json(
+        client
+            .post(format!("{base}/api/hands/instances/{id}/resume"))
+            .send(),
+    );
+    if body.get("error").is_some() {
+        ui::error(&format!(
+            "Failed: {}",
+            body["error"].as_str().unwrap_or("?")
+        ));
+    } else {
+        ui::success(&format!("Hand instance '{id}' resumed."));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Provider / API key helpers
 // ---------------------------------------------------------------------------
 
@@ -3968,6 +4664,31 @@ fn cmd_config_set(key: &str, value: &str) {
     }
 
     let last_key = parts[parts.len() - 1];
+
+    // Validate: single-part keys must be known scalar fields, not sections.
+    // Writing a section name as a scalar silently breaks config deserialization.
+    if parts.len() == 1 {
+        let known_scalars = [
+            "home_dir",
+            "data_dir",
+            "log_level",
+            "api_listen",
+            "network_enabled",
+            "api_key",
+            "language",
+            "max_cron_jobs",
+            "usage_footer",
+            "workspaces_dir",
+        ];
+        if !known_scalars.contains(&last_key) {
+            ui::error_with_fix(
+                &format!("'{last_key}' is a section, not a scalar"),
+                &format!("Use dotted notation: {last_key}.field_name"),
+            );
+            std::process::exit(1);
+        }
+    }
+
     let tbl = current.as_table_mut().unwrap_or_else(|| {
         ui::error(&format!("Parent of '{key}' is not a table"));
         std::process::exit(1);
@@ -3977,8 +4698,9 @@ fn cmd_config_set(key: &str, value: &str) {
     let new_value = if let Some(existing) = tbl.get(last_key) {
         match existing {
             toml::Value::Integer(_) => value
-                .parse::<i64>()
-                .map(toml::Value::Integer)
+                .parse::<u64>()
+                .map(|v| toml::Value::Integer(v as i64))
+                .or_else(|_| value.parse::<i64>().map(toml::Value::Integer))
                 .unwrap_or_else(|_| toml::Value::String(value.to_string())),
             toml::Value::Float(_) => value
                 .parse::<f64>()
@@ -3991,7 +4713,18 @@ fn cmd_config_set(key: &str, value: &str) {
             _ => toml::Value::String(value.to_string()),
         }
     } else {
-        toml::Value::String(value.to_string())
+        // No existing value — infer type from the string content
+        if let Ok(b) = value.parse::<bool>() {
+            toml::Value::Boolean(b)
+        } else if let Ok(i) = value.parse::<u64>() {
+            toml::Value::Integer(i as i64)
+        } else if let Ok(i) = value.parse::<i64>() {
+            toml::Value::Integer(i)
+        } else if let Ok(f) = value.parse::<f64>() {
+            toml::Value::Float(f)
+        } else {
+            toml::Value::String(value.to_string())
+        }
     };
 
     tbl.insert(last_key.to_string(), new_value);
@@ -4001,6 +4734,8 @@ fn cmd_config_set(key: &str, value: &str) {
         ui::error(&format!("Failed to serialize config: {e}"));
         std::process::exit(1);
     });
+
+    let _ = std::fs::copy(&config_path, config_path.with_extension("toml.bak"));
 
     std::fs::write(&config_path, &serialized).unwrap_or_else(|e| {
         ui::error(&format!("Failed to write config: {e}"));
@@ -4068,6 +4803,8 @@ fn cmd_config_unset(key: &str) {
         std::process::exit(1);
     });
 
+    let _ = std::fs::copy(&config_path, config_path.with_extension("toml.bak"));
+
     std::fs::write(&config_path, &serialized).unwrap_or_else(|e| {
         ui::error(&format!("Failed to write config: {e}"));
         std::process::exit(1);
@@ -4086,6 +4823,10 @@ fn cmd_config_set_key(provider: &str) {
         return;
     }
 
+    // Try vault first (best-effort)
+    save_credential_prefer_vault(&env_var, &key);
+
+    // Always save to dotenv as fallback
     match dotenv::save_env_key(&env_var, &key) {
         Ok(()) => {
             ui::success(&format!("Saved {env_var} to ~/.openfang/.env"));
@@ -4107,6 +4848,18 @@ fn cmd_config_set_key(provider: &str) {
 
 fn cmd_config_delete_key(provider: &str) {
     let env_var = provider_to_env_var(provider);
+
+    // Remove from vault (best-effort)
+    {
+        let home = openfang_home();
+        let vault_path = home.join("vault.enc");
+        if vault_path.exists() {
+            let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path);
+            if vault.unlock().is_ok() {
+                let _ = vault.remove(&env_var);
+            }
+        }
+    }
 
     match dotenv::remove_env_key(&env_var) {
         Ok(()) => ui::success(&format!("Removed {env_var} from ~/.openfang/.env")),
@@ -4137,6 +4890,26 @@ fn cmd_config_test_key(provider: &str) {
     }
 }
 
+/// Try to store a credential in the vault first; silently falls through if vault
+/// is not initialized or cannot be unlocked. The caller should always also
+/// write to dotenv as a fallback.
+fn save_credential_prefer_vault(env_var: &str, value: &str) {
+    use zeroize::Zeroizing;
+
+    let home = openfang_home();
+    let vault_path = home.join("vault.enc");
+    if !vault_path.exists() {
+        return;
+    }
+    let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path);
+    if vault.unlock().is_err() {
+        return;
+    }
+    if let Ok(()) = vault.set(env_var.to_string(), Zeroizing::new(value.to_string())) {
+        println!("  {}", "Also stored in encrypted vault".dimmed());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Quick chat (OpenClaw alias)
 // ---------------------------------------------------------------------------
@@ -4150,6 +4923,9 @@ fn cmd_quick_chat(config: Option<PathBuf>, agent: Option<String>) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn openfang_home() -> PathBuf {
+    if let Ok(home) = std::env::var("OPENFANG_HOME") {
+        return PathBuf::from(home);
+    }
     dirs::home_dir()
         .unwrap_or_else(|| {
             eprintln!("Error: Could not determine home directory");
@@ -4872,16 +5648,48 @@ fn cmd_cron_list(json: bool) {
     }
 }
 
-fn cmd_cron_create(agent: &str, spec: &str, prompt: &str) {
+fn cmd_cron_create(agent: &str, spec: &str, prompt: &str, explicit_name: Option<&str>) {
     let base = require_daemon("cron create");
     let client = daemon_client();
+
+    // Use explicit name if provided, otherwise derive from agent + prompt
+    let name = if let Some(n) = explicit_name {
+        n.to_string()
+    } else {
+        let short_prompt: String = prompt
+            .split_whitespace()
+            .take(4)
+            .collect::<Vec<_>>()
+            .join("-")
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+            .take(64)
+            .collect();
+        format!(
+            "{}-{}",
+            agent,
+            if short_prompt.is_empty() {
+                "job"
+            } else {
+                &short_prompt
+            }
+        )
+    };
+
     let body = daemon_json(
         client
             .post(format!("{base}/api/cron/jobs"))
             .json(&serde_json::json!({
                 "agent_id": agent,
-                "cron_expr": spec,
-                "prompt": prompt,
+                "name": name,
+                "schedule": {
+                    "kind": "cron",
+                    "expr": spec
+                },
+                "action": {
+                    "kind": "agent_turn",
+                    "message": prompt
+                }
             }))
             .send(),
     );
@@ -4968,9 +5776,7 @@ fn cmd_sessions(agent: Option<&str>, json: bool) {
 }
 
 fn cmd_logs(lines: usize, follow: bool) {
-    let log_path = dirs::home_dir()
-        .map(|h| h.join(".openfang").join("tui.log"))
-        .unwrap_or_else(|| PathBuf::from("tui.log"));
+    let log_path = cli_openfang_home().join("tui.log");
 
     if !log_path.exists() {
         ui::error_with_fix(
@@ -5500,13 +6306,7 @@ fn cmd_system_version(json: bool) {
 }
 
 fn cmd_reset(confirm: bool) {
-    let openfang_dir = match dirs::home_dir() {
-        Some(h) => h.join(".openfang"),
-        None => {
-            ui::error("Could not determine home directory");
-            std::process::exit(1);
-        }
-    };
+    let openfang_dir = cli_openfang_home();
 
     if !openfang_dir.exists() {
         println!(
@@ -5533,6 +6333,353 @@ fn cmd_reset(confirm: bool) {
             ui::error(&format!("Failed to remove {}: {e}", openfang_dir.display()));
             std::process::exit(1);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Uninstall
+// ---------------------------------------------------------------------------
+
+fn cmd_uninstall(confirm: bool, keep_config: bool) {
+    let openfang_dir = cli_openfang_home();
+    let exe_path = std::env::current_exe().ok();
+
+    // Step 1: Show what will be removed
+    println!();
+    println!(
+        "  {}",
+        "This will completely uninstall OpenFang from your system."
+            .bold()
+            .red()
+    );
+    println!();
+    if openfang_dir.exists() {
+        if keep_config {
+            println!(
+                "  • Remove data in {} (keeping config files)",
+                openfang_dir.display()
+            );
+        } else {
+            println!("  • Remove {}", openfang_dir.display());
+        }
+    }
+    if let Some(ref exe) = exe_path {
+        println!("  • Remove binary: {}", exe.display());
+    }
+    // Check cargo bin path
+    let cargo_bin = dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".cargo")
+        .join("bin")
+        .join(if cfg!(windows) {
+            "openfang.exe"
+        } else {
+            "openfang"
+        });
+    if cargo_bin.exists() && exe_path.as_ref().is_none_or(|e| *e != cargo_bin) {
+        println!("  • Remove cargo binary: {}", cargo_bin.display());
+    }
+    println!("  • Remove auto-start entries (if any)");
+    println!("  • Clean PATH from shell configs (if any)");
+    println!();
+
+    // Step 2: Confirm
+    if !confirm {
+        let answer = prompt_input("  Type 'uninstall' to confirm: ");
+        if answer.trim() != "uninstall" {
+            println!("  Cancelled.");
+            return;
+        }
+        println!();
+    }
+
+    // Step 3: Stop running daemon
+    if find_daemon().is_some() {
+        println!("  Stopping running daemon...");
+        cmd_stop();
+        // Give it a moment
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // Force kill if still alive
+        if find_daemon().is_some() {
+            if let Some(info) = read_daemon_info(&openfang_dir) {
+                force_kill_pid(info.pid);
+                let _ = std::fs::remove_file(openfang_dir.join("daemon.json"));
+            }
+        }
+    }
+
+    // Step 4: Remove auto-start entries
+    let user_home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    remove_autostart_entries(&user_home);
+
+    // Step 5: Clean PATH from shell configs
+    if let Some(ref exe) = exe_path {
+        if let Some(bin_dir) = exe.parent() {
+            clean_path_entries(&user_home, &bin_dir.to_string_lossy());
+        }
+    }
+
+    // Step 6: Remove ~/.openfang/ data
+    if openfang_dir.exists() {
+        if keep_config {
+            remove_dir_except_config(&openfang_dir);
+            ui::success("Removed data (kept config files)");
+        } else {
+            match std::fs::remove_dir_all(&openfang_dir) {
+                Ok(()) => ui::success(&format!("Removed {}", openfang_dir.display())),
+                Err(e) => ui::error(&format!("Failed to remove {}: {e}", openfang_dir.display())),
+            }
+        }
+    }
+
+    // Step 7: Remove cargo bin copy if it exists and is separate from current exe
+    if cargo_bin.exists() && exe_path.as_ref().is_none_or(|e| *e != cargo_bin) {
+        match std::fs::remove_file(&cargo_bin) {
+            Ok(()) => ui::success(&format!("Removed {}", cargo_bin.display())),
+            Err(e) => ui::error(&format!("Failed to remove {}: {e}", cargo_bin.display())),
+        }
+    }
+
+    // Step 8: Remove the binary itself (must be last)
+    if let Some(exe) = exe_path {
+        remove_self_binary(&exe);
+    }
+
+    println!();
+    ui::success("OpenFang has been uninstalled. Goodbye!");
+}
+
+/// Remove auto-start / launch-agent / systemd entries.
+#[allow(unused_variables)]
+fn remove_autostart_entries(home: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        // Windows: remove from HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+        let output = std::process::Command::new("reg")
+            .args([
+                "delete",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "OpenFang",
+                "/f",
+            ])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                ui::success("Removed Windows auto-start registry entry");
+            }
+            _ => {} // Entry didn't exist — that's fine
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let plist = home.join("Library/LaunchAgents/ai.openfang.desktop.plist");
+        if plist.exists() {
+            // Unload first
+            let _ = std::process::Command::new("launchctl")
+                .args(["unload", &plist.to_string_lossy()])
+                .output();
+            match std::fs::remove_file(&plist) {
+                Ok(()) => ui::success("Removed macOS launch agent"),
+                Err(e) => ui::error(&format!("Failed to remove launch agent: {e}")),
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let desktop_file = home.join(".config/autostart/OpenFang.desktop");
+        if desktop_file.exists() {
+            match std::fs::remove_file(&desktop_file) {
+                Ok(()) => ui::success("Removed Linux autostart entry"),
+                Err(e) => ui::error(&format!("Failed to remove autostart entry: {e}")),
+            }
+        }
+
+        // Also check for systemd user service
+        let service_file = home.join(".config/systemd/user/openfang.service");
+        if service_file.exists() {
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "disable", "--now", "openfang.service"])
+                .output();
+            match std::fs::remove_file(&service_file) {
+                Ok(()) => {
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--user", "daemon-reload"])
+                        .output();
+                    ui::success("Removed systemd user service");
+                }
+                Err(e) => ui::error(&format!("Failed to remove systemd service: {e}")),
+            }
+        }
+    }
+}
+
+/// Remove lines from shell config files that add openfang to PATH.
+#[allow(unused_variables)]
+fn clean_path_entries(home: &std::path::Path, openfang_dir: &str) {
+    #[cfg(not(windows))]
+    {
+        let shell_files = [
+            home.join(".bashrc"),
+            home.join(".bash_profile"),
+            home.join(".profile"),
+            home.join(".zshrc"),
+            home.join(".config/fish/config.fish"),
+        ];
+
+        for path in &shell_files {
+            if !path.exists() {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            let filtered: Vec<&str> = content
+                .lines()
+                .filter(|line| !is_openfang_path_line(line, openfang_dir))
+                .collect();
+            if filtered.len() < content.lines().count() {
+                let new_content = filtered.join("\n");
+                // Preserve trailing newline if original had one
+                let new_content = if content.ends_with('\n') {
+                    format!("{new_content}\n")
+                } else {
+                    new_content
+                };
+                if std::fs::write(path, &new_content).is_ok() {
+                    ui::success(&format!("Cleaned PATH from {}", path.display()));
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // Read User PATH via PowerShell, filter out openfang entries, write back
+        let output = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "[Environment]::GetEnvironmentVariable('PATH', 'User')",
+            ])
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                let current = String::from_utf8_lossy(&out.stdout);
+                let current = current.trim();
+                if !current.is_empty() {
+                    let dir_lower = openfang_dir.to_lowercase();
+                    let filtered: Vec<&str> = current
+                        .split(';')
+                        .filter(|entry| {
+                            let e = entry.trim().to_lowercase();
+                            !e.is_empty() && !e.contains("openfang") && !e.contains(&dir_lower)
+                        })
+                        .collect();
+                    if filtered.len() < current.split(';').count() {
+                        let new_path = filtered.join(";");
+                        let ps_cmd = format!(
+                            "[Environment]::SetEnvironmentVariable('PATH', '{}', 'User')",
+                            new_path.replace('\'', "''")
+                        );
+                        let result = std::process::Command::new("powershell")
+                            .args(["-NoProfile", "-Command", &ps_cmd])
+                            .output();
+                        if result.is_ok_and(|o| o.status.success()) {
+                            ui::success("Cleaned PATH from Windows user environment");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Returns true if a shell config line is an openfang PATH export.
+/// Must match BOTH an openfang reference AND a PATH-setting pattern.
+#[cfg(any(not(windows), test))]
+fn is_openfang_path_line(line: &str, openfang_dir: &str) -> bool {
+    let lower = line.to_lowercase();
+    let has_openfang = lower.contains("openfang") || lower.contains(&openfang_dir.to_lowercase());
+    if !has_openfang {
+        return false;
+    }
+    // Match common PATH-setting patterns
+    lower.contains("export path=")
+        || lower.contains("export path =")
+        || lower.starts_with("path=")
+        || lower.contains("set -gx path")
+        || lower.contains("fish_add_path")
+}
+
+/// Remove everything in ~/.openfang/ except config files.
+fn remove_dir_except_config(openfang_dir: &std::path::Path) {
+    let keep = ["config.toml", ".env", "secrets.env"];
+    let Ok(entries) = std::fs::read_dir(openfang_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if keep.contains(&name_str.as_ref()) {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Remove the currently-running binary.
+fn remove_self_binary(exe_path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        // On Unix, running binaries can be unlinked — the OS keeps the inode
+        // alive until the process exits.
+        match std::fs::remove_file(exe_path) {
+            Ok(()) => ui::success(&format!("Removed {}", exe_path.display())),
+            Err(e) => ui::error(&format!(
+                "Failed to remove binary {}: {e}",
+                exe_path.display()
+            )),
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // Windows locks running executables. Rename first, then spawn a
+        // detached process that waits briefly and deletes the renamed file.
+        let old_path = exe_path.with_extension("exe.old");
+        if std::fs::rename(exe_path, &old_path).is_err() {
+            ui::error(&format!(
+                "Could not rename binary for deferred deletion: {}",
+                exe_path.display()
+            ));
+            return;
+        }
+
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+        let del_cmd = format!(
+            "ping -n 3 127.0.0.1 >nul & del /f /q \"{}\"",
+            old_path.display()
+        );
+        let _ = std::process::Command::new("cmd.exe")
+            .args(["/C", &del_cmd])
+            .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+            .spawn();
+
+        ui::success(&format!(
+            "Removed {} (deferred cleanup)",
+            exe_path.display()
+        ));
     }
 }
 
@@ -5659,5 +6806,45 @@ args = ["-y", "@modelcontextprotocol/server-github"]
             HookEvent::AgentLoopEnd,
         ];
         assert_eq!(events.len(), 4);
+    }
+
+    // --- Uninstall command unit tests ---
+
+    #[test]
+    fn test_uninstall_path_line_filter() {
+        use super::is_openfang_path_line;
+        let dir = "/home/user/.openfang/bin";
+
+        // Should match: openfang PATH exports
+        assert!(is_openfang_path_line(
+            r#"export PATH="$HOME/.openfang/bin:$PATH""#,
+            dir
+        ));
+        assert!(is_openfang_path_line(
+            r#"export PATH="/home/user/.openfang/bin:$PATH""#,
+            dir
+        ));
+        assert!(is_openfang_path_line(
+            "set -gx PATH $HOME/.openfang/bin $PATH",
+            dir
+        ));
+        assert!(is_openfang_path_line(
+            "fish_add_path $HOME/.openfang/bin",
+            dir
+        ));
+
+        // Should NOT match: unrelated PATH exports
+        assert!(!is_openfang_path_line(
+            r#"export PATH="$HOME/.cargo/bin:$PATH""#,
+            dir
+        ));
+        assert!(!is_openfang_path_line(
+            r#"export PATH="/usr/local/bin:$PATH""#,
+            dir
+        ));
+
+        // Should NOT match: openfang lines that aren't PATH-related
+        assert!(!is_openfang_path_line("# openfang config", dir));
+        assert!(!is_openfang_path_line("alias of=openfang", dir));
     }
 }

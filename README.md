@@ -19,7 +19,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-0.1.0-green?style=flat-square" alt="v0.1.0" />
+  <img src="https://img.shields.io/badge/version-0.3.30-green?style=flat-square" alt="v0.3.30" />
   <img src="https://img.shields.io/badge/tests-1,767%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
   <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
@@ -27,9 +27,9 @@
 
 ---
 
-> **v0.1.0 — First Release (February 2026)**
+> **v0.3.30 — Security Hardening Release (March 2026)**
 >
-> OpenFang is feature-complete but this is the first public release. You may encounter instability, rough edges, or breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
+> OpenFang is feature-complete but still pre-1.0. You may encounter rough edges or breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
 
 ---
 
@@ -266,6 +266,97 @@ Each adapter supports per-channel model overrides, DM/group policies, rate limit
 
 ---
 
+## WhatsApp Web Gateway (QR Code)
+
+Connect your personal WhatsApp account to OpenFang via QR code — just like WhatsApp Web. No Meta Business account required.
+
+### Prerequisites
+
+- **Node.js >= 18** installed ([download](https://nodejs.org/))
+- OpenFang installed and initialized
+
+### Setup
+
+**1. Install the gateway dependencies:**
+
+```bash
+cd packages/whatsapp-gateway
+npm install
+```
+
+**2. Configure `config.toml`:**
+
+```toml
+[channels.whatsapp]
+mode = "web"
+default_agent = "assistant"
+```
+
+**3. Set the gateway URL (choose one):**
+
+Add to your shell profile for persistence:
+
+```bash
+# macOS / Linux
+echo 'export WHATSAPP_WEB_GATEWAY_URL="http://127.0.0.1:3009"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Or set it inline when starting the gateway:
+
+```bash
+export WHATSAPP_WEB_GATEWAY_URL="http://127.0.0.1:3009"
+```
+
+**4. Start the gateway:**
+
+```bash
+node packages/whatsapp-gateway/index.js
+```
+
+The gateway listens on port `3009` by default. Override with `WHATSAPP_GATEWAY_PORT`.
+
+**5. Start OpenFang:**
+
+```bash
+openfang start
+# Dashboard at http://localhost:4200
+```
+
+**6. Scan the QR code:**
+
+Open the dashboard → **Channels** → **WhatsApp**. A QR code will appear. Scan it with your phone:
+
+> **WhatsApp** → **Settings** → **Linked Devices** → **Link a Device**
+
+Once scanned, the status changes to `connected` and incoming messages are routed to your configured agent.
+
+### Gateway Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `WHATSAPP_WEB_GATEWAY_URL` | Gateway URL for OpenFang to connect to | _(empty = disabled)_ |
+| `WHATSAPP_GATEWAY_PORT` | Port the gateway listens on | `3009` |
+| `OPENFANG_URL` | OpenFang API URL the gateway reports to | `http://127.0.0.1:4200` |
+| `OPENFANG_DEFAULT_AGENT` | Agent that handles incoming messages | `assistant` |
+
+### Gateway API Endpoints
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| `POST` | `/login/start` | Generate QR code (returns base64 PNG) |
+| `GET` | `/login/status` | Connection status (`disconnected`, `qr_ready`, `connected`) |
+| `POST` | `/message/send` | Send a message (`{ "to": "5511999999999", "text": "Hello" }`) |
+| `GET` | `/health` | Health check |
+
+### Alternative: WhatsApp Cloud API
+
+For production workloads, use the [WhatsApp Cloud API](https://developers.facebook.com/docs/whatsapp/cloud-api) with a Meta Business account. See the [Cloud API configuration docs](https://openfang.sh/docs/channels/whatsapp).
+
+
+
+---
+
 ## 27 LLM Providers — 123+ Models
 
 3 native drivers (Anthropic, Gemini, OpenAI-compatible) route to 27 providers:
@@ -371,7 +462,7 @@ cargo fmt --all -- --check
 
 ## Stability Notice
 
-OpenFang v0.1.0 is the first public release. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
+OpenFang v0.3.30 is pre-1.0. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
 
 - **Breaking changes** may occur between minor versions until v1.0
 - **Some Hands** are more mature than others (Browser and Researcher are the most battle-tested)
@@ -379,6 +470,12 @@ OpenFang v0.1.0 is the first public release. The architecture is solid, the test
 - **Pin to a specific commit** for production deployments until v1.0
 
 We ship fast and fix fast. The goal is a rock-solid v1.0 by mid-2026.
+
+---
+
+## Security
+
+To report a security vulnerability, email **jaber@rightnowai.co**. We take all reports seriously and will respond within 48 hours.
 
 ---
 

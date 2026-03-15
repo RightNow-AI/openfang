@@ -64,12 +64,24 @@ pub fn truncate_tool_result_dynamic(content: &str, budget: &ContextBudget) -> St
         return content.to_string();
     }
 
-    // Find last newline before the cap to break cleanly
-    let search_start = cap.saturating_sub(200);
-    let break_point = content[search_start..cap]
+    // Find last newline before the cap to break cleanly (char-boundary safe)
+    let mut safe_cap = cap.min(content.len());
+    while safe_cap > 0 && !content.is_char_boundary(safe_cap) {
+        safe_cap -= 1;
+    }
+    let mut search_start = safe_cap.saturating_sub(200);
+    // Ensure search_start is a valid char boundary
+    while search_start > 0 && !content.is_char_boundary(search_start) {
+        search_start -= 1;
+    }
+    let mut break_point = content[search_start..safe_cap]
         .rfind('\n')
         .map(|pos| search_start + pos)
-        .unwrap_or(cap.saturating_sub(100));
+        .unwrap_or(safe_cap.saturating_sub(100));
+    // Ensure break_point is also a char boundary
+    while break_point > 0 && !content.is_char_boundary(break_point) {
+        break_point -= 1;
+    }
 
     format!(
         "{}\n\n[TRUNCATED: result was {} chars, showing first {} (budget: {}% of {}K context window)]",
@@ -134,7 +146,14 @@ pub fn apply_context_guard(
     let mut compacted = 0;
     for loc in &locations {
         if loc.char_len > single_max {
+            // Bounds check: indices may be stale if messages were modified concurrently
+            if loc.msg_idx >= messages.len() {
+                continue;
+            }
             if let MessageContent::Blocks(blocks) = &mut messages[loc.msg_idx].content {
+                if loc.block_idx >= blocks.len() {
+                    continue;
+                }
                 if let ContentBlock::ToolResult { content, .. } = &mut blocks[loc.block_idx] {
                     let old_len = content.len();
                     *content = truncate_to(content, single_max);
@@ -156,7 +175,13 @@ pub fn apply_context_guard(
         if loc.char_len <= compact_target {
             continue;
         }
+        if loc.msg_idx >= messages.len() {
+            continue;
+        }
         if let MessageContent::Blocks(blocks) = &mut messages[loc.msg_idx].content {
+            if loc.block_idx >= blocks.len() {
+                continue;
+            }
             if let ContentBlock::ToolResult { content, .. } = &mut blocks[loc.block_idx] {
                 if content.len() > compact_target {
                     let old_len = content.len();
@@ -177,11 +202,20 @@ fn truncate_to(content: &str, max_chars: usize) -> String {
     if content.len() <= max_chars {
         return content.to_string();
     }
-    let keep = max_chars.saturating_sub(80);
+    let mut keep = max_chars.saturating_sub(80).min(content.len());
+    // Walk back to a valid char boundary
+    while keep > 0 && !content.is_char_boundary(keep) {
+        keep -= 1;
+    }
+    let mut search_start = keep.saturating_sub(100);
+    // Walk back to a valid char boundary
+    while search_start > 0 && !content.is_char_boundary(search_start) {
+        search_start -= 1;
+    }
     // Try to break at newline
-    let break_point = content[keep.saturating_sub(100)..keep]
+    let break_point = content[search_start..keep]
         .rfind('\n')
-        .map(|pos| keep.saturating_sub(100) + pos)
+        .map(|pos| search_start + pos)
         .unwrap_or(keep);
     format!(
         "{}\n\n[COMPACTED: {} → {} chars by context guard]",
@@ -248,6 +282,7 @@ mod tests {
                 role: openfang_types::message::Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
+                    tool_name: String::new(),
                     content: big_result.clone(),
                     is_error: false,
                 }]),
@@ -256,6 +291,7 @@ mod tests {
                 role: openfang_types::message::Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "t2".to_string(),
+                    tool_name: String::new(),
                     content: big_result,
                     is_error: false,
                 }]),
@@ -271,5 +307,48 @@ mod tests {
                 assert!(content.len() < 500);
             }
         }
+    }
+
+    #[test]
+    fn test_truncate_tool_result_multibyte_chinese() {
+        // Tiny budget: cap = 30% of 100 * 2.0 = 60 bytes
+        let budget = ContextBudget::new(100);
+        // Each Chinese char is 3 bytes in UTF-8; 100 chars = 300 bytes
+        let content: String = "\u{4f60}\u{597d}\u{4e16}\u{754c}".repeat(25);
+        assert_eq!(content.len(), 300);
+        // Must not panic on multi-byte content
+        let result = truncate_tool_result_dynamic(&content, &budget);
+        assert!(result.contains("[TRUNCATED:"));
+        // The visible portion must be valid UTF-8 (implicit: no panic)
+        assert!(result.is_char_boundary(0));
+    }
+
+    #[test]
+    fn test_truncate_to_multibyte_emoji() {
+        // Each emoji is 4 bytes; 200 emojis = 800 bytes
+        let content: String = "\u{1f600}".repeat(200);
+        let result = truncate_to(&content, 100);
+        assert!(result.contains("[COMPACTED:"));
+        // Must not panic and must produce valid UTF-8
+        assert!(result.is_char_boundary(0));
+    }
+
+    #[test]
+    fn test_context_guard_multibyte_tool_results() {
+        let budget = ContextBudget::new(100);
+        // Chinese text: 500 chars * 3 bytes = 1500 bytes
+        let big_chinese: String = "\u{4e2d}\u{6587}\u{6d4b}\u{8bd5}\u{6570}\u{636e}".repeat(83);
+        let mut messages = vec![Message {
+            role: openfang_types::message::Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".to_string(),
+                tool_name: String::new(),
+                content: big_chinese,
+                is_error: false,
+            }]),
+        }];
+        // Must not panic on multi-byte content
+        let compacted = apply_context_guard(&mut messages, &budget, &[]);
+        assert!(compacted > 0);
     }
 }

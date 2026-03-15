@@ -143,6 +143,105 @@ impl TriggerEngine {
         }
     }
 
+    /// Take all triggers for an agent, removing them from the engine.
+    ///
+    /// Returns the extracted triggers so they can be restored under a
+    /// different agent ID via [`restore_triggers`]. This is used during
+    /// hand reactivation: triggers must be saved before `kill_agent`
+    /// destroys them, then restored with the new agent ID after spawn.
+    pub fn take_agent_triggers(&self, agent_id: AgentId) -> Vec<Trigger> {
+        let trigger_ids = self
+            .agent_triggers
+            .remove(&agent_id)
+            .map(|(_, ids)| ids)
+            .unwrap_or_default();
+        let mut taken = Vec::with_capacity(trigger_ids.len());
+        for id in trigger_ids {
+            if let Some((_, t)) = self.triggers.remove(&id) {
+                taken.push(t);
+            }
+        }
+        if !taken.is_empty() {
+            info!(
+                agent = %agent_id,
+                count = taken.len(),
+                "Took triggers for agent (pending reassignment)"
+            );
+        }
+        taken
+    }
+
+    /// Restore previously taken triggers under a new agent ID.
+    ///
+    /// Each trigger keeps its original pattern, prompt template, fire count,
+    /// and max_fires, but is re-keyed to `new_agent_id`. New trigger IDs are
+    /// generated so there are no stale references.
+    ///
+    /// Returns the number of triggers restored.
+    pub fn restore_triggers(&self, new_agent_id: AgentId, triggers: Vec<Trigger>) -> usize {
+        let count = triggers.len();
+        for old in triggers {
+            let new_id = TriggerId::new();
+            let trigger = Trigger {
+                id: new_id,
+                agent_id: new_agent_id,
+                pattern: old.pattern,
+                prompt_template: old.prompt_template,
+                enabled: old.enabled,
+                created_at: old.created_at,
+                fire_count: old.fire_count,
+                max_fires: old.max_fires,
+            };
+            self.triggers.insert(new_id, trigger);
+            self.agent_triggers
+                .entry(new_agent_id)
+                .or_default()
+                .push(new_id);
+        }
+        if count > 0 {
+            info!(
+                agent = %new_agent_id,
+                count,
+                "Restored triggers under new agent"
+            );
+        }
+        count
+    }
+
+    /// Reassign all triggers from one agent to another in place.
+    ///
+    /// Used during cold boot when the old agent ID (from persisted state) no
+    /// longer exists and a new agent was spawned. Updates the `agent_id` field
+    /// on each trigger and moves the index entry.
+    ///
+    /// Returns the number of triggers reassigned.
+    pub fn reassign_agent_triggers(&self, old_agent_id: AgentId, new_agent_id: AgentId) -> usize {
+        let trigger_ids = self
+            .agent_triggers
+            .remove(&old_agent_id)
+            .map(|(_, ids)| ids)
+            .unwrap_or_default();
+        let count = trigger_ids.len();
+        for id in &trigger_ids {
+            if let Some(mut t) = self.triggers.get_mut(id) {
+                t.agent_id = new_agent_id;
+            }
+        }
+        if !trigger_ids.is_empty() {
+            self.agent_triggers
+                .entry(new_agent_id)
+                .or_default()
+                .extend(trigger_ids);
+            info!(
+                old_agent = %old_agent_id,
+                new_agent = %new_agent_id,
+                count,
+                "Reassigned triggers to new agent"
+            );
+        }
+        count
+    }
+
     /// Enable or disable a trigger. Returns true if the trigger was found.
     pub fn set_enabled(&self, trigger_id: TriggerId, enabled: bool) -> bool {
         if let Some(mut t) = self.triggers.get_mut(&trigger_id) {
@@ -278,7 +377,7 @@ fn describe_event(event: &Event) -> String {
                 tr.tool_id,
                 if tr.success { "succeeded" } else { "failed" },
                 tr.execution_time_ms,
-                &tr.content[..tr.content.len().min(200)]
+                openfang_types::truncate_str(&tr.content, 200)
             )
         }
         EventPayload::MemoryUpdate(delta) => {
@@ -507,5 +606,129 @@ mod tests {
             }),
         );
         assert_eq!(engine.evaluate(&event).len(), 1);
+    }
+
+    // -- reassign_agent_triggers (#519) ------------------------------------
+
+    #[test]
+    fn test_reassign_agent_triggers_basic() {
+        let engine = TriggerEngine::new();
+        let old_agent = AgentId::new();
+        let new_agent = AgentId::new();
+        engine.register(old_agent, TriggerPattern::All, "a".to_string(), 0);
+        engine.register(old_agent, TriggerPattern::System, "b".to_string(), 0);
+
+        let count = engine.reassign_agent_triggers(old_agent, new_agent);
+        assert_eq!(count, 2);
+        assert_eq!(engine.list_agent_triggers(old_agent).len(), 0);
+        assert_eq!(engine.list_agent_triggers(new_agent).len(), 2);
+
+        // Verify triggers actually fire for the new agent
+        let event = Event::new(
+            AgentId::new(),
+            EventTarget::Broadcast,
+            EventPayload::System(SystemEvent::HealthCheck {
+                status: "ok".to_string(),
+            }),
+        );
+        let matches = engine.evaluate(&event);
+        assert_eq!(matches.len(), 2);
+        assert!(matches.iter().all(|(id, _)| *id == new_agent));
+    }
+
+    #[test]
+    fn test_reassign_agent_triggers_no_match_returns_zero() {
+        let engine = TriggerEngine::new();
+        let agent_a = AgentId::new();
+        engine.register(agent_a, TriggerPattern::All, "a".to_string(), 0);
+
+        let count = engine.reassign_agent_triggers(AgentId::new(), AgentId::new());
+        assert_eq!(count, 0);
+        // Original triggers untouched
+        assert_eq!(engine.list_agent_triggers(agent_a).len(), 1);
+    }
+
+    #[test]
+    fn test_reassign_does_not_touch_other_agents() {
+        let engine = TriggerEngine::new();
+        let agent_a = AgentId::new();
+        let agent_b = AgentId::new();
+        let agent_c = AgentId::new();
+        engine.register(agent_a, TriggerPattern::All, "a".to_string(), 0);
+        engine.register(agent_b, TriggerPattern::System, "b".to_string(), 0);
+
+        let count = engine.reassign_agent_triggers(agent_a, agent_c);
+        assert_eq!(count, 1);
+        // agent_b untouched
+        assert_eq!(engine.list_agent_triggers(agent_b).len(), 1);
+        assert_eq!(engine.list_agent_triggers(agent_c).len(), 1);
+    }
+
+    // -- take / restore triggers (#519) ------------------------------------
+
+    #[test]
+    fn test_take_and_restore_triggers() {
+        let engine = TriggerEngine::new();
+        let old_agent = AgentId::new();
+        let new_agent = AgentId::new();
+        engine.register(
+            old_agent,
+            TriggerPattern::ContentMatch {
+                substring: "deploy".to_string(),
+            },
+            "Deploy alert: {{event}}".to_string(),
+            5,
+        );
+        engine.register(old_agent, TriggerPattern::Lifecycle, "lc".to_string(), 0);
+
+        // Take triggers — engine should be empty for old agent
+        let taken = engine.take_agent_triggers(old_agent);
+        assert_eq!(taken.len(), 2);
+        assert_eq!(engine.list_agent_triggers(old_agent).len(), 0);
+        assert_eq!(engine.list_all().len(), 0);
+
+        // Restore under new agent
+        let restored = engine.restore_triggers(new_agent, taken);
+        assert_eq!(restored, 2);
+        assert_eq!(engine.list_agent_triggers(new_agent).len(), 2);
+
+        // Verify patterns and max_fires are preserved
+        let triggers = engine.list_agent_triggers(new_agent);
+        let has_content_match = triggers.iter().any(|t| {
+            matches!(&t.pattern, TriggerPattern::ContentMatch { substring } if substring == "deploy")
+                && t.max_fires == 5
+        });
+        assert!(
+            has_content_match,
+            "ContentMatch trigger with max_fires=5 should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_take_empty_returns_empty() {
+        let engine = TriggerEngine::new();
+        let taken = engine.take_agent_triggers(AgentId::new());
+        assert!(taken.is_empty());
+    }
+
+    #[test]
+    fn test_restore_preserves_enabled_state() {
+        let engine = TriggerEngine::new();
+        let old_agent = AgentId::new();
+        let new_agent = AgentId::new();
+        let tid = engine.register(old_agent, TriggerPattern::All, "a".to_string(), 0);
+        engine.set_enabled(tid, false);
+
+        let taken = engine.take_agent_triggers(old_agent);
+        assert_eq!(taken.len(), 1);
+        assert!(!taken[0].enabled);
+
+        engine.restore_triggers(new_agent, taken);
+        let restored = engine.list_agent_triggers(new_agent);
+        assert_eq!(restored.len(), 1);
+        assert!(
+            !restored[0].enabled,
+            "Disabled state should survive take/restore"
+        );
     }
 }

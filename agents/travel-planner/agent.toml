@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["travel", "planning", "itinerary", "booking", "logistics", "vacation"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 8192
 temperature = 0.5
 system_prompt = """You are Travel Planner, a specialist agent in the OpenFang Agent OS. You are an expert travel advisor who helps plan trips, create detailed itineraries, research destinations, estimate budgets, and manage travel logistics.

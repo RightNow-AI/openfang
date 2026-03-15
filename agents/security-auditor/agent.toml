@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["security", "audit", "vulnerability"]
 
 [model]
-provider = "deepseek"
-model = "deepseek-chat"
+provider = "default"
+model = "default"
 api_key_env = "DEEPSEEK_API_KEY"
 max_tokens = 4096
 temperature = 0.2
@@ -37,8 +37,8 @@ Severity levels: CRITICAL / HIGH / MEDIUM / LOW / INFO
 Report format: Finding → Impact → Evidence → Remediation"""
 
 [[fallback_models]]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 api_key_env = "GROQ_API_KEY"
 
 [schedule]

@@ -12,8 +12,8 @@ use openfang_kernel::OpenFangKernel;
 use openfang_runtime::llm_driver::StreamEvent;
 use openfang_types::agent::AgentId;
 use screens::{
-    agents, audit, channels, chat, dashboard, extensions, hands, logs, memory, peers, security,
-    sessions, settings, skills, templates, triggers, usage, welcome, wizard, workflows,
+    agents, audit, channels, chat, comms, dashboard, extensions, hands, logs, memory, peers,
+    security, sessions, settings, skills, templates, triggers, usage, welcome, wizard, workflows,
 };
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
@@ -53,6 +53,7 @@ enum Tab {
     Extensions,
     Templates,
     Peers,
+    Comms,
     Security,
     Audit,
     Usage,
@@ -74,6 +75,7 @@ const TABS: &[Tab] = &[
     Tab::Extensions,
     Tab::Templates,
     Tab::Peers,
+    Tab::Comms,
     Tab::Security,
     Tab::Audit,
     Tab::Usage,
@@ -97,6 +99,7 @@ impl Tab {
             Tab::Extensions => "Extensions",
             Tab::Templates => "Templates",
             Tab::Peers => "Peers",
+            Tab::Comms => "Comms",
             Tab::Security => "Security",
             Tab::Audit => "Audit",
             Tab::Usage => "Usage",
@@ -169,6 +172,7 @@ struct App {
     usage: usage::UsageState,
     settings: settings::SettingsState,
     peers: peers::PeersState,
+    comms: comms::CommsState,
     logs: logs::LogsState,
 
     kernel_booting: bool,
@@ -207,6 +211,7 @@ impl App {
             usage: usage::UsageState::new(),
             settings: settings::SettingsState::new(),
             peers: peers::PeersState::new(),
+            comms: comms::CommsState::new(),
             logs: logs::LogsState::new(),
             kernel_booting: false,
             kernel_boot_error: None,
@@ -503,6 +508,25 @@ impl App {
                     self.peers.list_state.select(Some(0));
                 }
                 self.peers.loading = false;
+            }
+            AppEvent::CommsTopologyLoaded { nodes, edges } => {
+                self.comms.nodes = nodes;
+                self.comms.edges = edges;
+                self.comms.loading = false;
+            }
+            AppEvent::CommsEventsLoaded(events) => {
+                self.comms.events = events;
+                if !self.comms.events.is_empty() && self.comms.event_list_state.selected().is_none()
+                {
+                    self.comms.event_list_state.select(Some(0));
+                }
+            }
+            AppEvent::CommsSendResult(msg) => {
+                self.comms.status_msg = msg;
+                self.refresh_comms();
+            }
+            AppEvent::CommsTaskResult(msg) => {
+                self.comms.status_msg = msg;
             }
             AppEvent::LogsLoaded(entries) => {
                 self.logs.entries = entries;
@@ -845,6 +869,10 @@ impl App {
                     let action = self.peers.handle_key(key);
                     self.handle_peers_action(action);
                 }
+                Tab::Comms => {
+                    let action = self.comms.handle_key(key);
+                    self.handle_comms_action(action);
+                }
                 Tab::Logs => {
                     let action = self.logs.handle_key(key);
                     self.handle_logs_action(action);
@@ -876,6 +904,7 @@ impl App {
         self.usage.tick();
         self.settings.tick();
         self.peers.tick();
+        self.comms.tick();
         self.logs.tick();
 
         // Auto-poll for active tabs
@@ -883,6 +912,7 @@ impl App {
             match self.active_tab {
                 Tab::Logs if self.logs.should_poll() => self.refresh_logs(),
                 Tab::Peers if self.peers.should_poll() => self.refresh_peers(),
+                Tab::Comms if self.comms.should_poll() => self.refresh_comms(),
                 _ => {}
             }
         }
@@ -932,6 +962,7 @@ impl App {
             Tab::Usage => self.refresh_usage(),
             Tab::Settings => self.refresh_settings_providers(),
             Tab::Peers => self.refresh_peers(),
+            Tab::Comms => self.refresh_comms(),
             Tab::Logs => self.refresh_logs(),
             Tab::Chat => {} // Chat doesn't need refresh on enter
         }
@@ -1086,6 +1117,13 @@ impl App {
         if let Some(backend) = self.backend.to_ref() {
             self.peers.loading = true;
             event::spawn_fetch_peers(backend, self.event_tx.clone());
+        }
+    }
+
+    fn refresh_comms(&mut self) {
+        if let Some(backend) = self.backend.to_ref() {
+            self.comms.loading = true;
+            event::spawn_fetch_comms(backend, self.event_tx.clone());
         }
     }
 
@@ -1325,6 +1363,8 @@ impl App {
             }
             chat::ChatAction::SendMessage(msg) => self.send_message(msg),
             chat::ChatAction::SlashCommand(cmd) => self.handle_slash_command(&cmd),
+            chat::ChatAction::OpenModelPicker => self.open_model_picker(),
+            chat::ChatAction::SwitchModel(model_id) => self.switch_model(&model_id),
         }
     }
 
@@ -1660,6 +1700,27 @@ impl App {
         }
     }
 
+    fn handle_comms_action(&mut self, action: comms::CommsAction) {
+        match action {
+            comms::CommsAction::Continue => {}
+            comms::CommsAction::Refresh => self.refresh_comms(),
+            comms::CommsAction::SendMessage { from, to, msg } => {
+                if let Some(backend) = self.backend.to_ref() {
+                    event::spawn_comms_send(backend, from, to, msg, self.event_tx.clone());
+                }
+            }
+            comms::CommsAction::PostTask {
+                title,
+                desc,
+                assign,
+            } => {
+                if let Some(backend) = self.backend.to_ref() {
+                    event::spawn_comms_task(backend, title, desc, assign, self.event_tx.clone());
+                }
+            }
+        }
+    }
+
     fn handle_logs_action(&mut self, action: logs::LogsAction) {
         match action {
             logs::LogsAction::Continue => {}
@@ -1788,6 +1849,150 @@ impl App {
         }
     }
 
+    // ─── Model picker ────────────────────────────────────────────────────────
+
+    fn open_model_picker(&mut self) {
+        let models = match &self.backend {
+            Backend::Daemon { base_url } => {
+                let client = crate::daemon_client();
+                match client.get(format!("{base_url}/api/models")).send() {
+                    Ok(resp) => match resp.json::<serde_json::Value>() {
+                        Ok(body) => body["models"]
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter(|m| m["available"].as_bool().unwrap_or(false))
+                                    .map(|m| chat::ModelEntry {
+                                        id: m["id"].as_str().unwrap_or("").to_string(),
+                                        display_name: m["display_name"]
+                                            .as_str()
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        provider: m["provider"].as_str().unwrap_or("").to_string(),
+                                        tier: m["tier"].as_str().unwrap_or("Balanced").to_string(),
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        Err(_) => Vec::new(),
+                    },
+                    Err(_) => Vec::new(),
+                }
+            }
+            Backend::InProcess { kernel } => {
+                let catalog = kernel.model_catalog.read().unwrap();
+                catalog
+                    .available_models()
+                    .into_iter()
+                    .map(|e| chat::ModelEntry {
+                        id: e.id.clone(),
+                        display_name: e.display_name.clone(),
+                        provider: e.provider.clone(),
+                        tier: format!("{:?}", e.tier),
+                    })
+                    .collect()
+            }
+            Backend::None => Vec::new(),
+        };
+
+        if models.is_empty() {
+            self.chat
+                .push_message(chat::Role::System, "No models available.".to_string());
+            return;
+        }
+
+        self.chat.model_picker_models = models;
+        self.chat.model_picker_filter.clear();
+        self.chat.model_picker_idx = 0;
+        self.chat.show_model_picker = true;
+    }
+
+    fn switch_model(&mut self, model_id: &str) {
+        if self.chat.model_label.ends_with(model_id) {
+            return;
+        }
+
+        match (&self.backend, &self.chat_target) {
+            (Backend::Daemon { base_url }, Some(target)) => {
+                if let Some(ref agent_id) = target.agent_id_daemon {
+                    let client = crate::daemon_client();
+                    let url = format!("{base_url}/api/agents/{agent_id}/model");
+                    match client
+                        .put(&url)
+                        .json(&serde_json::json!({"model": model_id}))
+                        .send()
+                    {
+                        Ok(r) if r.status().is_success() => {
+                            if let Ok(resp) = client
+                                .get(format!("{base_url}/api/agents/{agent_id}"))
+                                .send()
+                            {
+                                if let Ok(body) = resp.json::<serde_json::Value>() {
+                                    let provider = body["model_provider"].as_str().unwrap_or("?");
+                                    let model = body["model_name"].as_str().unwrap_or("?");
+                                    self.chat.model_label = format!("{provider}/{model}");
+                                }
+                            }
+                            self.chat.push_message(
+                                chat::Role::System,
+                                format!("Switched to {model_id}"),
+                            );
+                        }
+                        _ => {
+                            self.chat.push_message(
+                                chat::Role::System,
+                                format!("Failed to switch to {model_id}"),
+                            );
+                        }
+                    }
+                }
+            }
+            (Backend::InProcess { kernel }, Some(target)) => {
+                if let Some(id) = target.agent_id_inprocess {
+                    let provider = kernel
+                        .model_catalog
+                        .read()
+                        .unwrap()
+                        .find_model(model_id)
+                        .map(|e| e.provider.clone());
+                    let result = if let Some(ref prov) = provider {
+                        kernel.registry.update_model_and_provider(
+                            id,
+                            model_id.to_string(),
+                            prov.clone(),
+                        )
+                    } else {
+                        kernel.registry.update_model(id, model_id.to_string())
+                    };
+                    match result {
+                        Ok(()) => {
+                            let prov_label = provider.unwrap_or_else(|| {
+                                kernel
+                                    .registry
+                                    .get(id)
+                                    .map(|e| e.manifest.model.provider.clone())
+                                    .unwrap_or_else(|| "?".to_string())
+                            });
+                            self.chat.model_label = format!("{prov_label}/{model_id}");
+                            self.chat.push_message(
+                                chat::Role::System,
+                                format!("Switched to {model_id}"),
+                            );
+                        }
+                        Err(e) => {
+                            self.chat
+                                .push_message(chat::Role::System, format!("Switch failed: {e}"));
+                        }
+                    }
+                }
+            }
+            _ => {
+                self.chat
+                    .push_message(chat::Role::System, "No backend connected.".to_string());
+            }
+        }
+    }
+
     // ─── Slash commands ──────────────────────────────────────────────────────
 
     fn handle_slash_command(&mut self, cmd: &str) {
@@ -1798,13 +2003,14 @@ impl App {
                 self.chat.push_message(
                     chat::Role::System,
                     [
-                        "/help    \u{2014} show this help",
-                        "/status  \u{2014} connection & agent info",
-                        "/agents  \u{2014} list running agents",
-                        "/model   \u{2014} show current model",
-                        "/clear   \u{2014} clear chat history",
-                        "/kill    \u{2014} kill the current agent",
-                        "/exit    \u{2014} end chat session",
+                        "/help         \u{2014} show this help",
+                        "/model        \u{2014} open model picker (Ctrl+M)",
+                        "/model <name> \u{2014} switch to model directly",
+                        "/status       \u{2014} connection & agent info",
+                        "/agents       \u{2014} list running agents",
+                        "/clear        \u{2014} clear chat history",
+                        "/kill         \u{2014} kill the current agent",
+                        "/exit         \u{2014} end chat session",
                     ]
                     .join("\n"),
                 );
@@ -1929,10 +2135,12 @@ impl App {
                 }
             }
             "/model" => {
-                self.chat.push_message(
-                    chat::Role::System,
-                    format!("Model: {}", self.chat.model_label),
-                );
+                let args = parts.get(1).map(|s| s.trim()).unwrap_or("");
+                if args.is_empty() {
+                    self.open_model_picker();
+                } else {
+                    self.switch_model(args);
+                }
             }
             "/hands" => match &self.backend {
                 Backend::InProcess { kernel } => {
@@ -2029,6 +2237,7 @@ impl App {
                     Tab::Usage => usage::draw(frame, chunks[1], &mut self.usage),
                     Tab::Settings => settings::draw(frame, chunks[1], &mut self.settings),
                     Tab::Peers => peers::draw(frame, chunks[1], &mut self.peers),
+                    Tab::Comms => comms::draw(frame, chunks[1], &mut self.comms),
                     Tab::Logs => logs::draw(frame, chunks[1], &mut self.logs),
                 }
             }

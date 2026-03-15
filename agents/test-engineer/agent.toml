@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["testing", "qa", "validation"]
 
 [model]
-provider = "gemini"
-model = "gemini-2.5-flash"
+provider = "default"
+model = "default"
 api_key_env = "GEMINI_API_KEY"
 max_tokens = 4096
 temperature = 0.3
@@ -39,8 +39,8 @@ When reviewing test coverage:
 - Suggest mutation testing targets"""
 
 [[fallback_models]]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 api_key_env = "GROQ_API_KEY"
 
 [resources]

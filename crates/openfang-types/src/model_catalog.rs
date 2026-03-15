@@ -20,6 +20,7 @@ pub const FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
 pub const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 pub const VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub const LMSTUDIO_BASE_URL: &str = "http://localhost:1234/v1";
+pub const LEMONADE_BASE_URL: &str = "http://localhost:8888/api/v1";
 pub const PERPLEXITY_BASE_URL: &str = "https://api.perplexity.ai";
 pub const COHERE_BASE_URL: &str = "https://api.cohere.com/v2";
 pub const AI21_BASE_URL: &str = "https://api.ai21.com/studio/v1";
@@ -28,17 +29,35 @@ pub const SAMBANOVA_BASE_URL: &str = "https://api.sambanova.ai/v1";
 pub const HUGGINGFACE_BASE_URL: &str = "https://api-inference.huggingface.co/v1";
 pub const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const REPLICATE_BASE_URL: &str = "https://api.replicate.com/v1";
+pub const VENICE_BASE_URL: &str = "https://api.venice.ai/api/v1";
+pub const NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 
 // ── GitHub Copilot ──────────────────────────────────────────────
 pub const GITHUB_COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 
 // ── Chinese providers ─────────────────────────────────────────────
 pub const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-pub const MINIMAX_BASE_URL: &str = "https://api.minimax.chat/v1";
+/// Global endpoint. For China mainland, override via `[provider_urls] minimax = "https://api.minimaxi.com/v1"`.
+pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
-pub const ZHIPU_CODING_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
-pub const MOONSHOT_BASE_URL: &str = "https://api.moonshot.cn/v1";
+pub const ZHIPU_CODING_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
+/// Z.AI domain aliases (same API, different domain).
+pub const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
+pub const ZAI_CODING_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
+pub const MOONSHOT_BASE_URL: &str = "https://api.moonshot.ai/v1";
+pub const KIMI_CODING_BASE_URL: &str = "https://api.kimi.com/coding";
 pub const QIANFAN_BASE_URL: &str = "https://qianfan.baidubce.com/v2";
+pub const VOLCENGINE_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/v3";
+pub const VOLCENGINE_CODING_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/coding/v3";
+
+// ── Chutes.ai ────────────────────────────────────────────────────
+pub const CHUTES_BASE_URL: &str = "https://llm.chutes.ai/v1";
+
+// ── Azure OpenAI ────────────────────────────────────────────────────
+/// Azure OpenAI requires a per-resource URL. Users must set their own via
+/// `base_url` or `[provider_urls] azure = "https://{resource}.openai.azure.com/openai/deployments"`.
+/// This constant is intentionally empty — it is never used as a default.
+pub const AZURE_OPENAI_BASE_URL: &str = "";
 
 // ── AWS Bedrock ───────────────────────────────────────────────────
 pub const BEDROCK_BASE_URL: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";
@@ -284,5 +303,11 @@ mod tests {
         assert_eq!(parsed.id, "anthropic");
         assert_eq!(parsed.auth_status, AuthStatus::Configured);
         assert_eq!(parsed.model_count, 3);
+    }
+
+    #[test]
+    fn test_azure_openai_base_url_empty() {
+        // Azure requires user-supplied URL, so the constant must be empty.
+        assert!(AZURE_OPENAI_BASE_URL.is_empty());
     }
 }

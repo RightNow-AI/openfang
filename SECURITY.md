@@ -4,7 +4,7 @@
 
 | Version | Supported          |
 |---------|--------------------|
-| 0.1.x   | :white_check_mark: |
+| 0.3.x   | :white_check_mark: |
 
 ## Reporting a Vulnerability
 
@@ -14,7 +14,7 @@ If you discover a security vulnerability in OpenFang, please report it responsib
 
 ### How to Report
 
-1. Email: **security@openfang.ai**
+1. Email: **jaber@rightnowai.co**
 2. Include:
    - Description of the vulnerability
    - Steps to reproduce

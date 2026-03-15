@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.3"
+version = "0.4.4"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
@@ -49,9 +49,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 
 # IDs
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
 # Database
 rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
@@ -61,7 +62,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 
 # HTTP client (for LLM drivers)
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "gzip", "deflate", "brotli"] }
 
 # Async trait
 async-trait = "0.1"
@@ -101,6 +102,9 @@ walkdir = "2"
 
 # Security
 sha2 = "0.10"
+sha1 = "0.10"
+aes = "0.8"
+cbc = "0.1"
 hmac = "0.12"
 hex = "0.4"
 subtle = "2"
@@ -119,14 +123,26 @@ colored = "3"
 aes-gcm = "0.10"
 argon2 = "0.5"
 
+# HTML entity decoding
+html-escape = "0.2"
+
 # Lightweight regex
 regex-lite = "0.1"
+
+# Socket options (SO_REUSEADDR)
+socket2 = "0.5"
+
+# Zip archive extraction
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Email (SMTP + IMAP)
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
 imap = "2"
 native-tls = "0.2"
-mailparse = "0.15"
+mailparse = "0.16"
+
+# OpenSSL (vendored = statically compiled, no runtime libssl dependency on Linux)
+openssl = { version = "0.10", features = ["vendored"] }
 
 # Testing
 tokio-test = "0.4"
@@ -137,3 +153,10 @@ lto = true
 codegen-units = 1
 strip = true
 opt-level = 3
+
+[profile.release-fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 8
+opt-level = 2
+strip = false

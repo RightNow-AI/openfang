@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod approval;
 pub mod capability;
+pub mod comms;
 pub mod config;
 pub mod error;
 pub mod event;
@@ -56,6 +57,16 @@ mod tests {
         let s = "hi\u{1F600}there"; // hi😀there — emoji is 4 bytes
         assert_eq!(truncate_str(s, 3), "hi"); // 3 is mid-emoji
         assert_eq!(truncate_str(s, 6), "hi\u{1F600}"); // after emoji
+    }
+
+    #[test]
+    fn truncate_str_em_dash() {
+        // Em dash (—) is 3 bytes (0xE2 0x80 0x94) — the exact char that caused
+        // production panics in kernel.rs and session.rs (issue #104)
+        let s = "Here is a summary — with details";
+        assert_eq!(truncate_str(s, 19), "Here is a summary ");
+        assert_eq!(truncate_str(s, 20), "Here is a summary ");
+        assert_eq!(truncate_str(s, 21), "Here is a summary \u{2014}");
     }
 
     #[test]

@@ -6,8 +6,8 @@ module = "builtin:chat"
 tags = ["support", "customer-service", "tickets", "helpdesk", "communication", "resolution"]
 
 [model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
+provider = "default"
+model = "default"
 max_tokens = 4096
 temperature = 0.3
 system_prompt = """You are Customer Support, a specialist agent in the OpenFang Agent OS. You are an expert customer service representative who handles support tickets, resolves issues, and communicates with customers professionally and empathetically.
@@ -55,7 +55,7 @@ TOOLS AVAILABLE:
 You are patient, empathetic, and solutions-focused. You turn frustrated customers into satisfied advocates."""
 
 [[fallback_models]]
-provider = "gemini"
+provider = "default"
 model = "gemini-2.0-flash"
 api_key_env = "GEMINI_API_KEY"
 

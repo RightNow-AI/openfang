@@ -43,88 +43,121 @@ pub async fn request_logging(request: Request<Body>, next: Next) -> Response<Bod
     response
 }
 
+/// Authentication state passed to the auth middleware.
+#[derive(Clone)]
+pub struct AuthState {
+    pub api_key: String,
+    pub auth_enabled: bool,
+    pub session_secret: String,
+}
+
 /// Bearer token authentication middleware.
 ///
-/// When `api_key` is non-empty, all requests must include
-/// `Authorization: Bearer <api_key>`. If the key is empty, auth is bypassed.
+/// When `api_key` is non-empty (after trimming), requests to non-public
+/// endpoints must include `Authorization: Bearer <api_key>`.
+/// If the key is empty or whitespace-only, auth is disabled entirely
+/// (public/local development mode).
+///
+/// When dashboard auth is enabled, session cookies are also accepted.
 pub async fn auth(
-    axum::extract::State(api_key): axum::extract::State<String>,
+    axum::extract::State(auth_state): axum::extract::State<AuthState>,
     request: Request<Body>,
     next: Next,
 ) -> Response<Body> {
-    // If no API key configured, restrict to loopback addresses only.
-    if api_key.is_empty() {
+    // SECURITY: Capture method early for method-aware public endpoint checks.
+    let method = request.method().clone();
+
+    // Shutdown is loopback-only (CLI on same machine) — skip token auth
+    let path = request.uri().path();
+    if path == "/api/shutdown" {
         let is_loopback = request
             .extensions()
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
             .map(|ci| ci.0.ip().is_loopback())
-            .unwrap_or(false);
-
-        if !is_loopback {
-            tracing::warn!(
-                "Rejected non-localhost request: no API key configured. \
-                 Set api_key in config.toml for remote access."
-            );
-            return Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "error": "No API key configured. Remote access denied. Configure api_key in ~/.openfang/config.toml"
-                    })
-                    .to_string(),
-                ))
-                .unwrap_or_default();
+            .unwrap_or(false); // SECURITY: default-deny — unknown origin is NOT loopback
+        if is_loopback {
+            return next.run(request).await;
         }
-        return next.run(request).await;
     }
 
-    // Public endpoints that don't require auth (dashboard needs these)
-    let path = request.uri().path();
-    if path == "/"
+    // Public endpoints that don't require auth (dashboard needs these).
+    // SECURITY: /api/agents is GET-only (listing). POST (spawn) requires auth.
+    // SECURITY: Public endpoints are GET-only unless explicitly noted.
+    // POST/PUT/DELETE to any endpoint ALWAYS requires auth to prevent
+    // unauthenticated writes (cron job creation, skill install, etc.).
+    let is_get = method == axum::http::Method::GET;
+    let is_public = path == "/"
+        || path == "/logo.png"
+        || path == "/favicon.ico"
+        || (path == "/.well-known/agent.json" && is_get)
+        || (path.starts_with("/a2a/") && is_get)
         || path == "/api/health"
         || path == "/api/health/detail"
         || path == "/api/status"
         || path == "/api/version"
-        || path == "/api/agents"
-        || path == "/api/profiles"
-        || path == "/api/config"
-        || path.starts_with("/api/uploads/")
+        || (path == "/api/agents" && is_get)
+        || (path == "/api/profiles" && is_get)
+        || (path == "/api/config" && is_get)
+        || (path == "/api/config/schema" && is_get)
+        || (path.starts_with("/api/uploads/") && is_get)
         // Dashboard read endpoints — allow unauthenticated so the SPA can
         // render before the user enters their API key.
-        || path == "/api/models"
-        || path == "/api/models/aliases"
-        || path == "/api/providers"
-        || path == "/api/budget"
-        || path == "/api/budget/agents"
-        || path.starts_with("/api/budget/agents/")
-        || path == "/api/network/status"
-        || path == "/api/a2a/agents"
-        || path == "/api/approvals"
-        || path.starts_with("/api/approvals/")
-        || path == "/api/channels"
-        || path == "/api/skills"
-        || path == "/api/sessions"
-        || path == "/api/integrations"
-        || path == "/api/integrations/available"
-        || path == "/api/integrations/health"
-        || path == "/api/workflows"
-        || path == "/api/logs/stream"
-        || path.starts_with("/api/cron/")
+        || (path == "/api/models" && is_get)
+        || (path == "/api/models/aliases" && is_get)
+        || (path == "/api/providers" && is_get)
+        || (path == "/api/budget" && is_get)
+        || (path == "/api/budget/agents" && is_get)
+        || (path.starts_with("/api/budget/agents/") && is_get)
+        || (path == "/api/network/status" && is_get)
+        || (path == "/api/a2a/agents" && is_get)
+        || (path == "/api/approvals" && is_get)
+        || (path.starts_with("/api/approvals/") && is_get)
+        || (path == "/api/channels" && is_get)
+        || (path == "/api/hands" && is_get)
+        || (path == "/api/hands/active" && is_get)
+        || (path.starts_with("/api/hands/") && is_get)
+        || (path == "/api/skills" && is_get)
+        || (path == "/api/sessions" && is_get)
+        || (path == "/api/integrations" && is_get)
+        || (path == "/api/integrations/available" && is_get)
+        || (path == "/api/integrations/health" && is_get)
+        || (path == "/api/workflows" && is_get)
+        || path == "/api/logs/stream"  // SSE stream, read-only
+        || (path.starts_with("/api/cron/") && is_get)
         || path.starts_with("/api/providers/github-copilot/oauth/")
-    {
+        || path == "/api/auth/login"
+        || path == "/api/auth/logout"
+        || (path == "/api/auth/check" && is_get);
+
+    if is_public {
         return next.run(request).await;
     }
 
-    // Check Authorization: Bearer <token> header
+    // If no API key configured (empty, whitespace-only, or missing), skip auth
+    // entirely. Users who don't set api_key accept that all endpoints are open.
+    // To secure the dashboard, set a non-empty api_key in config.toml.
+    let api_key_trimmed = auth_state.api_key.trim().to_string();
+    if api_key_trimmed.is_empty() && !auth_state.auth_enabled {
+        return next.run(request).await;
+    }
+    let api_key = api_key_trimmed.as_str();
+
+    // Check Authorization: Bearer <token> header, then fallback to X-API-Key
     let bearer_token = request
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
 
+    let api_token = bearer_token.or_else(|| {
+        request
+            .headers()
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+    });
+
     // SECURITY: Use constant-time comparison to prevent timing attacks.
-    let header_auth = bearer_token.map(|token| {
+    let header_auth = api_token.map(|token| {
         use subtle::ConstantTimeEq;
         if token.len() != api_key.len() {
             return false;
@@ -153,6 +186,17 @@ pub async fn auth(
         return next.run(request).await;
     }
 
+    // Check session cookie (dashboard login sessions)
+    if auth_state.auth_enabled {
+        if let Some(token) = extract_session_cookie(&request) {
+            if crate::session_auth::verify_session_token(&token, &auth_state.session_secret)
+                .is_some()
+            {
+                return next.run(request).await;
+            }
+        }
+    }
+
     // Determine error message: was a credential provided but wrong, or missing entirely?
     let credential_provided = header_auth.is_some() || query_auth.is_some();
     let error_msg = if credential_provided {
@@ -168,6 +212,21 @@ pub async fn auth(
             serde_json::json!({"error": error_msg}).to_string(),
         ))
         .unwrap_or_default()
+}
+
+/// Extract the `openfang_session` cookie value from a request.
+fn extract_session_cookie(request: &Request<Body>) -> Option<String> {
+    request
+        .headers()
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|c| {
+                c.trim()
+                    .strip_prefix("openfang_session=")
+                    .map(|v| v.to_string())
+            })
+        })
 }
 
 /// Security headers middleware — applied to ALL API responses.
@@ -191,6 +250,10 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Bo
     headers.insert(
         "cache-control",
         "no-store, no-cache, must-revalidate".parse().unwrap(),
+    );
+    headers.insert(
+        "strict-transport-security",
+        "max-age=63072000; includeSubDomains".parse().unwrap(),
     );
     response
 }

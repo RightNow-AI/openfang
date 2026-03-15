@@ -35,9 +35,16 @@ pub fn discover_template_dirs() -> Vec<PathBuf> {
         }
     }
 
-    // Installed templates
-    if let Some(home) = dirs::home_dir() {
-        let agents = home.join(".openfang").join("agents");
+    // Installed templates (respects OPENFANG_HOME)
+    let of_home = if let Ok(h) = std::env::var("OPENFANG_HOME") {
+        PathBuf::from(h)
+    } else if let Some(home) = dirs::home_dir() {
+        home.join(".openfang")
+    } else {
+        std::env::temp_dir().join(".openfang")
+    };
+    {
+        let agents = of_home.join("agents");
         if agents.is_dir() && !dirs.contains(&agents) {
             dirs.push(agents);
         }

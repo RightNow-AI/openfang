@@ -20,6 +20,21 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroizing;
 
+/// SASL PLAIN authenticator for IMAP servers that reject LOGIN
+/// (e.g., Lark/Larksuite which only advertise AUTH=PLAIN).
+struct PlainAuthenticator {
+    username: String,
+    password: String,
+}
+
+impl imap::Authenticator for PlainAuthenticator {
+    type Response = String;
+    fn process(&self, _data: &[u8]) -> Self::Response {
+        // SASL PLAIN: \0<username>\0<password>
+        format!("\x00{}\x00{}", self.username, self.password)
+    }
+}
+
 /// Reply context for email threading (In-Reply-To / Subject continuity).
 #[derive(Debug, Clone)]
 struct ReplyCtx {
@@ -124,8 +139,7 @@ impl EmailAdapter {
     async fn build_smtp_transport(
         &self,
     ) -> Result<AsyncSmtpTransport<Tokio1Executor>, Box<dyn std::error::Error>> {
-        let creds =
-            Credentials::new(self.username.clone(), self.password.as_str().to_string());
+        let creds = Credentials::new(self.username.clone(), self.password.as_str().to_string());
 
         let transport = if self.smtp_port == 465 {
             // Implicit TLS (port 465)
@@ -200,12 +214,25 @@ fn fetch_unseen_emails(
         .build()
         .map_err(|e| format!("TLS connector error: {e}"))?;
 
-    let client = imap::connect((host, port), host, &tls)
-        .map_err(|e| format!("IMAP connect failed: {e}"))?;
+    let client =
+        imap::connect((host, port), host, &tls).map_err(|e| format!("IMAP connect failed: {e}"))?;
 
-    let mut session = client
-        .login(username, password)
-        .map_err(|(e, _)| format!("IMAP login failed: {e}"))?;
+    // Try LOGIN first; fall back to AUTHENTICATE PLAIN for servers like Lark
+    // that reject LOGIN and only support AUTH=PLAIN (SASL).
+    let mut session = match client.login(username, password) {
+        Ok(s) => s,
+        Err((login_err, client)) => {
+            let authenticator = PlainAuthenticator {
+                username: username.to_string(),
+                password: password.to_string(),
+            };
+            client
+                .authenticate("PLAIN", &authenticator)
+                .map_err(|(e, _)| {
+                    format!("IMAP login failed: {login_err}; AUTH=PLAIN also failed: {e}")
+                })?
+        }
+    };
 
     let mut results = Vec::new();
 
@@ -362,8 +389,7 @@ impl ChannelAdapter for EmailAdapter {
                     }
 
                     // Extract target agent from subject brackets (stored in metadata for router)
-                    let _target_agent =
-                        EmailAdapter::extract_agent_from_subject(&subject);
+                    let _target_agent = EmailAdapter::extract_agent_from_subject(&subject);
                     let clean_subject = EmailAdapter::strip_agent_tag(&subject);
 
                     // Build the message body: prepend subject context

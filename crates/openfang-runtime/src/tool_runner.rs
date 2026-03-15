@@ -9,6 +9,7 @@ use crate::web_search::{parse_ddg_results, WebToolsContext};
 use openfang_skills::registry::SkillRegistry;
 use openfang_types::taint::{TaintLabel, TaintSink, TaintedValue};
 use openfang_types::tool::{ToolDefinition, ToolResult};
+use openfang_types::tool_compat::normalize_tool_name;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,29 +20,26 @@ const MAX_AGENT_CALL_DEPTH: u32 = 5;
 
 /// Check if a shell command should be blocked by taint tracking.
 ///
-/// Commands containing patterns that look like injected external data
-/// (e.g., piped curl commands, base64-encoded payloads) are flagged.
+/// Layer 1: Shell metacharacter injection (backticks, `$(`, `${`, etc.)
+/// Layer 2: Heuristic patterns for injected external data (piped curl, base64, eval)
+///
 /// This implements the TaintSink::shell_exec() policy from SOTA 2.
 fn check_taint_shell_exec(command: &str) -> Option<String> {
-    // Heuristic: flag commands that look like they contain embedded external URLs
-    // or base64 payloads (common injection patterns)
-    let suspicious_patterns = [
-        "curl ",
-        "wget ",
-        "| sh",
-        "| bash",
-        "base64 -d",
-        "$(curl",
-        "`curl",
-        "eval ",
-    ];
+    // Layer 1: Block shell metacharacters that enable command injection.
+    // Uses the same validator as subprocess_sandbox and docker_sandbox.
+    if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
+        return Some(format!("Shell metacharacter injection blocked: {reason}"));
+    }
+
+    // Layer 2: Heuristic patterns for injected external URLs / base64 payloads
+    let suspicious_patterns = ["curl ", "wget ", "| sh", "| bash", "base64 -d", "eval "];
     for pattern in &suspicious_patterns {
         if command.contains(pattern) {
             let mut labels = HashSet::new();
             labels.insert(TaintLabel::ExternalNetwork);
             let tainted = TaintedValue::new(command, labels, "llm_tool_call");
             if let Err(violation) = tainted.check_sink(&TaintSink::shell_exec()) {
-                warn!(command = &command[..command.len().min(80)], %violation, "Shell taint check failed");
+                warn!(command = crate::str_utils::safe_truncate_str(command, 80), %violation, "Shell taint check failed");
                 return Some(violation.to_string());
             }
         }
@@ -68,7 +66,7 @@ fn check_taint_net_fetch(url: &str) -> Option<String> {
             labels.insert(TaintLabel::Secret);
             let tainted = TaintedValue::new(url, labels, "llm_tool_call");
             if let Err(violation) = tainted.check_sink(&TaintSink::net_fetch()) {
-                warn!(url = &url[..url.len().min(80)], %violation, "Net fetch taint check failed");
+                warn!(url = crate::str_utils::safe_truncate_str(url, 80), %violation, "Net fetch taint check failed");
                 return Some(violation.to_string());
             }
         }
@@ -117,6 +115,10 @@ pub async fn execute_tool(
     docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
 ) -> ToolResult {
+    // Normalize the tool name through compat mappings so LLM-hallucinated aliases
+    // (e.g. "fs-write" → "file_write") resolve to the canonical OpenFang name.
+    let tool_name = normalize_tool_name(tool_name);
+
     // Capability enforcement: reject tools not in the allowed list
     if let Some(allowed) = allowed_tools {
         if !allowed.iter().any(|t| t == tool_name) {
@@ -187,8 +189,13 @@ pub async fn execute_tool(
                     is_error: true,
                 };
             }
+            let method = input["method"].as_str().unwrap_or("GET");
+            let headers = input.get("headers").and_then(|v| v.as_object());
+            let body = input["body"].as_str();
             if let Some(ctx) = web_ctx {
-                ctx.fetch.fetch(url).await
+                ctx.fetch
+                    .fetch_with_options(url, method, headers, body)
+                    .await
             } else {
                 tool_web_fetch_legacy(input).await
             }
@@ -203,22 +210,41 @@ pub async fn execute_tool(
             }
         }
 
-        // Shell tool — exec policy + taint check
+        // Shell tool — metacharacter check + exec policy + taint check
         "shell_exec" => {
             let command = input["command"].as_str().unwrap_or("");
-            // Exec policy enforcement
+
+            // SECURITY: Always check for shell metacharacters, even in Full mode.
+            // These enable command injection regardless of exec policy.
+            if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command)
+            {
+                return ToolResult {
+                    tool_use_id: tool_use_id.to_string(),
+                    content: format!(
+                        "shell_exec blocked: command contains {reason}. \
+                         Shell metacharacters are never allowed."
+                    ),
+                    is_error: true,
+                };
+            }
+
+            // Exec policy enforcement (allowlist / deny / full)
             if let Some(policy) = exec_policy {
                 if let Err(reason) =
                     crate::subprocess_sandbox::validate_command_allowlist(command, policy)
                 {
                     return ToolResult {
                         tool_use_id: tool_use_id.to_string(),
-                        content: format!("Exec policy denied: {reason}"),
+                        content: format!(
+                            "shell_exec blocked: {reason}. Current exec_policy.mode = '{:?}'. \
+                             To allow shell commands, set exec_policy.mode = 'full' in the agent manifest or config.toml.",
+                            policy.mode
+                        ),
                         is_error: true,
                     };
                 }
             }
-            // Skip taint check for Full exec policy (e.g. hand agents that need curl for APIs)
+            // Skip heuristic taint patterns for Full exec policy (e.g. hand agents that need curl)
             let is_full_exec = exec_policy
                 .is_some_and(|p| p.mode == openfang_types::config::ExecSecurityMode::Full);
             if !is_full_exec {
@@ -289,13 +315,16 @@ pub async fn execute_tool(
         // Location tool
         "location_get" => tool_location_get().await,
 
+        // System time tool
+        "system_time" => Ok(tool_system_time()),
+
         // Cron scheduling tools
         "cron_create" => tool_cron_create(input, kernel, caller_agent_id).await,
         "cron_list" => tool_cron_list(kernel, caller_agent_id).await,
         "cron_cancel" => tool_cron_cancel(input, kernel).await,
 
         // Channel send tool (proactive outbound messaging)
-        "channel_send" => tool_channel_send(input, kernel).await,
+        "channel_send" => tool_channel_send(input, kernel, workspace_root).await,
 
         // Persistent process tools
         "process_start" => tool_process_start(input, process_manager, caller_agent_id).await,
@@ -330,8 +359,7 @@ pub async fn execute_tool(
                     crate::browser::tool_browser_navigate(input, mgr, aid).await
                 }
                 None => Err(
-                    "Browser tools not available. Ensure Python and playwright are installed."
-                        .to_string(),
+                    "Browser tools not available. Ensure Chrome/Chromium is installed.".to_string(),
                 ),
             }
         }
@@ -340,35 +368,81 @@ pub async fn execute_tool(
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_click(input, mgr, aid).await
             }
-            None => Err("Browser tools not available.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_type" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_type(input, mgr, aid).await
             }
-            None => Err("Browser tools not available.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_screenshot" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_screenshot(input, mgr, aid).await
             }
-            None => Err("Browser tools not available.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_read_page" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_read_page(input, mgr, aid).await
             }
-            None => Err("Browser tools not available.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_close" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_close(input, mgr, aid).await
             }
-            None => Err("Browser tools not available.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
+        },
+        "browser_scroll" => match browser_ctx {
+            Some(mgr) => {
+                let aid = caller_agent_id.unwrap_or("default");
+                crate::browser::tool_browser_scroll(input, mgr, aid).await
+            }
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
+        },
+        "browser_wait" => match browser_ctx {
+            Some(mgr) => {
+                let aid = caller_agent_id.unwrap_or("default");
+                crate::browser::tool_browser_wait(input, mgr, aid).await
+            }
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
+        },
+        "browser_run_js" => match browser_ctx {
+            Some(mgr) => {
+                let aid = caller_agent_id.unwrap_or("default");
+                crate::browser::tool_browser_run_js(input, mgr, aid).await
+            }
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
+        },
+        "browser_back" => match browser_ctx {
+            Some(mgr) => {
+                let aid = caller_agent_id.unwrap_or("default");
+                crate::browser::tool_browser_back(input, mgr, aid).await
+            }
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
 
         // Canvas / A2UI tool
@@ -378,8 +452,13 @@ pub async fn execute_tool(
             // Fallback 1: MCP tools (mcp_{server}_{tool} prefix)
             if mcp::is_mcp_tool(other) {
                 if let Some(mcp_conns) = mcp_connections {
-                    if let Some(server_name) = mcp::extract_mcp_server(other) {
-                        let mut conns = mcp_conns.lock().await;
+                    let mut conns = mcp_conns.lock().await;
+                    let known_names: Vec<String> =
+                        conns.iter().map(|c| c.name().to_string()).collect();
+                    let known_refs: Vec<&str> = known_names.iter().map(|s| s.as_str()).collect();
+                    if let Some(server_name) =
+                        mcp::extract_mcp_server_from_known(other, &known_refs)
+                    {
                         if let Some(conn) = conns.iter_mut().find(|c| c.name() == server_name) {
                             debug!(
                                 tool = other,
@@ -501,11 +580,14 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Web tools ---
         ToolDefinition {
             name: "web_fetch".to_string(),
-            description: "Fetch a web page and extract its content as Markdown. Includes SSRF protection and result caching.".to_string(),
+            description: "Fetch a URL with SSRF protection. Supports GET/POST/PUT/PATCH/DELETE. For GET, HTML is converted to Markdown. For other methods, returns raw response body.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "url": { "type": "string", "description": "The URL to fetch (http/https only)" }
+                    "url": { "type": "string", "description": "The URL to fetch (http/https only)" },
+                    "method": { "type": "string", "enum": ["GET","POST","PUT","PATCH","DELETE"], "description": "HTTP method (default: GET)" },
+                    "headers": { "type": "object", "description": "Custom HTTP headers as key-value pairs" },
+                    "body": { "type": "string", "description": "Request body for POST/PUT/PATCH" }
                 },
                 "required": ["url"]
             }),
@@ -589,7 +671,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "The storage key" },
-                    "value": { "description": "The JSON value to store (any type)" }
+                    "value": { "type": "string", "description": "The value to store (JSON-encode objects/arrays, or pass a plain string)" }
                 },
                 "required": ["key", "value"]
             }),
@@ -667,7 +749,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "event_type": { "type": "string", "description": "Type identifier for the event (e.g., 'code_review_requested')" },
-                    "payload": { "description": "JSON payload data for the event" }
+                    "payload": { "type": "object", "description": "JSON payload data for the event" }
                 },
                 "required": ["event_type"]
             }),
@@ -828,6 +910,48 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {}
             }),
         },
+        ToolDefinition {
+            name: "browser_scroll".to_string(),
+            description: "Scroll the browser page. Use this to see content below the fold or navigate long pages.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "direction": { "type": "string", "description": "Scroll direction: 'up', 'down', 'left', 'right' (default: 'down')" },
+                    "amount": { "type": "integer", "description": "Pixels to scroll (default: 600)" }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "browser_wait".to_string(),
+            description: "Wait for a CSS selector to appear on the page. Useful for dynamic content that loads asynchronously.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "selector": { "type": "string", "description": "CSS selector to wait for" },
+                    "timeout_ms": { "type": "integer", "description": "Max wait time in milliseconds (default: 5000, max: 30000)" }
+                },
+                "required": ["selector"]
+            }),
+        },
+        ToolDefinition {
+            name: "browser_run_js".to_string(),
+            description: "Run JavaScript on the current browser page and return the result. For advanced interactions that other browser tools cannot handle.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "expression": { "type": "string", "description": "JavaScript expression to run in the page context" }
+                },
+                "required": ["expression"]
+            }),
+        },
+        ToolDefinition {
+            name: "browser_back".to_string(),
+            description: "Go back to the previous page in browser history.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
         // --- Media understanding tools ---
         ToolDefinition {
             name: "media_describe".to_string(),
@@ -916,16 +1040,21 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Channel send tool (proactive outbound messaging) ---
         ToolDefinition {
             name: "channel_send".to_string(),
-            description: "Send a message to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally prefix the message with 'Subject: Your Subject\\n\\n' to set the email subject.".to_string(),
+            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url, file_url, or file_path to send an image or file instead of (or alongside) text. Use thread_id to reply in a specific thread/topic.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "channel": { "type": "string", "description": "Channel adapter name (e.g., 'email', 'telegram', 'slack', 'discord')" },
                     "recipient": { "type": "string", "description": "Platform-specific recipient identifier (email address, user ID, etc.)" },
                     "subject": { "type": "string", "description": "Optional subject line (used for email; ignored for other channels)" },
-                    "message": { "type": "string", "description": "The message body to send" }
+                    "message": { "type": "string", "description": "The message body to send (required for text, optional caption for media)" },
+                    "image_url": { "type": "string", "description": "URL of an image to send (supported on Telegram, Discord, Slack)" },
+                    "file_url": { "type": "string", "description": "URL of a file to send as attachment" },
+                    "file_path": { "type": "string", "description": "Local file path to send as attachment (reads from disk; use instead of file_url for local files)" },
+                    "filename": { "type": "string", "description": "Filename for file attachments (defaults to the basename of file_path, or 'file')" },
+                    "thread_id": { "type": "string", "description": "Thread/topic ID to reply in (e.g., Telegram message_thread_id, Slack thread_ts)" }
                 },
-                "required": ["channel", "recipient", "message"]
+                "required": ["channel", "recipient"]
             }),
         },
         // --- Hand tools (curated autonomous capability packages) ---
@@ -1092,6 +1221,16 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {}
+            }),
+        },
+        // --- System time tool ---
+        ToolDefinition {
+            name: "system_time".to_string(),
+            description: "Get the current date, time, and timezone. Returns ISO 8601 timestamp, Unix epoch seconds, and timezone info.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
             }),
         },
         // --- Canvas / A2UI tool ---
@@ -1322,39 +1461,66 @@ async fn tool_shell_exec(
     let policy_timeout = exec_policy.map(|p| p.timeout_secs).unwrap_or(30);
     let timeout_secs = input["timeout_seconds"].as_u64().unwrap_or(policy_timeout);
 
-    // Shell resolution: prefer sh (Git Bash/MSYS2) on Windows to avoid cmd.exe
-    // quoting issues (% expansion mangles yt-dlp templates, " in filenames
-    // converted to # by --restrict-filenames). Fall back to cmd if sh not found.
-    #[cfg(windows)]
-    let git_sh: Option<&str> = {
-        const SH_PATHS: &[&str] = &[
-            "C:\\Program Files\\Git\\usr\\bin\\sh.exe",
-            "C:\\Program Files (x86)\\Git\\usr\\bin\\sh.exe",
-        ];
-        SH_PATHS
-            .iter()
-            .copied()
-            .find(|p| std::path::Path::new(p).exists())
-    };
-    let (shell, shell_arg) = if cfg!(windows) {
-        #[cfg(windows)]
-        {
-            if let Some(sh) = git_sh {
-                (sh, "-c")
-            } else {
-                ("cmd", "/C")
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            ("sh", "-c")
-        }
-    } else {
-        ("sh", "-c")
-    };
+    // SECURITY: Determine execution strategy based on exec policy.
+    //
+    // In Allowlist mode (default): Use direct execution via shlex argv splitting.
+    // This avoids invoking a shell interpreter, which eliminates an entire class
+    // of injection attacks (encoding tricks, $IFS, glob expansion, etc.).
+    //
+    // In Full mode: User explicitly opted into unrestricted shell access,
+    // so we use sh -c / cmd /C as before.
+    let use_direct_exec = exec_policy
+        .map(|p| p.mode == openfang_types::config::ExecSecurityMode::Allowlist)
+        .unwrap_or(true); // Default to safe mode
 
-    let mut cmd = tokio::process::Command::new(shell);
-    cmd.arg(shell_arg).arg(command);
+    let mut cmd = if use_direct_exec {
+        // SAFE PATH: Split command into argv using POSIX shell lexer rules,
+        // then execute the binary directly — no shell interpreter involved.
+        let argv = shlex::split(command).ok_or_else(|| {
+            "Command contains unmatched quotes or invalid shell syntax".to_string()
+        })?;
+        if argv.is_empty() {
+            return Err("Empty command after parsing".to_string());
+        }
+        let mut c = tokio::process::Command::new(&argv[0]);
+        if argv.len() > 1 {
+            c.args(&argv[1..]);
+        }
+        c
+    } else {
+        // UNSAFE PATH: Full mode — user explicitly opted in to shell interpretation.
+        // Shell resolution: prefer sh (Git Bash/MSYS2) on Windows.
+        #[cfg(windows)]
+        let git_sh: Option<&str> = {
+            const SH_PATHS: &[&str] = &[
+                "C:\\Program Files\\Git\\usr\\bin\\sh.exe",
+                "C:\\Program Files (x86)\\Git\\usr\\bin\\sh.exe",
+            ];
+            SH_PATHS
+                .iter()
+                .copied()
+                .find(|p| std::path::Path::new(p).exists())
+        };
+        let (shell, shell_arg) = if cfg!(windows) {
+            #[cfg(windows)]
+            {
+                if let Some(sh) = git_sh {
+                    (sh, "-c")
+                } else {
+                    ("cmd", "/C")
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                ("sh", "-c")
+            }
+        } else {
+            ("sh", "-c")
+        };
+        let mut c = tokio::process::Command::new(shell);
+        c.arg(shell_arg).arg(command);
+        c
+    };
 
     // Set working directory to agent workspace so files are created there
     if let Some(ws) = workspace_root {
@@ -2027,6 +2193,7 @@ async fn tool_cron_cancel(
 async fn tool_channel_send(
     input: &serde_json::Value,
     kernel: Option<&Arc<dyn KernelHandle>>,
+    workspace_root: Option<&Path>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
 
@@ -2035,28 +2202,121 @@ async fn tool_channel_send(
         .ok_or("Missing 'channel' parameter")?
         .trim()
         .to_lowercase();
-    let recipient = input["recipient"]
+    let recipient_input = input["recipient"]
         .as_str()
-        .ok_or("Missing 'recipient' parameter")?
-        .trim();
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    // If recipient is empty, resolve from channel's default_chat_id config.
+    let recipient = if recipient_input.is_empty() {
+        let default_id = kh.get_channel_default_recipient(&channel).await;
+        match default_id {
+            Some(id) => id,
+            None => {
+                return Err(format!(
+                "Missing 'recipient' parameter. Set default_chat_id in [channels.{channel}] config \
+                 or pass recipient explicitly."
+            ))
+            }
+        }
+    } else {
+        recipient_input
+    };
+    let recipient = recipient.as_str();
+
+    let thread_id = input["thread_id"].as_str().filter(|s| !s.is_empty());
+
+    // Check for media content (image_url, file_url, or file_path)
+    let image_url = input["image_url"].as_str().filter(|s| !s.is_empty());
+    let file_url = input["file_url"].as_str().filter(|s| !s.is_empty());
+    let file_path = input["file_path"].as_str().filter(|s| !s.is_empty());
+
+    if let Some(url) = image_url {
+        let caption = input["message"].as_str().filter(|s| !s.is_empty());
+        return kh
+            .send_channel_media(&channel, recipient, "image", url, caption, None, thread_id)
+            .await;
+    }
+
+    if let Some(url) = file_url {
+        let caption = input["message"].as_str().filter(|s| !s.is_empty());
+        let filename = input["filename"].as_str();
+        return kh
+            .send_channel_media(
+                &channel, recipient, "file", url, caption, filename, thread_id,
+            )
+            .await;
+    }
+
+    // Local file attachment: read from disk and send as FileData
+    if let Some(raw_path) = file_path {
+        let resolved = resolve_file_path(raw_path, workspace_root)?;
+        let data = tokio::fs::read(&resolved)
+            .await
+            .map_err(|e| format!("Failed to read file '{}': {e}", resolved.display()))?;
+
+        // Derive filename from the path if not explicitly provided
+        let filename = input["filename"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                resolved
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("file")
+                    .to_string()
+            });
+
+        // Determine MIME type from extension
+        let ext = resolved
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let mime_type = match ext.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "svg" => "image/svg+xml",
+            "pdf" => "application/pdf",
+            "txt" => "text/plain",
+            "csv" => "text/csv",
+            "json" => "application/json",
+            "xml" => "application/xml",
+            "zip" => "application/zip",
+            "gz" | "gzip" => "application/gzip",
+            "tar" => "application/x-tar",
+            "mp3" => "audio/mpeg",
+            "wav" => "audio/wav",
+            "mp4" => "video/mp4",
+            "doc" => "application/msword",
+            "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "xls" => "application/vnd.ms-excel",
+            "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            _ => "application/octet-stream",
+        };
+
+        return kh
+            .send_channel_file_data(&channel, recipient, data, &filename, mime_type, thread_id)
+            .await;
+    }
+
+    // Text-only message
     let message = input["message"]
         .as_str()
-        .ok_or("Missing 'message' parameter")?;
+        .ok_or("Missing 'message' parameter (required for text messages)")?;
 
-    if recipient.is_empty() {
-        return Err("Recipient cannot be empty".to_string());
-    }
     if message.is_empty() {
         return Err("Message cannot be empty".to_string());
     }
 
     // For email channels, validate email format and prepend subject
     let final_message = if channel == "email" {
-        // Basic email format validation
         if !recipient.contains('@') || !recipient.contains('.') {
             return Err(format!("Invalid email address: '{recipient}'"));
         }
-        // Prepend subject if provided
         if let Some(subject) = input["subject"].as_str() {
             if !subject.is_empty() {
                 format!("Subject: {subject}\n\n{message}")
@@ -2070,7 +2330,7 @@ async fn tool_channel_send(
         message.to_string()
     };
 
-    kh.send_channel_message(&channel, recipient, &final_message)
+    kh.send_channel_message(&channel, recipient, &final_message, thread_id)
         .await
 }
 
@@ -2432,6 +2692,27 @@ async fn tool_location_get() -> Result<String, String> {
     });
 
     serde_json::to_string_pretty(&result).map_err(|e| format!("Serialize error: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// System time tool
+// ---------------------------------------------------------------------------
+
+/// Return current date, time, timezone, and Unix epoch.
+fn tool_system_time() -> String {
+    let now_utc = chrono::Utc::now();
+    let now_local = chrono::Local::now();
+    let result = serde_json::json!({
+        "utc": now_utc.to_rfc3339(),
+        "local": now_local.to_rfc3339(),
+        "unix_epoch": now_utc.timestamp(),
+        "timezone": now_local.format("%Z").to_string(),
+        "utc_offset": now_local.format("%:z").to_string(),
+        "date": now_local.format("%Y-%m-%d").to_string(),
+        "time": now_local.format("%H:%M:%S").to_string(),
+        "day_of_week": now_local.format("%A").to_string(),
+    });
+    serde_json::to_string_pretty(&result).unwrap_or_else(|_| now_utc.to_rfc3339())
 }
 
 // ---------------------------------------------------------------------------
@@ -2955,7 +3236,10 @@ async fn tool_canvas_present(
     let _ = tokio::fs::create_dir_all(&output_dir).await;
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let filename = format!("canvas_{timestamp}_{}.html", &canvas_id[..8]);
+    let filename = format!(
+        "canvas_{timestamp}_{}.html",
+        crate::str_utils::safe_truncate_str(&canvas_id, 8)
+    );
     let filepath = output_dir.join(&filename);
 
     // Write the full HTML document
@@ -3011,6 +3295,7 @@ mod tests {
         assert!(names.contains(&"schedule_delete"));
         assert!(names.contains(&"image_analyze"));
         assert!(names.contains(&"location_get"));
+        assert!(names.contains(&"system_time"));
         // 6 browser tools
         assert!(names.contains(&"browser_navigate"));
         assert!(names.contains(&"browser_click"));
@@ -3018,6 +3303,10 @@ mod tests {
         assert!(names.contains(&"browser_screenshot"));
         assert!(names.contains(&"browser_read_page"));
         assert!(names.contains(&"browser_close"));
+        assert!(names.contains(&"browser_scroll"));
+        assert!(names.contains(&"browser_wait"));
+        assert!(names.contains(&"browser_run_js"));
+        assert!(names.contains(&"browser_back"));
         // 3 media/image generation tools
         assert!(names.contains(&"media_describe"));
         assert!(names.contains(&"media_transcribe"));
@@ -3073,10 +3362,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_read_missing() {
+        let bad_path = std::env::temp_dir()
+            .join("openfang_test_nonexistent_99999")
+            .join("file.txt");
         let result = execute_tool(
             "test-id",
             "file_read",
-            &serde_json::json!({"path": "/nonexistent/file.txt"}),
+            &serde_json::json!({"path": bad_path.to_str().unwrap()}),
             None,
             None,
             None,
@@ -3093,7 +3385,11 @@ mod tests {
             None, // process_manager
         )
         .await;
-        assert!(result.is_error);
+        assert!(
+            result.is_error,
+            "Expected error but got: {}",
+            result.content
+        );
     }
 
     #[tokio::test]
@@ -3282,10 +3578,14 @@ mod tests {
     #[tokio::test]
     async fn test_capability_enforcement_allowed() {
         let allowed = vec!["file_read".to_string()];
+        // Use a cross-platform nonexistent path
+        let bad_path = std::env::temp_dir()
+            .join("openfang_test_nonexistent_12345")
+            .join("file.txt");
         let result = execute_tool(
             "test-id",
             "file_read",
-            &serde_json::json!({"path": "/nonexistent/file.txt"}),
+            &serde_json::json!({"path": bad_path.to_str().unwrap()}),
             None,
             Some(&allowed),
             None,
@@ -3303,8 +3603,88 @@ mod tests {
         )
         .await;
         // Should fail for file-not-found, NOT for permission denied
+        assert!(
+            result.is_error,
+            "Expected error but got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("Failed to read")
+                || result.content.contains("not found")
+                || result.content.contains("No such file"),
+            "Unexpected error: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn test_capability_enforcement_aliased_tool_name() {
+        // Agent has "file_write" in allowed tools, but LLM calls "fs-write".
+        // After normalization, this should pass the capability check.
+        let allowed = vec![
+            "file_read".to_string(),
+            "file_write".to_string(),
+            "file_list".to_string(),
+            "shell_exec".to_string(),
+        ];
+        let result = execute_tool(
+            "test-id",
+            "fs-write", // LLM-hallucinated alias
+            &serde_json::json!({"path": "/nonexistent/file.txt", "content": "hello"}),
+            None,
+            Some(&allowed),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // media_engine
+            None, // exec_policy
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
+        // Should NOT be "Permission denied" — it should normalize to file_write
+        // and pass the capability check. It will fail for other reasons (path validation).
+        assert!(
+            !result.content.contains("Permission denied"),
+            "fs-write should normalize to file_write and pass capability check, got: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn test_capability_enforcement_aliased_denied() {
+        // Agent does NOT have file_write, and LLM calls "fs-write" — should be denied.
+        let allowed = vec!["file_read".to_string()];
+        let result = execute_tool(
+            "test-id",
+            "fs-write",
+            &serde_json::json!({"path": "/tmp/test.txt", "content": "hello"}),
+            None,
+            Some(&allowed),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // media_engine
+            None, // exec_policy
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
         assert!(result.is_error);
-        assert!(result.content.contains("Failed to read"));
+        assert!(
+            result.content.contains("Permission denied"),
+            "fs-write should normalize to file_write which is not in allowed list"
+        );
     }
 
     // --- Schedule parser tests ---

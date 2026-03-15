@@ -29,6 +29,8 @@ pub enum HandError {
     TomlParse(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Config error: {0}")]
+    Config(String),
 }
 
 pub type HandResult<T> = Result<T, HandError>;
@@ -115,6 +117,13 @@ pub struct HandRequirement {
     /// Human-readable description of why this is needed.
     #[serde(default)]
     pub description: Option<String>,
+    /// Whether this requirement is optional (non-critical).
+    ///
+    /// Optional requirements do not block activation. When an active hand has
+    /// unmet optional requirements it is reported as "degraded" rather than
+    /// "requirements not met".
+    #[serde(default)]
+    pub optional: bool,
     /// Platform-specific installation instructions.
     #[serde(default)]
     pub install: Option<HandInstallInfo>,
@@ -172,6 +181,10 @@ pub struct HandSetting {
     pub default: String,
     #[serde(default)]
     pub options: Vec<HandSettingOption>,
+    /// Env var name to expose when a text-type setting has a value
+    /// (e.g. `ELEVENLABS_API_KEY` for an API key text field).
+    #[serde(default)]
+    pub env_var: Option<String>,
 }
 
 /// Result of resolving user-chosen settings against the schema.
@@ -227,6 +240,9 @@ pub fn resolve_settings(
             HandSettingType::Text => {
                 if !chosen_value.is_empty() {
                     lines.push(format!("- {}: {}", setting.label, chosen_value));
+                    if let Some(ref env) = setting.env_var {
+                        env_vars.push(env.clone());
+                    }
                 }
             }
         }
@@ -288,6 +304,20 @@ fn default_max_tokens() -> u32 {
 }
 fn default_temperature() -> f32 {
     0.7
+}
+
+#[derive(Deserialize)]
+struct HandTomlWrapper {
+    hand: HandDefinition,
+}
+
+/// Parse HAND.toml content, supporting both flat format and `[hand]` table format.
+pub fn parse_hand_toml(content: &str) -> Result<HandDefinition, toml::de::Error> {
+    if let Ok(def) = toml::from_str::<HandDefinition>(content) {
+        return Ok(def);
+    }
+    let wrapper: HandTomlWrapper = toml::from_str(content)?;
+    Ok(wrapper.hand)
 }
 
 /// Complete Hand definition — parsed from HAND.toml.
@@ -550,6 +580,7 @@ metrics = []
                     binary: None,
                 },
             ],
+            env_var: None,
         }];
 
         // User picks groq
@@ -583,6 +614,7 @@ metrics = []
                     binary: None,
                 },
             ],
+            env_var: None,
         }];
 
         // Empty config → uses default "auto"
@@ -604,6 +636,7 @@ metrics = []
                 setting_type: HandSettingType::Toggle,
                 default: "false".to_string(),
                 options: vec![],
+                env_var: None,
             },
             HandSetting {
                 key: "custom_model".to_string(),
@@ -612,6 +645,7 @@ metrics = []
                 setting_type: HandSettingType::Text,
                 default: String::new(),
                 options: vec![],
+                env_var: None,
             },
         ];
 
@@ -777,5 +811,51 @@ metrics = []
         assert_eq!(install.steps[0], "Go to example.com and sign up");
         assert!(install.macos.is_none());
         assert!(install.windows.is_none());
+    }
+
+    #[test]
+    fn parse_hand_toml_flat_format() {
+        let toml_str = r#"
+id = "test"
+name = "Test Hand"
+description = "A test hand"
+category = "content"
+tools = ["shell_exec"]
+
+[agent]
+name = "test-hand"
+description = "Test agent"
+system_prompt = "You are a test agent."
+
+[dashboard]
+metrics = []
+"#;
+        let def = parse_hand_toml(toml_str).unwrap();
+        assert_eq!(def.id, "test");
+        assert_eq!(def.name, "Test Hand");
+    }
+
+    #[test]
+    fn parse_hand_toml_wrapped_format() {
+        let toml_str = r#"
+[hand]
+id = "test"
+name = "Test Hand"
+description = "A test hand"
+category = "content"
+tools = ["shell_exec"]
+
+[hand.agent]
+name = "test-hand"
+description = "Test agent"
+system_prompt = "You are a test agent."
+
+[hand.dashboard]
+metrics = []
+"#;
+        let def = parse_hand_toml(toml_str).unwrap();
+        assert_eq!(def.id, "test");
+        assert_eq!(def.name, "Test Hand");
+        assert_eq!(def.agent.name, "test-hand");
     }
 }

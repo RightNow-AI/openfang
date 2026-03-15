@@ -38,7 +38,7 @@ pub struct SettingStatus {
 /// The Hand registry — stores definitions and tracks active instances.
 pub struct HandRegistry {
     /// All known hand definitions, keyed by hand_id.
-    definitions: HashMap<String, HandDefinition>,
+    definitions: DashMap<String, HandDefinition>,
     /// Active hand instances, keyed by instance UUID.
     instances: DashMap<Uuid, HandInstance>,
 }
@@ -47,13 +47,66 @@ impl HandRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self {
-            definitions: HashMap::new(),
+            definitions: DashMap::new(),
             instances: DashMap::new(),
         }
     }
 
+    /// Persist active hand state to disk so it survives restarts.
+    pub fn persist_state(&self, path: &std::path::Path) -> HandResult<()> {
+        let entries: Vec<serde_json::Value> = self
+            .instances
+            .iter()
+            .filter(|e| e.status == HandStatus::Active)
+            .map(|e| {
+                serde_json::json!({
+                    "hand_id": e.hand_id,
+                    "config": e.config,
+                    "agent_id": e.agent_id,
+                })
+            })
+            .collect();
+        let json = serde_json::to_string_pretty(&entries)
+            .map_err(|e| HandError::Config(format!("serialize hand state: {e}")))?;
+        std::fs::write(path, json)
+            .map_err(|e| HandError::Config(format!("write hand state: {e}")))?;
+        Ok(())
+    }
+
+    /// Load persisted hand state and re-activate hands.
+    /// Returns list of (hand_id, config, old_agent_id) that should be activated.
+    /// The `old_agent_id` is the agent UUID from before the restart, used to
+    /// reassign cron jobs to the newly spawned agent (issue #402).
+    pub fn load_state(
+        path: &std::path::Path,
+    ) -> Vec<(String, HashMap<String, serde_json::Value>, Option<AgentId>)> {
+        let data = match std::fs::read_to_string(path) {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        };
+        let entries: Vec<serde_json::Value> = match serde_json::from_str(&data) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("Failed to parse hand state file: {e}");
+                return Vec::new();
+            }
+        };
+        entries
+            .into_iter()
+            .filter_map(|e| {
+                let hand_id = e["hand_id"].as_str()?.to_string();
+                let config: HashMap<String, serde_json::Value> =
+                    serde_json::from_value(e["config"].clone()).unwrap_or_default();
+                let old_agent_id: Option<AgentId> = e
+                    .get("agent_id")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                Some((hand_id, config, old_agent_id))
+            })
+            .collect()
+    }
+
     /// Load all bundled hand definitions. Returns count of definitions loaded.
-    pub fn load_bundled(&mut self) -> usize {
+    pub fn load_bundled(&self) -> usize {
         let bundled = bundled::bundled_hands();
         let mut count = 0;
         for (id, toml_content, skill_content) in bundled {
@@ -71,16 +124,79 @@ impl HandRegistry {
         count
     }
 
+    /// Install a hand from a directory containing HAND.toml (and optional SKILL.md).
+    pub fn install_from_path(&self, path: &std::path::Path) -> HandResult<HandDefinition> {
+        let toml_path = path.join("HAND.toml");
+        let skill_path = path.join("SKILL.md");
+
+        let toml_content = std::fs::read_to_string(&toml_path).map_err(|e| {
+            HandError::NotFound(format!("Cannot read {}: {e}", toml_path.display()))
+        })?;
+        let skill_content = std::fs::read_to_string(&skill_path).unwrap_or_default();
+
+        let def = bundled::parse_bundled("custom", &toml_content, &skill_content)?;
+
+        if self.definitions.contains_key(&def.id) {
+            return Err(HandError::AlreadyActive(format!(
+                "Hand '{}' already registered",
+                def.id
+            )));
+        }
+
+        info!(hand = %def.id, name = %def.name, path = %path.display(), "Installed hand from path");
+        self.definitions.insert(def.id.clone(), def.clone());
+        Ok(def)
+    }
+
+    /// Install a hand from raw TOML + skill content (for API-based installs).
+    pub fn install_from_content(
+        &self,
+        toml_content: &str,
+        skill_content: &str,
+    ) -> HandResult<HandDefinition> {
+        let def = bundled::parse_bundled("custom", toml_content, skill_content)?;
+
+        if self.definitions.contains_key(&def.id) {
+            return Err(HandError::AlreadyActive(format!(
+                "Hand '{}' already registered",
+                def.id
+            )));
+        }
+
+        info!(hand = %def.id, name = %def.name, "Installed hand from content");
+        self.definitions.insert(def.id.clone(), def.clone());
+        Ok(def)
+    }
+
+    /// Install or update a hand from raw TOML + skill content.
+    ///
+    /// Unlike `install_from_content`, this overwrites an existing definition
+    /// with the same ID.  Active instances are NOT automatically restarted —
+    /// the caller should deactivate + reactivate to pick up the new definition.
+    pub fn upsert_from_content(
+        &self,
+        toml_content: &str,
+        skill_content: &str,
+    ) -> HandResult<HandDefinition> {
+        let def = bundled::parse_bundled("custom", toml_content, skill_content)?;
+        let existed = self.definitions.contains_key(&def.id);
+        let verb = if existed { "Updated" } else { "Installed" };
+        info!(hand = %def.id, name = %def.name, "{verb} hand from content");
+        self.definitions.insert(def.id.clone(), def.clone());
+        Ok(def)
+    }
+
     /// List all known hand definitions.
-    pub fn list_definitions(&self) -> Vec<&HandDefinition> {
-        let mut defs: Vec<&HandDefinition> = self.definitions.values().collect();
-        defs.sort_by_key(|d| &d.name);
+    pub fn list_definitions(&self) -> Vec<HandDefinition> {
+        let mut defs: Vec<HandDefinition> =
+            self.definitions.iter().map(|r| r.value().clone()).collect();
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
     }
 
     /// Get a specific hand definition by ID.
-    pub fn get_definition(&self, hand_id: &str) -> Option<&HandDefinition> {
-        self.definitions.get(hand_id)
+    pub fn get_definition(&self, hand_id: &str) -> Option<HandDefinition> {
+        self.definitions.get(hand_id).map(|r| r.value().clone())
     }
 
     /// Activate a hand — creates an instance (agent spawning is done by kernel).
@@ -230,6 +346,21 @@ impl HandRegistry {
             .collect())
     }
 
+    /// Update config for an active hand instance.
+    pub fn update_config(
+        &self,
+        instance_id: Uuid,
+        config: HashMap<String, serde_json::Value>,
+    ) -> HandResult<()> {
+        let mut entry = self
+            .instances
+            .get_mut(&instance_id)
+            .ok_or(HandError::InstanceNotFound(instance_id))?;
+        entry.config = config;
+        entry.updated_at = chrono::Utc::now();
+        Ok(())
+    }
+
     /// Mark an instance as errored.
     pub fn set_error(&self, instance_id: Uuid, message: String) -> HandResult<()> {
         let mut entry = self
@@ -240,6 +371,47 @@ impl HandRegistry {
         entry.updated_at = chrono::Utc::now();
         Ok(())
     }
+
+    /// Compute readiness for a hand, cross-referencing requirements with
+    /// active instance state.
+    ///
+    /// Returns `None` if the hand definition does not exist.
+    pub fn readiness(&self, hand_id: &str) -> Option<HandReadiness> {
+        let reqs = self.check_requirements(hand_id).ok()?;
+
+        let requirements_met = reqs.iter().all(|(_, ok)| *ok);
+
+        // A hand is active if at least one instance is in Active status.
+        let active = self
+            .instances
+            .iter()
+            .any(|entry| entry.hand_id == hand_id && entry.status == HandStatus::Active);
+
+        // Degraded: active, but at least one non-optional requirement is unmet
+        // OR any optional requirement is unmet. In practice, the most useful
+        // definition is: active + any requirement unsatisfied.
+        let degraded = active && reqs.iter().any(|(_, ok)| !ok);
+
+        Some(HandReadiness {
+            requirements_met,
+            active,
+            degraded,
+        })
+    }
+}
+
+/// Readiness snapshot for a hand definition — combines requirement checks
+/// with runtime activation state so the API can report unambiguous status.
+#[derive(Debug, Clone, Serialize)]
+pub struct HandReadiness {
+    /// Whether all declared requirements are currently satisfied.
+    pub requirements_met: bool,
+    /// Whether the hand currently has a running (Active-status) instance.
+    pub active: bool,
+    /// Whether the hand is active but some requirements are unmet.
+    /// This means the hand is running in a degraded mode — some features
+    /// may not work (e.g. browser hand without chromium).
+    pub degraded: bool,
 }
 
 impl Default for HandRegistry {
@@ -252,8 +424,20 @@ impl Default for HandRegistry {
 fn check_requirement(req: &HandRequirement) -> bool {
     match req.requirement_type {
         RequirementType::Binary => {
-            // Check if binary exists on PATH
-            which_binary(&req.check_value)
+            // Special handling for python3: must actually run the command and verify
+            // the output contains "Python 3", because Windows ships a python3.exe
+            // Store shim that exists on PATH but doesn't actually work.
+            if req.check_value == "python3" {
+                return check_python3_available();
+            }
+            // Check if binary exists on PATH.
+            if which_binary(&req.check_value) {
+                return true;
+            }
+            if req.check_value == "chromium" {
+                return check_chromium_available();
+            }
+            false
         }
         RequirementType::EnvVar | RequirementType::ApiKey => {
             // Check if env var is set and non-empty
@@ -262,6 +446,133 @@ fn check_requirement(req: &HandRequirement) -> bool {
                 .unwrap_or(false)
         }
     }
+}
+
+/// Check if Python 3 is actually available by running the command and checking
+/// the version output. This avoids false negatives from Windows Store shims
+/// (python3.exe that just opens the Microsoft Store) and false positives from
+/// Python 2 installations where `python` exists but is Python 2.
+fn check_python3_available() -> bool {
+    // Try "python3 --version" first (Linux/macOS, some Windows installs)
+    if run_returns_python3("python3") {
+        return true;
+    }
+    // Try "python --version" (Windows commonly uses this, Docker containers too)
+    if run_returns_python3("python") {
+        return true;
+    }
+    false
+}
+
+/// Run `{cmd} --version` and return true if the output contains "Python 3".
+fn run_returns_python3(cmd: &str) -> bool {
+    match std::process::Command::new(cmd)
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .output()
+    {
+        Ok(output) => {
+            if !output.status.success() {
+                return false;
+            }
+            // Python --version may print to stdout or stderr depending on version
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            stdout.contains("Python 3") || stderr.contains("Python 3")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Check if Chromium (or Chrome) is available anywhere on the system.
+///
+/// Checks in order:
+/// 1. CHROME_PATH / CHROMIUM_PATH env vars
+/// 2. Common binary names on PATH (chromium, chromium-browser, google-chrome, etc.)
+/// 3. Well-known install paths (Windows Program Files, macOS Applications, Linux /usr)
+/// 4. Playwright cache (~/.cache/ms-playwright/chromium-*)
+fn check_chromium_available() -> bool {
+    // 1. Env vars
+    for var in &["CHROME_PATH", "CHROMIUM_PATH"] {
+        if let Ok(p) = std::env::var(var) {
+            if !p.is_empty() && std::path::Path::new(&p).exists() {
+                return true;
+            }
+        }
+    }
+
+    // 2. Common binary names on PATH
+    let names = [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "chrome",
+    ];
+    for name in &names {
+        if which_binary(name) {
+            return true;
+        }
+    }
+
+    // 3. Well-known install paths
+    let known_paths: Vec<std::path::PathBuf> = if cfg!(windows) {
+        let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+        let pf86 =
+            std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".into());
+        let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        vec![
+            std::path::PathBuf::from(&pf).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf86).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&local).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf).join(r"Chromium\Application\chrome.exe"),
+            std::path::PathBuf::from(&local).join(r"Chromium\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf).join(r"Microsoft\Edge\Application\msedge.exe"),
+        ]
+    } else if cfg!(target_os = "macos") {
+        vec![
+            std::path::PathBuf::from(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            std::path::PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ]
+    } else {
+        vec![
+            std::path::PathBuf::from("/usr/bin/chromium"),
+            std::path::PathBuf::from("/usr/bin/chromium-browser"),
+            std::path::PathBuf::from("/usr/bin/google-chrome"),
+            std::path::PathBuf::from("/usr/bin/google-chrome-stable"),
+            std::path::PathBuf::from("/snap/bin/chromium"),
+        ]
+    };
+    for p in &known_paths {
+        if p.exists() {
+            return true;
+        }
+    }
+
+    // 4. Playwright cache
+    if let Some(home) = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+    {
+        let pw_cache = std::path::Path::new(&home).join(".cache/ms-playwright");
+        if pw_cache.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&pw_cache) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with("chromium-") && entry.path().is_dir() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Check if a binary is on PATH (cross-platform).
@@ -329,9 +640,9 @@ mod tests {
 
     #[test]
     fn load_bundled_hands() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         let count = reg.load_bundled();
-        assert_eq!(count, 7);
+        assert_eq!(count, 8);
         assert!(!reg.list_definitions().is_empty());
 
         // Clip hand should be loaded
@@ -353,7 +664,7 @@ mod tests {
 
     #[test]
     fn activate_and_deactivate() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         reg.load_bundled();
 
         let instance = reg.activate("clip", HashMap::new()).unwrap();
@@ -375,7 +686,7 @@ mod tests {
 
     #[test]
     fn pause_and_resume() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         reg.load_bundled();
 
         let instance = reg.activate("clip", HashMap::new()).unwrap();
@@ -394,7 +705,7 @@ mod tests {
 
     #[test]
     fn set_agent() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         reg.load_bundled();
 
         let instance = reg.activate("clip", HashMap::new()).unwrap();
@@ -412,7 +723,7 @@ mod tests {
 
     #[test]
     fn check_requirements() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         reg.load_bundled();
 
         let results = reg.check_requirements("clip").unwrap();
@@ -437,7 +748,7 @@ mod tests {
 
     #[test]
     fn set_error_status() {
-        let mut reg = HandRegistry::new();
+        let reg = HandRegistry::new();
         reg.load_bundled();
 
         let instance = reg.activate("clip", HashMap::new()).unwrap();
@@ -471,6 +782,7 @@ mod tests {
             requirement_type: RequirementType::EnvVar,
             check_value: "OPENFANG_TEST_HAND_REQ".to_string(),
             description: None,
+            optional: false,
             install: None,
         };
         assert!(check_requirement(&req));
@@ -481,9 +793,93 @@ mod tests {
             requirement_type: RequirementType::EnvVar,
             check_value: "OPENFANG_NONEXISTENT_VAR_12345".to_string(),
             description: None,
+            optional: false,
             install: None,
         };
         assert!(!check_requirement(&req_missing));
         std::env::remove_var("OPENFANG_TEST_HAND_REQ");
+    }
+
+    #[test]
+    fn readiness_nonexistent_hand() {
+        let reg = HandRegistry::new();
+        assert!(reg.readiness("nonexistent").is_none());
+    }
+
+    #[test]
+    fn readiness_inactive_hand() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Lead hand has no requirements, so requirements_met = true
+        let r = reg.readiness("lead").unwrap();
+        assert!(r.requirements_met);
+        assert!(!r.active);
+        assert!(!r.degraded);
+    }
+
+    #[test]
+    fn readiness_active_hand_all_met() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Lead hand has no requirements — activate it
+        let instance = reg.activate("lead", HashMap::new()).unwrap();
+        let r = reg.readiness("lead").unwrap();
+        assert!(r.requirements_met);
+        assert!(r.active);
+        assert!(!r.degraded); // all met, so not degraded
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn readiness_active_hand_degraded() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Browser hand requires python3 + chromium. Activate it — if either
+        // requirement is unmet on this machine, it will show as degraded.
+        let instance = reg.activate("browser", HashMap::new()).unwrap();
+        let r = reg.readiness("browser").unwrap();
+        assert!(r.active);
+
+        // If any requirement is not satisfied, degraded should be true
+        if !r.requirements_met {
+            assert!(r.degraded);
+        } else {
+            assert!(!r.degraded);
+        }
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn readiness_paused_hand_not_active() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        let instance = reg.activate("lead", HashMap::new()).unwrap();
+        reg.pause(instance.instance_id).unwrap();
+
+        let r = reg.readiness("lead").unwrap();
+        assert!(!r.active); // Paused is not Active
+        assert!(!r.degraded);
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn optional_field_defaults_false() {
+        let req = HandRequirement {
+            key: "test".to_string(),
+            label: "test".to_string(),
+            requirement_type: RequirementType::Binary,
+            check_value: "test".to_string(),
+            description: None,
+            optional: false,
+            install: None,
+        };
+        assert!(!req.optional);
     }
 }

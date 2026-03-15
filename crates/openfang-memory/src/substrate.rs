@@ -149,6 +149,16 @@ impl MemorySubstrate {
         self.sessions.save_session(session)
     }
 
+    /// Save a session asynchronously — runs the SQLite write in a blocking
+    /// thread so the tokio runtime stays responsive.
+    pub async fn save_session_async(&self, session: &Session) -> OpenFangResult<()> {
+        let sessions = self.sessions.clone();
+        let session = session.clone();
+        tokio::task::spawn_blocking(move || sessions.save_session(&session))
+            .await
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?
+    }
+
     /// Create a new empty session for an agent.
     pub fn create_session(&self, agent_id: AgentId) -> OpenFangResult<Session> {
         self.sessions.create_session(agent_id)
@@ -162,6 +172,16 @@ impl MemorySubstrate {
     /// Delete a session by ID.
     pub fn delete_session(&self, session_id: SessionId) -> OpenFangResult<()> {
         self.sessions.delete_session(session_id)
+    }
+
+    /// Delete all sessions belonging to an agent.
+    pub fn delete_agent_sessions(&self, agent_id: AgentId) -> OpenFangResult<()> {
+        self.sessions.delete_agent_sessions(agent_id)
+    }
+
+    /// Delete the canonical (cross-channel) session for an agent.
+    pub fn delete_canonical_session(&self, agent_id: AgentId) -> OpenFangResult<()> {
+        self.sessions.delete_canonical_session(agent_id)
     }
 
     /// Set or clear a session label.

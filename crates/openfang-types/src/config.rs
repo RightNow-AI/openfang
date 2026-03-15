@@ -4,6 +4,26 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Deserialize a `Vec<String>` that tolerates both string and integer elements.
+///
+/// When channel configs are saved from the web dashboard, numeric IDs (e.g. Discord
+/// guild snowflakes, Telegram user IDs) are stored as TOML integers. This helper
+/// transparently converts integers back to strings so deserialization never fails.
+fn deserialize_string_or_int_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values: Vec<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .map(|v| match v {
+            serde_json::Value::String(s) => s,
+            serde_json::Value::Number(n) => n.to_string(),
+            other => other.to_string(),
+        })
+        .collect())
+}
+
 /// DM (direct message) policy for a channel.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,7 +68,7 @@ pub enum OutputFormat {
 }
 
 /// Per-channel behavior overrides.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChannelOverrides {
     /// Model override (uses agent's default if None).
@@ -69,6 +89,27 @@ pub struct ChannelOverrides {
     pub usage_footer: Option<UsageFooterMode>,
     /// Typing indicator mode override.
     pub typing_mode: Option<TypingMode>,
+    /// Whether to send lifecycle emoji reactions (⏳🤔✅❌) on messages.
+    /// Defaults to true. Set to false to suppress automatic reactions (e.g. on Telegram).
+    #[serde(default = "default_true")]
+    pub lifecycle_reactions: bool,
+}
+
+impl Default for ChannelOverrides {
+    fn default() -> Self {
+        Self {
+            model: None,
+            system_prompt: None,
+            dm_policy: DmPolicy::default(),
+            group_policy: GroupPolicy::default(),
+            rate_limit_per_user: 0,
+            threading: false,
+            output_format: None,
+            usage_footer: None,
+            typing_mode: None,
+            lifecycle_reactions: true,
+        }
+    }
 }
 
 /// Controls what usage info appears in response footers.
@@ -281,8 +322,8 @@ pub struct BrowserConfig {
     pub idle_timeout_secs: u64,
     /// Maximum concurrent browser sessions.
     pub max_sessions: usize,
-    /// Python executable path (e.g., "python3" on Unix, "python" on Windows).
-    pub python_path: String,
+    /// Path to Chromium/Chrome binary. Auto-detected if None.
+    pub chromium_path: Option<String>,
 }
 
 impl Default for BrowserConfig {
@@ -294,11 +335,7 @@ impl Default for BrowserConfig {
             timeout_secs: 30,
             idle_timeout_secs: 300,
             max_sessions: 5,
-            python_path: if cfg!(windows) {
-                "python".to_string()
-            } else {
-                "python3".to_string()
-            },
+            chromium_path: None,
         }
     }
 }
@@ -750,11 +787,14 @@ impl Default for CanvasConfig {
 #[serde(rename_all = "lowercase")]
 pub enum ExecSecurityMode {
     /// Block all shell execution.
+    #[serde(alias = "none", alias = "disabled")]
     Deny,
     /// Only allow commands in safe_bins or allowed_commands.
     #[default]
+    #[serde(alias = "restricted")]
     Allowlist,
     /// Allow all commands (unsafe, dev only).
+    #[serde(alias = "allow", alias = "all", alias = "unrestricted")]
     Full,
 }
 
@@ -1043,9 +1083,48 @@ pub struct KernelConfig {
     /// e.g. `ollama = "http://192.168.1.100:11434/v1"`
     #[serde(default)]
     pub provider_urls: HashMap<String, String>,
+    /// Provider API key env var overrides (provider ID → env var name).
+    /// For custom/unknown providers, maps the provider name to the environment
+    /// variable holding the API key. e.g. `nvidia = "NVIDIA_API_KEY"`.
+    /// If not set, the convention `{PROVIDER_UPPER}_API_KEY` is used automatically.
+    #[serde(default)]
+    pub provider_api_keys: HashMap<String, String>,
     /// OAuth client ID overrides for PKCE flows.
     #[serde(default)]
     pub oauth: OAuthConfig,
+    /// Dashboard authentication (username/password login).
+    #[serde(default)]
+    pub auth: AuthConfig,
+    /// Directory for auto-loading workflow JSON files on startup.
+    /// Defaults to `~/.openfang/workflows`. Set to empty string to disable.
+    #[serde(default)]
+    pub workflows_dir: Option<PathBuf>,
+}
+
+/// Dashboard authentication (username/password login).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuthConfig {
+    /// Enable username/password authentication for the dashboard.
+    pub enabled: bool,
+    /// Admin username.
+    pub username: String,
+    /// SHA256 hash of the password (hex-encoded).
+    /// Generate with: openfang auth hash-password
+    pub password_hash: String,
+    /// Session token lifetime in hours (default: 168 = 7 days).
+    pub session_ttl_hours: u64,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            username: "admin".to_string(),
+            password_hash: String::new(),
+            session_ttl_hours: 168,
+        }
+    }
 }
 
 /// OAuth client ID overrides for PKCE flows.
@@ -1083,6 +1162,10 @@ pub struct BudgetConfig {
     pub max_monthly_usd: f64,
     /// Alert threshold as a fraction (0.0 - 1.0). Trigger warnings at this % of any limit.
     pub alert_threshold: f64,
+    /// Default per-agent hourly token limit override. When set (> 0), all agents
+    /// will be overridden to this value. Set to 0 to keep each agent's own limit.
+    /// Use this to globally raise or lower the token budget for all agents.
+    pub default_max_llm_tokens_per_hour: u64,
 }
 
 impl Default for BudgetConfig {
@@ -1092,6 +1175,7 @@ impl Default for BudgetConfig {
             max_daily_usd: 0.0,
             max_monthly_usd: 0.0,
             alert_threshold: 0.8,
+            default_max_llm_tokens_per_hour: 0,
         }
     }
 }
@@ -1167,9 +1251,17 @@ fn default_language() -> String {
     "en".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_thread_ttl() -> u64 {
+    24
+}
+
 impl Default for KernelConfig {
     fn default() -> Self {
-        let home_dir = dirs_next_home().join(".openfang");
+        let home_dir = openfang_home_dir();
         Self {
             data_dir: home_dir.join("data"),
             home_dir,
@@ -1212,7 +1304,10 @@ impl Default for KernelConfig {
             thinking: None,
             budget: BudgetConfig::default(),
             provider_urls: HashMap::new(),
+            provider_api_keys: HashMap::new(),
             oauth: OAuthConfig::default(),
+            auth: AuthConfig::default(),
+            workflows_dir: None,
         }
     }
 }
@@ -1223,6 +1318,27 @@ impl KernelConfig {
         self.workspaces_dir
             .clone()
             .unwrap_or_else(|| self.home_dir.join("workspaces"))
+    }
+
+    /// Resolve the API key env var name for a provider.
+    ///
+    /// Checks: 1) explicit `provider_api_keys` mapping, 2) `auth_profiles` first entry,
+    /// 3) convention `{PROVIDER_UPPER}_API_KEY`.
+    pub fn resolve_api_key_env(&self, provider: &str) -> String {
+        // 1. Explicit mapping in [provider_api_keys]
+        if let Some(env_var) = self.provider_api_keys.get(provider) {
+            return env_var.clone();
+        }
+        // 2. Auth profiles (first profile by priority)
+        if let Some(profiles) = self.auth_profiles.get(provider) {
+            let mut sorted: Vec<_> = profiles.iter().collect();
+            sorted.sort_by_key(|p| p.priority);
+            if let Some(best) = sorted.first() {
+                return best.api_key_env.clone();
+            }
+        }
+        // 3. Convention: NVIDIA → NVIDIA_API_KEY
+        format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"))
     }
 }
 
@@ -1305,13 +1421,25 @@ impl std::fmt::Debug for KernelConfig {
                 &format!("{} provider(s)", self.auth_profiles.len()),
             )
             .field("thinking", &self.thinking.is_some())
+            .field(
+                "provider_api_keys",
+                &format!("{} mapping(s)", self.provider_api_keys.len()),
+            )
+            .field("auth", &format!("enabled={}", self.auth.enabled))
             .finish()
     }
 }
 
-/// Fallback home directory resolution.
-fn dirs_next_home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(std::env::temp_dir)
+/// Resolve the OpenFang home directory.
+///
+/// Priority: `OPENFANG_HOME` env var > `~/.openfang`.
+fn openfang_home_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("OPENFANG_HOME") {
+        return PathBuf::from(home);
+    }
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".openfang")
 }
 
 /// Default LLM model configuration.
@@ -1501,8 +1629,10 @@ pub struct ChannelsConfig {
     // Wave 5 — Niche & differentiating channels
     /// Mumble text chat configuration (None = disabled).
     pub mumble: Option<MumbleConfig>,
-    /// DingTalk robot configuration (None = disabled).
+    /// DingTalk robot configuration — webhook mode (None = disabled).
     pub dingtalk: Option<DingTalkConfig>,
+    /// DingTalk Stream mode — long-lived WebSocket (None = disabled).
+    pub dingtalk_stream: Option<DingTalkStreamConfig>,
     /// Discourse forum configuration (None = disabled).
     pub discourse: Option<DiscourseConfig>,
     /// Gitter streaming configuration (None = disabled).
@@ -1515,6 +1645,8 @@ pub struct ChannelsConfig {
     pub webhook: Option<WebhookConfig>,
     /// LinkedIn messaging configuration (None = disabled).
     pub linkedin: Option<LinkedInConfig>,
+    /// WeCom/WeChat Work configuration (None = disabled).
+    pub wecom: Option<WeComConfig>,
 }
 
 /// Telegram channel adapter configuration.
@@ -1524,11 +1656,21 @@ pub struct TelegramConfig {
     /// Env var name holding the bot token (NOT the token itself).
     pub bot_token_env: String,
     /// Telegram user IDs allowed to interact (empty = allow all).
-    pub allowed_users: Vec<i64>,
+    /// Accepts strings for consistency; numeric TOML integers are coerced to strings.
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
+    pub allowed_users: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
     /// Polling interval in seconds.
     pub poll_interval_secs: u64,
+    /// Custom Telegram Bot API base URL for proxies or mirrors.
+    /// Defaults to `https://api.telegram.org` when not set.
+    #[serde(default)]
+    pub api_url: Option<String>,
+    /// Default chat ID for outgoing messages when no recipient is specified.
+    /// Allows channel_send(channel="telegram", message="...") without a recipient.
+    #[serde(default)]
+    pub default_chat_id: Option<String>,
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
@@ -1541,6 +1683,8 @@ impl Default for TelegramConfig {
             allowed_users: vec![],
             default_agent: None,
             poll_interval_secs: 1,
+            api_url: None,
+            default_chat_id: None,
             overrides: ChannelOverrides::default(),
         }
     }
@@ -1553,11 +1697,23 @@ pub struct DiscordConfig {
     /// Env var name holding the bot token (NOT the token itself).
     pub bot_token_env: String,
     /// Guild (server) IDs allowed to interact (empty = allow all).
-    pub allowed_guilds: Vec<u64>,
+    /// Accepts strings for consistency with other channel configs.
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
+    pub allowed_guilds: Vec<String>,
+    /// User IDs allowed to interact (empty = allow all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
+    pub allowed_users: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
-    /// Gateway intents bitmask (default: 33280 = GUILD_MESSAGES | MESSAGE_CONTENT).
+    /// Gateway intents bitmask (default: 37376 = GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT).
     pub intents: u64,
+    /// Ignore messages from other bots (default: true).
+    /// Set to false to allow bot-to-bot interactions in multi-agent setups.
+    #[serde(default = "default_true")]
+    pub ignore_bots: bool,
+    /// Default channel ID for outgoing messages when no recipient is specified.
+    #[serde(default)]
+    pub default_channel_id: Option<String>,
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
@@ -1568,8 +1724,11 @@ impl Default for DiscordConfig {
         Self {
             bot_token_env: "DISCORD_BOT_TOKEN".to_string(),
             allowed_guilds: vec![],
+            allowed_users: vec![],
             default_agent: None,
-            intents: 33280,
+            intents: 37376,
+            ignore_bots: true,
+            default_channel_id: None,
             overrides: ChannelOverrides::default(),
         }
     }
@@ -1584,12 +1743,22 @@ pub struct SlackConfig {
     /// Env var name holding the bot token (xoxb-) for REST API.
     pub bot_token_env: String,
     /// Channel IDs allowed to interact (empty = allow all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_channels: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
+    /// Automatically reply to follow-up messages in threads where bot was mentioned.
+    #[serde(default = "default_true")]
+    pub auto_thread_reply: bool,
+    /// Hours to track a thread after last interaction (default: 24).
+    #[serde(default = "default_thread_ttl")]
+    pub thread_ttl_hours: u64,
+    /// Whether to unfurl (expand previews for) links in messages (default: true).
+    #[serde(default = "default_true")]
+    pub unfurl_links: bool,
 }
 
 impl Default for SlackConfig {
@@ -1600,6 +1769,9 @@ impl Default for SlackConfig {
             allowed_channels: vec![],
             default_agent: None,
             overrides: ChannelOverrides::default(),
+            auto_thread_reply: true,
+            thread_ttl_hours: 24,
+            unfurl_links: true,
         }
     }
 }
@@ -1620,6 +1792,7 @@ pub struct WhatsAppConfig {
     /// When set, outgoing messages are routed through the gateway instead of Cloud API.
     pub gateway_url_env: String,
     /// Allowed phone numbers (empty = allow all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_users: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -1652,6 +1825,7 @@ pub struct SignalConfig {
     /// Registered phone number.
     pub phone_number: String,
     /// Allowed phone numbers (empty = allow all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_users: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -1683,6 +1857,7 @@ pub struct MatrixConfig {
     /// Env var name holding the access token.
     pub access_token_env: String,
     /// Room IDs to listen in (empty = all joined rooms).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_rooms: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -1723,8 +1898,10 @@ pub struct EmailConfig {
     /// Poll interval in seconds.
     pub poll_interval_secs: u64,
     /// IMAP folders to monitor.
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub folders: Vec<String>,
     /// Only process emails from these senders (empty = all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_senders: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -1762,6 +1939,7 @@ pub struct TeamsConfig {
     /// Port for the incoming webhook.
     pub webhook_port: u16,
     /// Allowed tenant IDs (empty = allow all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_tenants: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -1792,6 +1970,7 @@ pub struct MattermostConfig {
     /// Env var name holding the bot token.
     pub token_env: String,
     /// Allowed channel IDs (empty = all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_channels: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -1825,6 +2004,7 @@ pub struct IrcConfig {
     /// Env var name holding the server password (optional).
     pub password_env: Option<String>,
     /// Channels to join (e.g., `["#openfang", "#general"]`).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub channels: Vec<String>,
     /// Use TLS (requires tokio-native-tls).
     pub use_tls: bool,
@@ -1857,6 +2037,7 @@ pub struct GoogleChatConfig {
     /// Env var name holding the service account JSON key.
     pub service_account_env: String,
     /// Space IDs to listen in.
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub space_ids: Vec<String>,
     /// Port for the incoming webhook.
     pub webhook_port: u16,
@@ -1886,6 +2067,7 @@ pub struct TwitchConfig {
     /// Env var name holding the OAuth token.
     pub oauth_token_env: String,
     /// Twitch channels to join (without #).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub channels: Vec<String>,
     /// Bot nickname.
     pub nick: String,
@@ -1919,6 +2101,7 @@ pub struct RocketChatConfig {
     /// User ID for the bot.
     pub user_id: String,
     /// Allowed channel IDs (empty = all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_channels: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -1951,6 +2134,7 @@ pub struct ZulipConfig {
     /// Env var name holding the API key.
     pub api_key_env: String,
     /// Streams to listen in.
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub streams: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -1985,6 +2169,7 @@ pub struct XmppConfig {
     /// XMPP server port.
     pub port: u16,
     /// MUC rooms to join.
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub rooms: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -2109,6 +2294,7 @@ pub struct RedditConfig {
     /// Env var name holding the bot password.
     pub password_env: String,
     /// Subreddits to monitor.
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub subreddits: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -2187,6 +2373,9 @@ impl Default for BlueskyConfig {
 }
 
 /// Feishu/Lark Open Platform channel adapter configuration.
+///
+/// Supports both Feishu (China domestic, `open.feishu.cn`) and Lark
+/// (International, `open.larksuite.com`) via the `region` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FeishuConfig {
@@ -2196,6 +2385,17 @@ pub struct FeishuConfig {
     pub app_secret_env: String,
     /// Port for the incoming webhook.
     pub webhook_port: u16,
+    /// Region: "cn" for Feishu (open.feishu.cn), "intl" for Lark (open.larksuite.com).
+    pub region: String,
+    /// Webhook URL path (default: "/feishu/webhook").
+    pub webhook_path: String,
+    /// Optional verification token for webhook event validation.
+    pub verification_token: Option<String>,
+    /// Env var name holding the encrypt key for event decryption (AES-256-CBC).
+    pub encrypt_key_env: Option<String>,
+    /// Bot name aliases for group-chat @mention detection.
+    #[serde(default)]
+    pub bot_names: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
     /// Per-channel behavior overrides.
@@ -2209,6 +2409,49 @@ impl Default for FeishuConfig {
             app_id: String::new(),
             app_secret_env: "FEISHU_APP_SECRET".to_string(),
             webhook_port: 8453,
+            region: "cn".to_string(),
+            webhook_path: "/feishu/webhook".to_string(),
+            verification_token: None,
+            encrypt_key_env: None,
+            bot_names: Vec::new(),
+            default_agent: None,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
+/// WeCom/WeChat Work channel adapter configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WeComConfig {
+    /// WeCom corp ID.
+    pub corp_id: String,
+    /// WeCom application agent ID.
+    pub agent_id: String,
+    /// Env var name holding the application secret.
+    pub secret_env: String,
+    /// Port for the incoming webhook.
+    pub webhook_port: u16,
+    /// Callback verification token (optional, for URL verification).
+    pub token: Option<String>,
+    /// Encoding AES key for callback (optional, for encrypted mode).
+    pub encoding_aes_key: Option<String>,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for WeComConfig {
+    fn default() -> Self {
+        Self {
+            corp_id: String::new(),
+            agent_id: String::new(),
+            secret_env: "WECOM_SECRET".to_string(),
+            webhook_port: 8454,
+            token: None,
+            encoding_aes_key: None,
             default_agent: None,
             overrides: ChannelOverrides::default(),
         }
@@ -2252,6 +2495,7 @@ pub struct NextcloudConfig {
     /// Env var name holding the auth token.
     pub token_env: String,
     /// Room tokens to listen in (empty = all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_rooms: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -2279,6 +2523,7 @@ pub struct GuildedConfig {
     /// Env var name holding the bot token.
     pub bot_token_env: String,
     /// Server IDs to listen in (empty = all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub server_ids: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -2307,6 +2552,7 @@ pub struct KeybaseConfig {
     /// Env var name holding the paper key.
     pub paperkey_env: String,
     /// Team names to listen in (empty = all DMs).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_teams: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -2363,6 +2609,7 @@ pub struct NostrConfig {
     /// Env var name holding the private key (nsec or hex).
     pub private_key_env: String,
     /// Relay URLs to connect to.
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub relays: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -2389,6 +2636,7 @@ pub struct WebexConfig {
     /// Env var name holding the bot token.
     pub bot_token_env: String,
     /// Room IDs to listen in (empty = all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_rooms: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -2469,6 +2717,7 @@ pub struct TwistConfig {
     /// Workspace ID.
     pub workspace_id: String,
     /// Channel IDs to listen in (empty = all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_channels: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -2555,6 +2804,39 @@ impl Default for DingTalkConfig {
     }
 }
 
+/// DingTalk Stream channel adapter configuration.
+///
+/// Uses the DingTalk Stream Mode (WebSocket long-connection) instead of
+/// the legacy webhook approach. Requires an Enterprise Internal App with
+/// Stream Mode enabled in the DingTalk Open Platform console.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DingTalkStreamConfig {
+    /// Env var holding the App Key (client_id).
+    pub app_key_env: String,
+    /// Env var holding the App Secret (client_secret).
+    pub app_secret_env: String,
+    /// Robot code for outbound batchSend (often same as app_key).
+    pub robot_code_env: String,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for DingTalkStreamConfig {
+    fn default() -> Self {
+        Self {
+            app_key_env: "DINGTALK_APP_KEY".to_string(),
+            app_secret_env: "DINGTALK_APP_SECRET".to_string(),
+            robot_code_env: "DINGTALK_ROBOT_CODE".to_string(),
+            default_agent: None,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
 /// Discourse forum channel adapter configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -2566,6 +2848,7 @@ pub struct DiscourseConfig {
     /// API username.
     pub api_username: String,
     /// Category slugs to monitor.
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub categories: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
@@ -3070,6 +3353,26 @@ impl KernelConfig {
                 ));
             }
         }
+        if let Some(ref ds) = self.channels.dingtalk_stream {
+            if std::env::var(&ds.app_key_env)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                warnings.push(format!(
+                    "DingTalk Stream configured but {} is not set",
+                    ds.app_key_env
+                ));
+            }
+            if std::env::var(&ds.app_secret_env)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                warnings.push(format!(
+                    "DingTalk Stream configured but {} is not set",
+                    ds.app_secret_env
+                ));
+            }
+        }
         if let Some(ref dc) = self.channels.discourse {
             if std::env::var(&dc.api_key_env)
                 .unwrap_or_default()
@@ -3226,7 +3529,25 @@ mod tests {
         let dc = DiscordConfig::default();
         assert_eq!(dc.bot_token_env, "DISCORD_BOT_TOKEN");
         assert!(dc.allowed_guilds.is_empty());
-        assert_eq!(dc.intents, 33280);
+        assert_eq!(dc.intents, 37376);
+        assert!(dc.ignore_bots);
+    }
+
+    #[test]
+    fn test_discord_config_ignore_bots_deserialization() {
+        let toml_str = r#"
+            bot_token_env = "DISCORD_BOT_TOKEN"
+            ignore_bots = false
+        "#;
+        let dc: DiscordConfig = toml::from_str(toml_str).unwrap();
+        assert!(!dc.ignore_bots);
+
+        // Default (field omitted) should be true
+        let toml_str2 = r#"
+            bot_token_env = "DISCORD_BOT_TOKEN"
+        "#;
+        let dc2: DiscordConfig = toml::from_str(toml_str2).unwrap();
+        assert!(dc2.ignore_bots);
     }
 
     #[test]
@@ -3470,6 +3791,7 @@ mod tests {
         assert!(!ov.threading);
         assert!(ov.output_format.is_none());
         assert!(ov.model.is_none());
+        assert!(ov.lifecycle_reactions);
     }
 
     #[test]
@@ -3529,6 +3851,25 @@ mod tests {
         assert_eq!(back.rate_limit_per_user, 10);
         assert!(back.threading);
         assert_eq!(back.output_format, Some(OutputFormat::TelegramHtml));
+        // lifecycle_reactions defaults to true via ..Default::default()
+        assert!(back.lifecycle_reactions);
+    }
+
+    #[test]
+    fn test_channel_overrides_lifecycle_reactions_disabled() {
+        let json = r#"{"lifecycle_reactions": false}"#;
+        let ov: ChannelOverrides = serde_json::from_str(json).unwrap();
+        assert!(!ov.lifecycle_reactions);
+        // Other fields should have their defaults
+        assert_eq!(ov.dm_policy, DmPolicy::Respond);
+        assert!(ov.model.is_none());
+    }
+
+    #[test]
+    fn test_channel_overrides_lifecycle_reactions_missing_defaults_true() {
+        let json = r#"{}"#;
+        let ov: ChannelOverrides = serde_json::from_str(json).unwrap();
+        assert!(ov.lifecycle_reactions);
     }
 
     #[test]
@@ -3575,5 +3916,93 @@ mod tests {
         assert_eq!(config.browser.max_sessions, browser_sessions);
         assert_eq!(config.web.fetch.max_response_bytes, fetch_bytes);
         assert_eq!(config.web.fetch.timeout_secs, fetch_timeout);
+    }
+
+    #[test]
+    fn test_resolve_api_key_env_convention() {
+        let config = KernelConfig::default();
+        // Unknown provider falls back to convention
+        assert_eq!(config.resolve_api_key_env("nvidia"), "NVIDIA_API_KEY");
+        assert_eq!(config.resolve_api_key_env("my-custom"), "MY_CUSTOM_API_KEY");
+    }
+
+    #[test]
+    fn test_resolve_api_key_env_explicit_mapping() {
+        let mut config = KernelConfig::default();
+        config
+            .provider_api_keys
+            .insert("nvidia".to_string(), "NIM_KEY".to_string());
+        // Explicit mapping takes precedence over convention
+        assert_eq!(config.resolve_api_key_env("nvidia"), "NIM_KEY");
+    }
+
+    #[test]
+    fn test_resolve_api_key_env_auth_profiles() {
+        let mut config = KernelConfig::default();
+        config.auth_profiles.insert(
+            "nvidia".to_string(),
+            vec![AuthProfile {
+                name: "primary".to_string(),
+                api_key_env: "NVIDIA_PRIMARY_KEY".to_string(),
+                priority: 0,
+            }],
+        );
+        // Auth profiles take precedence over convention (but not explicit mapping)
+        assert_eq!(config.resolve_api_key_env("nvidia"), "NVIDIA_PRIMARY_KEY");
+    }
+
+    #[test]
+    fn test_resolve_api_key_env_explicit_over_auth_profile() {
+        let mut config = KernelConfig::default();
+        config
+            .provider_api_keys
+            .insert("nvidia".to_string(), "NIM_KEY".to_string());
+        config.auth_profiles.insert(
+            "nvidia".to_string(),
+            vec![AuthProfile {
+                name: "primary".to_string(),
+                api_key_env: "NVIDIA_PRIMARY_KEY".to_string(),
+                priority: 0,
+            }],
+        );
+        // Explicit mapping wins over auth profiles
+        assert_eq!(config.resolve_api_key_env("nvidia"), "NIM_KEY");
+    }
+
+    #[test]
+    fn test_provider_api_keys_toml_roundtrip() {
+        let toml_str = r#"
+            [provider_api_keys]
+            nvidia = "NVIDIA_NIM_KEY"
+            azure = "AZURE_OPENAI_KEY"
+        "#;
+        let config: KernelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.provider_api_keys.len(), 2);
+        assert_eq!(
+            config.provider_api_keys.get("nvidia").unwrap(),
+            "NVIDIA_NIM_KEY"
+        );
+        assert_eq!(
+            config.provider_api_keys.get("azure").unwrap(),
+            "AZURE_OPENAI_KEY"
+        );
+    }
+
+    #[test]
+    fn test_slack_config_unfurl_links_defaults_true() {
+        let config: SlackConfig = toml::from_str("").unwrap();
+        assert!(config.unfurl_links);
+    }
+
+    #[test]
+    fn test_slack_config_unfurl_links_explicit_false() {
+        let config: SlackConfig = toml::from_str("unfurl_links = false").unwrap();
+        assert!(!config.unfurl_links);
+    }
+
+    #[test]
+    fn test_slack_config_unfurl_links_explicit_true() {
+        let config: SlackConfig = toml::from_str("unfurl_links = true").unwrap();
+        assert!(config.unfurl_links);
     }
 }
