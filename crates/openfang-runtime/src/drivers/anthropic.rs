@@ -507,7 +507,10 @@ impl LlmDriver for AnthropicDriver {
             for block in blocks {
                 match block {
                     ContentBlockAccum::Text(text) => {
-                        content.push(ContentBlock::Text { text, provider_metadata: None });
+                        content.push(ContentBlock::Text {
+                            text,
+                            provider_metadata: None,
+                        });
                     }
                     ContentBlockAccum::Thinking(thinking) => {
                         content.push(ContentBlock::Thinking { thinking });
@@ -573,7 +576,9 @@ fn convert_message(msg: &Message) -> ApiMessage {
                             data: data.clone(),
                         },
                     }),
-                    ContentBlock::ToolUse { id, name, input, .. } => Some(ApiContentBlock::ToolUse {
+                    ContentBlock::ToolUse {
+                        id, name, input, ..
+                    } => Some(ApiContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
                         input: input.clone(),
@@ -610,7 +615,10 @@ fn convert_response(api: ApiResponse) -> CompletionResponse {
     for block in api.content {
         match block {
             ResponseContentBlock::Text { text } => {
-                content.push(ContentBlock::Text { text, provider_metadata: None });
+                content.push(ContentBlock::Text {
+                    text,
+                    provider_metadata: None,
+                });
             }
             ResponseContentBlock::ToolUse { id, name, input } => {
                 content.push(ContentBlock::ToolUse {

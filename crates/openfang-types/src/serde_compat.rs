@@ -187,8 +187,15 @@ where
                     return Err(de::Error::unknown_variant(
                         other,
                         &[
-                            "deny", "none", "disabled", "allowlist", "restricted", "full",
-                            "allow", "all", "unrestricted",
+                            "deny",
+                            "none",
+                            "disabled",
+                            "allowlist",
+                            "restricted",
+                            "full",
+                            "allow",
+                            "all",
+                            "unrestricted",
                         ],
                     ));
                 }
@@ -203,9 +210,8 @@ where
         where
             A: MapAccess<'de>,
         {
-            let policy = crate::config::ExecPolicy::deserialize(
-                de::value::MapAccessDeserializer::new(map),
-            )?;
+            let policy =
+                crate::config::ExecPolicy::deserialize(de::value::MapAccessDeserializer::new(map))?;
             Ok(Some(policy))
         }
 

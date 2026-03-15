@@ -78,8 +78,7 @@ impl AgentRouter {
         agent_name: String,
     ) {
         self.channel_defaults.insert(channel_key.clone(), agent_id);
-        self.channel_default_names
-            .insert(channel_key, agent_name);
+        self.channel_default_names.insert(channel_key, agent_name);
     }
 
     /// Retrieve the stored agent name for a channel default (if any).

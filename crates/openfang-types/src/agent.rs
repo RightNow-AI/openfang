@@ -275,7 +275,7 @@ impl Default for ResourceQuota {
             max_llm_tokens_per_hour: 0, // unlimited by default
             max_network_bytes_per_hour: 100 * 1024 * 1024, // 100 MB
             max_cost_per_hour_usd: 0.0, // unlimited by default
-            max_cost_per_day_usd: 0.0,   // unlimited
+            max_cost_per_day_usd: 0.0,  // unlimited
             max_cost_per_month_usd: 0.0, // unlimited
         }
     }
@@ -1269,10 +1269,7 @@ model = "llama-3.3-70b-versatile"
 system_prompt = "You are a helpful assistant."
 "#;
         let manifest: AgentManifest = toml::from_str(toml_str).unwrap();
-        assert_eq!(
-            manifest.model.system_prompt,
-            "You are a helpful assistant."
-        );
+        assert_eq!(manifest.model.system_prompt, "You are a helpful assistant.");
     }
 
     #[test]

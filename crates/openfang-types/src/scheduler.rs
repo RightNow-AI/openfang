@@ -332,9 +332,7 @@ impl CronJob {
                     }
                     // Workflows can run longer than agent turns (max 3600s = 1h)
                     if *t > 3600 {
-                        return Err(format!(
-                            "timeout_secs too large ({t}, max 3600)"
-                        ));
+                        return Err(format!("timeout_secs too large ({t}, max 3600)"));
                     }
                 }
             }

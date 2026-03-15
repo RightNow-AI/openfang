@@ -206,7 +206,11 @@ const CHANNEL_DEFS: &[ChannelDef] = &[
         name: "dingtalk_stream",
         display_name: "DingTalk Stream",
         category: "Enterprise",
-        env_vars: &["DINGTALK_APP_KEY", "DINGTALK_APP_SECRET", "DINGTALK_ROBOT_CODE"],
+        env_vars: &[
+            "DINGTALK_APP_KEY",
+            "DINGTALK_APP_SECRET",
+            "DINGTALK_ROBOT_CODE",
+        ],
         description: "DingTalk Stream Mode (WebSocket long-connection)",
     },
     ChannelDef {

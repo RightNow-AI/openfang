@@ -154,7 +154,9 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
 
     // Section 9.1 — Sender Identity (skip for subagents)
     if !ctx.is_subagent {
-        if let Some(sender_line) = build_sender_section(ctx.sender_name.as_deref(), ctx.sender_id.as_deref()) {
+        if let Some(sender_line) =
+            build_sender_section(ctx.sender_name.as_deref(), ctx.sender_id.as_deref())
+        {
             sections.push(sender_line);
         }
     }

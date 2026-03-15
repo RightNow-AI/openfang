@@ -89,7 +89,11 @@ impl ClaudeCodeDriver {
     }
 
     /// Create a new Claude Code driver with a custom timeout.
-    pub fn with_timeout(cli_path: Option<String>, skip_permissions: bool, timeout_secs: u64) -> Self {
+    pub fn with_timeout(
+        cli_path: Option<String>,
+        skip_permissions: bool,
+        timeout_secs: u64,
+    ) -> Self {
         let mut driver = Self::new(cli_path, skip_permissions);
         driver.message_timeout_secs = timeout_secs;
         driver
@@ -150,9 +154,7 @@ impl ClaudeCodeDriver {
 
     /// Map a model ID like "claude-code/opus" to CLI --model flag value.
     fn model_flag(model: &str) -> Option<String> {
-        let stripped = model
-            .strip_prefix("claude-code/")
-            .unwrap_or(model);
+        let stripped = model.strip_prefix("claude-code/").unwrap_or(model);
         match stripped {
             "opus" => Some("opus".to_string()),
             "sonnet" => Some("sonnet".to_string()),
@@ -228,10 +230,7 @@ struct ClaudeStreamEvent {
 
 #[async_trait]
 impl LlmDriver for ClaudeCodeDriver {
-    async fn complete(
-        &self,
-        request: CompletionRequest,
-    ) -> Result<CompletionResponse, LlmError> {
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let prompt = Self::build_prompt(&request);
         let model_flag = Self::model_flag(&request.model);
 
@@ -257,13 +256,13 @@ impl LlmDriver for ClaudeCodeDriver {
         debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, "Spawning Claude Code CLI");
 
         // Spawn child process instead of cmd.output() so we can track PID and timeout
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| LlmError::Http(format!(
+        let mut child = cmd.spawn().map_err(|e| {
+            LlmError::Http(format!(
                 "Claude Code CLI not found or failed to start ({}). \
                  Install: npm install -g @anthropic-ai/claude-code && claude auth",
                 e
-            )))?;
+            ))
+        })?;
 
         // Track the PID using the model name as label (best identifier available)
         let pid_label = request.model.clone();
@@ -319,7 +318,11 @@ impl LlmDriver for ClaudeCodeDriver {
         if !status.success() {
             let stderr = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
             let stdout_str = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
-            let detail = if !stderr.is_empty() { &stderr } else { &stdout_str };
+            let detail = if !stderr.is_empty() {
+                &stderr
+            } else {
+                &stdout_str
+            };
             let code = status.code().unwrap_or(1);
 
             warn!(
@@ -335,9 +338,7 @@ impl LlmDriver for ClaudeCodeDriver {
                 || detail.contains("login")
                 || detail.contains("credentials")
             {
-                format!(
-                    "Claude Code CLI is not authenticated. Run: claude auth\nDetail: {detail}"
-                )
+                format!("Claude Code CLI is not authenticated. Run: claude auth\nDetail: {detail}")
             } else if detail.contains("permission")
                 || detail.contains("--dangerously-skip-permissions")
             {
@@ -361,13 +362,17 @@ impl LlmDriver for ClaudeCodeDriver {
 
         // Try JSON parse first
         if let Ok(parsed) = serde_json::from_str::<ClaudeJsonOutput>(&stdout) {
-            let text = parsed.result
+            let text = parsed
+                .result
                 .or(parsed.content)
                 .or(parsed.text)
                 .unwrap_or_default();
             let usage = parsed.usage.unwrap_or_default();
             return Ok(CompletionResponse {
-                content: vec![ContentBlock::Text { text: text.clone(), provider_metadata: None }],
+                content: vec![ContentBlock::Text {
+                    text: text.clone(),
+                    provider_metadata: None,
+                }],
                 stop_reason: StopReason::EndTurn,
                 tool_calls: Vec::new(),
                 usage: TokenUsage {
@@ -380,7 +385,10 @@ impl LlmDriver for ClaudeCodeDriver {
         // Fallback: treat entire stdout as plain text
         let text = stdout.trim().to_string();
         Ok(CompletionResponse {
-            content: vec![ContentBlock::Text { text, provider_metadata: None }],
+            content: vec![ContentBlock::Text {
+                text,
+                provider_metadata: None,
+            }],
             stop_reason: StopReason::EndTurn,
             tool_calls: Vec::new(),
             usage: TokenUsage {
@@ -420,13 +428,13 @@ impl LlmDriver for ClaudeCodeDriver {
 
         debug!(cli = %self.cli_path, "Spawning Claude Code CLI (streaming)");
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| LlmError::Http(format!(
+        let mut child = cmd.spawn().map_err(|e| {
+            LlmError::Http(format!(
                 "Claude Code CLI not found or failed to start ({}). \
                  Install: npm install -g @anthropic-ai/claude-code && claude auth",
                 e
-            )))?;
+            ))
+        })?;
 
         // Track PID
         let pid_label = format!("{}-stream", request.model);
@@ -435,13 +443,10 @@ impl LlmDriver for ClaudeCodeDriver {
             debug!(pid = pid, model = %pid_label, "Claude Code CLI streaming subprocess started");
         }
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| {
-                self.active_pids.remove(&pid_label);
-                LlmError::Http("No stdout from claude CLI".to_string())
-            })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            self.active_pids.remove(&pid_label);
+            LlmError::Http("No stdout from claude CLI".to_string())
+        })?;
 
         let reader = tokio::io::BufReader::new(stdout);
         let mut lines = reader.lines();
@@ -507,9 +512,7 @@ impl LlmDriver for ClaudeCodeDriver {
                         // Not valid JSON — treat as raw text
                         warn!(line = %line, error = %e, "Non-JSON line from Claude CLI");
                         full_text.push_str(&line);
-                        let _ = tx
-                            .send(StreamEvent::TextDelta { text: line })
-                            .await;
+                        let _ = tx.send(StreamEvent::TextDelta { text: line }).await;
                     }
                 }
             }
@@ -558,7 +561,11 @@ impl LlmDriver for ClaudeCodeDriver {
                 status: code as u16,
                 message: format!(
                     "Claude Code CLI streaming exited with code {code}: {}",
-                    if stderr_text.is_empty() { "no stderr" } else { &stderr_text }
+                    if stderr_text.is_empty() {
+                        "no stderr"
+                    } else {
+                        &stderr_text
+                    }
                 ),
             });
         }
@@ -571,7 +578,10 @@ impl LlmDriver for ClaudeCodeDriver {
             .await;
 
         Ok(CompletionResponse {
-            content: vec![ContentBlock::Text { text: full_text, provider_metadata: None }],
+            content: vec![ContentBlock::Text {
+                text: full_text,
+                provider_metadata: None,
+            }],
             stop_reason: StopReason::EndTurn,
             tool_calls: Vec::new(),
             usage: final_usage,
@@ -581,8 +591,7 @@ impl LlmDriver for ClaudeCodeDriver {
 
 /// Check if the Claude Code CLI is available.
 pub fn claude_code_available() -> bool {
-    ClaudeCodeDriver::detect().is_some()
-        || claude_credentials_exist()
+    ClaudeCodeDriver::detect().is_some() || claude_credentials_exist()
 }
 
 /// Check if Claude credentials file exists.
@@ -604,7 +613,9 @@ fn claude_credentials_exist() -> bool {
 fn home_dir() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from)
+        std::env::var("USERPROFILE")
+            .ok()
+            .map(std::path::PathBuf::from)
     }
     #[cfg(not(target_os = "windows"))]
     {

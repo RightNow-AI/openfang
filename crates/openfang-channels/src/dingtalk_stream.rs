@@ -97,7 +97,10 @@ impl DingTalkStreamAdapter {
         user_ids: &[&str],
         content: ChannelContent,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let token = self.get_token().await.map_err(|e| -> Box<dyn std::error::Error> { e })?;
+        let token = self
+            .get_token()
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error> { e })?;
 
         let (msg_key, _msg_param) = match &content {
             ChannelContent::Text(t) => (
@@ -180,29 +183,27 @@ impl ChannelAdapter for DingTalkStreamAdapter {
                 }
 
                 // 1. Get access token
-                let token = match get_access_token(&client, &app_key, &app_secret, &token_cache)
-                    .await
-                {
-                    Ok(t) => t,
-                    Err(e) => {
-                        warn!("DingTalk Stream: token fetch failed: {e}");
-                        attempt += 1;
-                        tokio::time::sleep(backoff(attempt)).await;
-                        continue;
-                    }
-                };
-
-                // 2. Get WebSocket endpoint
-                let ws_url =
-                    match get_ws_endpoint(&client, &app_key, &app_secret, &token).await {
-                        Ok(u) => u,
+                let token =
+                    match get_access_token(&client, &app_key, &app_secret, &token_cache).await {
+                        Ok(t) => t,
                         Err(e) => {
-                            warn!("DingTalk Stream: endpoint fetch failed: {e}");
+                            warn!("DingTalk Stream: token fetch failed: {e}");
                             attempt += 1;
                             tokio::time::sleep(backoff(attempt)).await;
                             continue;
                         }
                     };
+
+                // 2. Get WebSocket endpoint
+                let ws_url = match get_ws_endpoint(&client, &app_key, &app_secret, &token).await {
+                    Ok(u) => u,
+                    Err(e) => {
+                        warn!("DingTalk Stream: endpoint fetch failed: {e}");
+                        attempt += 1;
+                        tokio::time::sleep(backoff(attempt)).await;
+                        continue;
+                    }
+                };
 
                 info!(
                     "DingTalk Stream: connecting to {}...",
@@ -379,7 +380,11 @@ async fn get_ws_endpoint(
         .error_for_status()?
         .json()
         .await?;
-    let sep = if resp.endpoint.contains('?') { "&" } else { "?" };
+    let sep = if resp.endpoint.contains('?') {
+        "&"
+    } else {
+        "?"
+    };
     Ok(format!("{}{}ticket={}", resp.endpoint, sep, resp.ticket))
 }
 
@@ -481,13 +486,11 @@ where
         "CALLBACK" | "EVENT" => {
             let data_str = frame.data.to_string();
             // Try direct parse, then try unwrapping double-encoded string
-            let cb: Option<CallbackPayload> = serde_json::from_str(&data_str)
-                .ok()
-                .or_else(|| {
-                    serde_json::from_str::<String>(&data_str)
-                        .ok()
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                });
+            let cb: Option<CallbackPayload> = serde_json::from_str(&data_str).ok().or_else(|| {
+                serde_json::from_str::<String>(&data_str)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+            });
 
             if let Some(cb) = cb {
                 if cb.msg_type == "text" {
@@ -499,9 +502,7 @@ where
                                 let cmd = parts[0].trim_start_matches('/');
                                 let args: Vec<String> = parts
                                     .get(1)
-                                    .map(|a| {
-                                        a.split_whitespace().map(String::from).collect()
-                                    })
+                                    .map(|a| a.split_whitespace().map(String::from).collect())
                                     .unwrap_or_default();
                                 ChannelContent::Command {
                                     name: cmd.to_string(),

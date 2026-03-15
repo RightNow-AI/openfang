@@ -290,15 +290,14 @@ impl ChannelAdapter for SlackAdapter {
 
                             // Extract the event
                             let event = &payload["payload"]["event"];
-                            if let Some(msg) =
-                                parse_slack_event(
-                                    event,
-                                    &bot_user_id,
-                                    &allowed_channels,
-                                    &active_threads,
-                                    auto_thread_reply,
-                                )
-                                .await
+                            if let Some(msg) = parse_slack_event(
+                                event,
+                                &bot_user_id,
+                                &allowed_channels,
+                                &active_threads,
+                                auto_thread_reply,
+                            )
+                            .await
                             {
                                 debug!(
                                     "Slack message from {}: {:?}",
@@ -369,12 +368,8 @@ impl ChannelAdapter for SlackAdapter {
                     .await?;
             }
             _ => {
-                self.api_send_message(
-                    channel_id,
-                    "(Unsupported content type)",
-                    Some(thread_id),
-                )
-                .await?;
+                self.api_send_message(channel_id, "(Unsupported content type)", Some(thread_id))
+                    .await?;
             }
         }
         Ok(())
@@ -572,7 +567,9 @@ mod tests {
             "ts": "1700000000.000100"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true).await.unwrap();
+        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true)
+            .await
+            .unwrap();
         assert_eq!(msg.channel, ChannelType::Slack);
         assert_eq!(msg.sender.platform_id, "C789");
         assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Hello agent!"));
@@ -621,12 +618,25 @@ mod tests {
         });
 
         // Not in allowed channels
-        let msg =
-            parse_slack_event(&event, &bot_id, &["C111".to_string(), "C222".to_string()], &Arc::new(DashMap::new()), true).await;
+        let msg = parse_slack_event(
+            &event,
+            &bot_id,
+            &["C111".to_string(), "C222".to_string()],
+            &Arc::new(DashMap::new()),
+            true,
+        )
+        .await;
         assert!(msg.is_none());
 
         // In allowed channels
-        let msg = parse_slack_event(&event, &bot_id, &["C789".to_string()], &Arc::new(DashMap::new()), true).await;
+        let msg = parse_slack_event(
+            &event,
+            &bot_id,
+            &["C789".to_string()],
+            &Arc::new(DashMap::new()),
+            true,
+        )
+        .await;
         assert!(msg.is_some());
     }
 
@@ -658,7 +668,9 @@ mod tests {
             "ts": "1700000000.000100"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true).await.unwrap();
+        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true)
+            .await
+            .unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -683,7 +695,9 @@ mod tests {
             "ts": "1700000001.000200"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true).await.unwrap();
+        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true)
+            .await
+            .unwrap();
         assert_eq!(msg.channel, ChannelType::Slack);
         assert_eq!(msg.sender.platform_id, "C789");
         assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Edited message text"));

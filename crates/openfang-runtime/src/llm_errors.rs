@@ -119,8 +119,8 @@ const FORBIDDEN_NON_AUTH_PATTERNS: &[&str] = &[
     "not available",
     "not supported",
     "not allowed",
-    "access denied",       // model/resource access, not API key
-    "permission",          // model permission, not API key auth
+    "access denied", // model/resource access, not API key
+    "permission",    // model permission, not API key auth
     "insufficient",
     "exceeded",
     "capacity",
@@ -128,7 +128,7 @@ const FORBIDDEN_NON_AUTH_PATTERNS: &[&str] = &[
     "restricted",
     "not enabled",
     "does not exist",
-    "model",               // model-level 403 (e.g., "model access forbidden")
+    "model", // model-level 403 (e.g., "model access forbidden")
 ];
 
 /// Rate-limit patterns.
@@ -417,9 +417,7 @@ pub fn sanitize_for_user(category: LlmErrorCategory, raw: &str) -> String {
     if detail.is_empty() {
         // Fall back to a helpful generic message when there is no raw detail.
         match category {
-            LlmErrorCategory::RateLimit => {
-                "Rate limited — retrying shortly.".to_string()
-            }
+            LlmErrorCategory::RateLimit => "Rate limited — retrying shortly.".to_string(),
             LlmErrorCategory::Overloaded => {
                 "Provider temporarily overloaded — retrying.".to_string()
             }
@@ -429,18 +427,14 @@ pub fn sanitize_for_user(category: LlmErrorCategory, raw: &str) -> String {
             LlmErrorCategory::Billing => {
                 "Billing issue. Check your API plan and balance.".to_string()
             }
-            LlmErrorCategory::Auth => {
-                "Auth error. Check your API key configuration.".to_string()
-            }
+            LlmErrorCategory::Auth => "Auth error. Check your API key configuration.".to_string(),
             LlmErrorCategory::ContextOverflow => {
                 "Context too long for the model's context window.".to_string()
             }
             LlmErrorCategory::Format => {
                 "Request failed. Check API key and model config.".to_string()
             }
-            LlmErrorCategory::ModelNotFound => {
-                "Model not found. Check the model name.".to_string()
-            }
+            LlmErrorCategory::ModelNotFound => "Model not found. Check the model name.".to_string(),
         }
     } else {
         // Include the sanitized detail — cap total at 300 chars.
@@ -888,8 +882,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_html_page() {
-        let msg =
-            sanitize_raw_excerpt("<!DOCTYPE html><html><body>502 Bad Gateway</body></html>");
+        let msg = sanitize_raw_excerpt("<!DOCTYPE html><html><body>502 Bad Gateway</body></html>");
         assert!(msg.contains("error page"));
         assert!(!msg.contains("<html>"));
     }

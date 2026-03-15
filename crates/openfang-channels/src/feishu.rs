@@ -432,11 +432,7 @@ fn extract_text_from_post(content: &serde_json::Value) -> Option<String> {
 }
 
 /// Check whether the bot should respond to a group message.
-fn should_respond_in_group(
-    text: &str,
-    mentions: &serde_json::Value,
-    bot_names: &[String],
-) -> bool {
+fn should_respond_in_group(text: &str, mentions: &serde_json::Value, bot_names: &[String]) -> bool {
     if let Some(arr) = mentions.as_array() {
         if !arr.is_empty() {
             return true;
@@ -522,7 +518,11 @@ fn parse_event(
 
     let text = match msg_type {
         "text" => {
-            let t = content_json["text"].as_str().unwrap_or("").trim().to_string();
+            let t = content_json["text"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if t.is_empty() {
                 return None;
             }
@@ -677,8 +677,7 @@ impl ChannelAdapter for FeishuAdapter {
                             let mut event_data = body.0.clone();
 
                             // Step 1: Decrypt if encrypted
-                            if let Some(encrypted) =
-                                body.0.get("encrypt").and_then(|v| v.as_str())
+                            if let Some(encrypted) = body.0.get("encrypt").and_then(|v| v.as_str())
                             {
                                 if let Some(ref key) = *ek {
                                     match decrypt_event(encrypted, key) {
@@ -703,8 +702,7 @@ impl ChannelAdapter for FeishuAdapter {
                                 == Some("url_verification")
                             {
                                 if let Some(ref expected_token) = *vt {
-                                    let token =
-                                        event_data["token"].as_str().unwrap_or("");
+                                    let token = event_data["token"].as_str().unwrap_or("");
                                     if token != expected_token {
                                         warn!("{region_label}: invalid verification token");
                                         return (
@@ -754,16 +752,13 @@ impl ChannelAdapter for FeishuAdapter {
                                 if let Some(msg) =
                                     parse_event(&event_data, &bot_names, &channel_name)
                                 {
-                                    if !message_dedup
-                                        .check_and_insert(&msg.platform_message_id)
-                                    {
+                                    if !message_dedup.check_and_insert(&msg.platform_message_id) {
                                         let _ = tx.send(msg).await;
                                     }
                                 }
                             } else {
                                 // V1 legacy event format
-                                let event_type =
-                                    event_data["event"]["type"].as_str().unwrap_or("");
+                                let event_type = event_data["event"]["type"].as_str().unwrap_or("");
                                 if event_type == "message" {
                                     let event = &event_data["event"];
                                     let text = event["text"].as_str().unwrap_or("");
@@ -778,10 +773,8 @@ impl ChannelAdapter for FeishuAdapter {
                                             .as_str()
                                             .unwrap_or("")
                                             .to_string();
-                                        let is_group = event["chat_type"]
-                                            .as_str()
-                                            .unwrap_or("")
-                                            == "group";
+                                        let is_group =
+                                            event["chat_type"].as_str().unwrap_or("") == "group";
 
                                         if !message_dedup.check_and_insert(&msg_id) {
                                             let content = if text.starts_with('/') {
@@ -936,7 +929,10 @@ mod tests {
         assert_eq!(FeishuRegion::parse_region("cn"), FeishuRegion::Cn);
         assert_eq!(FeishuRegion::parse_region("intl"), FeishuRegion::Intl);
         assert_eq!(FeishuRegion::parse_region("lark"), FeishuRegion::Intl);
-        assert_eq!(FeishuRegion::parse_region("international"), FeishuRegion::Intl);
+        assert_eq!(
+            FeishuRegion::parse_region("international"),
+            FeishuRegion::Intl
+        );
         assert_eq!(FeishuRegion::parse_region("anything"), FeishuRegion::Cn);
     }
 
@@ -1076,10 +1072,7 @@ mod tests {
             strip_mention_placeholders("@_user_1 hello world"),
             "hello world"
         );
-        assert_eq!(
-            strip_mention_placeholders("@_user_1 @_user_2 hi"),
-            "hi"
-        );
+        assert_eq!(strip_mention_placeholders("@_user_1 @_user_2 hi"), "hi");
         assert_eq!(strip_mention_placeholders("no mentions"), "no mentions");
     }
 

@@ -202,9 +202,10 @@ fn convert_messages(oai_messages: &[OaiMessage]) -> Vec<Message> {
                     let blocks: Vec<ContentBlock> = parts
                         .iter()
                         .filter_map(|part| match part {
-                            OaiContentPart::Text { text } => {
-                                Some(ContentBlock::Text { text: text.clone(), provider_metadata: None })
-                            }
+                            OaiContentPart::Text { text } => Some(ContentBlock::Text {
+                                text: text.clone(),
+                                provider_metadata: None,
+                            }),
                             OaiContentPart::ImageUrl { image_url } => {
                                 // Parse data URI: data:{media_type};base64,{data}
                                 if let Some(rest) = image_url.url.strip_prefix("data:") {

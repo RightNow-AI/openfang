@@ -279,17 +279,18 @@ async fn transcribe_with_parakeet_mlx(
                 "audio/flac" => "flac",
                 _ => "wav",
             };
-            let path = std::env::temp_dir()
-                .join(format!("openfang_parakeet_{}.{}", uuid::Uuid::new_v4(), ext));
+            let path = std::env::temp_dir().join(format!(
+                "openfang_parakeet_{}.{}",
+                uuid::Uuid::new_v4(),
+                ext
+            ));
             tokio::fs::write(&path, decoded)
                 .await
                 .map_err(|e| format!("Failed to write temp audio: {e}"))?;
             (path, true)
         }
         MediaSource::Url { url } => {
-            return Err(format!(
-                "URL audio not supported for parakeet-mlx: {url}"
-            ));
+            return Err(format!("URL audio not supported for parakeet-mlx: {url}"));
         }
     };
 
@@ -302,7 +303,15 @@ print(json.dumps({"text": result.text, "model": "mlx-community/parakeet-tdt-0.6b
 "#;
 
     let mut cmd = tokio::process::Command::new("uv");
-    cmd.args(["run", "--with", "parakeet-mlx", "python3", "-c", script, &audio_path.to_string_lossy()]);
+    cmd.args([
+        "run",
+        "--with",
+        "parakeet-mlx",
+        "python3",
+        "-c",
+        script,
+        &audio_path.to_string_lossy(),
+    ]);
     cmd.env("PYTHONUNBUFFERED", "1");
     cmd.kill_on_drop(true);
 
@@ -320,12 +329,16 @@ print(json.dumps({"text": result.text, "model": "mlx-community/parakeet-tdt-0.6b
         return Err(format!("parakeet-mlx failed: {}", stderr.trim()));
     }
 
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|e| format!("parakeet-mlx non-UTF8: {e}"))?;
+    let stdout =
+        String::from_utf8(output.stdout).map_err(|e| format!("parakeet-mlx non-UTF8: {e}"))?;
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .map_err(|e| format!("parakeet-mlx parse failed: {e}"))?;
 
-    let text = parsed["text"].as_str().ok_or("missing text field")?.trim().to_string();
+    let text = parsed["text"]
+        .as_str()
+        .ok_or("missing text field")?
+        .trim()
+        .to_string();
     if text.is_empty() {
         return Err("parakeet-mlx returned empty transcription".into());
     }
@@ -334,7 +347,10 @@ print(json.dumps({"text": result.text, "model": "mlx-community/parakeet-tdt-0.6b
         media_type: MediaType::Audio,
         description: text,
         provider: "parakeet-mlx".to_string(),
-        model: parsed["model"].as_str().unwrap_or("parakeet-tdt-0.6b-v3").to_string(),
+        model: parsed["model"]
+            .as_str()
+            .unwrap_or("parakeet-tdt-0.6b-v3")
+            .to_string(),
     })
 }
 

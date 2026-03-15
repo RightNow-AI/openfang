@@ -205,21 +205,13 @@ pub async fn exec_in_sandbox(
     let max_output = 50_000;
     let stdout = if stdout.len() > max_output {
         let safe_end = crate::str_utils::safe_truncate_str(&stdout, max_output);
-        format!(
-            "{}... [truncated, {} total bytes]",
-            safe_end,
-            stdout.len()
-        )
+        format!("{}... [truncated, {} total bytes]", safe_end, stdout.len())
     } else {
         stdout
     };
     let stderr = if stderr.len() > max_output {
         let safe_end = crate::str_utils::safe_truncate_str(&stderr, max_output);
-        format!(
-            "{}... [truncated, {} total bytes]",
-            safe_end,
-            stderr.len()
-        )
+        format!("{}... [truncated, {} total bytes]", safe_end, stderr.len())
     } else {
         stderr
     };

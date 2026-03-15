@@ -502,10 +502,13 @@ async fn handle_text_message(
             // Send message to agent with streaming
             let kernel_handle: Arc<dyn KernelHandle> =
                 state.kernel.clone() as Arc<dyn KernelHandle>;
-            match state
-                .kernel
-                .send_message_streaming(agent_id, &content, Some(kernel_handle), None, None)
-            {
+            match state.kernel.send_message_streaming(
+                agent_id,
+                &content,
+                Some(kernel_handle),
+                None,
+                None,
+            ) {
                 Ok((mut rx, handle)) => {
                     // Forward stream events to WebSocket with debouncing.
                     //
@@ -712,7 +715,8 @@ async fn handle_text_message(
                             };
 
                             // Estimate context pressure
-                            let ctx_pct = (usage.input_tokens as f64 / 200_000.0 * 100.0).min(100.0);
+                            let ctx_pct =
+                                (usage.input_tokens as f64 / 200_000.0 * 100.0).min(100.0);
                             let pressure = if ctx_pct > 85.0 {
                                 "critical"
                             } else if ctx_pct > 70.0 {
@@ -1183,7 +1187,10 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
             if inner.contains("localhost:11434") || inner.contains("ollama") {
                 "Model not found on Ollama. Run `ollama pull <model>` first. Use /model to see options.".to_string()
             } else {
-                format!("{}. Use /model to see options.", classified.sanitized_message)
+                format!(
+                    "{}. Use /model to see options.",
+                    classified.sanitized_message
+                )
             }
         }
         llm_errors::LlmErrorCategory::Format => {

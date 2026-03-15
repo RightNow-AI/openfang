@@ -160,9 +160,7 @@ async fn get_room_member_count(
     access_token: &str,
     room_id: &str,
 ) -> Option<usize> {
-    let url = format!(
-        "{homeserver}/_matrix/client/v3/rooms/{room_id}/joined_members"
-    );
+    let url = format!("{homeserver}/_matrix/client/v3/rooms/{room_id}/joined_members");
     let resp = client
         .get(&url)
         .bearer_auth(access_token)
@@ -296,10 +294,13 @@ impl ChannelAdapter for MatrixAdapter {
                             if !allowed_rooms.is_empty()
                                 && !allowed_rooms.iter().any(|r| r == room_id)
                             {
-                                debug!("Matrix: ignoring invite to {room_id} (not in allowed_rooms)");
+                                debug!(
+                                    "Matrix: ignoring invite to {room_id} (not in allowed_rooms)"
+                                );
                                 continue;
                             }
-                            accept_invite(&client, &homeserver, access_token.as_str(), room_id).await;
+                            accept_invite(&client, &homeserver, access_token.as_str(), room_id)
+                                .await;
                         }
                     }
                 }
@@ -372,10 +373,7 @@ impl ChannelAdapter for MatrixAdapter {
                                         "was_mentioned".to_string(),
                                         serde_json::json!(true),
                                     );
-                                    metadata.insert(
-                                        "is_dm".to_string(),
-                                        serde_json::json!(true),
-                                    );
+                                    metadata.insert("is_dm".to_string(), serde_json::json!(true));
                                 }
 
                                 let channel_msg = ChannelMessage {

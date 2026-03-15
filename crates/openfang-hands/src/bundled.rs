@@ -241,7 +241,14 @@ mod tests {
 
     #[test]
     fn all_einstein_hands_have_schedules() {
-        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter", "trader"];
+        let einstein_ids = [
+            "lead",
+            "collector",
+            "predictor",
+            "researcher",
+            "twitter",
+            "trader",
+        ];
         for (id, toml_content, skill_content) in bundled_hands() {
             if einstein_ids.contains(&id) {
                 let def = parse_bundled(id, toml_content, skill_content).unwrap();
@@ -266,7 +273,14 @@ mod tests {
 
     #[test]
     fn all_einstein_hands_have_memory() {
-        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter", "trader"];
+        let einstein_ids = [
+            "lead",
+            "collector",
+            "predictor",
+            "researcher",
+            "twitter",
+            "trader",
+        ];
         for (id, toml_content, skill_content) in bundled_hands() {
             if einstein_ids.contains(&id) {
                 let def = parse_bundled(id, toml_content, skill_content).unwrap();
@@ -286,7 +300,14 @@ mod tests {
 
     #[test]
     fn all_einstein_hands_have_knowledge_graph() {
-        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter", "trader"];
+        let einstein_ids = [
+            "lead",
+            "collector",
+            "predictor",
+            "researcher",
+            "twitter",
+            "trader",
+        ];
         for (id, toml_content, skill_content) in bundled_hands() {
             if einstein_ids.contains(&id) {
                 let def = parse_bundled(id, toml_content, skill_content).unwrap();

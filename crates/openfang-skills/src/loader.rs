@@ -329,11 +329,7 @@ async fn execute_shell(
         )
     })?;
 
-    debug!(
-        "Executing Shell skill: {} {}",
-        shell,
-        script_path.display()
-    );
+    debug!("Executing Shell skill: {} {}", shell, script_path.display());
 
     // Use -s to read from stdin, -c to execute command
     let mut cmd = tokio::process::Command::new(&shell);

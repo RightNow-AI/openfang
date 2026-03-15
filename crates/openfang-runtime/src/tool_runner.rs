@@ -28,20 +28,11 @@ fn check_taint_shell_exec(command: &str) -> Option<String> {
     // Layer 1: Block shell metacharacters that enable command injection.
     // Uses the same validator as subprocess_sandbox and docker_sandbox.
     if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
-        return Some(format!(
-            "Shell metacharacter injection blocked: {reason}"
-        ));
+        return Some(format!("Shell metacharacter injection blocked: {reason}"));
     }
 
     // Layer 2: Heuristic patterns for injected external URLs / base64 payloads
-    let suspicious_patterns = [
-        "curl ",
-        "wget ",
-        "| sh",
-        "| bash",
-        "base64 -d",
-        "eval ",
-    ];
+    let suspicious_patterns = ["curl ", "wget ", "| sh", "| bash", "base64 -d", "eval "];
     for pattern in &suspicious_patterns {
         if command.contains(pattern) {
             let mut labels = HashSet::new();
@@ -202,7 +193,9 @@ pub async fn execute_tool(
             let headers = input.get("headers").and_then(|v| v.as_object());
             let body = input["body"].as_str();
             if let Some(ctx) = web_ctx {
-                ctx.fetch.fetch_with_options(url, method, headers, body).await
+                ctx.fetch
+                    .fetch_with_options(url, method, headers, body)
+                    .await
             } else {
                 tool_web_fetch_legacy(input).await
             }
@@ -223,7 +216,8 @@ pub async fn execute_tool(
 
             // SECURITY: Always check for shell metacharacters, even in Full mode.
             // These enable command injection regardless of exec policy.
-            if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
+            if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command)
+            {
                 return ToolResult {
                     tool_use_id: tool_use_id.to_string(),
                     content: format!(
@@ -365,8 +359,7 @@ pub async fn execute_tool(
                     crate::browser::tool_browser_navigate(input, mgr, aid).await
                 }
                 None => Err(
-                    "Browser tools not available. Ensure Chrome/Chromium is installed."
-                        .to_string(),
+                    "Browser tools not available. Ensure Chrome/Chromium is installed.".to_string(),
                 ),
             }
         }
@@ -375,63 +368,81 @@ pub async fn execute_tool(
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_click(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_type" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_type(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_screenshot" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_screenshot(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_read_page" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_read_page(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_close" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_close(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_scroll" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_scroll(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_wait" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_wait(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_run_js" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_run_js(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
         "browser_back" => match browser_ctx {
             Some(mgr) => {
                 let aid = caller_agent_id.unwrap_or("default");
                 crate::browser::tool_browser_back(input, mgr, aid).await
             }
-            None => Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string()),
+            None => {
+                Err("Browser tools not available. Ensure Chrome/Chromium is installed.".to_string())
+            }
         },
 
         // Canvas / A2UI tool
@@ -442,9 +453,12 @@ pub async fn execute_tool(
             if mcp::is_mcp_tool(other) {
                 if let Some(mcp_conns) = mcp_connections {
                     let mut conns = mcp_conns.lock().await;
-                    let known_names: Vec<String> = conns.iter().map(|c| c.name().to_string()).collect();
+                    let known_names: Vec<String> =
+                        conns.iter().map(|c| c.name().to_string()).collect();
                     let known_refs: Vec<&str> = known_names.iter().map(|s| s.as_str()).collect();
-                    if let Some(server_name) = mcp::extract_mcp_server_from_known(other, &known_refs) {
+                    if let Some(server_name) =
+                        mcp::extract_mcp_server_from_known(other, &known_refs)
+                    {
                         if let Some(conn) = conns.iter_mut().find(|c| c.name() == server_name) {
                             debug!(
                                 tool = other,
@@ -2198,10 +2212,12 @@ async fn tool_channel_send(
         let default_id = kh.get_channel_default_recipient(&channel).await;
         match default_id {
             Some(id) => id,
-            None => return Err(format!(
+            None => {
+                return Err(format!(
                 "Missing 'recipient' parameter. Set default_chat_id in [channels.{channel}] config \
                  or pass recipient explicitly."
-            )),
+            ))
+            }
         }
     } else {
         recipient_input
@@ -2226,7 +2242,9 @@ async fn tool_channel_send(
         let caption = input["message"].as_str().filter(|s| !s.is_empty());
         let filename = input["filename"].as_str();
         return kh
-            .send_channel_media(&channel, recipient, "file", url, caption, filename, thread_id)
+            .send_channel_media(
+                &channel, recipient, "file", url, caption, filename, thread_id,
+            )
             .await;
     }
 
@@ -2281,9 +2299,7 @@ async fn tool_channel_send(
         };
 
         return kh
-            .send_channel_file_data(
-                &channel, recipient, data, &filename, mime_type, thread_id,
-            )
+            .send_channel_file_data(&channel, recipient, data, &filename, mime_type, thread_id)
             .await;
     }
 
@@ -3220,7 +3236,10 @@ async fn tool_canvas_present(
     let _ = tokio::fs::create_dir_all(&output_dir).await;
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let filename = format!("canvas_{timestamp}_{}.html", crate::str_utils::safe_truncate_str(&canvas_id, 8));
+    let filename = format!(
+        "canvas_{timestamp}_{}.html",
+        crate::str_utils::safe_truncate_str(&canvas_id, 8)
+    );
     let filepath = output_dir.join(&filename);
 
     // Write the full HTML document
@@ -3366,7 +3385,11 @@ mod tests {
             None, // process_manager
         )
         .await;
-        assert!(result.is_error, "Expected error but got: {}", result.content);
+        assert!(
+            result.is_error,
+            "Expected error but got: {}",
+            result.content
+        );
     }
 
     #[tokio::test]
@@ -3580,10 +3603,17 @@ mod tests {
         )
         .await;
         // Should fail for file-not-found, NOT for permission denied
-        assert!(result.is_error, "Expected error but got: {}", result.content);
         assert!(
-            result.content.contains("Failed to read") || result.content.contains("not found") || result.content.contains("No such file"),
-            "Unexpected error: {}", result.content
+            result.is_error,
+            "Expected error but got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("Failed to read")
+                || result.content.contains("not found")
+                || result.content.contains("No such file"),
+            "Unexpected error: {}",
+            result.content
         );
     }
 

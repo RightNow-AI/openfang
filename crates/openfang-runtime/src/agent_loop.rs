@@ -56,15 +56,9 @@ const TOOL_ERROR_GUIDANCE: &str =
     "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. If your next steps depend on a failed tool, either retry with a materially different approach or explain the failure to the user and stop. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
 
 fn append_tool_error_guidance(tool_result_blocks: &mut Vec<ContentBlock>) {
-    let has_tool_error = tool_result_blocks.iter().any(|block| {
-        matches!(
-            block,
-            ContentBlock::ToolResult {
-                is_error: true,
-                ..
-            }
-        )
-    });
+    let has_tool_error = tool_result_blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }));
     if has_tool_error {
         tool_result_blocks.push(ContentBlock::Text {
             text: TOOL_ERROR_GUIDANCE.to_string(),
@@ -428,8 +422,8 @@ pub async fn run_agent_loop(
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
                 if text.trim().is_empty() && response.tool_calls.is_empty() {
-                    let is_silent_failure = response.usage.input_tokens == 0
-                        && response.usage.output_tokens == 0;
+                    let is_silent_failure =
+                        response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {
                         warn!(
                             agent = %manifest.name,
@@ -744,10 +738,13 @@ pub async fn run_agent_loop(
                 append_tool_error_guidance(&mut tool_result_blocks);
 
                 // Detect approval denials and inject guidance to prevent infinite retry loops
-                let denial_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
+                let denial_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| {
+                        matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
                         if content.contains("requires human approval and was denied"))
-                }).count();
+                    })
+                    .count();
                 if denial_count > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
                         text: format!(
@@ -764,9 +761,10 @@ pub async fn run_agent_loop(
                 }
 
                 // Detect tool errors and inject guidance to prevent fabrication
-                let error_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { is_error: true, .. })
-                }).count();
+                let error_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| matches!(b, ContentBlock::ToolResult { is_error: true, .. }))
+                    .count();
                 let non_denial_errors = error_count.saturating_sub(denial_count);
                 if non_denial_errors > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
@@ -1411,8 +1409,8 @@ pub async fn run_agent_loop_streaming(
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
                 if text.trim().is_empty() && response.tool_calls.is_empty() {
-                    let is_silent_failure = response.usage.input_tokens == 0
-                        && response.usage.output_tokens == 0;
+                    let is_silent_failure =
+                        response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {
                         warn!(
                             agent = %manifest.name,
@@ -1736,10 +1734,13 @@ pub async fn run_agent_loop_streaming(
                 append_tool_error_guidance(&mut tool_result_blocks);
 
                 // Detect approval denials and inject guidance to prevent infinite retry loops
-                let denial_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
+                let denial_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| {
+                        matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
                         if content.contains("requires human approval and was denied"))
-                }).count();
+                    })
+                    .count();
                 if denial_count > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
                         text: format!(
@@ -1756,9 +1757,10 @@ pub async fn run_agent_loop_streaming(
                 }
 
                 // Detect tool errors and inject guidance to prevent fabrication
-                let error_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { is_error: true, .. })
-                }).count();
+                let error_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| matches!(b, ContentBlock::ToolResult { is_error: true, .. }))
+                    .count();
                 let non_denial_errors = error_count.saturating_sub(denial_count);
                 if non_denial_errors > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
@@ -2156,9 +2158,7 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
         }
 
         // Custom arrow syntax: {tool => "name", args => {--key "value"}}
-        if let Some((tool_name, input)) =
-            parse_arrow_syntax_tool_call(inner, &tool_names)
-        {
+        if let Some((tool_name, input)) = parse_arrow_syntax_tool_call(inner, &tool_names) {
             if !calls
                 .iter()
                 .any(|c| c.name == tool_name && c.input == input)
@@ -2213,15 +2213,17 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
     {
         use regex_lite::Regex;
         // Match both self-closing <function ... /> and <function ...></function>
-        let re = Regex::new(
-            r#"<function\s+name="([^"]+)"\s+parameters="([^"]*)"[^/]*/?>"#
-        ).unwrap();
+        let re =
+            Regex::new(r#"<function\s+name="([^"]+)"\s+parameters="([^"]*)"[^/]*/?>"#).unwrap();
         for caps in re.captures_iter(text) {
             let tool_name = caps.get(1).unwrap().as_str();
             let raw_params = caps.get(2).unwrap().as_str();
 
             if !tool_names.contains(&tool_name) {
-                warn!(tool = tool_name, "XML-attribute tool call for unknown tool — skipping");
+                warn!(
+                    tool = tool_name,
+                    "XML-attribute tool call for unknown tool — skipping"
+                );
                 continue;
             }
 
@@ -2241,11 +2243,17 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
                 }
             };
 
-            if calls.iter().any(|c| c.name == tool_name && c.input == input) {
+            if calls
+                .iter()
+                .any(|c| c.name == tool_name && c.input == input)
+            {
                 continue;
             }
 
-            info!(tool = tool_name, "Recovered XML-attribute tool call → synthetic ToolUse");
+            info!(
+                tool = tool_name,
+                "Recovered XML-attribute tool call → synthetic ToolUse"
+            );
             calls.push(ToolCall {
                 id: format!("recovered_{}", uuid::Uuid::new_v4()),
                 name: tool_name.to_string(),
@@ -2269,8 +2277,14 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
         search_from = after_tag + close_offset + close_tag.len();
 
         if let Some((tool_name, input)) = parse_json_tool_call_object(inner, &tool_names) {
-            if !calls.iter().any(|c| c.name == tool_name && c.input == input) {
-                info!(tool = tool_name.as_str(), "Recovered tool call from <|plugin|> block");
+            if !calls
+                .iter()
+                .any(|c| c.name == tool_name && c.input == input)
+            {
+                info!(
+                    tool = tool_name.as_str(),
+                    "Recovered tool call from <|plugin|> block"
+                );
                 calls.push(ToolCall {
                     id: format!("recovered_{}", uuid::Uuid::new_v4()),
                     name: tool_name,
@@ -2286,17 +2300,30 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
         let mut i = 0;
         while i < lines.len() {
             let line = lines[i].trim();
-            if let Some(tool_part) = line.strip_prefix("Action:").or_else(|| line.strip_prefix("action:")) {
+            if let Some(tool_part) = line
+                .strip_prefix("Action:")
+                .or_else(|| line.strip_prefix("action:"))
+            {
                 let tool_name = tool_part.trim();
                 if tool_names.contains(&tool_name) {
                     // Look for "Action Input:" on the next line(s)
                     if i + 1 < lines.len() {
                         let next = lines[i + 1].trim();
-                        if let Some(json_part) = next.strip_prefix("Action Input:").or_else(|| next.strip_prefix("action input:")).or_else(|| next.strip_prefix("action_input:")) {
+                        if let Some(json_part) = next
+                            .strip_prefix("Action Input:")
+                            .or_else(|| next.strip_prefix("action input:"))
+                            .or_else(|| next.strip_prefix("action_input:"))
+                        {
                             let json_str = json_part.trim();
                             if let Ok(input) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                if !calls.iter().any(|c| c.name == tool_name && c.input == input) {
-                                    info!(tool = tool_name, "Recovered tool call from Action/Action Input pattern");
+                                if !calls
+                                    .iter()
+                                    .any(|c| c.name == tool_name && c.input == input)
+                                {
+                                    info!(
+                                        tool = tool_name,
+                                        "Recovered tool call from Action/Action Input pattern"
+                                    );
                                     calls.push(ToolCall {
                                         id: format!("recovered_{}", uuid::Uuid::new_v4()),
                                         name: tool_name.to_string(),
@@ -2332,8 +2359,14 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
                 continue;
             }
             if let Ok(input) = serde_json::from_str::<serde_json::Value>(json_line) {
-                if !calls.iter().any(|c| c.name == name_line && c.input == input) {
-                    info!(tool = name_line, "Recovered tool call from name+JSON line pair");
+                if !calls
+                    .iter()
+                    .any(|c| c.name == name_line && c.input == input)
+                {
+                    info!(
+                        tool = name_line,
+                        "Recovered tool call from name+JSON line pair"
+                    );
                     calls.push(ToolCall {
                         id: format!("recovered_{}", uuid::Uuid::new_v4()),
                         name: name_line.to_string(),
@@ -2358,8 +2391,14 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
         search_from = after_tag + close_offset + "</tool_use>".len();
 
         if let Some((tool_name, input)) = parse_json_tool_call_object(inner, &tool_names) {
-            if !calls.iter().any(|c| c.name == tool_name && c.input == input) {
-                info!(tool = tool_name.as_str(), "Recovered tool call from <tool_use> block");
+            if !calls
+                .iter()
+                .any(|c| c.name == tool_name && c.input == input)
+            {
+                info!(
+                    tool = tool_name.as_str(),
+                    "Recovered tool call from <tool_use> block"
+                );
                 calls.push(ToolCall {
                     id: format!("recovered_{}", uuid::Uuid::new_v4()),
                     name: tool_name,
@@ -2903,11 +2942,13 @@ mod tests {
         .await
         .expect("Loop should complete without error");
 
-        let guidance_seen = session.messages.iter().any(|msg| match &msg.content {
+        let guidance_seen = session.messages.iter().any(|msg| {
+            match &msg.content {
             MessageContent::Blocks(blocks) => blocks.iter().any(|block| {
                 matches!(block, ContentBlock::Text { text, .. } if text == TOOL_ERROR_GUIDANCE)
             }),
             _ => false,
+        }
         });
 
         assert!(
@@ -3618,7 +3659,8 @@ mod tests {
             input_schema: serde_json::json!({}),
         }];
         // Same call in both function tag and tool tag — should only appear once
-        let text = r#"<function=exec>{"command":"ls"}</function> <tool>exec{"command":"ls"}</tool>"#;
+        let text =
+            r#"<function=exec>{"command":"ls"}</function> <tool>exec{"command":"ls"}</tool>"#;
         let calls = recover_text_tool_calls(text, &tools);
         assert_eq!(calls.len(), 1);
     }
@@ -3815,7 +3857,8 @@ mod tests {
             description: "Execute".into(),
             input_schema: serde_json::json!({}),
         }];
-        let text = "I'll run that: {\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ls -la\"}}";
+        let text =
+            "I'll run that: {\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ls -la\"}}";
         let calls = recover_text_tool_calls(text, &tools);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "shell_exec");
@@ -3911,7 +3954,8 @@ mod tests {
             description: "Search".into(),
             input_schema: serde_json::json!({}),
         }];
-        let text = "<|plugin|>\n{\"name\": \"hack\", \"arguments\": {\"cmd\": \"rm\"}}\n<|endofblock|>";
+        let text =
+            "<|plugin|>\n{\"name\": \"hack\", \"arguments\": {\"cmd\": \"rm\"}}\n<|endofblock|>";
         let calls = recover_text_tool_calls(text, &tools);
         assert!(calls.is_empty());
     }
@@ -3981,7 +4025,8 @@ mod tests {
             description: "Search".into(),
             input_schema: serde_json::json!({}),
         }];
-        let text = "<tool_use>{\"name\": \"web_search\", \"arguments\": {\"query\": \"test\"}}</tool_use>";
+        let text =
+            "<tool_use>{\"name\": \"web_search\", \"arguments\": {\"query\": \"test\"}}</tool_use>";
         let calls = recover_text_tool_calls(text, &tools);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "web_search");
@@ -4049,10 +4094,8 @@ mod tests {
     #[test]
     fn test_parse_json_tool_call_object_unknown_tool() {
         let tool_names = vec!["shell_exec"];
-        let result = parse_json_tool_call_object(
-            "{\"name\": \"unknown\", \"arguments\": {}}",
-            &tool_names,
-        );
+        let result =
+            parse_json_tool_call_object("{\"name\": \"unknown\", \"arguments\": {}}", &tool_names);
         assert!(result.is_none());
     }
 
