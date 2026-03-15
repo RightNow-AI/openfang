@@ -77,14 +77,14 @@ fn markdown_to_telegram_html(text: &str) -> String {
                 if current.is_empty() || !current.starts_with('>') {
                     break;
                 }
-                let content = current
-                    .strip_prefix('>')
-                    .unwrap_or(current)
-                    .trim_start();
+                let content = current.strip_prefix('>').unwrap_or(current).trim_start();
                 quote_lines.push(render_inline_markdown(content));
                 i += 1;
             }
-            blocks.push(format!("<blockquote>{}</blockquote>", quote_lines.join("\n")));
+            blocks.push(format!(
+                "<blockquote>{}</blockquote>",
+                quote_lines.join("\n")
+            ));
             continue;
         }
 
@@ -116,7 +116,11 @@ fn markdown_to_telegram_html(text: &str) -> String {
             while i < lines.len() {
                 let current = lines[i].trim();
                 if let Some(next_item) = ordered_list_item(current) {
-                    items.push(format!("{}. {}", counter, render_inline_markdown(next_item.trim())));
+                    items.push(format!(
+                        "{}. {}",
+                        counter,
+                        render_inline_markdown(next_item.trim())
+                    ));
                     counter += 1;
                     i += 1;
                 } else if current.is_empty() {
@@ -495,7 +499,11 @@ fn markdown_to_wecom_plain(text: &str) -> String {
 
     let mut collapsed = Vec::new();
     for line in result_lines {
-        if line.is_empty() && collapsed.last().is_some_and(|prev: &String| prev.is_empty()) {
+        if line.is_empty()
+            && collapsed
+                .last()
+                .is_some_and(|prev: &String| prev.is_empty())
+        {
             continue;
         }
         collapsed.push(line);

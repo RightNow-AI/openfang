@@ -585,10 +585,7 @@ impl OpenFangKernel {
                 None
             };
             let dotenv_path = config.home_dir.join(".env");
-            openfang_extensions::credentials::CredentialResolver::new(
-                vault,
-                Some(&dotenv_path),
-            )
+            openfang_extensions::credentials::CredentialResolver::new(vault, Some(&dotenv_path))
         };
 
         // Create LLM driver.
@@ -607,11 +604,12 @@ impl OpenFangKernel {
         let driver_config = DriverConfig {
             provider: config.default_model.provider.clone(),
             api_key: default_api_key,
-            base_url: config
-                .default_model
-                .base_url
-                .clone()
-                .or_else(|| config.provider_urls.get(&config.default_model.provider).cloned()),
+            base_url: config.default_model.base_url.clone().or_else(|| {
+                config
+                    .provider_urls
+                    .get(&config.default_model.provider)
+                    .cloned()
+            }),
             skip_permissions: true,
         };
         // Primary driver failure is non-fatal: the dashboard should remain accessible
@@ -631,7 +629,9 @@ impl OpenFangKernel {
                 if let Some((provider, model, env_var)) = drivers::detect_available_provider() {
                     let auto_config = DriverConfig {
                         provider: provider.to_string(),
-                        api_key: credential_resolver.resolve(env_var).map(|z: zeroize::Zeroizing<String>| z.to_string()),
+                        api_key: credential_resolver
+                            .resolve(env_var)
+                            .map(|z: zeroize::Zeroizing<String>| z.to_string()),
                         base_url: config.provider_urls.get(provider).cloned(),
                         skip_permissions: true,
                     };
@@ -670,7 +670,9 @@ impl OpenFangKernel {
                 } else {
                     config.resolve_api_key_env(&fb.provider)
                 };
-                credential_resolver.resolve(&env_var).map(|z: zeroize::Zeroizing<String>| z.to_string())
+                credential_resolver
+                    .resolve(&env_var)
+                    .map(|z: zeroize::Zeroizing<String>| z.to_string())
             };
             let fb_config = DriverConfig {
                 provider: fb.provider.clone(),
@@ -1455,8 +1457,15 @@ impl OpenFangKernel {
             .get()
             .and_then(|w| w.upgrade())
             .map(|arc| arc as Arc<dyn KernelHandle>);
-        self.send_message_with_handle_and_blocks(agent_id, message, handle, Some(blocks), None, None)
-            .await
+        self.send_message_with_handle_and_blocks(
+            agent_id,
+            message,
+            handle,
+            Some(blocks),
+            None,
+            None,
+        )
+        .await
     }
 
     /// Send a message with an optional kernel handle for inter-agent tools.
@@ -1468,8 +1477,15 @@ impl OpenFangKernel {
         sender_id: Option<String>,
         sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
-        self.send_message_with_handle_and_blocks(agent_id, message, kernel_handle, None, sender_id, sender_name)
-            .await
+        self.send_message_with_handle_and_blocks(
+            agent_id,
+            message,
+            kernel_handle,
+            None,
+            sender_id,
+            sender_name,
+        )
+        .await
     }
 
     /// Send a message with optional content blocks and an optional kernel handle.
@@ -1518,8 +1534,16 @@ impl OpenFangKernel {
             self.execute_python_agent(&entry, agent_id, message).await
         } else {
             // Default: LLM agent loop (builtin:chat or any unrecognized module)
-            self.execute_llm_agent(&entry, agent_id, message, kernel_handle, content_blocks, sender_id, sender_name)
-                .await
+            self.execute_llm_agent(
+                &entry,
+                agent_id,
+                message,
+                kernel_handle,
+                content_blocks,
+                sender_id,
+                sender_name,
+            )
+            .await
         };
 
         match result {
@@ -1811,7 +1835,11 @@ impl OpenFangKernel {
                     None
                 },
                 peer_agents,
-                current_date: Some(chrono::Local::now().format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)").to_string()),
+                current_date: Some(
+                    chrono::Local::now()
+                        .format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)")
+                        .to_string(),
+                ),
                 sender_id,
                 sender_name,
             };
@@ -2333,7 +2361,11 @@ impl OpenFangKernel {
                     None
                 },
                 peer_agents,
-                current_date: Some(chrono::Local::now().format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)").to_string()),
+                current_date: Some(
+                    chrono::Local::now()
+                        .format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)")
+                        .to_string(),
+                ),
                 sender_id,
                 sender_name,
             };
@@ -2793,15 +2825,11 @@ impl OpenFangKernel {
                 None
             } else {
                 // No custom base_url: safe to auto-detect from catalog / model name
-                let resolved_provider = self
-                    .model_catalog
-                    .read()
-                    .ok()
-                    .and_then(|catalog| {
-                        catalog
-                            .find_model(model)
-                            .map(|entry| entry.provider.clone())
-                    });
+                let resolved_provider = self.model_catalog.read().ok().and_then(|catalog| {
+                    catalog
+                        .find_model(model)
+                        .map(|entry| entry.provider.clone())
+                });
                 resolved_provider.or_else(|| infer_provider_from_model(model))
             }
         };
@@ -3280,7 +3308,11 @@ impl OpenFangKernel {
         // If an agent with this hand's name already exists, remove it first.
         // Save triggers before kill so they can be restored under the new ID
         // (issue #519 — triggers were lost on agent restart).
-        let existing = self.registry.list().into_iter().find(|e| e.name == def.agent.name);
+        let existing = self
+            .registry
+            .list()
+            .into_iter()
+            .find(|e| e.name == def.agent.name);
         let old_agent_id = existing.as_ref().map(|e| e.id);
         let saved_triggers = old_agent_id
             .map(|id| self.triggers.take_agent_triggers(id))
@@ -3994,7 +4026,13 @@ impl OpenFangKernel {
                                 > = kernel.clone();
                                 match tokio::time::timeout(
                                     timeout,
-                                    kernel.send_message_with_handle(agent_id, message, Some(kh), None, None),
+                                    kernel.send_message_with_handle(
+                                        agent_id,
+                                        message,
+                                        Some(kh),
+                                        None,
+                                        None,
+                                    ),
                                 )
                                 .await
                                 {
@@ -4047,10 +4085,13 @@ impl OpenFangKernel {
                                     Ok(uuid) => crate::workflow::WorkflowId(uuid),
                                     Err(_) => {
                                         let all_wfs = kernel.workflows.list_workflows().await;
-                                        if let Some(wf) = all_wfs.iter().find(|w| w.name == *workflow_id) {
+                                        if let Some(wf) =
+                                            all_wfs.iter().find(|w| w.name == *workflow_id)
+                                        {
                                             wf.id
                                         } else {
-                                            let err_msg = format!("workflow not found: {workflow_id}");
+                                            let err_msg =
+                                                format!("workflow not found: {workflow_id}");
                                             tracing::warn!(job = %job_name, %err_msg);
                                             kernel.cron_scheduler.record_failure(job_id, &err_msg);
                                             continue;
@@ -4066,10 +4107,7 @@ impl OpenFangKernel {
                                 {
                                     Ok(Ok((_run_id, output))) => {
                                         match cron_deliver_response(
-                                            &kernel,
-                                            agent_id,
-                                            &output,
-                                            &delivery,
+                                            &kernel, agent_id, &output, &delivery,
                                         )
                                         .await
                                         {
@@ -4310,10 +4348,9 @@ impl OpenFangKernel {
                         }
 
                         // Check cooldown
-                        if !recovery_tracker.can_attempt(
-                            status.agent_id,
-                            config.recovery_cooldown_secs,
-                        ) {
+                        if !recovery_tracker
+                            .can_attempt(status.agent_id, config.recovery_cooldown_secs)
+                        {
                             debug!(
                                 agent = %status.name,
                                 "Recovery cooldown active, skipping"
@@ -5009,8 +5046,8 @@ impl OpenFangKernel {
         // Check if the agent has unrestricted tool access:
         // - capabilities.tools is empty (not specified → all tools)
         // - capabilities.tools contains "*" (explicit wildcard)
-        let tools_unrestricted = declared_tools.is_empty()
-            || declared_tools.iter().any(|t| t == "*");
+        let tools_unrestricted =
+            declared_tools.is_empty() || declared_tools.iter().any(|t| t == "*");
 
         // Step 1: Filter builtin tools.
         // Priority: declared tools > ToolProfile > all builtins.
@@ -5057,9 +5094,7 @@ impl OpenFangKernel {
         };
         for skill_tool in skill_tools {
             // If agent declares specific tools, only include matching skill tools
-            if !tools_unrestricted
-                && !declared_tools.iter().any(|d| d == &skill_tool.name)
-            {
+            if !tools_unrestricted && !declared_tools.iter().any(|d| d == &skill_tool.name) {
                 continue;
             }
             all_tools.push(ToolDefinition {
@@ -5597,15 +5632,10 @@ async fn cron_deliver_response(
                 "response": response,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             });
-            let resp = client
-                .post(url)
-                .json(&payload)
-                .send()
-                .await
-                .map_err(|e| {
-                    tracing::warn!(error = %e, "Cron webhook delivery failed");
-                    format!("webhook delivery failed: {e}")
-                })?;
+            let resp = client.post(url).json(&payload).send().await.map_err(|e| {
+                tracing::warn!(error = %e, "Cron webhook delivery failed");
+                format!("webhook delivery failed: {e}")
+            })?;
             tracing::debug!(status = %resp.status(), "Cron webhook delivered");
             Ok(())
         }
@@ -6057,8 +6087,20 @@ impl KernelHandle for OpenFangKernel {
 
     async fn get_channel_default_recipient(&self, channel: &str) -> Option<String> {
         match channel {
-            "telegram" => self.config.channels.telegram.as_ref()?.default_chat_id.clone(),
-            "discord" => self.config.channels.discord.as_ref()?.default_channel_id.clone(),
+            "telegram" => self
+                .config
+                .channels
+                .telegram
+                .as_ref()?
+                .default_chat_id
+                .clone(),
+            "discord" => self
+                .config
+                .channels
+                .discord
+                .as_ref()?
+                .default_channel_id
+                .clone(),
             _ => None,
         }
     }
@@ -6237,7 +6279,10 @@ impl KernelHandle for OpenFangKernel {
                 .map_err(|e| format!("Channel file send failed: {e}"))?;
         }
 
-        Ok(format!("File '{}' sent to {} via {}", filename, recipient, channel))
+        Ok(format!(
+            "File '{}' sent to {} via {}",
+            filename, recipient, channel
+        ))
     }
 
     async fn spawn_agent_checked(

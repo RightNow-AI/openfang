@@ -369,7 +369,13 @@ pub async fn send_message(
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(agent_id, &req.message, Some(kernel_handle), req.sender_id, req.sender_name)
+        .send_message_with_handle(
+            agent_id,
+            &req.message,
+            Some(kernel_handle),
+            req.sender_id,
+            req.sender_name,
+        )
         .await
     {
         Ok(result) => {
@@ -673,10 +679,7 @@ pub async fn restart_agent(
     drop(entry);
 
     // Cancel any running task
-    let was_running = state
-        .kernel
-        .stop_agent_run(agent_id)
-        .unwrap_or(false);
+    let was_running = state.kernel.stop_agent_run(agent_id).unwrap_or(false);
 
     // Reset state to Running (also updates last_active)
     let _ = state
@@ -1075,12 +1078,7 @@ pub async fn delete_workflow(
         }
     });
 
-    if state
-        .kernel
-        .workflows
-        .remove_workflow(workflow_id)
-        .await
-    {
+    if state.kernel.workflows.remove_workflow(workflow_id).await {
         (
             StatusCode::OK,
             Json(serde_json::json!({"status": "removed", "workflow_id": id})),
@@ -1408,21 +1406,23 @@ pub async fn send_message_stream(
     }
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
-    let (rx, _handle) =
-        match state
-            .kernel
-            .send_message_streaming(agent_id, &req.message, Some(kernel_handle), req.sender_id, req.sender_name)
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                tracing::warn!("Streaming message failed for agent {id}: {e}");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "Streaming message failed"})),
-                )
-                    .into_response();
-            }
-        };
+    let (rx, _handle) = match state.kernel.send_message_streaming(
+        agent_id,
+        &req.message,
+        Some(kernel_handle),
+        req.sender_id,
+        req.sender_name,
+    ) {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::warn!("Streaming message failed for agent {id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Streaming message failed"})),
+            )
+                .into_response();
+        }
+    };
 
     let sse_stream = stream::unfold(rx, |mut rx| async move {
         match rx.recv().await {
@@ -2293,48 +2293,174 @@ fn channel_config_values(
     name: &str,
 ) -> Option<serde_json::Value> {
     match name {
-        "telegram" => config.telegram.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "discord" => config.discord.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "slack" => config.slack.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "whatsapp" => config.whatsapp.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "signal" => config.signal.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "matrix" => config.matrix.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "email" => config.email.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "teams" => config.teams.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "mattermost" => config.mattermost.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "irc" => config.irc.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "google_chat" => config.google_chat.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "twitch" => config.twitch.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "rocketchat" => config.rocketchat.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "zulip" => config.zulip.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "xmpp" => config.xmpp.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "line" => config.line.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "viber" => config.viber.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "messenger" => config.messenger.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "reddit" => config.reddit.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "mastodon" => config.mastodon.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "bluesky" => config.bluesky.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "feishu" => config.feishu.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "revolt" => config.revolt.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "nextcloud" => config.nextcloud.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "guilded" => config.guilded.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "keybase" => config.keybase.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "threema" => config.threema.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "nostr" => config.nostr.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "webex" => config.webex.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "pumble" => config.pumble.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "flock" => config.flock.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "twist" => config.twist.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "mumble" => config.mumble.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "dingtalk" => config.dingtalk.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "dingtalk_stream" => config.dingtalk_stream.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "discourse" => config.discourse.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "gitter" => config.gitter.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "ntfy" => config.ntfy.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "gotify" => config.gotify.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "webhook" => config.webhook.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "linkedin" => config.linkedin.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-        "wecom" => config.wecom.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        "telegram" => config
+            .telegram
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "discord" => config
+            .discord
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "slack" => config
+            .slack
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "whatsapp" => config
+            .whatsapp
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "signal" => config
+            .signal
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "matrix" => config
+            .matrix
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "email" => config
+            .email
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "teams" => config
+            .teams
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "mattermost" => config
+            .mattermost
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "irc" => config
+            .irc
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "google_chat" => config
+            .google_chat
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "twitch" => config
+            .twitch
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "rocketchat" => config
+            .rocketchat
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "zulip" => config
+            .zulip
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "xmpp" => config
+            .xmpp
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "line" => config
+            .line
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "viber" => config
+            .viber
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "messenger" => config
+            .messenger
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "reddit" => config
+            .reddit
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "mastodon" => config
+            .mastodon
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "bluesky" => config
+            .bluesky
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "feishu" => config
+            .feishu
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "revolt" => config
+            .revolt
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "nextcloud" => config
+            .nextcloud
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "guilded" => config
+            .guilded
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "keybase" => config
+            .keybase
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "threema" => config
+            .threema
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "nostr" => config
+            .nostr
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "webex" => config
+            .webex
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "pumble" => config
+            .pumble
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "flock" => config
+            .flock
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "twist" => config
+            .twist
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "mumble" => config
+            .mumble
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "dingtalk" => config
+            .dingtalk
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "dingtalk_stream" => config
+            .dingtalk_stream
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "discourse" => config
+            .discourse
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "gitter" => config
+            .gitter
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "ntfy" => config
+            .ntfy
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "gotify" => config
+            .gotify
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "webhook" => config
+            .webhook
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "linkedin" => config
+            .linkedin
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "wecom" => config
+            .wecom
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
         _ => None,
     }
 }
@@ -3147,9 +3273,7 @@ pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
         ]));
-        memory
-            .structured_get(shared_id, "__health_check__")
-            .is_ok()
+        memory.structured_get(shared_id, "__health_check__").is_ok()
     })
     .await
     .unwrap_or(false);
@@ -3171,9 +3295,7 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
         let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
         ]));
-        memory
-            .structured_get(shared_id, "__health_check__")
-            .is_ok()
+        memory.structured_get(shared_id, "__health_check__").is_ok()
     })
     .await
     .unwrap_or(false);
@@ -3794,7 +3916,10 @@ pub async fn list_hands(State(state): State<Arc<AppState>>) -> impl IntoResponse
                 .check_requirements(&d.id)
                 .unwrap_or_default();
             let readiness = state.kernel.hand_registry.readiness(&d.id);
-            let requirements_met = readiness.as_ref().map(|r| r.requirements_met).unwrap_or(false);
+            let requirements_met = readiness
+                .as_ref()
+                .map(|r| r.requirements_met)
+                .unwrap_or(false);
             let active = readiness.as_ref().map(|r| r.active).unwrap_or(false);
             let degraded = readiness.as_ref().map(|r| r.degraded).unwrap_or(false);
             serde_json::json!({
@@ -3857,7 +3982,10 @@ pub async fn get_hand(
                 .check_requirements(&hand_id)
                 .unwrap_or_default();
             let readiness = state.kernel.hand_registry.readiness(&hand_id);
-            let requirements_met = readiness.as_ref().map(|r| r.requirements_met).unwrap_or(false);
+            let requirements_met = readiness
+                .as_ref()
+                .map(|r| r.requirements_met)
+                .unwrap_or(false);
             let active = readiness.as_ref().map(|r| r.active).unwrap_or(false);
             let degraded = readiness.as_ref().map(|r| r.degraded).unwrap_or(false);
             let settings_status = state
@@ -3934,7 +4062,10 @@ pub async fn check_hand_deps(
                 .check_requirements(&hand_id)
                 .unwrap_or_default();
             let readiness = state.kernel.hand_registry.readiness(&hand_id);
-            let requirements_met = readiness.as_ref().map(|r| r.requirements_met).unwrap_or(false);
+            let requirements_met = readiness
+                .as_ref()
+                .map(|r| r.requirements_met)
+                .unwrap_or(false);
             let active = readiness.as_ref().map(|r| r.active).unwrap_or(false);
             let degraded = readiness.as_ref().map(|r| r.degraded).unwrap_or(false);
             (
@@ -5566,7 +5697,10 @@ pub async fn patch_agent(
     }
     if let Some(model) = body.get("model").and_then(|v| v.as_str()) {
         let explicit_provider = body.get("provider").and_then(|v| v.as_str());
-        if let Err(e) = state.kernel.set_agent_model(agent_id, model, explicit_provider) {
+        if let Err(e) = state
+            .kernel
+            .set_agent_model(agent_id, model, explicit_provider)
+        {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": format!("{e}")})),
@@ -6818,7 +6952,10 @@ pub async fn set_model(
         }
     };
     let explicit_provider = body["provider"].as_str();
-    match state.kernel.set_agent_model(agent_id, model, explicit_provider) {
+    match state
+        .kernel
+        .set_agent_model(agent_id, model, explicit_provider)
+    {
         Ok(()) => {
             // Return the resolved model+provider so frontend stays in sync.
             // The model name may have been normalized (provider prefix stripped),
@@ -8376,7 +8513,11 @@ pub async fn run_schedule(
     );
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
-    match state.kernel.send_message_with_handle(target_agent, &run_message, Some(kernel_handle), None, None).await {
+    match state
+        .kernel
+        .send_message_with_handle(target_agent, &run_message, Some(kernel_handle), None, None)
+        .await
+    {
         Ok(result) => (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -10956,15 +11097,17 @@ pub async fn auth_login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<serde_json::Value>,
 ) -> axum::response::Response {
-    use axum::response::Response;
     use axum::body::Body;
+    use axum::response::Response;
 
     let auth_cfg = &state.kernel.config.auth;
     if !auth_cfg.enabled {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
             .header("content-type", "application/json")
-            .body(Body::from(serde_json::json!({"error": "Auth not enabled"}).to_string()))
+            .body(Body::from(
+                serde_json::json!({"error": "Auth not enabled"}).to_string(),
+            ))
             .unwrap();
     }
 
@@ -10994,7 +11137,9 @@ pub async fn auth_login(
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header("content-type", "application/json")
-            .body(Body::from(serde_json::json!({"error": "Invalid credentials"}).to_string()))
+            .body(Body::from(
+                serde_json::json!({"error": "Invalid credentials"}).to_string(),
+            ))
             .unwrap();
     }
 
@@ -11009,9 +11154,8 @@ pub async fn auth_login(
     let token =
         crate::session_auth::create_session_token(username, &secret, auth_cfg.session_ttl_hours);
     let ttl_secs = auth_cfg.session_ttl_hours * 3600;
-    let cookie = format!(
-        "openfang_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}"
-    );
+    let cookie =
+        format!("openfang_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}");
 
     state.kernel.audit_log.record(
         "system",
@@ -11024,11 +11168,14 @@ pub async fn auth_login(
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .header("set-cookie", &cookie)
-        .body(Body::from(serde_json::json!({
-            "status": "ok",
-            "token": token,
-            "username": username,
-        }).to_string()))
+        .body(Body::from(
+            serde_json::json!({
+                "status": "ok",
+                "token": token,
+                "username": username,
+            })
+            .to_string(),
+        ))
         .unwrap()
 }
 
@@ -11069,9 +11216,11 @@ pub async fn auth_check(
         .get("cookie")
         .and_then(|v| v.to_str().ok())
         .and_then(|cookies| {
-            cookies
-                .split(';')
-                .find_map(|c| c.trim().strip_prefix("openfang_session=").map(|v| v.to_string()))
+            cookies.split(';').find_map(|c| {
+                c.trim()
+                    .strip_prefix("openfang_session=")
+                    .map(|v| v.to_string())
+            })
         })
         .and_then(|token| crate::session_auth::verify_session_token(&token, &secret));
 

@@ -176,7 +176,10 @@ fn decode_wecom_post_body(
 fn wecom_success_response() -> axum::response::Response {
     (
         axum::http::StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
         "success",
     )
         .into_response()
@@ -677,7 +680,10 @@ mod tests {
         )
         .expect("xml should parse");
 
-        assert_eq!(fields.get("FromUserName").map(String::as_str), Some("user123"));
+        assert_eq!(
+            fields.get("FromUserName").map(String::as_str),
+            Some("user123")
+        );
         assert_eq!(fields.get("MsgType").map(String::as_str), Some("text"));
         assert_eq!(fields.get("Content").map(String::as_str), Some("hello"));
         assert_eq!(fields.get("MsgId").map(String::as_str), Some("123456"));

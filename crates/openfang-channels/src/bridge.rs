@@ -544,7 +544,10 @@ async fn dispatch_message(
         .and_then(|o| o.output_format)
         .unwrap_or(channel_default_format);
     let threading_enabled = overrides.as_ref().map(|o| o.threading).unwrap_or(false);
-    let lifecycle_reactions = overrides.as_ref().map(|o| o.lifecycle_reactions).unwrap_or(true);
+    let lifecycle_reactions = overrides
+        .as_ref()
+        .map(|o| o.lifecycle_reactions)
+        .unwrap_or(true);
     let thread_id = if threading_enabled {
         message.thread_id.as_deref()
     } else {
@@ -912,11 +915,8 @@ async fn dispatch_message(
         }
         Err(e) => {
             // Try re-resolution before reporting error
-            if let Some(new_id) =
-                try_reresolution(&e, &channel_key, handle, router).await
-            {
-                let typing_task2 =
-                    spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
+            if let Some(new_id) = try_reresolution(&e, &channel_key, handle, router).await {
+                let typing_task2 = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
                 let retry = handle.send_message(new_id, &text).await;
                 typing_task2.abort();
                 match retry {
@@ -930,14 +930,8 @@ async fn dispatch_message(
                             )
                             .await;
                         }
-                        send_response(
-                            adapter,
-                            &message.sender,
-                            response,
-                            thread_id,
-                            output_format,
-                        )
-                        .await;
+                        send_response(adapter, &message.sender, response, thread_id, output_format)
+                            .await;
                         handle
                             .record_delivery(
                                 new_id,
@@ -1098,7 +1092,9 @@ fn detect_image_magic(bytes: &[u8]) -> Option<String> {
     if bytes.len() >= 4 && bytes[..4] == [0x47, 0x49, 0x46, 0x38] {
         return Some("image/gif".to_string());
     }
-    if bytes.len() >= 12 && bytes[..4] == [0x52, 0x49, 0x46, 0x46] && bytes[8..12] == [0x57, 0x45, 0x42, 0x50]
+    if bytes.len() >= 12
+        && bytes[..4] == [0x52, 0x49, 0x46, 0x46]
+        && bytes[8..12] == [0x57, 0x45, 0x42, 0x50]
     {
         return Some("image/webp".to_string());
     }
@@ -1167,9 +1163,8 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
     // 1. Trusted Content-Type header (only if image/*)
     // 2. Magic byte sniffing (most reliable for binary data)
     // 3. URL extension fallback
-    let media_type = header_type.unwrap_or_else(|| {
-        detect_image_magic(&bytes).unwrap_or_else(|| media_type_from_url(url))
-    });
+    let media_type = header_type
+        .unwrap_or_else(|| detect_image_magic(&bytes).unwrap_or_else(|| media_type_from_url(url)));
 
     if bytes.len() > MAX_IMAGE_BYTES {
         warn!(
@@ -1183,7 +1178,10 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
             ),
             None => format!("[Image too large for vision ({} KB)]", bytes.len() / 1024),
         };
-        return vec![ContentBlock::Text { text: desc, provider_metadata: None }];
+        return vec![ContentBlock::Text {
+            text: desc,
+            provider_metadata: None,
+        }];
     }
 
     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -1314,14 +1312,9 @@ async fn dispatch_with_blocks(
         }
         Err(e) => {
             // Try re-resolution before reporting error
-            if let Some(new_id) =
-                try_reresolution(&e, &channel_key, handle, router).await
-            {
-                let typing_task2 =
-                    spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
-                let retry = handle
-                    .send_message_with_blocks(new_id, blocks)
-                    .await;
+            if let Some(new_id) = try_reresolution(&e, &channel_key, handle, router).await {
+                let typing_task2 = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
+                let retry = handle.send_message_with_blocks(new_id, blocks).await;
                 typing_task2.abort();
                 match retry {
                     Ok(response) => {
@@ -1334,14 +1327,8 @@ async fn dispatch_with_blocks(
                             )
                             .await;
                         }
-                        send_response(
-                            adapter,
-                            &message.sender,
-                            response,
-                            thread_id,
-                            output_format,
-                        )
-                        .await;
+                        send_response(adapter, &message.sender, response, thread_id, output_format)
+                            .await;
                         handle
                             .record_delivery(
                                 new_id,
@@ -1969,11 +1956,26 @@ mod tests {
 
     #[test]
     fn test_media_type_from_url() {
-        assert_eq!(media_type_from_url("https://example.com/photo.png"), "image/png");
-        assert_eq!(media_type_from_url("https://example.com/anim.gif"), "image/gif");
-        assert_eq!(media_type_from_url("https://example.com/img.webp"), "image/webp");
-        assert_eq!(media_type_from_url("https://example.com/photo.jpg"), "image/jpeg");
+        assert_eq!(
+            media_type_from_url("https://example.com/photo.png"),
+            "image/png"
+        );
+        assert_eq!(
+            media_type_from_url("https://example.com/anim.gif"),
+            "image/gif"
+        );
+        assert_eq!(
+            media_type_from_url("https://example.com/img.webp"),
+            "image/webp"
+        );
+        assert_eq!(
+            media_type_from_url("https://example.com/photo.jpg"),
+            "image/jpeg"
+        );
         // No extension — defaults to JPEG
-        assert_eq!(media_type_from_url("https://api.telegram.org/file/bot123/photos/file_42"), "image/jpeg");
+        assert_eq!(
+            media_type_from_url("https://api.telegram.org/file/bot123/photos/file_42"),
+            "image/jpeg"
+        );
     }
 }

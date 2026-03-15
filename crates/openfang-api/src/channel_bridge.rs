@@ -798,7 +798,10 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             // Wave 5
             "mumble" => channels.mumble.as_ref().map(|c| c.overrides.clone()),
             "dingtalk" => channels.dingtalk.as_ref().map(|c| c.overrides.clone()),
-            "dingtalk_stream" => channels.dingtalk_stream.as_ref().map(|c| c.overrides.clone()),
+            "dingtalk_stream" => channels
+                .dingtalk_stream
+                .as_ref()
+                .map(|c| c.overrides.clone()),
             "discourse" => channels.discourse.as_ref().map(|c| c.overrides.clone()),
             "gitter" => channels.gitter.as_ref().map(|c| c.overrides.clone()),
             "ntfy" => channels.ntfy.as_ref().map(|c| c.overrides.clone()),
@@ -1036,9 +1039,7 @@ fn read_token(env_var_or_token: &str, adapter_name: &str) -> Option<String> {
     match std::env::var(env_var_or_token) {
         Ok(t) if !t.is_empty() => Some(t),
         Ok(_) => {
-            warn!(
-                "{adapter_name} token env var '{env_var_or_token}' is set but empty, skipping"
-            );
+            warn!("{adapter_name} token env var '{env_var_or_token}' is set but empty, skipping");
             None
         }
         Err(_) => {
@@ -1423,8 +1424,7 @@ pub async fn start_channel_bridge_with_config(
     // Feishu/Lark
     if let Some(ref fs_config) = config.feishu {
         if let Some(secret) = read_token(&fs_config.app_secret_env, "Feishu") {
-            let region =
-                openfang_channels::feishu::FeishuRegion::parse_region(&fs_config.region);
+            let region = openfang_channels::feishu::FeishuRegion::parse_region(&fs_config.region);
             let encrypt_key = fs_config
                 .encrypt_key_env
                 .as_ref()
@@ -1584,9 +1584,12 @@ pub async fn start_channel_bridge_with_config(
     // DingTalk (stream mode)
     if let Some(ref ds_config) = config.dingtalk_stream {
         if let Some(app_key) = read_token(&ds_config.app_key_env, "DingTalk Stream (app_key)") {
-            if let Some(app_secret) = read_token(&ds_config.app_secret_env, "DingTalk Stream (app_secret)") {
-                let robot_code = read_token(&ds_config.robot_code_env, "DingTalk Stream (robot_code)")
-                    .unwrap_or_else(|| app_key.clone());
+            if let Some(app_secret) =
+                read_token(&ds_config.app_secret_env, "DingTalk Stream (app_secret)")
+            {
+                let robot_code =
+                    read_token(&ds_config.robot_code_env, "DingTalk Stream (robot_code)")
+                        .unwrap_or_else(|| app_key.clone());
                 let adapter = Arc::new(DingTalkStreamAdapter::new(app_key, app_secret, robot_code));
                 adapters.push((adapter, ds_config.default_agent.clone()));
             }
