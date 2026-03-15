@@ -437,22 +437,26 @@ async fn handle_text_message(
                 return;
             }
 
-            // Resolve file attachments into image content blocks
+            // Resolve file attachments into transient content blocks.
+            // Blocks are passed to the streaming call — NOT persisted in session history.
             let mut has_images = false;
+            let mut ws_content_blocks: Option<Vec<openfang_types::message::ContentBlock>> = None;
             if let Some(attachments) = parsed["attachments"].as_array() {
                 let refs: Vec<crate::types::AttachmentRef> = attachments
                     .iter()
                     .filter_map(|a| serde_json::from_value(a.clone()).ok())
                     .collect();
                 if !refs.is_empty() {
-                    let image_blocks = crate::routes::resolve_attachments(&refs);
+                    let image_blocks = crate::routes::resolve_attachments(&refs).await;
                     if !image_blocks.is_empty() {
                         has_images = true;
-                        crate::routes::inject_attachments_into_session(
-                            &state.kernel,
-                            agent_id,
-                            image_blocks,
-                        );
+                        // Build combined blocks: text message + images
+                        let mut blocks = vec![openfang_types::message::ContentBlock::Text {
+                            text: content.clone(),
+                            provider_metadata: None,
+                        }];
+                        blocks.extend(image_blocks);
+                        ws_content_blocks = Some(blocks);
                     }
                 }
             }
@@ -508,6 +512,7 @@ async fn handle_text_message(
                 Some(kernel_handle),
                 None,
                 None,
+                ws_content_blocks,
             ) {
                 Ok((mut rx, handle)) => {
                     // Forward stream events to WebSocket with debouncing.

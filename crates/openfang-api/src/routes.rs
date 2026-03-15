@@ -241,7 +241,8 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
 ///
 /// Reads each file from the upload directory, base64-encodes it, and
 /// returns image content blocks ready to insert into a session message.
-pub fn resolve_attachments(
+/// File I/O is offloaded to a blocking thread to avoid stalling the async runtime.
+pub async fn resolve_attachments(
     attachments: &[AttachmentRef],
 ) -> Vec<openfang_types::message::ContentBlock> {
     use base64::Engine;
@@ -271,58 +272,24 @@ pub fn resolve_attachments(
         }
 
         let file_path = upload_dir.join(&att.file_id);
-        match std::fs::read(&file_path) {
-            Ok(data) => {
+        match tokio::task::spawn_blocking(move || std::fs::read(file_path)).await {
+            Ok(Ok(data)) => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
                 blocks.push(openfang_types::message::ContentBlock::Image {
                     media_type: content_type,
                     data: b64,
                 });
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!(file_id = %att.file_id, error = %e, "Failed to read upload for attachment");
+            }
+            Err(e) => {
+                tracing::warn!(file_id = %att.file_id, error = %e, "Blocking task panicked reading attachment");
             }
         }
     }
 
     blocks
-}
-
-/// Pre-insert image attachments into an agent's session so the LLM can see them.
-///
-/// This injects image content blocks into the session BEFORE the kernel
-/// adds the text user message, so the LLM receives: [..., User(images), User(text)].
-pub fn inject_attachments_into_session(
-    kernel: &OpenFangKernel,
-    agent_id: AgentId,
-    image_blocks: Vec<openfang_types::message::ContentBlock>,
-) {
-    use openfang_types::message::{Message, MessageContent, Role};
-
-    let entry = match kernel.registry.get(agent_id) {
-        Some(e) => e,
-        None => return,
-    };
-
-    let mut session = match kernel.memory.get_session(entry.session_id) {
-        Ok(Some(s)) => s,
-        _ => openfang_memory::session::Session {
-            id: entry.session_id,
-            agent_id,
-            messages: Vec::new(),
-            context_window_tokens: 0,
-            label: None,
-        },
-    };
-
-    session.messages.push(Message {
-        role: Role::User,
-        content: MessageContent::Blocks(image_blocks),
-    });
-
-    if let Err(e) = kernel.memory.save_session(&session) {
-        tracing::warn!(error = %e, "Failed to save session with image attachments");
-    }
 }
 
 /// POST /api/agents/:id/message — Send a message to an agent.
@@ -358,21 +325,37 @@ pub async fn send_message(
         );
     }
 
-    // Resolve file attachments into image content blocks
-    if !req.attachments.is_empty() {
-        let image_blocks = resolve_attachments(&req.attachments);
-        if !image_blocks.is_empty() {
-            inject_attachments_into_session(&state.kernel, agent_id, image_blocks);
+    // Resolve file attachments into image content blocks.
+    // Blocks are passed as transient content for the current turn only —
+    // they are NOT persisted in session history, avoiding token bloat and
+    // compaction storms from large base64 payloads.
+    let content_blocks = if !req.attachments.is_empty() {
+        let mut blocks = resolve_attachments(&req.attachments).await;
+        if !blocks.is_empty() {
+            // Prepend a text block with the user's message so the LLM sees both
+            blocks.insert(
+                0,
+                openfang_types::message::ContentBlock::Text {
+                    text: req.message.clone(),
+                    provider_metadata: None,
+                },
+            );
+            Some(blocks)
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(
+        .send_message_with_handle_and_blocks(
             agent_id,
             &req.message,
             Some(kernel_handle),
+            content_blocks,
             req.sender_id,
             req.sender_name,
         )
@@ -1412,6 +1395,7 @@ pub async fn send_message_stream(
         Some(kernel_handle),
         req.sender_id,
         req.sender_name,
+        None, // no content_blocks for SSE streaming endpoint
     ) {
         Ok(pair) => pair,
         Err(e) => {

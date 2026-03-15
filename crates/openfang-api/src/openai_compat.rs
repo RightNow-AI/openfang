@@ -379,7 +379,7 @@ async fn stream_response(
 
     let (mut rx, _handle) = state
         .kernel
-        .send_message_streaming(agent_id, message, Some(kernel_handle), None, None)
+        .send_message_streaming(agent_id, message, Some(kernel_handle), None, None, None)
         .map_err(|e| format!("Streaming setup failed: {e}"))?;
 
     let (tx, stream_rx) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(64);
