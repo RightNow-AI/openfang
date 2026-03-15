@@ -1,0 +1,134 @@
+name: Sync upstream & build custom image
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+env:
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+jobs:
+  sync-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify Telegram (start)
+        if: env.TELEGRAM_BOT_TOKEN != ''
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="🔄 OpenFang fork sync started" \
+            -d parse_mode=HTML || true
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/RightNow-AI/openfang.git || true
+          git fetch upstream main --tags
+
+      - name: Check for changes
+        id: check
+        run: |
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+          # Find our custom commits (not in upstream)
+          FORK_CUSTOM=$(git log --oneline HEAD --not upstream/main | wc -l)
+          # Check if upstream moved
+          CURRENT_BASE=$(cat .upstream-sha 2>/dev/null || echo "none")
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "current_base=$CURRENT_BASE" >> "$GITHUB_OUTPUT"
+          echo "custom_commits=$FORK_CUSTOM" >> "$GITHUB_OUTPUT"
+          if [ "$UPSTREAM_SHA" != "$CURRENT_BASE" ]; then
+            echo "needs_sync=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reset to upstream and apply fixes
+        if: steps.check.outputs.needs_sync == 'true'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          # Save our custom commit SHAs before reset
+          CUSTOM_SHAS=$(git log --reverse --format=%H HEAD --not upstream/main)
+
+          # Reset to upstream main
+          git reset --hard upstream/main
+
+          # Cherry-pick our fixes on top
+          for SHA in $CUSTOM_SHAS; do
+            SUBJECT=$(git log --format=%s -1 "$SHA")
+            echo "Cherry-picking: $SUBJECT"
+            if ! git cherry-pick "$SHA" --no-edit; then
+              echo "::error::Failed to cherry-pick $SHA ($SUBJECT)"
+              git cherry-pick --abort
+              # Notify and fail — don't silently skip
+              exit 1
+            fi
+          done
+
+          # Track upstream state
+          echo "${{ steps.check.outputs.upstream_sha }}" > .upstream-sha
+          git add .upstream-sha
+          git commit -m "chore: track upstream sync point" || true
+
+          git push --force-with-lease
+
+      - name: Build check
+        if: steps.check.outputs.needs_sync == 'true'
+        id: build
+        run: echo "should_build=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        if: steps.build.outputs.should_build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: steps.build.outputs.should_build == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        if: steps.build.outputs.should_build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            fliva/openfang:latest
+            fliva/openfang:${{ steps.check.outputs.upstream_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update Docker Hub description
+        if: steps.build.outputs.should_build == 'true'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: fliva/openfang
+          short-description: "OpenFang fork with custom fixes"
+
+      - name: Notify Telegram (success)
+        if: success() && steps.check.outputs.needs_sync == 'true' && env.TELEGRAM_BOT_TOKEN != ''
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="✅ OpenFang fork synced to upstream (${{ steps.check.outputs.upstream_sha }})" \
+            -d parse_mode=HTML || true
+
+      - name: Notify Telegram (failure)
+        if: failure() && env.TELEGRAM_BOT_TOKEN != ''
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="❌ OpenFang fork sync FAILED — cherry-pick conflict, manual intervention needed" \
+            -d parse_mode=HTML || true
