@@ -11705,12 +11705,25 @@ system_prompt = "You are a test agent."
         kernel.spawn_agent(manifest).unwrap()
     }
 
+    fn materialize_session(kernel: &OpenFangKernel, agent_id: AgentId) -> SessionId {
+        let session_id = kernel.registry.get(agent_id).unwrap().session_id;
+        let session = openfang_memory::session::Session {
+            id: session_id,
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        kernel.memory.save_session(&session).unwrap();
+        session_id
+    }
+
     #[test]
     fn test_resolve_session_for_attachments_rejects_cross_agent_session() {
         let (kernel, _tmp) = boot_kernel();
         let agent_a = spawn_agent(&kernel, "agent-a");
         let agent_b = spawn_agent(&kernel, "agent-b");
-        let session_b = kernel.registry.get(agent_b).unwrap().session_id;
+        let session_b = materialize_session(&kernel, agent_b);
 
         let err = resolve_session_for_attachments(&kernel, agent_a, Some(session_b)).unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
@@ -11733,7 +11746,7 @@ system_prompt = "You are a test agent."
         let (kernel, _tmp) = boot_kernel();
         let agent_a = spawn_agent(&kernel, "agent-a");
         let agent_b = spawn_agent(&kernel, "agent-b");
-        let session_b = kernel.registry.get(agent_b).unwrap().session_id;
+        let session_b = materialize_session(&kernel, agent_b);
 
         let image = openfang_types::message::ContentBlock::Image {
             media_type: "image/png".to_string(),
