@@ -216,6 +216,13 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "VENICE_API_KEY",
             key_required: true,
         }),
+        // Azure AI — requires custom base_url. Use format:
+        // https://{resource}.openai.azure.com/openai/deployments/{deployment}?api-version={version}
+        "azure" | "azure-openai" => Some(ProviderDefaults {
+            base_url: "", // User must provide base_url
+            api_key_env: "AZURE_API_KEY",
+            key_required: true,
+        }),
         _ => None,
     }
 }
@@ -299,6 +306,37 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .clone()
             .unwrap_or_else(|| OPENAI_BASE_URL.to_string());
         return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
+    }
+
+    // Azure OpenAI — requires api-version header and specific base_url format
+    if provider == "azure" || provider == "azure-openai" {
+        let api_key = config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("AZURE_API_KEY").ok())
+            .ok_or_else(|| {
+                LlmError::MissingApiKey("Set AZURE_API_KEY environment variable".to_string())
+            })?;
+
+        // Azure requires base_url in format: https://{resource}.openai.azure.com/openai/deployments/{deployment}
+        let base_url = config.base_url.clone().ok_or_else(|| {
+            LlmError::MissingApiKey(
+                "Azure requires base_url. Use format: https://{resource}.openai.azure.com/openai/deployments/{deployment}".to_string()
+            )
+        })?;
+
+        // Get api-version from config or use default
+        let api_version = config.extra_headers.iter()
+            .find(|(k, _)| k.to_lowercase() == "api-version")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| "2024-02-15".to_string());
+
+        let mut driver = openai::OpenAIDriver::new(api_key, base_url);
+        driver = driver.with_extra_headers(vec![(
+            "api-version".to_string(),
+            api_version,
+        )]);
+        return Ok(Arc::new(driver));
     }
 
     // Claude Code CLI — subprocess-based, no API key needed

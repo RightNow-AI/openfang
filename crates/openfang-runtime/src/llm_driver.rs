@@ -167,6 +167,9 @@ pub struct DriverConfig {
     pub api_key: Option<String>,
     /// Base URL override.
     pub base_url: Option<String>,
+    /// Extra HTTP headers (e.g., api-version for Azure).
+    #[serde(default)]
+    pub extra_headers: Vec<(String, String)>,
     /// Skip interactive permission prompts (Claude Code provider only).
     ///
     /// When `true`, adds `--dangerously-skip-permissions` to the spawned
