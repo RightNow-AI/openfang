@@ -233,6 +233,23 @@ impl ProcessManager {
             .collect()
     }
 
+    /// Verify that a process belongs to the provided agent/session scope.
+    pub fn verify_owner(&self, process_id: &str, agent_id: &str) -> Result<(), String> {
+        let entry = self
+            .processes
+            .get(process_id)
+            .ok_or_else(|| format!("Process '{}' not found", process_id))?;
+
+        if entry.value().agent_id != agent_id {
+            return Err(format!(
+                "Process '{}' is not owned by '{}'",
+                process_id, agent_id
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Cleanup: kill processes older than timeout.
     pub async fn cleanup(&self, max_age_secs: u64) {
         let to_remove: Vec<ProcessId> = self
@@ -307,7 +324,11 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("max: 1"));
 
-        let _ = pm.kill(&id1).await;
+        // Avoid kill_process_tree() in this unit test because it may target the
+        // whole process group under some test runners.
+        if let Some((_, mut proc)) = pm.processes.remove(&id1) {
+            let _ = proc.child.kill().await;
+        }
     }
 
     #[tokio::test]

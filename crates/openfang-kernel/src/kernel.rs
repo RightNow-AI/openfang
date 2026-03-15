@@ -11,7 +11,10 @@ use crate::registry::AgentRegistry;
 use crate::scheduler::AgentScheduler;
 use crate::supervisor::Supervisor;
 use crate::triggers::{TriggerEngine, TriggerId, TriggerPattern};
-use crate::workflow::{StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowRunId};
+use crate::workflow::{
+    StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowRouteRequest, WorkflowRunId,
+    WorkflowShadowComparison, WorkflowTrafficPath,
+};
 
 use openfang_memory::MemorySubstrate;
 use openfang_runtime::agent_loop::{
@@ -480,6 +483,30 @@ fn read_identity_file(workspace: &Path, filename: &str) -> Option<String> {
     } else {
         Some(content)
     }
+}
+
+fn read_identity_file_from_workspaces(
+    workspace: Option<&Path>,
+    fallback_workspace: Option<&Path>,
+    filename: &str,
+) -> Option<String> {
+    workspace
+        .and_then(|w| read_identity_file(w, filename))
+        .or_else(|| fallback_workspace.and_then(|w| read_identity_file(w, filename)))
+}
+
+fn session_workspace_root(base_workspace: &Path, session_id: SessionId) -> PathBuf {
+    let already_scoped = base_workspace
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        == Some(".session-workspaces");
+    if already_scoped {
+        return base_workspace.to_path_buf();
+    }
+    base_workspace
+        .join(".session-workspaces")
+        .join(session_id.to_string())
 }
 
 /// Get the system hostname as a String.
@@ -1165,11 +1192,15 @@ impl OpenFangKernel {
                             if !dm.model.is_empty() {
                                 restored_entry.manifest.model.model = dm.model.clone();
                             }
-                            if !dm.api_key_env.is_empty() {
+                            if !dm.api_key_env.is_empty()
+                                && restored_entry.manifest.model.api_key_env.is_none()
+                            {
                                 restored_entry.manifest.model.api_key_env =
                                     Some(dm.api_key_env.clone());
                             }
-                            if dm.base_url.is_some() {
+                            if dm.base_url.is_some()
+                                && restored_entry.manifest.model.base_url.is_none()
+                            {
                                 restored_entry
                                     .manifest
                                     .model
@@ -1423,6 +1454,45 @@ impl OpenFangKernel {
         Ok(signed.manifest)
     }
 
+    fn has_concurrent_agent_sessions(&self, agent_id: AgentId) -> bool {
+        match self.memory.list_agent_sessions(agent_id) {
+            Ok(sessions) => sessions.len() > 1,
+            Err(e) => {
+                warn!(agent_id = %agent_id, "Failed to list agent sessions for isolation guardrails: {e}");
+                true
+            }
+        }
+    }
+
+    fn resolve_requested_session_id(
+        &self,
+        entry: &AgentEntry,
+        requested_session_id: Option<SessionId>,
+    ) -> KernelResult<SessionId> {
+        let Some(session_id) = requested_session_id else {
+            return Ok(entry.session_id);
+        };
+
+        let session = self
+            .memory
+            .get_session(session_id)
+            .map_err(KernelError::OpenFang)?
+            .ok_or_else(|| {
+                KernelError::OpenFang(OpenFangError::Internal(format!(
+                    "Session not found: {session_id}",
+                )))
+            })?;
+
+        if session.agent_id != entry.id {
+            return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                "Session {session_id} does not belong to agent {}",
+                entry.id
+            ))));
+        }
+
+        Ok(session_id)
+    }
+
     /// Send a message to an agent and get a response.
     ///
     /// Automatically upgrades the kernel handle from `self_handle` so that
@@ -1433,13 +1503,29 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
     ) -> KernelResult<AgentLoopResult> {
+        self.send_message_in_session(agent_id, message, None).await
+    }
+
+    pub async fn send_message_in_session(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        requested_session_id: Option<SessionId>,
+    ) -> KernelResult<AgentLoopResult> {
         let handle: Option<Arc<dyn KernelHandle>> = self
             .self_handle
             .get()
             .and_then(|w| w.upgrade())
             .map(|arc| arc as Arc<dyn KernelHandle>);
-        self.send_message_with_handle(agent_id, message, handle, None, None)
-            .await
+        self.send_message_with_handle_in_session(
+            agent_id,
+            message,
+            handle,
+            requested_session_id,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Send a multimodal message (text + images) to an agent and get a response.
@@ -1457,11 +1543,12 @@ impl OpenFangKernel {
             .get()
             .and_then(|w| w.upgrade())
             .map(|arc| arc as Arc<dyn KernelHandle>);
-        self.send_message_with_handle_and_blocks(
+        self.send_message_with_handle_and_blocks_in_session(
             agent_id,
             message,
             handle,
             Some(blocks),
+            None,
             None,
             None,
         )
@@ -1477,11 +1564,32 @@ impl OpenFangKernel {
         sender_id: Option<String>,
         sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
-        self.send_message_with_handle_and_blocks(
+        self.send_message_with_handle_in_session(
             agent_id,
             message,
             kernel_handle,
             None,
+            sender_id,
+            sender_name,
+        )
+        .await
+    }
+
+    pub async fn send_message_with_handle_in_session(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        requested_session_id: Option<SessionId>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> KernelResult<AgentLoopResult> {
+        self.send_message_with_handle_and_blocks_in_session(
+            agent_id,
+            message,
+            kernel_handle,
+            None,
+            requested_session_id,
             sender_id,
             sender_name,
         )
@@ -1506,6 +1614,28 @@ impl OpenFangKernel {
         sender_id: Option<String>,
         sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
+        self.send_message_with_handle_and_blocks_in_session(
+            agent_id,
+            message,
+            kernel_handle,
+            content_blocks,
+            None,
+            sender_id,
+            sender_name,
+        )
+        .await
+    }
+
+    pub async fn send_message_with_handle_and_blocks_in_session(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        requested_session_id: Option<SessionId>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> KernelResult<AgentLoopResult> {
         // Acquire per-agent lock to serialize concurrent messages for the same agent.
         // This prevents session corruption when multiple messages arrive in quick
         // succession (e.g. rapid voice messages via Telegram). Messages for different
@@ -1525,6 +1655,8 @@ impl OpenFangKernel {
         let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
         })?;
+        let resolved_session_id =
+            self.resolve_requested_session_id(&entry, requested_session_id)?;
 
         // Dispatch based on module type
         let result = if entry.manifest.module.starts_with("wasm:") {
@@ -1539,6 +1671,7 @@ impl OpenFangKernel {
                 agent_id,
                 message,
                 kernel_handle,
+                resolved_session_id,
                 content_blocks,
                 sender_id,
                 sender_name,
@@ -1603,6 +1736,70 @@ impl OpenFangKernel {
         tokio::sync::mpsc::Receiver<StreamEvent>,
         tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
     )> {
+        self.send_message_streaming_inner(
+            agent_id,
+            message,
+            kernel_handle,
+            None,
+            sender_id,
+            sender_name,
+        )
+    }
+
+    pub fn send_message_streaming_in_session(
+        self: &Arc<Self>,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        requested_session_id: Option<SessionId>,
+    ) -> KernelResult<(
+        tokio::sync::mpsc::Receiver<StreamEvent>,
+        tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
+    )> {
+        self.send_message_streaming_with_sender_in_session(
+            agent_id,
+            message,
+            kernel_handle,
+            requested_session_id,
+            None,
+            None,
+        )
+    }
+
+    pub fn send_message_streaming_with_sender_in_session(
+        self: &Arc<Self>,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        requested_session_id: Option<SessionId>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> KernelResult<(
+        tokio::sync::mpsc::Receiver<StreamEvent>,
+        tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
+    )> {
+        self.send_message_streaming_inner(
+            agent_id,
+            message,
+            kernel_handle,
+            requested_session_id,
+            sender_id,
+            sender_name,
+        )
+    }
+
+    fn send_message_streaming_inner(
+        self: &Arc<Self>,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        requested_session_id: Option<SessionId>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> KernelResult<(
+        tokio::sync::mpsc::Receiver<StreamEvent>,
+        tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
+    )> {
         // Enforce quota before spawning the streaming task
         self.scheduler
             .check_quota(agent_id)
@@ -1611,6 +1808,8 @@ impl OpenFangKernel {
         let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
         })?;
+        let resolved_session_id =
+            self.resolve_requested_session_id(&entry, requested_session_id)?;
 
         let is_wasm = entry.manifest.module.starts_with("wasm:");
         let is_python = entry.manifest.module.starts_with("python:");
@@ -1669,10 +1868,10 @@ impl OpenFangKernel {
         // LLM agent: true streaming via agent loop
         let mut session = self
             .memory
-            .get_session(entry.session_id)
+            .get_session(resolved_session_id)
             .map_err(KernelError::OpenFang)?
             .unwrap_or_else(|| openfang_memory::session::Session {
-                id: entry.session_id,
+                id: resolved_session_id,
                 agent_id,
                 messages: Vec::new(),
                 context_window_tokens: 0,
@@ -1732,8 +1931,9 @@ impl OpenFangKernel {
 
         let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let mut manifest = entry.manifest.clone();
+        let session_isolation_enabled = self.has_concurrent_agent_sessions(agent_id);
 
-        // Lazy backfill: create workspace for existing agents spawned before workspaces
+        // Lazy backfill: create base workspace for existing agents spawned before workspaces
         if manifest.workspace.is_none() {
             let workspace_dir = self.config.effective_workspaces_dir().join(&manifest.name);
             if let Err(e) = ensure_workspace(&workspace_dir) {
@@ -1743,6 +1943,20 @@ impl OpenFangKernel {
                 let _ = self
                     .registry
                     .update_workspace(agent_id, manifest.workspace.clone());
+            }
+        }
+
+        let base_workspace = manifest.workspace.clone();
+        if session_isolation_enabled {
+            if let Some(session_workspace) = base_workspace
+                .as_deref()
+                .map(|workspace| session_workspace_root(workspace, resolved_session_id))
+            {
+                if let Err(e) = ensure_workspace(&session_workspace) {
+                    warn!(agent_id = %agent_id, "Failed to prepare session workspace (streaming): {e}");
+                } else {
+                    manifest.workspace = Some(session_workspace);
+                }
             }
         }
 
@@ -1784,23 +1998,29 @@ impl OpenFangKernel {
                     String::new()
                 },
                 workspace_path: manifest.workspace.as_ref().map(|p| p.display().to_string()),
-                soul_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "SOUL.md")),
-                user_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "USER.md")),
-                memory_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "MEMORY.md")),
-                canonical_context: self
-                    .memory
-                    .canonical_context(agent_id, None)
-                    .ok()
-                    .and_then(|(s, _)| s),
+                soul_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "SOUL.md",
+                ),
+                user_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "USER.md",
+                ),
+                memory_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "MEMORY.md",
+                ),
+                canonical_context: if session_isolation_enabled {
+                    None
+                } else {
+                    self.memory
+                        .canonical_context(agent_id, None)
+                        .ok()
+                        .and_then(|(s, _)| s)
+                },
                 user_name,
                 channel_type: None,
                 is_subagent: manifest
@@ -1809,28 +2029,32 @@ impl OpenFangKernel {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 is_autonomous: manifest.autonomous.is_some(),
-                agents_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "AGENTS.md")),
-                bootstrap_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "BOOTSTRAP.md")),
+                agents_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "AGENTS.md",
+                ),
+                bootstrap_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "BOOTSTRAP.md",
+                ),
                 workspace_context: manifest.workspace.as_ref().map(|w| {
                     let mut ws_ctx =
                         openfang_runtime::workspace_context::WorkspaceContext::detect(w);
                     ws_ctx.build_context_section()
                 }),
-                identity_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "IDENTITY.md")),
+                identity_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "IDENTITY.md",
+                ),
                 heartbeat_md: if manifest.autonomous.is_some() {
-                    manifest
-                        .workspace
-                        .as_ref()
-                        .and_then(|w| read_identity_file(w, "HEARTBEAT.md"))
+                    read_identity_file_from_workspaces(
+                        manifest.workspace.as_deref(),
+                        base_workspace.as_deref(),
+                        "HEARTBEAT.md",
+                    )
                 } else {
                     None
                 },
@@ -1845,6 +2069,7 @@ impl OpenFangKernel {
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
+            manifest.metadata.remove("canonical_context_msg");
             // Store canonical context separately for injection as user message
             // (keeps system prompt stable across turns for provider prompt caching)
             if let Some(cc_msg) =
@@ -1872,7 +2097,10 @@ impl OpenFangKernel {
             // Auto-compact if the session is large before running the loop
             if needs_compact {
                 info!(agent_id = %agent_id, messages = session.messages.len(), "Auto-compacting session");
-                match kernel_clone.compact_agent_session(agent_id).await {
+                match kernel_clone
+                    .compact_agent_session_in_session(agent_id, resolved_session_id)
+                    .await
+                {
                     Ok(msg) => {
                         info!(agent_id = %agent_id, "{msg}");
                         // Reload the session after compaction
@@ -1971,7 +2199,7 @@ impl OpenFangKernel {
             match result {
                 Ok(result) => {
                     // Append new messages to canonical session for cross-channel memory
-                    if session.messages.len() > messages_before {
+                    if !session_isolation_enabled && session.messages.len() > messages_before {
                         let new_messages = session.messages[messages_before..].to_vec();
                         if let Err(e) = memory.append_canonical(agent_id, &new_messages, None) {
                             warn!(agent_id = %agent_id, "Failed to update canonical session (streaming): {e}");
@@ -1996,19 +2224,24 @@ impl OpenFangKernel {
                     // Persist usage to database (same as non-streaming path)
                     let model = &manifest.model.model;
                     let cost = MeteringEngine::estimate_cost_with_catalog(
-                        &kernel_clone.model_catalog.read().unwrap_or_else(|e| e.into_inner()),
+                        &kernel_clone
+                            .model_catalog
+                            .read()
+                            .unwrap_or_else(|e| e.into_inner()),
                         model,
                         result.total_usage.input_tokens,
                         result.total_usage.output_tokens,
                     );
-                    let _ = kernel_clone.metering.record(&openfang_memory::usage::UsageRecord {
-                        agent_id,
-                        model: model.clone(),
-                        input_tokens: result.total_usage.input_tokens,
-                        output_tokens: result.total_usage.output_tokens,
-                        cost_usd: cost,
-                        tool_calls: result.iterations.saturating_sub(1),
-                    });
+                    let _ = kernel_clone
+                        .metering
+                        .record(&openfang_memory::usage::UsageRecord {
+                            agent_id,
+                            model: model.clone(),
+                            input_tokens: result.total_usage.input_tokens,
+                            output_tokens: result.total_usage.output_tokens,
+                            cost_usd: cost,
+                            tool_calls: result.iterations.saturating_sub(1),
+                        });
 
                     let _ = kernel_clone
                         .registry
@@ -2026,7 +2259,10 @@ impl OpenFangKernel {
                             let kc = kernel_clone.clone();
                             tokio::spawn(async move {
                                 info!(agent_id = %agent_id, estimated_tokens = estimated, "Post-loop compaction triggered");
-                                if let Err(e) = kc.compact_agent_session(agent_id).await {
+                                if let Err(e) = kc
+                                    .compact_agent_session_in_session(agent_id, resolved_session_id)
+                                    .await
+                                {
                                     warn!(agent_id = %agent_id, "Post-loop compaction failed: {e}");
                                 }
                             });
@@ -2203,6 +2439,7 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
+        resolved_session_id: SessionId,
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
@@ -2214,10 +2451,10 @@ impl OpenFangKernel {
 
         let mut session = self
             .memory
-            .get_session(entry.session_id)
+            .get_session(resolved_session_id)
             .map_err(KernelError::OpenFang)?
             .unwrap_or_else(|| openfang_memory::session::Session {
-                id: entry.session_id,
+                id: resolved_session_id,
                 agent_id,
                 messages: Vec::new(),
                 context_window_tokens: 0,
@@ -2246,7 +2483,10 @@ impl OpenFangKernel {
             };
             if by_messages || by_tokens || by_quota {
                 info!(agent_id = %agent_id, messages = session.messages.len(), estimated_tokens = estimated, "Pre-emptive compaction before LLM call");
-                match self.compact_agent_session(agent_id).await {
+                match self
+                    .compact_agent_session_in_session(agent_id, resolved_session_id)
+                    .await
+                {
                     Ok(msg) => {
                         info!(agent_id = %agent_id, "{msg}");
                         if let Ok(Some(reloaded)) = self.memory.get_session(session.id) {
@@ -2275,8 +2515,9 @@ impl OpenFangKernel {
 
         // Apply model routing if configured (disabled in Stable mode)
         let mut manifest = entry.manifest.clone();
+        let session_isolation_enabled = self.has_concurrent_agent_sessions(agent_id);
 
-        // Lazy backfill: create workspace for existing agents spawned before workspaces
+        // Lazy backfill: create base workspace for existing agents spawned before workspaces
         if manifest.workspace.is_none() {
             let workspace_dir = self.config.effective_workspaces_dir().join(&manifest.name);
             if let Err(e) = ensure_workspace(&workspace_dir) {
@@ -2287,6 +2528,20 @@ impl OpenFangKernel {
                 let _ = self
                     .registry
                     .update_workspace(agent_id, manifest.workspace.clone());
+            }
+        }
+
+        let base_workspace = manifest.workspace.clone();
+        if session_isolation_enabled {
+            if let Some(session_workspace) = base_workspace
+                .as_deref()
+                .map(|workspace| session_workspace_root(workspace, resolved_session_id))
+            {
+                if let Err(e) = ensure_workspace(&session_workspace) {
+                    warn!(agent_id = %agent_id, "Failed to prepare session workspace: {e}");
+                } else {
+                    manifest.workspace = Some(session_workspace);
+                }
             }
         }
 
@@ -2328,23 +2583,29 @@ impl OpenFangKernel {
                     String::new()
                 },
                 workspace_path: manifest.workspace.as_ref().map(|p| p.display().to_string()),
-                soul_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "SOUL.md")),
-                user_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "USER.md")),
-                memory_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "MEMORY.md")),
-                canonical_context: self
-                    .memory
-                    .canonical_context(agent_id, None)
-                    .ok()
-                    .and_then(|(s, _)| s),
+                soul_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "SOUL.md",
+                ),
+                user_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "USER.md",
+                ),
+                memory_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "MEMORY.md",
+                ),
+                canonical_context: if session_isolation_enabled {
+                    None
+                } else {
+                    self.memory
+                        .canonical_context(agent_id, None)
+                        .ok()
+                        .and_then(|(s, _)| s)
+                },
                 user_name,
                 channel_type: None,
                 is_subagent: manifest
@@ -2353,28 +2614,32 @@ impl OpenFangKernel {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 is_autonomous: manifest.autonomous.is_some(),
-                agents_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "AGENTS.md")),
-                bootstrap_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "BOOTSTRAP.md")),
+                agents_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "AGENTS.md",
+                ),
+                bootstrap_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "BOOTSTRAP.md",
+                ),
                 workspace_context: manifest.workspace.as_ref().map(|w| {
                     let mut ws_ctx =
                         openfang_runtime::workspace_context::WorkspaceContext::detect(w);
                     ws_ctx.build_context_section()
                 }),
-                identity_md: manifest
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| read_identity_file(w, "IDENTITY.md")),
+                identity_md: read_identity_file_from_workspaces(
+                    manifest.workspace.as_deref(),
+                    base_workspace.as_deref(),
+                    "IDENTITY.md",
+                ),
                 heartbeat_md: if manifest.autonomous.is_some() {
-                    manifest
-                        .workspace
-                        .as_ref()
-                        .and_then(|w| read_identity_file(w, "HEARTBEAT.md"))
+                    read_identity_file_from_workspaces(
+                        manifest.workspace.as_deref(),
+                        base_workspace.as_deref(),
+                        "HEARTBEAT.md",
+                    )
                 } else {
                     None
                 },
@@ -2389,6 +2654,7 @@ impl OpenFangKernel {
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
+            manifest.metadata.remove("canonical_context_msg");
             // Store canonical context separately for injection as user message
             // (keeps system prompt stable across turns for provider prompt caching)
             if let Some(cc_msg) =
@@ -2515,7 +2781,7 @@ impl OpenFangKernel {
         .map_err(KernelError::OpenFang)?;
 
         // Append new messages to canonical session for cross-channel memory
-        if session.messages.len() > messages_before {
+        if !session_isolation_enabled && session.messages.len() > messages_before {
             let new_messages = session.messages[messages_before..].to_vec();
             if let Err(e) = self.memory.append_canonical(agent_id, &new_messages, None) {
                 warn!("Failed to update canonical session: {e}");
@@ -2796,9 +3062,15 @@ impl OpenFangKernel {
             self.memory
                 .structured_set(agent_id, &key, serde_json::Value::String(summary.clone()));
 
-        // Also write to workspace memory/ dir if workspace exists
+        // Keep session summaries isolated once an agent has multiple sessions.
         if let Some(ref workspace) = entry.manifest.workspace {
-            let mem_dir = workspace.join("memory");
+            let summary_workspace = if self.has_concurrent_agent_sessions(agent_id) {
+                session_workspace_root(workspace, session.id)
+            } else {
+                workspace.clone()
+            };
+            let mem_dir = summary_workspace.join("memory");
+            let _ = std::fs::create_dir_all(&mem_dir);
             let filename = format!("{date}-{slug}.md");
             let _ = std::fs::write(mem_dir.join(&filename), &summary);
         }
@@ -3032,6 +3304,19 @@ impl OpenFangKernel {
     /// Replaces the existing text-truncation compaction with an intelligent
     /// LLM-generated summary of older messages, keeping only recent messages.
     pub async fn compact_agent_session(&self, agent_id: AgentId) -> KernelResult<String> {
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+        self.compact_agent_session_in_session(agent_id, entry.session_id)
+            .await
+    }
+
+    /// Compact a specific agent session by session id.
+    pub async fn compact_agent_session_in_session(
+        &self,
+        agent_id: AgentId,
+        session_id: SessionId,
+    ) -> KernelResult<String> {
         use openfang_runtime::compactor::{compact_session, needs_compaction, CompactionConfig};
 
         let entry = self.registry.get(agent_id).ok_or_else(|| {
@@ -3040,10 +3325,19 @@ impl OpenFangKernel {
 
         let session = self
             .memory
-            .get_session(entry.session_id)
+            .get_session(session_id)
             .map_err(KernelError::OpenFang)?
+            .map(|session| {
+                if session.agent_id != agent_id {
+                    return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                        "Session {session_id} belongs to a different agent"
+                    ))));
+                }
+                Ok(session)
+            })
+            .transpose()?
             .unwrap_or_else(|| openfang_memory::session::Session {
-                id: entry.session_id,
+                id: session_id,
                 agent_id,
                 messages: Vec::new(),
                 context_window_tokens: 0,
@@ -3068,9 +3362,11 @@ impl OpenFangKernel {
             .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(e)))?;
 
         // Store the LLM summary in the canonical session
-        self.memory
-            .store_llm_summary(agent_id, &result.summary, result.kept_messages.clone())
-            .map_err(KernelError::OpenFang)?;
+        if !self.has_concurrent_agent_sessions(agent_id) {
+            self.memory
+                .store_llm_summary(agent_id, &result.summary, result.kept_messages.clone())
+                .map_err(KernelError::OpenFang)?;
+        }
 
         // Post-compaction audit: validate and repair the kept messages
         let (repaired_messages, repair_stats) =
@@ -3697,6 +3993,60 @@ impl OpenFangKernel {
         })?;
 
         Ok((run_id, output))
+    }
+
+    pub async fn run_workflow_shadow(
+        &self,
+        workflow_id: WorkflowId,
+        input: String,
+        production_output: String,
+    ) -> KernelResult<(WorkflowRunId, WorkflowShadowComparison)> {
+        let (run_id, _shadow_output) = self.run_workflow(workflow_id, input).await?;
+        let comparison = self
+            .workflows
+            .record_shadow_comparison(run_id, production_output)
+            .await
+            .map_err(|error| {
+                KernelError::OpenFang(OpenFangError::Internal(format!(
+                    "Shadow comparison failed: {error}"
+                )))
+            })?;
+        Ok((run_id, comparison))
+    }
+
+    pub async fn route_workflow(&self, request: &WorkflowRouteRequest) -> Option<WorkflowId> {
+        self.workflows.route_workflow(request).await
+    }
+
+    pub async fn run_routed_workflow(
+        &self,
+        request: WorkflowRouteRequest,
+        input: String,
+    ) -> KernelResult<(WorkflowRunId, String)> {
+        let workflow_id = self
+            .workflows
+            .route_workflow_for_primary_path(&request, WorkflowTrafficPath::Openfang)
+            .await
+            .ok_or_else(|| {
+                KernelError::OpenFang(OpenFangError::Internal(
+                    "No matching OpenFang-primary workflow route rule".to_string(),
+                ))
+            })?;
+        let rollout = self
+            .workflows
+            .get_rollout_state(workflow_id)
+            .await
+            .ok_or_else(|| {
+                KernelError::OpenFang(OpenFangError::Internal(
+                    "Workflow rollout state not found".to_string(),
+                ))
+            })?;
+        if rollout.primary_path != WorkflowTrafficPath::Openfang {
+            return Err(KernelError::OpenFang(OpenFangError::Internal(
+                "Workflow route is not promoted to OpenFang primary path".to_string(),
+            )));
+        }
+        self.run_workflow(workflow_id, input).await
     }
 
     /// Auto-load workflow definitions from a directory.
@@ -6406,6 +6756,7 @@ impl openfang_wire::peer::PeerHandle for OpenFangKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openfang_types::config::DefaultModelConfig;
     use std::collections::HashMap;
 
     #[test]
@@ -6474,6 +6825,50 @@ mod tests {
             tool_allowlist: vec![],
             tool_blocklist: vec![],
         }
+    }
+
+    fn boot_test_kernel() -> (OpenFangKernel, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "OLLAMA_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).unwrap();
+        (kernel, tmp)
+    }
+
+    #[tokio::test]
+    async fn test_compact_agent_session_in_session_rejects_cross_agent_session() {
+        let (kernel, _tmp) = boot_test_kernel();
+        let agent_a = kernel
+            .spawn_agent(test_manifest(
+                "agent-a",
+                "A routes test agent",
+                vec!["test".to_string()],
+            ))
+            .unwrap();
+        let agent_b = kernel
+            .spawn_agent(test_manifest(
+                "agent-b",
+                "B routes test agent",
+                vec!["test".to_string()],
+            ))
+            .unwrap();
+        let session_b = kernel.registry.get(agent_b).unwrap().session_id;
+
+        let err = kernel
+            .compact_agent_session_in_session(agent_a, session_b)
+            .await
+            .unwrap_err();
+        let err_text = err.to_string();
+        assert!(err_text.contains("belongs to a different agent"));
     }
 
     #[test]

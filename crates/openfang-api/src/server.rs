@@ -312,6 +312,14 @@ pub async fn build_router(
             axum::routing::get(routes::list_workflows).post(routes::create_workflow),
         )
         .route(
+            "/api/workflows/metrics",
+            axum::routing::get(routes::workflow_observability_metrics),
+        )
+        .route(
+            "/api/workflows/traces/{trace_id}/events",
+            axum::routing::get(routes::list_workflow_trace_events),
+        )
+        .route(
             "/api/workflows/{id}",
             axum::routing::get(routes::get_workflow)
                 .put(routes::update_workflow)
@@ -324,6 +332,14 @@ pub async fn build_router(
         .route(
             "/api/workflows/{id}/runs",
             axum::routing::get(routes::list_workflow_runs),
+        )
+        .route(
+            "/api/workflows/{id}/rollout",
+            axum::routing::get(routes::get_workflow_rollout).put(routes::update_workflow_rollout),
+        )
+        .route(
+            "/api/workflows/{id}/rollback",
+            axum::routing::post(routes::rollback_workflow_to_stable_path),
         )
         // Skills endpoints
         .route("/api/skills", axum::routing::get(routes::list_skills))

@@ -5,6 +5,30 @@ All notable changes to OpenFang will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Multi-Agent Foundation Release Candidate
+- Finalized the multi-agent foundation release candidate handoff for `feat/multiagent-foundation-v1`, covering declarative workflow orchestration, durable workflow recovery, review/retry controls, audit/metrics hooks, session isolation, shadow routing, rollback controls, and OpenClaw migration compatibility.
+- Confirmed the upstream delivery plan is split into six reviewable slices with rollback notes and focused gates recorded in `.codex-tasks/openfang-multiagent-foundation/PROGRESS.md`.
+- Recorded the operator acceptance outcome: the two-user shadow drill passed with stable user-specific routing, no cross-session context bleed, successful shadow comparison capture, and rollback checklist execution inside the five-minute rollback window.
+
+### Handoff Checklist
+- [x] Operator guide is published in `docs/multi-agent-foundation.md` with shadow-run, rollout, and rollback instructions.
+- [x] Upstream PR slicing plan and submission checklist are captured in `.codex-tasks/openfang-multiagent-foundation/PROGRESS.md`.
+- [x] Two-user acceptance drill passed via focused gates for route specificity, session isolation, shadow comparison, and rollback controls.
+- [x] Release handoff notes are consolidated in `CHANGELOG.md` so the final row is documentation-only and does not introduce unrelated runtime refactors.
+
+### Known Risks
+- Multi-session isolation spans kernel, runtime, API, and workspace persistence; keep rollout gradual and monitor for session-scoped memory regressions when traffic increases.
+- Shadow and rollback controls are operator-facing guardrails; keep `stable_path` anchored to the last production route until each upstream slice is reviewed and landed.
+- OpenClaw migration compatibility covers historical identity/provider/bindings variants, so representative production exports should still be revalidated before promotion.
+
+### Operational Quality Gates
+- Added CI workflow `.github/workflows/pre-pr-review-gate.yml` to enforce comprehensive pre-PR checklist structure on `pull_request -> main`.
+- Added PR template `.github/pull_request_template.md` with mandatory sections: summary, scope, validation evidence, findings, risks, and rollback.
+- Added branch-protection automation script `scripts/ci/configure_branch_protection.sh` to apply required checks/review rules for `main` (default checks include pre-PR gate plus CI check/test/clippy/format).
+- Added operator docs: `docs/pr-quality-gates.md`; linked from `docs/README.md` and `CONTRIBUTING.md`.
+
 ## [0.1.0] - 2026-02-24
 
 ### Added

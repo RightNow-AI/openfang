@@ -23,6 +23,7 @@
 
 use crate::report::{ItemKind, MigrateItem, MigrationReport, SkippedItem};
 use crate::{MigrateError, MigrateOptions};
+use openfang_types::config::{AgentBinding, BindingMatchRule};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
@@ -71,6 +72,55 @@ struct OpenClawRootTools {
     deny: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum OpenClawIdentity {
+    Text(String),
+    Object(serde_json::Map<String, serde_json::Value>),
+}
+
+impl OpenClawIdentity {
+    fn system_prompt(&self) -> Option<String> {
+        match self {
+            Self::Text(text) => {
+                let trimmed = text.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }
+            Self::Object(map) => Self::system_prompt_from_map(map),
+        }
+    }
+
+    fn system_prompt_from_map(map: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+        for key in [
+            "systemPrompt",
+            "system_prompt",
+            "prompt",
+            "persona",
+            "instructions",
+            "content",
+            "text",
+            "description",
+            "role",
+        ] {
+            if let Some(prompt) = map.get(key).and_then(Self::system_prompt_from_value) {
+                return Some(prompt);
+            }
+        }
+        None
+    }
+
+    fn system_prompt_from_value(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(text) => {
+                let trimmed = text.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }
+            serde_json::Value::Object(map) => Self::system_prompt_from_map(map),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct OpenClawAgents {
@@ -84,7 +134,7 @@ struct OpenClawAgentDefaults {
     model: Option<OpenClawAgentModel>,
     workspace: Option<String>,
     tools: Option<OpenClawAgentTools>,
-    identity: Option<String>,
+    identity: Option<OpenClawIdentity>,
 }
 
 /// Agent model reference — either `"provider/model"` or `{ primary, fallbacks }`.
@@ -111,7 +161,7 @@ struct OpenClawAgentEntry {
     tools: Option<OpenClawAgentTools>,
     workspace: Option<String>,
     skills: Option<serde_json::Value>,
-    identity: Option<String>,
+    identity: Option<OpenClawIdentity>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -286,6 +336,19 @@ struct OpenClawFeishuConfig {
     app_secret: Option<String>,
     domain: Option<String>,
     dm_policy: Option<String>,
+    allow_from: Option<serde_json::Value>,
+    default_agent: Option<String>,
+    #[serde(alias = "routeMap")]
+    routes: Option<serde_json::Value>,
+    #[serde(
+        alias = "userBindings",
+        alias = "agentBindings",
+        alias = "routeBindings"
+    )]
+    bindings: Option<serde_json::Value>,
+    #[serde(alias = "userAgentMap")]
+    user_to_agent: Option<serde_json::Value>,
+    user_routes: Option<serde_json::Value>,
     enabled: Option<bool>,
 }
 
@@ -421,6 +484,8 @@ struct OpenFangConfig {
     network: OpenFangNetworkSection,
     #[serde(skip_serializing_if = "Option::is_none")]
     channels: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    bindings: Vec<AgentBinding>,
 }
 
 #[derive(Serialize)]
@@ -449,6 +514,222 @@ struct OpenFangNetworkSection {
 // ---------------------------------------------------------------------------
 // Secrets & policy helpers
 // ---------------------------------------------------------------------------
+
+fn string_like_json(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        serde_json::Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
+    }
+}
+
+fn feishu_binding(peer_id: impl Into<String>, agent: impl Into<String>) -> AgentBinding {
+    AgentBinding {
+        agent: agent.into(),
+        match_rule: BindingMatchRule {
+            channel: Some("feishu".to_string()),
+            peer_id: Some(peer_id.into()),
+            ..Default::default()
+        },
+    }
+}
+
+fn parse_feishu_binding_entry(
+    entry: &serde_json::Value,
+    fallback_peer_id: Option<&str>,
+) -> Option<AgentBinding> {
+    match entry {
+        serde_json::Value::String(agent) => fallback_peer_id.and_then(|peer_id| {
+            let peer_id = peer_id.trim();
+            let agent = agent.trim();
+            (!peer_id.is_empty() && !agent.is_empty())
+                .then(|| feishu_binding(peer_id.to_string(), agent.to_string()))
+        }),
+        serde_json::Value::Object(map) => {
+            let agent = [
+                "agent",
+                "agentId",
+                "agent_id",
+                "target",
+                "targetAgent",
+                "target_agent",
+                "defaultAgent",
+                "default_agent",
+            ]
+            .iter()
+            .find_map(|key| map.get(*key).and_then(string_like_json))?;
+
+            let peer_id = [
+                "peerId",
+                "peer_id",
+                "user",
+                "userId",
+                "user_id",
+                "openId",
+                "open_id",
+                "senderId",
+                "sender_id",
+                "chatId",
+                "chat_id",
+            ]
+            .iter()
+            .find_map(|key| map.get(*key).and_then(string_like_json))
+            .or_else(|| fallback_peer_id.map(|peer_id| peer_id.trim().to_string()))?;
+
+            (!peer_id.is_empty() && !agent.is_empty()).then(|| feishu_binding(peer_id, agent))
+        }
+        _ => None,
+    }
+}
+
+fn extend_feishu_bindings_from_json_value(
+    value: &serde_json::Value,
+    source_label: &str,
+    out: &mut Vec<AgentBinding>,
+    report: &mut MigrationReport,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut imported_any = false;
+            for (fallback_peer_id, entry) in map {
+                if let Some(binding) = parse_feishu_binding_entry(entry, Some(fallback_peer_id)) {
+                    out.push(binding);
+                    imported_any = true;
+                }
+            }
+            if !imported_any && !map.is_empty() {
+                report.warnings.push(format!(
+                    "Feishu {source_label} entries were present but no valid peer→agent routes were found"
+                ));
+            }
+        }
+        serde_json::Value::Array(entries) => {
+            let mut imported_any = false;
+            for entry in entries {
+                if let Some(binding) = parse_feishu_binding_entry(entry, None) {
+                    out.push(binding);
+                    imported_any = true;
+                }
+            }
+            if !imported_any && !entries.is_empty() {
+                report.warnings.push(format!(
+                    "Feishu {source_label} array was present but no valid peer→agent routes were found"
+                ));
+            }
+        }
+        serde_json::Value::Null => {}
+        _ => report.warnings.push(format!(
+            "Feishu {source_label} must be an object or array to migrate routes"
+        )),
+    }
+}
+
+fn dedupe_feishu_bindings(mut bindings: Vec<AgentBinding>) -> Vec<AgentBinding> {
+    let mut seen = std::collections::BTreeSet::new();
+    bindings.retain(|binding| {
+        let key = (
+            binding.agent.clone(),
+            binding.match_rule.channel.clone(),
+            binding.match_rule.account_id.clone(),
+            binding.match_rule.peer_id.clone(),
+            binding.match_rule.guild_id.clone(),
+            binding.match_rule.roles.clone(),
+        );
+        seen.insert(key)
+    });
+    bindings.sort_by(|left, right| {
+        left.match_rule
+            .peer_id
+            .cmp(&right.match_rule.peer_id)
+            .then(left.agent.cmp(&right.agent))
+    });
+    bindings
+}
+
+fn extract_json5_feishu_bindings(
+    root: &OpenClawRoot,
+    report: &mut MigrationReport,
+) -> Vec<AgentBinding> {
+    let Some(feishu) = root
+        .channels
+        .as_ref()
+        .and_then(|channels| channels.feishu.as_ref())
+    else {
+        return Vec::new();
+    };
+
+    let mut bindings = Vec::new();
+    for (label, value) in [
+        ("userToAgent", feishu.user_to_agent.as_ref()),
+        ("userRoutes", feishu.user_routes.as_ref()),
+        ("routes", feishu.routes.as_ref()),
+        ("bindings", feishu.bindings.as_ref()),
+    ] {
+        if let Some(value) = value {
+            extend_feishu_bindings_from_json_value(value, label, &mut bindings, report);
+        }
+    }
+
+    let allowed_users = feishu
+        .allow_from
+        .as_ref()
+        .map(extract_string_list)
+        .unwrap_or_default();
+    if let Some(default_agent) = feishu.default_agent.as_ref() {
+        for peer_id in &allowed_users {
+            let peer_id = peer_id.trim();
+            if !peer_id.is_empty() {
+                bindings.push(feishu_binding(peer_id.to_string(), default_agent.clone()));
+            }
+        }
+    } else if !allowed_users.is_empty() {
+        report.warnings.push(
+            "Feishu allowFrom users were found but no defaultAgent was set, so no user bindings were migrated"
+                .to_string(),
+        );
+    }
+
+    dedupe_feishu_bindings(bindings)
+}
+
+fn extract_legacy_feishu_bindings(
+    source: &Path,
+    report: &mut MigrationReport,
+) -> Result<Vec<AgentBinding>, MigrateError> {
+    let yaml_path = source.join("messaging").join("feishu.yaml");
+    if !yaml_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let yaml_str = std::fs::read_to_string(&yaml_path)?;
+    let channel: LegacyYamlChannelConfig = serde_yaml::from_str(&yaml_str).unwrap_or_default();
+    if channel.allowed_users.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let Some(default_agent) = channel.default_agent else {
+        report.warnings.push(
+            "Legacy Feishu allowed_users were found but default_agent is missing, so no user bindings were migrated"
+                .to_string(),
+        );
+        return Ok(Vec::new());
+    };
+
+    Ok(dedupe_feishu_bindings(
+        channel
+            .allowed_users
+            .into_iter()
+            .filter_map(|peer_id| {
+                let peer_id = peer_id.trim().to_string();
+                (!peer_id.is_empty()).then(|| feishu_binding(peer_id, default_agent.clone()))
+            })
+            .collect(),
+    ))
+}
 
 /// Write or update a key in a secrets.env file.
 /// File format: one `KEY=value` per line. Existing keys are overwritten.
@@ -684,9 +965,11 @@ fn tools_for_profile(profile: &str) -> Vec<String> {
 
 /// Map OpenClaw provider name to OpenFang provider name.
 fn map_provider(openclaw_provider: &str) -> String {
-    match openclaw_provider.to_lowercase().as_str() {
+    let normalized = openclaw_provider.trim().to_lowercase();
+    let alias_key = normalized.replace('-', "_");
+    match alias_key.as_str() {
         "anthropic" | "claude" => "anthropic".to_string(),
-        "openai" | "gpt" => "openai".to_string(),
+        "openai" | "gpt" | "codex" | "openai_codex" => "openai".to_string(),
         "groq" => "groq".to_string(),
         "ollama" => "ollama".to_string(),
         "openrouter" => "openrouter".to_string(),
@@ -694,34 +977,35 @@ fn map_provider(openclaw_provider: &str) -> String {
         "together" => "together".to_string(),
         "mistral" => "mistral".to_string(),
         "fireworks" => "fireworks".to_string(),
-        // Gemini aliases
         "google" | "gemini" => "google".to_string(),
-        // Chinese provider aliases (including common OpenClaw custom IDs)
         "qwen" | "dashscope" | "qwencode" => "qwen".to_string(),
         "moonshot" | "kimi" | "kimicode" => "moonshot".to_string(),
         "minimax" => "minimax".to_string(),
         "zhipu" | "glm" => "zhipu".to_string(),
         "zhipu_coding" | "codegeex" => "zhipu_coding".to_string(),
+        "zai" => "zai".to_string(),
+        "zai_coding" => "zai_coding".to_string(),
         "qianfan" | "baidu" => "qianfan".to_string(),
+        "volcengine" | "doubao" => "volcengine".to_string(),
         "xai" | "grok" => "xai".to_string(),
         "cerebras" => "cerebras".to_string(),
         "sambanova" => "sambanova".to_string(),
-        // Additional OpenFang-supported providers and aliases
         "perplexity" => "perplexity".to_string(),
         "cohere" => "cohere".to_string(),
         "ai21" => "ai21".to_string(),
         "huggingface" => "huggingface".to_string(),
         "replicate" => "replicate".to_string(),
-        "github-copilot" | "copilot" => "github-copilot".to_string(),
+        "github_copilot" | "copilot" => "github-copilot".to_string(),
+        "claude_code" => "claude-code".to_string(),
         "vllm" => "vllm".to_string(),
         "lmstudio" => "lmstudio".to_string(),
-        other => other.to_string(),
+        _ => normalized,
     }
 }
 
 /// Map OpenClaw provider to its default API key env var.
 fn default_api_key_env(provider: &str) -> String {
-    match provider {
+    match map_provider(provider).as_str() {
         "anthropic" => "ANTHROPIC_API_KEY".to_string(),
         "openai" => "OPENAI_API_KEY".to_string(),
         "groq" => "GROQ_API_KEY".to_string(),
@@ -731,26 +1015,28 @@ fn default_api_key_env(provider: &str) -> String {
         "mistral" => "MISTRAL_API_KEY".to_string(),
         "fireworks" => "FIREWORKS_API_KEY".to_string(),
         "google" => "GOOGLE_API_KEY".to_string(),
-        "qwen" => "DASHSCOPE_API_KEY".to_string(),
-        "moonshot" => "MOONSHOT_API_KEY".to_string(),
-        "minimax" => "MINIMAX_API_KEY".to_string(),
-        "zhipu" | "zhipu_coding" => "ZHIPU_API_KEY".to_string(),
-        "qianfan" => "QIANFAN_API_KEY".to_string(),
         "xai" => "XAI_API_KEY".to_string(),
         "cerebras" => "CEREBRAS_API_KEY".to_string(),
         "sambanova" => "SAMBANOVA_API_KEY".to_string(),
+        "moonshot" => "MOONSHOT_API_KEY".to_string(),
+        "qwen" => "DASHSCOPE_API_KEY".to_string(),
+        "minimax" => "MINIMAX_API_KEY".to_string(),
+        "zhipu" | "zhipu_coding" | "zai" | "zai_coding" => "ZHIPU_API_KEY".to_string(),
+        "qianfan" => "QIANFAN_API_KEY".to_string(),
+        "volcengine" => "VOLCENGINE_API_KEY".to_string(),
         "perplexity" => "PERPLEXITY_API_KEY".to_string(),
         "cohere" => "COHERE_API_KEY".to_string(),
         "ai21" => "AI21_API_KEY".to_string(),
         "huggingface" => "HF_API_KEY".to_string(),
         "replicate" => "REPLICATE_API_TOKEN".to_string(),
         "github-copilot" => "GITHUB_TOKEN".to_string(),
-        "ollama" => String::new(), // Ollama doesn't need an API key
+        "claude-code" => String::new(), // Claude Code provider doesn't need API key env
+        "ollama" => String::new(),      // Ollama doesn't need an API key
         // Keep explicit env names for local OpenAI-compatible providers to avoid
         // falling back to default_model.api_key_env in kernel driver resolution.
         "vllm" => "VLLM_API_KEY".to_string(),
         "lmstudio" => "LMSTUDIO_API_KEY".to_string(),
-        _ => format!("{}_API_KEY", provider.to_uppercase()),
+        other => format!("{}_API_KEY", other.to_uppercase()),
     }
 }
 
@@ -761,6 +1047,8 @@ fn is_known_openfang_provider_id(provider: &str) -> bool {
             | "claude"
             | "openai"
             | "gpt"
+            | "codex"
+            | "openai-codex"
             | "groq"
             | "grok"
             | "openrouter"
@@ -782,7 +1070,10 @@ fn is_known_openfang_provider_id(provider: &str) -> bool {
             | "xai"
             | "replicate"
             | "github-copilot"
+            | "github_copilot"
             | "copilot"
+            | "claude-code"
+            | "claude_code"
             | "moonshot"
             | "kimi"
             | "qwen"
@@ -792,6 +1083,8 @@ fn is_known_openfang_provider_id(provider: &str) -> bool {
             | "glm"
             | "zhipu_coding"
             | "codegeex"
+            | "volcengine"
+            | "doubao"
             | "qianfan"
             | "baidu"
     )
@@ -1376,8 +1669,9 @@ fn migrate_config_from_json(
 
     let api_key_env = default_api_key_env(&resolved.provider);
 
-    // Extract channels (writes secrets.env)
+    // Extract channels and Feishu user bindings (writes secrets.env)
     let channels = migrate_channels_from_json(root, target, dry_run, report);
+    let bindings = extract_json5_feishu_bindings(root, report);
 
     let of_config = OpenFangConfig {
         default_model: OpenFangModelConfig {
@@ -1391,6 +1685,7 @@ fn migrate_config_from_json(
             listen_addr: "127.0.0.1:4200".to_string(),
         },
         channels,
+        bindings,
     };
 
     let toml_str = toml::to_string_pretty(&of_config)?;
@@ -2048,8 +2343,13 @@ fn convert_agent_from_json(
     // System prompt from identity
     let system_prompt = entry
         .identity
-        .clone()
-        .or_else(|| defaults.and_then(|d| d.identity.clone()))
+        .as_ref()
+        .and_then(OpenClawIdentity::system_prompt)
+        .or_else(|| {
+            defaults
+                .and_then(|d| d.identity.as_ref())
+                .and_then(OpenClawIdentity::system_prompt)
+        })
         .unwrap_or_else(|| {
             format!(
                 "You are {display_name}, an AI agent running on the OpenFang Agent OS. You are helpful, concise, and accurate."
@@ -2606,6 +2906,7 @@ fn migrate_legacy_config(
     let api_key_env = oc_config
         .api_key_env
         .unwrap_or_else(|| default_api_key_env(&provider));
+    let bindings = extract_legacy_feishu_bindings(source, report)?;
 
     let of_config = OpenFangConfig {
         default_model: OpenFangModelConfig {
@@ -2625,6 +2926,7 @@ fn migrate_legacy_config(
             listen_addr: "127.0.0.1:4200".to_string(),
         },
         channels,
+        bindings,
     };
 
     let toml_str = toml::to_string_pretty(&of_config)?;
@@ -4258,11 +4560,22 @@ mod tests {
         assert_eq!(map_provider("gpt"), "openai");
         assert_eq!(map_provider("groq"), "groq");
         assert_eq!(map_provider("custom"), "custom");
+        assert_eq!(map_provider("custom-provider"), "custom-provider");
         assert_eq!(map_provider("google"), "google");
         assert_eq!(map_provider("gemini"), "google");
         assert_eq!(map_provider("xai"), "xai");
         assert_eq!(map_provider("grok"), "xai");
         assert_eq!(map_provider("qwen"), "qwen");
+        assert_eq!(map_provider("claude-code"), "claude-code");
+        assert_eq!(map_provider("claude_code"), "claude-code");
+    }
+
+    #[test]
+    fn test_provider_alias_compatibility_mapping() {
+        assert_eq!(map_provider("codex"), "openai");
+        assert_eq!(map_provider("openai-codex"), "openai");
+        assert_eq!(map_provider("kimi"), "moonshot");
+        assert_eq!(map_provider("kimicode"), "moonshot");
         assert_eq!(map_provider("dashscope"), "qwen");
         assert_eq!(map_provider("qwencode"), "qwen");
         assert_eq!(map_provider("moonshot"), "moonshot");
@@ -4290,6 +4603,7 @@ mod tests {
         assert_eq!(default_api_key_env("huggingface"), "HF_API_KEY");
         assert_eq!(default_api_key_env("replicate"), "REPLICATE_API_TOKEN");
         assert_eq!(default_api_key_env("github-copilot"), "GITHUB_TOKEN");
+        assert!(default_api_key_env("claude-code").is_empty());
         assert!(default_api_key_env("ollama").is_empty());
         assert_eq!(default_api_key_env("vllm"), "VLLM_API_KEY");
         assert_eq!(default_api_key_env("lmstudio"), "LMSTUDIO_API_KEY");

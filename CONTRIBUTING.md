@@ -12,6 +12,7 @@ Thank you for your interest in contributing to OpenFang. This guide covers every
 - [How to Add a New Channel Adapter](#how-to-add-a-new-channel-adapter)
 - [How to Add a New Tool](#how-to-add-a-new-tool)
 - [Pull Request Process](#pull-request-process)
+- [PR Quality Gates](#pr-quality-gates)
 - [Code of Conduct](#code-of-conduct)
 
 ---
@@ -343,6 +344,22 @@ tools = ["my_tool"]
 6. **Review process**: At least one maintainer must approve before merge. Address review feedback promptly.
 
 7. **CI must pass**: All automated checks must be green before merge.
+
+8. **Review-first requirement**: Keep PR as Draft until comprehensive review findings are documented and blocking findings are resolved.
+
+### PR Quality Gates
+
+OpenFang uses a mandatory review-first workflow. Follow [`docs/pr-quality-gates.md`](docs/pr-quality-gates.md).
+
+Before changing a PR to Ready for review:
+
+1. Complete all required sections in `.github/pull_request_template.md`.
+2. Check all required items under `## Comprehensive Pre-PR Review`.
+3. Run local gate checks and include concrete validation evidence.
+4. Resolve all High findings and re-run focused regressions.
+5. Keep one concern per PR (or one planned slice).
+
+CI workflow `pre-pr-review-gate` validates the PR body structure and checklist state.
 
 ### Commit Messages
 
