@@ -11150,21 +11150,19 @@ mod channel_config_tests {
         let meta = wecom_meta.unwrap();
         assert_eq!(meta.display_name, "WeCom");
         assert_eq!(meta.category, "messaging");
-        assert_eq!(
+        assert!(
             meta.fields
                 .iter()
                 .find(|f| f.key == "corp_id")
                 .unwrap()
-                .required,
-            true
+                .required
         );
-        assert_eq!(
+        assert!(
             meta.fields
                 .iter()
                 .find(|f| f.key == "secret_env")
                 .unwrap()
-                .required,
-            true
+                .required
         );
     }
 }

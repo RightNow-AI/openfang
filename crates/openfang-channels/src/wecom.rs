@@ -21,9 +21,6 @@ use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
-/// WeCom API base URL.
-const WECOM_API_HOST: &str = "https://qyapi.weixin.qq.com";
-
 /// WeCom token endpoint.
 const WECOM_TOKEN_URL: &str = "https://qyapi.weixin.qq.com/cgi-bin/gettoken";
 
@@ -563,7 +560,7 @@ impl ChannelAdapter for WeComAdapter {
             ChannelContent::Text(text) => {
                 // Split long messages
                 for chunk in split_message(&text, MAX_MESSAGE_LEN) {
-                    self.send_text(user_id, &chunk).await?;
+                    self.send_text(user_id, chunk).await?;
                 }
             }
             ChannelContent::Command { name: _, args: _ } => {
