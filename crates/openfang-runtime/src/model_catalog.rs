@@ -8,7 +8,8 @@ use openfang_types::model_catalog::{
     BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL,
     FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
     HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
+    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
+    OPENAI_BASE_URL,
     OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
     REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
     VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
@@ -402,6 +403,7 @@ pub fn read_codex_credential() -> Option<String> {
     parsed
         .get("api_key")
         .or_else(|| parsed.get("token"))
+        .or_else(|| parsed.get("tokens").and_then(|t| t.get("id_token")))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
@@ -633,6 +635,16 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::Missing,
             model_count: 0,
         },
+        // ── NVIDIA NIM ────────────────────────────────────────────────
+        ProviderInfo {
+            id: "nvidia".into(),
+            display_name: "NVIDIA NIM".into(),
+            api_key_env: "NVIDIA_API_KEY".into(),
+            base_url: NVIDIA_NIM_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
         // ── Chinese providers (5) ────────────────────────────────────
         ProviderInfo {
             id: "qwen".into(),
@@ -837,9 +849,12 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("minimax-m2.1", "MiniMax-M2.1"),
         ("codegeex", "codegeex-4"),
         // Codex aliases
-        ("codex", "codex/gpt-4.1"),
+        ("codex", "codex/gpt-5.4"),
+        ("codex-5.4", "codex/gpt-5.4"),
         ("codex-4.1", "codex/gpt-4.1"),
         ("codex-o4", "codex/o4-mini"),
+        // NVIDIA NIM aliases
+        ("nemotron", "nvidia/llama-3.1-nemotron-70b-instruct"),
         // Venice aliases
         ("venice", "venice-uncensored"),
         // Claude Code aliases
@@ -852,6 +867,10 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("qwen-coder", "qwen-code/qwen3-coder"),
         ("qwen-coder-plus", "qwen-code/qwen-coder-plus"),
         ("qwq", "qwen-code/qwq-32b"),
+        // OpenRouter free-tier aliases
+        ("openrouter/free", "openrouter/meta-llama/llama-3.1-8b-instruct:free"),
+        ("free", "openrouter/meta-llama/llama-3.1-8b-instruct:free"),
+        ("free-reasoning", "openrouter/deepseek/deepseek-r1:free"),
     ];
     pairs
         .into_iter()
@@ -2050,6 +2069,79 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_vision: false,
             supports_streaming: true,
             aliases: vec![],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // NVIDIA NIM (5)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "nvidia/llama-3.1-nemotron-70b-instruct".into(),
+            display_name: "Nemotron 70B Instruct (NVIDIA NIM)".into(),
+            provider: "nvidia".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 0.88,
+            output_cost_per_m: 0.88,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["nemotron-70b".into()],
+        },
+        ModelCatalogEntry {
+            id: "meta/llama-3.1-405b-instruct".into(),
+            display_name: "Llama 3.1 405B Instruct (NVIDIA NIM)".into(),
+            provider: "nvidia".into(),
+            tier: ModelTier::Frontier,
+            context_window: 128_000,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 5.00,
+            output_cost_per_m: 16.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "meta/llama-3.1-70b-instruct".into(),
+            display_name: "Llama 3.1 70B Instruct (NVIDIA NIM)".into(),
+            provider: "nvidia".into(),
+            tier: ModelTier::Balanced,
+            context_window: 128_000,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 0.88,
+            output_cost_per_m: 0.88,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "mistralai/mistral-large-latest".into(),
+            display_name: "Mistral Large (NVIDIA NIM)".into(),
+            provider: "nvidia".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 2.00,
+            output_cost_per_m: 6.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "nvidia/nemotron-4-340b-instruct".into(),
+            display_name: "Nemotron 4 340B Instruct (NVIDIA NIM)".into(),
+            provider: "nvidia".into(),
+            tier: ModelTier::Frontier,
+            context_window: 4_096,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 4.20,
+            output_cost_per_m: 4.20,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["nemotron-340b".into()],
         },
         // ══════════════════════════════════════════════════════════════
         // Ollama (6) — local, no key required + dynamic discovery
@@ -3381,6 +3473,20 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         // OpenAI Codex (2) — reuses OpenAI driver
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
+            id: "codex/gpt-5.4".into(),
+            display_name: "GPT-5.4 (Codex)".into(),
+            provider: "codex".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_047_576,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 2.00,
+            output_cost_per_m: 8.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["codex".into(), "codex-5.4".into()],
+        },
+        ModelCatalogEntry {
             id: "codex/gpt-4.1".into(),
             display_name: "GPT-4.1 (Codex)".into(),
             provider: "codex".into(),
@@ -3392,7 +3498,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
-            aliases: vec!["codex".into(), "codex-4.1".into()],
+            aliases: vec!["codex-4.1".into()],
         },
         ModelCatalogEntry {
             id: "codex/o4-mini".into(),
@@ -3632,7 +3738,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 39);
+        assert_eq!(catalog.list_providers().len(), 40);
     }
 
     #[test]
@@ -3964,7 +4070,8 @@ mod tests {
     fn test_codex_models() {
         let catalog = ModelCatalog::new();
         let models = catalog.models_by_provider("codex");
-        assert_eq!(models.len(), 2);
+        assert_eq!(models.len(), 3);
+        assert!(models.iter().any(|m| m.id == "codex/gpt-5.4"));
         assert!(models.iter().any(|m| m.id == "codex/gpt-4.1"));
         assert!(models.iter().any(|m| m.id == "codex/o4-mini"));
     }
@@ -3973,7 +4080,7 @@ mod tests {
     fn test_codex_aliases() {
         let catalog = ModelCatalog::new();
         let entry = catalog.find_model("codex").unwrap();
-        assert_eq!(entry.id, "codex/gpt-4.1");
+        assert_eq!(entry.id, "codex/gpt-5.4");
     }
 
     #[test]

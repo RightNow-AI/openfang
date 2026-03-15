@@ -504,14 +504,24 @@ async fn handle_text_message(
                 state.kernel.clone() as Arc<dyn KernelHandle>;
             match state
                 .kernel
-                .send_message_streaming(agent_id, &content, Some(kernel_handle))
+                .send_message_streaming(agent_id, &content, Some(kernel_handle), None, None)
             {
                 Ok((mut rx, handle)) => {
-                    // Forward stream events to WebSocket with debouncing
+                    // Forward stream events to WebSocket with debouncing.
+                    //
+                    // The stream_task also accumulates the full response text and
+                    // captures ContentComplete usage data. This lets us send the
+                    // `response` event immediately when the stream channel closes
+                    // (after `drop(phase_cb)` in the kernel), WITHOUT waiting for
+                    // post-processing (canonical session writes, JSONL, compaction)
+                    // that happens in the kernel task after the loop.
                     let sender_stream = Arc::clone(sender);
                     let verbose_clone = Arc::clone(verbose);
                     let stream_task = tokio::spawn(async move {
                         let mut text_buffer = String::new();
+                        let mut accumulated_text = String::new();
+                        let mut stream_usage: Option<openfang_types::message::TokenUsage> = None;
+                        let mut is_silent = false;
                         let far_future = tokio::time::Instant::now() + Duration::from_secs(86400);
                         let mut flush_deadline = far_future;
 
@@ -535,7 +545,15 @@ async fn handle_text_message(
                                             break;
                                         }
                                         Some(ev) => {
+                                            // Capture ContentComplete for immediate response
+                                            if let StreamEvent::ContentComplete { usage, .. } = &ev {
+                                                stream_usage = Some(*usage);
+                                                // Don't forward — handled below
+                                                continue;
+                                            }
+
                                             if let StreamEvent::TextDelta { ref text } = ev {
+                                                accumulated_text.push_str(text);
                                                 text_buffer.push_str(text);
                                                 if text_buffer.len() >= DEBOUNCE_CHARS {
                                                     let _ = flush_text_buffer(
@@ -600,14 +618,62 @@ async fn handle_text_message(
                                 }
                             }
                         }
+
+                        // Check if the agent signalled NO_REPLY via the stream
+                        // (PhaseChange with a "silent" marker — currently the
+                        // kernel sets result.silent after the loop, so we detect
+                        // it from empty accumulated text when ContentComplete
+                        // had no text deltas at all).
+                        if accumulated_text.is_empty() && stream_usage.is_some() {
+                            is_silent = true;
+                        }
+
+                        (accumulated_text, stream_usage, is_silent)
                     });
 
-                    // Wait for the agent loop to complete
-                    match handle.await {
-                        Ok(Ok(result)) => {
-                            // Cancel the stream forwarder (should be done by now)
-                            stream_task.abort();
+                    // Wait for the stream to finish (fast — closes as soon as
+                    // drop(phase_cb) runs after the agent loop). This does NOT
+                    // wait for post-processing.
+                    let stream_result = stream_task.await;
 
+                    // Spawn the kernel task in the background for cleanup
+                    // (canonical session writes, JSONL mirror, compaction).
+                    // We don't need its result for the response event.
+                    let sender_bg = Arc::clone(sender);
+                    tokio::spawn(async move {
+                        match handle.await {
+                            Ok(Err(e)) => {
+                                warn!("Agent post-processing failed: {e}");
+                                let user_msg = classify_streaming_error(&e);
+                                let _ = send_json(
+                                    &sender_bg,
+                                    &serde_json::json!({
+                                        "type": "error",
+                                        "content": user_msg,
+                                    }),
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                warn!("Agent task panicked: {e}");
+                                let _ = send_json(
+                                    &sender_bg,
+                                    &serde_json::json!({
+                                        "type": "error",
+                                        "content": "Internal error occurred",
+                                    }),
+                                )
+                                .await;
+                            }
+                            Ok(Ok(_)) => {
+                                // Post-processing completed successfully — nothing to send
+                            }
+                        }
+                    });
+
+                    // Send the response immediately from stream data
+                    match stream_result {
+                        Ok((accumulated_text, stream_usage, is_silent)) => {
                             // Send typing lifecycle: stop
                             let _ = send_json(
                                 sender,
@@ -618,43 +684,35 @@ async fn handle_text_message(
                             )
                             .await;
 
-                            // NO_REPLY: agent intentionally chose not to reply
-                            if result.silent {
+                            let usage = stream_usage.unwrap_or_default();
+
+                            if is_silent {
                                 let _ = send_json(
                                     sender,
                                     &serde_json::json!({
                                         "type": "silent_complete",
-                                        "input_tokens": result.total_usage.input_tokens,
-                                        "output_tokens": result.total_usage.output_tokens,
+                                        "input_tokens": usage.input_tokens,
+                                        "output_tokens": usage.output_tokens,
                                     }),
                                 )
                                 .await;
                                 return;
                             }
 
-                            // Strip <think>...</think> blocks from model output
-                            // (e.g. MiniMax, DeepSeek reasoning tokens)
-                            let cleaned_response = strip_think_tags(&result.response);
+                            // Strip <think>...</think> blocks
+                            let cleaned = strip_think_tags(&accumulated_text);
 
-                            // Guard: ensure we never send an empty response
-                            let content = if cleaned_response.trim().is_empty() {
+                            let content = if cleaned.trim().is_empty() {
                                 format!(
-                                    "[The agent completed processing but returned no text response. ({} in / {} out | {} iter)]",
-                                    result.total_usage.input_tokens,
-                                    result.total_usage.output_tokens,
-                                    result.iterations,
+                                    "[The agent completed processing but returned no text response. ({} in / {} out)]",
+                                    usage.input_tokens, usage.output_tokens,
                                 )
                             } else {
-                                cleaned_response
+                                cleaned
                             };
 
-                            // Estimate context pressure from last call
-                            let per_call = if result.iterations > 0 {
-                                result.total_usage.input_tokens / result.iterations as u64
-                            } else {
-                                result.total_usage.input_tokens
-                            };
-                            let ctx_pct = (per_call as f64 / 200_000.0 * 100.0).min(100.0);
+                            // Estimate context pressure
+                            let ctx_pct = (usage.input_tokens as f64 / 200_000.0 * 100.0).min(100.0);
                             let pressure = if ctx_pct > 85.0 {
                                 "critical"
                             } else if ctx_pct > 70.0 {
@@ -670,38 +728,17 @@ async fn handle_text_message(
                                 &serde_json::json!({
                                     "type": "response",
                                     "content": content,
-                                    "input_tokens": result.total_usage.input_tokens,
-                                    "output_tokens": result.total_usage.output_tokens,
-                                    "iterations": result.iterations,
-                                    "cost_usd": result.cost_usd,
+                                    "input_tokens": usage.input_tokens,
+                                    "output_tokens": usage.output_tokens,
+                                    "iterations": 0, // Not available from stream; handle updates later if needed
+                                    "cost_usd": null,
                                     "context_pressure": pressure,
                                 }),
                             )
                             .await;
                         }
-                        Ok(Err(e)) => {
-                            stream_task.abort();
-                            warn!("Agent message failed: {e}");
-                            let _ = send_json(
-                                sender,
-                                &serde_json::json!({
-                                    "type": "typing", "state": "stop",
-                                }),
-                            )
-                            .await;
-                            let user_msg = classify_streaming_error(&e);
-                            let _ = send_json(
-                                sender,
-                                &serde_json::json!({
-                                    "type": "error",
-                                    "content": user_msg,
-                                }),
-                            )
-                            .await;
-                        }
                         Err(e) => {
-                            stream_task.abort();
-                            warn!("Agent task panicked: {e}");
+                            warn!("Stream task panicked: {e}");
                             let _ = send_json(
                                 sender,
                                 &serde_json::json!({
@@ -912,7 +949,7 @@ async fn handle_command(
             let msg = if !state.kernel.config.network_enabled {
                 "OFP network disabled.".to_string()
             } else {
-                match &state.kernel.peer_registry {
+                match state.kernel.peer_registry.get() {
                     Some(registry) => {
                         let peers = registry.all_peers();
                         if peers.is_empty() {

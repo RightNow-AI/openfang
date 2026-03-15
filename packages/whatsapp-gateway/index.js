@@ -124,27 +124,51 @@ async function startConnection() {
       if (msg.key.fromMe) continue;
       if (msg.key.remoteJid === 'status@broadcast') continue;
 
-      const sender = msg.key.remoteJid || '';
-      const text = msg.message?.conversation
+      const remoteJid = msg.key.remoteJid || '';
+      const isGroup = remoteJid.endsWith('@g.us');
+
+      let text = msg.message?.conversation
         || msg.message?.extendedTextMessage?.text
         || msg.message?.imageMessage?.caption
         || '';
 
-      if (!text) continue;
+      // Detect media type if no text
+      if (!text) {
+        const m = msg.message;
+        if (m?.imageMessage) text = '[Image received]' + (m.imageMessage.caption ? ': ' + m.imageMessage.caption : '');
+        else if (m?.audioMessage) text = '[Voice note received]';
+        else if (m?.videoMessage) text = '[Video received]' + (m.videoMessage.caption ? ': ' + m.videoMessage.caption : '');
+        else if (m?.documentMessage) text = '[Document received: ' + (m.documentMessage.fileName || 'file') + ']';
+        else if (m?.stickerMessage) text = '[Sticker received]';
+        else continue; // Only skip truly empty messages
+      }
 
-      // Extract phone number from JID (e.g. "1234567890@s.whatsapp.net" → "+1234567890")
-      const phone = '+' + sender.replace(/@.*$/, '');
+      // For groups: real sender is in participant; for DMs: it's remoteJid
+      const senderJid = isGroup ? (msg.key.participant || '') : remoteJid;
+      const phone = '+' + senderJid.replace(/@.*$/, '');
       const pushName = msg.pushName || phone;
 
-      console.log(`[gateway] Incoming from ${pushName} (${phone}): ${text.substring(0, 80)}`);
+      const metadata = {
+        channel: 'whatsapp',
+        sender: phone,
+        sender_name: pushName,
+      };
+      if (isGroup) {
+        metadata.group_jid = remoteJid;
+        metadata.is_group = true;
+        console.log(`[gateway] Group msg from ${pushName} (${phone}) in ${remoteJid}: ${text.substring(0, 80)}`);
+      } else {
+        console.log(`[gateway] Incoming from ${pushName} (${phone}): ${text.substring(0, 80)}`);
+      }
 
       // Forward to OpenFang agent
       try {
-        const response = await forwardToOpenFang(text, phone, pushName);
+        const response = await forwardToOpenFang(text, phone, pushName, metadata);
         if (response && sock) {
-          // Send agent response back to WhatsApp
-          await sock.sendMessage(sender, { text: response });
-          console.log(`[gateway] Replied to ${pushName}`);
+          // Reply in the same context: group → group, DM → DM
+          const replyJid = isGroup ? remoteJid : senderJid.replace(/@.*$/, '') + '@s.whatsapp.net';
+          await sock.sendMessage(replyJid, { text: response });
+          console.log(`[gateway] Replied to ${pushName}${isGroup ? ' in group ' + remoteJid : ''}`);
         }
       } catch (err) {
         console.error(`[gateway] Forward/reply failed:`, err.message);
@@ -156,11 +180,11 @@ async function startConnection() {
 // ---------------------------------------------------------------------------
 // Forward incoming message to OpenFang API, return agent response
 // ---------------------------------------------------------------------------
-function forwardToOpenFang(text, phone, pushName) {
+function forwardToOpenFang(text, phone, pushName, metadata) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
       message: text,
-      metadata: {
+      metadata: metadata || {
         channel: 'whatsapp',
         sender: phone,
         sender_name: pushName,
@@ -214,8 +238,8 @@ async function sendMessage(to, text) {
     throw new Error('WhatsApp not connected');
   }
 
-  // Normalize phone → JID: "+1234567890" → "1234567890@s.whatsapp.net"
-  const jid = to.replace(/^\+/, '').replace(/@.*$/, '') + '@s.whatsapp.net';
+  // If already a full JID (group or user), use as-is; otherwise normalize phone → JID
+  const jid = to.includes('@') ? to : to.replace(/^\+/, '') + '@s.whatsapp.net';
 
   await sock.sendMessage(jid, { text });
 }

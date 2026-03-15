@@ -117,6 +117,8 @@ pub struct OpenFangKernel {
         Option<Arc<dyn openfang_runtime::embedding::EmbeddingDriver + Send + Sync>>,
     /// Hand registry — curated autonomous capability packages.
     pub hand_registry: openfang_hands::registry::HandRegistry,
+    /// Credential resolver — vault → dotenv → env var priority chain.
+    pub credential_resolver: std::sync::Mutex<openfang_extensions::credentials::CredentialResolver>,
     /// Extension/integration registry (bundled MCP templates + install state).
     pub extension_registry: std::sync::RwLock<openfang_extensions::registry::IntegrationRegistry>,
     /// Integration health monitor.
@@ -139,10 +141,10 @@ pub struct OpenFangKernel {
     pub hooks: openfang_runtime::hooks::HookRegistry,
     /// Persistent process manager for interactive sessions (REPLs, servers).
     pub process_manager: Arc<openfang_runtime::process_manager::ProcessManager>,
-    /// OFP peer registry — tracks connected peers.
-    pub peer_registry: Option<openfang_wire::PeerRegistry>,
-    /// OFP peer node — the local networking node.
-    pub peer_node: Option<Arc<openfang_wire::PeerNode>>,
+    /// OFP peer registry — tracks connected peers (OnceLock for safe init after Arc creation).
+    pub peer_registry: OnceLock<openfang_wire::PeerRegistry>,
+    /// OFP peer node — the local networking node (OnceLock for safe init after Arc creation).
+    pub peer_node: OnceLock<Arc<openfang_wire::PeerNode>>,
     /// Boot timestamp for uptime calculation.
     pub booted_at: std::time::Instant,
     /// WhatsApp Web gateway child process PID (for shutdown cleanup).
@@ -562,16 +564,43 @@ impl OpenFangKernel {
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
         );
 
+        // Initialize credential resolver (vault → dotenv → env var)
+        let credential_resolver = {
+            let vault_path = config.home_dir.join("vault.enc");
+            let vault = if vault_path.exists() {
+                let mut v = openfang_extensions::vault::CredentialVault::new(vault_path);
+                match v.unlock() {
+                    Ok(()) => {
+                        info!("Credential vault unlocked ({} entries)", v.len());
+                        Some(v)
+                    }
+                    Err(e) => {
+                        warn!("Credential vault exists but could not unlock: {e} — falling back to env vars");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let dotenv_path = config.home_dir.join(".env");
+            openfang_extensions::credentials::CredentialResolver::new(
+                vault,
+                Some(&dotenv_path),
+            )
+        };
+
         // Create LLM driver.
-        // For the API key, try: 1) explicit api_key_env from config, 2) provider_api_keys
-        // mapping, 3) auth profiles, 4) convention {PROVIDER}_API_KEY. This ensures
-        // custom providers (e.g. nvidia, azure) work without hardcoded env var names.
-        let default_api_key = if !config.default_model.api_key_env.is_empty() {
-            std::env::var(&config.default_model.api_key_env).ok()
-        } else {
-            // api_key_env not set — resolve using provider_api_keys / convention
-            let env_var = config.resolve_api_key_env(&config.default_model.provider);
-            std::env::var(&env_var).ok()
+        // For the API key, try: 1) credential resolver (vault → dotenv → env var),
+        // 2) provider_api_keys mapping, 3) convention {PROVIDER}_API_KEY.
+        let default_api_key = {
+            let env_var = if !config.default_model.api_key_env.is_empty() {
+                config.default_model.api_key_env.clone()
+            } else {
+                config.resolve_api_key_env(&config.default_model.provider)
+            };
+            credential_resolver
+                .resolve(&env_var)
+                .map(|z: zeroize::Zeroizing<String>| z.to_string())
         };
         let driver_config = DriverConfig {
             provider: config.default_model.provider.clone(),
@@ -600,7 +629,7 @@ impl OpenFangKernel {
                 if let Some((provider, model, env_var)) = drivers::detect_available_provider() {
                     let auto_config = DriverConfig {
                         provider: provider.to_string(),
-                        api_key: std::env::var(env_var).ok(),
+                        api_key: credential_resolver.resolve(env_var).map(|z: zeroize::Zeroizing<String>| z.to_string()),
                         base_url: config.provider_urls.get(provider).cloned(),
                         skip_permissions: true,
                     };
@@ -633,12 +662,13 @@ impl OpenFangKernel {
             model_chain.push((d.clone(), String::new()));
         }
         for fb in &config.fallback_providers {
-            let fb_api_key = if !fb.api_key_env.is_empty() {
-                std::env::var(&fb.api_key_env).ok()
-            } else {
-                // Resolve using provider_api_keys / convention for custom providers
-                let env_var = config.resolve_api_key_env(&fb.provider);
-                std::env::var(&env_var).ok()
+            let fb_api_key = {
+                let env_var = if !fb.api_key_env.is_empty() {
+                    fb.api_key_env.clone()
+                } else {
+                    config.resolve_api_key_env(&fb.provider)
+                };
+                credential_resolver.resolve(&env_var).map(|z: zeroize::Zeroizing<String>| z.to_string())
             };
             let fb_config = DriverConfig {
                 provider: fb.provider.clone(),
@@ -994,6 +1024,7 @@ impl OpenFangKernel {
             pairing,
             embedding_driver,
             hand_registry,
+            credential_resolver: std::sync::Mutex::new(credential_resolver),
             extension_registry: std::sync::RwLock::new(extension_registry),
             extension_health,
             effective_mcp_servers: std::sync::RwLock::new(all_mcp_servers),
@@ -1005,8 +1036,8 @@ impl OpenFangKernel {
             auto_reply_engine,
             hooks: openfang_runtime::hooks::HookRegistry::new(),
             process_manager: Arc::new(openfang_runtime::process_manager::ProcessManager::new(5)),
-            peer_registry: None,
-            peer_node: None,
+            peer_registry: OnceLock::new(),
+            peer_node: OnceLock::new(),
             booted_at: std::time::Instant::now(),
             whatsapp_gateway_pid: Arc::new(std::sync::Mutex::new(None)),
             channel_adapters: dashmap::DashMap::new(),
@@ -1196,16 +1227,18 @@ impl OpenFangKernel {
 
     /// Spawn a new agent from a manifest, optionally linking to a parent agent.
     pub fn spawn_agent(&self, manifest: AgentManifest) -> KernelResult<AgentId> {
-        self.spawn_agent_with_parent(manifest, None)
+        self.spawn_agent_with_parent(manifest, None, None)
     }
 
     /// Spawn a new agent with an optional parent for lineage tracking.
+    /// If fixed_id is provided, use it instead of generating a new UUID.
     pub fn spawn_agent_with_parent(
         &self,
         manifest: AgentManifest,
         parent: Option<AgentId>,
+        fixed_id: Option<AgentId>,
     ) -> KernelResult<AgentId> {
-        let agent_id = AgentId::new();
+        let agent_id = fixed_id.unwrap_or_default();
         let session_id = SessionId::new();
         let name = manifest.name.clone();
 
@@ -1389,7 +1422,7 @@ impl OpenFangKernel {
             .get()
             .and_then(|w| w.upgrade())
             .map(|arc| arc as Arc<dyn KernelHandle>);
-        self.send_message_with_handle(agent_id, message, handle)
+        self.send_message_with_handle(agent_id, message, handle, None, None)
             .await
     }
 
@@ -1408,7 +1441,7 @@ impl OpenFangKernel {
             .get()
             .and_then(|w| w.upgrade())
             .map(|arc| arc as Arc<dyn KernelHandle>);
-        self.send_message_with_handle_and_blocks(agent_id, message, handle, Some(blocks))
+        self.send_message_with_handle_and_blocks(agent_id, message, handle, Some(blocks), None, None)
             .await
     }
 
@@ -1418,8 +1451,10 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
-        self.send_message_with_handle_and_blocks(agent_id, message, kernel_handle, None)
+        self.send_message_with_handle_and_blocks(agent_id, message, kernel_handle, None, sender_id, sender_name)
             .await
     }
 
@@ -1438,6 +1473,8 @@ impl OpenFangKernel {
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
         // Acquire per-agent lock to serialize concurrent messages for the same agent.
         // This prevents session corruption when multiple messages arrive in quick
@@ -1467,7 +1504,7 @@ impl OpenFangKernel {
             self.execute_python_agent(&entry, agent_id, message).await
         } else {
             // Default: LLM agent loop (builtin:chat or any unrecognized module)
-            self.execute_llm_agent(&entry, agent_id, message, kernel_handle, content_blocks)
+            self.execute_llm_agent(&entry, agent_id, message, kernel_handle, content_blocks, sender_id, sender_name)
                 .await
         };
 
@@ -1522,6 +1559,8 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
     ) -> KernelResult<(
         tokio::sync::mpsc::Receiver<StreamEvent>,
         tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
@@ -1602,7 +1641,7 @@ impl OpenFangKernel {
                 label: None,
             });
 
-        // Check if auto-compaction is needed: message-count OR token-count trigger
+        // Check if auto-compaction is needed: message-count OR token-count OR quota-headroom trigger
         let needs_compact = {
             use openfang_runtime::compactor::{
                 estimate_token_count, needs_compaction as check_compact,
@@ -1624,7 +1663,23 @@ impl OpenFangKernel {
                     "Token-based compaction triggered (messages below threshold but tokens above)"
                 );
             }
-            by_messages || by_tokens
+            let by_quota = if let Some(headroom) = self.scheduler.token_headroom(agent_id) {
+                let threshold = (headroom as f64 * 0.8) as u64;
+                if estimated as u64 > threshold && session.messages.len() > 4 {
+                    info!(
+                        agent_id = %agent_id,
+                        estimated_tokens = estimated,
+                        quota_headroom = headroom,
+                        "Quota-headroom compaction triggered (session would consume >80% of remaining quota)"
+                    );
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            by_messages || by_tokens || by_quota
         };
 
         let tools = self.available_tools(agent_id);
@@ -1743,6 +1798,8 @@ impl OpenFangKernel {
                 },
                 peer_agents,
                 current_date: Some(chrono::Local::now().format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)").to_string()),
+                sender_id,
+                sender_name,
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -1858,6 +1915,16 @@ impl OpenFangKernel {
                 None, // content_blocks (streaming path uses text only for now)
             )
             .await;
+
+            // Drop the phase callback immediately after the streaming loop
+            // completes. It holds a clone of the stream sender (`tx`), which
+            // keeps the mpsc channel alive. If we don't drop it here, the
+            // WS/SSE stream_task won't see channel closure until this entire
+            // spawned task exits (after all post-processing below). This was
+            // causing 20-45s hangs where the client received phase:done but
+            // never got the response event (the upstream WS would die from
+            // ping timeout before post-processing finished).
+            drop(phase_cb);
 
             match result {
                 Ok(result) => {
@@ -2069,6 +2136,7 @@ impl OpenFangKernel {
     }
 
     /// Execute the default LLM-based agent loop.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_llm_agent(
         &self,
         entry: &AgentEntry,
@@ -2076,6 +2144,8 @@ impl OpenFangKernel {
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2093,6 +2163,42 @@ impl OpenFangKernel {
                 context_window_tokens: 0,
                 label: None,
             });
+
+        // Pre-emptive compaction: compact before LLM call if session is large or quota headroom is low
+        {
+            use openfang_runtime::compactor::{
+                estimate_token_count, needs_compaction as check_compact,
+                needs_compaction_by_tokens, CompactionConfig,
+            };
+            let config = CompactionConfig::default();
+            let by_messages = check_compact(&session, &config);
+            let estimated = estimate_token_count(
+                &session.messages,
+                Some(&entry.manifest.model.system_prompt),
+                None,
+            );
+            let by_tokens = needs_compaction_by_tokens(estimated, &config);
+            let by_quota = if let Some(headroom) = self.scheduler.token_headroom(agent_id) {
+                let threshold = (headroom as f64 * 0.8) as u64;
+                estimated as u64 > threshold && session.messages.len() > 4
+            } else {
+                false
+            };
+            if by_messages || by_tokens || by_quota {
+                info!(agent_id = %agent_id, messages = session.messages.len(), estimated_tokens = estimated, "Pre-emptive compaction before LLM call");
+                match self.compact_agent_session(agent_id).await {
+                    Ok(msg) => {
+                        info!(agent_id = %agent_id, "{msg}");
+                        if let Ok(Some(reloaded)) = self.memory.get_session(session.id) {
+                            session = reloaded;
+                        }
+                    }
+                    Err(e) => {
+                        warn!(agent_id = %agent_id, "Pre-emptive compaction failed: {e}");
+                    }
+                }
+            }
+        }
 
         let messages_before = session.messages.len();
 
@@ -2214,6 +2320,8 @@ impl OpenFangKernel {
                 },
                 peer_agents,
                 current_date: Some(chrono::Local::now().format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)").to_string()),
+                sender_id,
+                sender_name,
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -3173,8 +3281,10 @@ impl OpenFangKernel {
             let _ = self.kill_agent(old.id);
         }
 
-        // Spawn the agent
-        let agent_id = self.spawn_agent(manifest)?;
+        // Spawn the agent with a fixed ID based on hand_id for stable identity across restarts.
+        // This ensures triggers and cron jobs continue to work after daemon restart.
+        let fixed_agent_id = AgentId::from_string(hand_id);
+        let agent_id = self.spawn_agent_with_parent(manifest, None, Some(fixed_agent_id))?;
 
         // Restore triggers from the old agent under the new agent ID (#519).
         if !saved_triggers.is_empty() {
@@ -3868,21 +3978,28 @@ impl OpenFangKernel {
                                 let kh: std::sync::Arc<dyn openfang_runtime::kernel_handle::KernelHandle> = kernel.clone();
                                 match tokio::time::timeout(
                                     timeout,
-                                    kernel.send_message_with_handle(agent_id, message, Some(kh)),
+                                    kernel.send_message_with_handle(agent_id, message, Some(kh), None, None),
                                 )
                                 .await
                                 {
                                     Ok(Ok(result)) => {
-                                        tracing::info!(job = %job_name, "Cron job completed successfully");
-                                        kernel.cron_scheduler.record_success(job_id);
-                                        // Deliver response to configured channel
-                                        cron_deliver_response(
+                                        match cron_deliver_response(
                                             &kernel,
                                             agent_id,
                                             &result.response,
                                             &delivery,
                                         )
-                                        .await;
+                                        .await
+                                        {
+                                            Ok(()) => {
+                                                tracing::info!(job = %job_name, "Cron job completed successfully");
+                                                kernel.cron_scheduler.record_success(job_id);
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(job = %job_name, error = %e, "Cron job delivery failed");
+                                                kernel.cron_scheduler.record_failure(job_id, &e);
+                                            }
+                                        }
                                     }
                                     Ok(Err(e)) => {
                                         let err_msg = format!("{e}");
@@ -3932,15 +4049,23 @@ impl OpenFangKernel {
                                 .await
                                 {
                                     Ok(Ok((_run_id, output))) => {
-                                        tracing::info!(job = %job_name, "Cron workflow completed");
-                                        kernel.cron_scheduler.record_success(job_id);
-                                        cron_deliver_response(
+                                        match cron_deliver_response(
                                             &kernel,
                                             agent_id,
                                             &output,
                                             &delivery,
                                         )
-                                        .await;
+                                        .await
+                                        {
+                                            Ok(()) => {
+                                                tracing::info!(job = %job_name, "Cron workflow completed");
+                                                kernel.cron_scheduler.record_success(job_id);
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(job = %job_name, error = %e, "Cron workflow delivery failed");
+                                                kernel.cron_scheduler.record_failure(job_id, &e);
+                                            }
+                                        }
                                     }
                                     Ok(Err(e)) => {
                                         let err_msg = format!("{e}");
@@ -4059,14 +4184,8 @@ impl OpenFangKernel {
                     "OFP peer node started"
                 );
 
-                // SAFETY: These fields are only written once during startup.
-                // We use unsafe to set them because start_background_agents runs
-                // after the Arc is created and the kernel is otherwise immutable.
-                let self_ptr = Arc::as_ptr(self) as *mut OpenFangKernel;
-                unsafe {
-                    (*self_ptr).peer_registry = Some(registry.clone());
-                    (*self_ptr).peer_node = Some(node.clone());
-                }
+                let _ = self.peer_registry.set(registry.clone());
+                let _ = self.peer_node.set(node.clone());
 
                 // Connect to bootstrap peers
                 for peer_addr_str in &self.config.network.bootstrap_peers {
@@ -4257,6 +4376,37 @@ impl OpenFangKernel {
     /// stored in the model catalog but NOT in `self.config.provider_urls` (which is
     /// the boot-time snapshot). This helper checks both sources so that custom
     /// providers work immediately without a daemon restart.
+    /// Resolve a credential by env var name using the vault → dotenv → env var chain.
+    pub fn resolve_credential(&self, key: &str) -> Option<String> {
+        self.credential_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .resolve(key)
+            .map(|z| z.to_string())
+    }
+
+    /// Store a credential in the vault (best-effort — falls through silently if no vault).
+    pub fn store_credential(&self, key: &str, value: &str) {
+        let mut resolver = self
+            .credential_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = resolver.store_in_vault(key, zeroize::Zeroizing::new(value.to_string())) {
+            debug!("Vault store skipped for {key}: {e}");
+        }
+    }
+
+    /// Remove a credential from the vault (best-effort — falls through silently if no vault).
+    pub fn remove_credential(&self, key: &str) {
+        let mut resolver = self
+            .credential_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = resolver.remove_from_vault(key) {
+            debug!("Vault remove skipped for {key}: {e}");
+        }
+    }
+
     fn lookup_provider_url(&self, provider: &str) -> Option<String> {
         // 1. Boot-time config (from config.toml [provider_urls])
         if let Some(url) = self.config.provider_urls.get(provider) {
@@ -4292,33 +4442,26 @@ impl OpenFangKernel {
         let has_custom_key = manifest.model.api_key_env.is_some();
         let has_custom_url = manifest.model.base_url.is_some();
 
-        // Always create a fresh driver by reading current env vars.
-        // This ensures API keys saved at runtime (via dashboard POST
-        // /api/providers/{name}/key which calls std::env::set_var) are
-        // picked up immediately — the boot-time default_driver cache is
-        // only used as a final fallback when driver creation fails.
+        // Always create a fresh driver by resolving credentials from the
+        // vault → dotenv → env var chain. This ensures API keys saved at
+        // runtime (via dashboard or vault) are picked up immediately.
         let primary = {
             let api_key = if has_custom_key {
-                // Agent explicitly set an API key env var — use it
                 manifest
                     .model
                     .api_key_env
                     .as_ref()
-                    .and_then(|env| std::env::var(env).ok())
+                    .and_then(|env| self.resolve_credential(env))
             } else if agent_provider == default_provider {
-                // Same provider as effective default — use its env var
                 if !effective_default.api_key_env.is_empty() {
-                    std::env::var(&effective_default.api_key_env).ok()
+                    self.resolve_credential(&effective_default.api_key_env)
                 } else {
                     let env_var = self.config.resolve_api_key_env(agent_provider);
-                    std::env::var(&env_var).ok()
+                    self.resolve_credential(&env_var)
                 }
             } else {
-                // Different provider — check auth profiles, provider_api_keys,
-                // and convention-based env var. For custom providers (not in the
-                // hardcoded list), this is the primary path for API key resolution.
                 let env_var = self.config.resolve_api_key_env(agent_provider);
-                std::env::var(&env_var).ok()
+                self.resolve_credential(&env_var)
             };
 
             // Don't inherit default provider's base_url when switching providers.
@@ -5183,6 +5326,12 @@ fn infer_provider_from_model(model: &str) -> Option<String> {
         (lower.as_str(), false)
     };
     if has_delim {
+        // Two or more slashes (e.g. "mlx-lm-lg/mlx-community/Qwen3-4B") means
+        // the first segment is explicitly a provider prefix — HuggingFace repo
+        // IDs only have one slash, so extra slashes are unambiguous.
+        if lower.chars().filter(|&c| c == '/').count() >= 2 {
+            return Some(prefix.to_string());
+        }
         match prefix {
             "minimax" | "gemini" | "anthropic" | "openai" | "groq" | "deepseek" | "mistral"
             | "cohere" | "xai" | "ollama" | "together" | "fireworks" | "perplexity"
@@ -5250,15 +5399,15 @@ async fn cron_deliver_response(
     agent_id: AgentId,
     response: &str,
     delivery: &openfang_types::scheduler::CronDelivery,
-) {
+) -> Result<(), String> {
     use openfang_types::scheduler::CronDelivery;
 
     if response.is_empty() {
-        return;
+        return Ok(());
     }
 
     match delivery {
-        CronDelivery::None => {}
+        CronDelivery::None => Ok(()),
         CronDelivery::Channel { channel, to } => {
             tracing::debug!(channel = %channel, to = %to, "Cron: delivering to channel");
             // Persist as last channel for this agent (survives restarts)
@@ -5266,6 +5415,17 @@ async fn cron_deliver_response(
             let _ = kernel
                 .memory
                 .structured_set(agent_id, "delivery.last_channel", kv_val);
+            // Deliver via the registered channel adapter
+            kernel
+                .send_channel_message(channel, to, response, None)
+                .await
+                .map(|_| {
+                    tracing::info!(channel = %channel, to = %to, "Cron: delivered to channel");
+                })
+                .map_err(|e| {
+                    tracing::warn!(channel = %channel, to = %to, error = %e, "Cron channel delivery failed");
+                    format!("channel delivery failed: {e}")
+                })
         }
         CronDelivery::LastChannel => {
             match kernel
@@ -5276,15 +5436,23 @@ async fn cron_deliver_response(
                     let channel = val["channel"].as_str().unwrap_or("");
                     let recipient = val["recipient"].as_str().unwrap_or("");
                     if !channel.is_empty() && !recipient.is_empty() {
-                        tracing::info!(
-                            channel = %channel,
-                            recipient = %recipient,
-                            "Cron: delivering to last channel"
-                        );
+                        kernel
+                            .send_channel_message(channel, recipient, response, None)
+                            .await
+                            .map(|_| {
+                                tracing::info!(channel = %channel, recipient = %recipient, "Cron: delivered to last channel");
+                            })
+                            .map_err(|e| {
+                                tracing::warn!(channel = %channel, recipient = %recipient, error = %e, "Cron last-channel delivery failed");
+                                format!("last-channel delivery failed: {e}")
+                            })
+                    } else {
+                        Ok(())
                     }
                 }
                 _ => {
                     tracing::debug!("Cron: no last channel found for agent {}", agent_id);
+                    Ok(())
                 }
             }
         }
@@ -5292,22 +5460,24 @@ async fn cron_deliver_response(
             tracing::debug!(url = %url, "Cron: delivering via webhook");
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
-                .build();
-            if let Ok(client) = client {
-                let payload = serde_json::json!({
-                    "agent_id": agent_id.to_string(),
-                    "response": response,
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                });
-                match client.post(url).json(&payload).send().await {
-                    Ok(resp) => {
-                        tracing::debug!(status = %resp.status(), "Cron webhook delivered");
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Cron webhook delivery failed");
-                    }
-                }
-            }
+                .build()
+                .map_err(|e| format!("webhook client init failed: {e}"))?;
+            let payload = serde_json::json!({
+                "agent_id": agent_id.to_string(),
+                "response": response,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            });
+            let resp = client
+                .post(url)
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "Cron webhook delivery failed");
+                    format!("webhook delivery failed: {e}")
+                })?;
+            tracing::debug!(status = %resp.status(), "Cron webhook delivered");
+            Ok(())
         }
     }
 }
@@ -5328,7 +5498,7 @@ impl KernelHandle for OpenFangKernel {
         let name = manifest.name.clone();
         let parent = parent_id.and_then(|pid| pid.parse::<AgentId>().ok());
         let id = self
-            .spawn_agent_with_parent(manifest, parent)
+            .spawn_agent_with_parent(manifest, parent, None)
             .map_err(|e| format!("Spawn failed: {e}"))?;
         Ok((id.to_string(), name))
     }

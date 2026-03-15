@@ -811,7 +811,7 @@
                               <div class="model-switcher-item" :class="{'active': currentAgent && m.id === currentAgent.model_name}" @click="switchModel(m)" @mouseenter="modelSwitcherIdx = filteredSwitcherModels.indexOf(m)">
                                 <div style="flex:1;min-width:0">
                                   <div style="display:flex;align-items:center;gap:6px">
-                                    <span class="model-switcher-item-name" x-text="m.display_name || m.id"></span>
+                                    <span class="model-switcher-item-name" x-text="m.provider + ':' + (m.display_name || m.id)"></span>
                                     <span class="model-switcher-tier" :class="'tier-' + (m.tier || 'balanced').toLowerCase()" x-text="m.tier || 'Balanced'"></span>
                                   </div>
                                   <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
@@ -922,7 +922,23 @@
                       </select>
                     </div>
                     <div class="detail-row" x-show="detailAgent.profile"><span class="detail-label">Profile</span><span class="detail-value" style="text-transform:capitalize" x-text="detailAgent.profile || '-'"></span></div>
-                    <div class="detail-row"><span class="detail-label">Provider</span><span class="detail-value" x-text="detailAgent.model_provider"></span></div>
+                    <div class="detail-row"><span class="detail-label">Provider</span>
+                      <template x-if="!editingProvider">
+                        <span>
+                          <span class="detail-value" x-text="detailAgent.model_provider"></span>
+                          <button class="btn btn-ghost btn-sm" style="margin-left:8px;padding:2px 8px;font-size:11px" @click="editingProvider = true; newProviderValue = detailAgent.model_provider">Change</button>
+                        </span>
+                      </template>
+                      <template x-if="editingProvider">
+                        <span class="flex gap-1" style="align-items:center">
+                          <input class="form-input" style="width:160px;font-size:12px" x-model="newProviderValue" placeholder="provider" @keydown.enter="changeProvider()" @keydown.escape="editingProvider = false">
+                          <button class="btn btn-primary btn-sm" @click="changeProvider()" :disabled="modelSaving" style="padding:2px 10px">
+                            <span x-show="!modelSaving">Save</span><span x-show="modelSaving">...</span>
+                          </button>
+                          <button class="btn btn-ghost btn-sm" @click="editingProvider = false" style="padding:2px 8px">Cancel</button>
+                        </span>
+                      </template>
+                    </div>
                     <div class="detail-row"><span class="detail-label">Model</span>
                       <template x-if="!editingModel">
                         <span>

@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.4"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
@@ -52,7 +52,7 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 
 # IDs
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
 # Database
 rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
@@ -138,6 +138,9 @@ imap = "2"
 native-tls = "0.2"
 mailparse = "0.15"
 
+# OpenSSL (vendored = statically compiled, no runtime libssl dependency on Linux)
+openssl = { version = "0.10", features = ["vendored"] }
+
 # Testing
 tokio-test = "0.4"
 tempfile = "3"
@@ -147,3 +150,10 @@ lto = true
 codegen-units = 1
 strip = true
 opt-level = 3
+
+[profile.release-fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 8
+opt-level = 2
+strip = false

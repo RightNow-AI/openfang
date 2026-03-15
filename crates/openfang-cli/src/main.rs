@@ -113,7 +113,11 @@ enum Commands {
         quick: bool,
     },
     /// Start the OpenFang kernel daemon (API server + kernel).
-    Start,
+    Start {
+        /// Auto-approve all tool calls (no confirmation prompts).
+        #[arg(long)]
+        yolo: bool,
+    },
     /// Stop the running daemon.
     Stop,
     /// Manage agents (new, list, chat, kill, spawn) [*].
@@ -794,11 +798,36 @@ enum SystemCommands {
     },
 }
 
+fn config_log_level() -> String {
+    let config_path = if let Ok(home) = std::env::var("OPENFANG_HOME") {
+        std::path::PathBuf::from(home).join("config.toml")
+    } else {
+        dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(".openfang")
+            .join("config.toml")
+    };
+    if let Ok(content) = std::fs::read_to_string(config_path) {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("log_level") {
+                if let Some(val) = trimmed.split('=').nth(1) {
+                    let level = val.trim().trim_matches('"').trim_matches('\'');
+                    if !level.is_empty() {
+                        return level.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "info".to_string()
+}
+
 fn init_tracing_stderr() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(config_log_level())),
         )
         .init();
 }
@@ -824,7 +853,7 @@ fn init_tracing_file() {
             tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(config_log_level())),
                 )
                 .with_writer(std::sync::Mutex::new(file))
                 .with_ansi(false)
@@ -893,7 +922,7 @@ fn main() {
         }
         Some(Commands::Tui) => tui::run(cli.config),
         Some(Commands::Init { quick }) => cmd_init(quick),
-        Some(Commands::Start) => cmd_start(cli.config),
+        Some(Commands::Start { yolo }) => cmd_start(cli.config, yolo),
         Some(Commands::Stop) => cmd_stop(),
         Some(Commands::Agent(sub)) => match sub {
             AgentCommands::New { template } => cmd_agent_new(cli.config, template),
@@ -986,7 +1015,7 @@ fn main() {
             ModelsCommands::Set { model } => cmd_models_set(model),
         },
         Some(Commands::Gateway(sub)) => match sub {
-            GatewayCommands::Start => cmd_start(cli.config),
+            GatewayCommands::Start => cmd_start(cli.config, false),
             GatewayCommands::Stop => cmd_stop(),
             GatewayCommands::Status { json } => cmd_status(cli.config, json),
         },
@@ -1431,7 +1460,7 @@ decay_rate = 0.05
     }
 }
 
-fn cmd_start(config: Option<PathBuf>) {
+fn cmd_start(config: Option<PathBuf>, yolo: bool) {
     if let Some(base) = find_daemon() {
         ui::error_with_fix(
             &format!("Daemon already running at {base}"),
@@ -1447,7 +1476,12 @@ fn cmd_start(config: Option<PathBuf>) {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let kernel = match OpenFangKernel::boot(config.as_deref()) {
+        let mut kernel_config = openfang_kernel::config::load_config(config.as_deref());
+        if yolo {
+            kernel_config.approval.auto_approve = true;
+            kernel_config.approval.apply_shorthands();
+        }
+        let kernel = match OpenFangKernel::boot_with_config(kernel_config) {
             Ok(k) => k,
             Err(e) => {
                 boot_kernel_error(&e);
@@ -4691,6 +4725,8 @@ fn cmd_config_set(key: &str, value: &str) {
         std::process::exit(1);
     });
 
+    let _ = std::fs::copy(&config_path, config_path.with_extension("toml.bak"));
+
     std::fs::write(&config_path, &serialized).unwrap_or_else(|e| {
         ui::error(&format!("Failed to write config: {e}"));
         std::process::exit(1);
@@ -4757,6 +4793,8 @@ fn cmd_config_unset(key: &str) {
         std::process::exit(1);
     });
 
+    let _ = std::fs::copy(&config_path, config_path.with_extension("toml.bak"));
+
     std::fs::write(&config_path, &serialized).unwrap_or_else(|e| {
         ui::error(&format!("Failed to write config: {e}"));
         std::process::exit(1);
@@ -4775,6 +4813,10 @@ fn cmd_config_set_key(provider: &str) {
         return;
     }
 
+    // Try vault first (best-effort)
+    save_credential_prefer_vault(&env_var, &key);
+
+    // Always save to dotenv as fallback
     match dotenv::save_env_key(&env_var, &key) {
         Ok(()) => {
             ui::success(&format!("Saved {env_var} to ~/.openfang/.env"));
@@ -4796,6 +4838,18 @@ fn cmd_config_set_key(provider: &str) {
 
 fn cmd_config_delete_key(provider: &str) {
     let env_var = provider_to_env_var(provider);
+
+    // Remove from vault (best-effort)
+    {
+        let home = openfang_home();
+        let vault_path = home.join("vault.enc");
+        if vault_path.exists() {
+            let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path);
+            if vault.unlock().is_ok() {
+                let _ = vault.remove(&env_var);
+            }
+        }
+    }
 
     match dotenv::remove_env_key(&env_var) {
         Ok(()) => ui::success(&format!("Removed {env_var} from ~/.openfang/.env")),
@@ -4823,6 +4877,26 @@ fn cmd_config_test_key(provider: &str) {
         println!("{}", "FAILED (401/403)".bright_red());
         ui::hint(&format!("Update key: openfang config set-key {provider}"));
         std::process::exit(1);
+    }
+}
+
+/// Try to store a credential in the vault first; silently falls through if vault
+/// is not initialized or cannot be unlocked. The caller should always also
+/// write to dotenv as a fallback.
+fn save_credential_prefer_vault(env_var: &str, value: &str) {
+    use zeroize::Zeroizing;
+
+    let home = openfang_home();
+    let vault_path = home.join("vault.enc");
+    if !vault_path.exists() {
+        return;
+    }
+    let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path);
+    if vault.unlock().is_err() {
+        return;
+    }
+    if let Ok(()) = vault.set(env_var.to_string(), Zeroizing::new(value.to_string())) {
+        println!("  {}", "Also stored in encrypted vault".dimmed());
     }
 }
 

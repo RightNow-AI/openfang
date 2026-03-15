@@ -530,7 +530,7 @@ function chatPage() {
                 id: (t.name || 'tool') + '-hist-' + idx,
                 name: t.name || 'unknown',
                 running: false,
-                expanded: false,
+                expanded: true,
                 input: t.input || '',
                 result: t.result || '',
                 is_error: !!t.is_error
@@ -703,7 +703,7 @@ function chatPage() {
                   id: toolMatch[1] + '-txt-' + Date.now(),
                   name: toolMatch[1],
                   running: true,
-                  expanded: false,
+                  expanded: true,
                   input: inputMatch ? inputMatch[1].replace(/<\/function>?\s*$/, '').trim() : '',
                   result: '',
                   is_error: false
@@ -721,7 +721,7 @@ function chatPage() {
           var lastMsg = this.messages.length ? this.messages[this.messages.length - 1] : null;
           if (lastMsg && lastMsg.streaming) {
             if (!lastMsg.tools) lastMsg.tools = [];
-            lastMsg.tools.push({ id: data.tool + '-' + Date.now(), name: data.tool, running: true, expanded: false, input: '', result: '', is_error: false });
+            lastMsg.tools.push({ id: data.tool + '-' + Date.now(), name: data.tool, running: true, expanded: true, input: '', result: '', is_error: false });
           }
           this.scrollToBottom();
           break;

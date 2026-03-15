@@ -306,6 +306,20 @@ fn default_temperature() -> f32 {
     0.7
 }
 
+#[derive(Deserialize)]
+struct HandTomlWrapper {
+    hand: HandDefinition,
+}
+
+/// Parse HAND.toml content, supporting both flat format and `[hand]` table format.
+pub fn parse_hand_toml(content: &str) -> Result<HandDefinition, toml::de::Error> {
+    if let Ok(def) = toml::from_str::<HandDefinition>(content) {
+        return Ok(def);
+    }
+    let wrapper: HandTomlWrapper = toml::from_str(content)?;
+    Ok(wrapper.hand)
+}
+
 /// Complete Hand definition — parsed from HAND.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandDefinition {
@@ -797,5 +811,51 @@ metrics = []
         assert_eq!(install.steps[0], "Go to example.com and sign up");
         assert!(install.macos.is_none());
         assert!(install.windows.is_none());
+    }
+
+    #[test]
+    fn parse_hand_toml_flat_format() {
+        let toml_str = r#"
+id = "test"
+name = "Test Hand"
+description = "A test hand"
+category = "content"
+tools = ["shell_exec"]
+
+[agent]
+name = "test-hand"
+description = "Test agent"
+system_prompt = "You are a test agent."
+
+[dashboard]
+metrics = []
+"#;
+        let def = parse_hand_toml(toml_str).unwrap();
+        assert_eq!(def.id, "test");
+        assert_eq!(def.name, "Test Hand");
+    }
+
+    #[test]
+    fn parse_hand_toml_wrapped_format() {
+        let toml_str = r#"
+[hand]
+id = "test"
+name = "Test Hand"
+description = "A test hand"
+category = "content"
+tools = ["shell_exec"]
+
+[hand.agent]
+name = "test-hand"
+description = "Test agent"
+system_prompt = "You are a test agent."
+
+[hand.dashboard]
+metrics = []
+"#;
+        let def = parse_hand_toml(toml_str).unwrap();
+        assert_eq!(def.id, "test");
+        assert_eq!(def.name, "Test Hand");
+        assert_eq!(def.agent.name, "test-hand");
     }
 }

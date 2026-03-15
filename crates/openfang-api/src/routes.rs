@@ -140,13 +140,19 @@ pub async fn spawn_agent(
 
     let name = manifest.name.clone();
     match state.kernel.spawn_agent(manifest) {
-        Ok(id) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!(SpawnResponse {
-                agent_id: id.to_string(),
-                name,
-            })),
-        ),
+        Ok(id) => {
+            // Register in channel router so binding resolution finds the new agent
+            if let Some(ref mgr) = *state.bridge_manager.lock().await {
+                mgr.router().register_agent(name.clone(), id);
+            }
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!(SpawnResponse {
+                    agent_id: id.to_string(),
+                    name,
+                })),
+            )
+        }
         Err(e) => {
             tracing::warn!("Spawn failed: {e}");
             (
@@ -361,7 +367,7 @@ pub async fn send_message(
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(agent_id, &req.message, Some(kernel_handle))
+        .send_message_with_handle(agent_id, &req.message, Some(kernel_handle), req.sender_id, req.sender_name)
         .await
     {
         Ok(result) => {
@@ -1341,7 +1347,7 @@ pub async fn send_message_stream(
     let (rx, _handle) =
         match state
             .kernel
-            .send_message_streaming(agent_id, &req.message, Some(kernel_handle))
+            .send_message_streaming(agent_id, &req.message, Some(kernel_handle), req.sender_id, req.sender_name)
         {
             Ok(pair) => pair,
             Err(e) => {
@@ -1395,7 +1401,9 @@ pub async fn send_message_stream(
         }
     });
 
-    Sse::new(sse_stream).into_response()
+    Sse::new(sse_stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -3023,15 +3031,21 @@ pub async fn delete_agent_kv_key(
 /// Returns only status and version to prevent information leakage.
 /// Use GET /api/health/detail for full diagnostics (requires auth).
 pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    // Check database connectivity
-    let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-    ]));
-    let db_ok = state
-        .kernel
-        .memory
-        .structured_get(shared_id, "__health_check__")
-        .is_ok();
+    // Run the database check on a blocking thread so we never hold the
+    // std::sync::Mutex<Connection> on a tokio worker thread.  This prevents
+    // the health probe from starving the async runtime when the agent loop
+    // is holding the database lock for session saves.
+    let memory = state.kernel.memory.clone();
+    let db_ok = tokio::task::spawn_blocking(move || {
+        let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]));
+        memory
+            .structured_get(shared_id, "__health_check__")
+            .is_ok()
+    })
+    .await
+    .unwrap_or(false);
 
     let status = if db_ok { "ok" } else { "degraded" };
 
@@ -3045,14 +3059,17 @@ pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let health = state.kernel.supervisor.health();
 
-    let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-    ]));
-    let db_ok = state
-        .kernel
-        .memory
-        .structured_get(shared_id, "__health_check__")
-        .is_ok();
+    let memory = state.kernel.memory.clone();
+    let db_ok = tokio::task::spawn_blocking(move || {
+        let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]));
+        memory
+            .structured_get(shared_id, "__health_check__")
+            .is_ok()
+    })
+    .await
+    .unwrap_or(false);
 
     let config_warnings = state.kernel.config.validate();
     let status = if db_ok { "ok" } else { "degraded" };
@@ -3974,7 +3991,9 @@ pub async fn install_hand_deps(
             let combined = format!("{stdout}{stderr}");
             let likely_ok = combined.contains("already installed")
                 || combined.contains("No applicable update")
-                || combined.contains("No available upgrade");
+                || combined.contains("No available upgrade")
+                || combined.contains("already an App at")
+                || combined.contains("is already installed");
             results.push(serde_json::json!({
                 "key": req.key,
                 "status": if likely_ok { "installed" } else { "error" },
@@ -4094,6 +4113,46 @@ pub async fn install_hand(
         .kernel
         .hand_registry
         .install_from_content(toml_content, skill_content)
+    {
+        Ok(def) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "id": def.id,
+                "name": def.name,
+                "description": def.description,
+                "category": format!("{:?}", def.category),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
+/// POST /api/hands/upsert — Install or update a hand definition.
+///
+/// Like `install_hand` but overwrites an existing definition with the same ID.
+/// Active instances are NOT automatically restarted — deactivate + reactivate
+/// to pick up the new definition.
+pub async fn upsert_hand(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let toml_content = body["toml_content"].as_str().unwrap_or("");
+    let skill_content = body["skill_content"].as_str().unwrap_or("");
+
+    if toml_content.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Missing toml_content field"})),
+        );
+    }
+
+    match state
+        .kernel
+        .hand_registry
+        .upsert_from_content(toml_content, skill_content)
     {
         Ok(def) => (
             StatusCode::OK,
@@ -4746,7 +4805,7 @@ pub async fn network_status(State(state): State<Arc<AppState>>) -> impl IntoResp
         && !state.kernel.config.network.shared_secret.is_empty();
 
     let (node_id, listen_address, connected_peers, total_peers) =
-        if let Some(ref peer_node) = state.kernel.peer_node {
+        if let Some(peer_node) = state.kernel.peer_node.get() {
             let registry = peer_node.registry();
             (
                 peer_node.node_id().to_string(),
@@ -6945,7 +7004,10 @@ pub async fn set_provider_key(
             })
     };
 
-    // Write to secrets.env file
+    // Store in vault (best-effort — no-op if vault not initialized)
+    state.kernel.store_credential(&env_var, &key);
+
+    // Write to secrets.env file (dual-write for backward compat / vault corruption recovery)
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
     if let Err(e) = write_secret_env(&secrets_path, &env_var, &key) {
         return (
@@ -7007,8 +7069,8 @@ pub async fn set_provider_key(
                 "\n[default_model]\nprovider = \"{}\"\nmodel = \"{}\"\napi_key_env = \"{}\"\n",
                 name, model_id, env_var
             );
+            backup_config(&config_path);
             if let Ok(existing) = std::fs::read_to_string(&config_path) {
-                // Remove existing [default_model] section if present, then append
                 let cleaned = remove_toml_section(&existing, "default_model");
                 let _ = std::fs::write(&config_path, format!("{}\n{}", cleaned.trim(), update_toml));
             } else {
@@ -7106,6 +7168,9 @@ pub async fn delete_provider_key(
             Json(serde_json::json!({"error": "Provider does not require an API key"})),
         );
     }
+
+    // Remove from vault (best-effort)
+    state.kernel.remove_credential(&env_var);
 
     // Remove from secrets.env
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
@@ -8173,7 +8238,7 @@ pub async fn run_schedule(
     );
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
-    match state.kernel.send_message_with_handle(target_agent, &run_message, Some(kernel_handle)).await {
+    match state.kernel.send_message_with_handle(target_agent, &run_message, Some(kernel_handle), None, None).await {
         Ok(result) => (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -8616,6 +8681,11 @@ pub async fn clone_agent(
         .kernel
         .registry
         .update_identity(new_id, source.identity.clone());
+
+    // Register in channel router so binding resolution finds the cloned agent
+    if let Some(ref mgr) = *state.bridge_manager.lock().await {
+        mgr.router().register_agent(req.new_name.clone(), new_id);
+    }
 
     (
         StatusCode::CREATED,
@@ -10254,7 +10324,10 @@ pub async fn copilot_oauth_poll(
             Json(serde_json::json!({"status": "pending"})),
         ),
         openfang_runtime::copilot_oauth::DeviceFlowStatus::Complete { access_token } => {
-            // Save to secrets.env
+            // Store in vault (best-effort)
+            state.kernel.store_credential("GITHUB_TOKEN", &access_token);
+
+            // Save to secrets.env (dual-write)
             let secrets_path = state.kernel.config.home_dir.join("secrets.env");
             if let Err(e) = write_secret_env(&secrets_path, "GITHUB_TOKEN", &access_token) {
                 return (
@@ -10839,6 +10912,12 @@ pub async fn auth_check(
 }
 
 /// Remove a `[section]` and its contents from a TOML string.
+#[allow(dead_code)]
+fn backup_config(config_path: &std::path::Path) {
+    let backup = config_path.with_extension("toml.bak");
+    let _ = std::fs::copy(config_path, backup);
+}
+
 fn remove_toml_section(content: &str, section: &str) -> String {
     let header = format!("[{}]", section);
     let mut result = String::new();

@@ -27,6 +27,8 @@ function renderMarkdown(text) {
     var html = marked.parse(text);
     // Add copy buttons to code blocks
     html = html.replace(/<pre><code/g, '<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><code');
+    // Open external links in new tab
+    html = html.replace(/<a\s+href="(https?:\/\/[^"]*)"(?![^>]*target=)([^>]*)>/gi, '<a href="$1" target="_blank" rel="noopener"$2>');
     return html;
   }
   return escapeHtml(text);

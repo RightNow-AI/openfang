@@ -925,7 +925,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             return "OFP peer network is disabled. Set network_enabled = true in config.toml."
                 .to_string();
         }
-        match &self.kernel.peer_registry {
+        match self.kernel.peer_registry.get() {
             Some(registry) => {
                 let peers = registry.all_peers();
                 if peers.is_empty() {

@@ -130,6 +130,19 @@ impl AgentScheduler {
             .get(&agent_id)
             .map(|t| (t.total_tokens, t.tool_calls))
     }
+
+    /// Returns remaining token headroom before quota is hit.
+    /// Returns `None` if no token quota is configured (unlimited).
+    pub fn token_headroom(&self, agent_id: AgentId) -> Option<u64> {
+        let quota = self.quotas.get(&agent_id)?;
+        if quota.max_llm_tokens_per_hour == 0 {
+            return None;
+        }
+        let mut tracker = self.usage.get_mut(&agent_id)?;
+        tracker.reset_if_expired();
+        let used = tracker.total_tokens;
+        Some(quota.max_llm_tokens_per_hour.saturating_sub(used))
+    }
 }
 
 impl Default for AgentScheduler {

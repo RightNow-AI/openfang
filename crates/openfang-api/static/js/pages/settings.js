@@ -401,8 +401,12 @@ function settingsPage() {
       var key = this.providerKeyInputs[provider.id];
       if (!key || !key.trim()) { OpenFangToast.error('Please enter an API key'); return; }
       try {
-        await OpenFangAPI.post('/api/providers/' + encodeURIComponent(provider.id) + '/key', { key: key.trim() });
-        OpenFangToast.success('API key saved for ' + provider.display_name);
+        var resp = await OpenFangAPI.post('/api/providers/' + encodeURIComponent(provider.id) + '/key', { key: key.trim() });
+        if (resp && resp.switched_default) {
+          OpenFangToast.warning(resp.message || 'Default provider was switched to ' + provider.display_name);
+        } else {
+          OpenFangToast.success('API key saved for ' + provider.display_name);
+        }
         this.providerKeyInputs[provider.id] = '';
         await this.loadProviders();
         await this.loadModels();

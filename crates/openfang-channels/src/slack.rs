@@ -414,7 +414,7 @@ async fn parse_slack_event(
     auto_thread_reply: bool,
 ) -> Option<ChannelMessage> {
     let event_type = event["type"].as_str()?;
-    if event_type != "message" {
+    if event_type != "message" && event_type != "app_mention" {
         return None;
     }
 
@@ -500,6 +500,9 @@ async fn parse_slack_event(
 
     // Check if the bot was @-mentioned (for group_policy = "mention_only")
     let mut metadata = HashMap::new();
+    if event_type == "app_mention" {
+        metadata.insert("was_mentioned".to_string(), serde_json::Value::Bool(true));
+    }
 
     // Determine the real thread_ts from the event (None for top-level messages).
     let real_thread_ts = msg_data["thread_ts"]

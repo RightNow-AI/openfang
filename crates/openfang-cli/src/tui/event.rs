@@ -303,7 +303,7 @@ pub fn spawn_inprocess_stream(
         // send_message_streaming() finds the reactor.
         let _guard = rt.enter();
 
-        match kernel.send_message_streaming(agent_id, &message, None) {
+        match kernel.send_message_streaming(agent_id, &message, None, None, None) {
             Ok((mut rx, handle)) => {
                 rt.block_on(async {
                     while let Some(ev) = rx.recv().await {
