@@ -24,12 +24,66 @@ function escapeHtml(text) {
 function renderMarkdown(text) {
   if (!text) return '';
   if (typeof marked !== 'undefined') {
-    var html = marked.parse(text);
+    // Protect LaTeX blocks from marked.js mangling (underscores, backslashes, etc.)
+    var latexBlocks = [];
+    var protected_ = text;
+    // Protect display math $$...$$ first (greedy across lines)
+    protected_ = protected_.replace(/\$\$([\s\S]+?)\$\$/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+    // Protect inline math $...$ (single line, not empty, not starting/ending with space)
+    protected_ = protected_.replace(/\$([^\s$](?:[^$]*[^\s$])?)\$/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+    // Protect \[...\] display math
+    protected_ = protected_.replace(/\\\[([\s\S]+?)\\\]/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+    // Protect \(...\) inline math
+    protected_ = protected_.replace(/\\\(([\s\S]+?)\\\)/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+
+    var html = marked.parse(protected_);
+    // Restore LaTeX blocks
+    for (var i = 0; i < latexBlocks.length; i++) {
+      html = html.replace('\x00LATEX' + i + '\x00', latexBlocks[i]);
+    }
     // Add copy buttons to code blocks
     html = html.replace(/<pre><code/g, '<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><code');
+    // Open external links in new tab
+    html = html.replace(/<a\s+href="(https?:\/\/[^"]*)"(?![^>]*target=)([^>]*)>/gi, '<a href="$1" target="_blank" rel="noopener"$2>');
     return html;
   }
   return escapeHtml(text);
+}
+
+// Render LaTeX math in the chat message container using KaTeX auto-render.
+// Call this after new messages are inserted into the DOM.
+function renderLatex(el) {
+  if (typeof renderMathInElement !== 'function') return;
+  var target = el || document.getElementById('messages');
+  if (!target) return;
+  try {
+    renderMathInElement(target, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '\\[', right: '\\]', display: true },
+        { left: '$', right: '$', display: false },
+        { left: '\\(', right: '\\)', display: false }
+      ],
+      throwOnError: false,
+      trust: false
+    });
+  } catch(e) { /* KaTeX render error — ignore gracefully */ }
 }
 
 function copyCode(btn) {
@@ -258,6 +312,22 @@ function app() {
           self.theme = e.matches ? 'dark' : 'light';
         }
       });
+
+      // Set up MutationObserver to render LaTeX when messages are added
+      // Wait for DOM to be ready, then watch for changes in #messages
+      setTimeout(function() {
+        var messagesEl = document.getElementById('messages');
+        if (messagesEl) {
+          var observer = new MutationObserver(function(mutations) {
+            // Debounce: only render LaTeX once after mutations stop
+            clearTimeout(self._latexTimeout);
+            self._latexTimeout = setTimeout(function() {
+              renderLatex(messagesEl);
+            }, 100);
+          });
+          observer.observe(messagesEl, { childList: true, subtree: true });
+        }
+      }, 1000);
 
       // Hash routing
       var validPages = ['overview','agents','sessions','approvals','comms','workflows','scheduler','channels','skills','hands','analytics','logs','runtime','settings','wizard'];
