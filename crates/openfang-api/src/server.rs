@@ -335,8 +335,7 @@ pub async fn build_router(
         )
         .route(
             "/api/workflows/{id}/rollout",
-            axum::routing::get(routes::get_workflow_rollout)
-                .put(routes::update_workflow_rollout),
+            axum::routing::get(routes::get_workflow_rollout).put(routes::update_workflow_rollout),
         )
         .route(
             "/api/workflows/{id}/rollback",

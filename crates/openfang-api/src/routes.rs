@@ -8,8 +8,8 @@ use axum::Json;
 use dashmap::DashMap;
 use openfang_kernel::triggers::{TriggerId, TriggerPattern};
 use openfang_kernel::workflow::{
-    ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowRunId,
-    WorkflowShadowComparison, WorkflowStep, WorkflowTrafficPath,
+    ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowRunId, WorkflowShadowComparison,
+    WorkflowStep, WorkflowTrafficPath,
 };
 use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;

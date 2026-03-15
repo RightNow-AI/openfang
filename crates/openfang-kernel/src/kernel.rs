@@ -3057,9 +3057,15 @@ impl OpenFangKernel {
             self.memory
                 .structured_set(agent_id, &key, serde_json::Value::String(summary.clone()));
 
-        // Also write to workspace memory/ dir if workspace exists
+        // Keep session summaries isolated once an agent has multiple sessions.
         if let Some(ref workspace) = entry.manifest.workspace {
-            let mem_dir = workspace.join("memory");
+            let summary_workspace = if self.has_concurrent_agent_sessions(agent_id) {
+                session_workspace_root(workspace, session.id)
+            } else {
+                workspace.clone()
+            };
+            let mem_dir = summary_workspace.join("memory");
+            let _ = std::fs::create_dir_all(&mem_dir);
             let filename = format!("{date}-{slug}.md");
             let _ = std::fs::write(mem_dir.join(&filename), &summary);
         }
