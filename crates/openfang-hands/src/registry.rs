@@ -9,8 +9,22 @@ use dashmap::DashMap;
 use openfang_types::agent::AgentId;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct PersistedHandStateEntry {
+    pub hand_id: String,
+    pub config: HashMap<String, serde_json::Value>,
+    pub agent_id: Option<AgentId>,
+    #[serde(default)]
+    pub source_path: Option<PathBuf>,
+    #[serde(default)]
+    pub toml_content: Option<String>,
+    #[serde(default)]
+    pub skill_content: Option<String>,
+}
 
 // ─── Settings availability types ────────────────────────────────────────────
 
@@ -53,17 +67,27 @@ impl HandRegistry {
     }
 
     /// Persist active hand state to disk so it survives restarts.
-    pub fn persist_state(&self, path: &std::path::Path) -> HandResult<()> {
-        let entries: Vec<serde_json::Value> = self
+    pub fn persist_state(&self, path: &Path) -> HandResult<()> {
+        let entries: Vec<PersistedHandStateEntry> = self
             .instances
             .iter()
             .filter(|e| e.status == HandStatus::Active)
             .map(|e| {
-                serde_json::json!({
-                    "hand_id": e.hand_id,
-                    "config": e.config,
-                    "agent_id": e.agent_id,
-                })
+                let definition = self
+                    .definitions
+                    .get(&e.hand_id)
+                    .map(|def| def.value().clone());
+
+                PersistedHandStateEntry {
+                    hand_id: e.hand_id.clone(),
+                    config: e.config.clone(),
+                    agent_id: e.agent_id,
+                    source_path: definition.as_ref().and_then(|def| def.install_path.clone()),
+                    toml_content: definition.as_ref().and_then(|def| def.install_toml.clone()),
+                    skill_content: definition
+                        .as_ref()
+                        .and_then(|def| def.install_skill_content.clone()),
+                }
             })
             .collect();
         let json = serde_json::to_string_pretty(&entries)
@@ -73,36 +97,20 @@ impl HandRegistry {
         Ok(())
     }
 
-    /// Load persisted hand state and re-activate hands.
-    /// Returns list of (hand_id, config, old_agent_id) that should be activated.
-    /// The `old_agent_id` is the agent UUID from before the restart, used to
-    /// reassign cron jobs to the newly spawned agent (issue #402).
-    pub fn load_state(
-        path: &std::path::Path,
-    ) -> Vec<(String, HashMap<String, serde_json::Value>, Option<AgentId>)> {
+    /// Load persisted hand state entries that should be restored on boot.
+    pub fn load_state(path: &Path) -> Vec<PersistedHandStateEntry> {
         let data = match std::fs::read_to_string(path) {
             Ok(d) => d,
             Err(_) => return Vec::new(),
         };
-        let entries: Vec<serde_json::Value> = match serde_json::from_str(&data) {
-            Ok(e) => e,
+        let entries: Vec<PersistedHandStateEntry> = match serde_json::from_str(&data) {
+            Ok(entries) => entries,
             Err(e) => {
                 warn!("Failed to parse hand state file: {e}");
                 return Vec::new();
             }
         };
         entries
-            .into_iter()
-            .filter_map(|e| {
-                let hand_id = e["hand_id"].as_str()?.to_string();
-                let config: HashMap<String, serde_json::Value> =
-                    serde_json::from_value(e["config"].clone()).unwrap_or_default();
-                let old_agent_id: Option<AgentId> = e
-                    .get("agent_id")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok());
-                Some((hand_id, config, old_agent_id))
-            })
-            .collect()
     }
 
     /// Load all bundled hand definitions. Returns count of definitions loaded.
@@ -125,7 +133,7 @@ impl HandRegistry {
     }
 
     /// Install a hand from a directory containing HAND.toml (and optional SKILL.md).
-    pub fn install_from_path(&self, path: &std::path::Path) -> HandResult<HandDefinition> {
+    pub fn install_from_path(&self, path: &Path) -> HandResult<HandDefinition> {
         let toml_path = path.join("HAND.toml");
         let skill_path = path.join("SKILL.md");
 
@@ -134,17 +142,14 @@ impl HandRegistry {
         })?;
         let skill_content = std::fs::read_to_string(&skill_path).unwrap_or_default();
 
-        let def = bundled::parse_bundled("custom", &toml_content, &skill_content)?;
+        let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let def = self.install_from_content_with_source(
+            &toml_content,
+            &skill_content,
+            Some(canonical_path.clone()),
+        )?;
 
-        if self.definitions.contains_key(&def.id) {
-            return Err(HandError::AlreadyActive(format!(
-                "Hand '{}' already registered",
-                def.id
-            )));
-        }
-
-        info!(hand = %def.id, name = %def.name, path = %path.display(), "Installed hand from path");
-        self.definitions.insert(def.id.clone(), def.clone());
+        info!(hand = %def.id, name = %def.name, path = %canonical_path.display(), "Installed hand from path");
         Ok(def)
     }
 
@@ -154,14 +159,31 @@ impl HandRegistry {
         toml_content: &str,
         skill_content: &str,
     ) -> HandResult<HandDefinition> {
-        let def = bundled::parse_bundled("custom", toml_content, skill_content)?;
+        self.install_from_content_with_source(toml_content, skill_content, None)
+    }
 
+    /// Install a hand from raw content and keep track of its source metadata.
+    pub fn install_from_content_with_source(
+        &self,
+        toml_content: &str,
+        skill_content: &str,
+        source_path: Option<PathBuf>,
+    ) -> HandResult<HandDefinition> {
+        let mut def = bundled::parse_bundled("custom", toml_content, skill_content)?;
         if self.definitions.contains_key(&def.id) {
             return Err(HandError::AlreadyActive(format!(
                 "Hand '{}' already registered",
                 def.id
             )));
         }
+
+        def.install_path = source_path;
+        def.install_toml = Some(toml_content.to_string());
+        def.install_skill_content = if skill_content.is_empty() {
+            None
+        } else {
+            Some(skill_content.to_string())
+        };
 
         info!(hand = %def.id, name = %def.name, "Installed hand from content");
         self.definitions.insert(def.id.clone(), def.clone());
@@ -170,7 +192,8 @@ impl HandRegistry {
 
     /// List all known hand definitions.
     pub fn list_definitions(&self) -> Vec<HandDefinition> {
-        let mut defs: Vec<HandDefinition> = self.definitions.iter().map(|r| r.value().clone()).collect();
+        let mut defs: Vec<HandDefinition> =
+            self.definitions.iter().map(|r| r.value().clone()).collect();
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
     }
@@ -363,9 +386,10 @@ impl HandRegistry {
         let requirements_met = reqs.iter().all(|(_, ok)| *ok);
 
         // A hand is active if at least one instance is in Active status.
-        let active = self.instances.iter().any(|entry| {
-            entry.hand_id == hand_id && entry.status == HandStatus::Active
-        });
+        let active = self
+            .instances
+            .iter()
+            .any(|entry| entry.hand_id == hand_id && entry.status == HandStatus::Active);
 
         // Degraded: active, but at least one non-optional requirement is unmet
         // OR any optional requirement is unmet. In practice, the most useful
@@ -513,7 +537,9 @@ fn check_chromium_available() -> bool {
         ]
     } else if cfg!(target_os = "macos") {
         vec![
-            std::path::PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            std::path::PathBuf::from(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
             std::path::PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
         ]
     } else {
@@ -608,6 +634,7 @@ fn check_option_available(provider_env: Option<&str>, binary: Option<&str>) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn new_registry_is_empty() {
@@ -859,5 +886,58 @@ mod tests {
             install: None,
         };
         assert!(!req.optional);
+    }
+
+    #[test]
+    fn persist_state_round_trips_external_source_metadata() {
+        let reg = HandRegistry::new();
+        let hand_dir = tempdir().unwrap();
+        let state_dir = tempdir().unwrap();
+
+        std::fs::write(
+            hand_dir.path().join("HAND.toml"),
+            r#"
+id = "external-test"
+name = "External Test"
+description = "External hand for persistence test"
+category = "development"
+tools = []
+
+[agent]
+name = "external-test-hand"
+description = "External test agent"
+system_prompt = "Test prompt"
+
+[dashboard]
+metrics = []
+"#,
+        )
+        .unwrap();
+        std::fs::write(hand_dir.path().join("SKILL.md"), "External skill body").unwrap();
+
+        reg.install_from_path(hand_dir.path()).unwrap();
+        let instance = reg.activate("external-test", HashMap::new()).unwrap();
+        let agent_id = AgentId::new();
+        reg.set_agent(instance.instance_id, agent_id).unwrap();
+
+        let state_path = state_dir.path().join("hand_state.json");
+        reg.persist_state(&state_path).unwrap();
+
+        let loaded = HandRegistry::load_state(&state_path);
+        assert_eq!(loaded.len(), 1);
+        let entry = &loaded[0];
+        let canonical_hand_dir = hand_dir.path().canonicalize().unwrap();
+        assert_eq!(entry.hand_id, "external-test");
+        assert_eq!(entry.agent_id, Some(agent_id));
+        assert_eq!(
+            entry.source_path.as_deref(),
+            Some(canonical_hand_dir.as_path())
+        );
+        assert!(entry
+            .toml_content
+            .as_deref()
+            .unwrap_or_default()
+            .contains("external-test"));
+        assert_eq!(entry.skill_content.as_deref(), Some("External skill body"));
     }
 }

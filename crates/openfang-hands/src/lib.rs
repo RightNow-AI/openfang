@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use openfang_types::agent::AgentId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 // ─── Error types ─────────────────────────────────────────────────────────────
@@ -357,6 +358,15 @@ pub struct HandDefinition {
     /// Bundled skill content (populated at load time, not in TOML).
     #[serde(skip)]
     pub skill_content: Option<String>,
+    /// Source directory for external hands when installed from disk.
+    #[serde(skip)]
+    pub install_path: Option<PathBuf>,
+    /// Original HAND.toml used to install this hand.
+    #[serde(skip)]
+    pub install_toml: Option<String>,
+    /// Original SKILL.md used to install this hand.
+    #[serde(skip)]
+    pub install_skill_content: Option<String>,
 }
 
 /// Runtime status of a Hand instance.
