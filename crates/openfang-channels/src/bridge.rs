@@ -471,6 +471,45 @@ fn sender_user_id(message: &ChannelMessage) -> &str {
         .unwrap_or(&message.sender.platform_id)
 }
 
+/// If an error contains "Agent not found", try to re-resolve the channel's default agent
+/// by name (the name stored at bridge startup). Returns `Some(new_id)` on success.
+async fn try_reresolution(
+    err: &str,
+    channel_key: &str,
+    handle: &Arc<dyn ChannelBridgeHandle>,
+    router: &Arc<AgentRouter>,
+) -> Option<AgentId> {
+    if !err.to_lowercase().contains("agent not found") {
+        return None;
+    }
+    let name = router.channel_default_name(channel_key)?;
+    info!(
+        channel = channel_key,
+        agent_name = %name,
+        "Agent not found — attempting re-resolution by name"
+    );
+    match handle.find_agent_by_name(&name).await {
+        Ok(Some(new_id)) => {
+            router.update_channel_default(channel_key, new_id);
+            info!(
+                channel = channel_key,
+                agent_name = %name,
+                new_id = %new_id,
+                "Re-resolved agent successfully"
+            );
+            Some(new_id)
+        }
+        _ => {
+            warn!(
+                channel = channel_key,
+                agent_name = %name,
+                "Re-resolution failed — agent not found by name"
+            );
+            None
+        }
+    }
+}
+
 /// Dispatch a single incoming message — handles bot commands or routes to an agent.
 ///
 /// Applies per-channel policies (DM/group filtering, rate limiting, formatting, threading).
@@ -787,6 +826,9 @@ async fn dispatch_message(
         return;
     }
 
+    // Build channel key for re-resolution lookups
+    let channel_key = format!("{:?}", message.channel);
+
     // Auto-reply check — if enabled, the engine decides whether to process this message.
     // If auto-reply is enabled but suppressed for this message, skip agent call entirely.
     if let Some(reply) = handle.check_auto_reply(agent_id, &text).await {
@@ -828,6 +870,81 @@ async fn dispatch_message(
                 .await;
         }
         Err(e) => {
+            // Try re-resolution before reporting error
+            if let Some(new_id) =
+                try_reresolution(&e, &channel_key, handle, router).await
+            {
+                let typing_task2 =
+                    spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
+                let retry = handle.send_message(new_id, &text).await;
+                typing_task2.abort();
+                match retry {
+                    Ok(response) => {
+                        if lifecycle_reactions {
+                            send_lifecycle_reaction(
+                                adapter,
+                                &message.sender,
+                                msg_id,
+                                AgentPhase::Done,
+                            )
+                            .await;
+                        }
+                        send_response(
+                            adapter,
+                            &message.sender,
+                            response,
+                            thread_id,
+                            output_format,
+                        )
+                        .await;
+                        handle
+                            .record_delivery(
+                                new_id,
+                                ct_str,
+                                &message.sender.platform_id,
+                                true,
+                                None,
+                                thread_id,
+                            )
+                            .await;
+                    }
+                    Err(e2) => {
+                        if lifecycle_reactions {
+                            send_lifecycle_reaction(
+                                adapter,
+                                &message.sender,
+                                msg_id,
+                                AgentPhase::Error,
+                            )
+                            .await;
+                        }
+                        warn!("Agent error after re-resolution for {new_id}: {e2}");
+                        let err_msg = sanitize_agent_error(&e2.to_string());
+                        if !adapter.suppress_error_responses() {
+                            send_response(
+                                adapter,
+                                &message.sender,
+                                err_msg.clone(),
+                                thread_id,
+                                output_format,
+                            )
+                            .await;
+                        }
+                        handle
+                            .record_delivery(
+                                new_id,
+                                ct_str,
+                                &message.sender.platform_id,
+                                false,
+                                Some(&err_msg),
+                                thread_id,
+                            )
+                            .await;
+                    }
+                }
+                return;
+            }
+
             if lifecycle_reactions {
                 send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Error).await;
             }
@@ -1097,6 +1214,9 @@ async fn dispatch_with_blocks(
         }
     };
 
+    // Build channel key for re-resolution lookups
+    let channel_key = format!("{:?}", message.channel);
+
     // RBAC check
     if let Err(denied) = handle
         .authorize_channel_user(ct_str, sender_user_id(message), "chat")
@@ -1125,7 +1245,9 @@ async fn dispatch_with_blocks(
     // Continuous typing indicator (see spawn_typing_loop doc)
     let typing_task = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
 
-    let result = handle.send_message_with_blocks(agent_id, blocks).await;
+    let result = handle
+        .send_message_with_blocks(agent_id, blocks.clone())
+        .await;
 
     typing_task.abort();
 
@@ -1140,6 +1262,83 @@ async fn dispatch_with_blocks(
                 .await;
         }
         Err(e) => {
+            // Try re-resolution before reporting error
+            if let Some(new_id) =
+                try_reresolution(&e, &channel_key, handle, router).await
+            {
+                let typing_task2 =
+                    spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
+                let retry = handle
+                    .send_message_with_blocks(new_id, blocks)
+                    .await;
+                typing_task2.abort();
+                match retry {
+                    Ok(response) => {
+                        if lifecycle_reactions {
+                            send_lifecycle_reaction(
+                                adapter,
+                                &message.sender,
+                                msg_id,
+                                AgentPhase::Done,
+                            )
+                            .await;
+                        }
+                        send_response(
+                            adapter,
+                            &message.sender,
+                            response,
+                            thread_id,
+                            output_format,
+                        )
+                        .await;
+                        handle
+                            .record_delivery(
+                                new_id,
+                                ct_str,
+                                &message.sender.platform_id,
+                                true,
+                                None,
+                                thread_id,
+                            )
+                            .await;
+                    }
+                    Err(e2) => {
+                        if lifecycle_reactions {
+                            send_lifecycle_reaction(
+                                adapter,
+                                &message.sender,
+                                msg_id,
+                                AgentPhase::Error,
+                            )
+                            .await;
+                        }
+                        warn!("Agent error after re-resolution for {new_id}: {e2}");
+                        let err_msg = sanitize_agent_error(&e2.to_string());
+                        if !adapter.suppress_error_responses() {
+                            send_response(
+                                adapter,
+                                &message.sender,
+                                err_msg.clone(),
+                                thread_id,
+                                output_format,
+                            )
+                            .await;
+                        }
+                        handle
+                            .record_delivery(
+                                new_id,
+                                ct_str,
+                                &message.sender.platform_id,
+                                false,
+                                Some(&err_msg),
+                                thread_id,
+                            )
+                            .await;
+                    }
+                }
+                return;
+            }
+
             if lifecycle_reactions {
                 send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Error).await;
             }

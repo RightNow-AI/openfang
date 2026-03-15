@@ -1644,7 +1644,7 @@ pub async fn start_channel_bridge_with_config(
                     "{} default agent: {name} ({agent_id}) [channel: {channel_key}]",
                     adapter.name()
                 );
-                router.set_channel_default(channel_key, agent_id);
+                router.set_channel_default_with_name(channel_key, agent_id, name.clone());
                 // First configured default also becomes system-wide fallback
                 if !system_default_set {
                     router.set_default(agent_id);
