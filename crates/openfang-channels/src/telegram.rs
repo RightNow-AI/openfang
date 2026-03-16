@@ -438,7 +438,7 @@ impl ChannelAdapter for TelegramAdapter {
             match self
                 .client
                 .post(&delete_url)
-                .json(&serde_json::json!({"drop_pending_updates": true}))
+                .json(&serde_json::json!({"drop_pending_updates": false}))
                 .send()
                 .await
             {

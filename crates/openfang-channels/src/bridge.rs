@@ -275,6 +275,7 @@ pub struct BridgeManager {
     rate_limiter: ChannelRateLimiter,
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
+    adapters: Vec<Arc<dyn ChannelAdapter>>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -287,6 +288,7 @@ impl BridgeManager {
             rate_limiter: ChannelRateLimiter::default(),
             shutdown_tx,
             shutdown_rx,
+            adapters: Vec::new(),
             tasks: Vec::new(),
         }
     }
@@ -311,6 +313,7 @@ impl BridgeManager {
         adapter: Arc<dyn ChannelAdapter>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let stream = adapter.start().await?;
+        self.adapters.push(adapter.clone());
         let handle = self.handle.clone();
         let router = self.router.clone();
         let rate_limiter = self.rate_limiter.clone();
@@ -374,6 +377,11 @@ impl BridgeManager {
 
     /// Stop all adapters and wait for dispatch tasks to finish.
     pub async fn stop(&mut self) {
+        for adapter in self.adapters.drain(..) {
+            if let Err(err) = adapter.stop().await {
+                warn!("Failed to stop channel adapter {}: {err}", adapter.name());
+            }
+        }
         let _ = self.shutdown_tx.send(true);
         for task in self.tasks.drain(..) {
             let _ = task.await;
