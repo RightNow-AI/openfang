@@ -964,13 +964,13 @@ async fn merge_media_group_updates(
                             Ok(local_path) => {
                                 if is_video {
                                     media_items.push(format!(
-                                        "[Video (as document): {} - file://{}]",
+                                        "[视频（文档形式）: {} - file://{}]",
                                         filename,
                                         local_path.display()
                                     ));
                                 } else {
                                     media_items.push(format!(
-                                        "[File {}: file://{}]",
+                                        "[文件 {}: file://{}]",
                                         filename,
                                         local_path.display()
                                     ));
@@ -980,12 +980,12 @@ async fn merge_media_group_updates(
                                 warn!("Failed to download document {}: {}", file_id, e);
                                 if is_video {
                                     media_items.push(format!(
-                                        "[Video (as document): {} - {}]",
+                                        "[视频（文档形式）: {} - {}]",
                                         filename, file_info.download_url
                                     ));
                                 } else {
                                     media_items.push(format!(
-                                        "[File {}: {}]",
+                                        "[文件 {}: {}]",
                                         filename, file_info.download_url
                                     ));
                                 }
@@ -1000,11 +1000,11 @@ async fn merge_media_group_updates(
                         }
                         if is_video {
                             media_items.push(format!(
-                                "[Video (as document): {} - {}]",
+                                "[视频（文档形式）: {} - {}]",
                                 filename, file_info.download_url
                             ));
                         } else {
-                            media_items.push(format!("[File {}: {}]", filename, file_info.download_url));
+                            media_items.push(format!("[文件 {}: {}]", filename, file_info.download_url));
                         }
                     }
                 }
