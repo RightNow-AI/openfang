@@ -60,8 +60,16 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
+      # Linux runners can OOM while compiling the full workspace test graph.
+      - name: Run cargo test --workspace (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CARGO_BUILD_JOBS: 1
+        run: cargo test --workspace
       # Tests that need a display (Tauri) are skipped in headless CI via cfg
-      - run: cargo test --workspace
+      - name: Run cargo test --workspace
+        if: runner.os != 'Linux'
+        run: cargo test --workspace
 
   clippy:
     name: Clippy
