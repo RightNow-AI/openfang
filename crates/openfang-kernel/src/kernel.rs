@@ -1627,6 +1627,7 @@ impl OpenFangKernel {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_message_with_handle_and_blocks_in_session(
         &self,
         agent_id: AgentId,

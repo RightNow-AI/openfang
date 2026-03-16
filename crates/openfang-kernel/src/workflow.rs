@@ -1434,6 +1434,32 @@ stderr:
         }
     }
 
+    fn quality_gate_shell_command(command: &str) -> Command {
+        #[cfg(windows)]
+        {
+            const SH_PATHS: &[&str] = &[
+                "C:\\Program Files\\Git\\usr\\bin\\sh.exe",
+                "C:\\Program Files (x86)\\Git\\usr\\bin\\sh.exe",
+            ];
+            if let Some(sh) = SH_PATHS.iter().copied().find(|p| Path::new(p).exists()) {
+                let mut cmd = Command::new(sh);
+                cmd.arg("-lc").arg(command);
+                return cmd;
+            }
+
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/C").arg(command);
+            cmd
+        }
+
+        #[cfg(not(windows))]
+        {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-lc").arg(command);
+            cmd
+        }
+    }
+
     async fn maybe_execute_step_quality_gate(
         &self,
         workflow_id: WorkflowId,
@@ -1503,9 +1529,8 @@ stderr:
         )
         .await;
 
-        let command_output = match Command::new("/bin/sh")
-            .arg("-lc")
-            .arg(&gate.validation_command)
+        let mut command = Self::quality_gate_shell_command(&gate.validation_command);
+        let command_output = match command
             .env("OPENFANG_WORKFLOW_ID", workflow_id.to_string())
             .env("OPENFANG_WORKFLOW_RUN_ID", run_id.to_string())
             .env("OPENFANG_STEP_NAME", step_name)

@@ -49,7 +49,7 @@ fn json5_catalog_preserves_custom_openai_provider_and_base_url() {
     assert_eq!(dm.get("model").and_then(toml::Value::as_str), Some("glm-5"));
     assert_eq!(
         dm.get("api_key_env").and_then(toml::Value::as_str),
-        Some("QWENCODE_API_KEY")
+        Some("DASHSCOPE_API_KEY")
     );
     assert_eq!(
         dm.get("base_url").and_then(toml::Value::as_str),
