@@ -146,19 +146,30 @@ pub async fn agent_ws(
     uri: axum::http::Uri,
 ) -> impl IntoResponse {
     // SECURITY: Authenticate WebSocket upgrades (bypasses middleware).
-    let api_key = &state.kernel.config.api_key;
+    // Trim whitespace so empty/whitespace-only api_key disables auth.
+    let api_key_raw = &state.kernel.config.api_key;
+    let api_key = api_key_raw.trim();
     if !api_key.is_empty() {
+        // SECURITY: Use constant-time comparison to prevent timing attacks on API key
+        let ct_eq = |token: &str, key: &str| -> bool {
+            use subtle::ConstantTimeEq;
+            if token.len() != key.len() {
+                return false;
+            }
+            token.as_bytes().ct_eq(key.as_bytes()).into()
+        };
+
         let header_auth = headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
-            .map(|token| token == api_key)
+            .map(|token| ct_eq(token, api_key))
             .unwrap_or(false);
 
         let query_auth = uri
             .query()
             .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
-            .map(|token| token == api_key)
+            .map(|token| ct_eq(token, api_key))
             .unwrap_or(false);
 
         if !header_auth && !query_auth {
@@ -491,10 +502,13 @@ async fn handle_text_message(
             // Send message to agent with streaming
             let kernel_handle: Arc<dyn KernelHandle> =
                 state.kernel.clone() as Arc<dyn KernelHandle>;
-            match state
-                .kernel
-                .send_message_streaming(agent_id, &content, Some(kernel_handle))
-            {
+            match state.kernel.send_message_streaming(
+                agent_id,
+                &content,
+                Some(kernel_handle),
+                None,
+                None,
+            ) {
                 Ok((mut rx, handle)) => {
                     // Forward stream events to WebSocket with debouncing
                     let sender_stream = Arc::clone(sender);
@@ -798,14 +812,21 @@ async fn handle_command(
                     serde_json::json!({"type": "error", "content": "Agent not found"})
                 }
             } else {
-                match state.kernel.set_agent_model(agent_id, args) {
+                match state.kernel.set_agent_model(agent_id, args, None) {
                     Ok(()) => {
-                        let msg = if let Some(entry) = state.kernel.registry.get(agent_id) {
-                            format!("Model switched to: {} (provider: {})", entry.manifest.model.model, entry.manifest.model.provider)
+                        if let Some(entry) = state.kernel.registry.get(agent_id) {
+                            let model = &entry.manifest.model.model;
+                            let provider = &entry.manifest.model.provider;
+                            serde_json::json!({
+                                "type": "command_result",
+                                "command": cmd,
+                                "message": format!("Model switched to: {model} (provider: {provider})"),
+                                "model": model,
+                                "provider": provider
+                            })
                         } else {
-                            format!("Model switched to: {args}")
-                        };
-                        serde_json::json!({"type": "command_result", "command": cmd, "message": msg})
+                            serde_json::json!({"type": "command_result", "command": cmd, "message": format!("Model switched to: {args}")})
+                        }
                     }
                     Err(e) => {
                         serde_json::json!({"type": "error", "content": format!("Model switch failed: {e}")})
@@ -1101,6 +1122,9 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
     let status = extract_status_code(&inner);
     let classified = llm_errors::classify_error(&inner, status);
 
+    // Build a user-facing message. The classified.sanitized_message now
+    // includes a redacted excerpt of the raw error (issue #493 fix), so we
+    // use it as the base and only override for cases that need extra context.
     match classified.category {
         llm_errors::LlmErrorCategory::ContextOverflow => {
             "Context is full. Try /compact or /new.".to_string()
@@ -1108,24 +1132,36 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
         llm_errors::LlmErrorCategory::RateLimit => {
             if let Some(delay_ms) = classified.suggested_delay_ms {
                 let secs = (delay_ms / 1000).max(1);
-                format!("Provider rate limited. Wait ~{secs}s and try again.")
+                format!("Rate limited. Wait ~{secs}s and try again.")
             } else {
-                "Provider rate limited. Wait a moment and try again.".to_string()
+                "Rate limited. Wait a moment and try again.".to_string()
             }
         }
         llm_errors::LlmErrorCategory::Billing => {
-            "Check provider account status (billing issue detected).".to_string()
+            format!("Billing issue. {}", classified.sanitized_message)
         }
-        llm_errors::LlmErrorCategory::Auth => "Verify your API key in config.".to_string(),
+        llm_errors::LlmErrorCategory::Auth => {
+            // Show the actual error detail so users can diagnose (issue #493).
+            // The sanitized_message already redacts secrets.
+            classified.sanitized_message.clone()
+        }
         llm_errors::LlmErrorCategory::ModelNotFound => {
             if inner.contains("localhost:11434") || inner.contains("ollama") {
-                "Model not found on Ollama. Run `ollama pull <model>` to download it, then try again. Use /model to see options.".to_string()
+                "Model not found on Ollama. Run `ollama pull <model>` first. Use /model to see options.".to_string()
             } else {
-                "Model unavailable. Use /model to see options or check your provider configuration.".to_string()
+                format!(
+                    "{}. Use /model to see options.",
+                    classified.sanitized_message
+                )
             }
         }
         llm_errors::LlmErrorCategory::Format => {
-            "LLM request failed. Check your API key and model configuration in Settings.".to_string()
+            // Claude Code CLI errors have actionable messages — pass them through
+            if inner.contains("Claude Code CLI") || inner.contains("claude auth") {
+                classified.raw_message.clone()
+            } else {
+                classified.sanitized_message.clone()
+            }
         }
         _ => classified.sanitized_message,
     }
@@ -1133,6 +1169,14 @@ fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String
 
 /// Try to extract an HTTP status code from an error string.
 fn extract_status_code(s: &str) -> Option<u16> {
+    // "API error (NNN):" — the format produced by LlmError::Api Display impl
+    if let Some(idx) = s.find("API error (") {
+        let after = &s[idx + 11..];
+        let num: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(code) = num.parse::<u16>() {
+            return Some(code);
+        }
+    }
     // "status: NNN"
     if let Some(idx) = s.find("status: ") {
         let after = &s[idx + 8..];
@@ -1251,6 +1295,15 @@ mod tests {
         );
         assert_eq!(extract_status_code("StatusCode(401)"), Some(401));
         assert_eq!(extract_status_code("some random error"), None);
+        // LlmError::Api Display format (issue #493 fix)
+        assert_eq!(
+            extract_status_code("LLM driver error: API error (403): quota exceeded"),
+            Some(403)
+        );
+        assert_eq!(
+            extract_status_code("API error (401): invalid api key"),
+            Some(401)
+        );
     }
 
     #[test]

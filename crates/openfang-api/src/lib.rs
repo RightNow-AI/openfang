@@ -9,6 +9,7 @@ pub mod openai_compat;
 pub mod rate_limiter;
 pub mod routes;
 pub mod server;
+pub mod session_auth;
 pub mod stream_chunker;
 pub mod stream_dedup;
 pub mod types;

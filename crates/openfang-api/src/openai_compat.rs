@@ -202,9 +202,10 @@ fn convert_messages(oai_messages: &[OaiMessage]) -> Vec<Message> {
                     let blocks: Vec<ContentBlock> = parts
                         .iter()
                         .filter_map(|part| match part {
-                            OaiContentPart::Text { text } => {
-                                Some(ContentBlock::Text { text: text.clone() })
-                            }
+                            OaiContentPart::Text { text } => Some(ContentBlock::Text {
+                                text: text.clone(),
+                                provider_metadata: None,
+                            }),
                             OaiContentPart::ImageUrl { image_url } => {
                                 // Parse data URI: data:{media_type};base64,{data}
                                 if let Some(rest) = image_url.url.strip_prefix("data:") {
@@ -322,7 +323,7 @@ pub async fn chat_completions(
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(agent_id, &last_user_msg, Some(kernel_handle))
+        .send_message_with_handle(agent_id, &last_user_msg, Some(kernel_handle), None, None)
         .await
     {
         Ok(result) => {
@@ -378,7 +379,7 @@ async fn stream_response(
 
     let (mut rx, _handle) = state
         .kernel
-        .send_message_streaming(agent_id, message, Some(kernel_handle))
+        .send_message_streaming(agent_id, message, Some(kernel_handle), None, None)
         .map_err(|e| format!("Streaming setup failed: {e}"))?;
 
     let (tx, stream_rx) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(64);
