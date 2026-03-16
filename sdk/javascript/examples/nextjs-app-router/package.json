@@ -25,6 +25,8 @@
   "devDependencies": {
     "@types/react": "19.2.14",
     "cypress": "^13.17.0",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.1.6",
     "openapi-typescript": "^7",
     "typescript": "5.9.3"
   }

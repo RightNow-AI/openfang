@@ -8,7 +8,7 @@ use crate::request_context::RequestId;
 use crate::routes::{self, AppState};
 use crate::webchat;
 use crate::ws;
-use axum::{extract::OriginalUri, http::Method, Extension, Router};
+use axum::{extract::OriginalUri, http::Method, response::IntoResponse, Extension, Router};
 use openfang_kernel::OpenFangKernel;
 use openfang_orchestrator::{
     support_triage_workflow, InMemoryWorkflowStore, MockWorkflowExecutor, WorkflowEngine,
@@ -41,19 +41,21 @@ async fn not_found_handler(
     ApiError::not_found("Route not found", request_id)
 }
 
-async fn method_not_allowed_handler(
+/// Outer wildcard handler for `/{*path}` registered on the outer router.
+///
+/// OPTIONS → 204 (CORS preflight; the outer `cors2` layer adds headers).  
+/// Any other method on an unregistered path → 404 JSON envelope (ensures
+/// unknown paths return 404, not 405, even though `/{*path}` matches their
+/// path segment).
+async fn outer_catch_all(
     method: Method,
     uri: OriginalUri,
-    request_id: Option<Extension<RequestId>>,
-) -> impl axum::response::IntoResponse {
-    let request_id = request_id_from_extension(request_id);
-    tracing::warn!(
-        route = uri.0.path(),
-        method = %method,
-        request_id = request_id.as_deref().unwrap_or(""),
-        "api method not allowed"
-    );
-    ApiError::method_not_allowed("Method not allowed", request_id)
+) -> axum::response::Response {
+    if method == Method::OPTIONS {
+        return axum::http::StatusCode::NO_CONTENT.into_response();
+    }
+    tracing::debug!(route = uri.0.path(), "outer wildcard: route not found");
+    ApiError::not_found("Route not found", None).into_response()
 }
 
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
@@ -88,6 +90,9 @@ pub async fn build_router(
         .await
         .expect("support-triage workflow should register");
 
+    // Seed bundled agency fixture profiles (idempotent — skips existing).
+    let _ = kernel.memory.agency_seed_fixtures();
+
     let channels_config = kernel.config.channels.clone();
     let user_rate_limiter = rate_limiter::create_user_rate_limiter();
     let state = Arc::new(AppState {
@@ -109,13 +114,13 @@ pub async fn build_router(
     // H1: Restrict CORS to explicit headers and methods rather than Any.
     // Allowing Any headers and methods would permit cross-origin requests with
     // credentials, custom auth headers, and arbitrary HTTP methods.
-    let allowed_headers = [
+    let allowed_headers = vec![
         axum::http::header::AUTHORIZATION,
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderName::from_static("x-api-key"),
         axum::http::HeaderName::from_static("x-request-id"),
     ];
-    let allowed_methods = [
+    let allowed_methods = vec![
         axum::http::Method::GET,
         axum::http::Method::POST,
         axum::http::Method::PUT,
@@ -123,7 +128,7 @@ pub async fn build_router(
         axum::http::Method::DELETE,
         axum::http::Method::OPTIONS,
     ];
-    let cors = if state.kernel.config.api_key.is_empty() {
+    let cors_origins: Vec<axum::http::HeaderValue> = if state.kernel.config.api_key.is_empty() {
         // No auth → restrict CORS to localhost origins (include both 127.0.0.1 and localhost)
         let port = listen_addr.port();
         let mut origins: Vec<axum::http::HeaderValue> = vec![
@@ -141,14 +146,9 @@ pub async fn build_router(
                 }
             }
         }
-        CorsLayer::new()
-            .allow_origin(origins)
-            .allow_methods(allowed_methods.clone())
-            .allow_headers(allowed_headers.clone())
+        origins
     } else {
         // Auth enabled → restrict CORS to localhost + configured origins.
-        // SECURITY: CorsLayer::permissive() is dangerous — any website could
-        // make cross-origin requests. Restrict to known origins instead.
         let mut origins: Vec<axum::http::HeaderValue> = vec![
             format!("http://{listen_addr}").parse().unwrap(),
             "http://localhost:50051".parse().unwrap(),
@@ -173,11 +173,20 @@ pub async fn build_router(
                 origins.push(v);
             }
         }
+        origins
+    };
+    // Build identical CorsLayer instances — one for the inner router and one for the
+    // outer OPTIONS preflight handler (tower-http 0.6 CorsLayer does not impl Clone).
+    // max_age lets browsers cache preflight results for up to 24 h, reducing round-trips.
+    let make_cors = |origins: Vec<axum::http::HeaderValue>| {
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods(allowed_methods)
-            .allow_headers(allowed_headers)
+            .allow_methods(allowed_methods.clone())
+            .allow_headers(allowed_headers.clone())
+            .max_age(std::time::Duration::from_secs(86400))
     };
+    let cors  = make_cors(cors_origins.clone());
+    let cors2 = make_cors(cors_origins);
 
     let gcra_limiter = rate_limiter::create_rate_limiter();
 
@@ -278,6 +287,10 @@ pub async fn build_router(
         .route(
             "/api/agency/import",
             axum::routing::post(routes::import_agency_profile),
+        )
+        .route(
+            "/api/agency/fixtures",
+            axum::routing::post(routes::seed_agency_fixtures),
         )
         .route(
             "/api/agency/profiles",
@@ -723,6 +736,11 @@ pub async fn build_router(
             axum::routing::put(routes::set_provider_url),
         )
         .route(
+            "/api/settings/providers/current",
+            axum::routing::get(routes::get_current_provider)
+                .put(routes::save_provider_settings),
+        )
+        .route(
             "/api/skills/create",
             axum::routing::post(routes::create_skill),
         )
@@ -931,6 +949,25 @@ pub async fn build_router(
             "/api/orchestrator/heartbeat",
             axum::routing::post(routes::post_orchestrator_heartbeat),
         )
+        // Research / Autoresearch inspection endpoints
+        .route(
+            "/api/research/control-plane",
+            axum::routing::get(routes::get_research_control_plane)
+                .post(routes::put_research_control_plane),
+        )
+        .route(
+            "/api/research/experiments",
+            axum::routing::get(routes::list_research_experiments)
+                .post(routes::run_research_experiment),
+        )
+        .route(
+            "/api/research/experiments/{id}",
+            axum::routing::get(routes::get_research_experiment),
+        )
+        .route(
+            "/api/research/patterns",
+            axum::routing::get(routes::list_research_patterns),
+        )
         // MCP HTTP endpoint (exposes MCP protocol over HTTP)
         .route("/mcp", axum::routing::post(routes::mcp_http))
         // OpenAI-compatible API
@@ -963,9 +1000,24 @@ pub async fn build_router(
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(cors)
-        .method_not_allowed_fallback(method_not_allowed_handler)
+        // No custom method_not_allowed_fallback: axum's default 405 includes the
+        // Allow header, which normalize_empty_error_responses then preserves when
+        // it wraps the response in the standard JSON error envelope.
         .fallback(not_found_handler)
         .with_state(state.clone());
+
+    // Outer router: intercepts OPTIONS preflights for ALL channel + API paths
+    // before axum routing can fire. Routes registered with `any(outer_catch_all)`
+    // on `/{*path}`; axum prefers more-specific inner_app routes, so real paths
+    // continue to use their full middleware stack (normalize, cors, auth, etc.).
+    // Only unknown paths hit outer_catch_all (OPTIONS → 204, other → 404 JSON).
+    // A separate explicit `OPTIONS /` handler covers the root path since
+    // `/{*path}` requires at least one non-empty segment.
+    let app = axum::Router::new()
+        .route("/{*path}", axum::routing::any(outer_catch_all))
+        .route("/", axum::routing::options(|| async { axum::http::StatusCode::NO_CONTENT }))
+        .merge(app)
+        .layer(cors2);
 
     (app, state)
 }

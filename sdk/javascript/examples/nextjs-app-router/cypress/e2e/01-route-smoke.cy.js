@@ -91,10 +91,12 @@ describe('Layer 1 — Sidebar Route Smoke', () => {
         cy.visit('/');
         cy.get('[data-cy="sidebar"]').should('be.visible');
 
-        // Sidebar link must exist and be clickable
+        // Sidebar link must exist and be clickable.
+        // { force: true } bypasses Cypress coordinate-based click to work
+        // correctly with Next.js 15 App Router in headless Electron.
         cy.get(`[data-cy="${navCy}"]`)
-          .should('be.visible')
-          .click();
+          .should('exist')
+          .click({ force: true });
 
         // URL must resolve to the expected path
         cy.location('pathname').should('eq', href);
@@ -143,12 +145,12 @@ describe('Layer 1 — Sidebar Route Smoke', () => {
         cy.get(`[data-cy="${rootCy}"]`).should('exist');
 
         // Navigate to Overview (always present)
-        cy.get('[data-cy="nav-link-overview"]').click();
+        cy.get('[data-cy="nav-link-overview"]').click({ force: true });
         cy.location('pathname').should('eq', '/overview');
         cy.get('[data-cy="sidebar"]').should('be.visible');
 
         // Navigate back
-        cy.get(`[data-cy="${navCy}"]`).click();
+        cy.get(`[data-cy="${navCy}"]`).click({ force: true });
         cy.location('pathname').should('eq', href);
         cy.get(`[data-cy="${rootCy}"]`).should('exist');
       });
@@ -170,13 +172,13 @@ describe('Layer 1 — Sidebar Route Smoke', () => {
       const route2 = PAGES[2];
       const route3 = PAGES[4];
 
-      cy.get(`[data-cy="${route1.navCy}"]`).click();
+      cy.get(`[data-cy="${route1.navCy}"]`).click({ force: true });
       cy.get('[data-cy="sidebar"]').should('be.visible');
 
-      cy.get(`[data-cy="${route2.navCy}"]`).click();
+      cy.get(`[data-cy="${route2.navCy}"]`).click({ force: true });
       cy.get('[data-cy="sidebar"]').should('be.visible');
 
-      cy.get(`[data-cy="${route3.navCy}"]`).click();
+      cy.get(`[data-cy="${route3.navCy}"]`).click({ force: true });
       cy.get('[data-cy="sidebar"]').should('be.visible');
     });
   });

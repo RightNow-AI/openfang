@@ -120,12 +120,28 @@ impl WorkflowEngine {
                     }
                 }
             },
-            WorkflowNode::Agent(_) => Err(WorkflowError::RunNotWaitingForApproval),
+            WorkflowNode::Agent(_) | WorkflowNode::Route(_) => {
+                Err(WorkflowError::RunNotWaitingForApproval)
+            }
         }
     }
 
     pub async fn get_run(&self, run_id: Uuid) -> WorkflowResult<Option<WorkflowRun>> {
         self.store.get_run(run_id).await
+    }
+
+    /// Resolve a step id to its index in `definition.steps`.
+    fn resolve_step_id(definition: &WorkflowDefinition, step_id: &str) -> WorkflowResult<usize> {
+        definition
+            .steps
+            .iter()
+            .position(|s| s.step_id() == step_id)
+            .ok_or_else(|| {
+                WorkflowError::InvalidDefinition(format!(
+                    "step id '{}' not found in workflow '{}'",
+                    step_id, definition.id
+                ))
+            })
     }
 
     async fn drive_run(
@@ -178,7 +194,41 @@ impl WorkflowEngine {
                         agent_label: result.agent_label,
                         output: result.output,
                     });
-                    run.current_step_index += 1;
+                    // Jump to named step or advance linearly.
+                    run.current_step_index = if let Some(next_id) = &node.next_step_id {
+                        Self::resolve_step_id(definition, next_id)?
+                    } else {
+                        run.current_step_index + 1
+                    };
+                    run.updated_at = now;
+                    self.store.save_run(run.clone()).await?;
+                }
+                WorkflowNode::Route(node) => {
+                    let text = run.last_output.as_deref().unwrap_or(&run.input);
+                    let text_lower = text.to_lowercase();
+                    let next_step_id = node
+                        .rules
+                        .iter()
+                        .find(|rule| text_lower.contains(&rule.when_contains.to_lowercase()))
+                        .map(|rule| rule.next_step_id.as_str())
+                        .unwrap_or(node.fallback_step_id.as_str());
+                    let now = Utc::now();
+                    run.steps.push(StepExecutionRecord {
+                        step_id: node.id.clone(),
+                        title: node.title.clone(),
+                        kind: StepKind::Route,
+                        output: Some(format!("Routed to: {next_step_id}")),
+                        decision: None,
+                        completed_at: now,
+                    });
+                    run.events.push(WorkflowEvent::AgentStepCompleted {
+                        at: now,
+                        step_id: node.id.clone(),
+                        title: node.title.clone(),
+                        agent_label: "router".to_string(),
+                        output: format!("Routed to: {next_step_id}"),
+                    });
+                    run.current_step_index = Self::resolve_step_id(definition, next_step_id)?;
                     run.updated_at = now;
                     self.store.save_run(run.clone()).await?;
                 }
@@ -233,3 +283,4 @@ impl WorkflowEngine {
         Ok(run)
     }
 }
+

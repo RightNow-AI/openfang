@@ -4,11 +4,15 @@ import Link from 'next/link';
 import { workApi } from '../../lib/work-api';
 
 function statusBadgeClass(s) {
-  if (s === 'completed') return 'badge-success';
-  if (s === 'running') return 'badge-accent';
-  if (s === 'failed' || s === 'rejected') return 'badge-error';
-  if (s === 'waiting_approval') return 'badge-warn';
-  return 'badge-dim';
+  if (s === 'completed') return 'success';
+  if (s === 'running') return 'info';
+  if (s === 'failed' || s === 'rejected') return 'error';
+  if (s === 'waiting_approval') return 'warn';
+  if (s === 'blocked') return 'error';
+  if (s === 'retry_scheduled') return 'warn';
+  if (s === 'delegated_to_subagent') return 'info';
+  if (s === 'pending' || s === 'ready') return 'created';
+  return 'dim';
 }
 
 function fmtDate(iso) {
@@ -53,7 +57,11 @@ export default function InboxClient({ initialItems }) {
         )}
         {!error && items.length === 0 && (
           <div data-cy="inbox-empty" className="empty-state">
-            Inbox is empty. Pending work items will appear here.
+            <span style={{ fontSize: 28, opacity: 0.35 }}>∅</span>
+            <div>
+              <div style={{ fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>Inbox is empty</div>
+              <div className="text-dim text-sm">Pending work items will appear here when created.</div>
+            </div>
           </div>
         )}
         {items.length > 0 && (
@@ -61,31 +69,31 @@ export default function InboxClient({ initialItems }) {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Title</th>
+                  <th style={{ width: '25%' }}>Title</th>
                   <th>Summary</th>
-                  <th>Status</th>
-                  <th>Assigned Agent</th>
-                  <th>Created</th>
-                  <th></th>
+                  <th style={{ width: 120 }}>Status</th>
+                  <th style={{ width: 140 }}>Agent</th>
+                  <th style={{ width: 140 }}>Created</th>
+                  <th style={{ width: 60 }}></th>
                 </tr>
               </thead>
               <tbody>
                 {items.map(item => (
                   <tr key={item.id} data-cy="inbox-item">
-                    <td style={{ fontWeight: 600, maxWidth: 200 }}>{item.title}</td>
-                    <td style={{ fontSize: 12, color: 'var(--text-dim)', maxWidth: 280 }}>
-                      {item.description || '—'}
+                    <td style={{ fontWeight: 600, color: 'var(--text)', maxWidth: 200 }} className="truncate">{item.title}</td>
+                    <td style={{ fontSize: 12, color: 'var(--text-dim)', maxWidth: 280 }} className="truncate">
+                      {item.description || <span className="text-muted">—</span>}
                     </td>
                     <td>
-                      <span className={`badge ${statusBadgeClass(item.status)}`}>
-                        {item.status}
+                      <span className={`badge badge-${statusBadgeClass(item.status)}`}>
+                        {item.status?.replace(/_/g, ' ')}
                       </span>
                     </td>
-                    <td style={{ fontSize: 12 }}>{item.assigned_agent_name || '—'}</td>
+                    <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{item.assigned_agent_name || <span className="text-muted">—</span>}</td>
                     <td style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                       {fmtDate(item.created_at)}
                     </td>
-                    <td>
+                    <td style={{ textAlign: 'right' }}>
                       <Link
                         data-cy="inbox-item-detail-link"
                         href={`/work/${item.id}`}

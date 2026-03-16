@@ -17,6 +17,7 @@ pub enum WorkflowRunStatus {
 pub enum StepKind {
     Agent,
     Approval,
+    Route,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

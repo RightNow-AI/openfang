@@ -53,3 +53,8 @@ sdk/javascript/examples/nextjs-app-router/.data/
 *.swp
 *.swo
 *~
+
+# Cypress test output
+cypress-output.txt
+cypress-run2.txt
+cy-combined.txt

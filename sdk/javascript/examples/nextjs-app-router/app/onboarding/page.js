@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { apiClient } from '../../lib/api-client';
 
 // ── Step definitions ────────────────────────────────────────────────────────
 const STEPS = [
@@ -163,6 +164,182 @@ function NavBtns({ onBack, onNext, nextLabel = 'Continue →', nextDisabled = fa
             {nextLabel}
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Provider list for the onboarding step ────────────────────────────────────
+const ONBOARDING_PROVIDERS = [
+  { id: 'openrouter', name: 'OpenRouter',    icon: '🌐', desc: '100+ models, free tier — recommended for first-timers', keyUrl: 'https://openrouter.ai/keys',              prefix: 'sk-or-', defaultModel: 'openrouter/auto',           local: false },
+  { id: 'groq',       name: 'Groq',          icon: '⚡', desc: 'Llama 3.3 at ~800 tok/s — fastest free option',       keyUrl: 'https://console.groq.com/keys',           prefix: 'gsk_',   defaultModel: 'llama-3.3-70b-versatile',   local: false },
+  { id: 'anthropic',  name: 'Anthropic',     icon: '🔴', desc: 'Claude 4 — best reasoning and safety',               keyUrl: 'https://console.anthropic.com/settings/keys', prefix: 'sk-ant-', defaultModel: 'claude-sonnet-4-20250514', local: false },
+  { id: 'openai',     name: 'OpenAI',        icon: '🟢', desc: 'GPT-4o and o-series models',                         keyUrl: 'https://platform.openai.com/api-keys',    prefix: 'sk-',    defaultModel: 'gpt-4o',                    local: false },
+  { id: 'gemini',     name: 'Google Gemini', icon: '🔵', desc: 'Gemini 2.5 Flash — long context, multimodal',        keyUrl: 'https://aistudio.google.com/app/apikey',  prefix: 'AIza',   defaultModel: 'gemini-2.5-flash',          local: false },
+  { id: 'xai',        name: 'xAI Grok',      icon: '🤖', desc: 'Grok 3 from xAI',                                    keyUrl: 'https://console.x.ai/',                   prefix: 'xai-',   defaultModel: 'grok-3-fast',               local: false },
+  { id: 'minimax',    name: 'MiniMax',        icon: '🧠', desc: 'MiniMax M2.5 — multimodal, 1M token context',        keyUrl: 'https://www.minimaxi.com/',               prefix: null,     defaultModel: 'MiniMax-M2.5',              local: false },
+  { id: 'ollama',     name: 'Ollama (local)', icon: '🏠', desc: 'Run models locally — no API key needed',             keyUrl: null,                                      prefix: null,     defaultModel: 'llama3.2',                  local: true  },
+];
+
+// ── OnboardingProviderStep component ─────────────────────────────────────────
+function OnboardingProviderStep({ onNext, onBack }) {
+  const [selectedId, setSelectedId] = useState('openrouter');
+  const [apiKey,     setApiKey]     = useState('');
+  const [showKey,    setShowKey]    = useState(false);
+  const [baseUrl,    setBaseUrl]    = useState('');
+  const [saving,     setSaving]     = useState(false);
+  const [testing,    setTesting]    = useState(false);
+  const [result,     setResult]     = useState(null); // { type: 'save'|'test', ok, msg }
+
+  const meta = ONBOARDING_PROVIDERS.find(p => p.id === selectedId) ?? ONBOARDING_PROVIDERS[0];
+
+  // Reset fields when provider changes
+  useEffect(() => {
+    setApiKey('');
+    setResult(null);
+    const defaults = {
+      openrouter: 'https://openrouter.ai/api/v1',
+      groq:       'https://api.groq.com/openai/v1',
+      anthropic:  'https://api.anthropic.com',
+      openai:     'https://api.openai.com/v1',
+      gemini:     'https://generativelanguage.googleapis.com',
+      xai:        'https://api.x.ai/v1',
+      ollama:     'http://127.0.0.1:11434/v1',
+    };
+    setBaseUrl(defaults[selectedId] ?? '');
+  }, [selectedId]);
+
+  async function saveAndTest() {
+    setSaving(true);
+    setTesting(false);
+    setResult(null);
+    try {
+      const body = { provider: selectedId, default_model: meta.defaultModel, base_url: baseUrl };
+      if (apiKey.trim()) body.api_key = apiKey.trim();
+      await apiClient.put('/api/settings/providers/current', body);
+    } catch (e) {
+      setResult({ type: 'save', ok: false, msg: `Failed to save settings: ${e.message}` });
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    setTesting(true);
+    try {
+      const td = await apiClient.post(`/api/providers/${selectedId}/test`, {});
+      if (td.status === 'ok') {
+        setResult({ type: 'test', ok: true, msg: `✅ Connected! (${td.latency_ms}ms)` });
+      } else {
+        setResult({ type: 'test', ok: false, msg: `❌ ${td.error ?? 'Connection failed — check your key and try again.'}` });
+      }
+    } catch (e) {
+      setResult({ type: 'test', ok: false, msg: `❌ ${e.message}` });
+    }
+    setTesting(false);
+  }
+
+  return (
+    <div>
+      <p style={{ color: 'var(--text-dim)', marginBottom: 20, fontSize: 15, lineHeight: 1.75 }}>
+        Pick an AI provider, paste your key, and hit <strong style={{ color: 'var(--text)' }}>Save &amp; Test</strong>.
+        Don't have a key yet? Click <strong>Get a key ↗</strong> next to the field — it only takes a minute.
+      </p>
+
+      {/* Provider selector */}
+      <div style={{ marginBottom: 18 }}>
+        <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'block', marginBottom: 6 }}>
+          Choose a provider
+        </label>
+        <select
+          value={selectedId}
+          onChange={e => setSelectedId(e.target.value)}
+          style={{ width: '100%', padding: '9px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text)', fontSize: 13, cursor: 'pointer' }}
+        >
+          {ONBOARDING_PROVIDERS.map(p => (
+            <option key={p.id} value={p.id}>{p.icon}  {p.name}</option>
+          ))}
+        </select>
+        <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 5, lineHeight: 1.5 }}>{meta.desc}</div>
+      </div>
+
+      {/* API key field */}
+      {!meta.local && (
+        <div style={{ marginBottom: 18 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'block', marginBottom: 6 }}>
+            API Key
+            {meta.keyUrl && (
+              <a href={meta.keyUrl} target="_blank" rel="noreferrer"
+                style={{ marginLeft: 8, fontWeight: 400, color: 'var(--accent)', textTransform: 'none', letterSpacing: 0, fontSize: 12 }}>
+                Get a free key ↗
+              </a>
+            )}
+          </label>
+          <div style={{ position: 'relative' }}>
+            <input
+              type={showKey ? 'text' : 'password'}
+              value={apiKey}
+              onChange={e => setApiKey(e.target.value)}
+              placeholder={`Paste your ${meta.name} key (starts with ${meta.prefix}…)`}
+              style={{ width: '100%', padding: '9px 48px 9px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text)', fontSize: 13, boxSizing: 'border-box' }}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <button onClick={() => setShowKey(v => !v)} type="button"
+              style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: 'var(--text-dim)', padding: 4 }}
+            >{showKey ? '🙈' : '👁'}</button>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            Saved to <code>~/.openfang/secrets.env</code> — never stored in the repo.
+          </div>
+        </div>
+      )}
+
+      {/* Ollama info */}
+      {meta.local && (
+        <Callout type="info" icon="🏠">
+          <strong>No API key needed!</strong><br />
+          Ollama runs AI models locally on your computer. Make sure{' '}
+          <a href="https://ollama.com/download" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Ollama is installed ↗</a>{' '}
+          and running (<code>ollama serve</code>) before saving.
+        </Callout>
+      )}
+
+      {/* Save & Test button */}
+      <div style={{ marginTop: 20, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button
+          className="btn btn-primary"
+          onClick={saveAndTest}
+          disabled={saving || testing || (!meta.local && !apiKey.trim())}
+        >
+          {saving ? '💾 Saving…' : testing ? '🔌 Testing…' : '💾 Save & Test'}
+        </button>
+        {result?.ok && (
+          <button className="btn btn-ghost" onClick={onNext}>
+            Continue →
+          </button>
+        )}
+      </div>
+
+      {result && (
+        <div style={{
+          marginTop: 14, padding: '10px 14px', borderRadius: 'var(--radius-sm)',
+          background: result.ok ? 'var(--success-subtle)' : 'var(--error-subtle)',
+          border: `1px solid ${result.ok ? 'var(--success)' : 'var(--error)'}`,
+          fontSize: 13, lineHeight: 1.6,
+        }}>
+          {result.msg}
+          {result.ok && (
+            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-dim)' }}>
+              Restart the daemon (<code>openfang start</code>) to pick up the new provider.
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 28 }}>
+        <button className="btn btn-ghost" onClick={onBack}>← Back</button>
+        <button className="btn btn-ghost btn-sm" onClick={onNext} style={{ color: 'var(--text-dim)' }}>
+          Skip for now →
+        </button>
       </div>
     </div>
   );
@@ -575,177 +752,13 @@ export default function OnboardingPage() {
         )}
 
         {/* ════════════════════════════════════════════════════════════════
-            STEP 4 — API key
+            STEP 4 — API key  (live provider form)
         ════════════════════════════════════════════════════════════════ */}
         {step?.id === 'api-key' && (
-          <div>
-            <p style={{ color: 'var(--text-dim)', marginBottom: 20, fontSize: 15, lineHeight: 1.75 }}>
-              To make the AI work, this app needs to connect to an AI service.
-              We recommend <strong style={{ color: 'var(--text)' }}>OpenRouter</strong>
-              — it is free to start and works with dozens of different AI models.
-            </p>
-
-            <Callout type="info" icon="💡">
-              <strong>What is OpenRouter?</strong><br />
-              It is a website that gives you access to powerful AI assistants. You create a free account,
-              and they give you a secret code — called an <strong>API key</strong> — that lets this app
-              use their AI. You only pay for what you use, and getting started is completely free.
-            </Callout>
-
-            {/* Step-by-step instructions */}
-            <div style={{ marginTop: 26 }}>
-              <h3 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15 }}>
-                Follow these steps to get your free API key
-              </h3>
-
-              {[
-                {
-                  n: 1,
-                  title: 'Go to the OpenRouter website',
-                  body: (
-                    <span>
-                      Open a new browser tab and visit{' '}
-                      <a
-                        href="https://openrouter.ai"
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ color: 'var(--accent)', textDecoration: 'underline', fontWeight: 600 }}
-                      >
-                        openrouter.ai ↗
-                      </a>
-                    </span>
-                  ),
-                },
-                {
-                  n: 2,
-                  title: 'Create a free account',
-                  body: 'Click the "Sign in" button at the top right of the page. You can sign up with your email address or your Google or GitHub account. It is free.',
-                },
-                {
-                  n: 3,
-                  title: 'Go to your API keys page',
-                  body: (
-                    <span>
-                      After signing in, click your name or profile picture at the top right.
-                      In the menu, click <strong>"API Keys"</strong>. Or go directly to{' '}
-                      <a
-                        href="https://openrouter.ai/keys"
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ color: 'var(--accent)', textDecoration: 'underline', fontWeight: 600 }}
-                      >
-                        openrouter.ai/keys ↗
-                      </a>
-                    </span>
-                  ),
-                },
-                {
-                  n: 4,
-                  title: 'Create a new API key',
-                  body: (
-                    <span>
-                      Click the <strong>"+ Create Key"</strong> button.
-                      Give it any name you like — for example: <em>My OpenFang Key</em>.
-                      Then click <strong>Create</strong>.
-                    </span>
-                  ),
-                },
-                {
-                  n: 5,
-                  title: 'Copy your key carefully',
-                  body: (
-                    <span>
-                      A long code will appear. It starts with <code style={{ background: 'var(--surface3)', padding: '2px 6px', borderRadius: 3, fontSize: 12 }}>sk-or-</code>.
-                      {' '}<strong>Copy it now</strong> — you will only see it once.
-                      Paste it into a notes app or text file while you follow the next step.
-                    </span>
-                  ),
-                },
-                {
-                  n: 6,
-                  title: 'Give it to the person who set up this app',
-                  body: 'Show your copied key to the person who installed this app on your computer. They need to add it to the app configuration so the AI can start working. See the technical instructions below if that is you.',
-                },
-              ].map(item => (
-                <div key={item.n} style={{ display: 'flex', gap: 14, marginBottom: 16 }}>
-                  <div style={{
-                    width: 30, height: 30, borderRadius: '50%', background: 'var(--accent)',
-                    color: 'white', fontWeight: 800, fontSize: 14,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    flexShrink: 0, marginTop: 1,
-                  }}>
-                    {item.n}
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 700, marginBottom: 3, fontSize: 14 }}>{item.title}</div>
-                    <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.7 }}>{item.body}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <Callout type="warning" icon="⚠️">
-              <strong>Keep your key safe — it is like a password.</strong><br />
-              Never type it into a chat window, email, or any public place.
-              If you think someone else has seen it, go to openrouter.ai/keys,
-              delete the old key, and create a new one.
-            </Callout>
-
-            {/* Technical instructions for the person helping */}
-            <Expandable title="🛠️ For the person helping — Technical setup instructions">
-              <p style={{ marginTop: 0 }}>
-                <strong>Option A — OpenRouter (recommended)</strong>
-              </p>
-              <p>Edit <code>~/.openfang/config.toml</code> and ensure this section exists:</p>
-              <CodeBlock>{`[default_model]
-provider = "openrouter"
-model = "openrouter/auto"
-api_key_env = "OPENROUTER_API_KEY"`}</CodeBlock>
-              <p>Then start the daemon with the key as an environment variable:</p>
-              <CodeBlock>$env:OPENROUTER_API_KEY="sk-or-v1-..."
-.\target\release\openfang.exe start</CodeBlock>
-
-              <p style={{ marginTop: 16 }}>
-                <strong>Option B — Groq (faster, free tier)</strong>
-              </p>
-              <p>
-                Get a free key at{' '}
-                <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
-                  console.groq.com/keys ↗
-                </a>. Then:
-              </p>
-              <CodeBlock>{`[default_model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
-api_key_env = "GROQ_API_KEY"`}</CodeBlock>
-              <CodeBlock>$env:GROQ_API_KEY="gsk_..."
-.\target\release\openfang.exe start</CodeBlock>
-
-              <p style={{ marginTop: 16 }}>
-                After starting, click <strong>"Test connection"</strong> in the wizard to confirm it is working.
-              </p>
-            </Expandable>
-
-            <NavBtns
-              onBack={prev}
-              onNext={() => {
-                // Go back to status step to re-check
-                setStatusChecked(false);
-                goTo('check-status');
-              }}
-              nextLabel="Test my connection →"
-              extra={
-                <a
-                  href="https://openrouter.ai/keys"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="btn btn-ghost btn-sm"
-                >
-                  Open OpenRouter ↗
-                </a>
-              }
-            />
-          </div>
+          <OnboardingProviderStep
+            onNext={() => { setStatusChecked(false); goTo('check-status'); }}
+            onBack={prev}
+          />
         )}
 
         {/* ════════════════════════════════════════════════════════════════
@@ -970,11 +983,11 @@ api_key_env = "GROQ_API_KEY"`}</CodeBlock>
             </div>
 
             <div style={{ display: 'flex', gap: 14, justifyContent: 'center', flexWrap: 'wrap' }}>
-              <Link href="/chat" className="btn btn-primary" style={{ fontSize: 15, padding: '13px 32px' }}>
-                Start chatting →
+              <Link href="/overview" className="btn btn-primary" style={{ fontSize: 15, padding: '13px 32px' }}>
+                Go to Overview →
               </Link>
-              <Link href="/today" className="btn btn-ghost">
-                See today's overview
+              <Link href="/chat" className="btn btn-ghost">
+                Start chatting
               </Link>
             </div>
           </div>

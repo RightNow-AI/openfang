@@ -5,6 +5,58 @@
  * Never scatter fetch calls directly against /api/work across the app.
  */
 
+/**
+ * @typedef {Object} AdapterSelection
+ * @property {string} chosen
+ * @property {string[]} rejected
+ * @property {string} rationale
+ */
+
+/**
+ * @typedef {Object} ActionResult
+ * @property {string|null} output
+ * @property {number} tokens_in
+ * @property {number} tokens_out
+ * @property {number|null} cost_usd
+ * @property {number} iterations
+ * @property {boolean} action_succeeded
+ * @property {string|null} error
+ */
+
+/**
+ * @typedef {Object} VerificationResult
+ * @property {boolean} passed
+ * @property {Object} method_used
+ * @property {string} evidence
+ * @property {string} verified_at
+ */
+
+/**
+ * ExecutionReport is returned by POST /api/work/:id/run.
+ * It is NOT a WorkItem — it does not have `.id` or `.status` at the top level.
+ * Detect by checking `result?.work_item_id !== undefined`.
+ *
+ * @typedef {Object} ExecutionReport
+ * @property {string} work_item_id
+ * @property {string} execution_path  - "fast_path" | "planned_swarm" | "review_swarm"
+ * @property {AdapterSelection} adapter_selection
+ * @property {Object} objective
+ * @property {ActionResult} action_result
+ * @property {VerificationResult} verification
+ * @property {string} status  - "completed" | "failed" | "blocked" | "waiting_approval" | "retry_scheduled" | "delegated_to_subagent"
+ * @property {Object|null} block_reason
+ * @property {string} result_summary
+ * @property {string[]} artifact_refs
+ * @property {number} retry_count
+ * @property {boolean} retry_scheduled
+ * @property {string|null} delegated_to
+ * @property {number|null} cost_usd
+ * @property {string[]} warnings
+ * @property {string[]} events_emitted
+ * @property {string} started_at
+ * @property {string} finished_at
+ */
+
 import { apiClient } from './api-client';
 
 const BASE = '/api/work';

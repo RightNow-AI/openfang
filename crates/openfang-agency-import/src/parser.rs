@@ -19,3 +19,9 @@ pub fn import_profile_from_path(path: &Path) -> Result<AgentProfile, ProfileImpo
     let parsed = parse_profile_markdown(&markdown);
     map_profile(path, &parsed)
 }
+
+/// Parse an agent profile from an in-memory string using `path` only for id/division inference.
+pub fn import_profile_from_str(path: &Path, content: &str) -> Result<AgentProfile, ProfileImportError> {
+    let parsed = parse_profile_markdown(content);
+    map_profile(path, &parsed)
+}

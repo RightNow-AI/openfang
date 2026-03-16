@@ -63,7 +63,11 @@ export default function WorkflowsClient({ initialWorkflows }) {
         )}
         {!error && workflows.length === 0 && (
           <div data-cy="workflows-empty" className="empty-state">
-            No workflows defined. Create workflow TOML files to add automation pipelines.
+            <span style={{ fontSize: 28, opacity: 0.4 }}>▶</span>
+            <div>
+              <div style={{ fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>No workflows defined</div>
+              <div className="text-dim text-sm">Create workflow TOML files to add automation pipelines.</div>
+            </div>
           </div>
         )}
         {workflows.length > 0 && (
@@ -71,37 +75,40 @@ export default function WorkflowsClient({ initialWorkflows }) {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Name</th>
+                  <th style={{ width: '28%' }}>Name</th>
                   <th>Description</th>
-                  <th>Steps</th>
-                  <th>Last Run</th>
-                  <th></th>
+                  <th style={{ width: 60 }}>Steps</th>
+                  <th style={{ width: 100 }}>Status</th>
+                  <th style={{ width: 80 }}></th>
                 </tr>
               </thead>
               <tbody>
                 {workflows.map(w => (
                   <tr data-cy="workflow-row" key={w.id}>
-                    <td style={{ fontWeight: 600 }}>{w.name}</td>
+                    <td style={{ fontWeight: 600, color: 'var(--text)' }}>{w.name}</td>
                     <td style={{ fontSize: 12, color: 'var(--text-dim)', maxWidth: 280 }}>
-                      {w.description || '—'}
+                      {w.description || <span className="text-muted">—</span>}
                     </td>
                     <td style={{ fontSize: 12, color: 'var(--text-dim)' }}>{w.steps ?? '—'}</td>
-                    <td style={{ fontSize: 11, maxWidth: 200 }}>
-                      {createdItems[w.id] && (
+                    <td>
+                      {createdItems[w.id] ? (
                         <span
                           data-cy="workflow-result-badge"
                           className={`badge ${createdItems[w.id].ok ? 'badge-success' : 'badge-error'}`}
                         >
-                          {createdItems[w.id].ok ? 'queued' : 'error'}
+                          {createdItems[w.id].ok ? 'Queued' : 'Error'}
                         </span>
+                      ) : (
+                        <span className="badge badge-dim">ready</span>
                       )}
                     </td>
-                    <td>
+                    <td style={{ textAlign: 'right' }}>
                       <button
                         data-cy="workflow-run-btn"
                         className="btn btn-primary btn-xs"
                         onClick={() => run(w)}
                         disabled={!!running[w.id]}
+                        title={`Run ${w.name}`}
                       >
                         {running[w.id] ? '…' : '▶ Run'}
                       </button>

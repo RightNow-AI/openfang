@@ -96,9 +96,10 @@ function Pill({ color, bg, border, dot, children }) {
 const STEPS = ['Welcome', 'Credentials', 'Test', 'Done'];
 
 function FieldRow({ field, value, shown, onChange, onToggleShow }) {
-  const isSecret = ['secret', 'Secret'].includes(field.field_type ?? '');
-  const isNumber = ['number', 'Number'].includes(field.field_type ?? '');
-  const isArea   = ['text_area', 'TextArea'].includes(field.field_type ?? '');
+  const ft = field.type ?? field.field_type ?? '';
+  const isSecret = ['secret', 'Secret'].includes(ft);
+  const isNumber = ['number', 'Number'].includes(ft);
+  const isArea   = ['text_area', 'TextArea'].includes(ft);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
       <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -162,7 +163,10 @@ function WizardModal({ channel, onClose, onSaved }) {
     try {
       await apiClient.post(`/api/channels/${channel.name}/configure`, { fields: values });
       setStep(2);
-    } catch (e) { setSaveError(e.message || 'Save failed.'); }
+    } catch (e) {
+      const status = e.status ? ` (${e.status})` : '';
+      setSaveError((e.message || 'Save failed.') + status);
+    }
     setSaving(false);
   }
 
@@ -171,7 +175,10 @@ function WizardModal({ channel, onClose, onSaved }) {
     try {
       const res = await apiClient.post(`/api/channels/${channel.name}/test`, {});
       setTestResult({ ok: true, message: res?.message ?? res?.note ?? 'Connection successful!' });
-    } catch (e) { setTestResult({ ok: false, message: e.message || 'Test failed.' }); }
+    } catch (e) {
+      const status = e.status ? ` (HTTP ${e.status})` : '';
+      setTestResult({ ok: false, message: (e.message || 'Test failed.') + status });
+    }
     setTesting(false);
   }
 
@@ -443,7 +450,7 @@ export default function ChannelsClient({ initialChannels }) {
 
       {wizard && <WizardModal channel={wizard} onClose={() => setWizard(null)} onSaved={handleSaved} />}
 
-      <div>
+      <div data-cy="channels-page">
         <div className="page-header">
           <div>
             <h1 style={{ marginBottom: 2 }}>Integrations</h1>

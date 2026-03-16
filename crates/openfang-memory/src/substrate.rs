@@ -15,11 +15,13 @@ use crate::planner::{
 use crate::semantic::SemanticStore;
 use crate::session::{Session, SessionStore};
 use crate::structured::StructuredStore;
+use crate::research::ResearchStore;
 use crate::usage::UsageStore;
 use crate::work_item::WorkItemStore;
 
 use async_trait::async_trait;
-use openfang_agency_import::import_profile_from_path;
+use openfang_agency_import::{import_profile_from_path, import_profile_from_str};
+use openfang_agency_import::fixtures::bundled_fixtures;
 use openfang_types::agent::{AgentEntry, AgentId, SessionId};
 use openfang_types::agent_profile::AgentProfile;
 use openfang_types::error::{OpenFangError, OpenFangResult};
@@ -49,6 +51,7 @@ pub struct MemorySubstrate {
     consolidation: ConsolidationEngine,
     usage: UsageStore,
     work_items: WorkItemStore,
+    research: ResearchStore,
 }
 
 impl MemorySubstrate {
@@ -70,6 +73,7 @@ impl MemorySubstrate {
             sessions: SessionStore::new(Arc::clone(&shared)),
             usage: UsageStore::new(Arc::clone(&shared)),
             work_items: WorkItemStore::new(Arc::clone(&shared)),
+            research: ResearchStore::new(Arc::clone(&shared)),
             consolidation: ConsolidationEngine::new(shared, decay_rate),
         })
     }
@@ -91,6 +95,7 @@ impl MemorySubstrate {
             sessions: SessionStore::new(Arc::clone(&shared)),
             usage: UsageStore::new(Arc::clone(&shared)),
             work_items: WorkItemStore::new(Arc::clone(&shared)),
+            research: ResearchStore::new(Arc::clone(&shared)),
             consolidation: ConsolidationEngine::new(shared, decay_rate),
         })
     }
@@ -103,6 +108,11 @@ impl MemorySubstrate {
     /// Get a reference to the work item store.
     pub fn work_items(&self) -> &WorkItemStore {
         &self.work_items
+    }
+
+    /// Get a reference to the research store.
+    pub fn research(&self) -> &ResearchStore {
+        &self.research
     }
 
     /// Get the shared database connection (for constructing stores from outside).
@@ -194,6 +204,41 @@ impl MemorySubstrate {
         })?;
 
         self.agency_profiles.upsert_profile(&profile, path)
+    }
+
+    /// Parse and store an agency profile from an in-memory string.
+    /// `synthetic_path` is used only for id/division inference.
+    pub fn agency_import_profile_from_str(
+        &self,
+        synthetic_path: &Path,
+        content: &str,
+    ) -> OpenFangResult<AgentProfile> {
+        let profile = import_profile_from_str(synthetic_path, content).map_err(|error| {
+            let details = error
+                .errors
+                .iter()
+                .map(|e| format!("{}: {}", e.section, e.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            OpenFangError::InvalidInput(format!(
+                "Agency profile import failed for {}: {}",
+                error.source_path, details
+            ))
+        })?;
+
+        self.agency_profiles.upsert_profile(&profile, synthetic_path)
+    }
+
+    /// Seed all bundled fixture profiles (idempotent — existing profiles are overwritten).
+    /// Returns the list of imported profile ids.
+    pub fn agency_seed_fixtures(&self) -> OpenFangResult<Vec<String>> {
+        let mut imported = Vec::new();
+        for (path_str, content) in bundled_fixtures() {
+            let synthetic_path = Path::new(path_str);
+            let profile = self.agency_import_profile_from_str(synthetic_path, content)?;
+            imported.push(profile.id);
+        }
+        Ok(imported)
     }
 
     /// List all persisted agency profiles.

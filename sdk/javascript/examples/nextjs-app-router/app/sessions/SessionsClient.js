@@ -41,7 +41,7 @@ export default function SessionsClient({ initialAgents }) {
   }, []);
 
   return (
-    <div>
+    <div data-cy="sessions-page">
       <div className="page-header">
         <h1>Sessions</h1>
         <div className="flex items-center gap-2">

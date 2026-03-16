@@ -16,10 +16,24 @@ const THEME_SCRIPT = `(function(){
   }catch(e){}
 })();`;
 
+// Critical-path CSS loaded synchronously in <head> — prevents layout jumps
+// while the main CSS bundle loads.  Only structural rules that are immediately
+// visible above the fold; everything else stays in globals.css.
+const CRITICAL_CSS = `
+  *,*::before,*::after{box-sizing:border-box}
+  body{margin:0}
+  .app-shell{display:flex;min-height:100vh}
+  .sidebar{flex-shrink:0;width:220px;overflow:hidden}
+  .main-content{flex:1;overflow:auto}
+  .nav-icon svg{display:block;width:16px;height:16px}
+`;
+
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
+        {/* eslint-disable-next-line react/no-danger */}
+        <style dangerouslySetInnerHTML={{ __html: CRITICAL_CSS }} />
         {/* eslint-disable-next-line react/no-danger */}
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>

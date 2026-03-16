@@ -65,7 +65,7 @@ export default function AnalyticsClient({ initialStats }) {
   const pct = budgetLimit > 0 ? Math.min(100, (budgetSpent / budgetLimit) * 100) : null;
 
   return (
-    <div>
+    <div data-cy="analytics-page">
       <div className="page-header">
         <h1>Analytics</h1>
         <button className="btn btn-ghost btn-sm" onClick={refresh} disabled={loading}>

@@ -8,7 +8,7 @@ pub mod run;
 pub mod store;
 pub mod types;
 
-pub use definition::{AgentNode, AgentSelector, ApprovalNode, ApprovalRejection, WorkflowDefinition, WorkflowNode};
+pub use definition::{AgentNode, AgentSelector, ApprovalNode, ApprovalRejection, RouteNode, RouteRule, WorkflowDefinition, WorkflowNode};
 pub use engine::WorkflowEngine;
 pub use errors::{WorkflowError, WorkflowResult};
 pub use event::{WorkflowEvent, WorkflowResumeRequest};

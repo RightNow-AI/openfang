@@ -29,6 +29,8 @@ pub mod tool_registry;
 pub mod whatsapp_gateway;
 pub mod wizard;
 pub mod workflow;
+pub mod work_executor;
+pub mod research_planner;
 
 pub use kernel::DeliveryTracker;
 pub use kernel::OpenFangKernel;

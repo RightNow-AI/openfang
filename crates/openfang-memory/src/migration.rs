@@ -6,7 +6,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 
 /// Current schema version.
-const SCHEMA_VERSION: u32 = 15;
+const SCHEMA_VERSION: u32 = 16;
 
 /// Run all migrations to bring the database up to date.
 pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -70,6 +70,10 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
 
     if current_version < 15 {
         migrate_v15(conn)?;
+    }
+
+    if current_version < 16 {
+        migrate_v16(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -626,6 +630,61 @@ fn migrate_v15(conn: &Connection) -> Result<(), rusqlite::Error> {
             WHERE parent_id IS NOT NULL;
         INSERT OR IGNORE INTO migrations (version, applied_at, description)
         VALUES (15, datetime('now'), 'Add parent_id to work_items for subagent delegation');
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v16(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "
+        -- Control plane configuration (single-row upsert; id = 'active')
+        CREATE TABLE IF NOT EXISTS research_control_plane (
+            id TEXT PRIMARY KEY,
+            config_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        -- Research experiments
+        CREATE TABLE IF NOT EXISTS research_experiments (
+            id TEXT PRIMARY KEY,
+            work_item_id TEXT,
+            hypothesis TEXT NOT NULL,
+            planner_id TEXT NOT NULL,
+            executor_id TEXT,
+            reviewer_id TEXT,
+            status TEXT NOT NULL DEFAULT 'planned',
+            score_json TEXT,
+            promotion_status TEXT,
+            validated_patterns_applied_json TEXT NOT NULL DEFAULT '[]',
+            result_summary TEXT,
+            selection_trace_json TEXT NOT NULL DEFAULT '[]',
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_experiments_status
+            ON research_experiments(status);
+        CREATE INDEX IF NOT EXISTS idx_research_experiments_work_item
+            ON research_experiments(work_item_id)
+            WHERE work_item_id IS NOT NULL;
+
+        -- Validated patterns extracted from promoted experiments
+        CREATE TABLE IF NOT EXISTS research_validated_patterns (
+            id TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            pattern_type TEXT NOT NULL,
+            example_work_item_ids_json TEXT NOT NULL DEFAULT '[]',
+            times_applied INTEGER NOT NULL DEFAULT 0,
+            success_rate REAL NOT NULL DEFAULT 0.0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_patterns_type
+            ON research_validated_patterns(pattern_type);
+
+        INSERT OR IGNORE INTO migrations (version, applied_at, description)
+        VALUES (16, datetime('now'), 'Add autoresearch tables: control_plane, experiments, validated_patterns');
         ",
     )?;
     Ok(())

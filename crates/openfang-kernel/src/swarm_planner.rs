@@ -309,6 +309,9 @@ fn compose_swarm(
     let mut members: Vec<SwarmMember> = Vec::new();
     let mut additional_rejected: Vec<RejectionReason> = Vec::new();
     let mut selected_ids: HashSet<String> = HashSet::new();
+    // Accumulates all agent IDs that any currently-selected agent has declared incompatible.
+    // When a new candidate is considered, checking this set provides the symmetric guard.
+    let mut excluded_by_selected: HashSet<String> = HashSet::new();
 
     // Sort candidates: prefer exact capability tag matches, then by division priority
     let mut sorted = eligible;
@@ -348,17 +351,9 @@ fn compose_swarm(
             continue;
         }
 
-        // Also reject already-selected agents that are incompatible with this candidate
-        let conflicts_with_existing = members.iter().any(|m| {
-            if let Some(entry) = selected_ids.get(m.agent_id.as_str()) {
-                // Check if the existing member declared this candidate as incompatible
-                let _ = entry;
-                false // Full check would require back-reference; covered by forward check above
-            } else {
-                false
-            }
-        });
-        if conflicts_with_existing {
+        // Also reject if any already-selected agent declared this candidate as incompatible.
+        let excluded_by_prior = excluded_by_selected.contains(candidate.agent_id.as_str());
+        if excluded_by_prior {
             additional_rejected.push(RejectionReason {
                 agent_id: candidate.agent_id.clone(),
                 agent_name: manifest.name.clone(),
@@ -383,6 +378,11 @@ fn compose_swarm(
         };
 
         selected_ids.insert(candidate.agent_id.clone());
+        // Register all agent IDs this selected candidate is incompatible with
+        // so the reverse check fires when those agents come up as candidates later.
+        for incompat_id in &manifest.incompatible_with {
+            excluded_by_selected.insert(incompat_id.clone());
+        }
         members.push(member);
     }
 

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiClient } from '../../lib/api-client';
+import { labelExecutionPath, pathBadgeClass } from '../../lib/planning-api';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -94,6 +95,7 @@ export default function OverviewPage() {
   const [mcpServers, setMcpServers] = useState([]);
   const [skillCount, setSkillCount] = useState(0);
   const [agents, setAgents] = useState([]);
+  const [planningQueue, setPlanningQueue] = useState(null);
   const [lastRefresh, setLastRefresh] = useState(null);
   const refreshTimer = useRef(null);
 
@@ -101,9 +103,8 @@ export default function OverviewPage() {
     if (!silent) setLoading(true);
     setError('');
     try {
-      const [
-        healthData, statusData, usageData, auditData,
-        channelsData, providersData, mcpData, skillsData, agentsData,
+      const [healthData, statusData, usageData, auditData,
+        channelsData, providersData, mcpData, skillsData, agentsData, workData,
       ] = await Promise.allSettled([
         apiClient.get('/api/health'),
         apiClient.get('/api/status'),
@@ -114,6 +115,7 @@ export default function OverviewPage() {
         apiClient.get('/api/mcp/servers'),
         apiClient.get('/api/skills'),
         apiClient.get('/api/agents'),
+        apiClient.get('/api/work?limit=100'),
       ]);
 
       if (healthData.status === 'fulfilled') setHealth(healthData.value || {});
@@ -137,6 +139,24 @@ export default function OverviewPage() {
       if (skillsData.status === 'fulfilled') setSkillCount((skillsData.value?.skills || []).length);
       if (agentsData.status === 'fulfilled') setAgents(agentsData.value || []);
 
+      if (workData.status === 'fulfilled') {
+        const items = workData.value?.items ?? workData.value ?? [];
+        const arr = Array.isArray(items) ? items : [];
+        const byPath = {};
+        arr.forEach(it => {
+          const path = it.payload?.execution_path || it.payload?.scope?.path || null;
+          if (path) byPath[path] = (byPath[path] ?? 0) + 1;
+        });
+        setPlanningQueue({
+          total: arr.length,
+          pending: arr.filter(i => ['pending', 'ready'].includes(i.status)).length,
+          running: arr.filter(i => i.status === 'running').length,
+          waiting_approval: arr.filter(i => i.status === 'waiting_approval').length,
+          failed: arr.filter(i => i.status === 'failed').length,
+          byPath,
+        });
+      }
+
       setLastRefresh(Date.now());
     } catch (e) {
       if (!silent) setError(e.message || 'Could not load overview data.');
@@ -154,21 +174,21 @@ export default function OverviewPage() {
   const connectedMcp = mcpServers.filter(s => s.status === 'connected');
 
   if (loading) return (
-    <div>
+    <div data-cy="overview-page">
       <div className="page-header"><h1>Overview</h1></div>
       <div className="loading-state"><div className="spinner" /><span>Loading overview…</span></div>
     </div>
   );
 
   if (error) return (
-    <div>
+    <div data-cy="overview-page">
       <div className="page-header"><h1>Overview</h1><button className="btn btn-ghost btn-sm" onClick={() => loadAll()}>Retry</button></div>
       <div className="error-state">⚠ {error}</div>
     </div>
   );
 
   return (
-    <div>
+    <div data-cy="overview-page">
       <div className="page-header">
         <h1>Overview</h1>
         <div className="flex items-center gap-2">
@@ -181,14 +201,14 @@ export default function OverviewPage() {
         <SetupChecklist providers={providers} agents={agents} channels={channels} />
 
         {/* Stats row */}
-        <div className="grid grid-4" style={{ marginBottom: 20 }}>
+        <div className="grid grid-4 page-section">
           <div className="stat-card">
             <div className="stat-label">Agents</div>
             <div className="stat-value">{usageSummary.agent_count}</div>
             <div className="stat-sub">{agents.length} configured</div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Tokens used</div>
+            <div className="stat-label">Tokens</div>
             <div className="stat-value">{usageSummary.total_tokens.toLocaleString()}</div>
             <div className="stat-sub">this session</div>
           </div>
@@ -205,11 +225,11 @@ export default function OverviewPage() {
         </div>
 
         {/* Providers + MCP row */}
-        <div className="grid grid-2" style={{ marginBottom: 20 }}>
+        <div className="grid grid-2 page-section">
           <div className="card">
             <div className="card-header">
               LLM Providers
-              <span style={{ float: 'right', fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
                 {configuredProviders.length}/{providers.length} configured
               </span>
             </div>
@@ -229,7 +249,7 @@ export default function OverviewPage() {
           <div className="card">
             <div className="card-header">
               MCP Servers
-              <span style={{ float: 'right', fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
                 {connectedMcp.length}/{mcpServers.length} connected
               </span>
             </div>
@@ -248,7 +268,7 @@ export default function OverviewPage() {
         </div>
 
         {/* Channels + Skills row */}
-        <div className="grid grid-2" style={{ marginBottom: 20 }}>
+        <div className="grid grid-2 page-section">
           <div className="card">
             <div className="card-header">Active Channels</div>
             {channels.length === 0 ? (
@@ -269,18 +289,54 @@ export default function OverviewPage() {
           </div>
         </div>
 
+        {/* Planning Queue */}
+        {planningQueue && (
+          <div className="card page-section" data-cy="planning-queue-card">
+            <div className="card-header">
+              Work Queue
+              <a href="/inbox" style={{ fontSize: 11, fontWeight: 500, color: 'var(--accent)' }}>View all →</a>
+            </div>
+            <div className="grid grid-4">
+              {[
+                { label: 'Pending / Ready',  value: planningQueue.pending,          badge: 'warn' },
+                { label: 'Running',          value: planningQueue.running,          badge: 'info' },
+                { label: 'Needs approval',   value: planningQueue.waiting_approval, badge: 'created' },
+                { label: 'Failed',           value: planningQueue.failed,           badge: 'error' },
+              ].map(({ label, value, badge }) => (
+                <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div className="stat-label">{label}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="stat-value" style={{ fontSize: 24 }}>{value}</span>
+                    {value > 0 && <span className={`badge badge-${badge}`}>{value}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {Object.keys(planningQueue.byPath).length > 0 && (
+              <div style={{ marginTop: 14, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span className="text-xs text-muted">By execution path:</span>
+                {Object.entries(planningQueue.byPath).map(([path, count]) => (
+                  <span key={path} className={`badge ${pathBadgeClass(path)}`} data-cy={`planning-path-badge-${path}`}>
+                    {labelExecutionPath(path)} · {count}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* System health */}
-        <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card page-section">
           <div className="card-header">System Health</div>
-          <div className="grid grid-3" style={{ marginTop: 10 }}>
+          <div className="grid grid-3">
             {[
-              { label: 'Status', value: health.status || status.status || '—' },
+              { label: 'Status',  value: health.status  || status.status  || '—' },
               { label: 'Version', value: health.version || status.version || '—' },
-              { label: 'Uptime', value: status.uptime ? `${Math.round(status.uptime / 60)}m` : '—' },
+              { label: 'Uptime',  value: status.uptime ? `${Math.round(status.uptime / 60)}m` : '—' },
             ].map(({ label, value }) => (
               <div key={label}>
                 <div className="stat-label">{label}</div>
-                <div className="text-mono" style={{ fontSize: 14, fontWeight: 600, marginTop: 2 }}>{value}</div>
+                <div className="text-mono" style={{ fontSize: 14, fontWeight: 600, marginTop: 4 }}>{value}</div>
               </div>
             ))}
           </div>
@@ -291,7 +347,7 @@ export default function OverviewPage() {
           <div className="card">
             <div className="card-header">
               Recent Audit Events
-              <a href="/logs" style={{ float: 'right', fontSize: 11, fontWeight: 400, color: 'var(--accent)' }}>View all →</a>
+              <a href="/logs" style={{ fontSize: 11, fontWeight: 500, color: 'var(--accent)' }}>View all →</a>
             </div>
             <table className="data-table" style={{ marginTop: 8 }}>
               <thead>

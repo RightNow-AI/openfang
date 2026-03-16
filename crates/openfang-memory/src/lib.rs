@@ -13,6 +13,7 @@ pub mod consolidation;
 pub mod knowledge;
 pub mod migration;
 pub mod planner;
+pub mod research;
 pub mod semantic;
 pub mod session;
 pub mod structured;

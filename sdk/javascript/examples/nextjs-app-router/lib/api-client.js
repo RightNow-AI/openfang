@@ -23,7 +23,19 @@ function buildHeaders() {
 async function request(method, path, body) {
   const opts = { method, headers: buildHeaders() };
   if (body !== undefined) opts.body = JSON.stringify(body);
-  const res = await fetch(`${BASE_URL}${path}`, opts);
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, opts);
+  } catch (networkErr) {
+    // TypeError: Failed to fetch means CORS preflight failed, daemon is down,
+    // or the requested origin is not in the allowed list.
+    const hint = networkErr instanceof TypeError
+      ? `Network error — ensure the OpenFang daemon is running on ${BASE_URL} and CORS allows this origin`
+      : networkErr.message;
+    const err = new Error(hint);
+    err.status = 0;
+    throw err;
+  }
   if (!res.ok) {
     if (res.status === 401) {
       // Clear stale token and notify listeners
@@ -33,7 +45,10 @@ async function request(method, path, body) {
     }
     const text = await res.text().catch(() => res.statusText);
     let msg;
-    try { msg = JSON.parse(text).error || res.statusText; } catch { msg = res.statusText; }
+    try {
+      const parsed = JSON.parse(text);
+      msg = parsed.error || parsed.message || res.statusText;
+    } catch { msg = text || res.statusText; }
     const err = new Error(msg || `HTTP ${res.status}`);
     err.status = res.status;
     throw err;

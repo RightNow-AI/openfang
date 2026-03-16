@@ -33,7 +33,7 @@ export default function SkillsClient({ initialSkills }) {
   }, []);
 
   return (
-    <div>
+    <div data-cy="skills-page">
       <div className="page-header">
         <h1>Skills</h1>
         <button className="btn btn-ghost btn-sm" onClick={refresh} disabled={loading}>

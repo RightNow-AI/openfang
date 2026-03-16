@@ -7502,6 +7502,17 @@ pub async fn import_agency_profile(
     }
 }
 
+/// POST /api/agency/fixtures — Seed all bundled fixture profiles (idempotent).
+pub async fn seed_agency_fixtures(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.kernel.memory.agency_seed_fixtures() {
+        Ok(ids) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "imported": ids })),
+        ),
+        Err(error) => agency_error_response(error),
+    }
+}
+
 /// GET /api/agency/profiles — List imported agency profiles.
 pub async fn list_agency_profiles(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.kernel.memory.agency_list_profiles() {
@@ -8476,9 +8487,14 @@ pub async fn test_provider(
 
     match openfang_runtime::drivers::create_driver(&driver_config) {
         Ok(driver) => {
+            // Strip provider prefix before sending to the upstream API.
+            // Models are stored as e.g. "openrouter/google/gemini-2.5-flash" but
+            // OpenRouter expects "google/gemini-2.5-flash".
+            let api_model =
+                openfang_runtime::agent_loop::strip_provider_prefix(&default_model, &name);
             // Send a minimal completion request to test connectivity
             let test_req = openfang_runtime::llm_driver::CompletionRequest {
-                model: default_model.clone(),
+                model: api_model,
                 messages: vec![openfang_types::message::Message::user("Hi")],
                 tools: vec![],
                 max_tokens: 1,
@@ -8586,6 +8602,190 @@ pub async fn set_provider_url(
     }
 
     (StatusCode::OK, Json(resp))
+}
+
+/// GET /api/settings/providers/current — Returns the active provider config without exposing keys.
+pub async fn get_current_provider(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let (provider_id, model, configured_base_url) = {
+        let cfg = &state.kernel.config.default_model;
+        (cfg.provider.clone(), cfg.model.clone(), cfg.base_url.clone())
+    };
+
+    let (display_name, api_key_env, key_required, auth_status, catalog_base_url) = {
+        let catalog = state
+            .kernel
+            .model_catalog
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        match catalog.get_provider(&provider_id) {
+            Some(p) => (
+                p.display_name.clone(),
+                p.api_key_env.clone(),
+                p.key_required,
+                format!("{:?}", p.auth_status).to_lowercase(),
+                p.base_url.clone(),
+            ),
+            None => (
+                provider_id.clone(),
+                String::new(),
+                true,
+                "missing".to_string(),
+                String::new(),
+            ),
+        }
+    };
+
+    let effective_base_url = configured_base_url
+        .as_deref()
+        .filter(|u| !u.is_empty())
+        .unwrap_or(&catalog_base_url)
+        .to_string();
+
+    let api_key_configured = auth_status == "configured" || auth_status == "notrequired" || !key_required;
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "provider": provider_id,
+            "display_name": display_name,
+            "model": model,
+            "base_url": effective_base_url,
+            "api_key_env": api_key_env,
+            "key_required": key_required,
+            "api_key_configured": api_key_configured,
+            "auth_status": auth_status,
+        })),
+    )
+}
+
+/// PUT /api/settings/providers/current — Atomically save provider + key + base_url + model.
+pub async fn save_provider_settings(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let provider = match body["provider"].as_str() {
+        Some(p) if !p.trim().is_empty() => p.trim().to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Missing 'provider' field"})),
+            );
+        }
+    };
+
+    let new_key = body["api_key"]
+        .as_str()
+        .filter(|k| !k.trim().is_empty())
+        .map(|k| k.trim().to_string());
+    let new_url = body["base_url"]
+        .as_str()
+        .filter(|u| !u.trim().is_empty())
+        .map(|u| u.trim().to_string());
+    let new_model = body["default_model"]
+        .as_str()
+        .filter(|m| !m.trim().is_empty())
+        .map(|m| m.trim().to_string());
+
+    let (env_var, default_base_url, key_required) = {
+        let catalog = state
+            .kernel
+            .model_catalog
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        match catalog.get_provider(&provider) {
+            Some(p) => (p.api_key_env.clone(), p.base_url.clone(), p.key_required),
+            None => (
+                format!("{}_API_KEY", provider.to_uppercase().replace('-', "_")),
+                String::new(),
+                true,
+            ),
+        }
+    };
+
+    // 1. Save API key if provided
+    if let Some(ref key) = new_key {
+        let secrets_path = state.kernel.config.home_dir.join("secrets.env");
+        if let Err(e) = write_secret_env(&secrets_path, &env_var, key) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to write secrets.env: {e}")})),
+            );
+        }
+        std::env::set_var(&env_var, key);
+        state
+            .kernel
+            .model_catalog
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .detect_auth();
+    }
+
+    // 2. Save custom base URL if different from the catalog default
+    let effective_url = new_url.clone().unwrap_or_else(|| default_base_url.clone());
+    if new_url.is_some() && effective_url != default_base_url && !effective_url.is_empty() {
+        if !effective_url.starts_with("http://") && !effective_url.starts_with("https://") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "base_url must start with http:// or https://"})),
+            );
+        }
+        {
+            let mut catalog = state
+                .kernel
+                .model_catalog
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            catalog.set_provider_url(&provider, &effective_url);
+        }
+        let config_path = state.kernel.config.home_dir.join("config.toml");
+        if let Err(e) = upsert_provider_url(&config_path, &provider, &effective_url) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to save base_url: {e}")})),
+            );
+        }
+    }
+
+    // 3. Update [default_model] in config.toml
+    let model = new_model
+        .or_else(|| {
+            let catalog = state
+                .kernel
+                .model_catalog
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            catalog.default_model_for_provider(&provider)
+        })
+        .unwrap_or_default();
+
+    let config_path = state.kernel.config.home_dir.join("config.toml");
+    let update_toml = format!(
+        "\n[default_model]\nprovider = \"{}\"\nmodel = \"{}\"\napi_key_env = \"{}\"\n",
+        provider, model, env_var
+    );
+    match std::fs::read_to_string(&config_path) {
+        Ok(existing) => {
+            let cleaned = remove_toml_section(&existing, "default_model");
+            let _ = std::fs::write(
+                &config_path,
+                format!("{}\n{}", cleaned.trim(), update_toml),
+            );
+        }
+        Err(_) => {
+            let _ = std::fs::write(&config_path, update_toml);
+        }
+    }
+
+    let api_key_configured = new_key.is_some() || !key_required;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "saved",
+            "provider": provider,
+            "model": model,
+            "api_key_configured": api_key_configured,
+        })),
+    )
 }
 
 /// Upsert a provider URL in the `[provider_urls]` section of config.toml.
@@ -12522,25 +12722,29 @@ pub async fn run_work_item(
         };
     }
 
-    // Normal path — transition to Running.
-    match state
-        .kernel
-        .memory
-        .work_items()
-        .transition(&id, openfang_types::work_item::WorkStatus::Running, Some("api"), Some("started via API"), None)
-    {
-        Ok(item) => Json(item).into_response(),
-        Err(e) => {
-            let status = if e.to_string().contains("not found") {
-                StatusCode::NOT_FOUND
-            } else if e.to_string().contains("invalid transition") {
-                StatusCode::UNPROCESSABLE_ENTITY
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            (status, Json(serde_json::json!({"error": e.to_string()}))).into_response()
-        }
+    // Transition to Running before dispatching the execution loop.
+    if let Err(e) = state.kernel.memory.work_items().transition(
+        &id,
+        openfang_types::work_item::WorkStatus::Running,
+        Some("api"),
+        Some("started via API"),
+        None,
+    ) {
+        let status = if e.to_string().contains("not found") {
+            StatusCode::NOT_FOUND
+        } else if e.to_string().contains("invalid transition") {
+            StatusCode::UNPROCESSABLE_ENTITY
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        return (status, Json(serde_json::json!({"error": e.to_string()}))).into_response();
     }
+
+    // Run the disciplined 10-step execution loop.
+    let executor = openfang_kernel::work_executor::WorkItemExecutor::new(state.kernel.clone());
+    let report = executor.execute(&id).await;
+
+    (StatusCode::OK, Json(report)).into_response()
 }
 
 /// POST /api/work/{id}/approve — approve a waiting work item.
@@ -13216,5 +13420,148 @@ fn resolve_agent_id(state: &AppState, id_or_name: &str) -> String {
         return entry.id.to_string();
     }
     id_or_name.to_string()
+}
+
+// =============================================================================
+// Research / Autoresearch inspection endpoints
+// =============================================================================
+
+/// GET /api/research/control-plane — fetch the active ControlPlaneConfig.
+///
+/// Returns the stored config or the compiled-in default if none is stored yet.
+pub async fn get_research_control_plane(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.kernel.memory.research().load_control_plane() {
+        Ok(cfg) => Json(cfg).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/research/control-plane — upsert the active ControlPlaneConfig.
+pub async fn put_research_control_plane(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<openfang_types::research::ControlPlaneConfig>,
+) -> impl IntoResponse {
+    match state.kernel.memory.research().upsert_control_plane(&body) {
+        Ok(()) => Json(serde_json::json!({"ok": true})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/research/experiments — list all research experiments (newest first, max 100).
+///
+/// Optional query param: `?status=planned|running|awaiting_review|reviewed|aborted`
+pub async fn list_research_experiments(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let filter = params.get("status").cloned();
+    match state.kernel.memory.research().list_experiments(filter.as_deref()) {
+        Ok(experiments) => {
+            let total = experiments.len();
+            Json(serde_json::json!({"experiments": experiments, "total": total})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/research/experiments/{id} — fetch a single research experiment.
+pub async fn get_research_experiment(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.kernel.memory.research().get_experiment(&id) {
+        Ok(Some(exp)) => Json(exp).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("experiment {id} not found")})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/research/experiments — run a full 3-phase autoresearch experiment.
+///
+/// Body fields:
+/// - `hypothesis`   (required) — the research question
+/// - `planner_id`   (required) — agent ID for the Planner role
+/// - `executor_id`  (optional) — agent ID for the Executor role; defaults to planner_id
+/// - `reviewer_id`  (optional) — agent ID for the Reviewer role; defaults to planner_id
+pub async fn run_research_experiment(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let hypothesis = match body.get("hypothesis").and_then(|v| v.as_str()) {
+        Some(h) if !h.trim().is_empty() => h.to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "hypothesis is required"})),
+            )
+                .into_response();
+        }
+    };
+    let planner_id = match body.get("planner_id").and_then(|v| v.as_str()) {
+        Some(id) if !id.trim().is_empty() => id.to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "planner_id is required"})),
+            )
+                .into_response();
+        }
+    };
+    let executor_id = body
+        .get("executor_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&planner_id)
+        .to_string();
+    let reviewer_id = body
+        .get("reviewer_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&planner_id)
+        .to_string();
+
+    let planner = openfang_kernel::research_planner::ResearchPlanner::new(state.kernel.clone());
+    let experiment = planner
+        .run_experiment(&hypothesis, &planner_id, &executor_id, &reviewer_id)
+        .await;
+
+    (StatusCode::CREATED, Json(experiment)).into_response()
+}
+
+/// GET /api/research/patterns — list all validated patterns (ordered by usage, max 200).
+pub async fn list_research_patterns(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.kernel.memory.research().list_patterns() {
+        Ok(patterns) => {
+            let total = patterns.len();
+            Json(serde_json::json!({"patterns": patterns, "total": total})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 

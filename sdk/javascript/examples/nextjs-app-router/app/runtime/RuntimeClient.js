@@ -1,6 +1,18 @@
 'use client';
 import { useState, useCallback } from 'react';
+import Link from 'next/link';
 import { apiClient } from '../../lib/api-client';
+import { workApi } from '../../lib/work-api';
+
+const EXEC_STATUS_BADGE = {
+  completed:             'badge-success',
+  failed:                'badge-error',
+  blocked:               'badge-error',
+  running:               'badge-accent',
+  waiting_approval:      'badge-warn',
+  retry_scheduled:       'badge-warn',
+  delegated_to_subagent: 'badge-info',
+};
 
 function normalizeRuntime(h, s, n, p) {
   const health = h ?? {};
@@ -43,22 +55,29 @@ function StatusDot({ ok }) {
   );
 }
 
+function fmtDate(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+}
+
 export default function RuntimeClient({ initialRuntime }) {
   const [runtime, setRuntime] = useState(initialRuntime ?? {
     isUp: false, version: '', uptimeSec: null, agentCount: 0,
     networkUp: false, nodeId: '', peerCount: 0, peers: [],
   });
+  const [execItems, setExecItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError('');
-    const [hRes, sRes, nRes, pRes] = await Promise.allSettled([
+    const [hRes, sRes, nRes, pRes, wRes] = await Promise.allSettled([
       apiClient.get('/api/health'),
       apiClient.get('/api/status'),
       apiClient.get('/api/network/status'),
       apiClient.get('/api/peers'),
+      workApi.getWork({ limit: 20 }),
     ]);
     if (hRes.status === 'rejected' && sRes.status === 'rejected') {
       setError('Could not reach daemon.');
@@ -67,7 +86,10 @@ export default function RuntimeClient({ initialRuntime }) {
       const s = sRes.status === 'fulfilled' ? sRes.value : null;
       const n = nRes.status === 'fulfilled' ? nRes.value : null;
       const p = pRes.status === 'fulfilled' ? pRes.value : null;
+      const w = wRes.status === 'fulfilled' ? wRes.value : null;
       setRuntime(normalizeRuntime(h, s, n, p));
+      const rawItems = Array.isArray(w?.items) ? w.items : [];
+      setExecItems(rawItems.filter(i => i.status !== 'pending' && i.status !== 'ready').slice(0, 15));
     }
     setLoading(false);
   }, []);
@@ -75,7 +97,7 @@ export default function RuntimeClient({ initialRuntime }) {
   const { isUp, version, uptimeSec, agentCount, networkUp, nodeId, peerCount, peers } = runtime;
 
   return (
-    <div>
+    <div data-cy="runtime-page">
       <div className="page-header">
         <h1>Runtime</h1>
         <div className="flex items-center gap-2">
@@ -158,6 +180,38 @@ export default function RuntimeClient({ initialRuntime }) {
             <p>Start the daemon with <code>openfang start</code> to see runtime details.</p>
           </div>
         )}
+
+        <div className="card" style={{ padding: 0, overflow: 'hidden', marginTop: 20 }} data-cy="runtime-execution-activity">
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+            <span className="card-header" style={{ margin: 0 }}>Execution activity</span>
+          </div>
+          {execItems.length === 0 ? (
+            <div style={{ padding: '20px 16px', color: 'var(--text-muted)', fontSize: 13 }}>No executed work items yet.</div>
+          ) : (
+            <table className="data-table">
+              <thead>
+                <tr><th style={{ width: '30%' }}>Title</th><th style={{ width: 120 }}>Status</th><th>Agent</th><th style={{ width: 160 }}>Completed</th><th style={{ width: 60 }}></th></tr>
+              </thead>
+              <tbody>
+                {execItems.map(it => (
+                  <tr key={it.id} data-cy="runtime-exec-item">
+                    <td style={{ fontWeight: 500, maxWidth: 200 }} className="truncate">{it.title}</td>
+                    <td>
+                      <span className={`badge ${EXEC_STATUS_BADGE[it.status] ?? 'badge-dim'}`} style={{ fontSize: 11 }}>
+                        {it.status?.replace(/_/g, ' ')}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{it.assigned_agent_name || '—'}</td>
+                    <td style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{fmtDate(it.completed_at)}</td>
+                    <td>
+                      <Link href={`/work/${it.id}`} className="btn btn-ghost btn-xs" data-cy="runtime-exec-item-link">View</Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
     </div>
   );

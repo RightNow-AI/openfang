@@ -31,8 +31,11 @@ pub mod work_item;
 pub mod workflow_template;
 pub mod swarm;
 pub mod persona;
+pub mod planning;
 pub mod tool_contract;
 pub mod app_adapter;
+pub mod execution;
+pub mod research;
 
 /// Safely truncate a string to at most `max_bytes`, never splitting a UTF-8 char.
 pub fn truncate_str(s: &str, max_bytes: usize) -> &str {

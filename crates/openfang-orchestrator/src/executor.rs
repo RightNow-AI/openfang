@@ -48,10 +48,40 @@ impl WorkflowExecutor for MockWorkflowExecutor {
             AgentSelector::ByName { agent_name } => agent_name.clone(),
         };
 
-        let output = if agent_label == "support-triage" {
+        let output = if agent_label == "support-responder" || agent_label == "support-triage" {
             format!(
-                "Triage summary: issue captured from '{}'. Urgency: normal. Next action: draft a customer response.",
+                "Category: frontend, Urgency: normal, \
+                 Summary: Login page errors after latest frontend release. \
+                 Route to: frontend-specialist. \
+                 (triage from '{}')",
                 input.original_input
+            )
+        } else if agent_label == "frontend-developer" || agent_label == "frontend-specialist" {
+            format!(
+                "Frontend analysis: The login page regression is likely caused by a CSS/JS bundle \
+                 change in the latest release. Recommend: revert the layout component change and \
+                 rerun the auth flow test suite. (based on triage: {})",
+                input.outputs
+                    .get("triage")
+                    .cloned()
+                    .unwrap_or_else(|| input.original_input.clone())
+            )
+        } else if agent_label == "security-auditor" || agent_label == "security-specialist" {
+            format!(
+                "Security assessment: No credential exposure detected. Issue appears to be a \
+                 frontend rendering bug, not a security vulnerability. Risk: low. \
+                 Recommend routing to frontend specialist. (based on: {})",
+                input.original_input
+            )
+        } else if agent_label == "reviewer" {
+            format!(
+                "Review: Analysis is thorough and actionable. The root cause identification is \
+                 correct. Recommended resolution is appropriate. Approved for customer response. \
+                 (reviewed analysis: {})",
+                input.outputs
+                    .get("specialist_analysis")
+                    .cloned()
+                    .unwrap_or_else(|| input.rendered_prompt.clone())
             )
         } else if agent_label == "support-writer" {
             format!(

@@ -106,7 +106,7 @@ export default function TodayPage() {
   const blockerDetail = summary?.blocker_detail || (plan?.blockers?.length ? plan.blockers[0] : 'Blocked work is staying out of must-do.');
 
   return (
-    <div>
+    <div data-cy="today-page">
       <div className="page-header">
         <h1>Today</h1>
         <div className="flex items-center gap-2">

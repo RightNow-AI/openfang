@@ -59,7 +59,7 @@ export default function LogsClient({ initialEntries }) {
   }
 
   return (
-    <div>
+    <div data-cy="logs-page">
       <div className="page-header">
         <h1>Audit Logs</h1>
         <div className="flex items-center gap-2">

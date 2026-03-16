@@ -17,6 +17,7 @@ function normalizeEntry(raw) {
     avoid_for: raw?.avoid_for ?? '',
     example: raw?.example ?? '',
     purpose: raw?.purpose ?? '',
+    role: raw?.role ?? '',
   };
 }
 
@@ -111,8 +112,19 @@ export default function AgentCatalogClient({ initialEntries }) {
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
                 <div style={{ minWidth: 0 }}>
                   <div className="card-header" style={{ marginBottom: 2 }}>{entry.name}</div>
-                  {entry.division && (
-                    <span className="badge badge-info" style={{ fontSize: 10 }}>{entry.division}</span>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3 }}>
+                    {entry.division && (
+                      <span className="badge badge-info" style={{ fontSize: 10 }}>{entry.division}</span>
+                    )}
+                    <span
+                      className={`badge ${entry.source === 'imported' ? 'badge-warning' : 'badge-success'}`}
+                      style={{ fontSize: 10 }}
+                    >
+                      {entry.source === 'imported' ? 'Imported' : 'Native'}
+                    </span>
+                  </div>
+                  {entry.role && (
+                    <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>{entry.role}</div>
                   )}
                 </div>
                 <button
