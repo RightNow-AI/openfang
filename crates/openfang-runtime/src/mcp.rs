@@ -200,6 +200,19 @@ impl McpConnection {
                     let input_schema = tool
                         .get("inputSchema")
                         .cloned()
+                        .and_then(|v| {
+                            // Ensure input_schema is a JSON object. MCP servers may
+                            // return it as a string, null, or omit it entirely.
+                            match &v {
+                                serde_json::Value::Object(_) => Some(v),
+                                serde_json::Value::String(s) => {
+                                    serde_json::from_str::<serde_json::Value>(s)
+                                        .ok()
+                                        .filter(|p| p.is_object())
+                                }
+                                _ => None,
+                            }
+                        })
                         .unwrap_or(serde_json::json!({"type": "object"}));
 
                     // Namespace: mcp_{server}_{tool}
@@ -419,9 +432,7 @@ impl McpConnection {
                 let has_cmd = std::env::var("PATH")
                     .unwrap_or_default()
                     .split(';')
-                    .any(|dir| {
-                        std::path::Path::new(dir).join(&cmd_variant).exists()
-                    });
+                    .any(|dir| std::path::Path::new(dir).join(&cmd_variant).exists());
                 if has_cmd {
                     cmd_variant
                 } else {

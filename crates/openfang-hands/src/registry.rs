@@ -9,8 +9,22 @@ use dashmap::DashMap;
 use openfang_types::agent::AgentId;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct PersistedHandStateEntry {
+    pub hand_id: String,
+    pub config: HashMap<String, serde_json::Value>,
+    pub agent_id: Option<AgentId>,
+    #[serde(default)]
+    pub source_path: Option<PathBuf>,
+    #[serde(default)]
+    pub toml_content: Option<String>,
+    #[serde(default)]
+    pub skill_content: Option<String>,
+}
 
 // ─── Settings availability types ────────────────────────────────────────────
 
@@ -52,6 +66,53 @@ impl HandRegistry {
         }
     }
 
+    /// Persist active hand state to disk so it survives restarts.
+    pub fn persist_state(&self, path: &Path) -> HandResult<()> {
+        let entries: Vec<PersistedHandStateEntry> = self
+            .instances
+            .iter()
+            .filter(|e| e.status == HandStatus::Active)
+            .map(|e| {
+                let definition = self
+                    .definitions
+                    .get(&e.hand_id)
+                    .map(|def| def.value().clone());
+
+                PersistedHandStateEntry {
+                    hand_id: e.hand_id.clone(),
+                    config: e.config.clone(),
+                    agent_id: e.agent_id,
+                    source_path: definition.as_ref().and_then(|def| def.install_path.clone()),
+                    toml_content: definition.as_ref().and_then(|def| def.install_toml.clone()),
+                    skill_content: definition
+                        .as_ref()
+                        .and_then(|def| def.install_skill_content.clone()),
+                }
+            })
+            .collect();
+        let json = serde_json::to_string_pretty(&entries)
+            .map_err(|e| HandError::Config(format!("serialize hand state: {e}")))?;
+        std::fs::write(path, json)
+            .map_err(|e| HandError::Config(format!("write hand state: {e}")))?;
+        Ok(())
+    }
+
+    /// Load persisted hand state entries that should be restored on boot.
+    pub fn load_state(path: &Path) -> Vec<PersistedHandStateEntry> {
+        let data = match std::fs::read_to_string(path) {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        };
+        let entries: Vec<PersistedHandStateEntry> = match serde_json::from_str(&data) {
+            Ok(entries) => entries,
+            Err(e) => {
+                warn!("Failed to parse hand state file: {e}");
+                return Vec::new();
+            }
+        };
+        entries
+    }
+
     /// Load all bundled hand definitions. Returns count of definitions loaded.
     pub fn load_bundled(&self) -> usize {
         let bundled = bundled::bundled_hands();
@@ -72,7 +133,7 @@ impl HandRegistry {
     }
 
     /// Install a hand from a directory containing HAND.toml (and optional SKILL.md).
-    pub fn install_from_path(&self, path: &std::path::Path) -> HandResult<HandDefinition> {
+    pub fn install_from_path(&self, path: &Path) -> HandResult<HandDefinition> {
         let toml_path = path.join("HAND.toml");
         let skill_path = path.join("SKILL.md");
 
@@ -81,17 +142,14 @@ impl HandRegistry {
         })?;
         let skill_content = std::fs::read_to_string(&skill_path).unwrap_or_default();
 
-        let def = bundled::parse_bundled("custom", &toml_content, &skill_content)?;
+        let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let def = self.install_from_content_with_source(
+            &toml_content,
+            &skill_content,
+            Some(canonical_path.clone()),
+        )?;
 
-        if self.definitions.contains_key(&def.id) {
-            return Err(HandError::AlreadyActive(format!(
-                "Hand '{}' already registered",
-                def.id
-            )));
-        }
-
-        info!(hand = %def.id, name = %def.name, path = %path.display(), "Installed hand from path");
-        self.definitions.insert(def.id.clone(), def.clone());
+        info!(hand = %def.id, name = %def.name, path = %canonical_path.display(), "Installed hand from path");
         Ok(def)
     }
 
@@ -101,14 +159,31 @@ impl HandRegistry {
         toml_content: &str,
         skill_content: &str,
     ) -> HandResult<HandDefinition> {
-        let def = bundled::parse_bundled("custom", toml_content, skill_content)?;
+        self.install_from_content_with_source(toml_content, skill_content, None)
+    }
 
+    /// Install a hand from raw content and keep track of its source metadata.
+    pub fn install_from_content_with_source(
+        &self,
+        toml_content: &str,
+        skill_content: &str,
+        source_path: Option<PathBuf>,
+    ) -> HandResult<HandDefinition> {
+        let mut def = bundled::parse_bundled("custom", toml_content, skill_content)?;
         if self.definitions.contains_key(&def.id) {
             return Err(HandError::AlreadyActive(format!(
                 "Hand '{}' already registered",
                 def.id
             )));
         }
+
+        def.install_path = source_path;
+        def.install_toml = Some(toml_content.to_string());
+        def.install_skill_content = if skill_content.is_empty() {
+            None
+        } else {
+            Some(skill_content.to_string())
+        };
 
         info!(hand = %def.id, name = %def.name, "Installed hand from content");
         self.definitions.insert(def.id.clone(), def.clone());
@@ -117,7 +192,8 @@ impl HandRegistry {
 
     /// List all known hand definitions.
     pub fn list_definitions(&self) -> Vec<HandDefinition> {
-        let mut defs: Vec<HandDefinition> = self.definitions.iter().map(|r| r.value().clone()).collect();
+        let mut defs: Vec<HandDefinition> =
+            self.definitions.iter().map(|r| r.value().clone()).collect();
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
     }
@@ -299,6 +375,47 @@ impl HandRegistry {
         entry.updated_at = chrono::Utc::now();
         Ok(())
     }
+
+    /// Compute readiness for a hand, cross-referencing requirements with
+    /// active instance state.
+    ///
+    /// Returns `None` if the hand definition does not exist.
+    pub fn readiness(&self, hand_id: &str) -> Option<HandReadiness> {
+        let reqs = self.check_requirements(hand_id).ok()?;
+
+        let requirements_met = reqs.iter().all(|(req, ok)| req.optional || *ok);
+
+        // A hand is active if at least one instance is in Active status.
+        let active = self
+            .instances
+            .iter()
+            .any(|entry| entry.hand_id == hand_id && entry.status == HandStatus::Active);
+
+        // Degraded: active, but at least one non-optional requirement is unmet
+        // OR any optional requirement is unmet. In practice, the most useful
+        // definition is: active + any requirement unsatisfied.
+        let degraded = active && reqs.iter().any(|(_, ok)| !ok);
+
+        Some(HandReadiness {
+            requirements_met,
+            active,
+            degraded,
+        })
+    }
+}
+
+/// Readiness snapshot for a hand definition — combines requirement checks
+/// with runtime activation state so the API can report unambiguous status.
+#[derive(Debug, Clone, Serialize)]
+pub struct HandReadiness {
+    /// Whether all declared requirements are currently satisfied.
+    pub requirements_met: bool,
+    /// Whether the hand currently has a running (Active-status) instance.
+    pub active: bool,
+    /// Whether the hand is active but some requirements are unmet.
+    /// This means the hand is running in a degraded mode — some features
+    /// may not work (e.g. browser hand without chromium).
+    pub degraded: bool,
 }
 
 impl Default for HandRegistry {
@@ -311,8 +428,20 @@ impl Default for HandRegistry {
 fn check_requirement(req: &HandRequirement) -> bool {
     match req.requirement_type {
         RequirementType::Binary => {
-            // Check if binary exists on PATH
-            which_binary(&req.check_value)
+            // Special handling for python3: must actually run the command and verify
+            // the output contains "Python 3", because Windows ships a python3.exe
+            // Store shim that exists on PATH but doesn't actually work.
+            if req.check_value == "python3" {
+                return check_python3_available();
+            }
+            // Check if binary exists on PATH.
+            if which_binary(&req.check_value) {
+                return true;
+            }
+            if req.check_value == "chromium" {
+                return check_chromium_available();
+            }
+            false
         }
         RequirementType::EnvVar | RequirementType::ApiKey => {
             // Check if env var is set and non-empty
@@ -321,6 +450,133 @@ fn check_requirement(req: &HandRequirement) -> bool {
                 .unwrap_or(false)
         }
     }
+}
+
+/// Check if Python 3 is actually available by running the command and checking
+/// the version output. This avoids false negatives from Windows Store shims
+/// (python3.exe that just opens the Microsoft Store) and false positives from
+/// Python 2 installations where `python` exists but is Python 2.
+fn check_python3_available() -> bool {
+    // Try "python3 --version" first (Linux/macOS, some Windows installs)
+    if run_returns_python3("python3") {
+        return true;
+    }
+    // Try "python --version" (Windows commonly uses this, Docker containers too)
+    if run_returns_python3("python") {
+        return true;
+    }
+    false
+}
+
+/// Run `{cmd} --version` and return true if the output contains "Python 3".
+fn run_returns_python3(cmd: &str) -> bool {
+    match std::process::Command::new(cmd)
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .output()
+    {
+        Ok(output) => {
+            if !output.status.success() {
+                return false;
+            }
+            // Python --version may print to stdout or stderr depending on version
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            stdout.contains("Python 3") || stderr.contains("Python 3")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Check if Chromium (or Chrome) is available anywhere on the system.
+///
+/// Checks in order:
+/// 1. CHROME_PATH / CHROMIUM_PATH env vars
+/// 2. Common binary names on PATH (chromium, chromium-browser, google-chrome, etc.)
+/// 3. Well-known install paths (Windows Program Files, macOS Applications, Linux /usr)
+/// 4. Playwright cache (~/.cache/ms-playwright/chromium-*)
+fn check_chromium_available() -> bool {
+    // 1. Env vars
+    for var in &["CHROME_PATH", "CHROMIUM_PATH"] {
+        if let Ok(p) = std::env::var(var) {
+            if !p.is_empty() && std::path::Path::new(&p).exists() {
+                return true;
+            }
+        }
+    }
+
+    // 2. Common binary names on PATH
+    let names = [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "chrome",
+    ];
+    for name in &names {
+        if which_binary(name) {
+            return true;
+        }
+    }
+
+    // 3. Well-known install paths
+    let known_paths: Vec<std::path::PathBuf> = if cfg!(windows) {
+        let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+        let pf86 =
+            std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".into());
+        let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        vec![
+            std::path::PathBuf::from(&pf).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf86).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&local).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf).join(r"Chromium\Application\chrome.exe"),
+            std::path::PathBuf::from(&local).join(r"Chromium\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf).join(r"Microsoft\Edge\Application\msedge.exe"),
+        ]
+    } else if cfg!(target_os = "macos") {
+        vec![
+            std::path::PathBuf::from(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            std::path::PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ]
+    } else {
+        vec![
+            std::path::PathBuf::from("/usr/bin/chromium"),
+            std::path::PathBuf::from("/usr/bin/chromium-browser"),
+            std::path::PathBuf::from("/usr/bin/google-chrome"),
+            std::path::PathBuf::from("/usr/bin/google-chrome-stable"),
+            std::path::PathBuf::from("/snap/bin/chromium"),
+        ]
+    };
+    for p in &known_paths {
+        if p.exists() {
+            return true;
+        }
+    }
+
+    // 4. Playwright cache
+    if let Some(home) = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+    {
+        let pw_cache = std::path::Path::new(&home).join(".cache/ms-playwright");
+        if pw_cache.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&pw_cache) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with("chromium-") && entry.path().is_dir() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Check if a binary is on PATH (cross-platform).
@@ -378,6 +634,7 @@ fn check_option_available(provider_env: Option<&str>, binary: Option<&str>) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn new_registry_is_empty() {
@@ -390,7 +647,7 @@ mod tests {
     fn load_bundled_hands() {
         let reg = HandRegistry::new();
         let count = reg.load_bundled();
-        assert_eq!(count, 7);
+        assert_eq!(count, 8);
         assert!(!reg.list_definitions().is_empty());
 
         // Clip hand should be loaded
@@ -530,6 +787,7 @@ mod tests {
             requirement_type: RequirementType::EnvVar,
             check_value: "OPENFANG_TEST_HAND_REQ".to_string(),
             description: None,
+            optional: false,
             install: None,
         };
         assert!(check_requirement(&req));
@@ -540,9 +798,190 @@ mod tests {
             requirement_type: RequirementType::EnvVar,
             check_value: "OPENFANG_NONEXISTENT_VAR_12345".to_string(),
             description: None,
+            optional: false,
             install: None,
         };
         assert!(!check_requirement(&req_missing));
         std::env::remove_var("OPENFANG_TEST_HAND_REQ");
+    }
+
+    #[test]
+    fn readiness_nonexistent_hand() {
+        let reg = HandRegistry::new();
+        assert!(reg.readiness("nonexistent").is_none());
+    }
+
+    #[test]
+    fn readiness_inactive_hand() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Lead hand has no requirements, so requirements_met = true
+        let r = reg.readiness("lead").unwrap();
+        assert!(r.requirements_met);
+        assert!(!r.active);
+        assert!(!r.degraded);
+    }
+
+    #[test]
+    fn readiness_active_hand_all_met() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Lead hand has no requirements — activate it
+        let instance = reg.activate("lead", HashMap::new()).unwrap();
+        let r = reg.readiness("lead").unwrap();
+        assert!(r.requirements_met);
+        assert!(r.active);
+        assert!(!r.degraded); // all met, so not degraded
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn readiness_active_hand_degraded() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Browser hand requires python3 + chromium. Activate it — if either
+        // requirement is unmet on this machine, it will show as degraded.
+        let instance = reg.activate("browser", HashMap::new()).unwrap();
+        let r = reg.readiness("browser").unwrap();
+        assert!(r.active);
+
+        // If any requirement is not satisfied, degraded should be true
+        if !r.requirements_met {
+            assert!(r.degraded);
+        } else {
+            assert!(!r.degraded);
+        }
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn readiness_paused_hand_not_active() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        let instance = reg.activate("lead", HashMap::new()).unwrap();
+        reg.pause(instance.instance_id).unwrap();
+
+        let r = reg.readiness("lead").unwrap();
+        assert!(!r.active); // Paused is not Active
+        assert!(!r.degraded);
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn optional_field_defaults_false() {
+        let req = HandRequirement {
+            key: "test".to_string(),
+            label: "test".to_string(),
+            requirement_type: RequirementType::Binary,
+            check_value: "test".to_string(),
+            description: None,
+            optional: false,
+            install: None,
+        };
+        assert!(!req.optional);
+    }
+
+    #[test]
+    fn optional_requirements_do_not_block_readiness() {
+        let reg = HandRegistry::new();
+        reg.install_from_content(
+            r#"
+id = "optional-check"
+name = "Optional Check"
+description = "Hand with an optional dependency"
+category = "development"
+tools = []
+
+[[requires]]
+key = "optional-browser"
+label = "Optional browser"
+requirement_type = "binary"
+check_value = "OPENFANG_MISSING_BINARY_12345"
+optional = true
+
+[agent]
+name = "optional-check-hand"
+description = "Optional dependency test"
+system_prompt = "Optional dependency test"
+
+[dashboard]
+metrics = []
+"#,
+            "",
+        )
+        .unwrap();
+
+        let before = reg.readiness("optional-check").unwrap();
+        assert!(before.requirements_met);
+        assert!(!before.active);
+        assert!(!before.degraded);
+
+        let instance = reg.activate("optional-check", HashMap::new()).unwrap();
+        let active = reg.readiness("optional-check").unwrap();
+        assert!(active.requirements_met);
+        assert!(active.active);
+        assert!(active.degraded);
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn persist_state_round_trips_external_source_metadata() {
+        let reg = HandRegistry::new();
+        let hand_dir = tempdir().unwrap();
+        let state_dir = tempdir().unwrap();
+
+        std::fs::write(
+            hand_dir.path().join("HAND.toml"),
+            r#"
+id = "external-test"
+name = "External Test"
+description = "External hand for persistence test"
+category = "development"
+tools = []
+
+[agent]
+name = "external-test-hand"
+description = "External test agent"
+system_prompt = "Test prompt"
+
+[dashboard]
+metrics = []
+"#,
+        )
+        .unwrap();
+        std::fs::write(hand_dir.path().join("SKILL.md"), "External skill body").unwrap();
+
+        reg.install_from_path(hand_dir.path()).unwrap();
+        let instance = reg.activate("external-test", HashMap::new()).unwrap();
+        let agent_id = AgentId::new();
+        reg.set_agent(instance.instance_id, agent_id).unwrap();
+
+        let state_path = state_dir.path().join("hand_state.json");
+        reg.persist_state(&state_path).unwrap();
+
+        let loaded = HandRegistry::load_state(&state_path);
+        assert_eq!(loaded.len(), 1);
+        let entry = &loaded[0];
+        let canonical_hand_dir = hand_dir.path().canonicalize().unwrap();
+        assert_eq!(entry.hand_id, "external-test");
+        assert_eq!(entry.agent_id, Some(agent_id));
+        assert_eq!(
+            entry.source_path.as_deref(),
+            Some(canonical_hand_dir.as_path())
+        );
+        assert!(entry
+            .toml_content
+            .as_deref()
+            .unwrap_or_default()
+            .contains("external-test"));
+        assert_eq!(entry.skill_content.as_deref(), Some("External skill body"));
     }
 }

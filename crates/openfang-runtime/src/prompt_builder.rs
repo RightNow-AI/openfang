@@ -55,6 +55,10 @@ pub struct PromptContext {
     pub peer_agents: Vec<(String, String, String)>,
     /// Current date/time string for temporal awareness.
     pub current_date: Option<String>,
+    /// Sender identity (e.g. WhatsApp phone number, Telegram user ID).
+    pub sender_id: Option<String>,
+    /// Sender display name.
+    pub sender_name: Option<String>,
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -145,6 +149,15 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
     if !ctx.is_subagent {
         if let Some(ref channel) = ctx.channel_type {
             sections.push(build_channel_section(channel));
+        }
+    }
+
+    // Section 9.1 — Sender Identity (skip for subagents)
+    if !ctx.is_subagent {
+        if let Some(sender_line) =
+            build_sender_section(ctx.sender_name.as_deref(), ctx.sender_id.as_deref())
+        {
+            sections.push(sender_line);
         }
     }
 
@@ -275,12 +288,18 @@ pub fn build_canonical_context_message(ctx: &PromptContext) -> Option<String> {
 ///
 /// Also used by `agent_loop.rs` to append recalled memories after DB lookup.
 pub fn build_memory_section(memories: &[(String, String)]) -> String {
-    let mut out = String::from(
-        "## Memory\n\
-         - When the user asks about something from a previous conversation, use memory_recall first.\n\
-         - Store important preferences, decisions, and context with memory_store for future use.",
-    );
-    if !memories.is_empty() {
+    let mut out = String::from("## Memory\n");
+    if memories.is_empty() {
+        out.push_str(
+            "- When the user asks about something from a previous conversation, use memory_recall first.\n\
+             - Store important preferences, decisions, and context with memory_store for future use.",
+        );
+    } else {
+        out.push_str(
+            "- Use the recalled memories below to inform your responses.\n\
+             - Only call memory_recall if you need information not already shown here.\n\
+             - Store important preferences, decisions, and context with memory_store for future use.",
+        );
         out.push_str("\n\nRecalled memories:\n");
         for (key, content) in memories.iter().take(5) {
             let capped = cap_str(content, 500);
@@ -411,6 +430,15 @@ fn build_channel_section(channel: &str) -> String {
          You are responding via {channel}. Keep messages under {limit} chars.\n\
          {hints}"
     )
+}
+
+fn build_sender_section(sender_name: Option<&str>, sender_id: Option<&str>) -> Option<String> {
+    match (sender_name, sender_id) {
+        (Some(name), Some(id)) => Some(format!("## Sender\nMessage from: {name} ({id})")),
+        (Some(name), None) => Some(format!("## Sender\nMessage from: {name}")),
+        (None, Some(id)) => Some(format!("## Sender\nMessage from: {id}")),
+        (None, None) => None,
+    }
 }
 
 fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]) -> String {
@@ -728,7 +756,7 @@ mod tests {
     fn test_memory_section_empty() {
         let section = build_memory_section(&[]);
         assert!(section.contains("## Memory"));
-        assert!(section.contains("memory_recall"));
+        assert!(section.contains("use memory_recall first"));
         assert!(!section.contains("Recalled memories"));
     }
 
@@ -742,6 +770,8 @@ mod tests {
         assert!(section.contains("Recalled memories"));
         assert!(section.contains("[pref] User likes dark mode"));
         assert!(section.contains("[ctx] Working on Rust project"));
+        assert!(section.contains("Use the recalled memories below"));
+        assert!(!section.contains("use memory_recall first"));
     }
 
     #[test]

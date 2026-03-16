@@ -8,7 +8,7 @@ tags = ["database", "sql", "relational", "sqlite", "local", "embedded"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-sqlite"]
+args = ["-y", "@modelcontextprotocol/server-sqlite"]
 
 [[required_env]]
 name = "SQLITE_DB_PATH"

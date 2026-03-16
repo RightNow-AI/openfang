@@ -291,15 +291,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_synthesize_no_provider() {
+        let original_openai = std::env::var_os("OPENAI_API_KEY");
+        let original_elevenlabs = std::env::var_os("ELEVENLABS_API_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("ELEVENLABS_API_KEY");
+
         let mut config = default_config();
         config.enabled = true;
         let engine = TtsEngine::new(config);
-        // This may or may not error depending on env vars
         let result = engine.synthesize("Hello world", None, None).await;
-        // If no API keys are set, should error
-        if let Err(err) = result {
-            assert!(err.contains("No TTS provider") || err.contains("not set"));
+
+        match original_openai {
+            Some(value) => std::env::set_var("OPENAI_API_KEY", value),
+            None => std::env::remove_var("OPENAI_API_KEY"),
         }
+        match original_elevenlabs {
+            Some(value) => std::env::set_var("ELEVENLABS_API_KEY", value),
+            None => std::env::remove_var("ELEVENLABS_API_KEY"),
+        }
+
+        let err = result.expect_err("missing TTS provider should error");
+        assert!(err.contains("No TTS provider") || err.contains("not set"));
     }
 
     #[test]

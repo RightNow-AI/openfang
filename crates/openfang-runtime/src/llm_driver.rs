@@ -40,6 +40,12 @@ pub enum LlmError {
         /// How long to wait before retrying.
         retry_after_ms: u64,
     },
+    /// Authentication failed (invalid/missing API key).
+    #[error("Authentication failed: {0}")]
+    AuthenticationFailed(String),
+    /// Model not found.
+    #[error("Model not found: {0}")]
+    ModelNotFound(String),
 }
 
 /// A request to an LLM for completion.
@@ -80,7 +86,7 @@ impl CompletionResponse {
         self.content
             .iter()
             .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
                 ContentBlock::Thinking { .. } => None,
                 _ => None,
             })
@@ -161,6 +167,19 @@ pub struct DriverConfig {
     pub api_key: Option<String>,
     /// Base URL override.
     pub base_url: Option<String>,
+    /// Skip interactive permission prompts (Claude Code provider only).
+    ///
+    /// When `true`, adds `--dangerously-skip-permissions` to the spawned
+    /// `claude` CLI.  Defaults to `true` because OpenFang runs as a daemon
+    /// with no interactive terminal, so permission prompts would block
+    /// indefinitely.  OpenFang's own capability / RBAC layer already
+    /// restricts what agents can do, making this safe.
+    #[serde(default = "default_skip_permissions")]
+    pub skip_permissions: bool,
+}
+
+fn default_skip_permissions() -> bool {
+    true
 }
 
 /// SECURITY: Custom Debug impl redacts the API key.
@@ -170,6 +189,7 @@ impl std::fmt::Debug for DriverConfig {
             .field("provider", &self.provider)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("base_url", &self.base_url)
+            .field("skip_permissions", &self.skip_permissions)
             .finish()
     }
 }
@@ -184,9 +204,11 @@ mod tests {
             content: vec![
                 ContentBlock::Text {
                     text: "Hello ".to_string(),
+                    provider_metadata: None,
                 },
                 ContentBlock::Text {
                     text: "world!".to_string(),
+                    provider_metadata: None,
                 },
             ],
             stop_reason: StopReason::EndTurn,
@@ -249,6 +271,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: "Hello!".to_string(),
+                        provider_metadata: None,
                     }],
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],

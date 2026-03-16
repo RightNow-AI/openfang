@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.24"
+version = "0.4.4"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
@@ -49,6 +49,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 
 # IDs
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -61,7 +62,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 
 # HTTP client (for LLM drivers)
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "gzip", "deflate", "brotli"] }
 
 # Async trait
 async-trait = "0.1"
@@ -119,6 +120,9 @@ colored = "3"
 aes-gcm = "0.10"
 argon2 = "0.5"
 
+# HTML entity decoding
+html-escape = "0.2"
+
 # Lightweight regex
 regex-lite = "0.1"
 
@@ -133,6 +137,9 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "h
 imap = "2"
 native-tls = "0.2"
 mailparse = "0.15"
+
+# OpenSSL (vendored = statically compiled, no runtime libssl dependency on Linux)
+openssl = { version = "0.10", features = ["vendored"] }
 
 # Testing
 tokio-test = "0.4"

@@ -343,7 +343,11 @@ fn build_conversation_text(messages: &[Message], config: &CompactionConfig) -> S
                     if oversized {
                         let limit = config.max_chunk_chars / 4;
                         let truncated = if s.len() > limit {
-                            format!("{}...[truncated from {} chars]", safe_truncate_str(s, limit), s.len())
+                            format!(
+                                "{}...[truncated from {} chars]",
+                                safe_truncate_str(s, limit),
+                                s.len()
+                            )
                         } else {
                             s.clone()
                         };
@@ -356,7 +360,7 @@ fn build_conversation_text(messages: &[Message], config: &CompactionConfig) -> S
             MessageContent::Blocks(blocks) => {
                 for block in blocks {
                     match block {
-                        ContentBlock::Text { text } => {
+                        ContentBlock::Text { text, .. } => {
                             if !text.is_empty() {
                                 if oversized && text.len() > config.max_chunk_chars / 4 {
                                     let limit = config.max_chunk_chars / 4;
@@ -431,7 +435,11 @@ async fn summarize_messages(
         let safe_start = if conversation_text.is_char_boundary(start) {
             start
         } else {
-            conversation_text[start..].char_indices().next().map(|(i, _)| start + i).unwrap_or(conversation_text.len())
+            conversation_text[start..]
+                .char_indices()
+                .next()
+                .map(|(i, _)| start + i)
+                .unwrap_or(conversation_text.len())
         };
         conversation_text = conversation_text[safe_start..].to_string();
     }
@@ -448,6 +456,7 @@ async fn summarize_messages(
             role: Role::User,
             content: MessageContent::Blocks(vec![ContentBlock::Text {
                 text: summarize_prompt,
+                provider_metadata: None,
             }]),
         }],
         tools: vec![],
@@ -563,7 +572,10 @@ async fn summarize_in_chunks(
         model: model.to_string(),
         messages: vec![Message {
             role: Role::User,
-            content: MessageContent::Blocks(vec![ContentBlock::Text { text: merge_prompt }]),
+            content: MessageContent::Blocks(vec![ContentBlock::Text {
+                text: merge_prompt,
+                provider_metadata: None,
+            }]),
         }],
         tools: vec![],
         max_tokens: config.max_summary_tokens,
@@ -766,6 +778,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: "Summary of conversation".to_string(),
+                        provider_metadata: None,
                     }],
                     stop_reason: openfang_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
@@ -827,6 +840,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: "Summary with tools".to_string(),
+                        provider_metadata: None,
                     }],
                     stop_reason: openfang_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
@@ -850,6 +864,7 @@ mod tests {
                 id: "tu-1".to_string(),
                 name: "web_search".to_string(),
                 input: serde_json::json!({"query": "test"}),
+                provider_metadata: None,
             }]),
         };
         messages[2] = Message {
@@ -918,6 +933,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: "Summary: discussed topics 0 through 79".to_string(),
+                        provider_metadata: None,
                     }],
                     stop_reason: openfang_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
@@ -1113,6 +1129,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: format!("Chunk summary {n}"),
+                        provider_metadata: None,
                     }],
                     stop_reason: openfang_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
@@ -1179,11 +1196,13 @@ mod tests {
                 content: MessageContent::Blocks(vec![
                     ContentBlock::Text {
                         text: "Let me search".to_string(),
+                        provider_metadata: None,
                     },
                     ContentBlock::ToolUse {
                         id: "tu-1".to_string(),
                         name: "web_search".to_string(),
                         input: serde_json::json!({"query": "rust"}),
+                        provider_metadata: None,
                     },
                 ]),
             },
@@ -1227,7 +1246,7 @@ mod tests {
         assert!(
             text.contains("truncated from"),
             "Oversized message should be truncated, got: {}",
-            &text[..text.len().min(200)]
+            crate::str_utils::safe_truncate_str(&text, 200)
         );
     }
 

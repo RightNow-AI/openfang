@@ -185,19 +185,26 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 | **Key Required** | Yes |
 | **Free Tier** | Yes (limited credits for some models) |
 | **Auth** | `Authorization: Bearer` header |
-| **Models** | 3 |
+| **Models** | 10 |
 
 **Available Models:**
-- `openrouter/auto` (Smart) -- auto-selects best model
-- `openrouter/optimus` (Balanced) -- cost-optimized
-- `openrouter/nitro` (Fast) -- speed-optimized
+- `openrouter/google/gemini-2.5-flash` (Smart) -- cheap, fast, 1M context (default)
+- `openrouter/anthropic/claude-sonnet-4` (Smart) -- strong reasoning + tools
+- `openrouter/openai/gpt-4o` (Smart) -- GPT-4o via OpenRouter
+- `openrouter/deepseek/deepseek-chat` (Smart) -- DeepSeek V3
+- `openrouter/meta-llama/llama-3.3-70b-instruct` (Balanced) -- Llama 3.3 70B
+- `openrouter/qwen/qwen-2.5-72b-instruct` (Balanced) -- Qwen 2.5 72B
+- `openrouter/google/gemini-2.5-pro` (Frontier) -- Gemini 2.5 Pro
+- `openrouter/mistralai/mistral-large-latest` (Smart) -- Mistral Large
+- `openrouter/google/gemma-2-9b-it` (Fast) -- Gemma 2 9B, free
+- `openrouter/deepseek/deepseek-r1` (Frontier) -- DeepSeek R1 reasoning
 
 **Setup:**
 1. Sign up at [openrouter.ai](https://openrouter.ai)
 2. Create an API key under Keys
 3. `export OPENROUTER_API_KEY="sk-or-..."`
 
-**Notes:** OpenRouter is a unified gateway to 200+ models from many providers. The three builtin entries are OpenRouter's smart-routing endpoints. You can also use any model ID from their catalog directly by specifying the full OpenRouter model path.
+**Notes:** OpenRouter is a unified gateway to 200+ models from many providers. Model IDs use the upstream format (e.g. `google/gemini-2.5-flash`). You can use any model from OpenRouter's catalog by specifying the full model path with the `openrouter/` prefix.
 
 ---
 
@@ -566,34 +573,41 @@ The complete catalog of all 51 builtin models, sorted by provider. Pricing is pe
 | 16 | `mixtral-8x7b-32768` | Mixtral 8x7B | groq | Balanced | 32,768 | 4,096 | $0.024 | $0.024 | Yes | No |
 | 17 | `llama-3.1-8b-instant` | Llama 3.1 8B | groq | Fast | 128,000 | 8,192 | $0.05 | $0.08 | Yes | No |
 | 18 | `gemma2-9b-it` | Gemma 2 9B | groq | Fast | 8,192 | 4,096 | $0.02 | $0.02 | No | No |
-| 19 | `openrouter/auto` | OpenRouter Auto | openrouter | Smart | 200,000 | 32,000 | $1.00 | $3.00 | Yes | Yes |
-| 20 | `openrouter/optimus` | OpenRouter Optimus | openrouter | Balanced | 200,000 | 32,000 | $0.50 | $1.50 | Yes | No |
-| 21 | `openrouter/nitro` | OpenRouter Nitro | openrouter | Fast | 128,000 | 16,000 | $0.20 | $0.60 | Yes | No |
-| 22 | `mistral-large-latest` | Mistral Large | mistral | Smart | 128,000 | 8,192 | $2.00 | $6.00 | Yes | No |
-| 23 | `codestral-latest` | Codestral | mistral | Smart | 32,000 | 8,192 | $0.30 | $0.90 | Yes | No |
-| 24 | `mistral-small-latest` | Mistral Small | mistral | Fast | 128,000 | 8,192 | $0.10 | $0.30 | Yes | No |
-| 25 | `meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo` | Llama 3.1 405B (Together) | together | Frontier | 130,000 | 4,096 | $3.50 | $3.50 | Yes | No |
-| 26 | `Qwen/Qwen2.5-72B-Instruct-Turbo` | Qwen 2.5 72B (Together) | together | Smart | 32,768 | 4,096 | $0.20 | $0.60 | Yes | No |
-| 27 | `mistralai/Mixtral-8x22B-Instruct-v0.1` | Mixtral 8x22B (Together) | together | Balanced | 65,536 | 4,096 | $0.60 | $0.60 | Yes | No |
-| 28 | `accounts/fireworks/models/llama-v3p1-405b-instruct` | Llama 3.1 405B (Fireworks) | fireworks | Frontier | 131,072 | 16,384 | $3.00 | $3.00 | Yes | No |
-| 29 | `accounts/fireworks/models/mixtral-8x22b-instruct` | Mixtral 8x22B (Fireworks) | fireworks | Balanced | 65,536 | 4,096 | $0.90 | $0.90 | Yes | No |
-| 30 | `llama3.2` | Llama 3.2 (Ollama) | ollama | Local | 128,000 | 4,096 | $0.00 | $0.00 | Yes | No |
-| 31 | `mistral:latest` | Mistral (Ollama) | ollama | Local | 32,768 | 4,096 | $0.00 | $0.00 | Yes | No |
-| 32 | `phi3` | Phi-3 (Ollama) | ollama | Local | 128,000 | 4,096 | $0.00 | $0.00 | No | No |
-| 33 | `vllm-local` | vLLM Local Model | vllm | Local | 32,768 | 4,096 | $0.00 | $0.00 | Yes | No |
-| 34 | `lmstudio-local` | LM Studio Local Model | lmstudio | Local | 32,768 | 4,096 | $0.00 | $0.00 | Yes | No |
-| 35 | `sonar-pro` | Sonar Pro | perplexity | Smart | 200,000 | 8,192 | $3.00 | $15.00 | No | No |
-| 36 | `sonar` | Sonar | perplexity | Balanced | 128,000 | 8,192 | $1.00 | $5.00 | No | No |
-| 37 | `command-r-plus` | Command R+ | cohere | Smart | 128,000 | 4,096 | $2.50 | $10.00 | Yes | No |
-| 38 | `command-r` | Command R | cohere | Balanced | 128,000 | 4,096 | $0.15 | $0.60 | Yes | No |
-| 39 | `jamba-1.5-large` | Jamba 1.5 Large | ai21 | Smart | 256,000 | 4,096 | $2.00 | $8.00 | Yes | No |
-| 40 | `cerebras/llama3.3-70b` | Llama 3.3 70B (Cerebras) | cerebras | Balanced | 128,000 | 8,192 | $0.06 | $0.06 | Yes | No |
-| 41 | `cerebras/llama3.1-8b` | Llama 3.1 8B (Cerebras) | cerebras | Fast | 128,000 | 8,192 | $0.01 | $0.01 | Yes | No |
-| 42 | `sambanova/llama-3.3-70b` | Llama 3.3 70B (SambaNova) | sambanova | Balanced | 128,000 | 8,192 | $0.06 | $0.06 | Yes | No |
-| 43 | `grok-2` | Grok 2 | xai | Smart | 131,072 | 32,768 | $2.00 | $10.00 | Yes | Yes |
-| 44 | `grok-2-mini` | Grok 2 Mini | xai | Fast | 131,072 | 32,768 | $0.30 | $0.50 | Yes | No |
-| 45 | `hf/meta-llama/Llama-3.3-70B-Instruct` | Llama 3.3 70B (HF) | huggingface | Balanced | 128,000 | 4,096 | $0.30 | $0.30 | No | No |
-| 46 | `replicate/meta-llama-3.3-70b-instruct` | Llama 3.3 70B (Replicate) | replicate | Balanced | 128,000 | 4,096 | $0.40 | $0.40 | No | No |
+| 19 | `openrouter/google/gemini-2.5-flash` | Gemini 2.5 Flash (OpenRouter) | openrouter | Smart | 1,048,576 | 65,536 | $0.15 | $0.60 | Yes | Yes |
+| 20 | `openrouter/anthropic/claude-sonnet-4` | Claude Sonnet 4 (OpenRouter) | openrouter | Smart | 200,000 | 64,000 | $3.00 | $15.00 | Yes | Yes |
+| 21 | `openrouter/openai/gpt-4o` | GPT-4o (OpenRouter) | openrouter | Smart | 128,000 | 16,384 | $2.50 | $10.00 | Yes | Yes |
+| 22 | `openrouter/deepseek/deepseek-chat` | DeepSeek V3 (OpenRouter) | openrouter | Smart | 128,000 | 32,768 | $0.14 | $0.28 | Yes | No |
+| 23 | `openrouter/meta-llama/llama-3.3-70b-instruct` | Llama 3.3 70B (OpenRouter) | openrouter | Balanced | 128,000 | 32,768 | $0.39 | $0.39 | Yes | No |
+| 24 | `openrouter/qwen/qwen-2.5-72b-instruct` | Qwen 2.5 72B (OpenRouter) | openrouter | Balanced | 128,000 | 32,768 | $0.36 | $0.36 | Yes | No |
+| 25 | `openrouter/google/gemini-2.5-pro` | Gemini 2.5 Pro (OpenRouter) | openrouter | Frontier | 1,048,576 | 65,536 | $1.25 | $10.00 | Yes | Yes |
+| 26 | `openrouter/mistralai/mistral-large-latest` | Mistral Large (OpenRouter) | openrouter | Smart | 128,000 | 8,192 | $2.00 | $6.00 | Yes | No |
+| 27 | `openrouter/google/gemma-2-9b-it` | Gemma 2 9B (OpenRouter) | openrouter | Fast | 8,192 | 4,096 | $0.00 | $0.00 | No | No |
+| 28 | `openrouter/deepseek/deepseek-r1` | DeepSeek R1 (OpenRouter) | openrouter | Frontier | 128,000 | 32,768 | $0.55 | $2.19 | No | No |
+| 29 | `mistral-large-latest` | Mistral Large | mistral | Smart | 128,000 | 8,192 | $2.00 | $6.00 | Yes | No |
+| 30 | `codestral-latest` | Codestral | mistral | Smart | 32,000 | 8,192 | $0.30 | $0.90 | Yes | No |
+| 31 | `mistral-small-latest` | Mistral Small | mistral | Fast | 128,000 | 8,192 | $0.10 | $0.30 | Yes | No |
+| 32 | `meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo` | Llama 3.1 405B (Together) | together | Frontier | 130,000 | 4,096 | $3.50 | $3.50 | Yes | No |
+| 33 | `Qwen/Qwen2.5-72B-Instruct-Turbo` | Qwen 2.5 72B (Together) | together | Smart | 32,768 | 4,096 | $0.20 | $0.60 | Yes | No |
+| 34 | `mistralai/Mixtral-8x22B-Instruct-v0.1` | Mixtral 8x22B (Together) | together | Balanced | 65,536 | 4,096 | $0.60 | $0.60 | Yes | No |
+| 35 | `accounts/fireworks/models/llama-v3p1-405b-instruct` | Llama 3.1 405B (Fireworks) | fireworks | Frontier | 131,072 | 16,384 | $3.00 | $3.00 | Yes | No |
+| 36 | `accounts/fireworks/models/mixtral-8x22b-instruct` | Mixtral 8x22B (Fireworks) | fireworks | Balanced | 65,536 | 4,096 | $0.90 | $0.90 | Yes | No |
+| 37 | `llama3.2` | Llama 3.2 (Ollama) | ollama | Local | 128,000 | 4,096 | $0.00 | $0.00 | Yes | No |
+| 38 | `mistral:latest` | Mistral (Ollama) | ollama | Local | 32,768 | 4,096 | $0.00 | $0.00 | Yes | No |
+| 39 | `phi3` | Phi-3 (Ollama) | ollama | Local | 128,000 | 4,096 | $0.00 | $0.00 | No | No |
+| 40 | `vllm-local` | vLLM Local Model | vllm | Local | 32,768 | 4,096 | $0.00 | $0.00 | Yes | No |
+| 41 | `lmstudio-local` | LM Studio Local Model | lmstudio | Local | 32,768 | 4,096 | $0.00 | $0.00 | Yes | No |
+| 42 | `sonar-pro` | Sonar Pro | perplexity | Smart | 200,000 | 8,192 | $3.00 | $15.00 | No | No |
+| 43 | `sonar` | Sonar | perplexity | Balanced | 128,000 | 8,192 | $1.00 | $5.00 | No | No |
+| 44 | `command-r-plus` | Command R+ | cohere | Smart | 128,000 | 4,096 | $2.50 | $10.00 | Yes | No |
+| 45 | `command-r` | Command R | cohere | Balanced | 128,000 | 4,096 | $0.15 | $0.60 | Yes | No |
+| 46 | `jamba-1.5-large` | Jamba 1.5 Large | ai21 | Smart | 256,000 | 4,096 | $2.00 | $8.00 | Yes | No |
+| 47 | `cerebras/llama3.3-70b` | Llama 3.3 70B (Cerebras) | cerebras | Balanced | 128,000 | 8,192 | $0.06 | $0.06 | Yes | No |
+| 48 | `cerebras/llama3.1-8b` | Llama 3.1 8B (Cerebras) | cerebras | Fast | 128,000 | 8,192 | $0.01 | $0.01 | Yes | No |
+| 49 | `sambanova/llama-3.3-70b` | Llama 3.3 70B (SambaNova) | sambanova | Balanced | 128,000 | 8,192 | $0.06 | $0.06 | Yes | No |
+| 50 | `grok-2` | Grok 2 | xai | Smart | 131,072 | 32,768 | $2.00 | $10.00 | Yes | Yes |
+| 51 | `grok-2-mini` | Grok 2 Mini | xai | Fast | 131,072 | 32,768 | $0.30 | $0.50 | Yes | No |
+| 52 | `hf/meta-llama/Llama-3.3-70B-Instruct` | Llama 3.3 70B (HF) | huggingface | Balanced | 128,000 | 4,096 | $0.30 | $0.30 | No | No |
+| 53 | `replicate/meta-llama-3.3-70b-instruct` | Llama 3.3 70B (Replicate) | replicate | Balanced | 128,000 | 4,096 | $0.40 | $0.40 | No | No |
 
 **Model Tiers:**
 

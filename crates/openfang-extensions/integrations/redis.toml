@@ -8,7 +8,7 @@ tags = ["database", "cache", "key-value", "in-memory", "nosql"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-redis"]
+args = ["-y", "@modelcontextprotocol/server-redis"]
 
 [[required_env]]
 name = "REDIS_URL"

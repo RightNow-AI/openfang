@@ -8,7 +8,7 @@ tags = ["tasks", "todo", "project-management", "productivity", "gtd"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-todoist"]
+args = ["-y", "todoist-mcp"]
 
 [[required_env]]
 name = "TODOIST_API_KEY"

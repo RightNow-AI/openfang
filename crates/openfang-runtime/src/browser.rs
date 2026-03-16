@@ -141,13 +141,13 @@ impl CdpConnection {
             if let Some(id) = json.get("id").and_then(|v| v.as_u64()) {
                 if let Some((_, sender)) = pending.remove(&id) {
                     if let Some(error) = json.get("error") {
-                        let msg = error["message"]
-                            .as_str()
-                            .unwrap_or("CDP error")
-                            .to_string();
+                        let msg = error["message"].as_str().unwrap_or("CDP error").to_string();
                         let _ = sender.send(Err(msg));
                     } else {
-                        let result = json.get("result").cloned().unwrap_or(serde_json::Value::Null);
+                        let result = json
+                            .get("result")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
                         let _ = sender.send(Ok(result));
                     }
                 }
@@ -287,9 +287,12 @@ impl BrowserSession {
             }
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to launch Chromium at {}: {e}", chrome_path.display()))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            format!(
+                "Failed to launch Chromium at {}: {e}",
+                chrome_path.display()
+            )
+        })?;
 
         // Parse stderr for the DevTools WebSocket URL
         let stderr = child.stderr.take().ok_or("No stderr from Chromium")?;
@@ -453,7 +456,10 @@ impl BrowserSession {
                     .unwrap_or(val);
                 if parsed["success"].as_bool() == Some(false) {
                     return BrowserResponse::err(
-                        parsed["error"].as_str().unwrap_or("Click failed").to_string(),
+                        parsed["error"]
+                            .as_str()
+                            .unwrap_or("Click failed")
+                            .to_string(),
                     );
                 }
                 // Wait briefly for any navigation triggered by click
@@ -632,7 +638,11 @@ impl BrowserSession {
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or(info);
 
-        let content_val = self.cdp.run_js(EXTRACT_CONTENT_JS).await.unwrap_or_default();
+        let content_val = self
+            .cdp
+            .run_js(EXTRACT_CONTENT_JS)
+            .await
+            .unwrap_or_default();
         let content_obj: serde_json::Value = content_val
             .as_str()
             .and_then(|s| serde_json::from_str(s).ok())
@@ -987,9 +997,7 @@ pub async fn tool_browser_read_page(
     mgr: &BrowserManager,
     agent_id: &str,
 ) -> Result<String, String> {
-    let resp = mgr
-        .send_command(agent_id, BrowserCommand::ReadPage)
-        .await?;
+    let resp = mgr.send_command(agent_id, BrowserCommand::ReadPage).await?;
     if !resp.success {
         return Err(resp.error.unwrap_or_else(|| "ReadPage failed".to_string()));
     }
@@ -1293,7 +1301,10 @@ mod tests {
     #[test]
     fn test_chromium_candidates_not_empty() {
         let paths = chromium_candidates();
-        assert!(!paths.is_empty(), "Should have platform-specific candidates");
+        assert!(
+            !paths.is_empty(),
+            "Should have platform-specific candidates"
+        );
     }
 
     #[test]

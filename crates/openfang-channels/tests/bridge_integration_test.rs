@@ -17,6 +17,7 @@ use openfang_channels::types::{
 use openfang_types::agent::AgentId;
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, watch};
 
@@ -31,6 +32,8 @@ struct MockAdapter {
     rx: Mutex<Option<mpsc::Receiver<ChannelMessage>>>,
     /// Captures all messages sent via send().
     sent: Arc<Mutex<Vec<(String, String)>>>,
+    /// Counts how many times stop() was called.
+    stop_calls: Arc<AtomicUsize>,
     shutdown_tx: watch::Sender<bool>,
 }
 
@@ -46,6 +49,7 @@ impl MockAdapter {
             channel_type,
             rx: Mutex::new(Some(rx)),
             sent: Arc::new(Mutex::new(Vec::new())),
+            stop_calls: Arc::new(AtomicUsize::new(0)),
             shutdown_tx,
         });
         (adapter, tx)
@@ -54,6 +58,10 @@ impl MockAdapter {
     /// Get a copy of all sent responses as (platform_id, text) pairs.
     fn get_sent(&self) -> Vec<(String, String)> {
         self.sent.lock().unwrap().clone()
+    }
+
+    fn stop_call_count(&self) -> usize {
+        self.stop_calls.load(Ordering::SeqCst)
     }
 }
 
@@ -96,6 +104,7 @@ impl ChannelAdapter for MockAdapter {
     }
 
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.stop_calls.fetch_add(1, Ordering::SeqCst);
         let _ = self.shutdown_tx.send(true);
         Ok(())
     }
@@ -491,6 +500,30 @@ async fn test_bridge_manager_lifecycle() {
 
     // Stop — should complete without hanging
     manager.stop().await;
+}
+
+/// Test that BridgeManager stop propagates to the underlying adapters.
+#[tokio::test]
+async fn test_bridge_manager_stop_calls_adapter_stop() {
+    let agent_id = AgentId::new();
+    let handle = Arc::new(MockHandle::new(vec![(agent_id, "bot".to_string())]));
+    let router = Arc::new(AgentRouter::new());
+    router.set_user_default("user1".to_string(), agent_id);
+
+    let (adapter, tx) = MockAdapter::new("stop-check", ChannelType::Telegram);
+    let adapter_ref = adapter.clone();
+
+    let mut manager = BridgeManager::new(handle, router);
+    manager.start_adapter(adapter.clone()).await.unwrap();
+
+    tx.send(make_text_msg(ChannelType::Telegram, "user1", "hello"))
+        .await
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    manager.stop().await;
+
+    assert_eq!(adapter_ref.stop_call_count(), 1);
 }
 
 /// Test multiple adapters running simultaneously in the same BridgeManager.

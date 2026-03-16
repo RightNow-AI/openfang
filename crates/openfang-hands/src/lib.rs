@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use openfang_types::agent::AgentId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 // ─── Error types ─────────────────────────────────────────────────────────────
@@ -29,6 +30,8 @@ pub enum HandError {
     TomlParse(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Config error: {0}")]
+    Config(String),
 }
 
 pub type HandResult<T> = Result<T, HandError>;
@@ -115,6 +118,13 @@ pub struct HandRequirement {
     /// Human-readable description of why this is needed.
     #[serde(default)]
     pub description: Option<String>,
+    /// Whether this requirement is optional (non-critical).
+    ///
+    /// Optional requirements do not block activation. When an active hand has
+    /// unmet optional requirements it is reported as "degraded" rather than
+    /// "requirements not met".
+    #[serde(default)]
+    pub optional: bool,
     /// Platform-specific installation instructions.
     #[serde(default)]
     pub install: Option<HandInstallInfo>,
@@ -297,6 +307,20 @@ fn default_temperature() -> f32 {
     0.7
 }
 
+#[derive(Deserialize)]
+struct HandTomlWrapper {
+    hand: HandDefinition,
+}
+
+/// Parse HAND.toml content, supporting both flat format and `[hand]` table format.
+pub fn parse_hand_toml(content: &str) -> Result<HandDefinition, toml::de::Error> {
+    if let Ok(def) = toml::from_str::<HandDefinition>(content) {
+        return Ok(def);
+    }
+    let wrapper: HandTomlWrapper = toml::from_str(content)?;
+    Ok(wrapper.hand)
+}
+
 /// Complete Hand definition — parsed from HAND.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandDefinition {
@@ -334,6 +358,15 @@ pub struct HandDefinition {
     /// Bundled skill content (populated at load time, not in TOML).
     #[serde(skip)]
     pub skill_content: Option<String>,
+    /// Source directory for external hands when installed from disk.
+    #[serde(skip)]
+    pub install_path: Option<PathBuf>,
+    /// Original HAND.toml used to install this hand.
+    #[serde(skip)]
+    pub install_toml: Option<String>,
+    /// Original SKILL.md used to install this hand.
+    #[serde(skip)]
+    pub install_skill_content: Option<String>,
 }
 
 /// Runtime status of a Hand instance.
@@ -788,5 +821,51 @@ metrics = []
         assert_eq!(install.steps[0], "Go to example.com and sign up");
         assert!(install.macos.is_none());
         assert!(install.windows.is_none());
+    }
+
+    #[test]
+    fn parse_hand_toml_flat_format() {
+        let toml_str = r#"
+id = "test"
+name = "Test Hand"
+description = "A test hand"
+category = "content"
+tools = ["shell_exec"]
+
+[agent]
+name = "test-hand"
+description = "Test agent"
+system_prompt = "You are a test agent."
+
+[dashboard]
+metrics = []
+"#;
+        let def = parse_hand_toml(toml_str).unwrap();
+        assert_eq!(def.id, "test");
+        assert_eq!(def.name, "Test Hand");
+    }
+
+    #[test]
+    fn parse_hand_toml_wrapped_format() {
+        let toml_str = r#"
+[hand]
+id = "test"
+name = "Test Hand"
+description = "A test hand"
+category = "content"
+tools = ["shell_exec"]
+
+[hand.agent]
+name = "test-hand"
+description = "Test agent"
+system_prompt = "You are a test agent."
+
+[hand.dashboard]
+metrics = []
+"#;
+        let def = parse_hand_toml(toml_str).unwrap();
+        assert_eq!(def.id, "test");
+        assert_eq!(def.name, "Test Hand");
+        assert_eq!(def.agent.name, "test-hand");
     }
 }
