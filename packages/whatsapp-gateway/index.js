@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
 import http from 'node:http';
-import net from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys';
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  Browsers,
+} from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import pino from 'pino';
 
@@ -15,222 +18,120 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ---------------------------------------------------------------------------
-// Config from environment
+// Config
 // ---------------------------------------------------------------------------
 const PORT = parseInt(process.env.WHATSAPP_GATEWAY_PORT || '3009', 10);
 const OPENFANG_URL = (process.env.OPENFANG_URL || 'http://127.0.0.1:4200').replace(/\/+$/, '');
-
-// Resolve default agent: env var > config.toml [channels.whatsapp].default_agent > 'assistant'
-function readDefaultAgentFromConfig() {
-  const configPaths = ['/data/config.toml', path.join(__dirname, '..', 'config.toml')];
-  for (const cfgPath of configPaths) {
-    try {
-      const content = fs.readFileSync(cfgPath, 'utf-8');
-      // Find [channels.whatsapp] section and extract default_agent
-      const waSection = content.match(/\[channels\.whatsapp\]([^[]*)/s);
-      if (waSection) {
-        const agentMatch = waSection[1].match(/default_agent\s*=\s*"([^"]+)"/);
-        if (agentMatch) {
-          console.log(`[gateway] Read default_agent="${agentMatch[1]}" from ${cfgPath}`);
-          return agentMatch[1];
-        }
-      }
-    } catch { /* file not found, try next */ }
-  }
-  return null;
-}
-
-let DEFAULT_AGENT = process.env.OPENFANG_DEFAULT_AGENT
-  || readDefaultAgentFromConfig()
-  || 'assistant';
-
-// ---------------------------------------------------------------------------
-// Resolve agent name → UUID if needed (OpenFang API requires UUID)
-// ---------------------------------------------------------------------------
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-async function resolveAgentId(nameOrId) {
-  if (UUID_RE.test(nameOrId)) return nameOrId;
-  return new Promise((resolve) => {
-    const url = new URL(`${OPENFANG_URL}/api/agents`);
-    http.get({ hostname: url.hostname, port: url.port || 4200, path: url.pathname, timeout: 5000 }, (res) => {
-      let body = '';
-      res.on('data', (c) => (body += c));
-      res.on('end', () => {
-        try {
-          const agents = JSON.parse(body);
-          const match = agents.find((a) => a.name === nameOrId);
-          if (match) {
-            console.log(`[gateway] Resolved agent "${nameOrId}" → ${match.id}`);
-            resolve(match.id);
-          } else {
-            console.warn(`[gateway] Agent "${nameOrId}" not found, using as-is`);
-            resolve(nameOrId);
-          }
-        } catch {
-          resolve(nameOrId);
-        }
-      });
-    }).on('error', () => resolve(nameOrId));
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Retry helper — exponential backoff for any async operation
-// ---------------------------------------------------------------------------
-async function withRetry(fn, { retries = 3, baseDelay = 1000, label = 'operation' } = {}) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      return await fn(attempt);
-    } catch (err) {
-      if (attempt === retries) throw err;
-      const delay = baseDelay * Math.pow(2, attempt - 1);
-      console.warn(`[gateway] ${label} failed (attempt ${attempt}/${retries}): ${err.message} — retrying in ${delay}ms`);
-      await new Promise((r) => setTimeout(r, delay));
-    }
-  }
-}
+const DEFAULT_AGENT = process.env.OPENFANG_DEFAULT_AGENT || 'ambrogio';
+const AGENT_UUID_CACHE = new Map();
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-let sock = null;          // Baileys socket
-let sessionId = '';       // current session identifier
-let qrDataUrl = '';       // latest QR code as data:image/png;base64,...
-let connStatus = 'disconnected'; // disconnected | qr_ready | connected
+let sock = null;
+let sessionId = '';
+let qrDataUrl = '';
+let connStatus = 'disconnected';
 let qrExpired = false;
 let statusMessage = 'Not started';
-let reconnectAttempt = 0; // exponential backoff counter
-const MAX_RECONNECT_DELAY = 30_000; // cap at 30s (was 60s — too slow)
-let lastPongTime = Date.now();  // track last successful WebSocket pong
-let lastConnectedAt = 0;        // timestamp of last successful connection
-const STABLE_CONNECTION_MS = 10_000; // connection must last 10s to be considered stable
-let qrTimer = null;             // QR code expiration timer
-let pingInterval = null;        // WebSocket keepalive ping interval
-let watchdogInterval = null;    // [RESILIENCE] connection watchdog timer
-let reconnectTimerId = null;    // [RESILIENCE] guard against duplicate reconnect timers
-let processingMessage = false;  // message queue lock
-const messageQueue = [];        // serialized message processing queue
-let lastDisconnectedAt = 0;     // timestamp of last disconnection — used to recover missed messages
-const processedMessageIds = new Set(); // dedup: track recently processed message IDs
-const MAX_PROCESSED_IDS = 500;  // cap dedup set size
-const RECOVERY_WINDOW_MS = 120_000; // recover messages from the last 2 minutes after reconnect
+let reconnectAttempt = 0;
+let reconnectTimer = null;
+let connectedSince = null;
+let flushInterval = null;
+let evProcessUnsub = null;
+const MAX_RECONNECT_DELAY = 60_000;
+const pendingReplies = new Map();
 
-// Persistent dedup file — survives process restarts
-const DEDUP_FILE = path.join(__dirname, '.processed_ids.json');
-
-// Tuning constants
-const QR_TIMEOUT_MS = 60_000;     // QR expires after 60s — auto-regenerate
-const PING_INTERVAL_MS = 25_000;  // WebSocket keepalive ping every 25s
-const PING_STALE_MS = 45_000;     // consider connection dead if no pong in 45s (was 90s)
-const WATCHDOG_INTERVAL_MS = 30_000; // [RESILIENCE] check "am I connected?" every 30s
-const WATCHDOG_MAX_DISCONNECTED_MS = 120_000; // [RESILIENCE] force process exit if disconnected > 2min
-const MAX_MEDIA_RETRIES = 3;      // retry count for media download/upload
-const MAX_API_RETRIES = 3;        // retry count for OpenFang API calls
-
-// ---------------------------------------------------------------------------
-// [RESILIENCE] Persistent dedup — load/save processed message IDs to disk
-// ---------------------------------------------------------------------------
-function loadDedupIds() {
-  try {
-    const data = JSON.parse(fs.readFileSync(DEDUP_FILE, 'utf-8'));
-    if (Array.isArray(data)) {
-      for (const id of data.slice(-MAX_PROCESSED_IDS)) {
-        processedMessageIds.add(id);
-      }
-      console.log(`[gateway] Loaded ${processedMessageIds.size} dedup IDs from disk`);
-    }
-  } catch { /* no file or corrupt — start fresh */ }
+// Per-sender serial queue: ensures only one OpenFang call per sender at a time
+const senderQueues = new Map();
+function enqueueSender(senderJid, fn) {
+  const prev = senderQueues.get(senderJid) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  senderQueues.set(senderJid, next);
+  next.finally(() => {
+    if (senderQueues.get(senderJid) === next) senderQueues.delete(senderJid);
+  });
 }
 
-function saveDedupIds() {
-  try {
-    fs.writeFileSync(DEDUP_FILE, JSON.stringify([...processedMessageIds]), 'utf-8');
-  } catch (err) {
-    console.warn(`[gateway] Failed to save dedup IDs:`, err.message);
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+const log = (level, msg) => {
+  const ts = new Date().toISOString();
+  console[level === 'error' ? 'error' : 'log'](`[gateway] [${ts}] ${msg}`);
+};
+
+// ---------------------------------------------------------------------------
+// Markdown → WhatsApp formatting
+// ---------------------------------------------------------------------------
+function markdownToWhatsApp(text) {
+  if (!text) return text;
+  // Bold: **text** or __text__ → *text*
+  text = text.replace(/\*\*(.+?)\*\*/g, '*$1*');
+  text = text.replace(/__(.+?)__/g, '*$1*');
+  // Italic: *text* (single) or _text_ → _text_ (WhatsApp italic)
+  // Be careful not to convert already-bold markers
+  text = text.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '_$1_');
+  // Strikethrough: ~~text~~ → ~text~
+  text = text.replace(/~~(.+?)~~/g, '~$1~');
+  // Code blocks: ```text``` → ```text```  (WhatsApp supports this natively)
+  // Inline code: `text` → ```text``` (no inline code in WhatsApp)
+  text = text.replace(/(?<!`)(`{1})(?!`)(.+?)(?<!`)\1(?!`)/g, '```$2```');
+  return text;
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup socket
+// ---------------------------------------------------------------------------
+function cleanupSocket() {
+  if (flushInterval) {
+    clearInterval(flushInterval);
+    flushInterval = null;
   }
+  if (evProcessUnsub) {
+    try { evProcessUnsub(); } catch (_) {}
+    evProcessUnsub = null;
+  }
+  if (sock) {
+    try { sock.end(undefined); } catch (_) {}
+    sock = null;
+  }
+  connectedSince = null;
 }
 
-// Load dedup IDs on startup
-loadDedupIds();
-
-// Save dedup IDs periodically (every 30s) and on exit
-setInterval(saveDedupIds, 30_000);
-
 // ---------------------------------------------------------------------------
-// [RESILIENCE] Safe reconnect scheduler — prevents duplicate timers
+// Schedule reconnect with exponential backoff
 // ---------------------------------------------------------------------------
-function scheduleReconnect(delayMs, label) {
-  if (reconnectTimerId) {
-    console.log(`[gateway] Reconnect already scheduled, skipping duplicate (${label})`);
+function scheduleReconnect(reason) {
+  if (reconnectTimer) {
+    log('info', `Reconnect already scheduled, skipping (${reason})`);
     return;
   }
-  console.log(`[gateway] Scheduling reconnect in ${delayMs}ms (${label})`);
-  reconnectTimerId = setTimeout(async () => {
-    reconnectTimerId = null;
+  reconnectAttempt++;
+  const delay = Math.min(1000 * Math.pow(2, reconnectAttempt - 1), MAX_RECONNECT_DELAY);
+  log('info', `Scheduling reconnect #${reconnectAttempt} in ${delay}ms — reason: ${reason}`);
+  statusMessage = `Reconnecting (attempt ${reconnectAttempt})...`;
+  connStatus = 'disconnected';
+
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
     try {
       await startConnection();
     } catch (err) {
-      console.error(`[gateway] Reconnect failed (${label}):`, err.message);
-      // Don't leave the process stuck — schedule another attempt
-      reconnectAttempt++;
-      const nextDelay = Math.min(1000 * Math.pow(2, reconnectAttempt - 1), MAX_RECONNECT_DELAY);
-      scheduleReconnect(nextDelay, 'retry after failure');
+      log('error', `Reconnect failed: ${err.message}`);
+      scheduleReconnect('reconnect-error');
     }
-  }, delayMs);
+  }, delay);
 }
-
-// ---------------------------------------------------------------------------
-// [RESILIENCE] Connection watchdog — catches ALL cases where we're stuck disconnected
-// ---------------------------------------------------------------------------
-let disconnectedSince = 0; // track when we first became disconnected
-
-function startWatchdog() {
-  if (watchdogInterval) clearInterval(watchdogInterval);
-
-  watchdogInterval = setInterval(() => {
-    const now = Date.now();
-
-    if (connStatus === 'connected') {
-      disconnectedSince = 0; // reset
-      return;
-    }
-
-    // We're not connected — track how long
-    if (disconnectedSince === 0) {
-      disconnectedSince = now;
-    }
-
-    const disconnectedMs = now - disconnectedSince;
-
-    // If no reconnect is pending, schedule one
-    if (!reconnectTimerId) {
-      console.warn(`[gateway] WATCHDOG: Not connected, no reconnect pending — forcing reconnect`);
-      reconnectAttempt = 0;
-      scheduleReconnect(1000, 'watchdog forced');
-      return;
-    }
-
-    // If disconnected for too long, let PM2 handle it with a clean restart
-    if (disconnectedMs > WATCHDOG_MAX_DISCONNECTED_MS) {
-      console.error(`[gateway] WATCHDOG: Disconnected for ${Math.round(disconnectedMs / 1000)}s — forcing process exit for PM2 restart`);
-      saveDedupIds();
-      cleanupPidFile();
-      process.exit(1);
-    }
-  }, WATCHDOG_INTERVAL_MS);
-}
-
-// Start watchdog immediately
-startWatchdog();
 
 // ---------------------------------------------------------------------------
 // Baileys connection
 // ---------------------------------------------------------------------------
 async function startConnection() {
-  const logger = pino({ level: 'warn' });
-  const authDir = path.join(__dirname, 'auth_store');
+  cleanupSocket();
 
+  const logger = pino({ level: 'info' });
+  const authDir = path.join(__dirname, 'auth_store');
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
   const { version } = await fetchLatestBaileysVersion();
 
@@ -240,512 +141,274 @@ async function startConnection() {
   connStatus = 'disconnected';
   statusMessage = 'Connecting...';
 
-  // Clear any existing QR timer and ping interval
-  if (qrTimer) { clearTimeout(qrTimer); qrTimer = null; }
-  if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+  log('info', `Starting connection (Baileys v${version.join('.')})`);
 
   sock = makeWASocket({
     version,
     auth: state,
     logger,
-    printQRInTerminal: true,
-    browser: ['OpenFang', 'Desktop', '1.0.0'],
-    keepAliveIntervalMs: PING_INTERVAL_MS,
+    browser: Browsers.ubuntu('Chrome'),
+    keepAliveIntervalMs: 25_000,
+    connectTimeoutMs: 20_000,
+    retryRequestDelayMs: 250,
+    markOnlineOnConnect: true,
+    defaultQueryTimeoutMs: 60_000,
+    emitOwnEvents: false,
+    fireInitQueries: true,
+    syncFullHistory: false,
+    generateHighQualityLinkPreview: false,
+    getMessage: async () => undefined,
   });
 
-  // Save credentials whenever they update
-  sock.ev.on('creds.update', saveCreds);
-
-  // Connection state changes (QR code, connected, disconnected)
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      // New QR code generated — convert to data URL
-      try {
-        qrDataUrl = await QRCode.toDataURL(qr, { width: 256, margin: 2 });
-        connStatus = 'qr_ready';
-        qrExpired = false;
-        statusMessage = 'Scan this QR code with WhatsApp → Linked Devices';
-        console.log('[gateway] QR code ready — waiting for scan');
-
-        // [FIX #2] QR timeout — expire after 60s and regenerate
-        if (qrTimer) clearTimeout(qrTimer);
-        qrTimer = setTimeout(() => {
-          if (connStatus === 'qr_ready') {
-            qrExpired = true;
-            qrDataUrl = '';
-            statusMessage = 'QR code expired. Reconnecting for a fresh code...';
-            console.warn('[gateway] QR code expired after 60s — regenerating');
-            try { if (sock) sock.end(); } catch {}
-            sock = null;
-            scheduleReconnect(1000, 'QR expired');
-          }
-        }, QR_TIMEOUT_MS);
-      } catch (err) {
-        console.error('[gateway] QR generation failed:', err.message);
-      }
+  // ------------------------------------------------------------------
+  // Use sock.ev.process() — the canonical Baileys v6 event API.
+  // This receives consolidated event batches AFTER the internal
+  // buffer is flushed, avoiding the "events stuck in buffer" problem.
+  // ------------------------------------------------------------------
+  evProcessUnsub = sock.ev.process(async (events) => {
+    // Credentials update
+    if (events['creds.update']) {
+      await saveCreds();
     }
 
-    if (connection === 'close') {
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const reason = lastDisconnect?.error?.output?.payload?.message || 'unknown';
-      console.log(`[gateway] Connection closed: ${reason} (${statusCode})`);
-
-      // Clear ping interval on disconnect
-      if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
-      if (qrTimer) { clearTimeout(qrTimer); qrTimer = null; }
-
-      lastDisconnectedAt = Date.now();
-
-      if (statusCode === DisconnectReason.loggedOut) {
-        // User logged out from phone — clear auth and stop (truly non-recoverable)
-        connStatus = 'disconnected';
-        statusMessage = 'Logged out. Generate a new QR code to reconnect.';
-        qrDataUrl = '';
-        sock = null;
-        reconnectAttempt = 0;
-        // Remove auth store so next connect gets a fresh QR
-        const authPath = path.join(__dirname, 'auth_store');
-        if (fs.existsSync(authPath)) {
-          fs.rmSync(authPath, { recursive: true, force: true });
-        }
-      } else {
-        // Check if the connection was stable before this disconnect
-        const connectionDuration = Date.now() - lastConnectedAt;
-        const wasStable = lastConnectedAt > 0 && connectionDuration > STABLE_CONNECTION_MS;
-
-        if (wasStable) {
-          // Connection was stable — reset backoff, this is a genuine disconnect
-          reconnectAttempt = 0;
-        }
-
-        // Detect conflict loops (rapid connect → conflict → reconnect)
-        const isConflict = reason.includes('conflict') || statusCode === 440;
-        connStatus = 'disconnected';
-        // Ensure old socket is fully dead before reconnecting
-        try { if (sock) sock.end(); } catch {}
-        sock = null;
-
-        if (isConflict) {
-          // Conflict means another session is active. Use longer base delay
-          reconnectAttempt++;
-          const delay = Math.min(5000 * Math.pow(2, reconnectAttempt - 1), MAX_RECONNECT_DELAY);
-          console.warn(`[gateway] Conflict detected — waiting ${delay}ms before reconnect (attempt ${reconnectAttempt})`);
-          statusMessage = `Session conflict — reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempt})...`;
-          scheduleReconnect(delay, 'conflict');
-        } else {
-          // Normal disconnect — reconnect with standard backoff
-          reconnectAttempt++;
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttempt - 1), MAX_RECONNECT_DELAY);
-          console.log(`[gateway] Reconnecting in ${delay}ms (attempt ${reconnectAttempt})...`);
-          statusMessage = `Reconnecting (attempt ${reconnectAttempt})...`;
-          scheduleReconnect(delay, 'disconnect');
-        }
-      }
+    // Connection state
+    if (events['connection.update']) {
+      await handleConnectionUpdate(events['connection.update']);
     }
 
-    if (connection === 'open') {
-      connStatus = 'connected';
-      qrExpired = false;
-      qrDataUrl = '';
-      lastPongTime = Date.now();
-      lastConnectedAt = Date.now();
-      disconnectedSince = 0; // reset watchdog tracker
-      reconnectAttempt = 0; // reset backoff on successful connection
-      statusMessage = 'Connected to WhatsApp';
-      console.log('[gateway] Connected to WhatsApp!');
+    // Incoming messages
+    if (events['messages.upsert']) {
+      const { messages, type } = events['messages.upsert'];
+      log('info', `messages.upsert event: ${messages.length} message(s), type=${type}`);
 
-      // Clear any pending reconnect timer (we're already connected)
-      if (reconnectTimerId) { clearTimeout(reconnectTimerId); reconnectTimerId = null; }
-
-      // Clear QR timer — no longer needed
-      if (qrTimer) { clearTimeout(qrTimer); qrTimer = null; }
-
-      // [FIX #4] Start WebSocket keepalive ping
-      startPingMonitor();
-    }
-  });
-
-  // Debug: log key Baileys events
-  for (const evt of ['messages.upsert', 'messages.update', 'messages.delete', 'message-receipt.update', 'messaging-history.set', 'chats.upsert', 'chats.update', 'contacts.upsert', 'contacts.update', 'presence.update', 'groups.upsert', 'groups.update']) {
-    sock.ev.on(evt, (data) => {
-      // Any event from the server means the connection is alive
-      lastPongTime = Date.now();
-      const count = Array.isArray(data) ? data.length : (data?.messages?.length || data?.chats?.length || '?');
-      console.log(`[gateway] Event: ${evt} (count=${count})`);
-    });
-  }
-
-  // Incoming messages → enqueue for serialized processing
-  // Also recovers messages missed during connection gaps (type=append)
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    console.log(`[gateway] messages.upsert: type=${type}, count=${messages.length}`);
-
-    const isNotify = type === 'notify';
-    const isAppend = type === 'append';
-
-    // Only process notify (live) and append (history sync for recovery)
-    if (!isNotify && !isAppend) return;
-
-    for (const msg of messages) {
-      // Skip messages from self and status broadcasts
-      if (msg.key.fromMe) continue;
-      if (msg.key.remoteJid === 'status@broadcast') continue;
-
-      // Dedup: skip if we've already processed this message
-      const msgId = msg.key.id;
-      if (processedMessageIds.has(msgId)) {
-        continue;
-      }
-
-      if (isAppend) {
-        // History sync — only process recent messages missed during disconnection
-        const msgTimestamp = (msg.messageTimestamp || 0) * 1000; // Baileys uses seconds
-        const now = Date.now();
-        const cutoff = Math.max(lastDisconnectedAt - 5000, now - RECOVERY_WINDOW_MS);
-
-        if (msgTimestamp < cutoff) {
-          continue; // too old, skip
-        }
-
-        console.log(`[gateway] RECOVERY: processing missed message id=${msgId} from=${msg.pushName || 'unknown'} age=${Math.round((now - msgTimestamp) / 1000)}s`);
-      }
-
-      // Track as processed (persisted to disk periodically)
-      processedMessageIds.add(msgId);
-      // Cap dedup set size
-      if (processedMessageIds.size > MAX_PROCESSED_IDS) {
-        const iter = processedMessageIds.values();
-        processedMessageIds.delete(iter.next().value);
-      }
-      // Save dedup state after each batch
-      saveDedupIds();
-
-      // [FIX #7] Enqueue message for serialized processing
-      messageQueue.push(msg);
-    }
-
-    // Process queue (non-blocking — kicks off if not already running)
-    processMessageQueue();
-  });
-}
-
-// ---------------------------------------------------------------------------
-// [FIX #7] Message queue — process one message at a time
-// ---------------------------------------------------------------------------
-async function processMessageQueue() {
-  if (processingMessage) return; // already processing
-  processingMessage = true;
-
-  while (messageQueue.length > 0) {
-    const msg = messageQueue.shift();
-    try {
-      await handleIncomingMessage(msg);
-    } catch (err) {
-      console.error(`[gateway] Message processing error:`, err.message);
-    }
-  }
-
-  processingMessage = false;
-}
-
-async function handleIncomingMessage(msg) {
-  // Send read receipt (blue checkmarks) immediately
-  try {
-    if (sock) await sock.readMessages([msg.key]);
-  } catch (err) {
-    console.warn(`[gateway] Failed to send read receipt:`, err.message);
-  }
-
-  const remoteJid = msg.key.remoteJid || '';
-  const isGroup = remoteJid.endsWith('@g.us');
-
-  // Unwrap Baileys message wrappers (viewOnce, ephemeral, etc.)
-  const rawMsg = msg.message;
-  const m = rawMsg?.ephemeralMessage?.message
-    || rawMsg?.viewOnceMessage?.message
-    || rawMsg?.viewOnceMessageV2?.message
-    || rawMsg?.viewOnceMessageV2Extension?.message
-    || rawMsg?.documentWithCaptionMessage?.message
-    || rawMsg;
-
-  let text = m?.conversation
-    || m?.extendedTextMessage?.text
-    || '';
-
-  // Debug: log message keys to diagnose undetected media
-  const rawKeys = rawMsg ? Object.keys(rawMsg) : [];
-  const unwrappedKeys = m ? Object.keys(m) : [];
-  if (rawKeys.length > 0) {
-    console.log(`[gateway] Message keys: raw=[${rawKeys.join(',')}] unwrapped=[${unwrappedKeys.join(',')}]`);
-  }
-
-  // Check for media messages
-  const hasMedia = m?.imageMessage || m?.audioMessage || m?.videoMessage
-    || m?.documentMessage || m?.stickerMessage;
-
-  // Extract caption from media messages
-  if (!text && hasMedia) {
-    text = m?.imageMessage?.caption || m?.videoMessage?.caption || '';
-  }
-
-  // Download and upload media if present
-  let attachments = [];
-  if (hasMedia) {
-    const mediaType = m?.imageMessage ? 'image' : m?.audioMessage ? 'audio' : m?.videoMessage ? 'video' : m?.documentMessage ? 'document' : 'sticker';
-    const wasWrapped = m !== rawMsg;
-    console.log(`[gateway] Media detected: type=${mediaType}, wrapped=${wasWrapped}, from=${msg.pushName || 'unknown'}`);
-
-    // [FIX #3] Media download with retry
-    const media = await withRetry(
-      () => downloadWhatsAppMedia(msg),
-      { retries: MAX_MEDIA_RETRIES, baseDelay: 1000, label: 'media download' }
-    ).catch(() => null);
-
-    if (media) {
-      try {
-        // [FIX #3] Media upload with retry
-        const fileId = await withRetry(
-          () => uploadMediaToOpenFang(media.buffer, media.mimetype, media.filename),
-          { retries: MAX_MEDIA_RETRIES, baseDelay: 1000, label: 'media upload' }
-        );
-        attachments.push({
-          file_id: fileId,
-          filename: media.filename,
-          content_type: media.mimetype,
-        });
-        // If no text/caption, describe what was sent
-        if (!text) {
-          const type = media.mimetype.split('/')[0]; // image, audio, video
-          text = `[${type} attachment: ${media.filename}]`;
-        }
-      } catch (err) {
-        console.error(`[gateway] Media upload failed after ${MAX_MEDIA_RETRIES} retries:`, err.message);
-        if (!text) {
-          if (m?.imageMessage) text = '[Image received - upload failed]';
-          else if (m?.audioMessage) text = '[Voice note received - upload failed]';
-          else if (m?.videoMessage) text = '[Video received - upload failed]';
-          else if (m?.documentMessage) text = '[Document received - upload failed]';
-          else if (m?.stickerMessage) text = '[Sticker received - upload failed]';
-        }
-      }
-    } else if (!text) {
-      if (m?.imageMessage) text = '[Image received - download failed]';
-      else if (m?.audioMessage) text = '[Voice note received - download failed]';
-      else if (m?.videoMessage) text = '[Video received - download failed]';
-      else if (m?.documentMessage) text = '[Document received - download failed]';
-      else if (m?.stickerMessage) text = '[Sticker received - download failed]';
-    }
-  }
-
-  // Skip truly empty messages (no text, no media)
-  if (!text && attachments.length === 0) return;
-
-  // For groups: real sender is in participant; for DMs: it's remoteJid
-  const senderJid = isGroup ? (msg.key.participant || '') : remoteJid;
-  const phone = '+' + senderJid.replace(/@.*$/, '');
-  const pushName = msg.pushName || phone;
-
-  const metadata = {
-    channel: 'whatsapp',
-    sender: phone,
-    sender_name: pushName,
-  };
-  if (isGroup) {
-    metadata.group_jid = remoteJid;
-    metadata.is_group = true;
-    console.log(`[gateway] Group msg from ${pushName} (${phone}) in ${remoteJid}: ${text.substring(0, 80)}`);
-  } else {
-    console.log(`[gateway] Incoming from ${pushName} (${phone}): ${text.substring(0, 80)}`);
-  }
-
-  // [FIX #5] Forward to OpenFang with retry + [FIX #6] timeout with cleanup
-  let response = null;
-  try {
-    response = await withRetry(
-      () => forwardToOpenFang(text, phone, pushName, metadata, attachments),
-      { retries: MAX_API_RETRIES, baseDelay: 2000, label: 'OpenFang API' }
-    );
-  } catch (err) {
-    console.error(`[gateway] Forward failed after ${MAX_API_RETRIES} retries:`, err.message);
-  }
-
-  if (response && sock && connStatus === 'connected') {
-    const replyJid = remoteJid;
-    try {
-      await sock.sendMessage(replyJid, { text: markdownToWhatsApp(response) });
-      console.log(`[gateway] Replied to ${pushName}${isGroup ? ' in group ' + remoteJid : ''}`);
-    } catch (err) {
-      console.error(`[gateway] Reply send failed:`, err.message);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// [FIX #4] WebSocket keepalive ping — detect zombie connections
-// ---------------------------------------------------------------------------
-function startPingMonitor() {
-  if (pingInterval) clearInterval(pingInterval);
-
-  pingInterval = setInterval(() => {
-    if (connStatus !== 'connected' || !sock) return;
-
-    const timeSinceLastPong = Date.now() - lastPongTime;
-
-    // Check if the socket's underlying WebSocket is still alive
-    try {
-      const wsState = sock?.ws?.readyState;
-      // WebSocket states: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
-      if (wsState !== undefined && wsState !== 1) {
-        console.warn(`[gateway] Ping monitor: WebSocket in bad state (${wsState}), triggering reconnect`);
-        triggerReconnect('WebSocket bad state');
+      if (type !== 'notify') {
+        log('info', `Skipping non-notify batch (type=${type})`);
         return;
       }
+
+      for (const msg of messages) {
+        if (msg.key.fromMe) {
+          log('info', `Skipping own message ${msg.key.id}`);
+          continue;
+        }
+        if (msg.key.remoteJid === 'status@broadcast') continue;
+
+        const sender = msg.key.remoteJid || '';
+        const text =
+          msg.message?.conversation ||
+          msg.message?.extendedTextMessage?.text ||
+          msg.message?.imageMessage?.caption ||
+          msg.message?.videoMessage?.caption ||
+          '';
+
+        if (!text) {
+          log('info', `No text content in message from ${sender} (stub=${msg.messageStubType || 'none'})`);
+          continue;
+        }
+
+        const phone = '+' + sender.replace(/@.*$/, '');
+        const pushName = msg.pushName || phone;
+
+        log('info', `Incoming from ${pushName} (${phone}): ${text.substring(0, 120)}`);
+
+        // Read receipt (blue ticks)
+        try {
+          if (sock) await sock.readMessages([msg.key]);
+        } catch (err) {
+          log('error', `Read receipt failed: ${err.message}`);
+        }
+
+        // Enqueue per-sender to serialize OpenFang calls per contact
+        enqueueSender(sender, () =>
+          handleIncoming(text, phone, pushName, sender).catch((err) => {
+            log('error', `Handle failed for ${pushName}: ${err.message}`);
+          })
+        );
+      }
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // Safety net: periodic buffer flush every 3 seconds.
+  // In theory processNodeWithBuffer already flushes, but if a code
+  // path inside Baileys activates the buffer without flushing, this
+  // ensures events don't get stuck forever.
+  // ------------------------------------------------------------------
+  flushInterval = setInterval(() => {
+    try {
+      if (sock?.ev?.flush) sock.ev.flush();
+    } catch (_) {}
+  }, 3_000);
+
+  log('info', 'Event handlers registered via sock.ev.process()');
+}
+
+// ---------------------------------------------------------------------------
+// Handle connection updates
+// ---------------------------------------------------------------------------
+async function handleConnectionUpdate(update) {
+  const { connection, lastDisconnect, qr } = update;
+
+  if (qr) {
+    try {
+      qrDataUrl = await QRCode.toDataURL(qr, { width: 256, margin: 2 });
+      connStatus = 'qr_ready';
+      qrExpired = false;
+      statusMessage = 'Scan QR with WhatsApp > Linked Devices';
+      log('info', 'QR code ready');
     } catch (err) {
-      console.warn(`[gateway] Ping monitor error:`, err.message);
+      log('error', `QR generation failed: ${err.message}`);
     }
+  }
 
-    // Check for stale connection — no data received for too long
-    if (timeSinceLastPong > PING_STALE_MS) {
-      console.warn(`[gateway] Ping monitor: No activity for ${Math.round(timeSinceLastPong / 1000)}s, triggering reconnect`);
-      triggerReconnect('stale connection (no pong)');
+  if (connection === 'open') {
+    connStatus = 'connected';
+    qrExpired = false;
+    qrDataUrl = '';
+    reconnectAttempt = 0;
+    connectedSince = Date.now();
+    statusMessage = 'Connected to WhatsApp';
+    log('info', 'Connected to WhatsApp!');
+
+    // TCP keepalive — prevents silent network deaths in containers
+    try {
+      const rawSocket = sock?.ws?.socket?._socket;
+      if (rawSocket && typeof rawSocket.setKeepAlive === 'function') {
+        rawSocket.setKeepAlive(true, 10_000);
+        log('info', 'TCP keepalive enabled');
+      }
+    } catch (_) {}
+
+    flushPendingReplies();
+  }
+
+  if (connection === 'close') {
+    const statusCode = lastDisconnect?.error?.output?.statusCode;
+    const reason = lastDisconnect?.error?.output?.payload?.message || 'unknown';
+    const uptime = connectedSince ? Math.round((Date.now() - connectedSince) / 1000) : 0;
+    log('info', `Closed after ${uptime}s — ${reason} (code: ${statusCode})`);
+
+    if (statusCode === DisconnectReason.loggedOut) {
+      connStatus = 'disconnected';
+      statusMessage = 'Logged out. POST /login/start to reconnect.';
+      qrDataUrl = '';
+      cleanupSocket();
+      reconnectAttempt = 0;
+      const authPath = path.join(__dirname, 'auth_store');
+      if (fs.existsSync(authPath)) {
+        fs.rmSync(authPath, { recursive: true, force: true });
+      }
+      log('info', 'Auth cleared');
+    } else if (statusCode === DisconnectReason.connectionReplaced) {
+      log('info', 'Connection replaced — backing off');
+      reconnectAttempt = Math.max(reconnectAttempt, 3);
+      scheduleReconnect('connection-replaced');
+    } else {
+      scheduleReconnect(reason);
     }
-  }, PING_INTERVAL_MS);
-}
-
-function triggerReconnect(reason) {
-  console.warn(`[gateway] Triggering reconnect: ${reason}`);
-  connStatus = 'disconnected';
-  statusMessage = `Reconnecting: ${reason}`;
-  reconnectAttempt = 0;
-  if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
-  try { if (sock) sock.end(); } catch {}
-  sock = null;
-  scheduleReconnect(1000, reason);
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Upload media to OpenFang, return file_id
+// Handle incoming → OpenFang → reply
 // ---------------------------------------------------------------------------
-async function uploadMediaToOpenFang(buffer, contentType, filename) {
+async function handleIncoming(text, phone, pushName, senderJid) {
+  let response;
+  try {
+    response = await forwardToOpenFang(text, phone, pushName);
+  } catch (err) {
+    log('error', `OpenFang error for ${pushName}: ${err.message}`);
+    return;
+  }
+  if (!response) {
+    log('info', `No response from OpenFang for ${pushName}`);
+    return;
+  }
+
+  // Convert markdown formatting to WhatsApp-native formatting
+  response = markdownToWhatsApp(response);
+
+  if (sock && connStatus === 'connected') {
+    try {
+      await sock.sendMessage(senderJid, { text: response });
+      log('info', `Replied to ${pushName} (${response.length} chars)`);
+      return;
+    } catch (err) {
+      log('error', `Send failed for ${pushName}: ${err.message}`);
+    }
+  }
+
+  log('info', `Buffering reply for ${pushName}`);
+  pendingReplies.set(senderJid, { text: response, timestamp: Date.now() });
+}
+
+// ---------------------------------------------------------------------------
+// Flush pending replies
+// ---------------------------------------------------------------------------
+async function flushPendingReplies() {
+  if (pendingReplies.size === 0) return;
+  const maxAge = 5 * 60_000;
+  const now = Date.now();
+
+  for (const [jid, { text, timestamp }] of pendingReplies) {
+    pendingReplies.delete(jid);
+    if (now - timestamp > maxAge) {
+      log('info', `Discarding stale reply for ${jid}`);
+      continue;
+    }
+    try {
+      await sock.sendMessage(jid, { text });
+      log('info', `Flushed reply to ${jid}`);
+    } catch (err) {
+      log('error', `Flush failed for ${jid}: ${err.message}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resolve agent name → UUID
+// ---------------------------------------------------------------------------
+async function resolveAgentUUID(nameOrUUID) {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nameOrUUID)) {
+    return nameOrUUID;
+  }
+  if (AGENT_UUID_CACHE.has(nameOrUUID)) {
+    return AGENT_UUID_CACHE.get(nameOrUUID);
+  }
   return new Promise((resolve, reject) => {
-    const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(DEFAULT_AGENT)}/upload`);
-
-    const req = http.request(
-      {
-        hostname: url.hostname,
-        port: url.port || 4200,
-        path: url.pathname,
-        method: 'POST',
-        headers: {
-          'Content-Type': contentType,
-          'Content-Length': buffer.length,
-          'X-Filename': filename,
-        },
-        timeout: 30_000,
-      },
-      (res) => {
-        let body = '';
-        res.on('data', (chunk) => (body += chunk));
-        res.on('end', () => {
-          try {
-            const data = JSON.parse(body);
-            if (data.file_id) {
-              console.log(`[gateway] Uploaded media: ${filename} → ${data.file_id}`);
-              resolve(data.file_id);
-            } else {
-              reject(new Error(`Upload failed: ${body}`));
-            }
-          } catch {
-            reject(new Error(`Upload parse error: ${body}`));
+    http.get(`${OPENFANG_URL}/api/agents`, (res) => {
+      let body = '';
+      res.on('data', (chunk) => (body += chunk));
+      res.on('end', () => {
+        try {
+          const agents = JSON.parse(body);
+          const agent = agents.find((a) => a.name === nameOrUUID);
+          if (agent) {
+            AGENT_UUID_CACHE.set(nameOrUUID, agent.id);
+            resolve(agent.id);
+          } else {
+            reject(new Error(`Agent "${nameOrUUID}" not found`));
           }
-        });
-      },
-    );
-
-    req.on('error', reject);
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('Upload timeout'));
-    });
-    req.write(buffer);
-    req.end();
+        } catch (e) {
+          reject(new Error(`Parse agents failed: ${e.message}`));
+        }
+      });
+    }).on('error', reject);
   });
 }
 
 // ---------------------------------------------------------------------------
-// Download media from a WhatsApp message, returns { buffer, mimetype, filename }
+// Forward to OpenFang
 // ---------------------------------------------------------------------------
-async function downloadWhatsAppMedia(msg) {
-  // Unwrap Baileys message wrappers (viewOnce, ephemeral, etc.)
-  const rawMsg = msg.message;
-  const m = rawMsg?.ephemeralMessage?.message
-    || rawMsg?.viewOnceMessage?.message
-    || rawMsg?.viewOnceMessageV2?.message
-    || rawMsg?.viewOnceMessageV2Extension?.message
-    || rawMsg?.documentWithCaptionMessage?.message
-    || rawMsg;
-  let mediaMsg = null;
-  let mimetype = 'application/octet-stream';
-  let filename = 'file';
-
-  if (m?.imageMessage) {
-    mediaMsg = m.imageMessage;
-    mimetype = mediaMsg.mimetype || 'image/jpeg';
-    filename = `image_${Date.now()}.${mimetype.split('/')[1] || 'jpg'}`;
-  } else if (m?.audioMessage) {
-    mediaMsg = m.audioMessage;
-    mimetype = mediaMsg.mimetype || 'audio/ogg';
-    const ext = mediaMsg.ptt ? 'ogg' : (mimetype.split('/')[1] || 'ogg');
-    filename = `audio_${Date.now()}.${ext}`;
-  } else if (m?.videoMessage) {
-    mediaMsg = m.videoMessage;
-    mimetype = mediaMsg.mimetype || 'video/mp4';
-    filename = `video_${Date.now()}.${mimetype.split('/')[1] || 'mp4'}`;
-  } else if (m?.documentMessage) {
-    mediaMsg = m.documentMessage;
-    mimetype = mediaMsg.mimetype || 'application/octet-stream';
-    filename = mediaMsg.fileName || `document_${Date.now()}`;
-  } else if (m?.stickerMessage) {
-    mediaMsg = m.stickerMessage;
-    mimetype = mediaMsg.mimetype || 'image/webp';
-    filename = `sticker_${Date.now()}.webp`;
-  }
-
-  if (!mediaMsg) return null;
-
-  // For wrapped messages, create a shallow copy with unwrapped .message
-  // so Baileys' downloadMediaMessage can find the media content
-  const downloadMsg = (m !== rawMsg) ? { ...msg, message: m } : msg;
-  const buffer = await downloadMediaMessage(downloadMsg, 'buffer', {});
-  return { buffer, mimetype, filename };
-}
-
-// ---------------------------------------------------------------------------
-// Forward incoming message to OpenFang API, return agent response
-// [FIX #5] Retries handled by caller via withRetry()
-// [FIX #6] AbortController for clean timeout with cleanup
-// ---------------------------------------------------------------------------
-function forwardToOpenFang(text, phone, pushName, metadata, attachments) {
+async function forwardToOpenFang(text, phone, pushName) {
+  const agentId = await resolveAgentUUID(DEFAULT_AGENT);
   return new Promise((resolve, reject) => {
-    const body = {
+    const payload = JSON.stringify({
       message: text,
       sender_id: phone,
       sender_name: pushName,
-      metadata: metadata || {
-        channel: 'whatsapp',
-        sender: phone,
-        sender_name: pushName,
-      },
-    };
-    if (attachments && attachments.length > 0) {
-      body.attachments = attachments;
-    }
-    const payload = JSON.stringify(body);
-
-    const url = new URL(`${OPENFANG_URL}/api/agents/${encodeURIComponent(DEFAULT_AGENT)}/message`);
-
+    });
+    const url = new URL(`${OPENFANG_URL}/api/agents/${agentId}/message`);
     const req = http.request(
       {
         hostname: url.hostname,
@@ -756,7 +419,7 @@ function forwardToOpenFang(text, phone, pushName, metadata, attachments) {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(payload),
         },
-        timeout: 300_000, // LLM calls can be very slow (5 min)
+        timeout: 300_000,
       },
       (res) => {
         let body = '';
@@ -771,76 +434,20 @@ function forwardToOpenFang(text, phone, pushName, metadata, attachments) {
         });
       },
     );
-
     req.on('error', reject);
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('OpenFang API timeout'));
-    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('OpenFang timeout')); });
     req.write(payload);
     req.end();
   });
 }
 
 // ---------------------------------------------------------------------------
-// Convert Markdown to WhatsApp-compatible formatting
-// ---------------------------------------------------------------------------
-function markdownToWhatsApp(text) {
-  if (!text) return text;
-
-  // Protect code blocks from transformation (``` ... ```)
-  const codeBlocks = [];
-  text = text.replace(/```[\s\S]*?```/g, (match) => {
-    codeBlocks.push(match);
-    return `\x00CB${codeBlocks.length - 1}\x00`;
-  });
-
-  // Protect inline code (`...`)
-  const inlineCode = [];
-  text = text.replace(/`[^`]+`/g, (match) => {
-    inlineCode.push(match);
-    return `\x00IC${inlineCode.length - 1}\x00`;
-  });
-
-  // Headers: # Title → *Title* (bold in WhatsApp)
-  text = text.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
-
-  // Bold: **text** → *text*
-  text = text.replace(/\*\*(.+?)\*\*/g, '*$1*');
-
-  // Strikethrough: ~~text~~ → ~text~
-  text = text.replace(/~~(.+?)~~/g, '~$1~');
-
-  // Links: [text](url) → text (url)
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
-
-  // Images: ![alt](url) → alt (url)
-  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$1 ($2)');
-
-  // Horizontal rules: --- or *** or ___ → ———
-  text = text.replace(/^[-*_]{3,}$/gm, '———');
-
-  // Restore inline code
-  text = text.replace(/\x00IC(\d+)\x00/g, (_, i) => inlineCode[i]);
-
-  // Restore code blocks
-  text = text.replace(/\x00CB(\d+)\x00/g, (_, i) => codeBlocks[i]);
-
-  return text;
-}
-
-// ---------------------------------------------------------------------------
-// Send a message via Baileys (called by OpenFang for outgoing)
+// Send outgoing message
 // ---------------------------------------------------------------------------
 async function sendMessage(to, text) {
-  if (!sock || connStatus !== 'connected') {
-    throw new Error('WhatsApp not connected');
-  }
-
-  // If already a full JID (group or user), use as-is; otherwise normalize phone → JID
-  const jid = to.includes('@') ? to : to.replace(/^\+/, '') + '@s.whatsapp.net';
-
-  await sock.sendMessage(jid, { text: markdownToWhatsApp(text) });
+  if (!sock || connStatus !== 'connected') throw new Error('WhatsApp not connected');
+  const jid = to.replace(/^\+/, '').replace(/@.*$/, '') + '@s.whatsapp.net';
+  await sock.sendMessage(jid, { text });
 }
 
 // ---------------------------------------------------------------------------
@@ -851,11 +458,8 @@ function parseBody(req) {
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (e) {
-        reject(new Error('Invalid JSON'));
-      }
+      try { resolve(body ? JSON.parse(body) : {}); }
+      catch (e) { reject(new Error('Invalid JSON')); }
     });
     req.on('error', reject);
   });
@@ -872,7 +476,6 @@ function jsonResponse(res, status, data) {
 }
 
 const server = http.createServer(async (req, res) => {
-  // CORS preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
@@ -886,270 +489,76 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname;
 
   try {
-    // POST /login/start — start Baileys connection, return QR
     if (req.method === 'POST' && pathname === '/login/start') {
-      // If already connected, just return success
       if (connStatus === 'connected') {
         return jsonResponse(res, 200, {
-          qr_data_url: '',
-          session_id: sessionId,
-          message: 'Already connected to WhatsApp',
-          connected: true,
+          qr_data_url: '', session_id: sessionId,
+          message: 'Already connected', connected: true,
         });
       }
-
-      // Start a new connection (resets any existing)
       await startConnection();
-
-      // Wait briefly for QR to generate (Baileys emits it quickly)
       let waited = 0;
       while (!qrDataUrl && connStatus !== 'connected' && waited < 15_000) {
         await new Promise((r) => setTimeout(r, 300));
         waited += 300;
       }
-
       return jsonResponse(res, 200, {
-        qr_data_url: qrDataUrl,
-        session_id: sessionId,
-        message: statusMessage,
-        connected: connStatus === 'connected',
+        qr_data_url: qrDataUrl, session_id: sessionId,
+        message: statusMessage, connected: connStatus === 'connected',
       });
     }
 
-    // GET /login/status — poll for connection status
     if (req.method === 'GET' && pathname === '/login/status') {
       return jsonResponse(res, 200, {
         connected: connStatus === 'connected',
         message: statusMessage,
         expired: qrExpired,
+        uptime: connectedSince ? Math.round((Date.now() - connectedSince) / 1000) : 0,
       });
     }
 
-    // POST /message/send — send outgoing message via Baileys
     if (req.method === 'POST' && pathname === '/message/send') {
       const body = await parseBody(req);
-      const { to, text } = body;
-
-      if (!to || !text) {
-        return jsonResponse(res, 400, { error: 'Missing "to" or "text" field' });
-      }
-
-      await sendMessage(to, text);
+      if (!body.to || !body.text) return jsonResponse(res, 400, { error: 'Missing "to" or "text"' });
+      await sendMessage(body.to, body.text);
       return jsonResponse(res, 200, { success: true, message: 'Sent' });
     }
 
-    // [FIX #1] GET /health — detailed health check with uptime and queue info
     if (req.method === 'GET' && pathname === '/health') {
-      const now = Date.now();
-      const healthy = connStatus === 'connected' && sock !== null;
-      const timeSinceLastPong = connStatus === 'connected' ? now - lastPongTime : null;
-      return jsonResponse(res, healthy ? 200 : 503, {
-        status: healthy ? 'ok' : 'degraded',
+      return jsonResponse(res, 200, {
+        status: 'ok',
         connected: connStatus === 'connected',
         session_id: sessionId || null,
-        uptime_seconds: Math.round(process.uptime()),
-        queue_depth: messageQueue.length,
-        processing: processingMessage,
-        last_pong_ms_ago: timeSinceLastPong,
-        reconnect_attempts: reconnectAttempt,
-        reconnect_pending: reconnectTimerId !== null,
-        disconnected_seconds: disconnectedSince > 0 ? Math.round((now - disconnectedSince) / 1000) : 0,
-        watchdog_active: watchdogInterval !== null,
-        dedup_ids_count: processedMessageIds.size,
+        uptime: connectedSince ? Math.round((Date.now() - connectedSince) / 1000) : 0,
+        pending_replies: pendingReplies.size,
       });
     }
 
-    // 404
     jsonResponse(res, 404, { error: 'Not found' });
   } catch (err) {
-    console.error(`[gateway] ${req.method} ${pathname} error:`, err.message);
+    log('error', `${req.method} ${pathname}: ${err.message}`);
     jsonResponse(res, 500, { error: err.message });
   }
 });
 
 // ---------------------------------------------------------------------------
-// PID file management
+// Start
 // ---------------------------------------------------------------------------
-const PID_FILE = path.join(__dirname, 'gateway.pid');
+server.listen(PORT, '127.0.0.1', () => {
+  log('info', `Listening on http://127.0.0.1:${PORT}`);
+  log('info', `OpenFang: ${OPENFANG_URL} | Agent: ${DEFAULT_AGENT}`);
 
-function writePidFile() {
-  fs.writeFileSync(PID_FILE, String(process.pid), 'utf-8');
-  console.log(`[gateway] PID file written: ${PID_FILE} (${process.pid})`);
-}
-
-function cleanupPidFile() {
-  try { fs.unlinkSync(PID_FILE); } catch {}
-}
-
-function killStalePidFile() {
-  try {
-    const oldPid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
-    if (oldPid && oldPid !== process.pid) {
-      try {
-        process.kill(oldPid, 0); // check if alive
-        console.warn(`[gateway] Stale PID file found (PID ${oldPid}), killing...`);
-        process.kill(oldPid, 'SIGTERM');
-        // Wait briefly, then force-kill if still alive
-        const start = Date.now();
-        while (Date.now() - start < 2000) {
-          try { process.kill(oldPid, 0); } catch { break; } // dead
-          execSync('sleep 0.2');
-        }
-        try { process.kill(oldPid, 'SIGKILL'); } catch {}
-      } catch {
-        // Process already dead — clean up stale PID file
-      }
-    }
-  } catch {
-    // No PID file or unreadable — fine
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Port cleanup — robust cleanup with PID file + port scan + retry
-// ---------------------------------------------------------------------------
-function isPortFree(port) {
-  return new Promise((resolve) => {
-    const testSock = net.createConnection({ port, host: '127.0.0.1' }, () => {
-      testSock.destroy();
-      resolve(false); // occupied
-    });
-    testSock.on('error', () => resolve(true)); // free
-  });
-}
-
-function killProcessOnPort(port) {
-  try {
-    const out = execSync(`ss -tlnp sport = :${port} 2>/dev/null || true`, { encoding: 'utf-8' });
-    const pidMatch = out.match(/pid=(\d+)/);
-    if (pidMatch) {
-      const pid = parseInt(pidMatch[1], 10);
-      if (pid !== process.pid) {
-        console.warn(`[gateway] Killing process PID ${pid} on port ${port}`);
-        try { process.kill(pid, 'SIGTERM'); } catch {}
-        return pid;
-      }
-    }
-  } catch {}
-  return null;
-}
-
-async function ensurePortFree(port, maxRetries = 3) {
-  // Step 1: Kill stale process from PID file
-  killStalePidFile();
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    if (await isPortFree(port)) {
-      return; // port is free
-    }
-
-    console.warn(`[gateway] Port ${port} occupied (attempt ${attempt}/${maxRetries})`);
-
-    // Try to kill whatever is holding the port
-    const pid = killProcessOnPort(port);
-
-    if (pid) {
-      // Wait for process to die
-      await new Promise((r) => setTimeout(r, 1500));
-      // Force-kill if still alive
-      try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch {}
-      await new Promise((r) => setTimeout(r, 500));
-    } else {
-      // ss couldn't find it — wait and retry
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-  }
-
-  // Final check
-  if (!(await isPortFree(port))) {
-    console.error(`[gateway] FATAL: Port ${port} still occupied after ${maxRetries} cleanup attempts`);
-    process.exit(1);
-  }
-}
-
-await ensurePortFree(PORT);
-writePidFile();
-
-// Listen with EADDRINUSE retry as last-resort safety net
-function startServer() {
-  return new Promise((resolve, reject) => {
-    server.once('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        console.warn(`[gateway] EADDRINUSE on listen — retrying cleanup...`);
-        ensurePortFree(PORT, 2).then(() => {
-          server.listen(PORT, '127.0.0.1', resolve);
-        }).catch(reject);
-      } else {
-        reject(err);
-      }
-    });
-    server.listen(PORT, '127.0.0.1', resolve);
-  });
-}
-
-await startServer();
-
-// Post-listen setup
-(async () => {
-  // Resolve agent name to UUID before anything else
-  DEFAULT_AGENT = await resolveAgentId(DEFAULT_AGENT);
-  console.log(`[gateway] WhatsApp Web gateway listening on http://127.0.0.1:${PORT}`);
-  console.log(`[gateway] OpenFang URL: ${OPENFANG_URL}`);
-  console.log(`[gateway] Default agent: ${DEFAULT_AGENT}`);
-
-  // Auto-connect if credentials already exist from a previous session
   const credsPath = path.join(__dirname, 'auth_store', 'creds.json');
   if (fs.existsSync(credsPath)) {
-    console.log('[gateway] Found existing credentials — auto-connecting...');
+    log('info', 'Credentials found — auto-connecting...');
     startConnection().catch((err) => {
-      console.error('[gateway] Auto-connect failed:', err.message);
-      statusMessage = 'Auto-connect failed. Use POST /login/start to retry.';
+      log('error', `Auto-connect failed: ${err.message}`);
+      statusMessage = 'Auto-connect failed. POST /login/start to retry.';
     });
   } else {
-    console.log('[gateway] No credentials found. Waiting for POST /login/start to begin QR flow...');
-  }
-})();
-
-// ---------------------------------------------------------------------------
-// Uncaught exception / rejection handlers — prevent silent death
-// ---------------------------------------------------------------------------
-process.on('uncaughtException', (err) => {
-  console.error('[gateway] UNCAUGHT EXCEPTION:', err.message, err.stack);
-  // Always try to recover, regardless of current connection state
-  connStatus = 'disconnected';
-  statusMessage = 'Recovering from uncaught exception...';
-  try { if (sock) sock.end(); } catch {}
-  sock = null;
-  if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
-  scheduleReconnect(5000, 'uncaught exception');
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('[gateway] UNHANDLED REJECTION:', reason);
-  // If we're disconnected and no reconnect is pending, schedule one
-  if (connStatus !== 'connected' && !reconnectTimerId) {
-    scheduleReconnect(3000, 'unhandled rejection');
+    log('info', 'No credentials. POST /login/start for QR flow.');
   }
 });
 
-// Graceful shutdown — clean up PID file and intervals
-function gracefulShutdown(signal) {
-  console.log(`\n[gateway] Shutting down (${signal})...`);
-  saveDedupIds();
-  cleanupPidFile();
-  if (pingInterval) clearInterval(pingInterval);
-  if (watchdogInterval) clearInterval(watchdogInterval);
-  if (qrTimer) clearTimeout(qrTimer);
-  if (reconnectTimerId) clearTimeout(reconnectTimerId);
-  if (sock) sock.end();
-  server.close(() => process.exit(0));
-  // Force exit after 5s if server.close hangs
-  setTimeout(() => process.exit(0), 5000);
-}
-
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-
-process.on('exit', () => {
-  cleanupPidFile();
-});
+process.on('SIGINT', () => { log('info', 'SIGINT'); cleanupSocket(); server.close(() => process.exit(0)); });
+process.on('SIGTERM', () => { log('info', 'SIGTERM'); cleanupSocket(); server.close(() => process.exit(0)); });
