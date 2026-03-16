@@ -72,7 +72,7 @@ const PROVIDERS: &[ProviderInfo] = &[
         name: "openrouter",
         display: "OpenRouter",
         env_var: "OPENROUTER_API_KEY",
-        default_model: "openrouter/auto",
+        default_model: "openrouter/google/gemini-2.5-flash",
         needs_key: true,
         hint: "",
     },
@@ -173,12 +173,28 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "venice",
+        display: "Venice.ai",
+        env_var: "VENICE_API_KEY",
+        default_model: "venice-uncensored",
+        needs_key: true,
+        hint: "uncensored",
+    },
+    ProviderInfo {
         name: "ai21",
         display: "AI21",
         env_var: "AI21_API_KEY",
         default_model: "jamba-1.5-large",
         needs_key: true,
         hint: "",
+    },
+    ProviderInfo {
+        name: "claude-code",
+        display: "Claude Code",
+        env_var: "",
+        default_model: "claude-code/sonnet",
+        needs_key: false,
+        hint: "no API key",
     },
     ProviderInfo {
         name: "ollama",
@@ -375,15 +391,23 @@ impl State {
         self.provider_order.clear();
         let gemini_via_google = std::env::var("GOOGLE_API_KEY").is_ok();
         for (i, p) in PROVIDERS.iter().enumerate() {
-            let detected =
-                std::env::var(p.env_var).is_ok() || (p.name == "gemini" && gemini_via_google);
+            let detected = if p.name == "claude-code" {
+                openfang_runtime::drivers::claude_code::claude_code_available()
+            } else {
+                (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
+                    || (p.name == "gemini" && gemini_via_google)
+            };
             if detected {
                 self.provider_order.push(i);
             }
         }
         for (i, p) in PROVIDERS.iter().enumerate() {
-            let detected =
-                std::env::var(p.env_var).is_ok() || (p.name == "gemini" && gemini_via_google);
+            let detected = if p.name == "claude-code" {
+                openfang_runtime::drivers::claude_code::claude_code_available()
+            } else {
+                (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
+                    || (p.name == "gemini" && gemini_via_google)
+            };
             if !detected {
                 self.provider_order.push(i);
             }
@@ -422,7 +446,10 @@ impl State {
 
     fn is_provider_detected(&self, prov_idx: usize) -> bool {
         let p = &PROVIDERS[prov_idx];
-        std::env::var(p.env_var).is_ok()
+        if p.name == "claude-code" {
+            return openfang_runtime::drivers::claude_code::claude_code_available();
+        }
+        (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
             || (p.name == "gemini" && std::env::var("GOOGLE_API_KEY").is_ok())
     }
 
@@ -556,6 +583,13 @@ fn tier_label(tier: ModelTier) -> &'static str {
 // ── Entry point ────────────────────────────────────────────────────────────
 
 pub fn run() -> InitResult {
+    // Guard against non-TTY environments (Docker, piped, CI/CD)
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin())
+        || !std::io::IsTerminal::is_terminal(&std::io::stdout())
+    {
+        return InitResult::Cancelled;
+    }
+
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         ratatui::restore();
@@ -916,7 +950,9 @@ fn handle_migration_key(
                     let target_dir = if let Ok(h) = std::env::var("OPENFANG_HOME") {
                         PathBuf::from(h)
                     } else {
-                        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".openfang")
+                        dirs::home_dir()
+                            .unwrap_or_else(|| PathBuf::from("."))
+                            .join(".openfang")
                     };
                     let tx = migrate_tx.clone();
                     std::thread::spawn(move || {
@@ -1076,6 +1112,12 @@ complex_threshold = 500
     };
 
     let config_path = openfang_dir.join("config.toml");
+    let api_key_line = if p.env_var.is_empty() {
+        String::new()
+    } else {
+        format!("api_key_env = \"{}\"", p.env_var)
+    };
+
     let config = format!(
         r#"# OpenFang Agent OS configuration
 # See https://github.com/RightNow-AI/openfang for documentation
@@ -1085,13 +1127,12 @@ api_listen = "127.0.0.1:4200"
 [default_model]
 provider = "{provider}"
 model = "{model}"
-api_key_env = "{env_var}"
+{api_key_line}
 
 [memory]
 decay_rate = 0.05
 {routing_section}"#,
         provider = p.name,
-        env_var = p.env_var,
     );
 
     match std::fs::write(&config_path, &config) {
@@ -1688,7 +1729,13 @@ fn draw_provider(f: &mut Frame, area: Rect, state: &mut State) {
                 Span::styled("  ", Style::default())
             };
             let name_span = Span::raw(format!("{:<14}", p.display));
-            let hint_text = if detected {
+            let hint_text = if p.name == "claude-code" {
+                if detected {
+                    "CLI detected".to_string()
+                } else {
+                    "no API key needed".to_string()
+                }
+            } else if detected {
                 format!("{} detected", p.env_var)
             } else if !p.needs_key {
                 "local, no key needed".to_string()
@@ -2006,11 +2053,7 @@ fn draw_routing_pick(f: &mut Frame, area: Rect, state: &mut State, tier: usize) 
                 .split('/')
                 .next_back()
                 .unwrap_or(&state.routing_models[t]);
-            let display = if short.len() > 14 {
-                &short[..14]
-            } else {
-                short
-            };
+            let display = openfang_types::truncate_str(short, 14);
             summary_spans.push(Span::styled(
                 format!("{name}:{display}"),
                 Style::default().fg(*c),

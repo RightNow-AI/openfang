@@ -6,6 +6,7 @@
 use openfang_api::server::build_router;
 use openfang_kernel::OpenFangKernel;
 use std::net::{SocketAddr, TcpListener};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::{error, info};
@@ -20,24 +21,40 @@ pub struct ServerHandle {
     shutdown_tx: watch::Sender<bool>,
     /// Join handle for the background server thread.
     server_thread: Option<std::thread::JoinHandle<()>>,
+    /// Track whether shutdown has already been initiated to prevent double shutdown.
+    shutdown_initiated: Arc<AtomicBool>,
 }
 
 impl ServerHandle {
     /// Signal the server to shut down and wait for the background thread.
     pub fn shutdown(mut self) {
-        let _ = self.shutdown_tx.send(true);
-        if let Some(handle) = self.server_thread.take() {
-            let _ = handle.join();
+        // Only proceed if shutdown hasn't been initiated yet
+        if self
+            .shutdown_initiated
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok()
+        {
+            let _ = self.shutdown_tx.send(true);
+            if let Some(handle) = self.server_thread.take() {
+                let _ = handle.join();
+            }
+            self.kernel.shutdown();
+            info!("OpenFang embedded server stopped");
         }
-        self.kernel.shutdown();
-        info!("OpenFang embedded server stopped");
     }
 }
 
 impl Drop for ServerHandle {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(true);
-        // Best-effort: don't block in drop, the thread will exit on its own.
+        // Only send shutdown signal if it hasn't been initiated yet
+        if self
+            .shutdown_initiated
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok()
+        {
+            let _ = self.shutdown_tx.send(true);
+            // Best-effort: don't block in drop, the thread will exit on its own.
+        }
     }
 }
 
@@ -61,6 +78,7 @@ pub fn start_server() -> Result<ServerHandle, Box<dyn std::error::Error>> {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let kernel_clone = kernel.clone();
+    let shutdown_initiated = Arc::new(AtomicBool::new(false));
 
     let server_thread = std::thread::Builder::new()
         .name("openfang-server".into())
@@ -83,6 +101,7 @@ pub fn start_server() -> Result<ServerHandle, Box<dyn std::error::Error>> {
         kernel,
         shutdown_tx,
         server_thread: Some(server_thread),
+        shutdown_initiated,
     })
 }
 
