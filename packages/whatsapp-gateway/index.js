@@ -103,6 +103,8 @@ let statusMessage = 'Not started';
 let reconnectAttempt = 0; // exponential backoff counter
 const MAX_RECONNECT_DELAY = 60_000; // cap at 60s
 let lastPongTime = Date.now();  // track last successful WebSocket pong
+let lastConnectedAt = 0;        // timestamp of last successful connection
+const STABLE_CONNECTION_MS = 10_000; // connection must last 10s to be considered stable
 let qrTimer = null;             // QR code expiration timer
 let pingInterval = null;        // WebSocket keepalive ping interval
 let processingMessage = false;  // message queue lock
@@ -203,28 +205,50 @@ async function startConnection() {
           fs.rmSync(authPath, { recursive: true, force: true });
         }
       } else {
-        // All other disconnect reasons are recoverable — reconnect with backoff
-        reconnectAttempt++;
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempt - 1), MAX_RECONNECT_DELAY);
-        console.log(`[gateway] Reconnecting in ${delay}ms (attempt ${reconnectAttempt})...`);
-        statusMessage = `Reconnecting (attempt ${reconnectAttempt})...`;
-        connStatus = 'disconnected';
-        setTimeout(async () => {
-          try {
-            await startConnection();
-          } catch (err) {
-            console.error(`[gateway] Reconnect attempt ${reconnectAttempt} failed:`, err.message);
-            reconnectAttempt++;
-            const nextDelay = Math.min(1000 * Math.pow(2, reconnectAttempt - 1), MAX_RECONNECT_DELAY);
-            console.log(`[gateway] Will retry in ${nextDelay}ms (attempt ${reconnectAttempt})...`);
-            statusMessage = `Reconnect failed, retrying (attempt ${reconnectAttempt})...`;
-            setTimeout(async () => {
-              try { await startConnection(); } catch (e) {
-                console.error(`[gateway] Reconnect attempt ${reconnectAttempt} also failed:`, e.message);
-              }
-            }, nextDelay);
-          }
-        }, delay);
+        // Check if the connection was stable before this disconnect
+        const connectionDuration = Date.now() - lastConnectedAt;
+        const wasStable = lastConnectedAt > 0 && connectionDuration > STABLE_CONNECTION_MS;
+
+        if (wasStable) {
+          // Connection was stable — reset backoff, this is a genuine disconnect
+          reconnectAttempt = 0;
+        }
+
+        // Detect conflict loops (rapid connect → conflict → reconnect)
+        const isConflict = reason.includes('conflict') || statusCode === 440;
+        if (isConflict) {
+          // Conflict means another session is active. Use longer base delay
+          // to let the old session fully deregister before reconnecting
+          reconnectAttempt++;
+          const delay = Math.min(5000 * Math.pow(2, reconnectAttempt - 1), MAX_RECONNECT_DELAY);
+          console.warn(`[gateway] Conflict detected — waiting ${delay}ms before reconnect (attempt ${reconnectAttempt})`);
+          statusMessage = `Session conflict — reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempt})...`;
+          connStatus = 'disconnected';
+          // Ensure old socket is fully dead before reconnecting
+          try { if (sock) sock.end(); } catch {}
+          sock = null;
+          setTimeout(async () => {
+            try {
+              await startConnection();
+            } catch (err) {
+              console.error(`[gateway] Reconnect after conflict failed:`, err.message);
+            }
+          }, delay);
+        } else {
+          // Normal disconnect — reconnect with standard backoff
+          reconnectAttempt++;
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempt - 1), MAX_RECONNECT_DELAY);
+          console.log(`[gateway] Reconnecting in ${delay}ms (attempt ${reconnectAttempt})...`);
+          statusMessage = `Reconnecting (attempt ${reconnectAttempt})...`;
+          connStatus = 'disconnected';
+          setTimeout(async () => {
+            try {
+              await startConnection();
+            } catch (err) {
+              console.error(`[gateway] Reconnect attempt ${reconnectAttempt} failed:`, err.message);
+            }
+          }, delay);
+        }
       }
     }
 
@@ -232,10 +256,12 @@ async function startConnection() {
       connStatus = 'connected';
       qrExpired = false;
       qrDataUrl = '';
-      reconnectAttempt = 0;
       lastPongTime = Date.now();
+      lastConnectedAt = Date.now();
       statusMessage = 'Connected to WhatsApp';
       console.log('[gateway] Connected to WhatsApp!');
+      // Only reset backoff if the connection was stable (lasted > 10s)
+      // This prevents conflict loops from resetting the backoff counter
 
       // Clear QR timer — no longer needed
       if (qrTimer) { clearTimeout(qrTimer); qrTimer = null; }
