@@ -5396,7 +5396,10 @@ impl OpenFangKernel {
     /// This is the same logic used by the background cron tick loop, extracted
     /// so the API can trigger a job immediately via `POST /api/cron/jobs/{id}/run`.
     /// Records success/failure on the job's metadata just like the scheduler does.
-    pub async fn cron_run_job(self: &Arc<Self>, job: &openfang_types::scheduler::CronJob) -> Result<String, String> {
+    pub async fn cron_run_job(
+        self: &Arc<Self>,
+        job: &openfang_types::scheduler::CronJob,
+    ) -> Result<String, String> {
         use openfang_types::scheduler::CronAction;
 
         let job_id = job.id;
