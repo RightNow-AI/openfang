@@ -1099,6 +1099,11 @@ pub struct KernelConfig {
     /// Defaults to `~/.openfang/workflows`. Set to empty string to disable.
     #[serde(default)]
     pub workflows_dir: Option<PathBuf>,
+    /// Enable provider prompt caching (Anthropic cache_control, OpenAI cached tokens).
+    /// When enabled, system prompts and tool definitions are marked as cacheable,
+    /// reducing cost and latency for multi-turn conversations. Default: true.
+    #[serde(default = "default_true")]
+    pub prompt_cache: bool,
 }
 
 /// Dashboard authentication (username/password login).
@@ -1308,6 +1313,7 @@ impl Default for KernelConfig {
             oauth: OAuthConfig::default(),
             auth: AuthConfig::default(),
             workflows_dir: None,
+            prompt_cache: true,
         }
     }
 }

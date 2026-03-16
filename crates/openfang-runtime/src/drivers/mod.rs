@@ -270,7 +270,9 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .base_url
             .clone()
             .unwrap_or_else(|| ANTHROPIC_BASE_URL.to_string());
-        return Ok(Arc::new(anthropic::AnthropicDriver::new(api_key, base_url)));
+        let driver = anthropic::AnthropicDriver::new(api_key, base_url)
+            .with_prompt_cache(config.prompt_cache);
+        return Ok(Arc::new(driver));
     }
 
     // Gemini uses a different API format — special case
@@ -383,7 +385,9 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .base_url
             .clone()
             .unwrap_or_else(|| KIMI_CODING_BASE_URL.to_string());
-        return Ok(Arc::new(anthropic::AnthropicDriver::new(api_key, base_url)));
+        let driver = anthropic::AnthropicDriver::new(api_key, base_url)
+            .with_prompt_cache(config.prompt_cache);
+        return Ok(Arc::new(driver));
     }
 
     // All other providers use OpenAI-compatible format

@@ -160,6 +160,10 @@ pub async fn build_router(
             axum::routing::get(routes::get_routing_proposal_job),
         )
         .route(
+            "/api/routing/decisions",
+            axum::routing::get(routes::list_decision_traces),
+        )
+        .route(
             "/api/agents/{id}",
             axum::routing::get(routes::get_agent)
                 .delete(routes::kill_agent)

@@ -19,6 +19,7 @@ pub struct AnthropicDriver {
     api_key: Zeroizing<String>,
     base_url: String,
     client: reqwest::Client,
+    prompt_cache: bool,
 }
 
 impl AnthropicDriver {
@@ -31,7 +32,14 @@ impl AnthropicDriver {
                 .user_agent(crate::USER_AGENT)
                 .build()
                 .unwrap_or_default(),
+            prompt_cache: true,
         }
+    }
+
+    /// Set whether to use Anthropic prompt caching (cache_control headers).
+    pub fn with_prompt_cache(mut self, enabled: bool) -> Self {
+        self.prompt_cache = enabled;
+        self
     }
 }
 
@@ -41,7 +49,7 @@ struct ApiRequest {
     model: String,
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<serde_json::Value>,
     messages: Vec<ApiMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ApiTool>,
@@ -49,6 +57,22 @@ struct ApiRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+}
+
+/// Build the `system` field for the API request.
+/// When `prompt_cache` is true, wraps the system prompt in a block with
+/// `cache_control: {"type": "ephemeral"}` so Anthropic caches the prefix.
+fn build_system_field(system_prompt: Option<&str>, prompt_cache: bool) -> Option<serde_json::Value> {
+    let text = system_prompt.filter(|s| !s.is_empty())?;
+    if prompt_cache {
+        Some(serde_json::json!([{
+            "type": "text",
+            "text": text,
+            "cache_control": { "type": "ephemeral" }
+        }]))
+    } else {
+        Some(serde_json::Value::String(text.to_string()))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -156,7 +180,7 @@ enum ContentBlockAccum {
 impl LlmDriver for AnthropicDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         // Extract system prompt from messages or use the provided one
-        let system = request.system.clone().or_else(|| {
+        let system_text = request.system.clone().or_else(|| {
             request.messages.iter().find_map(|m| {
                 if m.role == Role::System {
                     match &m.content {
@@ -168,6 +192,7 @@ impl LlmDriver for AnthropicDriver {
                 }
             })
         });
+        let system = build_system_field(system_text.as_deref(), self.prompt_cache);
 
         // Build API messages, filtering out system messages
         let api_messages: Vec<ApiMessage> = request
@@ -265,7 +290,7 @@ impl LlmDriver for AnthropicDriver {
         tx: tokio::sync::mpsc::Sender<StreamEvent>,
     ) -> Result<CompletionResponse, LlmError> {
         // Build request (same as complete but with stream: true)
-        let system = request.system.clone().or_else(|| {
+        let system_text = request.system.clone().or_else(|| {
             request.messages.iter().find_map(|m| {
                 if m.role == Role::System {
                     match &m.content {
@@ -277,6 +302,7 @@ impl LlmDriver for AnthropicDriver {
                 }
             })
         });
+        let system = build_system_field(system_text.as_deref(), self.prompt_cache);
 
         let api_messages: Vec<ApiMessage> = request
             .messages

@@ -176,6 +176,21 @@ pub struct DriverConfig {
     /// restricts what agents can do, making this safe.
     #[serde(default = "default_skip_permissions")]
     pub skip_permissions: bool,
+    /// Enable provider prompt caching (Anthropic cache_control, etc.).
+    #[serde(default = "default_skip_permissions")]
+    pub prompt_cache: bool,
+}
+
+impl Default for DriverConfig {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            api_key: None,
+            base_url: None,
+            skip_permissions: true,
+            prompt_cache: true,
+        }
+    }
 }
 
 fn default_skip_permissions() -> bool {

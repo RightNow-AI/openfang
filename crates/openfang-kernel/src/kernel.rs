@@ -220,7 +220,25 @@ pub struct OpenFangKernel {
     agent_msg_locks: dashmap::DashMap<AgentId, Arc<tokio::sync::Mutex<()>>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
+    /// Decision trace log — bounded ring buffer of routing decisions for observability.
+    decision_traces: std::sync::Mutex<std::collections::VecDeque<DecisionTraceEntry>>,
 }
+
+/// A single routing decision record for the decision trace log.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DecisionTraceEntry {
+    pub id: uuid::Uuid,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub router_agent_id: AgentId,
+    pub input_message: String,
+    pub target_kind: String,
+    pub target_id: String,
+    pub target_name: String,
+    pub explanation: String,
+    pub gap_detected: bool,
+}
+
+const MAX_DECISION_TRACES: usize = 500;
 
 /// Bounded in-memory delivery receipt tracker.
 /// Stores up to `MAX_RECEIPTS` most recent delivery receipts per agent.
@@ -717,7 +735,8 @@ impl OpenFangKernel {
                     .get(&config.default_model.provider)
                     .cloned()
             }),
-            skip_permissions: true,
+            prompt_cache: config.prompt_cache,
+            ..Default::default()
         };
         // Primary driver failure is non-fatal: the dashboard should remain accessible
         // even if the LLM provider is misconfigured. Users can fix config via dashboard.
@@ -740,7 +759,8 @@ impl OpenFangKernel {
                             .resolve(env_var)
                             .map(|z: zeroize::Zeroizing<String>| z.to_string()),
                         base_url: config.provider_urls.get(provider).cloned(),
-                        skip_permissions: true,
+                        prompt_cache: config.prompt_cache,
+                        ..Default::default()
                     };
                     match drivers::create_driver(&auto_config) {
                         Ok(d) => {
@@ -788,7 +808,8 @@ impl OpenFangKernel {
                     .base_url
                     .clone()
                     .or_else(|| config.provider_urls.get(&fb.provider).cloned()),
-                skip_permissions: true,
+                prompt_cache: config.prompt_cache,
+                ..Default::default()
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {
@@ -1181,6 +1202,7 @@ impl OpenFangKernel {
             default_model_override: std::sync::RwLock::new(None),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
+            decision_traces: std::sync::Mutex::new(std::collections::VecDeque::new()),
         };
 
         kernel.load_persisted_capability_proposal_jobs();
@@ -2374,10 +2396,21 @@ impl OpenFangKernel {
             "Router selected execution target"
         );
 
-        if matches!(decision.target, RouterTarget::FallbackAgent { .. }) {
-            let analysis = capability_builder::analyze_gap(message, &capabilities);
+        let gap_analysis = if matches!(decision.target, RouterTarget::FallbackAgent { .. }) {
+            Some(capability_builder::analyze_gap(message, &capabilities))
+        } else {
+            None
+        };
+        let gap_detected = gap_analysis
+            .as_ref()
+            .map(|a| a.gap_detected)
+            .unwrap_or(false);
+
+        self.record_decision_trace(agent_id, message, &decision, gap_detected);
+
+        if let Some(analysis) = &gap_analysis {
             if analysis.gap_detected {
-                return Ok(self.capability_gap_result(&analysis));
+                return Ok(self.capability_gap_result(analysis));
             }
         }
 
@@ -4412,6 +4445,60 @@ impl OpenFangKernel {
         }
     }
 
+    // ─── Decision Trace ─────────────────────────────────────────────────
+
+    fn record_decision_trace(
+        &self,
+        router_agent_id: AgentId,
+        message: &str,
+        decision: &RouterDecision,
+        gap_detected: bool,
+    ) {
+        let (target_kind, target_id, target_name) = match &decision.target {
+            RouterTarget::Hand { hand_id } => ("hand", hand_id.clone(), hand_id.clone()),
+            RouterTarget::Workflow {
+                workflow_id,
+                workflow_name,
+            } => ("workflow", workflow_id.to_string(), workflow_name.clone()),
+            RouterTarget::Agent {
+                agent_id,
+                agent_name,
+            } => ("agent", agent_id.to_string(), agent_name.clone()),
+            RouterTarget::FallbackAgent {
+                agent_id,
+                agent_name,
+            } => ("fallback_agent", agent_id.to_string(), agent_name.clone()),
+        };
+
+        let entry = DecisionTraceEntry {
+            id: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now(),
+            router_agent_id,
+            input_message: openfang_types::truncate_str(message, 500).to_string(),
+            target_kind: target_kind.to_string(),
+            target_id,
+            target_name,
+            explanation: decision.explanation.clone(),
+            gap_detected,
+        };
+
+        if let Ok(mut traces) = self.decision_traces.lock() {
+            if traces.len() >= MAX_DECISION_TRACES {
+                traces.pop_front();
+            }
+            traces.push_back(entry);
+        }
+    }
+
+    /// List recent decision traces, newest first.
+    pub fn list_decision_traces(&self, limit: usize) -> Vec<DecisionTraceEntry> {
+        let traces = self
+            .decision_traces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        traces.iter().rev().take(limit).cloned().collect()
+    }
+
     // ─── Agent Binding management ──────────────────────────────────────
 
     /// List all agent bindings.
@@ -5625,7 +5712,8 @@ impl OpenFangKernel {
                 provider: agent_provider.clone(),
                 api_key,
                 base_url,
-                skip_permissions: true,
+                prompt_cache: self.config.prompt_cache,
+                ..Default::default()
             };
 
             match drivers::create_driver(&driver_config) {
@@ -5673,7 +5761,8 @@ impl OpenFangKernel {
                         .base_url
                         .clone()
                         .or_else(|| self.lookup_provider_url(&fb.provider)),
-                    skip_permissions: true,
+                    prompt_cache: self.config.prompt_cache,
+                    ..Default::default()
                 };
                 match drivers::create_driver(&config) {
                     Ok(d) => chain.push((d, strip_provider_prefix(&fb.model, &fb.provider))),

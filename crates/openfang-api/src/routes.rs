@@ -350,6 +350,23 @@ pub async fn get_routing_proposal_job(
     }
 }
 
+/// GET /api/routing/decisions — Recent routing decision traces.
+pub async fn list_decision_traces(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(500);
+    let traces = state.kernel.list_decision_traces(limit);
+    Json(serde_json::json!({
+        "decisions": traces,
+        "count": traces.len(),
+    }))
+}
+
 /// Resolve uploaded file attachments into ContentBlock::Image blocks.
 ///
 /// Reads each file from the upload directory, base64-encodes it, and
@@ -8286,7 +8303,7 @@ pub async fn test_provider(
         } else {
             Some(base_url)
         },
-        skip_permissions: true,
+        ..Default::default()
     };
 
     match openfang_runtime::drivers::create_driver(&driver_config) {
