@@ -59,6 +59,10 @@ pub struct PromptContext {
     pub sender_id: Option<String>,
     /// Sender display name.
     pub sender_name: Option<String>,
+    /// Whether Programmatic Tool Calling is enabled for this agent.
+    /// When true, the `## Your Tools` section is omitted — tool information
+    /// is provided via the `execute_code` tool description instead.
+    pub ptc_enabled: bool,
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -77,8 +81,9 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
         sections.push(format!("## Current Date\nToday is {date}."));
     }
 
-    // Section 2 — Tool Call Behavior (skip for subagents)
-    if !ctx.is_subagent {
+    // Section 2 — Tool Call Behavior (skip for subagents and PTC agents —
+    // PTC agents get their own behavioral guidance in the PTC supplement)
+    if !ctx.is_subagent && !ctx.ptc_enabled {
         sections.push(TOOL_CALL_BEHAVIOR.to_string());
     }
 
@@ -91,10 +96,13 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
         }
     }
 
-    // Section 3 — Available Tools (always present if tools exist)
-    let tools_section = build_tools_section(&ctx.granted_tools);
-    if !tools_section.is_empty() {
-        sections.push(tools_section);
+    // Section 3 — Available Tools (skip when PTC is enabled — tools are listed
+    // as Python function signatures in the execute_code tool description instead)
+    if !ctx.ptc_enabled {
+        let tools_section = build_tools_section(&ctx.granted_tools);
+        if !tools_section.is_empty() {
+            sections.push(tools_section);
+        }
     }
 
     // Section 4 — Memory Protocol (always present)
@@ -109,8 +117,9 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
         ));
     }
 
-    // Section 6 — MCP Servers (only if summary present)
-    if !ctx.mcp_summary.is_empty() {
+    // Section 6 — MCP Servers (skip when PTC is enabled — MCP tools are listed
+    // as Python functions in the execute_code tool description instead)
+    if !ctx.ptc_enabled && !ctx.mcp_summary.is_empty() {
         sections.push(build_mcp_section(&ctx.mcp_summary));
     }
 
