@@ -275,6 +275,19 @@ impl MemorySubstrate {
         }
     }
 
+    pub async fn save_session_async(&self, session: &Session) -> OpenFangResult<()> {
+        match &self.inner {
+            BackendInner::Sqlite { sessions, .. } => {
+                let store = sessions.clone();
+                let session = session.clone();
+                tokio::task::spawn_blocking(move || store.save_session(&session))
+                    .await
+                    .map_err(|e| OpenFangError::Internal(e.to_string()))?
+            }
+            BackendInner::Mongo(m) => m.sessions.save_session(session).await,
+        }
+    }
+
     pub fn create_session(&self, agent_id: AgentId) -> OpenFangResult<Session> {
         match &self.inner {
             BackendInner::Sqlite { sessions, .. } => sessions.create_session(agent_id),
