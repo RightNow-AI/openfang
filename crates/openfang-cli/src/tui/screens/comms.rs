@@ -821,41 +821,6 @@ fn draw_task_modal(f: &mut Frame, area: Rect, state: &CommsState) {
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    #[test]
-    fn send_modal_space_in_message_field_appends_to_message() {
-        let mut state = CommsState::new();
-        state.show_send_modal = true;
-        state.send_field = 6;
-        state.send_msg = "hello".to_string();
-
-        let action =
-            state.handle_send_modal_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-
-        assert!(matches!(action, CommsAction::Continue));
-        assert_eq!(state.send_msg, "hello ");
-        assert!(state.send_attachment_path.is_empty());
-    }
-
-    #[test]
-    fn send_modal_space_on_mode_field_toggles_mode() {
-        let mut state = CommsState::new();
-        state.show_send_modal = true;
-        state.send_field = 1;
-        state.send_mode = "agent".to_string();
-
-        state.handle_send_modal_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-        assert_eq!(state.send_mode, "channel");
-
-        state.handle_send_modal_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-        assert_eq!(state.send_mode, "agent");
-    }
-}
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn state_color(state: &str) -> Style {
@@ -918,4 +883,39 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     Rect::new(x, y, w, height.min(area.height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn send_modal_space_in_message_field_appends_to_message() {
+        let mut state = CommsState::new();
+        state.show_send_modal = true;
+        state.send_field = 6;
+        state.send_msg = "hello".to_string();
+
+        let action =
+            state.handle_send_modal_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        assert!(matches!(action, CommsAction::Continue));
+        assert_eq!(state.send_msg, "hello ");
+        assert!(state.send_attachment_path.is_empty());
+    }
+
+    #[test]
+    fn send_modal_space_on_mode_field_toggles_mode() {
+        let mut state = CommsState::new();
+        state.show_send_modal = true;
+        state.send_field = 1;
+        state.send_mode = "agent".to_string();
+
+        state.handle_send_modal_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert_eq!(state.send_mode, "channel");
+
+        state.handle_send_modal_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert_eq!(state.send_mode, "agent");
+    }
 }

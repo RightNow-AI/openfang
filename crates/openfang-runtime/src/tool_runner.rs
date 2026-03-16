@@ -3630,7 +3630,7 @@ mod tests {
         let result = execute_tool(
             "test-id",
             "fs-write", // LLM-hallucinated alias
-            &serde_json::json!({"path": "/nonexistent/file.txt", "content": "hello"}),
+            &serde_json::json!({"path": "/tmp/openfang-test-cap-alias/file.txt", "content": "hello"}),
             None,
             Some(&allowed),
             None,

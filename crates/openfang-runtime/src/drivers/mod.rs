@@ -594,7 +594,7 @@ mod tests {
             provider: "my-custom-llm".to_string(),
             api_key: Some("test".to_string()),
             base_url: Some("http://localhost:9999/v1".to_string()),
-            skip_permissions: true,
+            ..Default::default()
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok());
@@ -606,7 +606,7 @@ mod tests {
             provider: "nonexistent".to_string(),
             api_key: None,
             base_url: None,
-            skip_permissions: true,
+            ..Default::default()
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
@@ -709,7 +709,7 @@ mod tests {
             provider: "nvidia".to_string(),
             api_key: None, // picked up from env via provider_defaults
             base_url: None,
-            skip_permissions: true,
+            ..Default::default()
         };
         let driver = create_driver(&config);
         assert!(
@@ -726,7 +726,7 @@ mod tests {
             provider: "nvidia".to_string(),
             api_key: None,
             base_url: None,
-            skip_permissions: true,
+            ..Default::default()
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
@@ -741,7 +741,7 @@ mod tests {
             provider: "mycustom".to_string(),
             api_key: None,
             base_url: None,
-            skip_permissions: true,
+            ..Default::default()
         };
         let result = create_driver(&config);
         assert!(result.is_err());
@@ -769,7 +769,7 @@ mod tests {
             provider: "my-custom-provider".to_string(),
             api_key: Some("explicit-key".to_string()),
             base_url: Some("https://api.example.com/v1".to_string()),
-            skip_permissions: true,
+            ..Default::default()
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok());
@@ -796,7 +796,7 @@ mod tests {
             provider: "azure".to_string(),
             api_key: Some("test-azure-key".to_string()),
             base_url: Some("https://myresource.openai.azure.com/openai/deployments".to_string()),
-            skip_permissions: true,
+            ..Default::default()
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok(), "Azure driver with key + URL should succeed");
@@ -808,7 +808,7 @@ mod tests {
             provider: "azure".to_string(),
             api_key: None,
             base_url: Some("https://myresource.openai.azure.com/openai/deployments".to_string()),
-            skip_permissions: true,
+            ..Default::default()
         };
         let result = create_driver(&config);
         assert!(result.is_err(), "Azure driver without key should error");
@@ -826,7 +826,7 @@ mod tests {
             provider: "azure".to_string(),
             api_key: Some("test-azure-key".to_string()),
             base_url: None,
-            skip_permissions: true,
+            ..Default::default()
         };
         let result = create_driver(&config);
         assert!(result.is_err(), "Azure driver without URL should error");
@@ -844,7 +844,7 @@ mod tests {
             provider: "azure-openai".to_string(),
             api_key: Some("test-azure-key".to_string()),
             base_url: Some("https://myresource.openai.azure.com/openai/deployments".to_string()),
-            skip_permissions: true,
+            ..Default::default()
         };
         let driver = create_driver(&config);
         assert!(

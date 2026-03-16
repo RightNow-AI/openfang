@@ -32,6 +32,11 @@ predictions_database.json
 prediction_report_*.md
 BUILD_LOG.md
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
 # OS
 .DS_Store
 ._*

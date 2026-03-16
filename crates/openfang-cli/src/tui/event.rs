@@ -3555,6 +3555,54 @@ pub fn spawn_comms_send(
     });
 }
 
+/// Post a task via comms endpoint.
+pub fn spawn_comms_task(
+    backend: BackendRef,
+    title: String,
+    desc: String,
+    assign: String,
+    tx: mpsc::Sender<AppEvent>,
+) {
+    std::thread::spawn(move || match backend {
+        BackendRef::Daemon(base_url) => {
+            let client = daemon_client();
+            let mut body = serde_json::json!({
+                "title": title,
+                "description": desc,
+            });
+            if !assign.is_empty() {
+                body["assigned_to"] = serde_json::Value::String(assign);
+            }
+            match client
+                .post(format!("{base_url}/api/comms/task"))
+                .json(&body)
+                .send()
+            {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        let _ = tx.send(AppEvent::CommsTaskResult("Task posted".to_string()));
+                    } else {
+                        let err = resp
+                            .json::<serde_json::Value>()
+                            .ok()
+                            .and_then(|v| v["error"].as_str().map(String::from))
+                            .unwrap_or_else(|| "Post failed".to_string());
+                        let _ = tx.send(AppEvent::CommsTaskResult(err));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::CommsTaskResult(format!("Error: {e}")));
+                }
+            }
+        }
+        BackendRef::InProcess(_) => {
+            let _ = tx.send(AppEvent::CommsTaskResult(
+                "Task post not supported in-process".to_string(),
+            ));
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_mcp_servers_response, parse_security_features};
@@ -3693,52 +3741,4 @@ mod tests {
                 .active
         );
     }
-}
-
-/// Post a task via comms endpoint.
-pub fn spawn_comms_task(
-    backend: BackendRef,
-    title: String,
-    desc: String,
-    assign: String,
-    tx: mpsc::Sender<AppEvent>,
-) {
-    std::thread::spawn(move || match backend {
-        BackendRef::Daemon(base_url) => {
-            let client = daemon_client();
-            let mut body = serde_json::json!({
-                "title": title,
-                "description": desc,
-            });
-            if !assign.is_empty() {
-                body["assigned_to"] = serde_json::Value::String(assign);
-            }
-            match client
-                .post(format!("{base_url}/api/comms/task"))
-                .json(&body)
-                .send()
-            {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        let _ = tx.send(AppEvent::CommsTaskResult("Task posted".to_string()));
-                    } else {
-                        let err = resp
-                            .json::<serde_json::Value>()
-                            .ok()
-                            .and_then(|v| v["error"].as_str().map(String::from))
-                            .unwrap_or_else(|| "Post failed".to_string());
-                        let _ = tx.send(AppEvent::CommsTaskResult(err));
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(AppEvent::CommsTaskResult(format!("Error: {e}")));
-                }
-            }
-        }
-        BackendRef::InProcess(_) => {
-            let _ = tx.send(AppEvent::CommsTaskResult(
-                "Task post not supported in-process".to_string(),
-            ));
-        }
-    });
 }
