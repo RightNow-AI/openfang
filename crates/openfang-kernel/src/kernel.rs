@@ -6314,7 +6314,10 @@ impl openfang_wire::peer::PeerHandle for OpenFangKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openfang_types::config::{DefaultModelConfig, KernelConfig};
+    use openfang_types::event::{EventPayload, LifecycleEvent};
     use std::collections::HashMap;
+    use std::time::Duration;
 
     #[test]
     fn test_manifest_to_capabilities() {
@@ -6522,5 +6525,47 @@ mod tests {
         assert!(!caps
             .iter()
             .any(|c| matches!(c, Capability::ToolInvoke(name) if name == "shell_exec")));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_publishes_spawned_event() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "OLLAMA_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+        let mut events = kernel.event_bus.subscribe_all();
+        let agent_name = "spawn-event-test";
+        let agent_id = kernel
+            .spawn_agent(test_manifest(
+                agent_name,
+                "publishes lifecycle events",
+                vec![],
+            ))
+            .expect("agent spawn should succeed");
+
+        let (published_id, published_name) = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let event = events.recv().await.expect("event bus should stay open");
+                if let EventPayload::Lifecycle(LifecycleEvent::Spawned { agent_id, name }) =
+                    event.payload
+                {
+                    break (agent_id, name);
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for spawned lifecycle event");
+
+        assert_eq!(published_id, agent_id);
+        assert_eq!(published_name, agent_name);
     }
 }
