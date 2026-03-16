@@ -44,7 +44,7 @@
 #### 3.1.1 修复默认端口
 **文件**: `crates/openfang-types/src/config.rs`
 
-**修改**:
+**修改 1 - Default 实现** (约 line 1270):
 ```rust
 impl Default for KernelConfig {
     fn default() -> Self {
@@ -58,11 +58,23 @@ impl Default for KernelConfig {
 }
 ```
 
+**修改 2 - 测试断言** (line 3415):
+```rust
+#[test]
+fn test_default_config() {
+    let config = KernelConfig::default();
+    assert_eq!(config.log_level, "info");
+    assert_eq!(config.api_listen, "127.0.0.1:4200");  // 从 50051 改为 4200
+    assert!(!config.network_enabled);
+}
+```
+
 **理由**:
 - 代码注释明确标注 `/// API listen address (e.g., "0.0.0.0:4200")`
 - CLI 帮助信息显示 `Dashboard: http://127.0.0.1:4200/`
 - 文档 `docs/cli-reference.md` 和 `CLAUDE.md` 都使用 4200
 - 50051 是 gRPC 常用端口，但 OpenFang 使用 HTTP/REST API
+- 必须同步更新测试断言，否则测试失败
 
 ### 3.2 配置标准化
 
@@ -94,27 +106,47 @@ api_listen = "127.0.0.1:4200"  # 从 50051 改为 4200
 ### 3.4 macOS launchd 服务
 
 #### 3.4.1 服务配置
-**文件**: `~/Library/LaunchAgents/com.openfang.daemon.plist`
+**文件**: `~/Library/LaunchAgents/ai.openfang.daemon.plist` (已存在，需更新)
 
-**配置内容**:
+**现状**:
+- 服务已存在，label 为 `ai.openfang.daemon`
+- 当前通过 `openfang-daemon-runner.sh` → `openfang-daemon` 脚本启动
+- `openfang-daemon` 脚本已处理环境变量加载
+
+**策略**: 保持现有服务 label 和结构，仅更新配置以优化可靠性
+
+**更新后配置**:
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.openfang.daemon</string>
+    <string>ai.openfang.daemon</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/xiaomo/.openfang/bin/openfang</string>
-        <string>start</string>
+        <string>/Users/xiaomo/.openfang/bin/openfang-daemon-runner.sh</string>
     </array>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/xiaomo</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/xiaomo</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -131,14 +163,14 @@ api_listen = "127.0.0.1:4200"  # 从 50051 改为 4200
     <key>ThrottleInterval</key>
     <integer>60</integer>
 
+    <key>ProcessType</key>
+    <string>Background</string>
+
     <key>StandardOutPath</key>
-    <string>/Users/xiaomo/.openfang/logs/daemon.stdout.log</string>
+    <string>/Users/xiaomo/Library/Logs/openfang-daemon.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/xiaomo/.openfang/logs/daemon.stderr.log</string>
-
-    <key>WorkingDirectory</key>
-    <string>/Users/xiaomo/.openfang</string>
+    <string>/Users/xiaomo/Library/Logs/openfang-daemon.err.log</string>
 </dict>
 </plist>
 ```
@@ -147,33 +179,23 @@ api_listen = "127.0.0.1:4200"  # 从 50051 改为 4200
 - **开机自启**: `RunAtLoad=true`
 - **崩溃重启**: `KeepAlive.Crashed=true`
 - **节流保护**: 60 秒内最多重启 1 次
-- **日志记录**: 标准输出/错误分离记录
+- **日志记录**: 标准输出/错误分离记录到 `~/Library/Logs/`
 - **环境变量**: 加载完整 PATH
 
+**关键改进**:
+- 添加 `ThrottleInterval=60` 防止快速重启循环
+- 添加 `ProcessType=Background` 标记为后台服务
+- 保持现有的 `openfang-daemon-runner.sh` → `openfang-daemon` 调用链（已处理环境变量）
+
 #### 3.4.2 环境变量加载
-launchd 不会自动加载 `~/.openfang/secrets.env`，需要在服务启动前加载。
+**现状**: `openfang-daemon` 脚本已通过 `dotenv::load_dotenv()` 加载 `~/.openfang/.env`（符号链接到 `secrets.env`）
 
-**解决方案**: 创建包装脚本 `~/.openfang/bin/openfang-launchd-wrapper.sh`:
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
+**验证点**:
+- 确认 `.env` 符号链接存在且有效
+- 确认 `secrets.env` 包含所有必需的 API keys
+- 添加错误处理：如果 `.env` 不存在或不可读，脚本应明确失败并记录错误
 
-SECRETS_FILE="${HOME}/.openfang/secrets.env"
-if [[ -f "${SECRETS_FILE}" ]]; then
-    set -a
-    source "${SECRETS_FILE}"
-    set +a
-fi
-
-exec "${HOME}/.openfang/bin/openfang" start
-```
-
-修改 plist 中的 `ProgramArguments` 为:
-```xml
-<array>
-    <string>/Users/xiaomo/.openfang/bin/openfang-launchd-wrapper.sh</string>
-</array>
-```
+**无需额外包装脚本** - 现有的 `openfang-daemon-runner.sh` → `openfang-daemon` 链已处理环境变量加载
 
 ### 3.5 健康检查脚本
 
@@ -193,9 +215,10 @@ if ! curl -sf --max-time "${TIMEOUT}" "${API_URL}" | grep -q '"status":"ok"'; th
     exit 1
 fi
 
-# 检查 2: 进程存活
-if ! pgrep -f "openfang start" >/dev/null; then
-    echo "FAIL: openfang start process not running" >&2
+# 检查 2: 进程存活（匹配实际进程名）
+# 注意：launchd 启动的进程名可能是 "openfang" 而非 "openfang start"
+if ! pgrep -f "openfang" >/dev/null; then
+    echo "FAIL: openfang process not running" >&2
     exit 2
 fi
 
@@ -204,6 +227,16 @@ if ! lsof -i :4200 -sTCP:LISTEN >/dev/null 2>&1; then
     echo "FAIL: Port 4200 not listening" >&2
     exit 3
 fi
+
+# 检查 4: 端口可用性（预检）
+check_port_available() {
+    if lsof -i :4200 >/dev/null 2>&1; then
+        echo "WARN: Port 4200 already in use" >&2
+        lsof -i :4200 >&2
+        return 1
+    fi
+    return 0
+}
 
 echo "OK: All health checks passed"
 exit 0
@@ -271,7 +304,7 @@ curl -s http://127.0.0.1:4200/api/budget/agents
 5. **验证 launchd 服务**
 ```bash
 launchctl list | grep openfang
-launchctl print gui/$(id -u)/com.openfang.daemon
+launchctl print gui/$(id -u)/ai.openfang.daemon
 ```
 
 #### 3.6.3 成功标准
