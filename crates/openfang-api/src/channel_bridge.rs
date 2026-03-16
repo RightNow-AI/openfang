@@ -48,6 +48,7 @@ use openfang_channels::gitter::GitterAdapter;
 use openfang_channels::gotify::GotifyAdapter;
 use openfang_channels::linkedin::LinkedInAdapter;
 use openfang_channels::mumble::MumbleAdapter;
+use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_kernel::OpenFangKernel;
@@ -1118,13 +1119,75 @@ pub async fn start_channel_bridge_with_config(
     if let Some(ref tg_config) = config.telegram {
         if let Some(token) = read_token(&tg_config.bot_token_env, "Telegram") {
             let poll_interval = Duration::from_secs(tg_config.poll_interval_secs);
-            let adapter = Arc::new(TelegramAdapter::new(
+
+            let mut adapter = TelegramAdapter::new(
                 token,
                 tg_config.allowed_users.clone(),
                 poll_interval,
                 tg_config.api_url.clone(),
-            ));
-            adapters.push((adapter, tg_config.default_agent.clone()));
+            );
+
+            // Enable download functionality if configured
+            if tg_config.download_enabled {
+                use openfang_channels::telegram::ProgressInfo;
+                use std::path::PathBuf;
+
+                let download_dir = tg_config
+                    .download_dir
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| std::env::temp_dir().join("openfang-telegram-downloads"));
+
+                let max_size = tg_config
+                    .max_download_size
+                    .unwrap_or(2 * 1024 * 1024 * 1024); // 2GB default
+
+                // Create progress callback that sends updates via channel_send
+                let kernel_clone = kernel.clone();
+                let progress_callback = Arc::new(move |info: ProgressInfo| {
+                    let k = kernel_clone.clone();
+                    tokio::spawn(async move {
+                        if let Some(msg_id) = info.message_id {
+                            let text = if info.percentage < 100.0 {
+                                format!("⬇️ 下载中... {:.0}%", info.percentage)
+                            } else {
+                                "✅ 下载完成".to_string()
+                            };
+
+                            let mut metadata = serde_json::Map::new();
+                            metadata.insert(
+                                "edit_message_id".to_string(),
+                                serde_json::json!(msg_id),
+                            );
+
+                            let _ = k
+                                .send_channel_message(
+                                    "telegram",
+                                    &info.chat_id.to_string(),
+                                    &text,
+                                    None,
+                                    Some(&metadata),
+                                )
+                                .await;
+                        }
+                    });
+                });
+
+                adapter = adapter.with_download_config(
+                    true,
+                    Some(download_dir),
+                    Some(max_size),
+                    Some(progress_callback),
+                );
+
+                info!(
+                    "Telegram download enabled: max_size={}MB, dir={:?}",
+                    max_size / 1024 / 1024,
+                    tg_config.download_dir
+                );
+            }
+
+            adapters.push((Arc::new(adapter), tg_config.default_agent.clone()));
         }
     }
 

@@ -1671,6 +1671,19 @@ pub struct TelegramConfig {
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
+    /// Enable automatic file downloads (default: false for backward compatibility).
+    /// When enabled, videos and documents are downloaded to local disk instead of
+    /// just returning download URLs.
+    #[serde(default)]
+    pub download_enabled: bool,
+    /// Download directory for Telegram files (default: system temp dir).
+    /// Files are saved here with unique names based on file_id and timestamp.
+    #[serde(default)]
+    pub download_dir: Option<String>,
+    /// Maximum file size to download in bytes (default: 2GB).
+    /// Files larger than this will return URLs only, even if download_enabled is true.
+    #[serde(default)]
+    pub max_download_size: Option<u64>,
 }
 
 impl Default for TelegramConfig {
@@ -1683,6 +1696,9 @@ impl Default for TelegramConfig {
             api_url: None,
             default_chat_id: None,
             overrides: ChannelOverrides::default(),
+            download_enabled: false,
+            download_dir: None,
+            max_download_size: None,
         }
     }
 }
