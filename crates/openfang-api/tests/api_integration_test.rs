@@ -7,13 +7,17 @@
 //!
 //! Run: cargo test -p openfang-api --test api_integration_test -- --nocapture
 
-use axum::Router;
+use axum::{
+    extract::{Json, State},
+    response::IntoResponse,
+    Router,
+};
 use openfang_api::middleware;
 use openfang_api::routes::{self, AppState};
 use openfang_api::ws;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -51,17 +55,37 @@ async fn start_test_server_with_provider(
     model: &str,
     api_key_env: &str,
 ) -> TestServer {
+    start_test_server_with_default_model(DefaultModelConfig {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        api_key_env: api_key_env.to_string(),
+        base_url: None,
+    })
+    .await
+}
+
+async fn start_test_server_with_provider_base_url(
+    provider: &str,
+    model: &str,
+    api_key_env: &str,
+    base_url: Option<String>,
+) -> TestServer {
+    start_test_server_with_default_model(DefaultModelConfig {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        api_key_env: api_key_env.to_string(),
+        base_url,
+    })
+    .await
+}
+
+async fn start_test_server_with_default_model(default_model: DefaultModelConfig) -> TestServer {
     let tmp = tempfile::tempdir().expect("Failed to create temp dir");
 
     let config = KernelConfig {
         home_dir: tmp.path().to_path_buf(),
         data_dir: tmp.path().join("data"),
-        default_model: DefaultModelConfig {
-            provider: provider.to_string(),
-            model: model.to_string(),
-            api_key_env: api_key_env.to_string(),
-            base_url: None,
-        },
+        default_model,
         ..KernelConfig::default()
     };
 
@@ -88,18 +112,22 @@ async fn start_test_server_with_provider(
             axum::routing::get(routes::list_agents).post(routes::spawn_agent),
         )
         .route(
+            "/api/agents/{id}",
+            axum::routing::get(routes::get_agent).delete(routes::kill_agent),
+        )
+        .route(
             "/api/agents/{id}/message",
             axum::routing::post(routes::send_message),
+        )
+        .route(
+            "/api/agents/{id}/message/stream",
+            axum::routing::post(routes::send_message_stream),
         )
         .route(
             "/api/agents/{id}/session",
             axum::routing::get(routes::get_agent_session),
         )
         .route("/api/agents/{id}/ws", axum::routing::get(ws::agent_ws))
-        .route(
-            "/api/agents/{id}",
-            axum::routing::delete(routes::kill_agent),
-        )
         .route(
             "/api/triggers",
             axum::routing::get(routes::list_triggers).post(routes::create_trigger),
@@ -148,6 +176,52 @@ async fn start_test_server_with_provider(
         state,
         _tmp: tmp,
     }
+}
+
+#[derive(Clone)]
+struct MockOpenAiState {
+    request_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<serde_json::Value>>>>,
+}
+
+async fn mock_openai_chat(
+    State(state): State<MockOpenAiState>,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(tx) = state.request_tx.lock().unwrap().take() {
+        let _ = tx.send(payload);
+    }
+
+    (
+        [("content-type", "text/event-stream")],
+        concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"stream-response\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3}}\n\n",
+            "data: [DONE]\n\n",
+        ),
+    )
+}
+
+async fn start_mock_openai_stream_server(
+) -> (String, tokio::sync::oneshot::Receiver<serde_json::Value>) {
+    let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+    let state = MockOpenAiState {
+        request_tx: Arc::new(Mutex::new(Some(request_tx))),
+    };
+
+    let app = Router::new()
+        .route("/chat/completions", axum::routing::post(mock_openai_chat))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind mock OpenAI server");
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    (format!("http://{}", addr), request_rx)
 }
 
 /// Manifest that uses ollama (no API key required, won't make real LLM calls).
@@ -343,6 +417,153 @@ async fn test_agent_session_empty() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["message_count"], 0);
     assert_eq!(body["messages"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_send_message_accepts_fresh_explicit_session_id() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    std::fs::write(
+        server._tmp.path().join("workflow-echo.wat"),
+        WORKFLOW_ECHO_WAT,
+    )
+    .unwrap();
+
+    let wasm_manifest = r#"
+name = "explicit-session-wasm"
+version = "0.1.0"
+description = "Explicit session regression test agent"
+author = "test"
+module = "wasm:workflow-echo.wat"
+
+[model]
+provider = "ollama"
+model = "test-model"
+system_prompt = "Echo explicit session agent."
+
+[capabilities]
+memory_read = ["*"]
+memory_write = ["self.*"]
+"#;
+
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": wasm_manifest}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let agent_id = body["agent_id"].as_str().unwrap().to_string();
+
+    let resp = client
+        .get(format!("{}/api/agents/{}", server.base_url, agent_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let agent: serde_json::Value = resp.json().await.unwrap();
+    let session_id = agent["session_id"].as_str().unwrap().to_string();
+
+    let resp = client
+        .post(format!(
+            "{}/api/agents/{}/message",
+            server.base_url, agent_id
+        ))
+        .json(&serde_json::json!({
+            "message": "hello explicit session",
+            "session_id": session_id,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["response"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("hello explicit session"),
+        "wasm response should include the request payload"
+    );
+}
+
+#[tokio::test]
+async fn test_send_message_stream_forwards_sender_identity_to_kernel_prompt() {
+    let (mock_base_url, request_rx) = start_mock_openai_stream_server().await;
+    let server = start_test_server_with_provider_base_url(
+        "mock-openai",
+        "mock-stream-model",
+        "",
+        Some(mock_base_url),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let stream_manifest = r#"
+name = "sender-stream-agent"
+version = "0.1.0"
+description = "Streaming sender identity regression test agent"
+author = "test"
+module = "builtin:chat"
+
+[model]
+provider = "default"
+model = "default"
+system_prompt = "Streaming sender test agent."
+
+[capabilities]
+memory_read = ["*"]
+memory_write = ["self.*"]
+"#;
+
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": stream_manifest}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let agent_id = body["agent_id"].as_str().unwrap().to_string();
+
+    let resp = client
+        .post(format!(
+            "{}/api/agents/{}/message/stream",
+            server.base_url, agent_id
+        ))
+        .json(&serde_json::json!({
+            "message": "hello streaming sender",
+            "sender_id": "user-123",
+            "sender_name": "Alice",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let stream_body = resp.text().await.unwrap();
+    assert!(
+        stream_body.contains("stream-response"),
+        "SSE response should include the mock streaming content"
+    );
+
+    let request = request_rx
+        .await
+        .expect("mock OpenAI server should receive a request");
+    assert_eq!(request["stream"], serde_json::Value::Bool(true));
+
+    let system_prompt = request["messages"][0]["content"]
+        .as_str()
+        .expect("streaming request should include a system prompt");
+    assert!(
+        system_prompt.contains("## Sender"),
+        "system prompt should contain the sender section"
+    );
+    assert!(
+        system_prompt.contains("Message from: Alice (user-123)"),
+        "system prompt should include sender name and ID"
+    );
 }
 
 #[tokio::test]
@@ -958,18 +1179,22 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
             axum::routing::get(routes::list_agents).post(routes::spawn_agent),
         )
         .route(
+            "/api/agents/{id}",
+            axum::routing::get(routes::get_agent).delete(routes::kill_agent),
+        )
+        .route(
             "/api/agents/{id}/message",
             axum::routing::post(routes::send_message),
+        )
+        .route(
+            "/api/agents/{id}/message/stream",
+            axum::routing::post(routes::send_message_stream),
         )
         .route(
             "/api/agents/{id}/session",
             axum::routing::get(routes::get_agent_session),
         )
         .route("/api/agents/{id}/ws", axum::routing::get(ws::agent_ws))
-        .route(
-            "/api/agents/{id}",
-            axum::routing::delete(routes::kill_agent),
-        )
         .route(
             "/api/triggers",
             axum::routing::get(routes::list_triggers).post(routes::create_trigger),

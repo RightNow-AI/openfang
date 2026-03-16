@@ -3,7 +3,7 @@
 //! Provides a persistent bidirectional channel between the client
 //! and an agent. Messages are exchanged as JSON:
 //!
-//! Client → Server: `{"type":"message","content":"..."}`
+//! Client → Server: `{"type":"message","content":"...","session_id":"...","sender_id":"...","sender_name":"..."}`
 //! Server → Client: `{"type":"typing","state":"start|tool|stop"}`
 //! Server → Client: `{"type":"text_delta","content":"..."}`
 //! Server → Client: `{"type":"response","content":"...","input_tokens":N,"output_tokens":N,"iterations":N}`
@@ -44,6 +44,13 @@ const DEBOUNCE_MS: u64 = 100;
 
 /// Flush text buffer when it exceeds this many characters.
 const DEBOUNCE_CHARS: usize = 200;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WsMessageMetadata {
+    requested_session_id: Option<openfang_types::agent::SessionId>,
+    sender_id: Option<String>,
+    sender_name: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Verbose Level
@@ -437,22 +444,21 @@ async fn handle_text_message(
                 return;
             }
 
-            // Resolve file attachments into image content blocks
-            let requested_session_id =
-                match crate::routes::parse_requested_session_id(parsed["session_id"].as_str()) {
-                    Ok(session_id) => session_id,
-                    Err((_status, body)) => {
-                        let _ = send_json(
-                            sender,
-                            &serde_json::json!({
-                                "type": "error",
-                                "content": body.0["error"].as_str().unwrap_or("Invalid session ID"),
-                            }),
-                        )
-                        .await;
-                        return;
-                    }
-                };
+            let metadata = match parse_ws_message_metadata(&parsed) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    let _ = send_json(
+                        sender,
+                        &serde_json::json!({
+                            "type": "error",
+                            "content": error,
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            let requested_session_id = metadata.requested_session_id;
 
             let mut has_images = false;
             if let Some(attachments) = parsed["attachments"].as_array() {
@@ -552,11 +558,13 @@ async fn handle_text_message(
             // Send message to agent with streaming
             let kernel_handle: Arc<dyn KernelHandle> =
                 state.kernel.clone() as Arc<dyn KernelHandle>;
-            match state.kernel.send_message_streaming_in_session(
+            match state.kernel.send_message_streaming_with_sender_in_session(
                 agent_id,
                 &content,
                 Some(kernel_handle),
                 requested_session_id,
+                metadata.sender_id,
+                metadata.sender_name,
             ) {
                 Ok((mut rx, handle)) => {
                     // Forward stream events to WebSocket with debouncing.
@@ -1181,6 +1189,24 @@ fn sanitize_user_input(content: &str) -> String {
     sanitize_text(content)
 }
 
+fn parse_ws_message_metadata(parsed: &serde_json::Value) -> Result<WsMessageMetadata, String> {
+    let requested_session_id = crate::routes::parse_requested_session_id(
+        parsed["session_id"].as_str(),
+    )
+    .map_err(|(_status, body)| {
+        body.0["error"]
+            .as_str()
+            .unwrap_or("Invalid session ID")
+            .to_string()
+    })?;
+
+    Ok(WsMessageMetadata {
+        requested_session_id,
+        sender_id: parsed["sender_id"].as_str().map(String::from),
+        sender_name: parsed["sender_name"].as_str().map(String::from),
+    })
+}
+
 /// Strip control characters and normalize whitespace.
 fn sanitize_text(s: &str) -> String {
     s.chars()
@@ -1371,6 +1397,38 @@ mod tests {
         // JSON that doesn't have a content field is left as-is (after control-char stripping)
         let json = r#"{"key":"value"}"#;
         assert_eq!(sanitize_user_input(json), r#"{"key":"value"}"#);
+    }
+
+    #[test]
+    fn test_parse_ws_message_metadata_extracts_sender_identity() {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let parsed = serde_json::json!({
+            "type": "message",
+            "content": "hello",
+            "session_id": session_id,
+            "sender_id": "user-123",
+            "sender_name": "Alice",
+        });
+
+        let metadata = parse_ws_message_metadata(&parsed).unwrap();
+        assert_eq!(
+            metadata.requested_session_id.map(|id| id.0.to_string()),
+            Some(session_id)
+        );
+        assert_eq!(metadata.sender_id.as_deref(), Some("user-123"));
+        assert_eq!(metadata.sender_name.as_deref(), Some("Alice"));
+    }
+
+    #[test]
+    fn test_parse_ws_message_metadata_rejects_invalid_session_id() {
+        let parsed = serde_json::json!({
+            "type": "message",
+            "content": "hello",
+            "session_id": "not-a-uuid",
+        });
+
+        let err = parse_ws_message_metadata(&parsed).unwrap_err();
+        assert_eq!(err, "Invalid session ID");
     }
 
     #[test]

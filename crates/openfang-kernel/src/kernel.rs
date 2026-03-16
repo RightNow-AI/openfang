@@ -1285,15 +1285,16 @@ impl OpenFangKernel {
         fixed_id: Option<AgentId>,
     ) -> KernelResult<AgentId> {
         let agent_id = fixed_id.unwrap_or_default();
-        let session_id = SessionId::new();
         let name = manifest.name.clone();
 
         info!(agent = %name, id = %agent_id, parent = ?parent, "Spawning agent");
 
         // Create session
-        self.memory
+        let session = self
+            .memory
             .create_session(agent_id)
             .map_err(KernelError::OpenFang)?;
+        let session_id = session.id;
 
         // Inherit kernel exec_policy as fallback if agent manifest doesn't have one
         let mut manifest = manifest;
@@ -6869,6 +6870,27 @@ mod tests {
             .unwrap_err();
         let err_text = err.to_string();
         assert!(err_text.contains("belongs to a different agent"));
+    }
+
+    #[test]
+    fn test_spawn_agent_persists_registry_session_id() {
+        let (kernel, _tmp) = boot_test_kernel();
+        let agent_id = kernel
+            .spawn_agent(test_manifest(
+                "spawn-session-check",
+                "Ensure registry session IDs are persisted",
+                vec!["test".to_string()],
+            ))
+            .unwrap();
+
+        let entry = kernel.registry.get(agent_id).unwrap();
+        let session = kernel.memory.get_session(entry.session_id).unwrap();
+
+        assert!(
+            session.is_some(),
+            "spawned agent session should exist in memory"
+        );
+        assert_eq!(session.unwrap().agent_id, agent_id);
     }
 
     #[test]
