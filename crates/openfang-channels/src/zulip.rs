@@ -392,6 +392,7 @@ impl ChannelAdapter for ZulipAdapter {
                             platform_id,
                             display_name: sender_name.to_string(),
                             openfang_user: None,
+            metadata: None,
                         },
                         content: msg_content,
                         target_agent: None,

@@ -196,6 +196,7 @@ fn parse_pumble_event(event: &serde_json::Value, own_bot_id: &str) -> Option<Cha
             platform_id: channel_id,
             display_name: user_name.to_string(),
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,

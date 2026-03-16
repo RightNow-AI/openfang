@@ -307,6 +307,7 @@ impl ChannelAdapter for GoogleChatAdapter {
                             platform_id: space_name.to_string(),
                             display_name: sender_name.to_string(),
                             openfang_user: None,
+            metadata: None,
                         },
                         content: msg_content,
                         target_agent: None,

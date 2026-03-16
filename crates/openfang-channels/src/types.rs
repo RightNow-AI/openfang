@@ -27,14 +27,20 @@ pub enum ChannelType {
 }
 
 /// A user on a messaging platform.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChannelUser {
     /// Platform-specific user ID.
+    #[serde(default)]
     pub platform_id: String,
     /// Human-readable display name.
+    #[serde(default)]
     pub display_name: String,
     /// Optional mapping to an OpenFang user identity.
+    #[serde(default)]
     pub openfang_user: Option<String>,
+    /// Optional platform-specific metadata (e.g., reply_to_message_id for Telegram).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Content types that can be received from a channel.
@@ -321,6 +327,7 @@ mod tests {
                 platform_id: "user1".to_string(),
                 display_name: "Alice".to_string(),
                 openfang_user: None,
+                metadata: None,
             },
             content: ChannelContent::Text("Hello!".to_string()),
             target_agent: None,

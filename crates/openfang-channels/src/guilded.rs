@@ -279,6 +279,7 @@ impl ChannelAdapter for GuildedAdapter {
                             platform_id: channel_id,
                             display_name: created_by.to_string(),
                             openfang_user: None,
+                            metadata: None,
                         },
                         content: msg_content,
                         target_agent: None,

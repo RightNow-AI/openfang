@@ -422,6 +422,7 @@ impl ChannelAdapter for MumbleAdapter {
                                             platform_id: format!("session-{actor}"),
                                             display_name: format!("user-{actor}"),
                                             openfang_user: None,
+                                            metadata: None,
                                         },
                                         content,
                                         target_agent: None,

@@ -287,6 +287,7 @@ fn parse_viber_event(event: &serde_json::Value) -> Option<ChannelMessage> {
             platform_id: sender_id,
             display_name: sender_name,
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,

@@ -251,6 +251,7 @@ fn parse_mastodon_notification(
             platform_id: account_id.to_string(),
             display_name,
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,

@@ -212,6 +212,7 @@ impl ChannelAdapter for DingTalkAdapter {
                                         platform_id: sender_id,
                                         display_name: sender_nick,
                                         openfang_user: None,
+                                        metadata: None,
                                     },
                                     content,
                                     target_agent: None,

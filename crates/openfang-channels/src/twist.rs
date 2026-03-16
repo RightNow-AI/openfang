@@ -452,6 +452,7 @@ impl ChannelAdapter for TwistAdapter {
                                     platform_id: thread_id.clone(),
                                     display_name: creator_name.to_string(),
                                     openfang_user: None,
+                                    metadata: None,
                                 },
                                 content: msg_content,
                                 target_agent: None,

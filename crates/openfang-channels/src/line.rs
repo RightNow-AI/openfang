@@ -316,6 +316,7 @@ fn parse_line_event(event: &serde_json::Value) -> Option<ChannelMessage> {
             platform_id: reply_to,
             display_name: user_id,
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,

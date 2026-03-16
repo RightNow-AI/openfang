@@ -326,6 +326,7 @@ impl ChannelAdapter for LinkedInAdapter {
                             platform_id: sender_urn.clone(),
                             display_name: sender_name,
                             openfang_user: None,
+                            metadata: None,
                         },
                         content,
                         target_agent: None,

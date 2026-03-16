@@ -164,6 +164,7 @@ fn parse_threema_webhook(
             platform_id: from.clone(),
             display_name: from.clone(),
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,

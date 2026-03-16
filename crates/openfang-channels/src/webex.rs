@@ -407,6 +407,7 @@ impl ChannelAdapter for WebexAdapter {
                             platform_id: full_room_id,
                             display_name: sender_email.to_string(),
                             openfang_user: None,
+                            metadata: None,
                         },
                         content: msg_content,
                         target_agent: None,

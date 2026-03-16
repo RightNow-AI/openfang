@@ -533,6 +533,7 @@ async fn parse_slack_event(
             platform_id: channel.to_string(),
             display_name: user_id.to_string(), // Slack user IDs as display name
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,

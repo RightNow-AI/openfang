@@ -296,6 +296,7 @@ fn parse_reddit_comment(comment: &serde_json::Value, own_username: &str) -> Opti
             platform_id: author.to_string(),
             display_name: author.to_string(),
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,

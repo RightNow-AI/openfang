@@ -541,6 +541,7 @@ async fn parse_discord_message(
             platform_id: channel_id.to_string(),
             display_name,
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,

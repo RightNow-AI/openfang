@@ -220,6 +220,7 @@ fn parse_flock_event(event: &serde_json::Value, own_user_id: &str) -> Option<Cha
             platform_id: to.to_string(),
             display_name: sender_name.to_string(),
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,

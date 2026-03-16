@@ -1564,6 +1564,7 @@ mod tests {
             platform_id: "user1".to_string(),
             display_name: "Test".to_string(),
             openfang_user: None,
+            metadata: None,
         };
 
         let result = handle_command("agents", &[], &handle, &router, &sender).await;
@@ -1584,6 +1585,7 @@ mod tests {
             platform_id: "user1".to_string(),
             display_name: "Test".to_string(),
             openfang_user: None,
+            metadata: None,
         };
 
         // Select existing agent

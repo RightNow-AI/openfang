@@ -231,6 +231,7 @@ mod tests {
             platform_id: "user@example.com".to_string(),
             display_name: "Test User".to_string(),
             openfang_user: None,
+            metadata: None,
         };
         let result = adapter
             .send(&user, ChannelContent::Text("hello".to_string()))

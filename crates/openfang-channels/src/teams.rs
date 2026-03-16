@@ -259,6 +259,7 @@ fn parse_teams_activity(
             platform_id: conversation_id,
             display_name: from_name.to_string(),
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,

@@ -216,6 +216,7 @@ fn parse_mattermost_event(
             platform_id: channel_id.to_string(),
             display_name: sender_name.to_string(),
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,

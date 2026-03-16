@@ -345,6 +345,7 @@ impl ChannelAdapter for NostrAdapter {
                                     openfang_types::truncate_str(&sender_pubkey, 8)
                                 ),
                                 openfang_user: None,
+                                metadata: None,
                             },
                             content: msg_content,
                             target_agent: None,

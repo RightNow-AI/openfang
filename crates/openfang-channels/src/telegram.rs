@@ -8,11 +8,14 @@ use crate::types::{
     LifecycleReaction,
 };
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
@@ -26,6 +29,21 @@ const LONG_POLL_TIMEOUT: u64 = 30;
 
 /// Default Telegram Bot API base URL.
 const DEFAULT_API_URL: &str = "https://api.telegram.org";
+
+/// Progress information for file downloads.
+#[derive(Debug, Clone)]
+pub struct ProgressInfo {
+    pub file_id: String,
+    pub file_name: String,
+    pub total_bytes: u64,
+    pub downloaded_bytes: u64,
+    pub percentage: f64,
+    pub chat_id: i64,
+    pub message_id: Option<i64>,
+}
+
+/// Callback type for download progress updates.
+pub type ProgressCallback = Arc<dyn Fn(ProgressInfo) + Send + Sync>;
 
 /// Telegram Bot API adapter using long-polling.
 pub struct TelegramAdapter {
@@ -41,6 +59,14 @@ pub struct TelegramAdapter {
     bot_username: Arc<tokio::sync::RwLock<Option<String>>>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
+    /// Whether to download files to local disk (default: false, only return URLs).
+    download_enabled: bool,
+    /// Directory for downloaded files.
+    download_dir: PathBuf,
+    /// Maximum file size to download (bytes). Files larger than this return URLs only.
+    max_download_size: u64,
+    /// Optional callback for download progress updates.
+    progress_callback: Option<ProgressCallback>,
 }
 
 impl TelegramAdapter {
@@ -69,7 +95,30 @@ impl TelegramAdapter {
             bot_username: Arc::new(tokio::sync::RwLock::new(None)),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
+            download_enabled: false,
+            download_dir: std::env::temp_dir().join("openfang-telegram-downloads"),
+            max_download_size: 2 * 1024 * 1024 * 1024, // 2GB default
+            progress_callback: None,
         }
+    }
+
+    /// Enable file downloads with custom configuration.
+    pub fn with_download_config(
+        mut self,
+        enabled: bool,
+        download_dir: Option<PathBuf>,
+        max_size: Option<u64>,
+        progress_callback: Option<ProgressCallback>,
+    ) -> Self {
+        self.download_enabled = enabled;
+        if let Some(dir) = download_dir {
+            self.download_dir = dir;
+        }
+        if let Some(size) = max_size {
+            self.max_download_size = size;
+        }
+        self.progress_callback = progress_callback;
+        self
     }
 
     /// Validate the bot token by calling `getMe`.
@@ -100,12 +149,41 @@ impl TelegramAdapter {
     ///
     /// When `thread_id` is provided, includes `message_thread_id` in the request
     /// so the message lands in the correct forum topic.
+    /// When `metadata` contains `reply_to_message_id`, the message will be sent as a reply.
+    /// When `metadata` contains `edit_message_id`, the message will edit an existing message.
     async fn api_send_message(
         &self,
         chat_id: i64,
         text: &str,
         thread_id: Option<i64>,
+        metadata: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // Check if this is an edit operation
+        if let Some(meta) = metadata {
+            if let Some(edit_msg_id) = meta.get("edit_message_id").and_then(|v| v.as_i64()) {
+                // Use editMessageText instead of sendMessage
+                let url = format!(
+                    "{}/bot{}/editMessageText",
+                    self.api_base_url,
+                    self.token.as_str()
+                );
+                let sanitized = sanitize_telegram_html(text);
+                let body = serde_json::json!({
+                    "chat_id": chat_id,
+                    "message_id": edit_msg_id,
+                    "text": sanitized,
+                    "parse_mode": "HTML",
+                });
+                let resp = self.client.post(&url).json(&body).send().await?;
+                let status = resp.status();
+                if !status.is_success() {
+                    let body_text = resp.text().await.unwrap_or_default();
+                    warn!("Telegram editMessageText failed ({status}): {body_text}");
+                }
+                return Ok(());
+            }
+        }
+
         let url = format!(
             "{}/bot{}/sendMessage",
             self.api_base_url,
@@ -127,6 +205,12 @@ impl TelegramAdapter {
             });
             if let Some(tid) = thread_id {
                 body["message_thread_id"] = serde_json::json!(tid);
+            }
+            // Add reply_to_message_id if present in metadata
+            if let Some(meta) = metadata {
+                if let Some(reply_id) = meta.get("reply_to_message_id").and_then(|v| v.as_i64()) {
+                    body["reply_to_message_id"] = serde_json::json!(reply_id);
+                }
             }
 
             let resp = self.client.post(&url).json(&body).send().await?;
@@ -359,9 +443,12 @@ impl TelegramAdapter {
             .parse()
             .map_err(|_| format!("Invalid Telegram chat_id: {}", user.platform_id))?;
 
+        // Extract metadata from user
+        let metadata = user.metadata.as_ref();
+
         match content {
             ChannelContent::Text(text) => {
-                self.api_send_message(chat_id, &text, thread_id).await?;
+                self.api_send_message(chat_id, &text, thread_id, metadata).await?;
             }
             ChannelContent::Image { url, caption } => {
                 self.api_send_photo(chat_id, &url, caption.as_deref(), thread_id)
@@ -387,7 +474,7 @@ impl TelegramAdapter {
             }
             ChannelContent::Command { name, args } => {
                 let text = format!("/{name} {}", args.join(" "));
-                self.api_send_message(chat_id, text.trim(), thread_id)
+                self.api_send_message(chat_id, text.trim(), thread_id, metadata)
                     .await?;
             }
         }
@@ -447,6 +534,10 @@ impl ChannelAdapter for TelegramAdapter {
         let api_base_url = self.api_base_url.clone();
         let bot_username = self.bot_username.clone();
         let mut shutdown = self.shutdown_rx.clone();
+        let download_enabled = self.download_enabled;
+        let download_dir = self.download_dir.clone();
+        let max_download_size = self.max_download_size;
+        let progress_callback = self.progress_callback.clone();
 
         tokio::spawn(async move {
             let mut offset: Option<i64> = None;
@@ -481,6 +572,10 @@ impl ChannelAdapter for TelegramAdapter {
                             &client,
                             &api_base_url,
                             bot_username.read().await.as_deref(),
+                            download_enabled,
+                            &download_dir,
+                            max_download_size,
+                            progress_callback.as_ref(),
                         )
                         .await
                         {
@@ -624,6 +719,10 @@ impl ChannelAdapter for TelegramAdapter {
                         &client,
                         &api_base_url,
                         bot_uname.as_deref(),
+                        download_enabled,
+                        &download_dir,
+                        max_download_size,
+                        progress_callback.as_ref(),
                     )
                     .await
                     {
@@ -704,6 +803,7 @@ impl ChannelAdapter for TelegramAdapter {
 
 /// Merge multiple updates from the same media group into a single ChannelMessage.
 /// Takes the first update's metadata (sender, chat, timestamp) and combines all media URLs.
+#[allow(clippy::too_many_arguments)]
 async fn merge_media_group_updates(
     updates: &[serde_json::Value],
     allowed_users: &[String],
@@ -711,6 +811,10 @@ async fn merge_media_group_updates(
     client: &reqwest::Client,
     api_base_url: &str,
     bot_username: Option<&str>,
+    download_enabled: bool,
+    download_dir: &Path,
+    max_download_size: u64,
+    progress_callback: Option<&ProgressCallback>,
 ) -> Option<ChannelMessage> {
     if updates.is_empty() {
         return None;
@@ -724,6 +828,10 @@ async fn merge_media_group_updates(
         client,
         api_base_url,
         bot_username,
+        download_enabled,
+        download_dir,
+        max_download_size,
+        progress_callback,
     )
     .await?;
 
@@ -749,7 +857,7 @@ async fn merge_media_group_updates(
                 Some(url) => media_items.push(format!("[Photo: {}]", url)),
                 None => {
                     warn!("Failed to get photo URL for file_id: {}", file_id);
-                    media_items.push("[Photo: download failed]".to_string());
+                    media_items.push("[图片下载失败]".to_string());
                 }
             }
         }
@@ -759,22 +867,61 @@ async fn merge_media_group_updates(
             let file_id = video.get("file_id")?.as_str()?;
             let file_size = video.get("file_size").and_then(|v| v.as_u64()).unwrap_or(0);
             let duration = video.get("duration").and_then(|v| v.as_u64()).unwrap_or(0);
+            let chat_id = message.get("chat")?.get("id")?.as_i64()?;
+            let message_id = message.get("message_id")?.as_i64()?;
 
-            match telegram_get_file_url(token, client, file_id, api_base_url).await {
-                Some(url) => {
-                    media_items.push(format!(
-                        "[Video: {} ({}s, {} bytes)]",
-                        url, duration, file_size
-                    ));
+            match telegram_get_file_info(token, client, file_id, api_base_url).await {
+                Some(file_info) => {
+                    // Check if download is enabled and file size is within limit
+                    if download_enabled && file_size <= max_download_size {
+                        match download_file(
+                            client,
+                            &file_info,
+                            download_dir,
+                            progress_callback,
+                            chat_id,
+                            Some(message_id),
+                        )
+                        .await
+                        {
+                            Ok(local_path) => {
+                                media_items.push(format!(
+                                    "[Video: file://{} ({}s, {} bytes)]",
+                                    local_path.display(),
+                                    duration,
+                                    file_size
+                                ));
+                            }
+                            Err(e) => {
+                                warn!("Failed to download video {}: {}", file_id, e);
+                                media_items.push(format!(
+                                    "[Video: {} ({}s, {} bytes)]",
+                                    file_info.download_url, duration, file_size
+                                ));
+                            }
+                        }
+                    } else {
+                        if file_size > max_download_size {
+                            info!(
+                                "Video {} ({} bytes) exceeds max download size, returning URL only",
+                                file_id, file_size
+                            );
+                        }
+                        media_items.push(format!(
+                            "[Video: {} ({}s, {} bytes)]",
+                            file_info.download_url, duration, file_size
+                        ));
+                    }
                 }
                 None => {
                     warn!(
-                        "Failed to get video URL for file_id: {} (size: {} bytes)",
+                        "Failed to get video info for file_id: {} (size: {} bytes)",
                         file_id, file_size
                     );
-                    // Note: Download may fail for various reasons (API limits, network, etc.)
-                    // Don't assume file size is the only reason - let the user provide alternatives
-                    media_items.push(format!("[Video: download failed (file_id: {}, {} MB) - may need local path or download link]", file_id, file_size / 1024 / 1024));
+                    media_items.push(format!(
+                        "[视频下载失败 ({} MB)，请稍后重试或提供下载链接]",
+                        file_size / 1024 / 1024
+                    ));
                 }
             }
         }
@@ -794,29 +941,86 @@ async fn merge_media_group_updates(
                 .get("mime_type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            let chat_id = message.get("chat")?.get("id")?.as_i64()?;
+            let message_id = message.get("message_id")?.as_i64()?;
 
             // Check if this is a video document
             let is_video = mime_type.starts_with("video/");
 
-            match telegram_get_file_url(token, client, file_id, api_base_url).await {
-                Some(url) => {
-                    if is_video {
-                        media_items.push(format!("[Video (as document): {} - {}]", filename, url));
+            match telegram_get_file_info(token, client, file_id, api_base_url).await {
+                Some(file_info) => {
+                    // Check if download is enabled and file size is within limit
+                    if download_enabled && file_size <= max_download_size {
+                        match download_file(
+                            client,
+                            &file_info,
+                            download_dir,
+                            progress_callback,
+                            chat_id,
+                            Some(message_id),
+                        )
+                        .await
+                        {
+                            Ok(local_path) => {
+                                if is_video {
+                                    media_items.push(format!(
+                                        "[Video (as document): {} - file://{}]",
+                                        filename,
+                                        local_path.display()
+                                    ));
+                                } else {
+                                    media_items.push(format!(
+                                        "[File {}: file://{}]",
+                                        filename,
+                                        local_path.display()
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to download document {}: {}", file_id, e);
+                                if is_video {
+                                    media_items.push(format!(
+                                        "[Video (as document): {} - {}]",
+                                        filename, file_info.download_url
+                                    ));
+                                } else {
+                                    media_items.push(format!(
+                                        "[File {}: {}]",
+                                        filename, file_info.download_url
+                                    ));
+                                }
+                            }
+                        }
                     } else {
-                        media_items.push(format!("[File {}: {}]", filename, url));
+                        if file_size > max_download_size {
+                            info!(
+                                "Document {} ({} bytes) exceeds max download size, returning URL only",
+                                file_id, file_size
+                            );
+                        }
+                        if is_video {
+                            media_items.push(format!(
+                                "[Video (as document): {} - {}]",
+                                filename, file_info.download_url
+                            ));
+                        } else {
+                            media_items.push(format!("[File {}: {}]", filename, file_info.download_url));
+                        }
                     }
                 }
                 None => {
                     warn!(
-                        "Failed to get document URL for file_id: {} (size: {} bytes, mime: {})",
+                        "Failed to get document info for file_id: {} (size: {} bytes, mime: {})",
                         file_id, file_size, mime_type
                     );
-                    // Note: Download may fail for various reasons - don't assume file size is the only reason
                     if is_video {
-                        media_items.push(format!("[Video {}: download failed (file_id: {}, {} MB) - may need local path or download link]", filename, file_id, file_size / 1024 / 1024));
+                        media_items.push(format!(
+                            "[视频 {} 下载失败 ({} MB)，请稍后重试或提供下载链接]",
+                            filename, file_size / 1024 / 1024
+                        ));
                     } else {
                         media_items.push(format!(
-                            "[File {}: download failed ({} MB)]",
+                            "[文件 {} 下载失败 ({} MB)]",
                             filename,
                             file_size / 1024 / 1024
                         ));
@@ -855,15 +1059,21 @@ async fn merge_media_group_updates(
     })
 }
 
-/// Parse a Telegram update JSON into a `ChannelMessage`, or `None` if filtered/unparseable.
-/// Handles both `message` and `edited_message` update types.
-/// Resolve a Telegram file_id to a download URL via the Bot API.
-async fn telegram_get_file_url(
+/// File information returned by Telegram getFile API.
+#[derive(Debug, Clone)]
+struct FileInfo {
+    file_id: String,
+    file_size: u64,
+    download_url: String,
+}
+
+/// Resolve a Telegram file_id to file information via the Bot API.
+async fn telegram_get_file_info(
     token: &str,
     client: &reqwest::Client,
     file_id: &str,
     api_base_url: &str,
-) -> Option<String> {
+) -> Option<FileInfo> {
     let url = format!("{api_base_url}/bot{token}/getFile");
     let resp = client
         .post(&url)
@@ -876,9 +1086,95 @@ async fn telegram_get_file_url(
         return None;
     }
     let file_path = body["result"]["file_path"].as_str()?;
-    Some(format!("{api_base_url}/file/bot{token}/{file_path}"))
+    let file_size = body["result"]["file_size"].as_u64().unwrap_or(0);
+    let download_url = format!("{api_base_url}/file/bot{token}/{file_path}");
+
+    Some(FileInfo {
+        file_id: file_id.to_string(),
+        file_size,
+        download_url,
+    })
 }
 
+/// Download a file from Telegram to local disk with progress reporting.
+async fn download_file(
+    client: &reqwest::Client,
+    file_info: &FileInfo,
+    dest_dir: &Path,
+    progress_callback: Option<&ProgressCallback>,
+    chat_id: i64,
+    message_id: Option<i64>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    // Create download directory if it doesn't exist
+    tokio::fs::create_dir_all(dest_dir).await?;
+
+    // Generate unique filename
+    let filename = format!(
+        "{}_{}.dat",
+        file_info.file_id,
+        chrono::Utc::now().timestamp_millis()
+    );
+    let dest_path = dest_dir.join(&filename);
+
+    // Start download
+    let response = client.get(&file_info.download_url).send().await?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP error: {}", response.status()).into());
+    }
+
+    let mut file = File::create(&dest_path).await?;
+    let mut stream = response.bytes_stream();
+    let mut downloaded: u64 = 0;
+    let total = file_info.file_size;
+    let mut last_report = tokio::time::Instant::now();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
+
+        // Report progress (throttle to every 2 seconds or 5% change)
+        let now = tokio::time::Instant::now();
+        if let Some(callback) = progress_callback {
+            if now.duration_since(last_report) >= Duration::from_secs(2) || downloaded == total {
+                let percentage = if total > 0 {
+                    (downloaded as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                };
+
+                callback(ProgressInfo {
+                    file_id: file_info.file_id.clone(),
+                    file_name: filename.clone(),
+                    total_bytes: total,
+                    downloaded_bytes: downloaded,
+                    percentage,
+                    chat_id,
+                    message_id,
+                });
+
+                last_report = now;
+            }
+        }
+    }
+
+    file.flush().await?;
+    Ok(dest_path)
+}
+
+/// Resolve a Telegram file_id to a download URL via the Bot API (legacy function).
+async fn telegram_get_file_url(
+    token: &str,
+    client: &reqwest::Client,
+    file_id: &str,
+    api_base_url: &str,
+) -> Option<String> {
+    telegram_get_file_info(token, client, file_id, api_base_url)
+        .await
+        .map(|info| info.download_url)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn parse_telegram_update(
     update: &serde_json::Value,
     allowed_users: &[String],
@@ -886,6 +1182,10 @@ async fn parse_telegram_update(
     client: &reqwest::Client,
     api_base_url: &str,
     bot_username: Option<&str>,
+    download_enabled: bool,
+    download_dir: &Path,
+    max_download_size: u64,
+    progress_callback: Option<&ProgressCallback>,
 ) -> Option<ChannelMessage> {
     let update_id = update["update_id"].as_i64().unwrap_or(0);
     let message = match update
@@ -991,7 +1291,7 @@ async fn parse_telegram_update(
         match telegram_get_file_url(token, client, file_id, api_base_url).await {
             Some(url) => ChannelContent::Image { url, caption },
             None => ChannelContent::Text(format!(
-                "[Photo received{}]",
+                "[收到图片{}]",
                 caption
                     .as_deref()
                     .map(|c| format!(": {c}"))
@@ -1004,9 +1304,55 @@ async fn parse_telegram_update(
             .as_str()
             .unwrap_or("document")
             .to_string();
-        match telegram_get_file_url(token, client, file_id, api_base_url).await {
-            Some(url) => ChannelContent::File { url, filename },
-            None => ChannelContent::Text(format!("[Document received: {filename}]")),
+        let file_size = message["document"]["file_size"].as_u64().unwrap_or(0);
+
+        // Try to get file info first
+        match telegram_get_file_info(token, client, file_id, api_base_url).await {
+            Some(file_info) => {
+                // Check if download is enabled and file size is within limit
+                if download_enabled && file_size <= max_download_size {
+                    // Attempt to download the file
+                    match download_file(
+                        client,
+                        &file_info,
+                        download_dir,
+                        progress_callback,
+                        chat_id,
+                        Some(message_id),
+                    )
+                    .await
+                    {
+                        Ok(local_path) => {
+                            info!("Downloaded Telegram file to: {}", local_path.display());
+                            ChannelContent::File {
+                                url: format!("file://{}", local_path.display()),
+                                filename,
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to download file {}: {}", file_id, e);
+                            // Fallback to URL
+                            ChannelContent::File {
+                                url: file_info.download_url,
+                                filename,
+                            }
+                        }
+                    }
+                } else {
+                    // Return URL only (download disabled or file too large)
+                    if file_size > max_download_size {
+                        info!(
+                            "File {} ({} bytes) exceeds max download size ({} bytes), returning URL only",
+                            file_id, file_size, max_download_size
+                        );
+                    }
+                    ChannelContent::File {
+                        url: file_info.download_url,
+                        filename,
+                    }
+                }
+            }
+            None => ChannelContent::Text(format!("[收到文档: {filename}]")),
         }
     } else if message.get("voice").is_some() {
         let file_id = message["voice"]["file_id"].as_str().unwrap_or("");
@@ -1016,7 +1362,7 @@ async fn parse_telegram_update(
                 url,
                 duration_seconds: duration,
             },
-            None => ChannelContent::Text(format!("[Voice message, {duration}s]")),
+            None => ChannelContent::Text(format!("[收到语音消息，时长 {duration}s]")),
         }
     } else if message.get("location").is_some() {
         let lat = message["location"]["latitude"].as_f64().unwrap_or(0.0);
@@ -1095,6 +1441,7 @@ async fn parse_telegram_update(
             platform_id: chat_id.to_string(),
             display_name,
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,
@@ -1220,6 +1567,31 @@ mod tests {
         reqwest::Client::new()
     }
 
+    // Helper function for tests - uses default download settings (disabled)
+    async fn parse_telegram_update_test(
+        update: &serde_json::Value,
+        allowed_users: &[String],
+        token: &str,
+        client: &reqwest::Client,
+        api_base_url: &str,
+        bot_username: Option<&str>,
+    ) -> Option<ChannelMessage> {
+        let temp_dir = std::env::temp_dir();
+        parse_telegram_update(
+            update,
+            allowed_users,
+            token,
+            client,
+            api_base_url,
+            bot_username,
+            false, // download_enabled
+            &temp_dir,
+            2 * 1024 * 1024 * 1024, // 2GB max
+            None, // no progress callback
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn test_parse_telegram_update() {
         let update = serde_json::json!({
@@ -1241,7 +1613,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
@@ -1275,7 +1647,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         match &msg.content {
@@ -1310,12 +1682,12 @@ mod tests {
 
         // Empty allowed_users = allow all
         let msg =
-            parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
         assert!(msg.is_some());
 
         // Non-matching allowed_users = filter out
         let blocked: Vec<String> = vec!["111".to_string(), "222".to_string()];
-        let msg = parse_telegram_update(
+        let msg = parse_telegram_update_test(
             &update,
             &blocked,
             "fake:token",
@@ -1328,7 +1700,7 @@ mod tests {
 
         // Matching allowed_users = allow
         let allowed: Vec<String> = vec!["999".to_string()];
-        let msg = parse_telegram_update(
+        let msg = parse_telegram_update_test(
             &update,
             &allowed,
             "fake:token",
@@ -1362,7 +1734,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
@@ -1400,7 +1772,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         match &msg.content {
@@ -1426,7 +1798,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         assert!(matches!(msg.content, ChannelContent::Location { .. }));
@@ -1452,13 +1824,13 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         // With a fake token, getFile will fail, so we get a text fallback
         match &msg.content {
             ChannelContent::Text(t) => {
-                assert!(t.contains("Photo received"));
+                assert!(t.contains("收到图片"));
                 assert!(t.contains("Check this out"));
             }
             ChannelContent::Image { caption, .. } => {
@@ -1489,12 +1861,12 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
-                assert!(t.contains("Document received"));
+                assert!(t.contains("收到文档"));
                 assert!(t.contains("report.pdf"));
             }
             ChannelContent::File { filename, .. } => {
@@ -1522,12 +1894,12 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
-                assert!(t.contains("Voice message"));
+                assert!(t.contains("收到语音消息"));
                 assert!(t.contains("15s"));
             }
             ChannelContent::Voice {
@@ -1555,7 +1927,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         assert_eq!(msg.thread_id, Some("42".to_string()));
@@ -1577,7 +1949,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         assert_eq!(msg.thread_id, None);
@@ -1601,7 +1973,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         assert_eq!(msg.thread_id, Some("99".to_string()));
@@ -1626,7 +1998,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         assert_eq!(msg.sender.display_name, "My Channel");
@@ -1651,7 +2023,7 @@ mod tests {
 
         let client = test_client();
         let msg =
-            parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
         assert!(msg.is_none());
     }
 
@@ -1675,7 +2047,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(
+        let msg = parse_telegram_update_test(
             &update,
             &[],
             "fake:token",
@@ -1707,7 +2079,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(
+        let msg = parse_telegram_update_test(
             &update,
             &[],
             "fake:token",
@@ -1741,7 +2113,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(
+        let msg = parse_telegram_update_test(
             &update,
             &[],
             "fake:token",
@@ -1778,7 +2150,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(
+        let msg = parse_telegram_update_test(
             &update,
             &[],
             "fake:token",
@@ -1815,7 +2187,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(
+        let msg = parse_telegram_update_test(
             &update,
             &[],
             "fake:token",
@@ -1851,7 +2223,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(
+        let msg = parse_telegram_update_test(
             &update,
             &[],
             "fake:token",
@@ -1911,7 +2283,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         match &msg.content {
@@ -1953,7 +2325,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         match &msg.content {
@@ -1994,7 +2366,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         match &msg.content {
@@ -2032,7 +2404,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         match &msg.content {
@@ -2059,7 +2431,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
             .await
             .unwrap();
         match &msg.content {

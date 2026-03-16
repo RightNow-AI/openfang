@@ -531,6 +531,7 @@ where
                                     platform_id: uid,
                                     display_name: cb.sender_nick,
                                     openfang_user: None,
+            metadata: None,
                                 },
                                 content,
                                 target_agent: None,

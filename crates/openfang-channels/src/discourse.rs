@@ -301,6 +301,7 @@ impl ChannelAdapter for DiscourseAdapter {
                             platform_id: username.to_string(),
                             display_name,
                             openfang_user: None,
+                            metadata: None,
                         },
                         content,
                         target_agent: None,

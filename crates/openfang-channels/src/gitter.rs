@@ -277,6 +277,7 @@ impl ChannelAdapter for GitterAdapter {
                                                     platform_id: username.clone(),
                                                     display_name,
                                                     openfang_user: None,
+                                                    metadata: None,
                                                 },
                                                 content,
                                                 target_agent: None,

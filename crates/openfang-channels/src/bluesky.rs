@@ -325,6 +325,7 @@ fn parse_bluesky_notification(
             platform_id: author_did.to_string(),
             display_name,
             openfang_user: None,
+            metadata: None,
         },
         content,
         target_agent: None,
