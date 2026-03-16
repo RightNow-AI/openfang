@@ -11,6 +11,7 @@ pub mod fallback;
 pub mod gemini;
 pub mod openai;
 pub mod qwen_code;
+pub mod vertex;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
@@ -226,6 +227,12 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "AZURE_OPENAI_API_KEY",
             key_required: true,
         }),
+        "vertex-ai" | "vertex" | "google-vertex" => Some(ProviderDefaults {
+            // Vertex AI uses OAuth, not API keys - base_url is per-project
+            base_url: "https://us-central1-aiplatform.googleapis.com",
+            api_key_env: "GOOGLE_APPLICATION_CREDENTIALS",
+            key_required: false, // Uses OAuth service account, not API key
+        }),
         _ => None,
     }
 }
@@ -368,6 +375,39 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
                 .to_string(),
         })?;
         return Ok(Arc::new(openai::OpenAIDriver::new_azure(api_key, base_url)));
+    }
+
+    // Vertex AI — uses Google Cloud OAuth with service account credentials.
+    // Requires GOOGLE_APPLICATION_CREDENTIALS env var pointing to service account JSON,
+    // and the service account must be activated via gcloud CLI.
+    if provider == "vertex-ai" || provider == "vertex" || provider == "google-vertex" {
+        // Get project_id from environment or service account JSON
+        let project_id = std::env::var("GOOGLE_CLOUD_PROJECT")
+            .or_else(|_| std::env::var("GCLOUD_PROJECT"))
+            .or_else(|_| std::env::var("GCP_PROJECT"))
+            .or_else(|_| {
+                // Try to read from service account JSON
+                if let Ok(creds_path) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS") {
+                    if let Ok(contents) = std::fs::read_to_string(&creds_path) {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
+                            if let Some(proj) = json.get("project_id").and_then(|v| v.as_str()) {
+                                return Ok(proj.to_string());
+                            }
+                        }
+                    }
+                }
+                Err(std::env::VarError::NotPresent)
+            })
+            .map_err(|_| {
+                LlmError::MissingApiKey(
+                    "Set GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_CLOUD_PROJECT for Vertex AI"
+                        .to_string(),
+                )
+            })?;
+        let region = std::env::var("GOOGLE_CLOUD_REGION")
+            .or_else(|_| std::env::var("VERTEX_AI_REGION"))
+            .unwrap_or_else(|_| "us-central1".to_string());
+        return Ok(Arc::new(vertex::VertexAIDriver::new(project_id, region)));
     }
 
     // Kimi for Code — Anthropic-compatible endpoint
