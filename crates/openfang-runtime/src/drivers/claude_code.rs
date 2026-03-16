@@ -10,9 +10,11 @@
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
+use base64::Engine;
 use dashmap::DashMap;
-use openfang_types::message::{ContentBlock, Role, StopReason, TokenUsage};
+use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tracing::{debug, info, warn};
@@ -130,8 +132,16 @@ impl ClaudeCodeDriver {
     }
 
     /// Build a text prompt from the completion request messages.
-    fn build_prompt(request: &CompletionRequest) -> String {
+    ///
+    /// When messages contain image blocks, the images are decoded from base64,
+    /// written to a temporary directory, and referenced by file path in the
+    /// prompt text. The caller must pass the returned `image_dir` to
+    /// `--add-dir` so the Claude CLI can read them, and clean up the directory
+    /// after the CLI exits.
+    fn build_prompt(request: &CompletionRequest) -> PreparedPrompt {
         let mut parts = Vec::new();
+        let mut image_dir: Option<PathBuf> = None;
+        let mut image_count = 0u32;
 
         if let Some(ref sys) = request.system {
             parts.push(format!("[System]\n{sys}"));
@@ -143,13 +153,77 @@ impl ClaudeCodeDriver {
                 Role::Assistant => "Assistant",
                 Role::System => "System",
             };
-            let text = msg.content.text_content();
-            if !text.is_empty() {
-                parts.push(format!("[{role_label}]\n{text}"));
+
+            match &msg.content {
+                MessageContent::Text(s) => {
+                    if !s.is_empty() {
+                        parts.push(format!("[{role_label}]\n{s}"));
+                    }
+                }
+                MessageContent::Blocks(blocks) => {
+                    let mut msg_parts = Vec::new();
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text, .. } => {
+                                if !text.is_empty() {
+                                    msg_parts.push(text.clone());
+                                }
+                            }
+                            ContentBlock::Image { media_type, data } => {
+                                // Create temp dir on first image
+                                if image_dir.is_none() {
+                                    let dir = PathBuf::from(format!(
+                                        "/tmp/openfang-images-{}",
+                                        uuid::Uuid::new_v4()
+                                    ));
+                                    if let Err(e) = std::fs::create_dir_all(&dir) {
+                                        warn!(error = %e, "Failed to create image temp dir");
+                                        continue;
+                                    }
+                                    image_dir = Some(dir);
+                                }
+
+                                let ext = match media_type.as_str() {
+                                    "image/png" => "png",
+                                    "image/gif" => "gif",
+                                    "image/webp" => "webp",
+                                    _ => "jpg",
+                                };
+                                image_count += 1;
+                                let filename = format!("image-{image_count}.{ext}");
+                                let path = image_dir.as_ref().unwrap().join(&filename);
+
+                                match base64::engine::general_purpose::STANDARD.decode(data) {
+                                    Ok(decoded) => {
+                                        if let Err(e) = std::fs::write(&path, &decoded) {
+                                            warn!(error = %e, "Failed to write temp image");
+                                            continue;
+                                        }
+                                        msg_parts.push(format!(
+                                            "@{}",
+                                            path.display()
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Failed to decode base64 image");
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let text = msg_parts.join("\n");
+                    if !text.is_empty() {
+                        parts.push(format!("[{role_label}]\n{text}"));
+                    }
+                }
             }
         }
 
-        parts.join("\n\n")
+        PreparedPrompt {
+            text: parts.join("\n\n"),
+            image_dir,
+        }
     }
 
     /// Map a model ID like "claude-code/opus" to CLI --model flag value.
@@ -183,6 +257,25 @@ impl ClaudeCodeDriver {
                     cmd.env_remove(&key);
                     break;
                 }
+            }
+        }
+    }
+}
+
+/// Prompt text plus optional temp directory containing decoded images.
+struct PreparedPrompt {
+    text: String,
+    /// Temporary directory holding image files. The caller should pass this
+    /// path via `--add-dir` and remove it after the CLI exits.
+    image_dir: Option<PathBuf>,
+}
+
+impl PreparedPrompt {
+    /// Clean up temporary image files, if any.
+    fn cleanup(&self) {
+        if let Some(ref dir) = self.image_dir {
+            if let Err(e) = std::fs::remove_dir_all(dir) {
+                debug!(error = %e, dir = %dir.display(), "Failed to clean up image temp dir");
             }
         }
     }
@@ -231,17 +324,22 @@ struct ClaudeStreamEvent {
 #[async_trait]
 impl LlmDriver for ClaudeCodeDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
-        let prompt = Self::build_prompt(&request);
+        let prepared = Self::build_prompt(&request);
         let model_flag = Self::model_flag(&request.model);
 
         let mut cmd = tokio::process::Command::new(&self.cli_path);
         cmd.arg("-p")
-            .arg(&prompt)
+            .arg(&prepared.text)
             .arg("--output-format")
             .arg("json");
 
         if self.skip_permissions {
             cmd.arg("--dangerously-skip-permissions");
+        }
+
+        // Allow the CLI to read temp image files
+        if let Some(ref dir) = prepared.image_dir {
+            cmd.arg("--add-dir").arg(dir);
         }
 
         if let Some(ref model) = model_flag {
@@ -257,6 +355,7 @@ impl LlmDriver for ClaudeCodeDriver {
 
         // Spawn child process instead of cmd.output() so we can track PID and timeout
         let mut child = cmd.spawn().map_err(|e| {
+            prepared.cleanup();
             LlmError::Http(format!(
                 "Claude Code CLI not found or failed to start ({}). \
                  Install: npm install -g @anthropic-ai/claude-code && claude auth",
@@ -286,6 +385,7 @@ impl LlmDriver for ClaudeCodeDriver {
             Ok(Ok(status)) => status,
             Ok(Err(e)) => {
                 warn!(error = %e, model = %pid_label, "Claude Code CLI subprocess failed");
+                prepared.cleanup();
                 return Err(LlmError::Http(format!(
                     "Claude Code CLI subprocess failed: {e}"
                 )));
@@ -298,6 +398,7 @@ impl LlmDriver for ClaudeCodeDriver {
                     "Claude Code CLI subprocess timed out, killing process"
                 );
                 let _ = child.kill().await;
+                prepared.cleanup();
                 return Err(LlmError::Http(format!(
                     "Claude Code CLI subprocess timed out after {}s — process killed",
                     self.message_timeout_secs
@@ -350,11 +451,15 @@ impl LlmDriver for ClaudeCodeDriver {
                 format!("Claude Code CLI exited with code {code}: {detail}")
             };
 
+            prepared.cleanup();
             return Err(LlmError::Api {
                 status: code as u16,
                 message,
             });
         }
+
+        // Clean up temp images now that the CLI has finished
+        prepared.cleanup();
 
         info!(model = %pid_label, "Claude Code CLI subprocess completed successfully");
 
@@ -403,18 +508,23 @@ impl LlmDriver for ClaudeCodeDriver {
         request: CompletionRequest,
         tx: tokio::sync::mpsc::Sender<StreamEvent>,
     ) -> Result<CompletionResponse, LlmError> {
-        let prompt = Self::build_prompt(&request);
+        let prepared = Self::build_prompt(&request);
         let model_flag = Self::model_flag(&request.model);
 
         let mut cmd = tokio::process::Command::new(&self.cli_path);
         cmd.arg("-p")
-            .arg(&prompt)
+            .arg(&prepared.text)
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose");
 
         if self.skip_permissions {
             cmd.arg("--dangerously-skip-permissions");
+        }
+
+        // Allow the CLI to read temp image files
+        if let Some(ref dir) = prepared.image_dir {
+            cmd.arg("--add-dir").arg(dir);
         }
 
         if let Some(ref model) = model_flag {
@@ -429,6 +539,7 @@ impl LlmDriver for ClaudeCodeDriver {
         debug!(cli = %self.cli_path, "Spawning Claude Code CLI (streaming)");
 
         let mut child = cmd.spawn().map_err(|e| {
+            prepared.cleanup();
             LlmError::Http(format!(
                 "Claude Code CLI not found or failed to start ({}). \
                  Install: npm install -g @anthropic-ai/claude-code && claude auth",
@@ -445,6 +556,7 @@ impl LlmDriver for ClaudeCodeDriver {
 
         let stdout = child.stdout.take().ok_or_else(|| {
             self.active_pids.remove(&pid_label);
+            prepared.cleanup();
             LlmError::Http("No stdout from claude CLI".to_string())
         })?;
 
@@ -529,11 +641,15 @@ impl LlmDriver for ClaudeCodeDriver {
                 "Claude Code CLI streaming subprocess timed out, killing process"
             );
             let _ = child.kill().await;
+            prepared.cleanup();
             return Err(LlmError::Http(format!(
                 "Claude Code CLI streaming subprocess timed out after {}s — process killed",
                 self.message_timeout_secs
             )));
         }
+
+        // Clean up temp images now that the CLI has finished reading them
+        prepared.cleanup();
 
         // Wait for process to finish
         let status = child
