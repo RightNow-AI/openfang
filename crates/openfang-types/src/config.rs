@@ -1471,8 +1471,17 @@ impl Default for DefaultModelConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemoryConfig {
-    /// Path to SQLite database file.
+    /// Storage backend: "sqlite" (default) or "mongodb".
+    #[serde(default = "default_memory_backend")]
+    pub backend: String,
+    /// Path to SQLite database file (used when backend = "sqlite").
     pub sqlite_path: Option<PathBuf>,
+    /// MongoDB connection string (used when backend = "mongodb").
+    #[serde(default = "default_mongo_url")]
+    pub mongo_url: String,
+    /// MongoDB database name (used when backend = "mongodb").
+    #[serde(default = "default_mongo_db")]
+    pub mongo_db_name: String,
     /// Embedding model for semantic search.
     pub embedding_model: String,
     /// Maximum memories before consolidation is triggered.
@@ -1490,6 +1499,18 @@ pub struct MemoryConfig {
     pub consolidation_interval_hours: u64,
 }
 
+fn default_memory_backend() -> String {
+    "sqlite".to_string()
+}
+
+fn default_mongo_url() -> String {
+    "mongodb://localhost:27017".to_string()
+}
+
+fn default_mongo_db() -> String {
+    "openfang".to_string()
+}
+
 fn default_consolidation_interval() -> u64 {
     24
 }
@@ -1497,7 +1518,10 @@ fn default_consolidation_interval() -> u64 {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
+            backend: default_memory_backend(),
             sqlite_path: None,
+            mongo_url: default_mongo_url(),
+            mongo_db_name: default_mongo_db(),
             embedding_model: "all-MiniLM-L6-v2".to_string(),
             consolidation_threshold: 10_000,
             decay_rate: 0.1,

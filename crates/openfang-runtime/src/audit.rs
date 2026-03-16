@@ -4,8 +4,8 @@
 //! contains the SHA-256 hash of its own contents concatenated with the hash of
 //! the previous entry, forming a tamper-evident chain (similar to a blockchain).
 //!
-//! When a database connection is provided (`with_db`), entries are persisted to
-//! the `audit_entries` table (schema V8) so the trail survives daemon restarts.
+//! When a database connection is provided (`with_db` or `with_mongo_db`), entries
+//! are persisted so the trail survives daemon restarts.
 
 use chrono::Utc;
 use rusqlite::Connection;
@@ -78,15 +78,40 @@ fn compute_entry_hash(
     hex::encode(hasher.finalize())
 }
 
+/// Parse an action string into an AuditAction enum.
+fn parse_action(s: &str) -> AuditAction {
+    match s {
+        "ToolInvoke" => AuditAction::ToolInvoke,
+        "CapabilityCheck" => AuditAction::CapabilityCheck,
+        "AgentSpawn" => AuditAction::AgentSpawn,
+        "AgentKill" => AuditAction::AgentKill,
+        "AgentMessage" => AuditAction::AgentMessage,
+        "MemoryAccess" => AuditAction::MemoryAccess,
+        "FileAccess" => AuditAction::FileAccess,
+        "NetworkAccess" => AuditAction::NetworkAccess,
+        "ShellExec" => AuditAction::ShellExec,
+        "AuthAttempt" => AuditAction::AuthAttempt,
+        "WireConnect" => AuditAction::WireConnect,
+        "ConfigChange" => AuditAction::ConfigChange,
+        _ => AuditAction::ToolInvoke, // fallback
+    }
+}
+
+/// Backend selector for audit log persistence.
+enum AuditDb {
+    Sqlite(Arc<Mutex<Connection>>),
+    Mongo(mongodb::Collection<bson::Document>),
+}
+
 /// An append-only, tamper-evident audit log using a Merkle hash chain.
 ///
 /// Thread-safe — all access is serialised through internal mutexes.
-/// Optionally backed by SQLite for persistence across daemon restarts.
+/// Optionally backed by SQLite or MongoDB for persistence across daemon restarts.
 pub struct AuditLog {
     entries: Mutex<Vec<AuditEntry>>,
     tip: Mutex<String>,
-    /// Optional database connection for persistent storage.
-    db: Option<Arc<Mutex<Connection>>>,
+    /// Optional database backend for persistent storage.
+    db: Option<AuditDb>,
 }
 
 impl AuditLog {
@@ -101,7 +126,7 @@ impl AuditLog {
         }
     }
 
-    /// Creates an audit log backed by a database connection.
+    /// Creates an audit log backed by a SQLite database connection.
     ///
     /// On construction, loads all existing entries from the `audit_entries`
     /// table and verifies the Merkle chain integrity. New entries are written
@@ -118,26 +143,11 @@ impl AuditLog {
             if let Ok(mut stmt) = result {
                 let rows = stmt.query_map([], |row| {
                     let action_str: String = row.get(3)?;
-                    let action = match action_str.as_str() {
-                        "ToolInvoke" => AuditAction::ToolInvoke,
-                        "CapabilityCheck" => AuditAction::CapabilityCheck,
-                        "AgentSpawn" => AuditAction::AgentSpawn,
-                        "AgentKill" => AuditAction::AgentKill,
-                        "AgentMessage" => AuditAction::AgentMessage,
-                        "MemoryAccess" => AuditAction::MemoryAccess,
-                        "FileAccess" => AuditAction::FileAccess,
-                        "NetworkAccess" => AuditAction::NetworkAccess,
-                        "ShellExec" => AuditAction::ShellExec,
-                        "AuthAttempt" => AuditAction::AuthAttempt,
-                        "WireConnect" => AuditAction::WireConnect,
-                        "ConfigChange" => AuditAction::ConfigChange,
-                        _ => AuditAction::ToolInvoke, // fallback
-                    };
                     Ok(AuditEntry {
                         seq: row.get(0)?,
                         timestamp: row.get(1)?,
                         agent_id: row.get(2)?,
-                        action,
+                        action: parse_action(&action_str),
                         detail: row.get(4)?,
                         outcome: row.get(5)?,
                         prev_hash: row.get(6)?,
@@ -157,10 +167,83 @@ impl AuditLog {
         let log = Self {
             entries: Mutex::new(entries),
             tip: Mutex::new(tip),
-            db: Some(conn),
+            db: Some(AuditDb::Sqlite(conn)),
         };
 
         // Verify chain integrity on load
+        if count > 0 {
+            if let Err(e) = log.verify_integrity() {
+                tracing::error!("Audit trail integrity check FAILED on boot: {e}");
+            } else {
+                tracing::info!("Audit trail loaded: {count} entries, chain integrity OK");
+            }
+        }
+
+        log
+    }
+
+    /// Creates an audit log backed by a MongoDB database.
+    ///
+    /// On construction, loads all existing entries from the `audit_entries`
+    /// collection and verifies the Merkle chain integrity.
+    pub fn with_mongo_db(db: mongodb::Database) -> Self {
+        let collection: mongodb::Collection<bson::Document> = db.collection("audit_entries");
+        let mut entries = Vec::new();
+        let mut tip = "0".repeat(64);
+
+        // Load existing entries from MongoDB (boot-time only, use block_in_place)
+        let load_result: Result<Vec<AuditEntry>, String> =
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    use bson::doc;
+                    use futures::TryStreamExt;
+
+                    let opts = mongodb::options::FindOptions::builder()
+                        .sort(doc! { "seq": 1 })
+                        .build();
+                    let mut cursor = collection
+                        .find(doc! {})
+                        .with_options(opts)
+                        .await
+                        .map_err(|e| e.to_string())?;
+
+                    let mut loaded = Vec::new();
+                    while let Some(d) = cursor.try_next().await.map_err(|e| e.to_string())? {
+                        let entry = AuditEntry {
+                            seq: d.get_i64("seq").unwrap_or(0) as u64,
+                            timestamp: d.get_str("timestamp").unwrap_or("").to_string(),
+                            agent_id: d.get_str("agent_id").unwrap_or("").to_string(),
+                            action: parse_action(d.get_str("action").unwrap_or("")),
+                            detail: d.get_str("detail").unwrap_or("").to_string(),
+                            outcome: d.get_str("outcome").unwrap_or("").to_string(),
+                            prev_hash: d.get_str("prev_hash").unwrap_or("").to_string(),
+                            hash: d.get_str("hash").unwrap_or("").to_string(),
+                        };
+                        loaded.push(entry);
+                    }
+                    Ok(loaded)
+                })
+            });
+
+        match load_result {
+            Ok(loaded) => {
+                for entry in loaded {
+                    tip = entry.hash.clone();
+                    entries.push(entry);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to load audit entries from MongoDB: {e}");
+            }
+        }
+
+        let count = entries.len();
+        let log = Self {
+            entries: Mutex::new(entries),
+            tip: Mutex::new(tip),
+            db: Some(AuditDb::Mongo(collection)),
+        };
+
         if count > 0 {
             if let Err(e) = log.verify_integrity() {
                 tracing::error!("Audit trail integrity check FAILED on boot: {e}");
@@ -176,7 +259,7 @@ impl AuditLog {
     ///
     /// The entry is atomically appended to the chain with the current tip as
     /// its `prev_hash`, and the tip is advanced to the new hash.
-    /// If a database connection is available, the entry is also persisted.
+    /// If a database backend is available, the entry is also persisted.
     pub fn record(
         &self,
         agent_id: impl Into<String>,
@@ -211,22 +294,44 @@ impl AuditLog {
         };
 
         // Persist to database if available
-        if let Some(ref db) = self.db {
-            if let Ok(conn) = db.lock() {
-                let _ = conn.execute(
-                    "INSERT INTO audit_entries (seq, timestamp, agent_id, action, detail, outcome, prev_hash, hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    rusqlite::params![
-                        entry.seq as i64,
-                        &entry.timestamp,
-                        &entry.agent_id,
-                        entry.action.to_string(),
-                        &entry.detail,
-                        &entry.outcome,
-                        &entry.prev_hash,
-                        &entry.hash,
-                    ],
-                );
+        match &self.db {
+            Some(AuditDb::Sqlite(db)) => {
+                if let Ok(conn) = db.lock() {
+                    let _ = conn.execute(
+                        "INSERT INTO audit_entries (seq, timestamp, agent_id, action, detail, outcome, prev_hash, hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        rusqlite::params![
+                            entry.seq as i64,
+                            &entry.timestamp,
+                            &entry.agent_id,
+                            entry.action.to_string(),
+                            &entry.detail,
+                            &entry.outcome,
+                            &entry.prev_hash,
+                            &entry.hash,
+                        ],
+                    );
+                }
             }
+            Some(AuditDb::Mongo(collection)) => {
+                let doc = bson::doc! {
+                    "seq": entry.seq as i64,
+                    "timestamp": &entry.timestamp,
+                    "agent_id": &entry.agent_id,
+                    "action": entry.action.to_string(),
+                    "detail": &entry.detail,
+                    "outcome": &entry.outcome,
+                    "prev_hash": &entry.prev_hash,
+                    "hash": &entry.hash,
+                };
+                let coll = collection.clone();
+                // Fire-and-forget async insert
+                tokio::spawn(async move {
+                    if let Err(e) = coll.insert_one(doc).await {
+                        tracing::warn!("Failed to persist audit entry to MongoDB: {e}");
+                    }
+                });
+            }
+            None => {}
         }
 
         entries.push(entry);

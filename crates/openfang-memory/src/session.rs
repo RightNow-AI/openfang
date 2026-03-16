@@ -535,84 +535,92 @@ impl SessionStore {
         session: &Session,
         sessions_dir: &Path,
     ) -> Result<(), std::io::Error> {
-        std::fs::create_dir_all(sessions_dir)?;
-        let path = sessions_dir.join(format!("{}.jsonl", session.id.0));
-        let mut file = std::fs::File::create(&path)?;
-        let now = Utc::now().to_rfc3339();
+        write_jsonl_mirror_impl(session, sessions_dir)
+    }
+}
 
-        for msg in &session.messages {
-            let role_str = match msg.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::System => "system",
-            };
+/// Shared implementation for writing JSONL mirror files (used by both SQLite and MongoDB session stores).
+pub(crate) fn write_jsonl_mirror_impl(
+    session: &Session,
+    sessions_dir: &Path,
+) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(sessions_dir)?;
+    let path = sessions_dir.join(format!("{}.jsonl", session.id.0));
+    let mut file = std::fs::File::create(&path)?;
+    let now = Utc::now().to_rfc3339();
 
-            let mut text_parts: Vec<String> = Vec::new();
-            let mut tool_parts: Vec<serde_json::Value> = Vec::new();
+    for msg in &session.messages {
+        let role_str = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::System => "system",
+        };
 
-            match &msg.content {
-                MessageContent::Text(t) => {
-                    text_parts.push(t.clone());
-                }
-                MessageContent::Blocks(blocks) => {
-                    for block in blocks {
-                        match block {
-                            ContentBlock::Text { text, .. } => {
-                                text_parts.push(text.clone());
-                            }
-                            ContentBlock::ToolUse { id, name, input, .. } => {
-                                tool_parts.push(serde_json::json!({
-                                    "type": "tool_use",
-                                    "id": id,
-                                    "name": name,
-                                    "input": input,
-                                }));
-                            }
-                            ContentBlock::ToolResult {
-                                tool_use_id,
-                                tool_name: _,
-                                content,
-                                is_error,
-                            } => {
-                                tool_parts.push(serde_json::json!({
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_use_id,
-                                    "content": content,
-                                    "is_error": is_error,
-                                }));
-                            }
-                            ContentBlock::Image { media_type, .. } => {
-                                text_parts.push(format!("[image: {media_type}]"));
-                            }
-                            ContentBlock::Thinking { thinking } => {
-                                text_parts.push(format!(
-                                    "[thinking: {}]",
-                                    openfang_types::truncate_str(thinking, 200)
-                                ));
-                            }
-                            ContentBlock::Unknown => {}
+        let mut text_parts: Vec<String> = Vec::new();
+        let mut tool_parts: Vec<serde_json::Value> = Vec::new();
+
+        match &msg.content {
+            MessageContent::Text(t) => {
+                text_parts.push(t.clone());
+            }
+            MessageContent::Blocks(blocks) => {
+                for block in blocks {
+                    match block {
+                        ContentBlock::Text { text, .. } => {
+                            text_parts.push(text.clone());
                         }
+                        ContentBlock::ToolUse { id, name, input, .. } => {
+                            tool_parts.push(serde_json::json!({
+                                "type": "tool_use",
+                                "id": id,
+                                "name": name,
+                                "input": input,
+                            }));
+                        }
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            tool_name: _,
+                            content,
+                            is_error,
+                        } => {
+                            tool_parts.push(serde_json::json!({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "content": content,
+                                "is_error": is_error,
+                            }));
+                        }
+                        ContentBlock::Image { media_type, .. } => {
+                            text_parts.push(format!("[image: {media_type}]"));
+                        }
+                        ContentBlock::Thinking { thinking } => {
+                            text_parts.push(format!(
+                                "[thinking: {}]",
+                                openfang_types::truncate_str(thinking, 200)
+                            ));
+                        }
+                        ContentBlock::Unknown => {}
                     }
                 }
             }
-
-            let line = JsonlLine {
-                timestamp: now.clone(),
-                role: role_str.to_string(),
-                content: serde_json::Value::String(text_parts.join("\n")),
-                tool_use: if tool_parts.is_empty() {
-                    None
-                } else {
-                    Some(serde_json::Value::Array(tool_parts))
-                },
-            };
-
-            serde_json::to_writer(&mut file, &line).map_err(std::io::Error::other)?;
-            file.write_all(b"\n")?;
         }
 
-        Ok(())
+        let line = JsonlLine {
+            timestamp: now.clone(),
+            role: role_str.to_string(),
+            content: serde_json::Value::String(text_parts.join("\n")),
+            tool_use: if tool_parts.is_empty() {
+                None
+            } else {
+                Some(serde_json::Value::Array(tool_parts))
+            },
+        };
+
+        serde_json::to_writer(&mut file, &line).map_err(std::io::Error::other)?;
+        file.write_all(b"\n")?;
     }
+
+    Ok(())
 }
 
 #[cfg(test)]

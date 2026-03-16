@@ -56,6 +56,8 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
 # Database
 rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
+mongodb = { version = "3" }
+bson = { version = "2", features = ["chrono-0_4"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

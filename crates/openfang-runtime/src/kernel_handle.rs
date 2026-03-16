@@ -24,6 +24,7 @@ pub struct AgentInfo {
 /// can interact with each other via tools.
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait KernelHandle: Send + Sync {
     /// Spawn a new agent from a TOML manifest string.
     /// `parent_id` is the UUID string of the spawning agent (for lineage tracking).

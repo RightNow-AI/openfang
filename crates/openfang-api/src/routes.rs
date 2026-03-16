@@ -4912,7 +4912,8 @@ pub async fn usage_stats(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
 /// GET /api/usage/summary — Get overall usage summary from UsageStore.
 pub async fn usage_summary(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.kernel.memory.usage().query_summary(None) {
+    let usage_store = state.kernel.memory.create_usage_store();
+    match usage_store.query_summary(None) {
         Ok(s) => Json(serde_json::json!({
             "total_input_tokens": s.total_input_tokens,
             "total_output_tokens": s.total_output_tokens,
@@ -4932,7 +4933,8 @@ pub async fn usage_summary(State(state): State<Arc<AppState>>) -> impl IntoRespo
 
 /// GET /api/usage/by-model — Get usage grouped by model.
 pub async fn usage_by_model(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.kernel.memory.usage().query_by_model() {
+    let usage_store = state.kernel.memory.create_usage_store();
+    match usage_store.query_by_model() {
         Ok(models) => {
             let list: Vec<serde_json::Value> = models
                 .iter()
@@ -4954,9 +4956,10 @@ pub async fn usage_by_model(State(state): State<Arc<AppState>>) -> impl IntoResp
 
 /// GET /api/usage/daily — Get daily usage breakdown for the last 7 days.
 pub async fn usage_daily(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let days = state.kernel.memory.usage().query_daily_breakdown(7);
-    let today_cost = state.kernel.memory.usage().query_today_cost();
-    let first_event = state.kernel.memory.usage().query_first_event_date();
+    let usage_store = state.kernel.memory.create_usage_store();
+    let days = usage_store.query_daily_breakdown(7);
+    let today_cost = usage_store.query_today_cost();
+    let first_event = usage_store.query_first_event_date();
 
     let days_list = match days {
         Ok(d) => d
@@ -5055,7 +5058,7 @@ pub async fn agent_budget_status(
     };
 
     let quota = &entry.manifest.resources;
-    let usage_store = openfang_memory::usage::UsageStore::new(state.kernel.memory.usage_conn());
+    let usage_store = state.kernel.memory.create_usage_store();
     let hourly = usage_store.query_hourly(agent_id).unwrap_or(0.0);
     let daily = usage_store.query_daily(agent_id).unwrap_or(0.0);
     let monthly = usage_store.query_monthly(agent_id).unwrap_or(0.0);
@@ -5095,7 +5098,7 @@ pub async fn agent_budget_status(
 
 /// GET /api/budget/agents — Per-agent cost ranking (top spenders).
 pub async fn agent_budget_ranking(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let usage_store = openfang_memory::usage::UsageStore::new(state.kernel.memory.usage_conn());
+    let usage_store = state.kernel.memory.create_usage_store();
     let agents: Vec<serde_json::Value> = state
         .kernel
         .registry

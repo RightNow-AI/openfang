@@ -1,15 +1,19 @@
 //! Memory substrate for the OpenFang Agent Operating System.
 //!
-//! Provides a unified memory API over three storage backends:
-//! - **Structured store** (SQLite): Key-value pairs, sessions, agent state
-//! - **Semantic store**: Text-based search (Phase 1: LIKE matching, Phase 2: Qdrant vectors)
-//! - **Knowledge graph** (SQLite): Entities and relations
+//! Provides a unified memory API backed by either SQLite or MongoDB.
+//! The backend is selected via `MemoryConfig::backend` ("sqlite" or "mongodb").
 //!
-//! Agents interact with a single `Memory` trait that abstracts over all three stores.
+//! Storage layers:
+//! - **Structured store**: Key-value pairs, sessions, agent state
+//! - **Semantic store**: Text-based search with optional vector embeddings
+//! - **Knowledge graph**: Entities and relations
+//!
+//! Agents interact with a single `Memory` trait that abstracts over all stores.
 
 pub mod consolidation;
 pub mod knowledge;
 pub mod migration;
+pub mod mongo;
 pub mod semantic;
 pub mod session;
 pub mod structured;

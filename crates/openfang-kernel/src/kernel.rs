@@ -553,16 +553,26 @@ impl OpenFangKernel {
         std::fs::create_dir_all(&config.data_dir)
             .map_err(|e| KernelError::BootFailed(format!("Failed to create data dir: {e}")))?;
 
-        // Initialize memory substrate
-        let db_path = config
-            .memory
-            .sqlite_path
-            .clone()
-            .unwrap_or_else(|| config.data_dir.join("openfang.db"));
-        let memory = Arc::new(
-            MemorySubstrate::open(&db_path, config.memory.decay_rate)
-                .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
-        );
+        // Initialize memory substrate (SQLite or MongoDB)
+        let memory: Arc<MemorySubstrate> = Arc::new(match config.memory.backend.as_str() {
+            "mongodb" => {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(
+                        MemorySubstrate::open_with_config(&config.memory),
+                    )
+                })
+                .map_err(|e| KernelError::BootFailed(format!("MongoDB memory init failed: {e}")))?
+            }
+            _ => {
+                let db_path = config
+                    .memory
+                    .sqlite_path
+                    .clone()
+                    .unwrap_or_else(|| config.data_dir.join("openfang.db"));
+                MemorySubstrate::open(&db_path, config.memory.decay_rate)
+                    .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?
+            }
+        });
 
         // Initialize credential resolver (vault → dotenv → env var)
         let credential_resolver = {
@@ -713,9 +723,9 @@ impl OpenFangKernel {
             Arc::new(StubDriver) as Arc<dyn LlmDriver>
         };
 
-        // Initialize metering engine (shares the same SQLite connection as the memory substrate)
+        // Initialize metering engine (shares the same DB connection as the memory substrate)
         let metering = Arc::new(MeteringEngine::new(Arc::new(
-            openfang_memory::usage::UsageStore::new(memory.usage_conn()),
+            memory.create_usage_store(),
         )));
 
         let supervisor = Supervisor::new();
@@ -1005,7 +1015,10 @@ impl OpenFangKernel {
             workflows: WorkflowEngine::new(),
             triggers: TriggerEngine::new(),
             background,
-            audit_log: Arc::new(AuditLog::with_db(memory.usage_conn())),
+            audit_log: Arc::new(match memory.is_mongo() {
+                true => AuditLog::with_mongo_db(memory.mongo_db().unwrap()),
+                false => AuditLog::with_db(memory.usage_conn().unwrap()),
+            }),
             metering,
             default_driver: driver,
             wasm_sandbox,
