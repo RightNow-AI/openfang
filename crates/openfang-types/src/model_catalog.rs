@@ -53,6 +53,12 @@ pub const VOLCENGINE_CODING_BASE_URL: &str = "https://ark.cn-beijing.volces.com/
 // ── Chutes.ai ────────────────────────────────────────────────────
 pub const CHUTES_BASE_URL: &str = "https://llm.chutes.ai/v1";
 
+// ── Azure OpenAI ────────────────────────────────────────────────────
+/// Azure OpenAI requires a per-resource URL. Users must set their own via
+/// `base_url` or `[provider_urls] azure = "https://{resource}.openai.azure.com/openai/deployments"`.
+/// This constant is intentionally empty and is not used as a runtime default.
+pub const AZURE_OPENAI_BASE_URL: &str = "";
+
 // ── AWS Bedrock ───────────────────────────────────────────────────
 pub const BEDROCK_BASE_URL: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";
 

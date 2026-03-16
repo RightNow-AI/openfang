@@ -77,6 +77,8 @@ function agentsPage() {
     // -- Model switch --
     editingModel: false,
     newModelValue: '',
+    editingProvider: false,
+    newProviderValue: '',
     modelSaving: false,
     // -- Fallback chain --
     editingFallback: false,
@@ -634,6 +636,26 @@ function agentsPage() {
         }
       } catch(e) {
         OpenFangToast.error('Failed to change model: ' + e.message);
+      }
+      this.modelSaving = false;
+    },
+
+    // ── Provider switch ──
+    async changeProvider() {
+      if (!this.detailAgent || !this.newProviderValue.trim()) return;
+      this.modelSaving = true;
+      try {
+        var combined = this.newProviderValue.trim() + '/' + this.detailAgent.model_name;
+        var resp = await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: combined });
+        OpenFangToast.success('Provider changed to ' + (resp && resp.provider ? resp.provider : this.newProviderValue.trim()));
+        this.editingProvider = false;
+        await Alpine.store('app').refreshAgents();
+        var agents = Alpine.store('app').agents;
+        for (var i = 0; i < agents.length; i++) {
+          if (agents[i].id === this.detailAgent.id) { this.detailAgent = agents[i]; break; }
+        }
+      } catch(e) {
+        OpenFangToast.error('Failed to change provider: ' + e.message);
       }
       this.modelSaving = false;
     },

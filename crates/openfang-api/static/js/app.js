@@ -24,7 +24,39 @@ function escapeHtml(text) {
 function renderMarkdown(text) {
   if (!text) return '';
   if (typeof marked !== 'undefined') {
-    var html = marked.parse(text);
+    // Protect LaTeX blocks from marked.js mangling (underscores, backslashes, etc.)
+    var latexBlocks = [];
+    var protected_ = text;
+    // Protect display math $$...$$ first (greedy across lines)
+    protected_ = protected_.replace(/\$\$([\s\S]+?)\$\$/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+    // Protect inline math $...$ (single line, not empty, not starting/ending with space)
+    protected_ = protected_.replace(/\$([^\s$](?:[^$]*[^\s$])?)\$/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+    // Protect \[...\] display math
+    protected_ = protected_.replace(/\\\[([\s\S]+?)\\\]/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+    // Protect \(...\) inline math
+    protected_ = protected_.replace(/\\\(([\s\S]+?)\\\)/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+
+    var html = marked.parse(protected_);
+    // Restore LaTeX blocks
+    for (var i = 0; i < latexBlocks.length; i++) {
+      html = html.replace('\x00LATEX' + i + '\x00', latexBlocks[i]);
+    }
     // Add copy buttons to code blocks
     html = html.replace(/<pre><code/g, '<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><code');
     // Open external links in new tab
@@ -32,6 +64,26 @@ function renderMarkdown(text) {
     return html;
   }
   return escapeHtml(text);
+}
+
+// Render LaTeX math in the chat message container using KaTeX auto-render.
+// Call this after new messages are inserted into the DOM.
+function renderLatex(el) {
+  if (typeof renderMathInElement !== 'function') return;
+  var target = el || document.getElementById('messages');
+  if (!target) return;
+  try {
+    renderMathInElement(target, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '\\[', right: '\\]', display: true },
+        { left: '$', right: '$', display: false },
+        { left: '\\(', right: '\\)', display: false }
+      ],
+      throwOnError: false,
+      trust: false
+    });
+  } catch(e) { /* KaTeX render error — ignore gracefully */ }
 }
 
 function copyCode(btn) {

@@ -1046,10 +1046,16 @@ function chatPage() {
       });
     },
 
+    _latexTimer: null,
     scrollToBottom() {
       var self = this;
       var el = document.getElementById('messages');
-      if (el) self.$nextTick(function() { el.scrollTop = el.scrollHeight; });
+      if (el) self.$nextTick(function() {
+        el.scrollTop = el.scrollHeight;
+        // Debounce LaTeX rendering to avoid running on every streaming token
+        if (self._latexTimer) clearTimeout(self._latexTimer);
+        self._latexTimer = setTimeout(function() { renderLatex(el); }, 150);
+      });
     },
 
     addFiles(files) {

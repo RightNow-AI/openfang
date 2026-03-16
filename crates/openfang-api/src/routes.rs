@@ -642,6 +642,58 @@ pub async fn kill_agent(
     }
 }
 
+/// POST /api/agents/{id}/restart — Restart an agent by respawning its manifest.
+pub async fn restart_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            );
+        }
+    };
+
+    let entry = match state.kernel.registry.get(agent_id) {
+        Some(entry) => entry,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            );
+        }
+    };
+
+    let manifest = entry.manifest.clone();
+    let old_name = entry.name.clone();
+
+    if let Err(e) = state.kernel.kill_agent(agent_id) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to stop agent: {e}")})),
+        );
+    }
+
+    match state.kernel.spawn_agent(manifest) {
+        Ok(new_id) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "restarted",
+                "old_agent_id": id,
+                "agent_id": new_id.to_string(),
+                "name": old_name,
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to restart agent: {e}")})),
+        ),
+    }
+}
+
 /// GET /api/status — Kernel status.
 pub async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let agents: Vec<serde_json::Value> = state
@@ -4251,6 +4303,16 @@ pub async fn install_hand(
             Json(serde_json::json!({"error": format!("{e}")})),
         ),
     }
+}
+
+/// POST /api/hands/upsert — Upsert a hand from TOML content.
+///
+/// Current compatibility behavior matches `install_hand`.
+pub async fn upsert_hand(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    install_hand(State(state), Json(body)).await
 }
 
 /// POST /api/hands/{hand_id}/activate — Activate a hand (spawns agent).

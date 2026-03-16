@@ -922,7 +922,23 @@
                       </select>
                     </div>
                     <div class="detail-row" x-show="detailAgent.profile"><span class="detail-label">Profile</span><span class="detail-value" style="text-transform:capitalize" x-text="detailAgent.profile || '-'"></span></div>
-                    <div class="detail-row"><span class="detail-label">Provider</span><span class="detail-value" x-text="detailAgent.model_provider"></span></div>
+                    <div class="detail-row"><span class="detail-label">Provider</span>
+                      <template x-if="!editingProvider">
+                        <span>
+                          <span class="detail-value" x-text="detailAgent.model_provider"></span>
+                          <button class="btn btn-ghost btn-sm" style="margin-left:8px;padding:2px 8px;font-size:11px" @click="editingProvider = true; newProviderValue = detailAgent.model_provider">Change</button>
+                        </span>
+                      </template>
+                      <template x-if="editingProvider">
+                        <span class="flex gap-1" style="align-items:center">
+                          <input class="form-input" style="width:160px;font-size:12px" x-model="newProviderValue" placeholder="provider" @keydown.enter="changeProvider()" @keydown.escape="editingProvider = false">
+                          <button class="btn btn-primary btn-sm" @click="changeProvider()" :disabled="modelSaving" style="padding:2px 10px">
+                            <span x-show="!modelSaving">Save</span><span x-show="modelSaving">...</span>
+                          </button>
+                          <button class="btn btn-ghost btn-sm" @click="editingProvider = false" style="padding:2px 8px">Cancel</button>
+                        </span>
+                      </template>
+                    </div>
                     <div class="detail-row"><span class="detail-label">Model</span>
                       <template x-if="!editingModel">
                         <span>
@@ -2277,7 +2293,7 @@
                       <div class="flex gap-3 items-center">
                         <span class="text-xs text-dim" x-show="skill.version" x-text="'v' + skill.version"></span>
                       </div>
-                      <button class="btn btn-primary btn-sm" @click.stop="installFromClawHub(skill.slug)" :disabled="installingSlug === skill.slug || isSkillInstalled(skill.slug)" x-text="isSkillInstalled(skill.slug) ? 'Installed' : installingSlug === skill.slug ? 'Installing...' : 'Install'"></button>
+                      <button class="btn btn-primary btn-sm" @click.stop="installFromClawHub(skill.slug)" :disabled="installingSlug === skill.slug || skill.installed || isSkillInstalled(skill.slug)" x-text="skill.installed || isSkillInstalled(skill.slug) ? 'Installed' : installingSlug === skill.slug ? 'Installing...' : 'Install'"></button>
                     </div>
                   </div>
                 </template>
@@ -2300,7 +2316,7 @@
                         <span class="text-xs text-dim" x-show="skill.stars" x-text="skill.stars + ' stars'"></span>
                         <span class="text-xs text-dim" x-show="skill.version" x-text="'v' + skill.version"></span>
                       </div>
-                      <button class="btn btn-primary btn-sm" @click.stop="installFromClawHub(skill.slug)" :disabled="installingSlug === skill.slug || isSkillInstalled(skill.slug)" x-text="isSkillInstalled(skill.slug) ? 'Installed' : installingSlug === skill.slug ? 'Installing...' : 'Install'"></button>
+                      <button class="btn btn-primary btn-sm" @click.stop="installFromClawHub(skill.slug)" :disabled="installingSlug === skill.slug || skill.installed || isSkillInstalled(skill.slug)" x-text="skill.installed || isSkillInstalled(skill.slug) ? 'Installed' : installingSlug === skill.slug ? 'Installing...' : 'Install'"></button>
                     </div>
                   </div>
                 </template>
@@ -5019,3 +5035,5 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
 
 <!-- Toast notification container -->
 <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){});}</script>
