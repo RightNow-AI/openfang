@@ -1513,10 +1513,24 @@ pub struct MemoryConfig {
     /// How often to run memory consolidation (hours). 0 = disabled.
     #[serde(default = "default_consolidation_interval")]
     pub consolidation_interval_hours: u64,
+    /// Memory backend: "sqlite" (default) or "http".
+    #[serde(default = "default_memory_backend")]
+    pub backend: String,
+    /// HTTP memory API URL (when backend = "http").
+    /// e.g., "http://127.0.0.1:5500"
+    #[serde(default)]
+    pub http_url: Option<String>,
+    /// Env var name holding the HTTP memory API bearer token.
+    #[serde(default)]
+    pub http_token_env: Option<String>,
 }
 
 fn default_consolidation_interval() -> u64 {
     24
+}
+
+fn default_memory_backend() -> String {
+    "sqlite".to_string()
 }
 
 impl Default for MemoryConfig {
@@ -1529,6 +1543,9 @@ impl Default for MemoryConfig {
             embedding_provider: None,
             embedding_api_key_env: None,
             consolidation_interval_hours: default_consolidation_interval(),
+            backend: default_memory_backend(),
+            http_url: None,
+            http_token_env: None,
         }
     }
 }

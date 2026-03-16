@@ -14,18 +14,43 @@ use openfang_types::memory::{MemoryFilter, MemoryFragment, MemoryId, MemorySourc
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tracing::debug;
+use tracing::{debug, warn};
+
+#[cfg(feature = "http-memory")]
+use crate::http_client::MemoryApiClient;
 
 /// Semantic store backed by SQLite with optional vector search.
+///
+/// Supports two backends:
+/// - **SQLite** (default): Local LIKE matching / cosine similarity.
+/// - **HTTP**: Routes `remember`/`recall` to the memory-api gateway
+///   (PostgreSQL + pgvector + Jina AI embeddings).
 #[derive(Clone)]
 pub struct SemanticStore {
     conn: Arc<Mutex<Connection>>,
+    #[cfg(feature = "http-memory")]
+    http_client: Option<MemoryApiClient>,
 }
 
 impl SemanticStore {
-    /// Create a new semantic store wrapping the given connection.
+    /// Create a new semantic store wrapping the given connection (SQLite backend).
     pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
-        Self { conn }
+        Self {
+            conn,
+            #[cfg(feature = "http-memory")]
+            http_client: None,
+        }
+    }
+
+    /// Create a semantic store with an HTTP backend for the memory-api gateway.
+    ///
+    /// The SQLite connection is still required for local fallback and other stores.
+    #[cfg(feature = "http-memory")]
+    pub fn new_with_http(conn: Arc<Mutex<Connection>>, client: MemoryApiClient) -> Self {
+        Self {
+            conn,
+            http_client: Some(client),
+        }
     }
 
     /// Store a new memory fragment (without embedding).
@@ -41,7 +66,30 @@ impl SemanticStore {
     }
 
     /// Store a new memory fragment with an optional embedding vector.
+    ///
+    /// When HTTP backend is configured, stores via memory-api (which handles
+    /// embedding generation and deduplication). Falls back to local SQLite.
     pub fn remember_with_embedding(
+        &self,
+        agent_id: AgentId,
+        content: &str,
+        source: MemorySource,
+        scope: &str,
+        metadata: HashMap<String, serde_json::Value>,
+        embedding: Option<&[f32]>,
+    ) -> OpenFangResult<MemoryId> {
+        // HTTP backend: route to memory-api
+        #[cfg(feature = "http-memory")]
+        if let Some(ref client) = self.http_client {
+            return self.remember_via_http(client, agent_id, content, source, scope, &metadata);
+        }
+
+        // SQLite backend (default)
+        self.remember_sqlite(agent_id, content, source, scope, metadata, embedding)
+    }
+
+    /// SQLite implementation of remember_with_embedding.
+    fn remember_sqlite(
         &self,
         agent_id: AgentId,
         content: &str,
@@ -80,6 +128,53 @@ impl SemanticStore {
         Ok(id)
     }
 
+    /// HTTP implementation of remember — routes to memory-api POST /memory/store.
+    #[cfg(feature = "http-memory")]
+    fn remember_via_http(
+        &self,
+        client: &MemoryApiClient,
+        agent_id: AgentId,
+        content: &str,
+        source: MemorySource,
+        scope: &str,
+        metadata: &HashMap<String, serde_json::Value>,
+    ) -> OpenFangResult<MemoryId> {
+        let source_str = format!("{:?}", source).to_lowercase();
+        let importance = metadata
+            .get("importance")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.min(10) as u8)
+            .unwrap_or(5);
+        let tags: Option<Vec<String>> = metadata
+            .get("tags")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+        match client.store(
+            content,
+            Some(scope),
+            Some(&agent_id.0.to_string()),
+            Some(&source_str),
+            Some(importance),
+            tags,
+        ) {
+            Ok(resp) => {
+                debug!(id = %resp.id, "Stored memory via HTTP backend");
+                Ok(MemoryId::new())
+            }
+            Err(e) => {
+                warn!(error = %e, "HTTP memory store failed, falling back to SQLite");
+                self.remember_sqlite(
+                    agent_id,
+                    content,
+                    source,
+                    scope,
+                    metadata.clone(),
+                    None,
+                )
+            }
+        }
+    }
+
     /// Search for memories using text matching (fallback, no embeddings).
     pub fn recall(
         &self,
@@ -92,6 +187,9 @@ impl SemanticStore {
 
     /// Search for memories using vector similarity when a query embedding is provided,
     /// falling back to LIKE matching otherwise.
+    ///
+    /// When HTTP backend is configured, searches via memory-api (hybrid vector+BM25).
+    /// Falls back to local SQLite on HTTP errors.
     pub fn recall_with_embedding(
         &self,
         query: &str,
@@ -99,6 +197,17 @@ impl SemanticStore {
         filter: Option<MemoryFilter>,
         query_embedding: Option<&[f32]>,
     ) -> OpenFangResult<Vec<MemoryFragment>> {
+        // HTTP backend: route to memory-api
+        #[cfg(feature = "http-memory")]
+        if let Some(ref client) = self.http_client {
+            match self.recall_via_http(client, query, limit, &filter) {
+                Ok(results) => return Ok(results),
+                Err(e) => {
+                    warn!(error = %e, "HTTP memory search failed, falling back to SQLite");
+                }
+            }
+        }
+
         let conn = self
             .conn
             .lock()
@@ -277,7 +386,15 @@ impl SemanticStore {
     }
 
     /// Soft-delete a memory fragment.
+    ///
+    /// In HTTP mode, logs a warning (memory-api doesn't support delete yet)
+    /// and performs the soft-delete locally only.
     pub fn forget(&self, id: MemoryId) -> OpenFangResult<()> {
+        #[cfg(feature = "http-memory")]
+        if self.http_client.is_some() {
+            warn!(id = %id.0, "forget() not supported via HTTP backend, local-only soft-delete");
+        }
+
         let conn = self
             .conn
             .lock()
@@ -303,6 +420,58 @@ impl SemanticStore {
         )
         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
         Ok(())
+    }
+
+    /// HTTP implementation of recall — routes to memory-api POST /memory/search.
+    ///
+    /// Maps memory-api search results to `MemoryFragment` structs. Fields not
+    /// available from the HTTP API (agent_id, embedding, access_count) use defaults.
+    #[cfg(feature = "http-memory")]
+    fn recall_via_http(
+        &self,
+        client: &MemoryApiClient,
+        query: &str,
+        limit: usize,
+        filter: &Option<MemoryFilter>,
+    ) -> OpenFangResult<Vec<MemoryFragment>> {
+        let category = filter.as_ref().and_then(|f| f.scope.as_deref());
+
+        let results = client
+            .search(query, limit, category)
+            .map_err(|e| OpenFangError::Memory(format!("HTTP search failed: {e}")))?;
+
+        let fragments: Vec<MemoryFragment> = results
+            .into_iter()
+            .map(|r| {
+                let created_at = r
+                    .created_at
+                    .map(|ms| {
+                        chrono::DateTime::from_timestamp_millis(ms as i64)
+                            .unwrap_or_else(|| Utc::now())
+                    })
+                    .unwrap_or_else(|| Utc::now());
+
+                MemoryFragment {
+                    id: MemoryId::new(),
+                    agent_id: filter
+                        .as_ref()
+                        .and_then(|f| f.agent_id)
+                        .unwrap_or_else(AgentId::new),
+                    content: r.content,
+                    embedding: None,
+                    metadata: HashMap::new(),
+                    source: MemorySource::System,
+                    confidence: r.score as f32,
+                    created_at,
+                    accessed_at: Utc::now(),
+                    access_count: 0,
+                    scope: r.category.unwrap_or_else(|| "general".to_string()),
+                }
+            })
+            .collect();
+
+        debug!(count = fragments.len(), "Recalled memories via HTTP backend");
+        Ok(fragments)
     }
 }
 

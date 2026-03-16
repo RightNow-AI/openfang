@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "Memory substrate for the OpenFang Agent OS"
 
+[features]
+default = ["http-memory"]
+http-memory = ["reqwest"]
+
 [dependencies]
 openfang-types = { path = "../openfang-types" }
 tokio = { workspace = true }
@@ -17,6 +21,7 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"], optional = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
