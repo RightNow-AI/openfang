@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — Phases 1-10 (Agent OS Roadmap)
+## [0.4.4] - 2026-03-16
+
+### Added — Phases 1-12 (Agent OS Roadmap Complete)
 
 - **Phase 1: API detail endpoints** — `GET /api/tools/{name}`, `GET /api/profiles/{name}`, `GET /api/a2a/agents/{id}` for single-item lookups
 - **Phase 2: Cron CRUD completion** — `PUT /api/cron/jobs/{id}` for in-place job editing; CLI `openfang cron update` aligned
@@ -19,11 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Phase 8: Capability registry for routing** — `GET /api/routing/capabilities` exposing Hands, workflows, and agents as routable capabilities with keyword-based matching
 - **Phase 9: User-in-the-loop agent builder** — capability-gap analysis, reviewable proposals (agent/workflow/hand), approval-backed creation via `POST /api/routing/proposals` and `POST /api/routing/proposals/apply`; Dashboard Builder page; TUI Builder tab; CLI builder commands
 - **Phase 10: Extensions API** — Dashboard Extensions tab (browse/install/health); 7 integration management endpoints documented in api-reference.md
+- **Phase 11: TOML model catalog** — 41 providers, 199 models, and 66 aliases externalized to editable `catalog/providers.toml`, `catalog/models.toml`, `catalog/aliases.toml`; runtime fallback to hardcoded builtins
+- **Phase 12: Performance and observability** — Decision trace layer with bounded ring buffer and `GET /api/routing/decisions` endpoint; Anthropic prompt caching via `cache_control` headers; `prompt_cache` config field; `DriverConfig` Default impl
 
 ### Changed
 
 - `RoutingCapabilityKind` serde serialization normalized to snake_case for API consistency
 - `openfang approvals list` now renders the current approvals API object response correctly in human-readable mode
+
+### Fixed
+
+- 4 clippy warnings in openfang-cli (items_after_test_module, collapsible_else_if)
+- `test_capability_enforcement_aliased_tool_name` failure on non-root systems (path changed to /tmp)
 
 ## [0.1.0] - 2026-02-24
 
