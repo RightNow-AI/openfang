@@ -106,19 +106,18 @@ const aliveService = {
       agent: 'alive',
     });
 
+    // Fetch the daemon agent list once — reused for both routing context and ID resolution
+    const rawDaemonAgents = await openfangClient.listAgents().catch(() => []);
+    const daemonList = Array.isArray(rawDaemonAgents)
+      ? rawDaemonAgents
+      : (rawDaemonAgents?.agents ?? []);
+
     // Route: find a specialist or handle directly with alive
-    const availableAgents = await agentRegistry.listActiveInternal().catch(() => []);
+    // Pass the already-fetched daemon list so agentRegistry doesn't re-fetch
     const { agent: specialistId, reason } = agentRouter.select({
       message,
-      availableAgents,
+      availableAgents: daemonList,
     });
-
-    // Resolve logical agent name → actual daemon agent ID
-    // e.g. "coder" → UUID, or "alive" → UUID, or best available fallback
-    const allDaemonAgents = await openfangClient.listAgents().catch(() => []);
-    const daemonList = Array.isArray(allDaemonAgents)
-      ? allDaemonAgents
-      : (allDaemonAgents?.agents ?? []);
 
     const logicalTarget = specialistId ?? 'alive';
 

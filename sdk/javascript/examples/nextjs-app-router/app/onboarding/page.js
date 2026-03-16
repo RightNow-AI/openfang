@@ -568,27 +568,39 @@ export default function OnboardingPage() {
       if (!data.runId) throw new Error(data.error || 'No run ID returned.');
       setRunId(data.runId);
 
-      // Poll for result
-      let attempts = 0;
-      while (attempts < 45) {
-        await new Promise(res => setTimeout(res, 1000));
-        attempts++;
-        const pr = await fetch(`/api/runs/${data.runId}`);
-        const run = await pr.json();
-        if (run.status === 'completed') {
-          const output = run.output
-            ?? run.children?.find(c => c.output)?.output
-            ?? 'Done!';
-          setFirstReply(output);
-          break;
-        }
-        if (run.status === 'failed') {
-          throw new Error(run.error || 'The AI returned an error. It may not be connected yet.');
-        }
-      }
-      if (attempts >= 45) {
-        throw new Error('The AI is taking too long to reply. The API key may not be set up yet — ask the person who installed this app for help.');
-      }
+      // Subscribe to the SSE event stream instead of polling — resolves the moment
+      // the run completes with no fixed timeout ceiling.
+      await new Promise((resolve, reject) => {
+        // 90-second wall-clock guard (generous — aligns with OPENFANG_TIMEOUT_MS)
+        const deadline = setTimeout(() => {
+          es.close();
+          reject(new Error('The AI is taking too long to reply. The API key may not be set up yet — ask the person who installed this app for help.'));
+        }, 90_000);
+
+        const es = new EventSource(`/api/runs/${data.runId}/events`);
+
+        es.onmessage = (evt) => {
+          let event;
+          try { event = JSON.parse(evt.data); } catch { return; }
+
+          if (event.type === 'run.completed' && event.runId === data.runId) {
+            clearTimeout(deadline);
+            es.close();
+            setFirstReply(String(event.output ?? ''));
+            resolve();
+          } else if (event.type === 'run.failed' && event.runId === data.runId) {
+            clearTimeout(deadline);
+            es.close();
+            reject(new Error(event.error || 'The AI returned an error. It may not be connected yet.'));
+          }
+        };
+
+        es.onerror = () => {
+          clearTimeout(deadline);
+          es.close();
+          reject(new Error('Lost connection to the AI. Check the backend is running and try again.'));
+        };
+      });
     } catch (err) {
       setSendError(err.message);
     }
