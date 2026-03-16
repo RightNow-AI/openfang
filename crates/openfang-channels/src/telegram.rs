@@ -451,11 +451,50 @@ impl ChannelAdapter for TelegramAdapter {
         tokio::spawn(async move {
             let mut offset: Option<i64> = None;
             let mut backoff = INITIAL_BACKOFF;
+            // Media group deduplication: group_id -> (updates, last_seen_time)
+            let mut media_groups: HashMap<String, (Vec<serde_json::Value>, tokio::time::Instant)> =
+                HashMap::new();
+            const MEDIA_GROUP_WAIT_MS: u64 = 500; // Wait 500ms for all media in a group
 
             loop {
                 // Check shutdown
                 if *shutdown.borrow() {
                     break;
+                }
+
+                // Process pending media groups that have timed out
+                let now = tokio::time::Instant::now();
+                let mut completed_groups = Vec::new();
+                for (group_id, (_updates, last_seen)) in &media_groups {
+                    if now.duration_since(*last_seen).as_millis() >= MEDIA_GROUP_WAIT_MS as u128 {
+                        completed_groups.push(group_id.clone());
+                    }
+                }
+
+                for group_id in completed_groups {
+                    if let Some((updates, _)) = media_groups.remove(&group_id) {
+                        // Merge media group into a single message
+                        if let Some(merged_msg) = merge_media_group_updates(
+                            &updates,
+                            &allowed_users,
+                            token.as_str(),
+                            &client,
+                            &api_base_url,
+                            bot_username.read().await.as_deref(),
+                        )
+                        .await
+                        {
+                            debug!(
+                                "Telegram media group ({} items) from {}: {:?}",
+                                updates.len(),
+                                merged_msg.sender.display_name,
+                                merged_msg.content
+                            );
+                            if tx.send(merged_msg).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
                 }
 
                 // Build getUpdates request
@@ -557,7 +596,26 @@ impl ChannelAdapter for TelegramAdapter {
                         offset = Some(update_id + 1);
                     }
 
-                    // Parse the message
+                    // Check if this update is part of a media group
+                    let message = update
+                        .get("message")
+                        .or_else(|| update.get("edited_message"));
+                    let media_group_id = message
+                        .and_then(|m| m.get("media_group_id"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+
+                    if let Some(group_id) = media_group_id {
+                        // Add to media group buffer
+                        let entry = media_groups
+                            .entry(group_id)
+                            .or_insert_with(|| (Vec::new(), now));
+                        entry.0.push(update.clone());
+                        entry.1 = now; // Update last seen time
+                        continue; // Don't process immediately
+                    }
+
+                    // Not a media group — process immediately
                     let bot_uname = bot_username.read().await.clone();
                     let msg = match parse_telegram_update(
                         update,
@@ -642,6 +700,143 @@ impl ChannelAdapter for TelegramAdapter {
         let _ = self.shutdown_tx.send(true);
         Ok(())
     }
+}
+
+/// Merge multiple updates from the same media group into a single ChannelMessage.
+/// Takes the first update's metadata (sender, chat, timestamp) and combines all media URLs.
+async fn merge_media_group_updates(
+    updates: &[serde_json::Value],
+    allowed_users: &[String],
+    token: &str,
+    client: &reqwest::Client,
+    api_base_url: &str,
+    bot_username: Option<&str>,
+) -> Option<ChannelMessage> {
+    if updates.is_empty() {
+        return None;
+    }
+
+    // Use the first update as the base message
+    let first_msg = parse_telegram_update(
+        &updates[0],
+        allowed_users,
+        token,
+        client,
+        api_base_url,
+        bot_username,
+    )
+    .await?;
+
+    // Collect all media URLs and captions from the group
+    let mut media_items = Vec::new();
+    let mut combined_caption = String::new();
+
+    for update in updates {
+        let message = update
+            .get("message")
+            .or_else(|| update.get("edited_message"))?;
+
+        // Debug: log message structure
+        debug!("Media group item keys: {:?}", message.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+
+        // Extract photo
+        if let Some(photos) = message["photo"].as_array() {
+            let file_id = photos.last()?.get("file_id")?.as_str()?;
+            match telegram_get_file_url(token, client, file_id, api_base_url).await {
+                Some(url) => media_items.push(format!("[Photo: {}]", url)),
+                None => {
+                    warn!("Failed to get photo URL for file_id: {}", file_id);
+                    media_items.push("[Photo: download failed]".to_string());
+                }
+            }
+        }
+
+        // Extract video
+        if let Some(video) = message.get("video") {
+            let file_id = video.get("file_id")?.as_str()?;
+            let file_size = video.get("file_size").and_then(|v| v.as_u64()).unwrap_or(0);
+            let duration = video.get("duration").and_then(|v| v.as_u64()).unwrap_or(0);
+
+            match telegram_get_file_url(token, client, file_id, api_base_url).await {
+                Some(url) => {
+                    media_items.push(format!("[Video: {} ({}s, {} bytes)]", url, duration, file_size));
+                }
+                None => {
+                    warn!("Failed to get video URL for file_id: {} (size: {} bytes)", file_id, file_size);
+                    // Telegram Bot API has a 20MB limit for getFile
+                    if file_size > 20 * 1024 * 1024 {
+                        media_items.push(format!("[Video: file too large ({} MB), cannot download via Bot API]", file_size / 1024 / 1024));
+                    } else {
+                        media_items.push(format!("[Video: download failed ({} bytes)]", file_size));
+                    }
+                }
+            }
+        }
+
+        // Extract document (videos can also be sent as documents)
+        if let Some(document) = message.get("document") {
+            let file_id = document.get("file_id")?.as_str()?;
+            let filename = document
+                .get("file_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
+            let file_size = document.get("file_size").and_then(|v| v.as_u64()).unwrap_or(0);
+            let mime_type = document.get("mime_type").and_then(|v| v.as_str()).unwrap_or("");
+
+            // Check if this is a video document
+            let is_video = mime_type.starts_with("video/");
+
+            match telegram_get_file_url(token, client, file_id, api_base_url).await {
+                Some(url) => {
+                    if is_video {
+                        media_items.push(format!("[Video (as document): {} - {}]", filename, url));
+                    } else {
+                        media_items.push(format!("[File {}: {}]", filename, url));
+                    }
+                }
+                None => {
+                    warn!("Failed to get document URL for file_id: {} (size: {} bytes, mime: {})", file_id, file_size, mime_type);
+                    if file_size > 20 * 1024 * 1024 {
+                        if is_video {
+                            media_items.push(format!("[Video {}: file too large ({} MB), cannot download via Bot API]", filename, file_size / 1024 / 1024));
+                        } else {
+                            media_items.push(format!("[File {}: too large ({} MB)]", filename, file_size / 1024 / 1024));
+                        }
+                    } else {
+                        media_items.push(format!("[File {}: download failed]", filename));
+                    }
+                }
+            }
+        }
+
+        // Collect caption (usually only the first item has it)
+        if let Some(caption) = message.get("caption").and_then(|v| v.as_str()) {
+            if !caption.is_empty() && combined_caption.is_empty() {
+                combined_caption = caption.to_string();
+            }
+        }
+    }
+
+    // Build combined content
+    let content_text = if combined_caption.is_empty() {
+        format!(
+            "Media group ({} items):\n{}",
+            media_items.len(),
+            media_items.join("\n")
+        )
+    } else {
+        format!(
+            "{}\n\nMedia group ({} items):\n{}",
+            combined_caption,
+            media_items.len(),
+            media_items.join("\n")
+        )
+    };
+
+    Some(ChannelMessage {
+        content: ChannelContent::Text(content_text),
+        ..first_msg
+    })
 }
 
 /// Parse a Telegram update JSON into a `ChannelMessage`, or `None` if filtered/unparseable.
