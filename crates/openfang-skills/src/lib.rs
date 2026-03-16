@@ -55,6 +55,8 @@ pub enum SkillRuntime {
     Wasm,
     /// Node.js module (OpenClaw compatibility).
     Node,
+    /// Shell/Bash script executed in subprocess.
+    Shell,
     /// Built-in (compiled into the binary).
     Builtin,
     /// Prompt-only skill: injects context into the LLM system prompt.

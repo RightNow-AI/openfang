@@ -144,13 +144,19 @@ pub async fn spawn_agent(
 
     let name = manifest.name.clone();
     match state.kernel.spawn_agent(manifest) {
-        Ok(id) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!(SpawnResponse {
-                agent_id: id.to_string(),
-                name,
-            })),
-        ),
+        Ok(id) => {
+            // Register in channel router so binding resolution finds the new agent
+            if let Some(ref mgr) = *state.bridge_manager.lock().await {
+                mgr.router().register_agent(name.clone(), id);
+            }
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!(SpawnResponse {
+                    agent_id: id.to_string(),
+                    name,
+                })),
+            )
+        }
         Err(e) => {
             tracing::warn!("Spawn failed: {e}");
             (
@@ -363,15 +369,24 @@ pub async fn send_message(
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(agent_id, &req.message, Some(kernel_handle))
+        .send_message_with_handle(
+            agent_id,
+            &req.message,
+            Some(kernel_handle),
+            req.sender_id,
+            req.sender_name,
+        )
         .await
     {
         Ok(result) => {
             // Strip <think>...</think> blocks from model output
             let cleaned = crate::ws::strip_think_tags(&result.response);
 
-            // Guard: ensure we never return an empty response to the client
-            let response = if cleaned.trim().is_empty() {
+            // If the agent intentionally returned a silent/NO_REPLY response,
+            // return an empty string — don't generate debug fallback text.
+            let response = if result.silent {
+                String::new()
+            } else if cleaned.trim().is_empty() {
                 format!(
                     "[The agent completed processing but returned no text response. ({} in / {} out | {} iter)]",
                     result.total_usage.input_tokens,
@@ -628,6 +643,67 @@ pub async fn kill_agent(
             )
         }
     }
+}
+
+/// POST /api/agents/{id}/restart — Restart a crashed/stuck agent.
+///
+/// Cancels any active task, resets agent state to Running, and updates last_active.
+/// Returns the agent's new state.
+pub async fn restart_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            );
+        }
+    };
+
+    // Check agent exists
+    let entry = match state.kernel.registry.get(agent_id) {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            );
+        }
+    };
+
+    let agent_name = entry.name.clone();
+    let previous_state = format!("{:?}", entry.state);
+    drop(entry);
+
+    // Cancel any running task
+    let was_running = state.kernel.stop_agent_run(agent_id).unwrap_or(false);
+
+    // Reset state to Running (also updates last_active)
+    let _ = state
+        .kernel
+        .registry
+        .set_state(agent_id, openfang_types::agent::AgentState::Running);
+
+    tracing::info!(
+        agent = %agent_name,
+        previous_state = %previous_state,
+        task_cancelled = was_running,
+        "Agent restarted via API"
+    );
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "restarted",
+            "agent": agent_name,
+            "agent_id": id,
+            "previous_state": previous_state,
+            "task_cancelled": was_running,
+        })),
+    )
 }
 
 /// GET /api/status — Kernel status.
@@ -1336,21 +1412,23 @@ pub async fn send_message_stream(
     }
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
-    let (rx, _handle) =
-        match state
-            .kernel
-            .send_message_streaming(agent_id, &req.message, Some(kernel_handle))
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                tracing::warn!("Streaming message failed for agent {id}: {e}");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "Streaming message failed"})),
-                )
-                    .into_response();
-            }
-        };
+    let (rx, _handle) = match state.kernel.send_message_streaming(
+        agent_id,
+        &req.message,
+        Some(kernel_handle),
+        req.sender_id,
+        req.sender_name,
+    ) {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::warn!("Streaming message failed for agent {id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Streaming message failed"})),
+            )
+                .into_response();
+        }
+    };
 
     let sse_stream = stream::unfold(rx, |mut rx| async move {
         match rx.recv().await {
@@ -1393,7 +1471,9 @@ pub async fn send_message_stream(
         }
     });
 
-    Sse::new(sse_stream).into_response()
+    Sse::new(sse_stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -1776,18 +1856,23 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
     },
     ChannelMeta {
         name: "feishu", display_name: "Feishu/Lark", icon: "FS",
-        description: "Feishu/Lark Open Platform adapter",
+        description: "Feishu/Lark Open Platform adapter (supports China & International)",
         category: "enterprise", difficulty: "Easy", setup_time: "~3 min",
         quick_setup: "Paste your App ID and App Secret",
         setup_type: "form",
         fields: &[
             ChannelField { key: "app_id", label: "App ID", field_type: FieldType::Text, env_var: None, required: true, placeholder: "cli_abc123", advanced: false },
             ChannelField { key: "app_secret_env", label: "App Secret", field_type: FieldType::Secret, env_var: Some("FEISHU_APP_SECRET"), required: true, placeholder: "abc123...", advanced: false },
+            ChannelField { key: "region", label: "Region", field_type: FieldType::Text, env_var: None, required: false, placeholder: "cn or intl", advanced: false },
             ChannelField { key: "webhook_port", label: "Webhook Port", field_type: FieldType::Number, env_var: None, required: false, placeholder: "8453", advanced: true },
+            ChannelField { key: "webhook_path", label: "Webhook Path", field_type: FieldType::Text, env_var: None, required: false, placeholder: "/feishu/webhook", advanced: true },
+            ChannelField { key: "verification_token", label: "Verification Token", field_type: FieldType::Text, env_var: None, required: false, placeholder: "verify-token", advanced: true },
+            ChannelField { key: "encrypt_key_env", label: "Encrypt Key", field_type: FieldType::Secret, env_var: Some("FEISHU_ENCRYPT_KEY"), required: false, placeholder: "encrypt-key", advanced: true },
+            ChannelField { key: "bot_names", label: "Bot Names", field_type: FieldType::List, env_var: None, required: false, placeholder: "MyBot, Assistant", advanced: true },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
         ],
-        setup_steps: &["Create an app at open.feishu.cn", "Copy App ID and Secret", "Paste them below"],
-        config_template: "[channels.feishu]\napp_id = \"\"\napp_secret_env = \"FEISHU_APP_SECRET\"",
+        setup_steps: &["Create an app at open.feishu.cn (CN) or open.larksuite.com (International)", "Copy App ID and Secret", "Set region: cn (Feishu) or intl (Lark)"],
+        config_template: "[channels.feishu]\napp_id = \"\"\napp_secret_env = \"FEISHU_APP_SECRET\"\nregion = \"cn\"",
     },
     ChannelMeta {
         name: "dingtalk", display_name: "DingTalk", icon: "DT",
@@ -1803,6 +1888,21 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         ],
         setup_steps: &["Create a robot in your DingTalk group", "Copy the token and signing secret", "Paste them below"],
         config_template: "[channels.dingtalk]\naccess_token_env = \"DINGTALK_ACCESS_TOKEN\"\nsecret_env = \"DINGTALK_SECRET\"",
+    },
+    ChannelMeta {
+        name: "dingtalk_stream", display_name: "DingTalk Stream", icon: "DS",
+        description: "DingTalk Stream Mode (WebSocket long-connection)",
+        category: "enterprise", difficulty: "Easy", setup_time: "~5 min",
+        quick_setup: "Create an Enterprise Internal App with Stream Mode enabled",
+        setup_type: "form",
+        fields: &[
+            ChannelField { key: "app_key_env", label: "App Key", field_type: FieldType::Secret, env_var: Some("DINGTALK_APP_KEY"), required: true, placeholder: "ding...", advanced: false },
+            ChannelField { key: "app_secret_env", label: "App Secret", field_type: FieldType::Secret, env_var: Some("DINGTALK_APP_SECRET"), required: true, placeholder: "uAn4...", advanced: false },
+            ChannelField { key: "robot_code_env", label: "Robot Code", field_type: FieldType::Text, env_var: Some("DINGTALK_ROBOT_CODE"), required: false, placeholder: "ding... (same as App Key)", advanced: true },
+            ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
+        ],
+        setup_steps: &["Create an Enterprise Internal App in DingTalk Open Platform", "Enable Stream Mode in the app settings", "Add robot capability and configure permissions", "Copy App Key and App Secret below"],
+        config_template: "[channels.dingtalk_stream]\napp_key_env = \"DINGTALK_APP_KEY\"\napp_secret_env = \"DINGTALK_APP_SECRET\"",
     },
     ChannelMeta {
         name: "pumble", display_name: "Pumble", icon: "PB",
@@ -2065,6 +2165,24 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         setup_steps: &["Enter host and username below", "Optionally add a password"],
         config_template: "[channels.mumble]\nhost = \"\"\nusername = \"openfang\"",
     },
+    ChannelMeta {
+        name: "wecom", display_name: "WeCom", icon: "WC",
+        description: "WeCom (WeChat Work) adapter",
+        category: "messaging", difficulty: "Easy", setup_time: "~3 min",
+        quick_setup: "Enter your Corp ID, Agent ID, and Secret",
+        setup_type: "form",
+        fields: &[
+            ChannelField { key: "corp_id", label: "Corp ID", field_type: FieldType::Text, env_var: None, required: true, placeholder: "wwxxxxx", advanced: false },
+            ChannelField { key: "agent_id", label: "Agent ID", field_type: FieldType::Text, env_var: None, required: true, placeholder: "wwxxxxx", advanced: false },
+            ChannelField { key: "secret_env", label: "Secret", field_type: FieldType::Secret, env_var: Some("WECOM_SECRET"), required: true, placeholder: "secret", advanced: false },
+            ChannelField { key: "token", label: "Callback Token", field_type: FieldType::Text, env_var: None, required: false, placeholder: "callback_token", advanced: true },
+            ChannelField { key: "encoding_aes_key", label: "Encoding AES Key", field_type: FieldType::Text, env_var: None, required: false, placeholder: "encoding_aes_key", advanced: true },
+            ChannelField { key: "webhook_port", label: "Webhook Port", field_type: FieldType::Number, env_var: None, required: false, placeholder: "8454", advanced: true },
+            ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
+        ],
+        setup_steps: &["Create a WeCom application at work.weixin.qq.com", "Get Corp ID, Agent ID, and Secret", "Configure callback URL to your webhook endpoint"],
+        config_template: "[channels.wecom]\ncorp_id = \"\"\nagent_id = \"\"\nsecret_env = \"WECOM_SECRET\"",
+    },
 ];
 
 /// Check if a channel is configured (has a `[channels.xxx]` section in config).
@@ -2093,6 +2211,7 @@ fn is_channel_configured(config: &openfang_types::config::ChannelsConfig, name: 
         "webex" => config.webex.is_some(),
         "feishu" => config.feishu.is_some(),
         "dingtalk" => config.dingtalk.is_some(),
+        "dingtalk_stream" => config.dingtalk_stream.is_some(),
         "pumble" => config.pumble.is_some(),
         "flock" => config.flock.is_some(),
         "twist" => config.twist.is_some(),
@@ -2110,6 +2229,7 @@ fn is_channel_configured(config: &openfang_types::config::ChannelsConfig, name: 
         "gotify" => config.gotify.is_some(),
         "webhook" => config.webhook.is_some(),
         "mumble" => config.mumble.is_some(),
+        "wecom" => config.wecom.is_some(),
         _ => false,
     }
 }
@@ -3142,15 +3262,19 @@ pub async fn delete_agent_kv_key(
 /// Returns only status and version to prevent information leakage.
 /// Use GET /api/health/detail for full diagnostics (requires auth).
 pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    // Check database connectivity
-    let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-    ]));
-    let db_ok = state
-        .kernel
-        .memory
-        .structured_get(shared_id, "__health_check__")
-        .is_ok();
+    // Run the database check on a blocking thread so we never hold the
+    // std::sync::Mutex<Connection> on a tokio worker thread.  This prevents
+    // the health probe from starving the async runtime when the agent loop
+    // is holding the database lock for session saves.
+    let memory = state.kernel.memory.clone();
+    let db_ok = tokio::task::spawn_blocking(move || {
+        let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]));
+        memory.structured_get(shared_id, "__health_check__").is_ok()
+    })
+    .await
+    .unwrap_or(false);
 
     let status = if db_ok { "ok" } else { "degraded" };
 
@@ -3164,14 +3288,15 @@ pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let health = state.kernel.supervisor.health();
 
-    let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-    ]));
-    let db_ok = state
-        .kernel
-        .memory
-        .structured_get(shared_id, "__health_check__")
-        .is_ok();
+    let memory = state.kernel.memory.clone();
+    let db_ok = tokio::task::spawn_blocking(move || {
+        let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]));
+        memory.structured_get(shared_id, "__health_check__").is_ok()
+    })
+    .await
+    .unwrap_or(false);
 
     let config_warnings = state.kernel.config.validate();
     let status = if db_ok { "ok" } else { "degraded" };
@@ -3447,12 +3572,14 @@ pub async fn clawhub_search(
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
+    let skills_dir = state.kernel.config.home_dir.join("skills");
     match client.search(&query, limit).await {
         Ok(results) => {
             let items: Vec<serde_json::Value> = results
                 .results
                 .iter()
                 .map(|e| {
+                    let installed = skills_dir.join(&e.slug).exists();
                     serde_json::json!({
                         "slug": e.slug,
                         "name": e.display_name,
@@ -3460,6 +3587,7 @@ pub async fn clawhub_search(
                         "version": e.version,
                         "score": e.score,
                         "updated_at": e.updated_at,
+                        "installed": installed,
                     })
                 })
                 .collect();
@@ -3524,12 +3652,18 @@ pub async fn clawhub_browse(
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
+    let skills_dir = state.kernel.config.home_dir.join("skills");
     match client.browse(sort, limit, cursor).await {
         Ok(results) => {
             let items: Vec<serde_json::Value> = results
                 .items
                 .iter()
-                .map(clawhub_browse_entry_to_json)
+                .map(|entry| {
+                    let mut json = clawhub_browse_entry_to_json(entry);
+                    let installed = skills_dir.join(&entry.slug).exists();
+                    json["installed"] = serde_json::json!(installed);
+                    json
+                })
                 .collect();
             let resp = serde_json::json!({
                 "items": items,
@@ -4102,7 +4236,9 @@ pub async fn install_hand_deps(
             let combined = format!("{stdout}{stderr}");
             let likely_ok = combined.contains("already installed")
                 || combined.contains("No applicable update")
-                || combined.contains("No available upgrade");
+                || combined.contains("No available upgrade")
+                || combined.contains("already an App at")
+                || combined.contains("is already installed");
             results.push(serde_json::json!({
                 "key": req.key,
                 "status": if likely_ok { "installed" } else { "error" },
@@ -4222,6 +4358,46 @@ pub async fn install_hand(
         .kernel
         .hand_registry
         .install_from_content(toml_content, skill_content)
+    {
+        Ok(def) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "id": def.id,
+                "name": def.name,
+                "description": def.description,
+                "category": format!("{:?}", def.category),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
+/// POST /api/hands/upsert — Install or update a hand definition.
+///
+/// Like `install_hand` but overwrites an existing definition with the same ID.
+/// Active instances are NOT automatically restarted — deactivate + reactivate
+/// to pick up the new definition.
+pub async fn upsert_hand(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let toml_content = body["toml_content"].as_str().unwrap_or("");
+    let skill_content = body["skill_content"].as_str().unwrap_or("");
+
+    if toml_content.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Missing toml_content field"})),
+        );
+    }
+
+    match state
+        .kernel
+        .hand_registry
+        .upsert_from_content(toml_content, skill_content)
     {
         Ok(def) => (
             StatusCode::OK,
@@ -4884,7 +5060,7 @@ pub async fn network_status(State(state): State<Arc<AppState>>) -> impl IntoResp
         && !state.kernel.config.network.shared_secret.is_empty();
 
     let (node_id, listen_address, connected_peers, total_peers) =
-        if let Some(ref peer_node) = state.kernel.peer_node {
+        if let Some(peer_node) = state.kernel.peer_node.get() {
             let registry = peer_node.registry();
             (
                 peer_node.node_id().to_string(),
@@ -6814,11 +6990,11 @@ pub async fn set_model(
             )
         }
     };
-    match state.kernel.set_agent_model(
-        agent_id,
-        model,
-        body.get("provider").and_then(|v| v.as_str()),
-    ) {
+    let explicit_provider = body["provider"].as_str();
+    match state
+        .kernel
+        .set_agent_model(agent_id, model, explicit_provider)
+    {
         Ok(()) => {
             // Return the resolved model+provider so frontend stays in sync.
             // The model name may have been normalized (provider prefix stripped),
@@ -7137,7 +7313,10 @@ pub async fn set_provider_key(
             })
     };
 
-    // Write to secrets.env file
+    // Store in vault (best-effort — no-op if vault not initialized)
+    state.kernel.store_credential(&env_var, &key);
+
+    // Write to secrets.env file (dual-write for backward compat / vault corruption recovery)
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
     if let Err(e) = write_secret_env(&secrets_path, &env_var, &key) {
         return (
@@ -7203,8 +7382,8 @@ pub async fn set_provider_key(
                 "\n[default_model]\nprovider = \"{}\"\nmodel = \"{}\"\napi_key_env = \"{}\"\n",
                 name, model_id, env_var
             );
+            backup_config(&config_path);
             if let Ok(existing) = std::fs::read_to_string(&config_path) {
-                // Remove existing [default_model] section if present, then append
                 let cleaned = remove_toml_section(&existing, "default_model");
                 let _ =
                     std::fs::write(&config_path, format!("{}\n{}", cleaned.trim(), update_toml));
@@ -7304,6 +7483,9 @@ pub async fn delete_provider_key(
             Json(serde_json::json!({"error": "Provider does not require an API key"})),
         );
     }
+
+    // Remove from vault (best-effort)
+    state.kernel.remove_credential(&env_var);
 
     // Remove from secrets.env
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
@@ -8823,6 +9005,11 @@ pub async fn clone_agent(
         .kernel
         .registry
         .update_identity(new_id, source.identity.clone());
+
+    // Register in channel router so binding resolution finds the cloned agent
+    if let Some(ref mgr) = *state.bridge_manager.lock().await {
+        mgr.router().register_agent(req.new_name.clone(), new_id);
+    }
 
     (
         StatusCode::CREATED,
@@ -10466,7 +10653,10 @@ pub async fn copilot_oauth_poll(
             Json(serde_json::json!({"status": "pending"})),
         ),
         openfang_runtime::copilot_oauth::DeviceFlowStatus::Complete { access_token } => {
-            // Save to secrets.env
+            // Store in vault (best-effort)
+            state.kernel.store_credential("GITHUB_TOKEN", &access_token);
+
+            // Save to secrets.env (dual-write)
             let secrets_path = state.kernel.config.home_dir.join("secrets.env");
             if let Err(e) = write_secret_env(&secrets_path, "GITHUB_TOKEN", &access_token) {
                 return (
@@ -11201,6 +11391,12 @@ fn serialize_session_messages(
 }
 
 /// Remove a `[section]` and its contents from a TOML string.
+#[allow(dead_code)]
+fn backup_config(config_path: &std::path::Path) {
+    let backup = config_path.with_extension("toml.bak");
+    let _ = std::fs::copy(config_path, backup);
+}
+
 fn remove_toml_section(content: &str, section: &str) -> String {
     let header = format!("[{}]", section);
     let mut result = String::new();
@@ -11220,4 +11416,54 @@ fn remove_toml_section(content: &str, section: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod channel_config_tests {
+    use super::*;
+
+    #[test]
+    fn test_is_channel_configured_wecom_none() {
+        let config = openfang_types::config::ChannelsConfig::default();
+        assert!(!is_channel_configured(&config, "wecom"));
+    }
+
+    #[test]
+    fn test_is_channel_configured_wecom_some() {
+        let mut config = openfang_types::config::ChannelsConfig::default();
+        config.wecom = Some(openfang_types::config::WeComConfig {
+            corp_id: "test_corp".to_string(),
+            agent_id: "test_agent".to_string(),
+            secret_env: "WECOM_SECRET".to_string(),
+            webhook_port: 8454,
+            token: Some("token".to_string()),
+            encoding_aes_key: Some("aes_key".to_string()),
+            default_agent: Some("assistant".to_string()),
+            overrides: openfang_types::config::ChannelOverrides::default(),
+        });
+        assert!(is_channel_configured(&config, "wecom"));
+    }
+
+    #[test]
+    fn test_wecom_in_channel_registry() {
+        let wecom_meta = CHANNEL_REGISTRY.iter().find(|c| c.name == "wecom");
+        assert!(wecom_meta.is_some());
+        let meta = wecom_meta.unwrap();
+        assert_eq!(meta.display_name, "WeCom");
+        assert_eq!(meta.category, "messaging");
+        assert!(
+            meta.fields
+                .iter()
+                .find(|f| f.key == "corp_id")
+                .unwrap()
+                .required
+        );
+        assert!(
+            meta.fields
+                .iter()
+                .find(|f| f.key == "secret_env")
+                .unwrap()
+                .required
+        );
+    }
 }

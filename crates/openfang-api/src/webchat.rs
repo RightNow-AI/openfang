@@ -46,6 +46,34 @@ pub async fn favicon_ico() -> impl IntoResponse {
     )
 }
 
+/// Embedded PWA manifest for installable web app support.
+const MANIFEST_JSON: &str = include_str!("../static/manifest.json");
+
+/// Embedded service worker for PWA support.
+const SW_JS: &str = include_str!("../static/sw.js");
+
+/// GET /manifest.json — Serve the PWA web app manifest.
+pub async fn manifest_json() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/manifest+json"),
+            (header::CACHE_CONTROL, "public, max-age=86400, immutable"),
+        ],
+        MANIFEST_JSON,
+    )
+}
+
+/// GET /sw.js — Serve the PWA service worker.
+pub async fn sw_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/javascript"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        SW_JS,
+    )
+}
+
 /// GET / — Serve the OpenFang Dashboard single-page application.
 ///
 /// Returns the full SPA with ETag header based on package version for caching.

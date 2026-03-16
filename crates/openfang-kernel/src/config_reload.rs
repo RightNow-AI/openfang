@@ -242,7 +242,8 @@ pub fn build_reload_plan(old: &KernelConfig, new: &KernelConfig) -> ReloadPlan {
     }
 
     if field_changed(&old.provider_api_keys, &new.provider_api_keys) {
-        plan.noop_changes.push("provider_api_keys changed (takes effect on next driver init)".to_string());
+        plan.noop_changes
+            .push("provider_api_keys changed (takes effect on next driver init)".to_string());
     }
 
     // ----- No-op fields -----
@@ -415,7 +416,10 @@ mod tests {
         let mut b = default_cfg();
         b.default_model.model = "gpt-4".to_string();
         let plan = build_reload_plan(&a, &b);
-        assert!(!plan.restart_required, "default_model should be hot-reloadable");
+        assert!(
+            !plan.restart_required,
+            "default_model should be hot-reloadable"
+        );
         assert!(plan.hot_actions.contains(&HotAction::UpdateDefaultModel));
     }
 

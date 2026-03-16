@@ -51,6 +51,22 @@ const MAX_CONTINUATIONS: u32 = 5;
 /// Maximum message history size before auto-trimming to prevent context overflow.
 const MAX_HISTORY_MESSAGES: usize = 20;
 
+/// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
+const TOOL_ERROR_GUIDANCE: &str =
+    "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. If your next steps depend on a failed tool, either retry with a materially different approach or explain the failure to the user and stop. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
+
+fn append_tool_error_guidance(tool_result_blocks: &mut Vec<ContentBlock>) {
+    let has_tool_error = tool_result_blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }));
+    if has_tool_error {
+        tool_result_blocks.push(ContentBlock::Text {
+            text: TOOL_ERROR_GUIDANCE.to_string(),
+            provider_metadata: None,
+        });
+    }
+}
+
 /// Strip a provider prefix from a model ID before sending to the API.
 ///
 /// Many models are stored as `provider/org/model` (e.g. `openrouter/google/gemini-2.5-flash`)
@@ -379,7 +395,8 @@ pub async fn run_agent_loop(
                         .messages
                         .push(Message::assistant("[no reply needed]".to_string()));
                     memory
-                        .save_session(session)
+                        .save_session_async(session)
+                        .await
                         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
                     return Ok(AgentLoopResult {
                         response: String::new(),
@@ -447,7 +464,8 @@ pub async fn run_agent_loop(
 
                 // Save session
                 memory
-                    .save_session(session)
+                    .save_session_async(session)
+                    .await
                     .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
                 // Remember this interaction (with embedding if available)
@@ -561,7 +579,7 @@ pub async fn run_agent_loop(
                         LoopGuardVerdict::CircuitBreak(msg) => {
                             warn!(tool = %tool_call.name, "Circuit breaker triggered");
                             // Save session before bailing
-                            if let Err(e) = memory.save_session(session) {
+                            if let Err(e) = memory.save_session_async(session).await {
                                 warn!("Failed to save session on circuit break: {e}");
                             }
                             // Fire AgentLoopEnd hook on circuit break
@@ -711,6 +729,8 @@ pub async fn run_agent_loop(
                     });
                 }
 
+                append_tool_error_guidance(&mut tool_result_blocks);
+
                 // Detect approval denials and inject guidance to prevent infinite retry loops
                 let denial_count = tool_result_blocks
                     .iter()
@@ -724,7 +744,10 @@ pub async fn run_agent_loop(
                         text: format!(
                             "[System: {} tool call(s) were denied by approval policy. \
                              Do NOT retry denied tools. Explain to the user what you \
-                             wanted to do and that it requires their approval.]",
+                             wanted to do and that it requires their approval. \
+                             Hint: set auto_approve = true in [approval] section of \
+                             config.toml, or start with --yolo flag, to auto-approve \
+                             all tool calls.]",
                             denial_count
                         ),
                         provider_metadata: None,
@@ -759,7 +782,7 @@ pub async fn run_agent_loop(
                 messages.push(tool_results_msg);
 
                 // Interim save after tool execution to prevent data loss on crash
-                if let Err(e) = memory.save_session(session) {
+                if let Err(e) = memory.save_session_async(session).await {
                     warn!("Failed to interim-save session: {e}");
                 }
             }
@@ -774,7 +797,7 @@ pub async fn run_agent_loop(
                         text
                     };
                     session.messages.push(Message::assistant(&text));
-                    if let Err(e) = memory.save_session(session) {
+                    if let Err(e) = memory.save_session_async(session).await {
                         warn!("Failed to save session on max continuations: {e}");
                     }
                     warn!(
@@ -816,7 +839,7 @@ pub async fn run_agent_loop(
     }
 
     // Save session before failing so conversation history is preserved
-    if let Err(e) = memory.save_session(session) {
+    if let Err(e) = memory.save_session_async(session).await {
         warn!("Failed to save session on max iterations: {e}");
     }
 
@@ -1360,7 +1383,8 @@ pub async fn run_agent_loop_streaming(
                         .messages
                         .push(Message::assistant("[no reply needed]".to_string()));
                     memory
-                        .save_session(session)
+                        .save_session_async(session)
+                        .await
                         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
                     return Ok(AgentLoopResult {
                         response: String::new(),
@@ -1427,7 +1451,8 @@ pub async fn run_agent_loop_streaming(
                 crate::session_repair::prune_heartbeat_turns(&mut session.messages, 10);
 
                 memory
-                    .save_session(session)
+                    .save_session_async(session)
+                    .await
                     .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
                 // Remember this interaction (with embedding if available)
@@ -1537,7 +1562,7 @@ pub async fn run_agent_loop_streaming(
                     match &verdict {
                         LoopGuardVerdict::CircuitBreak(msg) => {
                             warn!(tool = %tool_call.name, "Circuit breaker triggered (streaming)");
-                            if let Err(e) = memory.save_session(session) {
+                            if let Err(e) = memory.save_session_async(session).await {
                                 warn!("Failed to save session on circuit break: {e}");
                             }
                             // Fire AgentLoopEnd hook on circuit break
@@ -1701,6 +1726,8 @@ pub async fn run_agent_loop_streaming(
                     });
                 }
 
+                append_tool_error_guidance(&mut tool_result_blocks);
+
                 // Detect approval denials and inject guidance to prevent infinite retry loops
                 let denial_count = tool_result_blocks
                     .iter()
@@ -1714,7 +1741,10 @@ pub async fn run_agent_loop_streaming(
                         text: format!(
                             "[System: {} tool call(s) were denied by approval policy. \
                              Do NOT retry denied tools. Explain to the user what you \
-                             wanted to do and that it requires their approval.]",
+                             wanted to do and that it requires their approval. \
+                             Hint: set auto_approve = true in [approval] section of \
+                             config.toml, or start with --yolo flag, to auto-approve \
+                             all tool calls.]",
                             denial_count
                         ),
                         provider_metadata: None,
@@ -1747,7 +1777,7 @@ pub async fn run_agent_loop_streaming(
                 session.messages.push(tool_results_msg.clone());
                 messages.push(tool_results_msg);
 
-                if let Err(e) = memory.save_session(session) {
+                if let Err(e) = memory.save_session_async(session).await {
                     warn!("Failed to interim-save session: {e}");
                 }
             }
@@ -1761,7 +1791,7 @@ pub async fn run_agent_loop_streaming(
                         text
                     };
                     session.messages.push(Message::assistant(&text));
-                    if let Err(e) = memory.save_session(session) {
+                    if let Err(e) = memory.save_session_async(session).await {
                         warn!("Failed to save session on max continuations: {e}");
                     }
                     warn!(
@@ -1801,7 +1831,7 @@ pub async fn run_agent_loop_streaming(
         }
     }
 
-    if let Err(e) = memory.save_session(session) {
+    if let Err(e) = memory.save_session_async(session).await {
         warn!("Failed to save session on max iterations: {e}");
     }
 
@@ -2864,6 +2894,61 @@ mod tests {
             result.response.contains("Task completed"),
             "Expected fallback message, got: {:?}",
             result.response
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tool_error_injects_no_fabrication_guidance() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(EmptyAfterToolUseDriver::new());
+
+        run_agent_loop(
+            &manifest,
+            "Do something with tools",
+            &mut session,
+            &memory,
+            driver,
+            &[], // no tools registered — the tool call will fail, which is fine
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // on_phase
+            None, // media_engine
+            None, // tts_engine
+            None, // docker_config
+            None, // hooks
+            None, // context_window_tokens
+            None, // process_manager
+            None, // user_content_blocks
+        )
+        .await
+        .expect("Loop should complete without error");
+
+        let guidance_seen = session.messages.iter().any(|msg| {
+            match &msg.content {
+            MessageContent::Blocks(blocks) => blocks.iter().any(|block| {
+                matches!(block, ContentBlock::Text { text, .. } if text == TOOL_ERROR_GUIDANCE)
+            }),
+            _ => false,
+        }
+        });
+
+        assert!(
+            guidance_seen,
+            "Expected tool error guidance in session messages after failed tool call"
         );
     }
 

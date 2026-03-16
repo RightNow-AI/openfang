@@ -215,11 +215,7 @@ impl TriggerEngine {
     /// on each trigger and moves the index entry.
     ///
     /// Returns the number of triggers reassigned.
-    pub fn reassign_agent_triggers(
-        &self,
-        old_agent_id: AgentId,
-        new_agent_id: AgentId,
-    ) -> usize {
+    pub fn reassign_agent_triggers(&self, old_agent_id: AgentId, new_agent_id: AgentId) -> usize {
         let trigger_ids = self
             .agent_triggers
             .remove(&old_agent_id)
@@ -702,7 +698,10 @@ mod tests {
             matches!(&t.pattern, TriggerPattern::ContentMatch { substring } if substring == "deploy")
                 && t.max_fires == 5
         });
-        assert!(has_content_match, "ContentMatch trigger with max_fires=5 should be preserved");
+        assert!(
+            has_content_match,
+            "ContentMatch trigger with max_fires=5 should be preserved"
+        );
     }
 
     #[test]
@@ -727,6 +726,9 @@ mod tests {
         engine.restore_triggers(new_agent, taken);
         let restored = engine.list_agent_triggers(new_agent);
         assert_eq!(restored.len(), 1);
-        assert!(!restored[0].enabled, "Disabled state should survive take/restore");
+        assert!(
+            !restored[0].enabled,
+            "Disabled state should survive take/restore"
+        );
     }
 }

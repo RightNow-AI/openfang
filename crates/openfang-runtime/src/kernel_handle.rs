@@ -216,7 +216,9 @@ pub trait KernelHandle: Send + Sync {
         filename: Option<&str>,
         thread_id: Option<&str>,
     ) -> Result<String, String> {
-        let _ = (channel, recipient, media_type, media_url, caption, filename, thread_id);
+        let _ = (
+            channel, recipient, media_type, media_url, caption, filename, thread_id,
+        );
         Err("Channel media send not available".to_string())
     }
 

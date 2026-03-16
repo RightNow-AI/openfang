@@ -400,6 +400,7 @@ pub fn read_codex_credential() -> Option<String> {
     parsed
         .get("api_key")
         .or_else(|| parsed.get("token"))
+        .or_else(|| parsed.get("tokens").and_then(|t| t.get("id_token")))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
@@ -687,6 +688,17 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             model_count: 0,
             is_local: false,
         },
+        // ── NVIDIA NIM ────────────────────────────────────────────────
+        ProviderInfo {
+            id: "nvidia".into(),
+            display_name: "NVIDIA NIM".into(),
+            api_key_env: "NVIDIA_API_KEY".into(),
+            base_url: NVIDIA_NIM_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+            is_local: false,
+        },
         // ── Chinese providers (5) ────────────────────────────────────
         ProviderInfo {
             id: "qwen".into(),
@@ -860,6 +872,28 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             model_count: 0,
             is_local: false,
         },
+        // ── Azure OpenAI ───────────────────────────────────────────
+        ProviderInfo {
+            id: "azure".into(),
+            display_name: "Azure OpenAI".into(),
+            api_key_env: "AZURE_OPENAI_API_KEY".into(),
+            base_url: AZURE_OPENAI_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+            is_local: false,
+        },
+        // ── Azure OpenAI ───────────────────────────────────────────
+        ProviderInfo {
+            id: "azure".into(),
+            display_name: "Azure OpenAI".into(),
+            api_key_env: "AZURE_OPENAI_API_KEY".into(),
+            base_url: AZURE_OPENAI_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+            is_local: false,
+        },
         // ── OpenAI Codex ────────────────────────────────────────────
         ProviderInfo {
             id: "codex".into(),
@@ -976,9 +1010,12 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("minimax-m2.1", "MiniMax-M2.1"),
         ("codegeex", "codegeex-4"),
         // Codex aliases
-        ("codex", "codex/gpt-4.1"),
+        ("codex", "codex/gpt-5.4"),
+        ("codex-5.4", "codex/gpt-5.4"),
         ("codex-4.1", "codex/gpt-4.1"),
         ("codex-o4", "codex/o4-mini"),
+        // NVIDIA NIM aliases
+        ("nemotron", "nvidia/llama-3.1-nemotron-70b-instruct"),
         // Venice aliases
         ("venice", "venice-uncensored"),
         // Claude Code aliases
@@ -991,6 +1028,13 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("qwen-coder", "qwen-code/qwen3-coder"),
         ("qwen-coder-plus", "qwen-code/qwen-coder-plus"),
         ("qwq", "qwen-code/qwq-32b"),
+        // OpenRouter free-tier aliases
+        (
+            "openrouter/free",
+            "openrouter/meta-llama/llama-3.1-8b-instruct:free",
+        ),
+        ("free", "openrouter/meta-llama/llama-3.1-8b-instruct:free"),
+        ("free-reasoning", "openrouter/deepseek/deepseek-r1:free"),
     ];
     pairs
         .into_iter()
@@ -1527,6 +1571,67 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             output_cost_per_m: 1.10,
             supports_tools: true,
             supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // Azure OpenAI (4)
+        // These represent common Azure deployment names. Users deploy models
+        // under their own deployment names, so these are illustrative defaults.
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "azure/gpt-4o".into(),
+            display_name: "GPT-4o (Azure)".into(),
+            provider: "azure".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 2.50,
+            output_cost_per_m: 10.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "azure/gpt-4o-mini".into(),
+            display_name: "GPT-4o Mini (Azure)".into(),
+            provider: "azure".into(),
+            tier: ModelTier::Fast,
+            context_window: 128_000,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.15,
+            output_cost_per_m: 0.60,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "azure/gpt-4.1".into(),
+            display_name: "GPT-4.1 (Azure)".into(),
+            provider: "azure".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_047_576,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 2.00,
+            output_cost_per_m: 8.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "azure/gpt-4.1-mini".into(),
+            display_name: "GPT-4.1 Mini (Azure)".into(),
+            provider: "azure".into(),
+            tier: ModelTier::Fast,
+            context_window: 1_047_576,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.40,
+            output_cost_per_m: 1.60,
+            supports_tools: true,
+            supports_vision: true,
             supports_streaming: true,
             aliases: vec![],
         },
@@ -2189,6 +2294,79 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_vision: false,
             supports_streaming: true,
             aliases: vec![],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // NVIDIA NIM (5)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "nvidia/llama-3.1-nemotron-70b-instruct".into(),
+            display_name: "Nemotron 70B Instruct (NVIDIA NIM)".into(),
+            provider: "nvidia".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 0.88,
+            output_cost_per_m: 0.88,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["nemotron-70b".into()],
+        },
+        ModelCatalogEntry {
+            id: "meta/llama-3.1-405b-instruct".into(),
+            display_name: "Llama 3.1 405B Instruct (NVIDIA NIM)".into(),
+            provider: "nvidia".into(),
+            tier: ModelTier::Frontier,
+            context_window: 128_000,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 5.00,
+            output_cost_per_m: 16.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "meta/llama-3.1-70b-instruct".into(),
+            display_name: "Llama 3.1 70B Instruct (NVIDIA NIM)".into(),
+            provider: "nvidia".into(),
+            tier: ModelTier::Balanced,
+            context_window: 128_000,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 0.88,
+            output_cost_per_m: 0.88,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "mistralai/mistral-large-latest".into(),
+            display_name: "Mistral Large (NVIDIA NIM)".into(),
+            provider: "nvidia".into(),
+            tier: ModelTier::Smart,
+            context_window: 128_000,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 2.00,
+            output_cost_per_m: 6.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "nvidia/nemotron-4-340b-instruct".into(),
+            display_name: "Nemotron 4 340B Instruct (NVIDIA NIM)".into(),
+            provider: "nvidia".into(),
+            tier: ModelTier::Frontier,
+            context_window: 4_096,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 4.20,
+            output_cost_per_m: 4.20,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["nemotron-340b".into()],
         },
         // ══════════════════════════════════════════════════════════════
         // Ollama (6) — local, no key required + dynamic discovery
@@ -3520,6 +3698,20 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         // OpenAI Codex (2) — reuses OpenAI driver
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
+            id: "codex/gpt-5.4".into(),
+            display_name: "GPT-5.4 (Codex)".into(),
+            provider: "codex".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_047_576,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 2.00,
+            output_cost_per_m: 8.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["codex".into(), "codex-5.4".into()],
+        },
+        ModelCatalogEntry {
             id: "codex/gpt-4.1".into(),
             display_name: "GPT-4.1 (Codex)".into(),
             provider: "codex".into(),
@@ -3531,7 +3723,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
-            aliases: vec!["codex".into(), "codex-4.1".into()],
+            aliases: vec!["codex-4.1".into()],
         },
         ModelCatalogEntry {
             id: "codex/o4-mini".into(),
@@ -3816,7 +4008,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 39);
+        assert_eq!(catalog.list_providers().len(), 41);
     }
 
     #[test]
@@ -4145,7 +4337,8 @@ mod tests {
     fn test_codex_models() {
         let catalog = ModelCatalog::new();
         let models = catalog.models_by_provider("codex");
-        assert_eq!(models.len(), 2);
+        assert_eq!(models.len(), 3);
+        assert!(models.iter().any(|m| m.id == "codex/gpt-5.4"));
         assert!(models.iter().any(|m| m.id == "codex/gpt-4.1"));
         assert!(models.iter().any(|m| m.id == "codex/o4-mini"));
     }
@@ -4154,7 +4347,7 @@ mod tests {
     fn test_codex_aliases() {
         let catalog = ModelCatalog::new();
         let entry = catalog.find_model("codex").unwrap();
-        assert_eq!(entry.id, "codex/gpt-4.1");
+        assert_eq!(entry.id, "codex/gpt-5.4");
     }
 
     #[test]
@@ -4205,5 +4398,37 @@ mod tests {
         let catalog = ModelCatalog::new();
         let entry = catalog.find_model("qwen-code").unwrap();
         assert_eq!(entry.id, "qwen-code/qwen3-coder");
+    }
+
+    #[test]
+    fn test_azure_provider_in_catalog() {
+        let catalog = ModelCatalog::new();
+        let azure = catalog.get_provider("azure").unwrap();
+        assert_eq!(azure.display_name, "Azure OpenAI");
+        assert_eq!(azure.api_key_env, "AZURE_OPENAI_API_KEY");
+        assert!(azure.key_required);
+        assert!(azure.base_url.is_empty()); // user must supply their own
+    }
+
+    #[test]
+    fn test_azure_models() {
+        let catalog = ModelCatalog::new();
+        let models = catalog.models_by_provider("azure");
+        assert_eq!(models.len(), 4);
+        assert!(models.iter().any(|m| m.id == "azure/gpt-4o"));
+        assert!(models.iter().any(|m| m.id == "azure/gpt-4o-mini"));
+        assert!(models.iter().any(|m| m.id == "azure/gpt-4.1"));
+        assert!(models.iter().any(|m| m.id == "azure/gpt-4.1-mini"));
+    }
+
+    #[test]
+    fn test_azure_model_lookup() {
+        let catalog = ModelCatalog::new();
+        let entry = catalog.find_model("azure/gpt-4o").unwrap();
+        assert_eq!(entry.provider, "azure");
+        assert_eq!(entry.display_name, "GPT-4o (Azure)");
+        assert_eq!(entry.tier, ModelTier::Smart);
+        assert!(entry.supports_tools);
+        assert!(entry.supports_vision);
     }
 }

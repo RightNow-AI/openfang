@@ -113,7 +113,11 @@ enum Commands {
         quick: bool,
     },
     /// Start the OpenFang kernel daemon (API server + kernel).
-    Start,
+    Start {
+        /// Auto-approve all tool calls (no confirmation prompts).
+        #[arg(long)]
+        yolo: bool,
+    },
     /// Stop the running daemon.
     Stop,
     /// Manage agents (new, list, chat, kill, spawn) [*].
@@ -794,11 +798,36 @@ enum SystemCommands {
     },
 }
 
+fn config_log_level() -> String {
+    let config_path = if let Ok(home) = std::env::var("OPENFANG_HOME") {
+        std::path::PathBuf::from(home).join("config.toml")
+    } else {
+        dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(".openfang")
+            .join("config.toml")
+    };
+    if let Ok(content) = std::fs::read_to_string(config_path) {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("log_level") {
+                if let Some(val) = trimmed.split('=').nth(1) {
+                    let level = val.trim().trim_matches('"').trim_matches('\'');
+                    if !level.is_empty() {
+                        return level.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "info".to_string()
+}
+
 fn init_tracing_stderr() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(config_log_level())),
         )
         .init();
 }
@@ -824,7 +853,7 @@ fn init_tracing_file() {
             tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(config_log_level())),
                 )
                 .with_writer(std::sync::Mutex::new(file))
                 .with_ansi(false)
@@ -893,7 +922,7 @@ fn main() {
         }
         Some(Commands::Tui) => tui::run(cli.config),
         Some(Commands::Init { quick }) => cmd_init(quick),
-        Some(Commands::Start) => cmd_start(cli.config),
+        Some(Commands::Start { yolo }) => cmd_start(cli.config, yolo),
         Some(Commands::Stop) => cmd_stop(),
         Some(Commands::Agent(sub)) => match sub {
             AgentCommands::New { template } => cmd_agent_new(cli.config, template),
@@ -911,7 +940,9 @@ fn main() {
             WorkflowCommands::List => cmd_workflow_list(),
             WorkflowCommands::Create { file } => cmd_workflow_create(file),
             WorkflowCommands::Get { workflow_id } => cmd_workflow_get(&workflow_id),
-            WorkflowCommands::Update { workflow_id, file } => cmd_workflow_update(&workflow_id, file),
+            WorkflowCommands::Update { workflow_id, file } => {
+                cmd_workflow_update(&workflow_id, file)
+            }
             WorkflowCommands::Delete { workflow_id } => cmd_workflow_delete(&workflow_id),
             WorkflowCommands::Run { workflow_id, input } => cmd_workflow_run(&workflow_id, &input),
         },
@@ -986,7 +1017,7 @@ fn main() {
             ModelsCommands::Set { model } => cmd_models_set(model),
         },
         Some(Commands::Gateway(sub)) => match sub {
-            GatewayCommands::Start => cmd_start(cli.config),
+            GatewayCommands::Start => cmd_start(cli.config, false),
             GatewayCommands::Stop => cmd_stop(),
             GatewayCommands::Status { json } => cmd_status(cli.config, json),
         },
@@ -1041,7 +1072,10 @@ fn main() {
             SystemCommands::Version { json } => cmd_system_version(json),
         },
         Some(Commands::Reset { confirm }) => cmd_reset(confirm),
-        Some(Commands::Uninstall { confirm, keep_config }) => cmd_uninstall(confirm, keep_config),
+        Some(Commands::Uninstall {
+            confirm,
+            keep_config,
+        }) => cmd_uninstall(confirm, keep_config),
     }
 }
 
@@ -1098,8 +1132,8 @@ pub(crate) fn find_daemon() -> Option<String> {
 /// includes a `Authorization: Bearer <key>` header on every request.
 /// When api_key is empty or missing, no auth header is sent.
 pub(crate) fn daemon_client() -> reqwest::blocking::Client {
-    let mut builder = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120));
+    let mut builder =
+        reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(120));
 
     if let Some(key) = read_api_key() {
         let mut headers = reqwest::header::HeaderMap::new();
@@ -1431,7 +1465,7 @@ decay_rate = 0.05
     }
 }
 
-fn cmd_start(config: Option<PathBuf>) {
+fn cmd_start(config: Option<PathBuf>, yolo: bool) {
     if let Some(base) = find_daemon() {
         ui::error_with_fix(
             &format!("Daemon already running at {base}"),
@@ -1447,7 +1481,12 @@ fn cmd_start(config: Option<PathBuf>) {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let kernel = match OpenFangKernel::boot(config.as_deref()) {
+        let mut kernel_config = openfang_kernel::config::load_config(config.as_deref());
+        if yolo {
+            kernel_config.approval.auto_approve = true;
+            kernel_config.approval.apply_shorthands();
+        }
+        let kernel = match OpenFangKernel::boot_with_config(kernel_config) {
             Ok(k) => k,
             Err(e) => {
                 boot_kernel_error(&e);
@@ -2214,7 +2253,9 @@ decay_rate = 0.05
                     if !json {
                         ui::check_ok(&format!("Port {api_listen} is available"));
                     }
-                    checks.push(serde_json::json!({"check": "port", "status": "ok", "address": api_listen}));
+                    checks.push(
+                        serde_json::json!({"check": "port", "status": "ok", "address": api_listen}),
+                    );
                 }
                 Err(_) => {
                     if !json {
@@ -3145,7 +3186,11 @@ fn cmd_workflow_run(workflow_id: &str, input: &str) {
 fn cmd_workflow_get(workflow_id: &str) {
     let base = require_daemon("workflow get");
     let client = daemon_client();
-    let body = daemon_json(client.get(format!("{base}/api/workflows/{workflow_id}")).send());
+    let body = daemon_json(
+        client
+            .get(format!("{base}/api/workflows/{workflow_id}"))
+            .send(),
+    );
 
     if body.get("error").is_some() {
         eprintln!(
@@ -4110,7 +4155,10 @@ fn cmd_hand_install(path: &str) {
         body["name"].as_str().unwrap_or("?"),
         body["id"].as_str().unwrap_or("?"),
     );
-    println!("Use `openfang hand activate {}` to start it.", body["id"].as_str().unwrap_or("?"));
+    println!(
+        "Use `openfang hand activate {}` to start it.",
+        body["id"].as_str().unwrap_or("?")
+    );
 }
 
 fn cmd_hand_list() {
@@ -4135,10 +4183,7 @@ fn cmd_hand_list() {
             println!("No hands available.");
             return;
         }
-        println!(
-            "{:<14} {:<20} {:<10} DESCRIPTION",
-            "ID", "NAME", "CATEGORY"
-        );
+        println!("{:<14} {:<20} {:<10} DESCRIPTION", "ID", "NAME", "CATEGORY");
         println!("{}", "-".repeat(72));
         for h in arr {
             println!(
@@ -4146,7 +4191,12 @@ fn cmd_hand_list() {
                 h["id"].as_str().unwrap_or("?"),
                 h["name"].as_str().unwrap_or("?"),
                 h["category"].as_str().unwrap_or("?"),
-                h["description"].as_str().unwrap_or("").chars().take(40).collect::<String>(),
+                h["description"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(40)
+                    .collect::<String>(),
             );
         }
         println!("\nUse `openfang hand activate <id>` to activate a hand.");
@@ -4168,10 +4218,7 @@ fn cmd_hand_active() {
         println!("No active hands.");
         return;
     }
-    println!(
-        "{:<38} {:<14} {:<10} AGENT",
-        "INSTANCE", "HAND", "STATUS"
-    );
+    println!("{:<38} {:<14} {:<10} AGENT", "INSTANCE", "HAND", "STATUS");
     println!("{}", "-".repeat(72));
     for i in &arr {
         println!(
@@ -4259,10 +4306,7 @@ fn cmd_hand_info(id: &str) {
     let client = daemon_client();
     let body = daemon_json(client.get(format!("{base}/api/hands/{id}")).send());
     if body.get("error").is_some() {
-        eprintln!(
-            "Hand not found: {}",
-            body["error"].as_str().unwrap_or(id)
-        );
+        eprintln!("Hand not found: {}", body["error"].as_str().unwrap_or(id));
         std::process::exit(1);
     }
     println!(
@@ -4691,6 +4735,8 @@ fn cmd_config_set(key: &str, value: &str) {
         std::process::exit(1);
     });
 
+    let _ = std::fs::copy(&config_path, config_path.with_extension("toml.bak"));
+
     std::fs::write(&config_path, &serialized).unwrap_or_else(|e| {
         ui::error(&format!("Failed to write config: {e}"));
         std::process::exit(1);
@@ -4757,6 +4803,8 @@ fn cmd_config_unset(key: &str) {
         std::process::exit(1);
     });
 
+    let _ = std::fs::copy(&config_path, config_path.with_extension("toml.bak"));
+
     std::fs::write(&config_path, &serialized).unwrap_or_else(|e| {
         ui::error(&format!("Failed to write config: {e}"));
         std::process::exit(1);
@@ -4775,6 +4823,10 @@ fn cmd_config_set_key(provider: &str) {
         return;
     }
 
+    // Try vault first (best-effort)
+    save_credential_prefer_vault(&env_var, &key);
+
+    // Always save to dotenv as fallback
     match dotenv::save_env_key(&env_var, &key) {
         Ok(()) => {
             ui::success(&format!("Saved {env_var} to ~/.openfang/.env"));
@@ -4796,6 +4848,18 @@ fn cmd_config_set_key(provider: &str) {
 
 fn cmd_config_delete_key(provider: &str) {
     let env_var = provider_to_env_var(provider);
+
+    // Remove from vault (best-effort)
+    {
+        let home = openfang_home();
+        let vault_path = home.join("vault.enc");
+        if vault_path.exists() {
+            let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path);
+            if vault.unlock().is_ok() {
+                let _ = vault.remove(&env_var);
+            }
+        }
+    }
 
     match dotenv::remove_env_key(&env_var) {
         Ok(()) => ui::success(&format!("Removed {env_var} from ~/.openfang/.env")),
@@ -4823,6 +4887,26 @@ fn cmd_config_test_key(provider: &str) {
         println!("{}", "FAILED (401/403)".bright_red());
         ui::hint(&format!("Update key: openfang config set-key {provider}"));
         std::process::exit(1);
+    }
+}
+
+/// Try to store a credential in the vault first; silently falls through if vault
+/// is not initialized or cannot be unlocked. The caller should always also
+/// write to dotenv as a fallback.
+fn save_credential_prefer_vault(env_var: &str, value: &str) {
+    use zeroize::Zeroizing;
+
+    let home = openfang_home();
+    let vault_path = home.join("vault.enc");
+    if !vault_path.exists() {
+        return;
+    }
+    let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path);
+    if vault.unlock().is_err() {
+        return;
+    }
+    if let Ok(()) = vault.set(env_var.to_string(), Zeroizing::new(value.to_string())) {
+        println!("  {}", "Also stored in encrypted vault".dimmed());
     }
 }
 
@@ -5581,7 +5665,15 @@ fn cmd_cron_create(agent: &str, spec: &str, prompt: &str, explicit_name: Option<
             .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
             .take(64)
             .collect();
-        format!("{}-{}", agent, if short_prompt.is_empty() { "job" } else { &short_prompt })
+        format!(
+            "{}-{}",
+            agent,
+            if short_prompt.is_empty() {
+                "job"
+            } else {
+                &short_prompt
+            }
+        )
     };
 
     let body = daemon_json(
@@ -6335,10 +6427,7 @@ fn cmd_uninstall(confirm: bool, keep_config: bool) {
         } else {
             match std::fs::remove_dir_all(&openfang_dir) {
                 Ok(()) => ui::success(&format!("Removed {}", openfang_dir.display())),
-                Err(e) => ui::error(&format!(
-                    "Failed to remove {}: {e}",
-                    openfang_dir.display()
-                )),
+                Err(e) => ui::error(&format!("Failed to remove {}: {e}", openfang_dir.display())),
             }
         }
     }
@@ -6347,10 +6436,7 @@ fn cmd_uninstall(confirm: bool, keep_config: bool) {
     if cargo_bin.exists() && exe_path.as_ref().is_none_or(|e| *e != cargo_bin) {
         match std::fs::remove_file(&cargo_bin) {
             Ok(()) => ui::success(&format!("Removed {}", cargo_bin.display())),
-            Err(e) => ui::error(&format!(
-                "Failed to remove {}: {e}",
-                cargo_bin.display()
-            )),
+            Err(e) => ui::error(&format!("Failed to remove {}: {e}", cargo_bin.display())),
         }
     }
 
@@ -6590,7 +6676,10 @@ fn remove_self_binary(exe_path: &std::path::Path) {
             .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
             .spawn();
 
-        ui::success(&format!("Removed {} (deferred cleanup)", exe_path.display()));
+        ui::success(&format!(
+            "Removed {} (deferred cleanup)",
+            exe_path.display()
+        ));
     }
 }
 

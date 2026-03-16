@@ -115,8 +115,7 @@ fn normalize_schema_recursive(schema: &serde_json::Value) -> serde_json::Value {
             if let Some(arr) = value.as_array() {
                 let types: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
                 let has_null = types.contains(&"null");
-                let non_null: Vec<&&str> =
-                    types.iter().filter(|&&t| t != "null").collect();
+                let non_null: Vec<&&str> = types.iter().filter(|&&t| t != "null").collect();
                 if has_null && non_null.len() == 1 {
                     // ["string", "null"] → type: "string", nullable: true
                     result.insert(
@@ -139,10 +138,7 @@ fn normalize_schema_recursive(schema: &serde_json::Value) -> serde_json::Value {
                         serde_json::Value::String(non_null[0].to_string()),
                     );
                     if has_null {
-                        result.insert(
-                            "nullable".to_string(),
-                            serde_json::Value::Bool(true),
-                        );
+                        result.insert("nullable".to_string(), serde_json::Value::Bool(true));
                     }
                     continue;
                 }
@@ -191,10 +187,7 @@ fn resolve_refs(obj: &serde_json::Map<String, serde_json::Value>) -> serde_json:
     result.remove("$defs");
 
     // Recursively replace $ref in the schema
-    fn inline_refs(
-        val: &mut serde_json::Value,
-        defs: &serde_json::Map<String, serde_json::Value>,
-    ) {
+    fn inline_refs(val: &mut serde_json::Value, defs: &serde_json::Map<String, serde_json::Value>) {
         match val {
             serde_json::Value::Object(map) => {
                 // If this object is a $ref, replace it with the definition

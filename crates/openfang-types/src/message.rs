@@ -327,8 +327,12 @@ mod tests {
         match msg.content {
             MessageContent::Blocks(ref b) => {
                 assert_eq!(b.len(), 2);
-                assert!(matches!(&b[0], ContentBlock::Text { text, .. } if text == "What is in this image?"));
-                assert!(matches!(&b[1], ContentBlock::Image { media_type, .. } if media_type == "image/jpeg"));
+                assert!(
+                    matches!(&b[0], ContentBlock::Text { text, .. } if text == "What is in this image?")
+                );
+                assert!(
+                    matches!(&b[1], ContentBlock::Image { media_type, .. } if media_type == "image/jpeg")
+                );
             }
             _ => panic!("Expected blocks content"),
         }

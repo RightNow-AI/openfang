@@ -1633,8 +1633,10 @@ pub struct ChannelsConfig {
     // Wave 5 — Niche & differentiating channels
     /// Mumble text chat configuration (None = disabled).
     pub mumble: Option<MumbleConfig>,
-    /// DingTalk robot configuration (None = disabled).
+    /// DingTalk robot configuration — webhook mode (None = disabled).
     pub dingtalk: Option<DingTalkConfig>,
+    /// DingTalk Stream mode — long-lived WebSocket (None = disabled).
+    pub dingtalk_stream: Option<DingTalkStreamConfig>,
     /// Discourse forum configuration (None = disabled).
     pub discourse: Option<DiscourseConfig>,
     /// Gitter streaming configuration (None = disabled).
@@ -1647,6 +1649,8 @@ pub struct ChannelsConfig {
     pub webhook: Option<WebhookConfig>,
     /// LinkedIn messaging configuration (None = disabled).
     pub linkedin: Option<LinkedInConfig>,
+    /// WeCom/WeChat Work configuration (None = disabled).
+    pub wecom: Option<WeComConfig>,
 }
 
 /// Telegram channel adapter configuration.
@@ -1756,6 +1760,9 @@ pub struct SlackConfig {
     /// Hours to track a thread after last interaction (default: 24).
     #[serde(default = "default_thread_ttl")]
     pub thread_ttl_hours: u64,
+    /// Whether to unfurl (expand previews for) links in messages (default: true).
+    #[serde(default = "default_true")]
+    pub unfurl_links: bool,
 }
 
 impl Default for SlackConfig {
@@ -1768,6 +1775,7 @@ impl Default for SlackConfig {
             overrides: ChannelOverrides::default(),
             auto_thread_reply: true,
             thread_ttl_hours: 24,
+            unfurl_links: true,
         }
     }
 }
@@ -2369,6 +2377,9 @@ impl Default for BlueskyConfig {
 }
 
 /// Feishu/Lark Open Platform channel adapter configuration.
+///
+/// Supports both Feishu (China domestic, `open.feishu.cn`) and Lark
+/// (International, `open.larksuite.com`) via the `region` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FeishuConfig {
@@ -2378,6 +2389,17 @@ pub struct FeishuConfig {
     pub app_secret_env: String,
     /// Port for the incoming webhook.
     pub webhook_port: u16,
+    /// Region: "cn" for Feishu (open.feishu.cn), "intl" for Lark (open.larksuite.com).
+    pub region: String,
+    /// Webhook URL path (default: "/feishu/webhook").
+    pub webhook_path: String,
+    /// Optional verification token for webhook event validation.
+    pub verification_token: Option<String>,
+    /// Env var name holding the encrypt key for event decryption (AES-256-CBC).
+    pub encrypt_key_env: Option<String>,
+    /// Bot name aliases for group-chat @mention detection.
+    #[serde(default)]
+    pub bot_names: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
     /// Per-channel behavior overrides.
@@ -2391,6 +2413,49 @@ impl Default for FeishuConfig {
             app_id: String::new(),
             app_secret_env: "FEISHU_APP_SECRET".to_string(),
             webhook_port: 8453,
+            region: "cn".to_string(),
+            webhook_path: "/feishu/webhook".to_string(),
+            verification_token: None,
+            encrypt_key_env: None,
+            bot_names: Vec::new(),
+            default_agent: None,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
+/// WeCom/WeChat Work channel adapter configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WeComConfig {
+    /// WeCom corp ID.
+    pub corp_id: String,
+    /// WeCom application agent ID.
+    pub agent_id: String,
+    /// Env var name holding the application secret.
+    pub secret_env: String,
+    /// Port for the incoming webhook.
+    pub webhook_port: u16,
+    /// Callback verification token (optional, for URL verification).
+    pub token: Option<String>,
+    /// Encoding AES key for callback (optional, for encrypted mode).
+    pub encoding_aes_key: Option<String>,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for WeComConfig {
+    fn default() -> Self {
+        Self {
+            corp_id: String::new(),
+            agent_id: String::new(),
+            secret_env: "WECOM_SECRET".to_string(),
+            webhook_port: 8454,
+            token: None,
+            encoding_aes_key: None,
             default_agent: None,
             overrides: ChannelOverrides::default(),
         }
@@ -2737,6 +2802,39 @@ impl Default for DingTalkConfig {
             access_token_env: "DINGTALK_ACCESS_TOKEN".to_string(),
             secret_env: "DINGTALK_SECRET".to_string(),
             webhook_port: 8457,
+            default_agent: None,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
+/// DingTalk Stream channel adapter configuration.
+///
+/// Uses the DingTalk Stream Mode (WebSocket long-connection) instead of
+/// the legacy webhook approach. Requires an Enterprise Internal App with
+/// Stream Mode enabled in the DingTalk Open Platform console.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DingTalkStreamConfig {
+    /// Env var holding the App Key (client_id).
+    pub app_key_env: String,
+    /// Env var holding the App Secret (client_secret).
+    pub app_secret_env: String,
+    /// Robot code for outbound batchSend (often same as app_key).
+    pub robot_code_env: String,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for DingTalkStreamConfig {
+    fn default() -> Self {
+        Self {
+            app_key_env: "DINGTALK_APP_KEY".to_string(),
+            app_secret_env: "DINGTALK_APP_SECRET".to_string(),
+            robot_code_env: "DINGTALK_ROBOT_CODE".to_string(),
             default_agent: None,
             overrides: ChannelOverrides::default(),
         }
@@ -3256,6 +3354,26 @@ impl KernelConfig {
                 warnings.push(format!(
                     "DingTalk configured but {} is not set",
                     dt.access_token_env
+                ));
+            }
+        }
+        if let Some(ref ds) = self.channels.dingtalk_stream {
+            if std::env::var(&ds.app_key_env)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                warnings.push(format!(
+                    "DingTalk Stream configured but {} is not set",
+                    ds.app_key_env
+                ));
+            }
+            if std::env::var(&ds.app_secret_env)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                warnings.push(format!(
+                    "DingTalk Stream configured but {} is not set",
+                    ds.app_secret_env
                 ));
             }
         }
@@ -3872,5 +3990,23 @@ mod tests {
             config.provider_api_keys.get("azure").unwrap(),
             "AZURE_OPENAI_KEY"
         );
+    }
+
+    #[test]
+    fn test_slack_config_unfurl_links_defaults_true() {
+        let config: SlackConfig = toml::from_str("").unwrap();
+        assert!(config.unfurl_links);
+    }
+
+    #[test]
+    fn test_slack_config_unfurl_links_explicit_false() {
+        let config: SlackConfig = toml::from_str("unfurl_links = false").unwrap();
+        assert!(!config.unfurl_links);
+    }
+
+    #[test]
+    fn test_slack_config_unfurl_links_explicit_true() {
+        let config: SlackConfig = toml::from_str("unfurl_links = true").unwrap();
+        assert!(config.unfurl_links);
     }
 }

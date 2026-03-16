@@ -675,7 +675,10 @@ fn merge_content(dst: &mut MessageContent, src: MessageContent) {
 /// Convert MessageContent to a Vec<ContentBlock>.
 fn content_to_blocks(content: MessageContent) -> Vec<ContentBlock> {
     match content {
-        MessageContent::Text(s) => vec![ContentBlock::Text { text: s, provider_metadata: None }],
+        MessageContent::Text(s) => vec![ContentBlock::Text {
+            text: s,
+            provider_metadata: None,
+        }],
         MessageContent::Blocks(blocks) => blocks,
     }
 }

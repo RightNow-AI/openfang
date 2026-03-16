@@ -56,6 +56,16 @@ Tests that require a real LLM key will skip gracefully if the env var is absent.
 cargo build --workspace
 ```
 
+### Fast Release Build (for development)
+
+The default `--release` profile uses full LTO and single-codegen-unit, which produces the smallest/fastest binary but is slow to compile. For iterating locally, use the `release-fast` profile instead:
+
+```bash
+cargo build --profile release-fast -p openfang-cli
+```
+
+This cuts link time significantly (thin LTO, 8 codegen units, `opt-level=2`) while still producing a binary fast enough to run integration tests against. Use `--release` only for final binaries or CI.
+
 ### Run All Tests
 
 ```bash

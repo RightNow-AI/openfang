@@ -149,10 +149,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &mut PeersState) {
             .iter()
             .map(|p| {
                 let id_short = if p.node_id.len() > 12 {
-                    format!(
-                        "{}\u{2026}",
-                        openfang_types::truncate_str(&p.node_id, 12)
-                    )
+                    format!("{}\u{2026}", openfang_types::truncate_str(&p.node_id, 12))
                 } else {
                     p.node_id.clone()
                 };
@@ -211,6 +208,9 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}\u{2026}", openfang_types::truncate_str(s, max.saturating_sub(1)))
+        format!(
+            "{}\u{2026}",
+            openfang_types::truncate_str(s, max.saturating_sub(1))
+        )
     }
 }

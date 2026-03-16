@@ -262,7 +262,10 @@ pub async fn probe_model(
     } else {
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        Err(format!("HTTP {status}: {}", crate::str_utils::safe_truncate_str(&body, 200)))
+        Err(format!(
+            "HTTP {status}: {}",
+            crate::str_utils::safe_truncate_str(&body, 200)
+        ))
     }
 }
 

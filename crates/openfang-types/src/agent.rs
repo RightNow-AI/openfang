@@ -117,6 +117,13 @@ impl AgentId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+
+    /// Create a deterministic AgentId from a string using SHA-1 namespace.
+    /// Useful for hand agents that need stable IDs across restarts.
+    pub fn from_string(s: &str) -> Self {
+        const NAMESPACE: Uuid = Uuid::NAMESPACE_DNS;
+        Self(Uuid::new_v5(&NAMESPACE, s.as_bytes()))
+    }
 }
 
 impl Default for AgentId {

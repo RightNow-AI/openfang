@@ -234,9 +234,12 @@ impl CronScheduler {
                 if !entry.value().job.enabled {
                     // Re-enable jobs that were auto-disabled due to the stale
                     // agent ID causing repeated failures.
-                    if entry.value().last_status.as_deref().is_some_and(|s| {
-                        s.contains("not found") || s.contains("No such agent")
-                    }) {
+                    if entry
+                        .value()
+                        .last_status
+                        .as_deref()
+                        .is_some_and(|s| s.contains("not found") || s.contains("No such agent"))
+                    {
                         entry.value_mut().job.enabled = true;
                         entry.value_mut().job.next_run =
                             Some(compute_next_run(&entry.value().job.schedule));
@@ -348,8 +351,7 @@ impl CronScheduler {
                 );
                 meta.job.enabled = false;
             } else {
-                meta.job.next_run =
-                    Some(compute_next_run_after(&meta.job.schedule, Utc::now()));
+                meta.job.next_run = Some(compute_next_run_after(&meta.job.schedule, Utc::now()));
             }
         }
     }
@@ -1094,7 +1096,10 @@ mod tests {
         sched.reassign_agent_jobs(old_agent, new_agent);
 
         let meta = sched.get_meta(id).unwrap();
-        assert!(meta.job.enabled, "Job should be re-enabled after reassignment");
+        assert!(
+            meta.job.enabled,
+            "Job should be re-enabled after reassignment"
+        );
         assert_eq!(meta.consecutive_errors, 0);
         assert_eq!(meta.job.agent_id, new_agent);
     }

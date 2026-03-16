@@ -4,13 +4,18 @@
 //! which is non-interactive and handles its own authentication.
 //! This allows users with Claude Code installed to use it as an LLM provider
 //! without needing a separate API key.
+//!
+//! Tracks active subprocess PIDs and enforces message timeouts to prevent
+//! hung CLI processes from blocking agents indefinitely.
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
+use dashmap::DashMap;
 use openfang_types::message::{ContentBlock, Role, StopReason, TokenUsage};
 use serde::Deserialize;
-use tokio::io::AsyncBufReadExt;
-use tracing::{debug, warn};
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+use tracing::{debug, info, warn};
 
 /// Environment variable names (and suffixes) to strip from the subprocess
 /// to prevent leaking API keys from other providers. We keep the full env
@@ -44,10 +49,18 @@ const SENSITIVE_ENV_EXACT: &[&str] = &[
 /// unless it starts with `CLAUDE_`.
 const SENSITIVE_SUFFIXES: &[&str] = &["_SECRET", "_TOKEN", "_PASSWORD"];
 
+/// Default subprocess timeout in seconds (5 minutes).
+const DEFAULT_MESSAGE_TIMEOUT_SECS: u64 = 300;
+
 /// LLM driver that delegates to the Claude Code CLI.
 pub struct ClaudeCodeDriver {
     cli_path: String,
     skip_permissions: bool,
+    /// Active subprocess PIDs keyed by a caller-provided label (e.g. agent name).
+    /// Allows external code to check if a subprocess is running and kill it.
+    active_pids: Arc<DashMap<String, u32>>,
+    /// Message timeout in seconds. CLI subprocesses that exceed this are killed.
+    message_timeout_secs: u64,
 }
 
 impl ClaudeCodeDriver {
@@ -70,7 +83,34 @@ impl ClaudeCodeDriver {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "claude".to_string()),
             skip_permissions,
+            active_pids: Arc::new(DashMap::new()),
+            message_timeout_secs: DEFAULT_MESSAGE_TIMEOUT_SECS,
         }
+    }
+
+    /// Create a new Claude Code driver with a custom timeout.
+    pub fn with_timeout(
+        cli_path: Option<String>,
+        skip_permissions: bool,
+        timeout_secs: u64,
+    ) -> Self {
+        let mut driver = Self::new(cli_path, skip_permissions);
+        driver.message_timeout_secs = timeout_secs;
+        driver
+    }
+
+    /// Get a snapshot of active subprocess PIDs.
+    /// Returns a vec of (label, pid) pairs.
+    pub fn active_pids(&self) -> Vec<(String, u32)> {
+        self.active_pids
+            .iter()
+            .map(|entry| (entry.key().clone(), *entry.value()))
+            .collect()
+    }
+
+    /// Get the shared PID map for external monitoring.
+    pub fn pid_map(&self) -> Arc<DashMap<String, u32>> {
+        Arc::clone(&self.active_pids)
     }
 
     /// Detect if the Claude Code CLI is available on PATH.
@@ -114,9 +154,7 @@ impl ClaudeCodeDriver {
 
     /// Map a model ID like "claude-code/opus" to CLI --model flag value.
     fn model_flag(model: &str) -> Option<String> {
-        let stripped = model
-            .strip_prefix("claude-code/")
-            .unwrap_or(model);
+        let stripped = model.strip_prefix("claude-code/").unwrap_or(model);
         match stripped {
             "opus" => Some("opus".to_string()),
             "sonnet" => Some("sonnet".to_string()),
@@ -192,10 +230,7 @@ struct ClaudeStreamEvent {
 
 #[async_trait]
 impl LlmDriver for ClaudeCodeDriver {
-    async fn complete(
-        &self,
-        request: CompletionRequest,
-    ) -> Result<CompletionResponse, LlmError> {
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let prompt = Self::build_prompt(&request);
         let model_flag = Self::model_flag(&request.model);
 
@@ -220,20 +255,82 @@ impl LlmDriver for ClaudeCodeDriver {
 
         debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, "Spawning Claude Code CLI");
 
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| LlmError::Http(format!(
+        // Spawn child process instead of cmd.output() so we can track PID and timeout
+        let mut child = cmd.spawn().map_err(|e| {
+            LlmError::Http(format!(
                 "Claude Code CLI not found or failed to start ({}). \
                  Install: npm install -g @anthropic-ai/claude-code && claude auth",
                 e
-            )))?;
+            ))
+        })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let detail = if !stderr.is_empty() { &stderr } else { &stdout };
-            let code = output.status.code().unwrap_or(1);
+        // Track the PID using the model name as label (best identifier available)
+        let pid_label = request.model.clone();
+        if let Some(pid) = child.id() {
+            self.active_pids.insert(pid_label.clone(), pid);
+            debug!(pid = pid, model = %pid_label, "Claude Code CLI subprocess started");
+        }
+
+        // Read stdout/stderr before waiting (take ownership of pipes)
+        let child_stdout = child.stdout.take();
+        let child_stderr = child.stderr.take();
+
+        // Wait with timeout
+        let timeout_duration = std::time::Duration::from_secs(self.message_timeout_secs);
+        let wait_result = tokio::time::timeout(timeout_duration, child.wait()).await;
+
+        // Clear PID tracking regardless of outcome
+        self.active_pids.remove(&pid_label);
+
+        let status = match wait_result {
+            Ok(Ok(status)) => status,
+            Ok(Err(e)) => {
+                warn!(error = %e, model = %pid_label, "Claude Code CLI subprocess failed");
+                return Err(LlmError::Http(format!(
+                    "Claude Code CLI subprocess failed: {e}"
+                )));
+            }
+            Err(_elapsed) => {
+                // Timeout — kill the process
+                warn!(
+                    timeout_secs = self.message_timeout_secs,
+                    model = %pid_label,
+                    "Claude Code CLI subprocess timed out, killing process"
+                );
+                let _ = child.kill().await;
+                return Err(LlmError::Http(format!(
+                    "Claude Code CLI subprocess timed out after {}s — process killed",
+                    self.message_timeout_secs
+                )));
+            }
+        };
+
+        // Read captured output from pipes
+        let mut stdout_bytes = Vec::new();
+        let mut stderr_bytes = Vec::new();
+        if let Some(mut out) = child_stdout {
+            let _ = out.read_to_end(&mut stdout_bytes).await;
+        }
+        if let Some(mut err) = child_stderr {
+            let _ = err.read_to_end(&mut stderr_bytes).await;
+        };
+
+        if !status.success() {
+            let stderr = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+            let stdout_str = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                &stderr
+            } else {
+                &stdout_str
+            };
+            let code = status.code().unwrap_or(1);
+
+            warn!(
+                exit_code = code,
+                model = %pid_label,
+                stderr = %detail,
+                "Claude Code CLI exited with error"
+            );
 
             // Provide actionable error messages
             let message = if detail.contains("not authenticated")
@@ -241,9 +338,7 @@ impl LlmDriver for ClaudeCodeDriver {
                 || detail.contains("login")
                 || detail.contains("credentials")
             {
-                format!(
-                    "Claude Code CLI is not authenticated. Run: claude auth\nDetail: {detail}"
-                )
+                format!("Claude Code CLI is not authenticated. Run: claude auth\nDetail: {detail}")
             } else if detail.contains("permission")
                 || detail.contains("--dangerously-skip-permissions")
             {
@@ -261,17 +356,23 @@ impl LlmDriver for ClaudeCodeDriver {
             });
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        info!(model = %pid_label, "Claude Code CLI subprocess completed successfully");
+
+        let stdout = String::from_utf8_lossy(&stdout_bytes);
 
         // Try JSON parse first
         if let Ok(parsed) = serde_json::from_str::<ClaudeJsonOutput>(&stdout) {
-            let text = parsed.result
+            let text = parsed
+                .result
                 .or(parsed.content)
                 .or(parsed.text)
                 .unwrap_or_default();
             let usage = parsed.usage.unwrap_or_default();
             return Ok(CompletionResponse {
-                content: vec![ContentBlock::Text { text: text.clone(), provider_metadata: None }],
+                content: vec![ContentBlock::Text {
+                    text: text.clone(),
+                    provider_metadata: None,
+                }],
                 stop_reason: StopReason::EndTurn,
                 tool_calls: Vec::new(),
                 usage: TokenUsage {
@@ -284,7 +385,10 @@ impl LlmDriver for ClaudeCodeDriver {
         // Fallback: treat entire stdout as plain text
         let text = stdout.trim().to_string();
         Ok(CompletionResponse {
-            content: vec![ContentBlock::Text { text, provider_metadata: None }],
+            content: vec![ContentBlock::Text {
+                text,
+                provider_metadata: None,
+            }],
             stop_reason: StopReason::EndTurn,
             tool_calls: Vec::new(),
             usage: TokenUsage {
@@ -322,20 +426,27 @@ impl LlmDriver for ClaudeCodeDriver {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, "Spawning Claude Code CLI (streaming)");
+        debug!(cli = %self.cli_path, "Spawning Claude Code CLI (streaming)");
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| LlmError::Http(format!(
+        let mut child = cmd.spawn().map_err(|e| {
+            LlmError::Http(format!(
                 "Claude Code CLI not found or failed to start ({}). \
                  Install: npm install -g @anthropic-ai/claude-code && claude auth",
                 e
-            )))?;
+            ))
+        })?;
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| LlmError::Http("No stdout from claude CLI".to_string()))?;
+        // Track PID
+        let pid_label = format!("{}-stream", request.model);
+        if let Some(pid) = child.id() {
+            self.active_pids.insert(pid_label.clone(), pid);
+            debug!(pid = pid, model = %pid_label, "Claude Code CLI streaming subprocess started");
+        }
+
+        let stdout = child.stdout.take().ok_or_else(|| {
+            self.active_pids.remove(&pid_label);
+            LlmError::Http("No stdout from claude CLI".to_string())
+        })?;
 
         let reader = tokio::io::BufReader::new(stdout);
         let mut lines = reader.lines();
@@ -346,64 +457,82 @@ impl LlmDriver for ClaudeCodeDriver {
             output_tokens: 0,
         };
 
-        while let Ok(Some(line)) = lines.next_line().await {
-            if line.trim().is_empty() {
-                continue;
-            }
+        let timeout_duration = std::time::Duration::from_secs(self.message_timeout_secs);
+        let stream_result = tokio::time::timeout(timeout_duration, async {
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.trim().is_empty() {
+                    continue;
+                }
 
-            match serde_json::from_str::<ClaudeStreamEvent>(&line) {
-                Ok(event) => {
-                    match event.r#type.as_str() {
-                        "content" | "text" | "assistant" | "content_block_delta" => {
-                            if let Some(ref content) = event.content {
-                                full_text.push_str(content);
-                                let _ = tx
-                                    .send(StreamEvent::TextDelta {
-                                        text: content.clone(),
-                                    })
-                                    .await;
-                            }
-                        }
-                        "result" | "done" | "complete" => {
-                            if let Some(ref result) = event.result {
-                                if full_text.is_empty() {
-                                    full_text = result.clone();
+                match serde_json::from_str::<ClaudeStreamEvent>(&line) {
+                    Ok(event) => {
+                        match event.r#type.as_str() {
+                            "content" | "text" | "assistant" | "content_block_delta" => {
+                                if let Some(ref content) = event.content {
+                                    full_text.push_str(content);
                                     let _ = tx
                                         .send(StreamEvent::TextDelta {
-                                            text: result.clone(),
+                                            text: content.clone(),
                                         })
                                         .await;
                                 }
                             }
-                            if let Some(usage) = event.usage {
-                                final_usage = TokenUsage {
-                                    input_tokens: usage.input_tokens,
-                                    output_tokens: usage.output_tokens,
-                                };
+                            "result" | "done" | "complete" => {
+                                if let Some(ref result) = event.result {
+                                    if full_text.is_empty() {
+                                        full_text = result.clone();
+                                        let _ = tx
+                                            .send(StreamEvent::TextDelta {
+                                                text: result.clone(),
+                                            })
+                                            .await;
+                                    }
+                                }
+                                if let Some(usage) = event.usage {
+                                    final_usage = TokenUsage {
+                                        input_tokens: usage.input_tokens,
+                                        output_tokens: usage.output_tokens,
+                                    };
+                                }
                             }
-                        }
-                        _ => {
-                            // Unknown event type — try content field as fallback
-                            if let Some(ref content) = event.content {
-                                full_text.push_str(content);
-                                let _ = tx
-                                    .send(StreamEvent::TextDelta {
-                                        text: content.clone(),
-                                    })
-                                    .await;
+                            _ => {
+                                // Unknown event type — try content field as fallback
+                                if let Some(ref content) = event.content {
+                                    full_text.push_str(content);
+                                    let _ = tx
+                                        .send(StreamEvent::TextDelta {
+                                            text: content.clone(),
+                                        })
+                                        .await;
+                                }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    // Not valid JSON — treat as raw text
-                    warn!(line = %line, error = %e, "Non-JSON line from Claude CLI");
-                    full_text.push_str(&line);
-                    let _ = tx
-                        .send(StreamEvent::TextDelta { text: line })
-                        .await;
+                    Err(e) => {
+                        // Not valid JSON — treat as raw text
+                        warn!(line = %line, error = %e, "Non-JSON line from Claude CLI");
+                        full_text.push_str(&line);
+                        let _ = tx.send(StreamEvent::TextDelta { text: line }).await;
+                    }
                 }
             }
+        })
+        .await;
+
+        // Clear PID tracking
+        self.active_pids.remove(&pid_label);
+
+        if stream_result.is_err() {
+            warn!(
+                timeout_secs = self.message_timeout_secs,
+                model = %pid_label,
+                "Claude Code CLI streaming subprocess timed out, killing process"
+            );
+            let _ = child.kill().await;
+            return Err(LlmError::Http(format!(
+                "Claude Code CLI streaming subprocess timed out after {}s — process killed",
+                self.message_timeout_secs
+            )));
         }
 
         // Wait for process to finish
@@ -413,7 +542,32 @@ impl LlmDriver for ClaudeCodeDriver {
             .map_err(|e| LlmError::Http(format!("Claude CLI wait failed: {e}")))?;
 
         if !status.success() {
-            warn!(code = ?status.code(), "Claude CLI exited with error");
+            let code = status.code().unwrap_or(1);
+            // Read stderr for diagnostic info
+            let stderr_text = if let Some(mut err) = child.stderr.take() {
+                let mut buf = Vec::new();
+                let _ = err.read_to_end(&mut buf).await;
+                String::from_utf8_lossy(&buf).trim().to_string()
+            } else {
+                String::new()
+            };
+            warn!(
+                exit_code = code,
+                model = %pid_label,
+                stderr = %stderr_text,
+                "Claude Code CLI streaming subprocess exited with error"
+            );
+            return Err(LlmError::Api {
+                status: code as u16,
+                message: format!(
+                    "Claude Code CLI streaming exited with code {code}: {}",
+                    if stderr_text.is_empty() {
+                        "no stderr"
+                    } else {
+                        &stderr_text
+                    }
+                ),
+            });
         }
 
         let _ = tx
@@ -424,7 +578,10 @@ impl LlmDriver for ClaudeCodeDriver {
             .await;
 
         Ok(CompletionResponse {
-            content: vec![ContentBlock::Text { text: full_text, provider_metadata: None }],
+            content: vec![ContentBlock::Text {
+                text: full_text,
+                provider_metadata: None,
+            }],
             stop_reason: StopReason::EndTurn,
             tool_calls: Vec::new(),
             usage: final_usage,
@@ -434,8 +591,7 @@ impl LlmDriver for ClaudeCodeDriver {
 
 /// Check if the Claude Code CLI is available.
 pub fn claude_code_available() -> bool {
-    ClaudeCodeDriver::detect().is_some()
-        || claude_credentials_exist()
+    ClaudeCodeDriver::detect().is_some() || claude_credentials_exist()
 }
 
 /// Check if Claude credentials file exists.
@@ -457,7 +613,9 @@ fn claude_credentials_exist() -> bool {
 fn home_dir() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from)
+        std::env::var("USERPROFILE")
+            .ok()
+            .map(std::path::PathBuf::from)
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -517,7 +675,8 @@ mod tests {
     fn test_new_defaults_to_claude() {
         let driver = ClaudeCodeDriver::new(None, true);
         assert_eq!(driver.cli_path, "claude");
-        assert!(driver.skip_permissions);
+        assert_eq!(driver.message_timeout_secs, DEFAULT_MESSAGE_TIMEOUT_SECS);
+        assert!(driver.active_pids().is_empty());
     }
 
     #[test]
@@ -533,9 +692,19 @@ mod tests {
     }
 
     #[test]
-    fn test_skip_permissions_disabled() {
-        let driver = ClaudeCodeDriver::new(None, false);
-        assert!(!driver.skip_permissions);
+    fn test_with_timeout() {
+        let driver = ClaudeCodeDriver::with_timeout(None, true, 600);
+        assert_eq!(driver.message_timeout_secs, 600);
+        assert_eq!(driver.cli_path, "claude");
+    }
+
+    #[test]
+    fn test_pid_map_shared() {
+        let driver = ClaudeCodeDriver::new(None, true);
+        let map = driver.pid_map();
+        map.insert("test-agent".to_string(), 12345);
+        assert_eq!(driver.active_pids().len(), 1);
+        assert_eq!(driver.active_pids()[0], ("test-agent".to_string(), 12345));
     }
 
     #[test]

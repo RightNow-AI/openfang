@@ -456,10 +456,18 @@ impl ChannelAdapter for MastodonAdapter {
                 let notifications: Vec<serde_json::Value> =
                     poll_resp.json().await.unwrap_or_default();
 
-                for notif in &notifications {
-                    if let Some(nid) = notif["id"].as_str() {
+                // Mastodon returns notifications newest-first. Record the first
+                // (highest) ID before processing so we never re-fetch these on
+                // the next poll. Updating inside the loop would leave us with
+                // the oldest ID, causing every previously seen notification to
+                // be re-delivered and re-processed.
+                if let Some(newest) = notifications.first() {
+                    if let Some(nid) = newest["id"].as_str() {
                         last_notification_id = Some(nid.to_string());
                     }
+                }
+
+                for notif in &notifications {
                     if let Some(msg) = parse_mastodon_notification(notif, &own_account_id) {
                         if tx.send(msg).await.is_err() {
                             return;
@@ -516,6 +524,10 @@ impl ChannelAdapter for MastodonAdapter {
     async fn send_typing(&self, _user: &ChannelUser) -> Result<(), Box<dyn std::error::Error>> {
         // Mastodon does not support typing indicators
         Ok(())
+    }
+
+    fn suppress_error_responses(&self) -> bool {
+        true
     }
 
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
