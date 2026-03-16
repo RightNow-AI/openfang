@@ -49,6 +49,7 @@ pub mod gitter;
 pub mod gotify;
 pub mod linkedin;
 pub mod mumble;
+pub mod mqtt;
 pub mod ntfy;
 pub mod webhook;
 pub mod wecom;

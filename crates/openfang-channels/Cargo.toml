@@ -39,6 +39,7 @@ lettre = { workspace = true }
 imap = { workspace = true }
 native-tls = { workspace = true }
 mailparse = { workspace = true }
+rumqttc = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

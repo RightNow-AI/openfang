@@ -51,6 +51,7 @@ use openfang_channels::gitter::GitterAdapter;
 use openfang_channels::gotify::GotifyAdapter;
 use openfang_channels::linkedin::LinkedInAdapter;
 use openfang_channels::mumble::MumbleAdapter;
+use openfang_channels::mqtt::MqttAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_channels::wecom::WeComAdapter;
@@ -812,6 +813,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             "webhook" => channels.webhook.as_ref().map(|c| c.overrides.clone()),
             "linkedin" => channels.linkedin.as_ref().map(|c| c.overrides.clone()),
             "wecom" => channels.wecom.as_ref().map(|c| c.overrides.clone()),
+            "mqtt" => channels.mqtt.as_ref().map(|c| c.overrides.clone()),
             _ => None,
         }
     }
@@ -1722,6 +1724,25 @@ pub async fn start_channel_bridge_with_config(
             ));
             adapters.push((adapter, li_config.default_agent.clone()));
         }
+    }
+
+    // MQTT
+    if let Some(ref mq_config) = config.mqtt {
+        let username = read_token(&mq_config.username_env, "MQTT (username)");
+        let password = read_token(&mq_config.password_env, "MQTT (password)");
+        let adapter = Arc::new(MqttAdapter::new(
+            mq_config.broker_url.clone(),
+            mq_config.client_id.clone(),
+            mq_config.subscribe_topic.clone(),
+            mq_config.publish_topic.clone(),
+            username,
+            password,
+            mq_config.use_tls,
+            mq_config.keep_alive_secs,
+            mq_config.clean_session,
+            mq_config.qos,
+        ));
+        adapters.push((adapter, mq_config.default_agent.clone()));
     }
 
     if adapters.is_empty() {

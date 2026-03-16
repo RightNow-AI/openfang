@@ -145,6 +145,9 @@ imap = "2"
 native-tls = { version = "0.2", features = ["vendored"] }
 mailparse = "0.16"
 
+# MQTT client
+rumqttc = "0.24"
+
 # OpenSSL (vendored = statically compiled, no runtime libssl dependency on Linux)
 openssl = { version = "0.10", features = ["vendored"] }
 

@@ -1702,6 +1702,8 @@ pub struct ChannelsConfig {
     pub linkedin: Option<LinkedInConfig>,
     /// WeCom/WeChat Work configuration (None = disabled).
     pub wecom: Option<WeComConfig>,
+    /// MQTT pub/sub configuration (None = disabled).
+    pub mqtt: Option<MqttConfig>,
 }
 
 /// Telegram channel adapter configuration.
@@ -2552,6 +2554,7 @@ pub struct WeChatConfig {
     pub cdn_base_url: Option<String>,
     /// Directory for persisted bot token and sync cursor.
     pub state_dir: Option<String>,
+
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
@@ -2568,6 +2571,59 @@ impl Default for WeChatConfig {
             api_base_url: None,
             cdn_base_url: None,
             state_dir: None,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
+/// MQTT channel adapter configuration.
+///
+/// Provides a generic MQTT pub/sub interface for IoT and messaging integration.
+/// Supports standard MQTT 3.1.1/5.0 brokers with optional TLS and authentication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MqttConfig {
+    /// MQTT broker URL (e.g., `"tcp://broker.hivemq.com:1883"` or `"ssl://broker.example.com:8883"`).
+    pub broker_url: String,
+    /// Client identifier (empty = auto-generated).
+    pub client_id: String,
+    /// Topic to subscribe to for incoming messages.
+    pub subscribe_topic: String,
+    /// Topic to publish responses to (empty = same as subscribe_topic).
+    pub publish_topic: String,
+    /// Env var name holding the username (optional).
+    pub username_env: String,
+    /// Env var name holding the password (optional).
+    pub password_env: String,
+    /// Use TLS/SSL connection.
+    pub use_tls: bool,
+    /// Keep-alive interval in seconds.
+    pub keep_alive_secs: u16,
+    /// Clean session flag.
+    pub clean_session: bool,
+    /// QoS level for subscriptions (0, 1, or 2).
+    pub qos: u8,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for MqttConfig {
+    fn default() -> Self {
+        Self {
+            broker_url: "tcp://broker.hivemq.com:1883".to_string(),
+            client_id: String::new(),
+            subscribe_topic: "openfang/inbox".to_string(),
+            publish_topic: String::new(),
+            username_env: "MQTT_USERNAME".to_string(),
+            password_env: "MQTT_PASSWORD".to_string(),
+            use_tls: false,
+            keep_alive_secs: 60,
+            clean_session: true,
+            qos: 1,
+            default_agent: None,
             overrides: ChannelOverrides::default(),
         }
     }

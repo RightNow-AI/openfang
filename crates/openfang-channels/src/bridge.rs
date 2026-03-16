@@ -482,6 +482,7 @@ fn channel_type_str(channel: &crate::types::ChannelType) -> &str {
         crate::types::ChannelType::WebChat => "webchat",
         crate::types::ChannelType::CLI => "cli",
         crate::types::ChannelType::Custom(s) => s.as_str(),
+        _ => "unknown",
     }
 }
 
