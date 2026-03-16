@@ -119,6 +119,47 @@ ls -t config.toml.bak-* 2>/dev/null | tail -n +6 | xargs rm -f
 
 Expected: Only 5 most recent backups remain
 
+### Task 2.5: Update openfang-daemon Script Port
+
+**Files:**
+- Modify: `~/.openfang/bin/openfang-daemon:76`
+
+- [ ] **Step 1: Backup openfang-daemon script**
+
+```bash
+cp ~/.openfang/bin/openfang-daemon ~/.openfang/bin/openfang-daemon.bak
+```
+
+Expected: Backup created
+
+- [ ] **Step 2: Update hardcoded port in health check**
+
+In `~/.openfang/bin/openfang-daemon` around line 76, find:
+```python
+base_url = "http://127.0.0.1:50051"
+```
+
+Change to:
+```python
+base_url = "http://127.0.0.1:4200"
+```
+
+Use sed:
+```bash
+sed -i.tmp 's|http://127.0.0.1:50051|http://127.0.0.1:4200|g' ~/.openfang/bin/openfang-daemon
+rm ~/.openfang/bin/openfang-daemon.tmp
+```
+
+- [ ] **Step 3: Verify change**
+
+Run: `grep "127.0.0.1:4200" ~/.openfang/bin/openfang-daemon`
+Expected: Shows the updated URL
+
+- [ ] **Step 4: Verify script syntax**
+
+Run: `bash -n ~/.openfang/bin/openfang-daemon`
+Expected: No output (syntax OK)
+
 ### Task 3: Clean Up Zombie Processes
 
 **Files:**
@@ -215,7 +256,7 @@ Expected: Backup created
 
 - [ ] **Step 3: Update plist with improved configuration**
 
-Create new plist content:
+Replace the entire plist file with:
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -265,6 +306,11 @@ Create new plist content:
 </dict>
 </plist>
 ```
+
+**Key changes from current plist:**
+- Changed `KeepAlive` from `<true/>` to dict with `SuccessfulExit=false, Crashed=true`
+- Added `ThrottleInterval=60` to prevent rapid restart loops
+- Added `ProcessType=Background`
 
 Write to: `~/Library/LaunchAgents/ai.openfang.daemon.plist`
 
@@ -356,23 +402,40 @@ Expected: Builds successfully
 Run: `ls -lh target/release/openfang`
 Expected: Shows binary file (~39M)
 
-- [ ] **Step 3: Wait for service to start**
+- [ ] **Step 3: Wait for service to start and check logs**
 
 ```bash
-sleep 6
+sleep 10
+tail -20 ~/Library/Logs/openfang-daemon.err.log
 ```
 
-Expected: Daemon has time to initialize
+Expected: No critical errors, daemon initializing
 
-- [ ] **Step 4: Check if daemon is running**
+- [ ] **Step 4: Verify .env symlink exists**
 
-Run: `ps aux | grep "openfang start" | grep -v grep`
+Run: `ls -la ~/.openfang/.env && readlink ~/.openfang/.env`
+Expected: Shows symlink to secrets.env
+
+- [ ] **Step 5: Check if daemon is running**
+
+Run: `ps aux | grep "openfang" | grep -v grep`
 Expected: Shows running process
 
-- [ ] **Step 5: Verify daemon.json was created**
+- [ ] **Step 6: Verify daemon.json was created**
 
-Run: `cat ~/.openfang/daemon.json`
-Expected: Shows JSON with pid, listen_addr (4200), version
+Run: `cat ~/.openfang/daemon.json 2>/dev/null || echo "Not created yet - check logs"`
+Expected: Shows JSON with pid, listen_addr (4200), version OR "Not created yet"
+
+- [ ] **Step 7: If daemon.json missing, diagnose**
+
+```bash
+if [ ! -f ~/.openfang/daemon.json ]; then
+  echo "Checking error logs:"
+  tail -50 ~/Library/Logs/openfang-daemon.err.log
+fi
+```
+
+Expected: Shows diagnostic info if startup failed
 
 ### Task 7: Run Integration Tests
 
@@ -484,15 +547,15 @@ Expected: No warnings
 - [ ] **Step 3: Verify all acceptance criteria**
 
 Checklist:
-- [x] Code compiles without errors or warnings
-- [x] All unit tests pass
-- [x] API responds on port 4200
-- [x] Real LLM call succeeds
-- [x] Budget tracking works
-- [x] launchd service running
-- [x] Health check script passes
-- [x] Logs recording properly
-- [x] Auto-restart works after crash
+- [ ] Code compiles without errors or warnings
+- [ ] All unit tests pass
+- [ ] API responds on port 4200
+- [ ] Real LLM call succeeds
+- [ ] Budget tracking works
+- [ ] launchd service running
+- [ ] Health check script passes
+- [ ] Logs recording properly
+- [ ] Auto-restart works after crash
 
 - [ ] **Step 4: Create final commit**
 
