@@ -1647,7 +1647,8 @@ pub async fn start_channel_bridge_with_config(
                     "{} default agent: {name} ({agent_id}) [channel: {channel_key}]",
                     adapter.name()
                 );
-                router.set_channel_default(channel_key, agent_id);
+                // Store both agent ID and name for auto-refresh on agent respawn
+                router.set_channel_default_with_name(channel_key, agent_id, name.clone());
                 // First configured default also becomes system-wide fallback
                 if !system_default_set {
                     router.set_default(agent_id);
@@ -1657,13 +1658,15 @@ pub async fn start_channel_bridge_with_config(
         }
     }
 
+    // Register all known agents in the router's name cache so binding and
+    // broadcast resolution work even when no spawn events arrive afterwards.
+    for entry in kernel.registry.list() {
+        router.register_agent(entry.name.clone(), entry.id);
+    }
+
     // Load bindings and broadcast config from kernel
     let bindings = kernel.list_bindings();
     if !bindings.is_empty() {
-        // Register all known agents in the router's name cache for binding resolution
-        for entry in kernel.registry.list() {
-            router.register_agent(entry.name.clone(), entry.id);
-        }
         router.load_bindings(&bindings);
         info!(count = bindings.len(), "Loaded agent bindings into router");
     }
@@ -1674,7 +1677,7 @@ pub async fn start_channel_bridge_with_config(
         started_at: Instant::now(),
     });
     let router = Arc::new(router);
-    let mut manager = BridgeManager::new(bridge_handle, router);
+    let mut manager = BridgeManager::new(bridge_handle, router.clone());
 
     let mut started_names = Vec::new();
     for (adapter, _) in adapters {
@@ -1699,6 +1702,54 @@ pub async fn start_channel_bridge_with_config(
     if started_names.is_empty() {
         (None, Vec::new())
     } else {
+        let kernel_clone = kernel.clone();
+        let router_clone = router.clone();
+        let mut shutdown = manager.subscribe_shutdown();
+        info!("Starting agent lifecycle event listener for channel router auto-refresh");
+        tokio::spawn(async move {
+            use openfang_types::event::{EventPayload, LifecycleEvent};
+            let mut event_rx = kernel_clone.event_bus.subscribe_all();
+            info!("Agent lifecycle event listener started, waiting for events...");
+
+            loop {
+                tokio::select! {
+                    recv = event_rx.recv() => match recv {
+                        Ok(event) => {
+                            if let EventPayload::Lifecycle(LifecycleEvent::Spawned { agent_id, name }) = event.payload {
+                                info!(
+                                    agent = %name,
+                                    id = %agent_id,
+                                    "Received agent spawned event"
+                                );
+
+                                router_clone.register_agent(name.clone(), agent_id);
+                                for channel_key in router_clone.refresh_channel_defaults_for_agent(&name, agent_id) {
+                                    info!(
+                                        channel = channel_key,
+                                        agent = %name,
+                                        new_id = %agent_id,
+                                        "Updated channel default agent ID after respawn"
+                                    );
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(skipped, "Agent lifecycle event listener lagged, some events skipped");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            info!("Event bus closed, stopping agent lifecycle listener");
+                            break;
+                        }
+                    },
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() {
+                            info!("Stopping agent lifecycle listener for channel bridge");
+                            break;
+                        }
+                    }
+                }
+            }
+        });
         (Some(manager), started_names)
     }
 }
@@ -1718,6 +1769,7 @@ pub async fn reload_channels_from_disk(
         }
         *guard = None;
     }
+    state.kernel.channel_adapters.clear();
 
     // Re-read secrets.env so new API tokens are available in std::env
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");

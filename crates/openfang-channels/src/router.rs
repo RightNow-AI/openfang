@@ -94,6 +94,27 @@ impl AgentRouter {
             .insert(channel_key.to_string(), new_agent_id);
     }
 
+    /// Refresh all channel defaults that point at the given agent name.
+    ///
+    /// Returns the channel keys that were updated so callers can log precisely
+    /// which routes moved to the new agent ID.
+    pub fn refresh_channel_defaults_for_agent(
+        &self,
+        agent_name: &str,
+        new_agent_id: AgentId,
+    ) -> Vec<String> {
+        let mut updated = Vec::new();
+        for entry in self.channel_default_names.iter() {
+            if entry.value() == agent_name {
+                let channel_key = entry.key().clone();
+                self.channel_defaults
+                    .insert(channel_key.clone(), new_agent_id);
+                updated.push(channel_key);
+            }
+        }
+        updated
+    }
+
     /// Set a user's default agent.
     pub fn set_user_default(&self, user_key: String, agent_id: AgentId) {
         self.user_defaults.insert(user_key, agent_id);
@@ -567,6 +588,40 @@ mod tests {
         // WhatsApp has no channel default — falls to system default
         let resolved = router.resolve(&ChannelType::WhatsApp, "user1", None);
         assert_eq!(resolved, Some(system_default));
+    }
+
+    #[test]
+    fn test_refresh_channel_defaults_for_agent_updates_custom_channels() {
+        let router = AgentRouter::new();
+        let old_id = AgentId::new();
+        let new_id = AgentId::new();
+
+        router.set_channel_default_with_name(
+            "Custom(\"bluesky\")".to_string(),
+            old_id,
+            "social-bot".to_string(),
+        );
+        router.set_channel_default_with_name(
+            "Telegram".to_string(),
+            old_id,
+            "social-bot".to_string(),
+        );
+        router.set_channel_default_with_name(
+            "Discord".to_string(),
+            AgentId::new(),
+            "ops-bot".to_string(),
+        );
+
+        let updated = router.refresh_channel_defaults_for_agent("social-bot", new_id);
+        assert_eq!(updated.len(), 2);
+        assert!(updated.iter().any(|key| key == "Custom(\"bluesky\")"));
+        assert!(updated.iter().any(|key| key == "Telegram"));
+
+        let bluesky = router.resolve(&ChannelType::Custom("bluesky".to_string()), "user1", None);
+        assert_eq!(bluesky, Some(new_id));
+
+        let telegram = router.resolve(&ChannelType::Telegram, "user1", None);
+        assert_eq!(telegram, Some(new_id));
     }
 
     #[test]

@@ -298,6 +298,11 @@ impl BridgeManager {
         &self.router
     }
 
+    /// Subscribe to the bridge shutdown signal for auxiliary background tasks.
+    pub fn subscribe_shutdown(&self) -> watch::Receiver<bool> {
+        self.shutdown_rx.clone()
+    }
+
     /// Start an adapter: subscribe to its message stream and spawn a dispatch task.
     ///
     /// Each incoming message is dispatched as a concurrent task so that slow LLM

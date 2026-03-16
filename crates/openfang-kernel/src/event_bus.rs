@@ -22,6 +22,15 @@ pub struct EventBus {
 }
 
 impl EventBus {
+    fn push_history_sync(&self, event: &Event) {
+        if let Ok(mut history) = self.history.try_write() {
+            if history.len() >= HISTORY_SIZE {
+                history.pop_front();
+            }
+            history.push_back(event.clone());
+        }
+    }
+
     /// Create a new event bus.
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(1024);
@@ -67,6 +76,37 @@ impl EventBus {
                 let _ = self.sender.send(event.clone());
             }
             EventTarget::System => {
+                let _ = self.sender.send(event.clone());
+            }
+        }
+    }
+
+    /// Publish an event from synchronous code paths.
+    ///
+    /// History recording is best-effort here because callers cannot await the
+    /// async lock used by the ring buffer.
+    pub fn publish_immediate(&self, event: Event) {
+        debug!(
+            event_id = %event.id,
+            source = %event.source,
+            "Publishing event immediately"
+        );
+
+        self.push_history_sync(&event);
+
+        match &event.target {
+            EventTarget::Agent(agent_id) => {
+                if let Some(sender) = self.agent_channels.get(agent_id) {
+                    let _ = sender.send(event.clone());
+                }
+            }
+            EventTarget::Broadcast => {
+                let _ = self.sender.send(event.clone());
+                for entry in self.agent_channels.iter() {
+                    let _ = entry.value().send(event.clone());
+                }
+            }
+            EventTarget::Pattern(_) | EventTarget::System => {
                 let _ = self.sender.send(event.clone());
             }
         }
@@ -145,5 +185,21 @@ mod tests {
             }
             _ => panic!("Wrong payload"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_publish_immediate_reaches_broadcast_subscribers() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe_all();
+        let event = Event::new(
+            AgentId::new(),
+            EventTarget::Broadcast,
+            EventPayload::System(SystemEvent::KernelStarted),
+        );
+
+        bus.publish_immediate(event.clone());
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.id, event.id);
     }
 }

@@ -12,6 +12,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 /// Categories of auditable actions within the agent runtime.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +90,121 @@ pub struct AuditLog {
     db: Option<Arc<Mutex<Connection>>>,
 }
 
+type IntegrityCheckResult = Result<(), (usize, String)>;
+
+fn validate_entries(entries: &[AuditEntry]) -> IntegrityCheckResult {
+    let mut expected_prev = "0".repeat(64);
+
+    for (idx, entry) in entries.iter().enumerate() {
+        let expected_seq = idx as u64;
+        if entry.seq != expected_seq {
+            return Err((
+                idx,
+                format!(
+                    "sequence gap at seq {}: expected {} but found {}",
+                    entry.seq, expected_seq, entry.seq
+                ),
+            ));
+        }
+
+        if entry.prev_hash != expected_prev {
+            return Err((
+                idx,
+                format!(
+                    "chain break at seq {}: expected prev_hash {} but found {}",
+                    entry.seq, expected_prev, entry.prev_hash
+                ),
+            ));
+        }
+
+        let recomputed = compute_entry_hash(
+            entry.seq,
+            &entry.timestamp,
+            &entry.agent_id,
+            &entry.action,
+            &entry.detail,
+            &entry.outcome,
+            &entry.prev_hash,
+        );
+
+        if recomputed != entry.hash {
+            return Err((
+                idx,
+                format!(
+                    "hash mismatch at seq {}: expected {} but found {}",
+                    entry.seq, recomputed, entry.hash
+                ),
+            ));
+        }
+
+        expected_prev = entry.hash.clone();
+    }
+
+    Ok(())
+}
+
+fn quarantine_and_delete_suffix(
+    conn: &mut Connection,
+    invalid_entries: &[AuditEntry],
+    reason: &str,
+) -> rusqlite::Result<()> {
+    if invalid_entries.is_empty() {
+        return Ok(());
+    }
+
+    let recovery_id = Uuid::new_v4().to_string();
+    let recovered_at = Utc::now().to_rfc3339();
+    let first_bad_seq = invalid_entries[0].seq as i64;
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS audit_entries_corrupt (
+            recovery_id TEXT NOT NULL,
+            recovered_at TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            timestamp TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            prev_hash TEXT NOT NULL,
+            hash TEXT NOT NULL,
+            PRIMARY KEY (recovery_id, seq)
+        );
+        ",
+    )?;
+
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO audit_entries_corrupt (
+                recovery_id, recovered_at, reason, seq, timestamp, agent_id, action, detail, outcome, prev_hash, hash
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        )?;
+        for entry in invalid_entries {
+            stmt.execute(rusqlite::params![
+                &recovery_id,
+                &recovered_at,
+                reason,
+                entry.seq as i64,
+                &entry.timestamp,
+                &entry.agent_id,
+                entry.action.to_string(),
+                &entry.detail,
+                &entry.outcome,
+                &entry.prev_hash,
+                &entry.hash,
+            ])?;
+        }
+    }
+
+    tx.execute(
+        "DELETE FROM audit_entries WHERE seq >= ?1",
+        rusqlite::params![first_bad_seq],
+    )?;
+    tx.commit()
+}
+
 impl AuditLog {
     /// Creates a new empty audit log (in-memory only, no persistence).
     ///
@@ -109,48 +225,69 @@ impl AuditLog {
     pub fn with_db(conn: Arc<Mutex<Connection>>) -> Self {
         let mut entries = Vec::new();
         let mut tip = "0".repeat(64);
+        let mut recovered = None;
 
         // Load existing entries from database
-        if let Ok(db) = conn.lock() {
-            let result = db.prepare(
-                "SELECT seq, timestamp, agent_id, action, detail, outcome, prev_hash, hash FROM audit_entries ORDER BY seq ASC",
-            );
-            if let Ok(mut stmt) = result {
-                let rows = stmt.query_map([], |row| {
-                    let action_str: String = row.get(3)?;
-                    let action = match action_str.as_str() {
-                        "ToolInvoke" => AuditAction::ToolInvoke,
-                        "CapabilityCheck" => AuditAction::CapabilityCheck,
-                        "AgentSpawn" => AuditAction::AgentSpawn,
-                        "AgentKill" => AuditAction::AgentKill,
-                        "AgentMessage" => AuditAction::AgentMessage,
-                        "MemoryAccess" => AuditAction::MemoryAccess,
-                        "FileAccess" => AuditAction::FileAccess,
-                        "NetworkAccess" => AuditAction::NetworkAccess,
-                        "ShellExec" => AuditAction::ShellExec,
-                        "AuthAttempt" => AuditAction::AuthAttempt,
-                        "WireConnect" => AuditAction::WireConnect,
-                        "ConfigChange" => AuditAction::ConfigChange,
-                        _ => AuditAction::ToolInvoke, // fallback
-                    };
-                    Ok(AuditEntry {
-                        seq: row.get(0)?,
-                        timestamp: row.get(1)?,
-                        agent_id: row.get(2)?,
-                        action,
-                        detail: row.get(4)?,
-                        outcome: row.get(5)?,
-                        prev_hash: row.get(6)?,
-                        hash: row.get(7)?,
-                    })
-                });
-                if let Ok(rows) = rows {
-                    for entry in rows.flatten() {
-                        tip = entry.hash.clone();
-                        entries.push(entry);
+        if let Ok(mut db) = conn.lock() {
+            {
+                let result = db.prepare(
+                    "SELECT seq, timestamp, agent_id, action, detail, outcome, prev_hash, hash FROM audit_entries ORDER BY seq ASC",
+                );
+                if let Ok(mut stmt) = result {
+                    let rows = stmt.query_map([], |row| {
+                        let action_str: String = row.get(3)?;
+                        let action = match action_str.as_str() {
+                            "ToolInvoke" => AuditAction::ToolInvoke,
+                            "CapabilityCheck" => AuditAction::CapabilityCheck,
+                            "AgentSpawn" => AuditAction::AgentSpawn,
+                            "AgentKill" => AuditAction::AgentKill,
+                            "AgentMessage" => AuditAction::AgentMessage,
+                            "MemoryAccess" => AuditAction::MemoryAccess,
+                            "FileAccess" => AuditAction::FileAccess,
+                            "NetworkAccess" => AuditAction::NetworkAccess,
+                            "ShellExec" => AuditAction::ShellExec,
+                            "AuthAttempt" => AuditAction::AuthAttempt,
+                            "WireConnect" => AuditAction::WireConnect,
+                            "ConfigChange" => AuditAction::ConfigChange,
+                            _ => AuditAction::ToolInvoke, // fallback
+                        };
+                        Ok(AuditEntry {
+                            seq: row.get(0)?,
+                            timestamp: row.get(1)?,
+                            agent_id: row.get(2)?,
+                            action,
+                            detail: row.get(4)?,
+                            outcome: row.get(5)?,
+                            prev_hash: row.get(6)?,
+                            hash: row.get(7)?,
+                        })
+                    });
+                    if let Ok(rows) = rows {
+                        for entry in rows.flatten() {
+                            entries.push(entry);
+                        }
                     }
                 }
             }
+
+            if let Err((bad_idx, reason)) = validate_entries(&entries) {
+                tracing::error!("Audit trail integrity check FAILED on boot: {reason}");
+                let invalid_entries = entries[bad_idx..].to_vec();
+                match quarantine_and_delete_suffix(&mut db, &invalid_entries, &reason) {
+                    Ok(()) => {
+                        entries.truncate(bad_idx);
+                        recovered = Some((invalid_entries.len(), reason));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to quarantine corrupt audit entries: {e}");
+                        entries.truncate(bad_idx);
+                    }
+                }
+            }
+        }
+
+        if let Some(last) = entries.last() {
+            tip = last.hash.clone();
         }
 
         let count = entries.len();
@@ -160,13 +297,14 @@ impl AuditLog {
             db: Some(conn),
         };
 
-        // Verify chain integrity on load
-        if count > 0 {
-            if let Err(e) = log.verify_integrity() {
-                tracing::error!("Audit trail integrity check FAILED on boot: {e}");
-            } else {
-                tracing::info!("Audit trail loaded: {count} entries, chain integrity OK");
-            }
+        if let Some((dropped, reason)) = recovered {
+            tracing::warn!(
+                dropped,
+                remaining = count,
+                "Recovered audit trail by quarantining corrupt suffix: {reason}"
+            );
+        } else if count > 0 {
+            tracing::info!("Audit trail loaded: {count} entries, chain integrity OK");
         }
 
         log
@@ -192,7 +330,7 @@ impl AuditLog {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let mut tip = self.tip.lock().unwrap_or_else(|e| e.into_inner());
 
-        let seq = entries.len() as u64;
+        let seq = entries.last().map(|entry| entry.seq + 1).unwrap_or(0);
         let prev_hash = tip.clone();
 
         let hash = compute_entry_hash(
@@ -213,7 +351,7 @@ impl AuditLog {
         // Persist to database if available
         if let Some(ref db) = self.db {
             if let Ok(conn) = db.lock() {
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "INSERT INTO audit_entries (seq, timestamp, agent_id, action, detail, outcome, prev_hash, hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     rusqlite::params![
                         entry.seq as i64,
@@ -225,7 +363,18 @@ impl AuditLog {
                         &entry.prev_hash,
                         &entry.hash,
                     ],
-                );
+                ) {
+                    tracing::error!(
+                        seq = entry.seq,
+                        agent = %entry.agent_id,
+                        action = %entry.action,
+                        "Failed to persist audit entry: {e}"
+                    );
+                    return tip.clone();
+                }
+            } else {
+                tracing::error!("Failed to lock audit database connection");
+                return tip.clone();
             }
         }
 
@@ -240,37 +389,7 @@ impl AuditLog {
     /// the first inconsistency found.
     pub fn verify_integrity(&self) -> Result<(), String> {
         let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let mut expected_prev = "0".repeat(64);
-
-        for entry in entries.iter() {
-            if entry.prev_hash != expected_prev {
-                return Err(format!(
-                    "chain break at seq {}: expected prev_hash {} but found {}",
-                    entry.seq, expected_prev, entry.prev_hash
-                ));
-            }
-
-            let recomputed = compute_entry_hash(
-                entry.seq,
-                &entry.timestamp,
-                &entry.agent_id,
-                &entry.action,
-                &entry.detail,
-                &entry.outcome,
-                &entry.prev_hash,
-            );
-
-            if recomputed != entry.hash {
-                return Err(format!(
-                    "hash mismatch at seq {}: expected {} but found {}",
-                    entry.seq, recomputed, entry.hash
-                ));
-            }
-
-            expected_prev = entry.hash.clone();
-        }
-
-        Ok(())
+        validate_entries(&entries).map_err(|(_, msg)| msg)
     }
 
     /// Returns the current tip hash (the hash of the most recent entry,
@@ -418,5 +537,120 @@ mod tests {
         // Verify tip is correct
         let entries = log2.recent(3);
         assert_eq!(entries[2].prev_hash, entries[1].hash);
+    }
+
+    #[test]
+    fn test_audit_recovers_corrupt_suffix_on_load() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE audit_entries (
+                seq INTEGER PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                prev_hash TEXT NOT NULL,
+                hash TEXT NOT NULL
+            )",
+        )
+        .unwrap();
+
+        let genesis = "0".repeat(64);
+        let hash0 = compute_entry_hash(
+            0,
+            "2026-01-01T00:00:00Z",
+            "a",
+            &AuditAction::AgentSpawn,
+            "ok",
+            "ok",
+            &genesis,
+        );
+        let hash1 = compute_entry_hash(
+            1,
+            "2026-01-01T00:00:01Z",
+            "b",
+            &AuditAction::AgentKill,
+            "ok",
+            "ok",
+            &hash0,
+        );
+        let bad_prev = "f".repeat(64);
+        let hash2 = compute_entry_hash(
+            2,
+            "2026-01-01T00:00:02Z",
+            "c",
+            &AuditAction::AgentMessage,
+            "ok",
+            "ok",
+            &bad_prev,
+        );
+
+        conn.execute(
+            "INSERT INTO audit_entries (seq, timestamp, agent_id, action, detail, outcome, prev_hash, hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![0i64, "2026-01-01T00:00:00Z", "a", "AgentSpawn", "ok", "ok", &genesis, &hash0],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO audit_entries (seq, timestamp, agent_id, action, detail, outcome, prev_hash, hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![1i64, "2026-01-01T00:00:01Z", "b", "AgentKill", "ok", "ok", &hash0, &hash1],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO audit_entries (seq, timestamp, agent_id, action, detail, outcome, prev_hash, hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![2i64, "2026-01-01T00:00:02Z", "c", "AgentMessage", "ok", "ok", &bad_prev, &hash2],
+        ).unwrap();
+
+        let db = Arc::new(Mutex::new(conn));
+        let log = AuditLog::with_db(Arc::clone(&db));
+        assert_eq!(log.len(), 2);
+        assert!(log.verify_integrity().is_ok());
+
+        let db_conn = db.lock().unwrap();
+        let count: i64 = db_conn
+            .query_row("SELECT COUNT(*) FROM audit_entries", [], |row| row.get(0))
+            .unwrap();
+        let quarantined: i64 = db_conn
+            .query_row("SELECT COUNT(*) FROM audit_entries_corrupt", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(quarantined, 1);
+    }
+
+    #[test]
+    fn test_audit_does_not_advance_in_memory_when_db_write_fails() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE audit_entries (
+                seq INTEGER PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                prev_hash TEXT NOT NULL,
+                hash TEXT NOT NULL
+            )",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO audit_entries (seq, timestamp, agent_id, action, detail, outcome, prev_hash, hash)
+             VALUES (0, '2026-01-01T00:00:00Z', 'other', 'AgentSpawn', 'seed', 'ok', ?1, ?2)",
+            rusqlite::params!["0".repeat(64), "seed-hash"],
+        )
+        .unwrap();
+
+        let db = Arc::new(Mutex::new(conn));
+        let log = AuditLog {
+            entries: Mutex::new(Vec::new()),
+            tip: Mutex::new("0".repeat(64)),
+            db: Some(Arc::clone(&db)),
+        };
+
+        let tip_before = log.tip_hash();
+        let returned = log.record("agent-1", AuditAction::AgentSpawn, "spawn", "ok");
+        assert_eq!(returned, tip_before);
+        assert_eq!(log.len(), 0);
+        assert_eq!(log.tip_hash(), tip_before);
     }
 }

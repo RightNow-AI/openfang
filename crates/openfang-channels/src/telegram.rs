@@ -763,12 +763,9 @@ async fn merge_media_group_updates(
                 }
                 None => {
                     warn!("Failed to get video URL for file_id: {} (size: {} bytes)", file_id, file_size);
-                    // Telegram Bot API has a 20MB limit for getFile
-                    if file_size > 20 * 1024 * 1024 {
-                        media_items.push(format!("[Video: file too large ({} MB), cannot download via Bot API]", file_size / 1024 / 1024));
-                    } else {
-                        media_items.push(format!("[Video: download failed ({} bytes)]", file_size));
-                    }
+                    // Note: Download may fail for various reasons (API limits, network, etc.)
+                    // Don't assume file size is the only reason - let the user provide alternatives
+                    media_items.push(format!("[Video: download failed (file_id: {}, {} MB) - may need local path or download link]", file_id, file_size / 1024 / 1024));
                 }
             }
         }
@@ -796,14 +793,11 @@ async fn merge_media_group_updates(
                 }
                 None => {
                     warn!("Failed to get document URL for file_id: {} (size: {} bytes, mime: {})", file_id, file_size, mime_type);
-                    if file_size > 20 * 1024 * 1024 {
-                        if is_video {
-                            media_items.push(format!("[Video {}: file too large ({} MB), cannot download via Bot API]", filename, file_size / 1024 / 1024));
-                        } else {
-                            media_items.push(format!("[File {}: too large ({} MB)]", filename, file_size / 1024 / 1024));
-                        }
+                    // Note: Download may fail for various reasons - don't assume file size is the only reason
+                    if is_video {
+                        media_items.push(format!("[Video {}: download failed (file_id: {}, {} MB) - may need local path or download link]", filename, file_id, file_size / 1024 / 1024));
                     } else {
-                        media_items.push(format!("[File {}: download failed]", filename));
+                        media_items.push(format!("[File {}: download failed ({} MB)]", filename, file_size / 1024 / 1024));
                     }
                 }
             }

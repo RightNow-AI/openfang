@@ -16,12 +16,12 @@ use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
     DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
-    KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL,
-    MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
-    QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL,
-    VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL,
+    MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL,
+    TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -531,6 +531,12 @@ pub fn known_providers() -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_provider_defaults_groq() {
@@ -672,6 +678,8 @@ mod tests {
     #[test]
     fn test_nvidia_provider_with_env_key() {
         // NVIDIA NIM is a known provider — set API key and verify driver creation succeeds.
+        let _guard = env_lock().lock().unwrap();
+        let original = std::env::var_os("NVIDIA_API_KEY");
         let unique_key = "test-nvidia-key-12345";
         std::env::set_var("NVIDIA_API_KEY", unique_key);
         let config = DriverConfig {
@@ -685,12 +693,16 @@ mod tests {
             driver.is_ok(),
             "NVIDIA provider with env var should succeed"
         );
-        std::env::remove_var("NVIDIA_API_KEY");
+        match original {
+            Some(value) => std::env::set_var("NVIDIA_API_KEY", value),
+            None => std::env::remove_var("NVIDIA_API_KEY"),
+        }
     }
 
     #[test]
     fn test_nvidia_provider_no_key_errors() {
         // NVIDIA NIM provider with no API key should error.
+        let _guard = env_lock().lock().unwrap();
         let original = std::env::var_os("NVIDIA_API_KEY");
         std::env::remove_var("NVIDIA_API_KEY");
         let config = DriverConfig {

@@ -1397,6 +1397,7 @@ impl OpenFangKernel {
         );
         // Evaluate triggers synchronously (we can't await in a sync fn, so just evaluate)
         let _triggered = self.triggers.evaluate(&event);
+        self.event_bus.publish_immediate(event);
 
         Ok(agent_id)
     }
