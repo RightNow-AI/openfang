@@ -155,6 +155,9 @@ pub struct OpenFangKernel {
     /// Hot-reloadable default model override (set via config hot-reload, read at agent spawn).
     pub default_model_override:
         std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
+    /// Hot-reloadable exec policy override (set via config hot-reload, read at command approval).
+    pub exec_policy_override:
+        std::sync::RwLock<Option<openfang_types::config::ExecPolicy>>,
     /// Per-agent message locks — serializes LLM calls for the same agent to prevent
     /// session corruption when multiple messages arrive concurrently (e.g. rapid voice
     /// messages via Telegram). Different agents can still run in parallel.
@@ -1047,6 +1050,7 @@ impl OpenFangKernel {
             whatsapp_gateway_pid: Arc::new(std::sync::Mutex::new(None)),
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
+            exec_policy_override: std::sync::RwLock::new(None),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
         };
@@ -3551,6 +3555,17 @@ impl OpenFangKernel {
                         .write()
                         .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
                     *guard = Some(new_config.default_model.clone());
+                }
+                HotAction::UpdateExecPolicy => {
+                    info!(
+                        "Hot-reload: updating exec policy (mode={:?}, allowed_commands={:?})",
+                        new_config.exec_policy.mode, new_config.exec_policy.allowed_commands
+                    );
+                    let mut guard = self
+                        .exec_policy_override
+                        .write()
+                        .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+                    *guard = Some(new_config.exec_policy.clone());
                 }
                 _ => {
                     // Other hot actions (channels, web, browser, extensions, etc.)
@@ -6081,10 +6096,17 @@ impl KernelHandle for OpenFangKernel {
     }
 
     fn is_cmd_approved(&self, _agent_id: &str, base_cmd: &str) -> bool {
+        // Get exec policy: use override if set, otherwise fall back to config
+        let override_guard = self
+            .exec_policy_override
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let exec_policy = override_guard
+            .as_ref()
+            .unwrap_or(&self.config.exec_policy);
+
         // Check static allowlist from config
-        if self
-            .config
-            .exec_policy
+        if exec_policy
             .allowed_commands
             .iter()
             .any(|c| c == base_cmd)

@@ -45,6 +45,8 @@ pub enum HotAction {
     ReloadProviderUrls,
     /// Default model changed — update in-place without restart.
     UpdateDefaultModel,
+    /// Exec policy changed — update allowlist at runtime.
+    UpdateExecPolicy,
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +168,11 @@ pub fn build_reload_plan(old: &KernelConfig, new: &KernelConfig) -> ReloadPlan {
     // Default model — hot-reloadable (just swap config fields, new agents pick it up)
     if field_changed(&old.default_model, &new.default_model) {
         plan.hot_actions.push(HotAction::UpdateDefaultModel);
+    }
+
+    // Exec policy — hot-reloadable (allowed_commands can change at runtime)
+    if field_changed(&old.exec_policy, &new.exec_policy) {
+        plan.hot_actions.push(HotAction::UpdateExecPolicy);
     }
 
     // Home/data directory changes
