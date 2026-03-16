@@ -36,6 +36,8 @@ base64 = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 hex = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
 socket2 = { workspace = true }
 reqwest = { workspace = true }
 

@@ -1324,7 +1324,7 @@ openfang doctor --json
 ### Dashboard auth
 
 ```bash
-# Generate a password hash for [auth].password_hash
+# Generate an Argon2id password hash for [auth].password_hash
 openfang security hash-password "change-me"
 
 # Avoid shell history by piping from stdin

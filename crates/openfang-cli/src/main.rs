@@ -687,7 +687,7 @@ enum SecurityCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Generate a SHA-256 password hash for dashboard auth config.
+    /// Generate an Argon2id password hash for dashboard auth config.
     HashPassword {
         /// Password to hash. If omitted, reads from stdin.
         password: Option<String>,
@@ -5934,7 +5934,13 @@ fn cmd_security_hash_password(password: Option<String>) {
         std::process::exit(1);
     }
 
-    println!("{}", openfang_api::session_auth::hash_password(password));
+    match openfang_api::session_auth::hash_password(password) {
+        Ok(hash) => println!("{hash}"),
+        Err(err) => {
+            ui::error(&err);
+            std::process::exit(1);
+        }
+    }
 }
 
 fn cmd_security_audit(limit: usize, json: bool) {

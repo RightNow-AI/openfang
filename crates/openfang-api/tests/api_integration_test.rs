@@ -788,6 +788,91 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
     }
 }
 
+/// Start a test server with session-based dashboard authentication enabled.
+async fn start_test_server_with_session_auth(username: &str, password: &str) -> TestServer {
+    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
+
+    let config = KernelConfig {
+        home_dir: tmp.path().to_path_buf(),
+        data_dir: tmp.path().join("data"),
+        auth: openfang_types::config::AuthConfig {
+            enabled: true,
+            username: username.to_string(),
+            password_hash: openfang_api::session_auth::hash_password(password).unwrap(),
+            session_ttl_hours: 24,
+        },
+        default_model: DefaultModelConfig {
+            provider: "ollama".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: "OLLAMA_API_KEY".to_string(),
+            base_url: None,
+        },
+        ..KernelConfig::default()
+    };
+
+    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = Arc::new(kernel);
+    kernel.set_self_handle();
+
+    let state = Arc::new(AppState {
+        kernel,
+        started_at: Instant::now(),
+        peer_registry: None,
+        bridge_manager: tokio::sync::Mutex::new(None),
+        channels_config: tokio::sync::RwLock::new(Default::default()),
+        shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+        clawhub_cache: dashmap::DashMap::new(),
+        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+    });
+
+    let api_key = state.kernel.config.api_key.trim().to_string();
+    let auth_state = middleware::AuthState {
+        api_key: api_key.clone(),
+        auth_enabled: state.kernel.config.auth.enabled,
+        session_secret: if !api_key.is_empty() {
+            api_key.clone()
+        } else if state.kernel.config.auth.enabled {
+            state.kernel.config.auth.password_hash.clone()
+        } else {
+            String::new()
+        },
+    };
+
+    let app = Router::new()
+        .route("/api/health", axum::routing::get(routes::health))
+        .route("/api/status", axum::routing::get(routes::status))
+        .route("/api/auth/login", axum::routing::post(routes::auth_login))
+        .route("/api/auth/logout", axum::routing::post(routes::auth_logout))
+        .route("/api/auth/check", axum::routing::get(routes::auth_check))
+        .route(
+            "/api/triggers",
+            axum::routing::get(routes::list_triggers).post(routes::create_trigger),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state,
+            middleware::auth,
+        ))
+        .layer(axum::middleware::from_fn(middleware::request_logging))
+        .layer(TraceLayer::new_for_http())
+        .layer(CorsLayer::permissive())
+        .with_state(state.clone());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind test server");
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    TestServer {
+        base_url: format!("http://{}", addr),
+        state,
+        _tmp: tmp,
+    }
+}
+
 #[tokio::test]
 async fn test_auth_health_is_public() {
     let server = start_test_server_with_auth("secret-key-123").await;
@@ -867,4 +952,81 @@ async fn test_auth_disabled_when_no_key() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_session_login_allows_access_to_protected_endpoint() {
+    let server = start_test_server_with_session_auth("admin", "secret123").await;
+    let client = reqwest::Client::new();
+
+    let login = client
+        .post(format!("{}/api/auth/login", server.base_url))
+        .json(&serde_json::json!({
+            "username": "admin",
+            "password": "secret123",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(login.status(), 200);
+    let cookie = login
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap()
+        .to_string();
+    assert!(cookie.contains("HttpOnly"));
+    assert!(cookie.contains("SameSite=Strict"));
+
+    let protected = client
+        .get(format!("{}/api/triggers", server.base_url))
+        .header(reqwest::header::COOKIE, cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(protected.status(), 200);
+}
+
+#[tokio::test]
+async fn test_session_login_rejects_invalid_password() {
+    let server = start_test_server_with_session_auth("admin", "secret123").await;
+    let client = reqwest::Client::new();
+
+    let login = client
+        .post(format!("{}/api/auth/login", server.base_url))
+        .json(&serde_json::json!({
+            "username": "admin",
+            "password": "wrong-password",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(login.status(), 401);
+}
+
+#[tokio::test]
+async fn test_session_login_sets_secure_cookie_for_https_proxy() {
+    let server = start_test_server_with_session_auth("admin", "secret123").await;
+    let client = reqwest::Client::new();
+
+    let login = client
+        .post(format!("{}/api/auth/login", server.base_url))
+        .header("x-forwarded-proto", "https")
+        .json(&serde_json::json!({
+            "username": "admin",
+            "password": "secret123",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(login.status(), 200);
+    let cookie = login
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap();
+    assert!(cookie.contains("Secure"));
 }

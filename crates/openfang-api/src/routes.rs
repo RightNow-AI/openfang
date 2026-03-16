@@ -10931,6 +10931,7 @@ pub async fn comms_task(
 /// POST /api/auth/login — Authenticate with username/password, returns session token.
 pub async fn auth_login(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<serde_json::Value>,
 ) -> axum::response::Response {
     use axum::body::Body;
@@ -10990,8 +10991,7 @@ pub async fn auth_login(
     let token =
         crate::session_auth::create_session_token(username, &secret, auth_cfg.session_ttl_hours);
     let ttl_secs = auth_cfg.session_ttl_hours * 3600;
-    let cookie =
-        format!("openfang_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}");
+    let cookie = session_cookie_header(&token, ttl_secs, request_uses_https(&headers));
 
     state.kernel.audit_log.record(
         "system",
@@ -11016,13 +11016,17 @@ pub async fn auth_login(
 }
 
 /// POST /api/auth/logout — Clear the session cookie.
-pub async fn auth_logout() -> impl IntoResponse {
-    let cookie = "openfang_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0";
-    (
-        StatusCode::OK,
-        [("content-type", "application/json"), ("set-cookie", cookie)],
-        serde_json::json!({"status": "ok"}).to_string(),
-    )
+pub async fn auth_logout(headers: axum::http::HeaderMap) -> axum::response::Response {
+    use axum::body::Body;
+    use axum::response::Response;
+
+    let cookie = clear_session_cookie_header(request_uses_https(&headers));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .header("set-cookie", cookie)
+        .body(Body::from(serde_json::json!({"status": "ok"}).to_string()))
+        .unwrap()
 }
 
 /// GET /api/auth/check — Check current authentication state.
@@ -11100,4 +11104,41 @@ fn remove_toml_section(content: &str, section: &str) -> String {
         }
     }
     result
+}
+
+fn request_uses_https(headers: &axum::http::HeaderMap) -> bool {
+    if let Some(value) = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+    {
+        return value
+            .split(',')
+            .any(|part| part.trim().eq_ignore_ascii_case("https"));
+    }
+
+    if let Some(value) = headers.get("x-forwarded-ssl").and_then(|v| v.to_str().ok()) {
+        if value.eq_ignore_ascii_case("on") {
+            return true;
+        }
+    }
+
+    if let Some(value) = headers.get("forwarded").and_then(|v| v.to_str().ok()) {
+        return value
+            .split(';')
+            .any(|part| part.trim().eq_ignore_ascii_case("proto=https"));
+    }
+
+    false
+}
+
+fn session_cookie_header(token: &str, ttl_secs: u64, secure: bool) -> String {
+    let secure_flag = if secure { "; Secure" } else { "" };
+    format!(
+        "openfang_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}{secure_flag}"
+    )
+}
+
+fn clear_session_cookie_header(secure: bool) -> String {
+    let secure_flag = if secure { "; Secure" } else { "" };
+    format!("openfang_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{secure_flag}")
 }

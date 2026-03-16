@@ -86,6 +86,7 @@ pub async fn auth(
     // POST/PUT/DELETE to any endpoint ALWAYS requires auth to prevent
     // unauthenticated writes (cron job creation, skill install, etc.).
     let is_get = method == axum::http::Method::GET;
+    let is_post = method == axum::http::Method::POST;
     let is_public = path == "/"
         || path == "/logo.png"
         || path == "/favicon.ico"
@@ -125,8 +126,8 @@ pub async fn auth(
         || path == "/api/logs/stream"  // SSE stream, read-only
         || (path.starts_with("/api/cron/") && is_get)
         || path.starts_with("/api/providers/github-copilot/oauth/")
-        || path == "/api/auth/login"
-        || path == "/api/auth/logout"
+        || (path == "/api/auth/login" && is_post)
+        || (path == "/api/auth/logout" && is_post)
         || (path == "/api/auth/check" && is_get);
 
     if is_public {
