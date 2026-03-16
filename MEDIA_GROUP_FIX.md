@@ -76,14 +76,13 @@ async fn merge_media_group_updates(
 
 1. 编译项目：
    ```bash
-   cd /Users/xiaomo/Desktop/openfang-upstream-fork
-   cargo build --release
+   cargo build --release -p openfang-cli
    ```
 
-2. 部署到服务器：
+2. 在目标环境中替换或启动新二进制：
    ```bash
-   export SHIPINBOT_CLUSTER_PASSWORD='your-password'
-   ./deploy-with-sshpass.sh
+   openfang stop
+   target/release/openfang start
    ```
 
 3. 验证修复：

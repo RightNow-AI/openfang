@@ -737,7 +737,10 @@ async fn merge_media_group_updates(
             .or_else(|| update.get("edited_message"))?;
 
         // Debug: log message structure
-        debug!("Media group item keys: {:?}", message.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+        debug!(
+            "Media group item keys: {:?}",
+            message.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
 
         // Extract photo
         if let Some(photos) = message["photo"].as_array() {
@@ -759,10 +762,16 @@ async fn merge_media_group_updates(
 
             match telegram_get_file_url(token, client, file_id, api_base_url).await {
                 Some(url) => {
-                    media_items.push(format!("[Video: {} ({}s, {} bytes)]", url, duration, file_size));
+                    media_items.push(format!(
+                        "[Video: {} ({}s, {} bytes)]",
+                        url, duration, file_size
+                    ));
                 }
                 None => {
-                    warn!("Failed to get video URL for file_id: {} (size: {} bytes)", file_id, file_size);
+                    warn!(
+                        "Failed to get video URL for file_id: {} (size: {} bytes)",
+                        file_id, file_size
+                    );
                     // Note: Download may fail for various reasons (API limits, network, etc.)
                     // Don't assume file size is the only reason - let the user provide alternatives
                     media_items.push(format!("[Video: download failed (file_id: {}, {} MB) - may need local path or download link]", file_id, file_size / 1024 / 1024));
@@ -777,8 +786,14 @@ async fn merge_media_group_updates(
                 .get("file_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("file");
-            let file_size = document.get("file_size").and_then(|v| v.as_u64()).unwrap_or(0);
-            let mime_type = document.get("mime_type").and_then(|v| v.as_str()).unwrap_or("");
+            let file_size = document
+                .get("file_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let mime_type = document
+                .get("mime_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
 
             // Check if this is a video document
             let is_video = mime_type.starts_with("video/");
@@ -792,12 +807,19 @@ async fn merge_media_group_updates(
                     }
                 }
                 None => {
-                    warn!("Failed to get document URL for file_id: {} (size: {} bytes, mime: {})", file_id, file_size, mime_type);
+                    warn!(
+                        "Failed to get document URL for file_id: {} (size: {} bytes, mime: {})",
+                        file_id, file_size, mime_type
+                    );
                     // Note: Download may fail for various reasons - don't assume file size is the only reason
                     if is_video {
                         media_items.push(format!("[Video {}: download failed (file_id: {}, {} MB) - may need local path or download link]", filename, file_id, file_size / 1024 / 1024));
                     } else {
-                        media_items.push(format!("[File {}: download failed ({} MB)]", filename, file_size / 1024 / 1024));
+                        media_items.push(format!(
+                            "[File {}: download failed ({} MB)]",
+                            filename,
+                            file_size / 1024 / 1024
+                        ));
                     }
                 }
             }
