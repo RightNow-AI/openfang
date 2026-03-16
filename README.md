@@ -27,7 +27,7 @@
 
 ---
 
-> **v0.4.4 — Agent OS Phases 1-10 (March 2026)**
+> **v0.4.4 — Agent OS Complete (March 2026)**
 >
 > OpenFang is feature-complete but still pre-1.0. You may encounter rough edges or breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
 
@@ -144,6 +144,60 @@ This is the beginning of the Agent OS expansion loop:
 
 ---
 
+## Agent OS Platform Features
+
+Everything below ships in a single binary. No plugins, no Docker, no Python environment.
+
+### Deterministic Goal Router
+
+Users describe goals in natural language. The builtin router dispatches to the right Hand, workflow, or specialist agent — deterministically, without an LLM roundtrip. Explicit selectors (`hand:browser`, `workflow:daily-report`, `agent:coder`) override heuristics.
+
+### Backup and Restore
+
+Full system snapshots as ZIP archives with manifest validation. Create, list, delete, and restore backups via API or CLI. Atomic writes prevent corruption during daemon crashes.
+
+```bash
+openfang backup create
+openfang backup list
+openfang backup restore latest.zip
+```
+
+### MCP Server Management
+
+Add, update, and remove Model Context Protocol servers at runtime. 26 bundled integration templates (GitHub, Slack, PostgreSQL, AWS, Brave Search, etc.) installable from the dashboard or CLI with one click. AES-256-GCM encrypted credential vault.
+
+```bash
+openfang add github
+openfang add slack
+openfang integrations          # browse available
+```
+
+### Cron Scheduling
+
+Per-agent cron jobs with create, update, enable/disable, and delete. Persistent across daemon restarts. Auto-disables on 5 consecutive failures. Up to 500 jobs system-wide.
+
+### Rich Inter-Agent Communication
+
+Thread-aware messaging with file and media attachments. Agents can message each other, post to channels with thread context, or queue tasks on the shared task board.
+
+### TOML Model Catalog
+
+42 providers and 200 models defined in editable TOML files under `catalog/`. Add a new model or provider without recompilation. Falls back to hardcoded builtins if catalog files are missing.
+
+### Decision Trace
+
+Every routing decision is recorded with target, explanation, and gap-detection flag. Query recent decisions via `GET /api/routing/decisions` for observability and debugging.
+
+### Prompt Caching
+
+Anthropic `cache_control` headers on system prompts reduce cost and latency for multi-turn conversations. Configurable per-daemon via `prompt_cache = true` in `config.toml`. The system prompt is architecturally separated from dynamic context to maximize cache hits.
+
+### Deterministic Hand Identity
+
+Hands use UUID v5 for stable instance IDs. Cron jobs, bindings, and dashboards survive daemon restarts without orphaning state.
+
+---
+
 ## OpenFang vs The Landscape
 
 <p align="center">
@@ -212,12 +266,12 @@ LangGraph  ░░░░░░░░░░░░░░░░░░░░░░░
 #### LLM Providers (higher is better)
 
 ```
-ZeroClaw   ████████████████████████████████████████████   28
-OpenFang   ██████████████████████████████████████████░░   27      ★
-LangGraph  ██████████████████████░░░░░░░░░░░░░░░░░░░░░   15
-CrewAI     ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
-OpenClaw   ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
-AutoGen    ███████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    8
+OpenFang   ████████████████████████████████████████████   42      ★
+ZeroClaw   ████████████████████████████░░░░░░░░░░░░░░░░   28
+LangGraph  ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   15
+CrewAI     ██████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
+OpenClaw   ██████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
+AutoGen    ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    8
 ```
 
 ### Feature-by-Feature Comparison
@@ -225,7 +279,7 @@ AutoGen    ███████████░░░░░░░░░░░░
 | Feature | OpenFang | OpenClaw | ZeroClaw | CrewAI | AutoGen | LangGraph |
 |---------|----------|----------|----------|--------|---------|-----------|
 | **Language** | **Rust** | TypeScript | **Rust** | Python | Python | Python |
-| **Autonomous Hands** | **7 built-in** | None | None | None | None | None |
+| **Autonomous Hands** | **8 built-in** | None | None | None | None | None |
 | **Security Layers** | **16 discrete** | 3 basic | 6 layers | 1 basic | Docker | AES enc. |
 | **Agent Sandbox** | **WASM dual-metered** | None | Allowlists | None | Docker | None |
 | **Channel Adapters** | **40** | 13 | 15 | 0 | 0 | 0 |
@@ -277,7 +331,7 @@ openfang-memory      SQLite persistence, vector embeddings, canonical sessions, 
 openfang-types       Core types, taint tracking, Ed25519 manifest signing, model catalog
 openfang-skills      60 bundled skills, SKILL.md parser, FangHub marketplace
 openfang-hands       8 autonomous Hands, HAND.toml parser, lifecycle management
-openfang-extensions  25 MCP templates, AES-256-GCM credential vault, OAuth2 PKCE
+openfang-extensions  26 MCP integrations, AES-256-GCM credential vault, OAuth2 PKCE
 openfang-wire        OFP P2P protocol with HMAC-SHA256 mutual authentication
 openfang-cli         CLI with daemon management, TUI dashboard, MCP server mode
 openfang-desktop     Tauri 2.0 native app (system tray, notifications, global shortcuts)
