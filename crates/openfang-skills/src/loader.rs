@@ -28,6 +28,9 @@ pub async fn execute_skill_tool(
         SkillRuntime::Node => {
             execute_node(skill_dir, &manifest.runtime.entry, tool_name, input).await
         }
+        SkillRuntime::Shell => {
+            execute_shell(skill_dir, &manifest.runtime.entry, tool_name, input).await
+        }
         SkillRuntime::Wasm => Err(SkillError::RuntimeNotAvailable(
             "WASM skill runtime not yet implemented".to_string(),
         )),
@@ -280,6 +283,123 @@ fn find_node() -> Option<String> {
         return Some("node".to_string());
     }
     None
+}
+
+/// Find Shell/Bash binary.
+fn find_shell() -> Option<String> {
+    // Try bash first, then sh as fallback
+    for name in &["bash", "sh"] {
+        if std::process::Command::new(name)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+        {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Execute a Shell/Bash skill script.
+async fn execute_shell(
+    skill_dir: &Path,
+    entry: &str,
+    tool_name: &str,
+    input: &serde_json::Value,
+) -> Result<SkillToolResult, SkillError> {
+    let script_path = skill_dir.join(entry);
+    if !script_path.exists() {
+        return Err(SkillError::ExecutionFailed(format!(
+            "Shell script not found: {}",
+            script_path.display()
+        )));
+    }
+
+    // Build the JSON payload to send via stdin
+    let payload = serde_json::json!({
+        "tool": tool_name,
+        "input": input,
+    });
+
+    let shell = find_shell().ok_or_else(|| {
+        SkillError::RuntimeNotAvailable(
+            "Shell/Bash not found. Install bash or sh to run Shell skills.".to_string(),
+        )
+    })?;
+
+    debug!("Executing Shell skill: {} {}", shell, script_path.display());
+
+    // Use -s to read from stdin, -c to execute command
+    let mut cmd = tokio::process::Command::new(&shell);
+    cmd.arg("-s")
+        .arg(&script_path)
+        .current_dir(skill_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // SECURITY: Isolate environment to prevent secret leakage.
+    // Same as Python/Node — skills are third-party code.
+    cmd.env_clear();
+    if let Ok(path) = std::env::var("PATH") {
+        cmd.env("PATH", path);
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        cmd.env("HOME", home);
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(sp) = std::env::var("SYSTEMROOT") {
+            cmd.env("SYSTEMROOT", sp);
+        }
+        if let Ok(tmp) = std::env::var("TEMP") {
+            cmd.env("TEMP", tmp);
+        }
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| SkillError::ExecutionFailed(format!("Failed to spawn shell: {e}")))?;
+
+    // Write input to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        let payload_bytes = serde_json::to_vec(&payload)
+            .map_err(|e| SkillError::ExecutionFailed(format!("JSON serialize: {e}")))?;
+        stdin
+            .write_all(&payload_bytes)
+            .await
+            .map_err(|e| SkillError::ExecutionFailed(format!("Write stdin: {e}")))?;
+        drop(stdin);
+    }
+
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|e| SkillError::ExecutionFailed(format!("Wait for shell: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        error!("Shell skill failed: {stderr}");
+        return Ok(SkillToolResult {
+            output: serde_json::json!({ "error": stderr.to_string() }),
+            is_error: true,
+        });
+    }
+
+    // Parse stdout as JSON
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match serde_json::from_str::<serde_json::Value>(&stdout) {
+        Ok(value) => Ok(SkillToolResult {
+            output: value,
+            is_error: false,
+        }),
+        Err(_) => Ok(SkillToolResult {
+            output: serde_json::json!({ "result": stdout.trim() }),
+            is_error: false,
+        }),
+    }
 }
 
 #[cfg(test)]

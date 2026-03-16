@@ -77,6 +77,7 @@ async fn start_test_server_with_provider(
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
+        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
     });
 
     let app = Router::new()
@@ -705,9 +706,21 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
+        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
     });
 
-    let api_key_state = state.kernel.config.api_key.clone();
+    let api_key = state.kernel.config.api_key.trim().to_string();
+    let auth_state = middleware::AuthState {
+        api_key: api_key.clone(),
+        auth_enabled: state.kernel.config.auth.enabled,
+        session_secret: if !api_key.is_empty() {
+            api_key.clone()
+        } else if state.kernel.config.auth.enabled {
+            state.kernel.config.auth.password_hash.clone()
+        } else {
+            String::new()
+        },
+    };
 
     let app = Router::new()
         .route("/api/health", axum::routing::get(routes::health))
@@ -751,7 +764,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         )
         .route("/api/shutdown", axum::routing::post(routes::shutdown))
         .layer(axum::middleware::from_fn_with_state(
-            api_key_state,
+            auth_state,
             middleware::auth,
         ))
         .layer(axum::middleware::from_fn(middleware::request_logging))

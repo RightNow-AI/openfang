@@ -8,7 +8,7 @@ tags = ["search", "database", "indexing", "analytics", "full-text"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-elasticsearch"]
+args = ["-y", "@elastic/mcp-server-elasticsearch"]
 
 [[required_env]]
 name = "ELASTICSEARCH_URL"

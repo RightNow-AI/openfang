@@ -7,11 +7,12 @@ use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
 use async_trait::async_trait;
+use dashmap::DashMap;
 use futures::{SinkExt, Stream, StreamExt};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroizing;
@@ -32,10 +33,25 @@ pub struct SlackAdapter {
     shutdown_rx: watch::Receiver<bool>,
     /// Bot's own user ID (populated after auth.test).
     bot_user_id: Arc<RwLock<Option<String>>>,
+    /// Threads where the bot was @-mentioned. Maps thread_ts -> last interaction time.
+    active_threads: Arc<DashMap<String, Instant>>,
+    /// How long to track a thread after last interaction.
+    thread_ttl: Duration,
+    /// Whether auto-thread-reply is enabled.
+    auto_thread_reply: bool,
+    /// Whether to unfurl (expand previews for) links in posted messages.
+    unfurl_links: bool,
 }
 
 impl SlackAdapter {
-    pub fn new(app_token: String, bot_token: String, allowed_channels: Vec<String>) -> Self {
+    pub fn new(
+        app_token: String,
+        bot_token: String,
+        allowed_channels: Vec<String>,
+        auto_thread_reply: bool,
+        thread_ttl_hours: u64,
+        unfurl_links: bool,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             app_token: Zeroizing::new(app_token),
@@ -45,6 +61,10 @@ impl SlackAdapter {
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             bot_user_id: Arc::new(RwLock::new(None)),
+            active_threads: Arc::new(DashMap::new()),
+            thread_ttl: Duration::from_secs(thread_ttl_hours * 3600),
+            auto_thread_reply,
+            unfurl_links,
         }
     }
 
@@ -76,14 +96,20 @@ impl SlackAdapter {
         &self,
         channel_id: &str,
         text: &str,
+        thread_ts: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let chunks = split_message(text, SLACK_MSG_LIMIT);
 
         for chunk in chunks {
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "channel": channel_id,
                 "text": chunk,
+                "unfurl_links": self.unfurl_links,
+                "unfurl_media": self.unfurl_links,
             });
+            if let Some(ts) = thread_ts {
+                body["thread_ts"] = serde_json::json!(ts);
+            }
 
             let resp: serde_json::Value = self
                 .client
@@ -133,6 +159,30 @@ impl ChannelAdapter for SlackAdapter {
         let allowed_channels = self.allowed_channels.clone();
         let client = self.client.clone();
         let mut shutdown = self.shutdown_rx.clone();
+        let active_threads = self.active_threads.clone();
+        let auto_thread_reply = self.auto_thread_reply;
+
+        // Spawn periodic cleanup of expired thread entries.
+        {
+            let active_threads = self.active_threads.clone();
+            let thread_ttl = self.thread_ttl;
+            let mut cleanup_shutdown = self.shutdown_rx.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(300));
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            active_threads.retain(|_, last| last.elapsed() < thread_ttl);
+                        }
+                        _ = cleanup_shutdown.changed() => {
+                            if *cleanup_shutdown.borrow() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         tokio::spawn(async move {
             let mut backoff = INITIAL_BACKOFF;
@@ -240,8 +290,14 @@ impl ChannelAdapter for SlackAdapter {
 
                             // Extract the event
                             let event = &payload["payload"]["event"];
-                            if let Some(msg) =
-                                parse_slack_event(event, &bot_user_id, &allowed_channels).await
+                            if let Some(msg) = parse_slack_event(
+                                event,
+                                &bot_user_id,
+                                &allowed_channels,
+                                &active_threads,
+                                auto_thread_reply,
+                            )
+                            .await
                             {
                                 debug!(
                                     "Slack message from {}: {:?}",
@@ -289,10 +345,30 @@ impl ChannelAdapter for SlackAdapter {
         let channel_id = &user.platform_id;
         match content {
             ChannelContent::Text(text) => {
-                self.api_send_message(channel_id, &text).await?;
+                self.api_send_message(channel_id, &text, None).await?;
             }
             _ => {
-                self.api_send_message(channel_id, "(Unsupported content type)")
+                self.api_send_message(channel_id, "(Unsupported content type)", None)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_in_thread(
+        &self,
+        user: &ChannelUser,
+        content: ChannelContent,
+        thread_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let channel_id = &user.platform_id;
+        match content {
+            ChannelContent::Text(text) => {
+                self.api_send_message(channel_id, &text, Some(thread_id))
+                    .await?;
+            }
+            _ => {
+                self.api_send_message(channel_id, "(Unsupported content type)", Some(thread_id))
                     .await?;
             }
         }
@@ -335,9 +411,11 @@ async fn parse_slack_event(
     event: &serde_json::Value,
     bot_user_id: &Arc<RwLock<Option<String>>>,
     allowed_channels: &[String],
+    active_threads: &Arc<DashMap<String, Instant>>,
+    auto_thread_reply: bool,
 ) -> Option<ChannelMessage> {
     let event_type = event["type"].as_str()?;
-    if event_type != "message" {
+    if event_type != "message" && event_type != "app_mention" {
         return None;
     }
 
@@ -413,6 +491,50 @@ async fn parse_slack_event(
         ChannelContent::Text(text.to_string())
     };
 
+    // Extract thread_id: threaded replies have `thread_ts`, top-level messages
+    // use their own `ts` so the reply will start a thread under the original.
+    let thread_id = msg_data["thread_ts"]
+        .as_str()
+        .or_else(|| event["thread_ts"].as_str())
+        .map(|s| s.to_string())
+        .or_else(|| Some(ts.to_string()));
+
+    // Check if the bot was @-mentioned (for group_policy = "mention_only")
+    let mut metadata = HashMap::new();
+    if event_type == "app_mention" {
+        metadata.insert("was_mentioned".to_string(), serde_json::Value::Bool(true));
+    }
+
+    // Determine the real thread_ts from the event (None for top-level messages).
+    let real_thread_ts = msg_data["thread_ts"]
+        .as_str()
+        .or_else(|| event["thread_ts"].as_str());
+
+    let mut explicitly_mentioned = false;
+    if let Some(ref bid) = *bot_user_id.read().await {
+        let mention_tag = format!("<@{bid}>");
+        if text.contains(&mention_tag) {
+            explicitly_mentioned = true;
+            metadata.insert("was_mentioned".to_string(), serde_json::json!(true));
+
+            // Track thread for auto-reply on subsequent messages.
+            if let Some(tts) = real_thread_ts {
+                active_threads.insert(tts.to_string(), Instant::now());
+            }
+        }
+    }
+
+    // Auto-reply to follow-up messages in tracked threads.
+    if !explicitly_mentioned && auto_thread_reply {
+        if let Some(tts) = real_thread_ts {
+            if let Some(mut entry) = active_threads.get_mut(tts) {
+                // Refresh TTL and mark as mentioned so dispatch proceeds.
+                *entry = Instant::now();
+                metadata.insert("was_mentioned".to_string(), serde_json::json!(true));
+            }
+        }
+    }
+
     Some(ChannelMessage {
         channel: ChannelType::Slack,
         platform_message_id: ts.to_string(),
@@ -425,8 +547,8 @@ async fn parse_slack_event(
         target_agent: None,
         timestamp,
         is_group: true,
-        thread_id: None,
-        metadata: HashMap::new(),
+        thread_id,
+        metadata,
     })
 }
 
@@ -445,7 +567,9 @@ mod tests {
             "ts": "1700000000.000100"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[]).await.unwrap();
+        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true)
+            .await
+            .unwrap();
         assert_eq!(msg.channel, ChannelType::Slack);
         assert_eq!(msg.sender.platform_id, "C789");
         assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Hello agent!"));
@@ -463,7 +587,7 @@ mod tests {
             "bot_id": "B999"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[]).await;
+        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true).await;
         assert!(msg.is_none());
     }
 
@@ -478,7 +602,7 @@ mod tests {
             "ts": "1700000000.000100"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[]).await;
+        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true).await;
         assert!(msg.is_none());
     }
 
@@ -494,12 +618,25 @@ mod tests {
         });
 
         // Not in allowed channels
-        let msg =
-            parse_slack_event(&event, &bot_id, &["C111".to_string(), "C222".to_string()]).await;
+        let msg = parse_slack_event(
+            &event,
+            &bot_id,
+            &["C111".to_string(), "C222".to_string()],
+            &Arc::new(DashMap::new()),
+            true,
+        )
+        .await;
         assert!(msg.is_none());
 
         // In allowed channels
-        let msg = parse_slack_event(&event, &bot_id, &["C789".to_string()]).await;
+        let msg = parse_slack_event(
+            &event,
+            &bot_id,
+            &["C789".to_string()],
+            &Arc::new(DashMap::new()),
+            true,
+        )
+        .await;
         assert!(msg.is_some());
     }
 
@@ -516,7 +653,7 @@ mod tests {
             "ts": "1700000000.000100"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[]).await;
+        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true).await;
         assert!(msg.is_none());
     }
 
@@ -531,7 +668,9 @@ mod tests {
             "ts": "1700000000.000100"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[]).await.unwrap();
+        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true)
+            .await
+            .unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -556,7 +695,9 @@ mod tests {
             "ts": "1700000001.000200"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[]).await.unwrap();
+        let msg = parse_slack_event(&event, &bot_id, &[], &Arc::new(DashMap::new()), true)
+            .await
+            .unwrap();
         assert_eq!(msg.channel, ChannelType::Slack);
         assert_eq!(msg.sender.platform_id, "C789");
         assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Edited message text"));
@@ -568,8 +709,37 @@ mod tests {
             "xapp-test".to_string(),
             "xoxb-test".to_string(),
             vec!["C123".to_string()],
+            true,
+            24,
+            true,
         );
         assert_eq!(adapter.name(), "slack");
         assert_eq!(adapter.channel_type(), ChannelType::Slack);
+    }
+
+    #[test]
+    fn test_slack_adapter_unfurl_links_enabled() {
+        let adapter = SlackAdapter::new(
+            "xapp-test".to_string(),
+            "xoxb-test".to_string(),
+            vec![],
+            true,
+            24,
+            true,
+        );
+        assert!(adapter.unfurl_links);
+    }
+
+    #[test]
+    fn test_slack_adapter_unfurl_links_disabled() {
+        let adapter = SlackAdapter::new(
+            "xapp-test".to_string(),
+            "xoxb-test".to_string(),
+            vec![],
+            true,
+            24,
+            false,
+        );
+        assert!(!adapter.unfurl_links);
     }
 }

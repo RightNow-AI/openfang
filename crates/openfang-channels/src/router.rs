@@ -34,6 +34,8 @@ pub struct AgentRouter {
     default_agent: Option<AgentId>,
     /// Per-channel-type default agent (e.g., Telegram -> agent_a, Discord -> agent_b).
     channel_defaults: DashMap<String, AgentId>,
+    /// Per-channel-type default agent *name* (for re-resolution when UUID becomes stale).
+    channel_default_names: DashMap<String, String>,
     /// Sorted bindings (most specific first). Uses Mutex for runtime updates via Arc.
     bindings: Mutex<Vec<(AgentBinding, String)>>,
     /// Broadcast configuration. Uses Mutex for runtime updates via Arc.
@@ -50,6 +52,7 @@ impl AgentRouter {
             direct_routes: DashMap::new(),
             default_agent: None,
             channel_defaults: DashMap::new(),
+            channel_default_names: DashMap::new(),
             bindings: Mutex::new(Vec::new()),
             broadcast: Mutex::new(BroadcastConfig::default()),
             agent_name_cache: DashMap::new(),
@@ -64,6 +67,31 @@ impl AgentRouter {
     /// Set a per-channel-type default agent (e.g., "Telegram" -> agent_id).
     pub fn set_channel_default(&self, channel_key: String, agent_id: AgentId) {
         self.channel_defaults.insert(channel_key, agent_id);
+    }
+
+    /// Set a per-channel-type default agent AND remember the agent name for
+    /// re-resolution when the cached UUID becomes stale (e.g. after agent restart).
+    pub fn set_channel_default_with_name(
+        &self,
+        channel_key: String,
+        agent_id: AgentId,
+        agent_name: String,
+    ) {
+        self.channel_defaults.insert(channel_key.clone(), agent_id);
+        self.channel_default_names.insert(channel_key, agent_name);
+    }
+
+    /// Retrieve the stored agent name for a channel default (if any).
+    pub fn channel_default_name(&self, channel_key: &str) -> Option<String> {
+        self.channel_default_names
+            .get(channel_key)
+            .map(|r| r.clone())
+    }
+
+    /// Update the cached agent ID for a channel default (after re-resolution).
+    pub fn update_channel_default(&self, channel_key: &str, new_agent_id: AgentId) {
+        self.channel_defaults
+            .insert(channel_key.to_string(), new_agent_id);
     }
 
     /// Set a user's default agent.

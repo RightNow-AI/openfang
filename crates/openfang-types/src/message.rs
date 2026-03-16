@@ -42,6 +42,11 @@ pub enum ContentBlock {
     Text {
         /// The text content.
         text: String,
+        /// Provider-specific metadata (e.g. Gemini `thoughtSignature`).
+        /// Opaque to the core — drivers read/write this to round-trip
+        /// fields the provider requires on subsequent requests.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<serde_json::Value>,
     },
     /// An inline base64-encoded image.
     #[serde(rename = "image")]
@@ -60,6 +65,11 @@ pub enum ContentBlock {
         name: String,
         /// The tool input parameters.
         input: serde_json::Value,
+        /// Provider-specific metadata (e.g. Gemini `thoughtSignature`).
+        /// Opaque to the core — drivers read/write this to round-trip
+        /// fields the provider requires on subsequent requests.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<serde_json::Value>,
     },
     /// A tool result from executing a tool.
     #[serde(rename = "tool_result")]
@@ -129,7 +139,7 @@ impl MessageContent {
             MessageContent::Blocks(blocks) => blocks
                 .iter()
                 .map(|b| match b {
-                    ContentBlock::Text { text } => text.len(),
+                    ContentBlock::Text { text, .. } => text.len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
                     ContentBlock::Thinking { thinking } => thinking.len(),
                     ContentBlock::ToolUse { .. }
@@ -147,7 +157,7 @@ impl MessageContent {
             MessageContent::Blocks(blocks) => blocks
                 .iter()
                 .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.as_str()),
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -170,6 +180,14 @@ impl Message {
         Self {
             role: Role::User,
             content: MessageContent::Text(content.into()),
+        }
+    }
+
+    /// Create a user message with structured content blocks (e.g. text + images).
+    pub fn user_with_blocks(blocks: Vec<ContentBlock>) -> Self {
+        Self {
+            role: Role::User,
+            content: MessageContent::Blocks(blocks),
         }
     }
 
@@ -290,5 +308,33 @@ mod tests {
         let json = serde_json::json!({"type": "future_block_type"});
         let block: ContentBlock = serde_json::from_value(json).unwrap();
         assert!(matches!(block, ContentBlock::Unknown));
+    }
+
+    #[test]
+    fn test_user_with_blocks() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "What is in this image?".to_string(),
+                provider_metadata: None,
+            },
+            ContentBlock::Image {
+                media_type: "image/jpeg".to_string(),
+                data: "base64data".to_string(),
+            },
+        ];
+        let msg = Message::user_with_blocks(blocks);
+        assert_eq!(msg.role, Role::User);
+        match msg.content {
+            MessageContent::Blocks(ref b) => {
+                assert_eq!(b.len(), 2);
+                assert!(
+                    matches!(&b[0], ContentBlock::Text { text, .. } if text == "What is in this image?")
+                );
+                assert!(
+                    matches!(&b[1], ContentBlock::Image { media_type, .. } if media_type == "image/jpeg")
+                );
+            }
+            _ => panic!("Expected blocks content"),
+        }
     }
 }

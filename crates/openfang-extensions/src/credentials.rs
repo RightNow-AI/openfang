@@ -126,6 +126,17 @@ impl CredentialResolver {
             ))
         }
     }
+
+    /// Remove a credential from the vault (if available).
+    pub fn remove_from_vault(&mut self, key: &str) -> ExtensionResult<bool> {
+        if let Some(ref mut vault) = self.vault {
+            vault.remove(key)
+        } else {
+            Err(crate::ExtensionError::Vault(
+                "No vault configured".to_string(),
+            ))
+        }
+    }
 }
 
 /// Load a dotenv file into a HashMap.

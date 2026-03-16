@@ -8,7 +8,7 @@ tags = ["cloud", "amazon", "infrastructure", "s3", "ec2", "lambda", "devops"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-aws"]
+args = ["-y", "@aws-mcp/server-aws"]
 
 [[required_env]]
 name = "AWS_ACCESS_KEY_ID"

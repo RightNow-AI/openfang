@@ -24,12 +24,66 @@ function escapeHtml(text) {
 function renderMarkdown(text) {
   if (!text) return '';
   if (typeof marked !== 'undefined') {
-    var html = marked.parse(text);
+    // Protect LaTeX blocks from marked.js mangling (underscores, backslashes, etc.)
+    var latexBlocks = [];
+    var protected_ = text;
+    // Protect display math $$...$$ first (greedy across lines)
+    protected_ = protected_.replace(/\$\$([\s\S]+?)\$\$/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+    // Protect inline math $...$ (single line, not empty, not starting/ending with space)
+    protected_ = protected_.replace(/\$([^\s$](?:[^$]*[^\s$])?)\$/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+    // Protect \[...\] display math
+    protected_ = protected_.replace(/\\\[([\s\S]+?)\\\]/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+    // Protect \(...\) inline math
+    protected_ = protected_.replace(/\\\(([\s\S]+?)\\\)/g, function(match) {
+      var idx = latexBlocks.length;
+      latexBlocks.push(match);
+      return '\x00LATEX' + idx + '\x00';
+    });
+
+    var html = marked.parse(protected_);
+    // Restore LaTeX blocks
+    for (var i = 0; i < latexBlocks.length; i++) {
+      html = html.replace('\x00LATEX' + i + '\x00', latexBlocks[i]);
+    }
     // Add copy buttons to code blocks
     html = html.replace(/<pre><code/g, '<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><code');
+    // Open external links in new tab
+    html = html.replace(/<a\s+href="(https?:\/\/[^"]*)"(?![^>]*target=)([^>]*)>/gi, '<a href="$1" target="_blank" rel="noopener"$2>');
     return html;
   }
   return escapeHtml(text);
+}
+
+// Render LaTeX math in the chat message container using KaTeX auto-render.
+// Call this after new messages are inserted into the DOM.
+function renderLatex(el) {
+  if (typeof renderMathInElement !== 'function') return;
+  var target = el || document.getElementById('messages');
+  if (!target) return;
+  try {
+    renderMathInElement(target, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '\\[', right: '\\]', display: true },
+        { left: '$', right: '$', display: false },
+        { left: '\\(', right: '\\)', display: false }
+      ],
+      throwOnError: false,
+      trust: false
+    });
+  } catch(e) { /* KaTeX render error — ignore gracefully */ }
 }
 
 function copyCode(btn) {
@@ -104,6 +158,8 @@ document.addEventListener('alpine:init', function() {
     focusMode: localStorage.getItem('openfang-focus') === 'true',
     showOnboarding: false,
     showAuthPrompt: false,
+    authMode: 'apikey',
+    sessionUser: null,
 
     toggleFocusMode() {
       this.focusMode = !this.focusMode;
@@ -155,16 +211,33 @@ document.addEventListener('alpine:init', function() {
 
     async checkAuth() {
       try {
-        // Use a protected endpoint (not in the public allowlist) to detect
-        // whether the server requires an API key.
+        // First check if session-based auth is configured
+        var authInfo = await OpenFangAPI.get('/api/auth/check');
+        if (authInfo.mode === 'none') {
+          // No session auth — fall back to API key detection
+          this.authMode = 'apikey';
+          this.sessionUser = null;
+        } else if (authInfo.mode === 'session') {
+          this.authMode = 'session';
+          if (authInfo.authenticated) {
+            this.sessionUser = authInfo.username;
+            this.showAuthPrompt = false;
+            return;
+          }
+          // Session auth enabled but not authenticated — show login prompt
+          this.showAuthPrompt = true;
+          return;
+        }
+      } catch(e) { /* ignore — fall through to API key check */ }
+
+      // API key mode detection
+      try {
         await OpenFangAPI.get('/api/tools');
         this.showAuthPrompt = false;
       } catch(e) {
         if (e.message && (e.message.indexOf('Not authorized') >= 0 || e.message.indexOf('401') >= 0 || e.message.indexOf('Missing Authorization') >= 0 || e.message.indexOf('Unauthorized') >= 0)) {
-          // Only show prompt if we don't already have a saved key
           var saved = localStorage.getItem('openfang-api-key');
           if (saved) {
-            // Saved key might be stale — clear it and show prompt
             OpenFangAPI.setAuthToken('');
             localStorage.removeItem('openfang-api-key');
           }
@@ -179,6 +252,29 @@ document.addEventListener('alpine:init', function() {
       localStorage.setItem('openfang-api-key', key.trim());
       this.showAuthPrompt = false;
       this.refreshAgents();
+    },
+
+    async sessionLogin(username, password) {
+      try {
+        var result = await OpenFangAPI.post('/api/auth/login', { username: username, password: password });
+        if (result.status === 'ok') {
+          this.sessionUser = result.username;
+          this.showAuthPrompt = false;
+          this.refreshAgents();
+        } else {
+          OpenFangToast.error(result.error || 'Login failed');
+        }
+      } catch(e) {
+        OpenFangToast.error(e.message || 'Login failed');
+      }
+    },
+
+    async sessionLogout() {
+      try {
+        await OpenFangAPI.post('/api/auth/logout');
+      } catch(e) { /* ignore */ }
+      this.sessionUser = null;
+      this.showAuthPrompt = true;
     },
 
     clearApiKey() {

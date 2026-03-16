@@ -8,7 +8,7 @@ tags = ["cloud", "microsoft", "infrastructure", "azure", "devops", "enterprise"]
 [transport]
 type = "stdio"
 command = "npx"
-args = ["@modelcontextprotocol/server-azure"]
+args = ["-y", "@azure/mcp@latest", "server", "start"]
 
 [[required_env]]
 name = "AZURE_SUBSCRIPTION_ID"

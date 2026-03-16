@@ -29,7 +29,9 @@ hex = { workspace = true }
 zeroize = { workspace = true }
 dashmap = { workspace = true }
 regex-lite = { workspace = true }
+rusqlite = { workspace = true }
 tokio-tungstenite = "0.24"
+shlex = "1"
 
 [dev-dependencies]
 tokio-test = { workspace = true }

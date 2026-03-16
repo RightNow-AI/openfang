@@ -141,13 +141,13 @@ impl CdpConnection {
             if let Some(id) = json.get("id").and_then(|v| v.as_u64()) {
                 if let Some((_, sender)) = pending.remove(&id) {
                     if let Some(error) = json.get("error") {
-                        let msg = error["message"]
-                            .as_str()
-                            .unwrap_or("CDP error")
-                            .to_string();
+                        let msg = error["message"].as_str().unwrap_or("CDP error").to_string();
                         let _ = sender.send(Err(msg));
                     } else {
-                        let result = json.get("result").cloned().unwrap_or(serde_json::Value::Null);
+                        let result = json
+                            .get("result")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
                         let _ = sender.send(Ok(result));
                     }
                 }
@@ -258,6 +258,12 @@ impl BrowserSession {
             args.insert(0, "--headless=new".to_string());
             args.push("--disable-gpu".to_string());
         }
+        // Chromium refuses to run as root without --no-sandbox. Detect this
+        // without adding a libc dependency by reading the effective UID from
+        // /proc/self/status (Linux) or falling back to the HOME env var.
+        if is_running_as_root() {
+            args.push("--no-sandbox".to_string());
+        }
 
         let mut cmd = tokio::process::Command::new(&chrome_path);
         cmd.args(&args);
@@ -287,9 +293,12 @@ impl BrowserSession {
             }
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to launch Chromium at {}: {e}", chrome_path.display()))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            format!(
+                "Failed to launch Chromium at {}: {e}",
+                chrome_path.display()
+            )
+        })?;
 
         // Parse stderr for the DevTools WebSocket URL
         let stderr = child.stderr.take().ok_or("No stderr from Chromium")?;
@@ -453,7 +462,10 @@ impl BrowserSession {
                     .unwrap_or(val);
                 if parsed["success"].as_bool() == Some(false) {
                     return BrowserResponse::err(
-                        parsed["error"].as_str().unwrap_or("Click failed").to_string(),
+                        parsed["error"]
+                            .as_str()
+                            .unwrap_or("Click failed")
+                            .to_string(),
                     );
                 }
                 // Wait briefly for any navigation triggered by click
@@ -632,7 +644,11 @@ impl BrowserSession {
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or(info);
 
-        let content_val = self.cdp.run_js(EXTRACT_CONTENT_JS).await.unwrap_or_default();
+        let content_val = self
+            .cdp
+            .run_js(EXTRACT_CONTENT_JS)
+            .await
+            .unwrap_or_default();
         let content_obj: serde_json::Value = content_val
             .as_str()
             .and_then(|s| serde_json::from_str(s).ok())
@@ -987,9 +1003,7 @@ pub async fn tool_browser_read_page(
     mgr: &BrowserManager,
     agent_id: &str,
 ) -> Result<String, String> {
-    let resp = mgr
-        .send_command(agent_id, BrowserCommand::ReadPage)
-        .await?;
+    let resp = mgr.send_command(agent_id, BrowserCommand::ReadPage).await?;
     if !resp.success {
         return Err(resp.error.unwrap_or_else(|| "ReadPage failed".to_string()));
     }
@@ -1154,6 +1168,36 @@ const EXTRACT_CONTENT_JS: &str = r#"(() => {
     return JSON.stringify({title, url, content});
 })()"#;
 
+// ── Root detection ─────────────────────────────────────────────────────────
+
+/// Returns true if the current process is running as root (UID 0).
+///
+/// On Linux, reads `/proc/self/status` to get the effective UID without
+/// requiring a `libc` dependency. Falls back to checking the `HOME` env var
+/// on systems where `/proc` is not available.
+fn is_running_as_root() -> bool {
+    #[cfg(unix)]
+    {
+        // Primary: read effective UID from /proc/self/status (Linux)
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if let Some(rest) = line.strip_prefix("Uid:") {
+                    // Format: "Uid:	<real> <effective> <saved> <fs>"
+                    if let Some(euid_str) = rest.split_whitespace().nth(1) {
+                        return euid_str == "0";
+                    }
+                }
+            }
+        }
+        // Fallback: HOME=/root is a reliable indicator on most Unix systems
+        std::env::var("HOME").map(|h| h == "/root").unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1291,9 +1335,18 @@ mod tests {
     }
 
     #[test]
+    fn test_is_running_as_root_returns_bool() {
+        // Just verify it doesn't panic and returns a bool.
+        let _ = is_running_as_root();
+    }
+
+    #[test]
     fn test_chromium_candidates_not_empty() {
         let paths = chromium_candidates();
-        assert!(!paths.is_empty(), "Should have platform-specific candidates");
+        assert!(
+            !paths.is_empty(),
+            "Should have platform-specific candidates"
+        );
     }
 
     #[test]

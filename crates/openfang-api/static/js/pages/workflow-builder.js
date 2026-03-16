@@ -38,6 +38,11 @@ function workflowBuilder() {
     ],
 
     _renderScheduled: false,
+    _lastClickNodeId: null,
+    _lastClickTime: 0,
+    _didDrag: false,
+    _didConnect: false,
+    _didPan: false,
 
     async init() {
       var self = this;
@@ -334,8 +339,23 @@ function workflowBuilder() {
 
     onNodeMouseDown: function(node, e) {
       e.stopPropagation();
+      // Detect double-click manually — the native dblclick event never fires
+      // because scheduleRender() destroys and recreates all SVG elements between
+      // the first and second click, so the browser loses the DOM target for dblclick.
+      var now = Date.now();
+      if (this._lastClickNodeId === node.id && (now - this._lastClickTime) < 350) {
+        // Double-click detected — open editor instead of starting drag
+        this._lastClickNodeId = null;
+        this._lastClickTime = 0;
+        this.editNode(node);
+        return;
+      }
+      this._lastClickNodeId = node.id;
+      this._lastClickTime = now;
+
       this.selectedNode = node;
       this.selectedConnection = null;
+      this._didDrag = false;
       this.dragging = node.id;
       var rect = this._getCanvasRect();
       this.dragOffset = {
@@ -350,6 +370,7 @@ function workflowBuilder() {
       this.selectedConnection = null;
       this.showNodeEditor = false;
       // Start canvas pan
+      this._didPan = false;
       this.canvasDragging = true;
       this.canvasDragStart = { x: e.clientX - this.canvasOffset.x * this.zoom, y: e.clientY - this.canvasOffset.y * this.zoom };
     },
@@ -357,6 +378,7 @@ function workflowBuilder() {
     onCanvasMouseMove: function(e) {
       var rect = this._getCanvasRect();
       if (this.dragging) {
+        this._didDrag = true;
         var node = this.getNode(this.dragging);
         if (node) {
           node.x = Math.max(0, (e.clientX - rect.left) / this.zoom - this.canvasOffset.x - this.dragOffset.x);
@@ -364,12 +386,14 @@ function workflowBuilder() {
         }
         this.scheduleRender();
       } else if (this.connecting) {
+        this._didConnect = true;
         this.connectPreview = {
           x: (e.clientX - rect.left) / this.zoom - this.canvasOffset.x,
           y: (e.clientY - rect.top) / this.zoom - this.canvasOffset.y
         };
         this.scheduleRender();
       } else if (this.canvasDragging) {
+        this._didPan = true;
         this.canvasOffset = {
           x: (e.clientX - this.canvasDragStart.x) / this.zoom,
           y: (e.clientY - this.canvasDragStart.y) / this.zoom
@@ -378,11 +402,19 @@ function workflowBuilder() {
     },
 
     onCanvasMouseUp: function() {
+      // Only re-render if something actually moved. Rendering on every mouseup
+      // destroys SVG elements between clicks, which prevents dblclick detection.
+      var needsRender = this._didDrag || this._didConnect || this._didPan;
       this.dragging = null;
       this.connecting = null;
       this.connectPreview = null;
       this.canvasDragging = false;
-      this.scheduleRender();
+      this._didDrag = false;
+      this._didConnect = false;
+      this._didPan = false;
+      if (needsRender) {
+        this.scheduleRender();
+      }
     },
 
     onCanvasWheel: function(e) {
@@ -427,6 +459,12 @@ function workflowBuilder() {
     editNode: function(node) {
       this.selectedNode = node;
       this.showNodeEditor = true;
+      this.scheduleRender();
+    },
+
+    // Called from editor panel inputs to reflect changes on the canvas SVG
+    applyNodeEdit: function() {
+      this.scheduleRender();
     },
 
     // ── TOML Generation ──────────────────────────────────

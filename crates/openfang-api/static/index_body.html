@@ -1,12 +1,28 @@
 <body x-data="app" :data-theme="theme">
 
-<!-- API Key Auth Prompt -->
-<div x-show="$store.app.showAuthPrompt" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px)" x-data="{ apiKeyInput: '' }">
+<!-- Auth Prompt (API Key or Username/Password) -->
+<div x-show="$store.app.showAuthPrompt" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px)" x-data="{ apiKeyInput: '', loginUser: '', loginPass: '' }">
   <div style="background:var(--bg-card,#1e1e2e);border:1px solid var(--border,#333);border-radius:12px;padding:2rem;max-width:400px;width:90%">
-    <h3 style="margin:0 0 0.5rem;font-size:1.1rem">API Key Required</h3>
-    <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 1rem">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
-    <input type="password" x-model="apiKeyInput" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
-    <button @click="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
+    <!-- Session login mode -->
+    <template x-if="$store.app.authMode === 'session'">
+      <div>
+        <h3 style="margin:0 0 0.5rem;font-size:1.1rem">Sign In</h3>
+        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 1rem">Enter your dashboard credentials.</p>
+        <input type="text" x-model="loginUser" placeholder="Username" autocomplete="username" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.5rem">
+        <input type="password" x-model="loginPass" placeholder="Password" autocomplete="current-password" @keydown.enter="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
+        <button @click="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Sign In</button>
+      </div>
+    </template>
+    <!-- API key mode -->
+    <template x-if="$store.app.authMode === 'apikey'">
+      <div>
+        <h3 style="margin:0 0 0.5rem;font-size:1.1rem">API Key Required</h3>
+        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 0.5rem">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
+        <p style="color:var(--text-dim,#666);font-size:0.75rem;margin:0 0 1rem">Add <code style="color:var(--accent-light,#a78bfa);background:var(--bg,#111);padding:1px 4px;border-radius:2px">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.openfang/config.toml</code> (not under any [section]).</p>
+        <input type="password" x-model="apiKeyInput" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
+        <button @click="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
+      </div>
+    </template>
   </div>
 </div>
 
@@ -170,6 +186,10 @@
     </div>
 
     <div class="sidebar-footer">
+      <div x-show="$store.app.sessionUser" style="padding:4px 16px;display:flex;align-items:center;justify-content:space-between">
+        <span class="text-xs text-dim" x-text="$store.app.sessionUser" style="letter-spacing:0.5px"></span>
+        <button @click="$store.app.sessionLogout()" class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;opacity:0.7" title="Sign out">Logout</button>
+      </div>
       <div class="sidebar-label text-xs text-dim" style="padding:0 16px 4px;letter-spacing:0.5px">Ctrl+K agents | Ctrl+N new</div>
     </div>
     <div class="sidebar-toggle" @click="toggleSidebar()" x-text="sidebarCollapsed ? '\u276F' : '\u276E'"></div>
@@ -735,7 +755,7 @@
                   <span class="text-xs" style="color:var(--danger)" x-text="formatRecordingTime()"></span>
                 </div>
                 <textarea id="msg-input" rows="1" :placeholder="recording ? 'Recording... release to send' : 'Message OpenFang... (/ for commands)'"
-                          @keydown.enter.prevent="if(!$event.shiftKey){if(showModelPicker && filteredModelPicker.length){pickModel(filteredModelPicker[modelPickerIdx].id)}else if(showSlashMenu && filteredSlashCommands.length){executeSlashCommand(filteredSlashCommands[slashIdx].cmd)}else{sendMessage()}}"
+                          @keydown.enter.prevent="if(!$event.isComposing && $event.keyCode !== 229 && !$event.shiftKey){if(showModelPicker && filteredModelPicker.length){pickModel(filteredModelPicker[modelPickerIdx].id)}else if(showSlashMenu && filteredSlashCommands.length){executeSlashCommand(filteredSlashCommands[slashIdx].cmd)}else{sendMessage()}}"
                           @keydown.escape="showSlashMenu = false; showModelPicker = false"
                           @keydown.arrow-up.prevent="if(showModelPicker){modelPickerIdx = Math.max(0, modelPickerIdx - 1)}else if(showSlashMenu){slashIdx = Math.max(0, slashIdx - 1)}"
                           @keydown.arrow-down.prevent="if(showModelPicker){modelPickerIdx = Math.min(filteredModelPicker.length - 1, modelPickerIdx + 1)}else if(showSlashMenu){slashIdx = Math.min(filteredSlashCommands.length - 1, slashIdx + 1)}"
@@ -768,7 +788,13 @@
                     <div class="model-switcher-dropdown" x-show="showModelSwitcher" x-transition:enter="transition ease-out duration-150" x-transition:enter-start="opacity-0 transform translate-y-1" x-transition:enter-end="opacity-100 transform translate-y-0" x-transition:leave="transition ease-in duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0">
                       <div class="model-switcher-search">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;opacity:0.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                        <input id="model-switcher-search" type="text" x-model="modelSwitcherFilter" placeholder="Search models..." @keydown.escape.stop="showModelSwitcher = false" @keydown.arrow-down.prevent="modelSwitcherIdx = Math.min(modelSwitcherIdx + 1, filteredSwitcherModels.length - 1)" @keydown.arrow-up.prevent="modelSwitcherIdx = Math.max(modelSwitcherIdx - 1, 0)" @keydown.enter.prevent="filteredSwitcherModels[modelSwitcherIdx] && switchModel(filteredSwitcherModels[modelSwitcherIdx])">
+                        <input id="model-switcher-search" type="text" x-model="modelSwitcherFilter" placeholder="Search models..." @keydown.escape.stop="showModelSwitcher = false" @keydown.arrow-down.prevent="modelSwitcherIdx = Math.min(modelSwitcherIdx + 1, filteredSwitcherModels.length - 1)" @keydown.arrow-up.prevent="modelSwitcherIdx = Math.max(modelSwitcherIdx - 1, 0)" @keydown.enter.prevent="!$event.isComposing && $event.keyCode !== 229 && filteredSwitcherModels[modelSwitcherIdx] && switchModel(filteredSwitcherModels[modelSwitcherIdx])">
+                        <select x-model="modelSwitcherProviderFilter" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text-dim);font-size:11px;padding:2px 6px;cursor:pointer;font-family:var(--font-mono);flex-shrink:0">
+                          <option value="">All</option>
+                          <template x-for="pn in switcherProviders" :key="pn">
+                            <option :value="pn" x-text="pn"></option>
+                          </template>
+                        </select>
                       </div>
                       <div x-show="modelSwitching" style="display:flex;align-items:center;justify-content:center;padding:12px;gap:8px">
                         <div class="tool-card-spinner"></div>
@@ -785,7 +811,7 @@
                               <div class="model-switcher-item" :class="{'active': currentAgent && m.id === currentAgent.model_name}" @click="switchModel(m)" @mouseenter="modelSwitcherIdx = filteredSwitcherModels.indexOf(m)">
                                 <div style="flex:1;min-width:0">
                                   <div style="display:flex;align-items:center;gap:6px">
-                                    <span class="model-switcher-item-name" x-text="m.display_name || m.id"></span>
+                                    <span class="model-switcher-item-name" x-text="m.provider + ':' + (m.display_name || m.id)"></span>
                                     <span class="model-switcher-tier" :class="'tier-' + (m.tier || 'balanced').toLowerCase()" x-text="m.tier || 'Balanced'"></span>
                                   </div>
                                   <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
@@ -841,6 +867,9 @@
                     <div class="text-xs text-dim font-mono" style="font-size:11px" x-text="agent.model_name"></div>
                   </div>
                   <span class="badge" :class="'badge-' + agent.state.toLowerCase()" x-text="agent.state" style="font-size:10px"></span>
+                  <button class="agent-chip-config-btn" @click.stop="showDetail(agent)" title="Agent settings" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:transparent;cursor:pointer;color:var(--text-dim);transition:all 0.15s;flex-shrink:0" @mouseenter="$el.style.borderColor='var(--accent)';$el.style.color='var(--accent)';$el.style.background='var(--surface2)'" @mouseleave="$el.style.borderColor='var(--border)';$el.style.color='var(--text-dim)';$el.style.background='transparent'">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                  </button>
                 </div>
               </template>
             </div>
@@ -893,7 +922,23 @@
                       </select>
                     </div>
                     <div class="detail-row" x-show="detailAgent.profile"><span class="detail-label">Profile</span><span class="detail-value" style="text-transform:capitalize" x-text="detailAgent.profile || '-'"></span></div>
-                    <div class="detail-row"><span class="detail-label">Provider</span><span class="detail-value" x-text="detailAgent.model_provider"></span></div>
+                    <div class="detail-row"><span class="detail-label">Provider</span>
+                      <template x-if="!editingProvider">
+                        <span>
+                          <span class="detail-value" x-text="detailAgent.model_provider"></span>
+                          <button class="btn btn-ghost btn-sm" style="margin-left:8px;padding:2px 8px;font-size:11px" @click="editingProvider = true; newProviderValue = detailAgent.model_provider">Change</button>
+                        </span>
+                      </template>
+                      <template x-if="editingProvider">
+                        <span class="flex gap-1" style="align-items:center">
+                          <input class="form-input" style="width:160px;font-size:12px" x-model="newProviderValue" placeholder="provider" @keydown.enter="changeProvider()" @keydown.escape="editingProvider = false">
+                          <button class="btn btn-primary btn-sm" @click="changeProvider()" :disabled="modelSaving" style="padding:2px 10px">
+                            <span x-show="!modelSaving">Save</span><span x-show="modelSaving">...</span>
+                          </button>
+                          <button class="btn btn-ghost btn-sm" @click="editingProvider = false" style="padding:2px 8px">Cancel</button>
+                        </span>
+                      </template>
+                    </div>
                     <div class="detail-row"><span class="detail-label">Model</span>
                       <template x-if="!editingModel">
                         <span>
@@ -912,6 +957,36 @@
                       </template>
                     </div>
                     <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value" x-text="detailAgent.created_at ? new Date(detailAgent.created_at).toLocaleString() : '-'"></span></div>
+
+                    <!-- Fallback Model Chain -->
+                    <div class="detail-row" style="align-items:flex-start">
+                      <span class="detail-label">Fallbacks</span>
+                      <div style="flex:1">
+                        <template x-if="detailAgent._fallbacks && detailAgent._fallbacks.length > 0">
+                          <div>
+                            <template x-for="(fb, idx) in detailAgent._fallbacks" :key="idx">
+                              <div class="flex gap-1 items-center" style="margin-bottom:4px">
+                                <span class="badge" style="font-size:11px;font-family:var(--font-mono)" x-text="(idx+1) + '. ' + fb.provider + '/' + fb.model"></span>
+                                <button class="btn btn-ghost btn-sm" style="padding:1px 4px;font-size:10px;color:var(--danger)" @click="removeFallback(idx)">&times;</button>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
+                        <template x-if="!detailAgent._fallbacks || detailAgent._fallbacks.length === 0">
+                          <span class="text-dim" style="font-size:12px">None — add a fallback chain</span>
+                        </template>
+                        <template x-if="!editingFallback">
+                          <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;margin-top:4px" @click="editingFallback = true; newFallbackValue = ''">+ Add</button>
+                        </template>
+                        <template x-if="editingFallback">
+                          <div class="flex gap-1 mt-1" style="align-items:center">
+                            <input class="form-input" style="width:220px;font-size:12px" x-model="newFallbackValue" placeholder="provider/model" @keydown.enter="addFallback()" @keydown.escape="editingFallback = false">
+                            <button class="btn btn-primary btn-sm" @click="addFallback()" style="padding:2px 10px;font-size:11px">Add</button>
+                            <button class="btn btn-ghost btn-sm" @click="editingFallback = false" style="padding:2px 8px;font-size:11px">Cancel</button>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
                   </div>
                   <div class="flex gap-2 mt-4">
                     <button class="btn btn-primary" @click="chatWithAgent(detailAgent); showDetailModal = false">Chat</button>
@@ -1051,7 +1126,7 @@
                   <div x-show="spawnStep === 1">
                     <div class="form-group">
                       <label>Agent Name</label>
-                      <input class="form-input" x-model="spawnForm.name" placeholder="my-agent" @keydown.enter="nextStep()">
+                      <input class="form-input" x-model="spawnForm.name" placeholder="my-agent" @keydown.enter="if(!$event.isComposing && $event.keyCode !== 229) nextStep()">
                     </div>
                     <div class="form-group">
                       <label>Emoji</label>
@@ -1280,7 +1355,9 @@
                     <td class="text-xs" x-text="new Date(wf.created_at).toLocaleDateString()"></td>
                     <td>
                       <button class="btn btn-primary btn-sm" @click="showRunModal(wf)">Run</button>
+                      <button class="btn btn-ghost btn-sm" @click="showEditModal(wf)">Edit</button>
                       <button class="btn btn-ghost btn-sm" @click="viewRuns(wf)">History</button>
+                      <button class="btn btn-danger btn-sm" @click="deleteWorkflow(wf)">Delete</button>
                     </td>
                   </tr>
                 </template>
@@ -1342,6 +1419,39 @@
                   <div class="card-header">Result</div>
                   <pre style="font-size:11px;white-space:pre-wrap;margin-top:8px;color:var(--text-dim)" x-text="runResult"></pre>
                 </div>
+              </div>
+            </div>
+          </template>
+          <!-- Edit modal -->
+          <template x-if="editModal">
+            <div class="modal-overlay" @click.self="editModal = null" @keydown.escape.window="editModal = null">
+              <div class="modal">
+                <div class="modal-header"><h3 x-text="'Edit: ' + editModal.name"></h3><button class="modal-close" @click="editModal = null">&times;</button></div>
+                <div class="form-group"><label>Name</label><input class="form-input" x-model="editWf.name" placeholder="Workflow name"></div>
+                <div class="form-group"><label>Description</label><input class="form-input" x-model="editWf.description" placeholder="What does this workflow do?"></div>
+                <div class="mb-4">
+                  <div class="form-group" style="margin:0"><label>Steps</label></div>
+                  <div class="text-xs text-dim mb-2">Each step runs an agent. Use <code style="color:var(--accent)">{{input}}</code> in prompts to pass the previous step's output.</div>
+                  <template x-for="(step, i) in editWf.steps" :key="i">
+                    <div class="card mt-2" style="padding:10px">
+                      <div class="flex gap-2 items-center">
+                        <span class="text-xs text-dim font-bold" x-text="'#' + (i+1)" style="width:24px"></span>
+                        <input class="form-input" style="flex:1" x-model="step.name" placeholder="Step name">
+                        <input class="form-input" style="flex:1" x-model="step.agent_name" placeholder="Agent name">
+                        <select class="form-select" style="width:120px" x-model="step.mode">
+                          <option value="sequential">Sequential</option>
+                          <option value="fan_out">Fan Out</option>
+                          <option value="conditional">Conditional</option>
+                          <option value="loop">Loop</option>
+                        </select>
+                        <button class="btn btn-danger btn-sm" @click="editWf.steps.splice(i,1)">&times;</button>
+                      </div>
+                      <input class="form-input mt-2" x-model="step.prompt" placeholder="Prompt template (use {{input}})">
+                    </div>
+                  </template>
+                  <button class="btn btn-ghost btn-sm mt-2" @click="editWf.steps.push({name:'',agent_name:'',mode:'sequential',prompt:'{{input}}'})">+ Add Step</button>
+                </div>
+                <button class="btn btn-primary btn-block" @click="saveWorkflow()">Save Changes</button>
               </div>
             </div>
           </template>
@@ -1428,7 +1538,7 @@
                 <div>
                   <div class="form-group">
                     <label class="text-xs">Label</label>
-                    <input class="form-input" x-model="selectedNode.label" style="font-size:11px">
+                    <input class="form-input" x-model="selectedNode.label" @input="applyNodeEdit()" style="font-size:11px">
                   </div>
 
                   <!-- Agent config -->
@@ -1436,7 +1546,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Agent</label>
-                        <select class="form-select" x-model="selectedNode.config.agent_name" style="font-size:11px">
+                        <select class="form-select" x-model="selectedNode.config.agent_name" @change="applyNodeEdit()" style="font-size:11px">
                           <option value="">Select agent...</option>
                           <template x-for="a in agents" :key="a.id || a.name">
                             <option :value="a.name" x-text="a.name"></option>
@@ -1445,11 +1555,11 @@
                       </div>
                       <div class="form-group">
                         <label class="text-xs">Prompt Template</label>
-                        <textarea class="form-textarea" x-model="selectedNode.config.prompt" style="font-size:11px;min-height:60px" placeholder="{{input}}"></textarea>
+                        <textarea class="form-textarea" x-model="selectedNode.config.prompt" @input="applyNodeEdit()" style="font-size:11px;min-height:60px" placeholder="{{input}}"></textarea>
                       </div>
                       <div class="form-group">
                         <label class="text-xs">Model (optional)</label>
-                        <input class="form-input" x-model="selectedNode.config.model" style="font-size:11px" placeholder="Default model">
+                        <input class="form-input" x-model="selectedNode.config.model" @input="applyNodeEdit()" style="font-size:11px" placeholder="Default model">
                       </div>
                     </div>
                   </template>
@@ -1459,7 +1569,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Expression</label>
-                        <input class="form-input" x-model="selectedNode.config.expression" style="font-size:11px" placeholder="output.contains('yes')">
+                        <input class="form-input" x-model="selectedNode.config.expression" @input="applyNodeEdit()" style="font-size:11px" placeholder="output.contains('yes')">
                       </div>
                       <div class="text-xs text-dim">Top port = true, bottom port = false</div>
                     </div>
@@ -1470,11 +1580,11 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Max Iterations</label>
-                        <input type="number" class="form-input" x-model.number="selectedNode.config.max_iterations" style="font-size:11px" min="1" max="100">
+                        <input type="number" class="form-input" x-model.number="selectedNode.config.max_iterations" @input="applyNodeEdit()" style="font-size:11px" min="1" max="100">
                       </div>
                       <div class="form-group">
                         <label class="text-xs">Until (stop condition)</label>
-                        <input class="form-input" x-model="selectedNode.config.until" style="font-size:11px" placeholder="output === 'done'">
+                        <input class="form-input" x-model="selectedNode.config.until" @input="applyNodeEdit()" style="font-size:11px" placeholder="output === 'done'">
                       </div>
                     </div>
                   </template>
@@ -1484,7 +1594,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Fan-out Count</label>
-                        <input type="number" class="form-input" x-model.number="selectedNode.config.fan_count" style="font-size:11px" min="2" max="10">
+                        <input type="number" class="form-input" x-model.number="selectedNode.config.fan_count" @input="applyNodeEdit()" style="font-size:11px" min="2" max="10">
                       </div>
                     </div>
                   </template>
@@ -1494,7 +1604,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Strategy</label>
-                        <select class="form-select" x-model="selectedNode.config.strategy" style="font-size:11px">
+                        <select class="form-select" x-model="selectedNode.config.strategy" @change="applyNodeEdit()" style="font-size:11px">
                           <option value="all">Wait for all</option>
                           <option value="first">First to finish</option>
                           <option value="majority">Majority vote</option>
@@ -2132,7 +2242,7 @@
             <!-- Search bar with live search and clear button -->
             <div class="search-input mb-4" style="position:relative">
               <span style="color:var(--text-muted)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg></span>
-              <input placeholder="Search ClawHub skills... (type to search)" x-model="clawhubSearch" @input="onSearchInput()" @keydown.enter="searchClawHub()" @keydown.escape="clearSearch()" x-ref="clawhubSearchInput">
+              <input placeholder="Search ClawHub skills... (type to search)" x-model="clawhubSearch" @input="onSearchInput()" @keydown.enter="if(!$event.isComposing && $event.keyCode !== 229) searchClawHub()" @keydown.escape="clearSearch()" x-ref="clawhubSearchInput">
               <button x-show="clawhubSearch" @click="clearSearch()" class="search-clear-btn" title="Clear search (Esc)">&times;</button>
             </div>
 
@@ -2183,7 +2293,7 @@
                       <div class="flex gap-3 items-center">
                         <span class="text-xs text-dim" x-show="skill.version" x-text="'v' + skill.version"></span>
                       </div>
-                      <button class="btn btn-primary btn-sm" @click.stop="installFromClawHub(skill.slug)" :disabled="installingSlug === skill.slug || isSkillInstalled(skill.slug)" x-text="isSkillInstalled(skill.slug) ? 'Installed' : installingSlug === skill.slug ? 'Installing...' : 'Install'"></button>
+                      <button class="btn btn-primary btn-sm" @click.stop="installFromClawHub(skill.slug)" :disabled="installingSlug === skill.slug || skill.installed || isSkillInstalled(skill.slug)" x-text="skill.installed || isSkillInstalled(skill.slug) ? 'Installed' : installingSlug === skill.slug ? 'Installing...' : 'Install'"></button>
                     </div>
                   </div>
                 </template>
@@ -2206,7 +2316,7 @@
                         <span class="text-xs text-dim" x-show="skill.stars" x-text="skill.stars + ' stars'"></span>
                         <span class="text-xs text-dim" x-show="skill.version" x-text="'v' + skill.version"></span>
                       </div>
-                      <button class="btn btn-primary btn-sm" @click.stop="installFromClawHub(skill.slug)" :disabled="installingSlug === skill.slug || isSkillInstalled(skill.slug)" x-text="isSkillInstalled(skill.slug) ? 'Installed' : installingSlug === skill.slug ? 'Installing...' : 'Install'"></button>
+                      <button class="btn btn-primary btn-sm" @click.stop="installFromClawHub(skill.slug)" :disabled="installingSlug === skill.slug || skill.installed || isSkillInstalled(skill.slug)" x-text="skill.installed || isSkillInstalled(skill.slug) ? 'Installed' : installingSlug === skill.slug ? 'Installing...' : 'Install'"></button>
                     </div>
                   </div>
                 </template>
@@ -2490,6 +2600,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                     <!-- Actions -->
                     <div class="flex gap-2 mt-3">
                       <button class="btn btn-ghost btn-sm" @click="loadStats(inst)">Stats</button>
+                      <template x-if="isTraderHand(inst)">
+                        <button class="btn btn-primary btn-sm" @click="openDashboard(inst)">Dashboard</button>
+                      </template>
                       <template x-if="isBrowserHand(inst)">
                         <button class="btn btn-ghost btn-sm" @click="openBrowserViewer(inst)">View Browser</button>
                       </template>
@@ -2602,9 +2715,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <!-- ═══ Step 1: Dependencies ═══ -->
                   <div class="hand-wizard-body" x-show="setupStep === 1">
                     <template x-for="req in (setupWizard.requirements || [])" :key="req.key">
-                      <div class="dep-card" :class="req.satisfied ? 'dep-met' : 'dep-missing'">
+                      <div class="dep-card" :class="(req.satisfied || (req.type === 'ApiKey' && apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== '')) ? 'dep-met' : 'dep-missing'">
                         <div class="dep-card-header">
-                          <div class="dep-status-icon" :class="[req.satisfied ? 'met' : 'missing', setupChecking ? 'checking' : '']" x-text="req.satisfied ? '\u2713' : '\u2717'"></div>
+                          <div class="dep-status-icon" :class="[(req.satisfied || (req.type === 'ApiKey' && apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== '')) ? 'met' : 'missing', setupChecking ? 'checking' : '']" x-text="(req.satisfied || (req.type === 'ApiKey' && apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== '')) ? '\u2713' : '\u2717'"></div>
                           <span class="dep-card-title" x-text="req.label"></span>
                           <template x-if="req.install && req.install.estimated_time">
                             <span class="dep-time-badge" x-text="req.install.estimated_time"></span>
@@ -2647,24 +2760,32 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                               </ol>
                             </template>
 
-                            <!-- API Key: numbered steps + signup link -->
+                            <!-- API Key: input field + numbered steps + signup link -->
                             <template x-if="req.type === 'ApiKey' && req.install">
                               <div>
-                                <template x-if="req.install.steps && req.install.steps.length">
-                                  <ol class="api-key-steps">
-                                    <template x-for="step in req.install.steps" :key="step">
-                                      <li x-text="step"></li>
-                                    </template>
-                                  </ol>
-                                </template>
-                                <template x-if="req.install.env_example">
-                                  <div class="install-block" style="margin-top:8px">
-                                    <div class="install-cmd">
-                                      <code x-text="req.install.env_example"></code>
-                                      <button class="copy-btn" :class="{ copied: clipboardMsg === req.install.env_example }" @click="copyToClipboard(req.install.env_example)" x-text="clipboardMsg === req.install.env_example ? 'Copied!' : 'Copy'"></button>
+                                <div style="margin-bottom:10px">
+                                  <label class="text-xs text-dim" style="display:block;margin-bottom:4px" x-text="'Paste your ' + req.label + ':'"></label>
+                                  <input type="password" class="form-input" x-model="apiKeyInputs[req.key]" :placeholder="req.label" style="width:100%;font-family:var(--font-mono);font-size:12px">
+                                  <div class="text-xs" style="margin-top:4px;color:var(--green)" x-show="apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== ''">&check; Token entered</div>
+                                </div>
+                                <details style="margin-bottom:8px">
+                                  <summary class="text-xs text-dim" style="cursor:pointer;user-select:none">Or set as environment variable</summary>
+                                  <template x-if="req.install.steps && req.install.steps.length">
+                                    <ol class="api-key-steps">
+                                      <template x-for="step in req.install.steps" :key="step">
+                                        <li x-text="step"></li>
+                                      </template>
+                                    </ol>
+                                  </template>
+                                  <template x-if="req.install.env_example">
+                                    <div class="install-block" style="margin-top:8px">
+                                      <div class="install-cmd">
+                                        <code x-text="req.install.env_example"></code>
+                                        <button class="copy-btn" :class="{ copied: clipboardMsg === req.install.env_example }" @click="copyToClipboard(req.install.env_example)" x-text="clipboardMsg === req.install.env_example ? 'Copied!' : 'Copy'"></button>
+                                      </div>
                                     </div>
-                                  </div>
-                                </template>
+                                  </template>
+                                </details>
                                 <div class="flex gap-2 mt-2">
                                   <template x-if="req.install.signup_url">
                                     <a :href="req.install.signup_url" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Get API Key &rarr;</a>
@@ -2897,6 +3018,152 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             </div>
           </template>
 
+          <!-- Trader Dashboard Modal -->
+          <template x-if="dashboardOpen">
+            <div class="modal-overlay" @click.self="closeDashboard()" @keydown.escape.window="closeDashboard()">
+              <div class="trader-dashboard">
+                <!-- Header -->
+                <div class="trader-dashboard-header">
+                  <div class="flex items-center gap-2">
+                    <span style="font-size:1.4rem">&#x1F4C8;</span>
+                    <div>
+                      <div style="font-weight:600;font-size:1.1rem" x-text="dashboardData ? (dashboardData.agent_name || 'Trading Hand') : 'Trading Hand'"></div>
+                      <div class="text-xs text-dim">Live Trading Dashboard</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button class="btn btn-ghost btn-sm" @click="refreshDashboard()">Refresh</button>
+                    <button class="modal-close" @click="closeDashboard()">&times;</button>
+                  </div>
+                </div>
+
+                <!-- Loading -->
+                <div x-show="dashboardLoading" class="text-center" style="padding:60px 0">
+                  <div class="spinner"></div>
+                  <div class="text-dim mt-2">Loading dashboard data...</div>
+                </div>
+
+                <!-- Dashboard Content -->
+                <div class="trader-dashboard-body" x-show="!dashboardLoading && dashboardData">
+                  <!-- KPI Row -->
+                  <div class="trader-kpi-row">
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Portfolio Value</div>
+                      <div class="trader-kpi-value" x-text="dashboardData ? (dashboardData.portfolio_value || '-') : '-'"></div>
+                    </div>
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Total P&amp;L</div>
+                      <div class="trader-kpi-value" :class="dashboardData && dashboardData.total_pnl && dashboardData.total_pnl.startsWith('+') ? 'kpi-positive' : (dashboardData && dashboardData.total_pnl && dashboardData.total_pnl.startsWith('-') ? 'kpi-negative' : '')" x-text="dashboardData ? (dashboardData.total_pnl || '-') : '-'"></div>
+                    </div>
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Win Rate</div>
+                      <div class="trader-kpi-value" x-text="dashboardData && dashboardData.win_rate ? (dashboardData.win_rate + '%') : '-'"></div>
+                    </div>
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Sharpe Ratio</div>
+                      <div class="trader-kpi-value" x-text="dashboardData ? (dashboardData.sharpe_ratio || '-') : '-'"></div>
+                    </div>
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Max Drawdown</div>
+                      <div class="trader-kpi-value kpi-negative" x-text="dashboardData && dashboardData.max_drawdown ? (dashboardData.max_drawdown + '%') : '-'"></div>
+                    </div>
+                    <div class="trader-kpi-card">
+                      <div class="trader-kpi-label">Trades</div>
+                      <div class="trader-kpi-value" x-text="dashboardData ? (dashboardData.trades_count || '0') : '0'"></div>
+                    </div>
+                  </div>
+
+                  <!-- Charts Row 1: Equity Curve + Daily P&L -->
+                  <div class="trader-chart-row">
+                    <div class="trader-chart-panel" style="flex:2">
+                      <div class="trader-chart-title">Equity Curve</div>
+                      <div class="trader-chart-wrap">
+                        <canvas id="traderEquityChart"></canvas>
+                        <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.equity_curve || !dashboardData.equity_curve.length">No equity data yet</div>
+                      </div>
+                    </div>
+                    <div class="trader-chart-panel" style="flex:1">
+                      <div class="trader-chart-title">Daily P&amp;L</div>
+                      <div class="trader-chart-wrap">
+                        <canvas id="traderPnlChart"></canvas>
+                        <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.daily_pnl || !dashboardData.daily_pnl.length">No P&amp;L data yet</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Charts Row 2: Signal Radar + Watchlist Heatmap -->
+                  <div class="trader-chart-row">
+                    <div class="trader-chart-panel" style="flex:1;max-width:320px">
+                      <div class="trader-chart-title">Signal Radar</div>
+                      <div class="trader-chart-wrap" style="max-height:280px">
+                        <canvas id="traderRadarChart"></canvas>
+                        <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.signal_radar">No signal data yet</div>
+                      </div>
+                    </div>
+                    <div class="trader-chart-panel" style="flex:2">
+                      <div class="trader-chart-title">Watchlist Heatmap</div>
+                      <div class="trader-heatmap-wrap" x-show="dashboardData && dashboardData.watchlist_heatmap && dashboardData.watchlist_heatmap.length">
+                        <table class="trader-heatmap-table">
+                          <thead>
+                            <tr><th>Ticker</th><th>Change</th><th>Signal</th><th>Confidence</th></tr>
+                          </thead>
+                          <tbody>
+                            <template x-for="item in (dashboardData ? dashboardData.watchlist_heatmap || [] : [])" :key="item.ticker">
+                              <tr>
+                                <td style="font-weight:600" x-text="item.ticker"></td>
+                                <td :class="item.change_pct >= 0 ? 'heatmap-positive' : 'heatmap-negative'" x-text="(item.change_pct >= 0 ? '+' : '') + item.change_pct + '%'"></td>
+                                <td><span class="signal-badge" :class="'signal-' + (item.signal || 'hold').toLowerCase()" x-text="item.signal || 'HOLD'"></span></td>
+                                <td>
+                                  <div class="confidence-bar-wrap">
+                                    <div class="confidence-bar" :style="'width:' + (item.confidence || 0) + '%'" :class="item.confidence >= 70 ? 'conf-high' : (item.confidence >= 40 ? 'conf-mid' : 'conf-low')"></div>
+                                    <span class="confidence-label" x-text="(item.confidence || 0) + '%'"></span>
+                                  </div>
+                                </td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                      <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.watchlist_heatmap || !dashboardData.watchlist_heatmap.length">No watchlist data yet</div>
+                    </div>
+                  </div>
+
+                  <!-- Recent Trades Table -->
+                  <div class="trader-chart-panel">
+                    <div class="trader-chart-title">Recent Trades</div>
+                    <div x-show="dashboardData && dashboardData.recent_trades && dashboardData.recent_trades.length">
+                      <table class="trader-trades-table">
+                        <thead>
+                          <tr><th>Date</th><th>Ticker</th><th>Side</th><th>Price</th><th>Qty</th><th>P&amp;L</th></tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="trade in (dashboardData ? dashboardData.recent_trades || [] : [])" :key="trade.date + trade.ticker">
+                            <tr>
+                              <td class="text-dim" x-text="trade.date"></td>
+                              <td style="font-weight:600" x-text="trade.ticker"></td>
+                              <td><span class="trade-side-badge" :class="trade.side === 'BUY' ? 'trade-buy' : 'trade-sell'" x-text="trade.side"></span></td>
+                              <td x-text="'$' + Number(trade.price || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})"></td>
+                              <td x-text="trade.qty"></td>
+                              <td :class="(trade.pnl || 0) >= 0 ? 'heatmap-positive' : 'heatmap-negative'" x-text="(trade.pnl >= 0 ? '+$' : '-$') + Math.abs(trade.pnl || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.recent_trades || !dashboardData.recent_trades.length">No trades yet</div>
+                  </div>
+                </div>
+
+                <!-- No data state -->
+                <div x-show="!dashboardLoading && !dashboardData" class="text-center" style="padding:60px 0">
+                  <div style="font-size:2rem;margin-bottom:8px">&#x1F4C8;</div>
+                  <div class="text-dim">Could not load dashboard data.</div>
+                  <button class="btn btn-ghost btn-sm mt-3" @click="refreshDashboard()">Retry</button>
+                </div>
+              </div>
+            </div>
+          </template>
+
           <!-- Activation result toast -->
           <div x-show="activateResult" x-transition class="info-card" style="position:fixed;bottom:24px;right:24px;z-index:200;max-width:360px" @click="activateResult = null">
             <div class="flex items-center gap-2">
@@ -3002,6 +3269,30 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   </template>
                 </div>
               </template>
+            </div>
+            <!-- Add Custom Provider -->
+            <div class="info-card mt-4" style="border:1px solid var(--border)">
+              <h4 style="margin-top:0">Add Custom Provider</h4>
+              <p class="text-xs text-dim mb-2">Connect any OpenAI-compatible API (vLLM, LiteLLM, LocalAI, etc.)</p>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
+                <div>
+                  <label class="text-xs text-dim">Provider Name</label>
+                  <input class="form-input" x-model="customProviderName" placeholder="e.g. my-local-llm">
+                </div>
+                <div>
+                  <label class="text-xs text-dim">Base URL (required)</label>
+                  <input class="form-input" x-model="customProviderUrl" placeholder="http://localhost:8080/v1">
+                </div>
+              </div>
+              <div class="mt-2">
+                <label class="text-xs text-dim">API Key (optional)</label>
+                <input class="form-input" type="password" x-model="customProviderKey" placeholder="sk-... (leave blank if not needed)">
+              </div>
+              <button class="btn btn-primary btn-sm mt-2" @click="addCustomProvider()" :disabled="!customProviderName.trim() || !customProviderUrl.trim() || addingCustomProvider">
+                <span x-show="!addingCustomProvider">Add Provider</span>
+                <span x-show="addingCustomProvider" class="spinner" style="width:10px;height:10px;border-width:2px"></span>
+              </button>
+              <span class="text-xs text-dim ml-2" x-text="customProviderStatus"></span>
             </div>
             <div class="empty-state" x-show="!providers.length">
               <h4>No providers found</h4>
@@ -3308,11 +3599,11 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <!-- Network tab -->
           <div x-show="tab === 'network'" x-data="{
             netStatus: null, a2aAgents: [], a2aDiscoverUrl: '', a2aDiscovering: false,
-            async loadNetStatus() { try { this.netStatus = await (await fetch('/api/network/status')).json(); } catch(e) {} },
-            async loadA2aAgents() { try { let r = await (await fetch('/api/a2a/agents')).json(); this.a2aAgents = r.agents || []; } catch(e) {} },
+            async loadNetStatus() { try { this.netStatus = await OpenFangAPI.get('/api/network/status'); } catch(e) {} },
+            async loadA2aAgents() { try { let r = await OpenFangAPI.get('/api/a2a/agents'); this.a2aAgents = r.agents || []; } catch(e) {} },
             async discoverA2a() {
               if (!this.a2aDiscoverUrl) return; this.a2aDiscovering = true;
-              try { await fetch('/api/a2a/discover', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:this.a2aDiscoverUrl})}); this.a2aDiscoverUrl=''; await this.loadA2aAgents(); } catch(e) {}
+              try { await OpenFangAPI.post('/api/a2a/discover', {url:this.a2aDiscoverUrl}); this.a2aDiscoverUrl=''; await this.loadA2aAgents(); } catch(e) {}
               this.a2aDiscovering = false;
             }
           }" x-init="loadNetStatus(); loadA2aAgents()">
@@ -3394,14 +3685,14 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <div x-show="tab === 'budget'" x-data="{
             budgetData: null, agentRanking: [], budgetLoading: true,
             editMode: false,
-            editHourly: '', editDaily: '', editMonthly: '', editAlert: '',
+            editHourly: '', editDaily: '', editMonthly: '', editAlert: '', editTokenLimit: '',
             saving: false,
             async loadBudget() {
               this.budgetLoading = true;
               try {
                 let [b, a] = await Promise.all([
-                  fetch('/api/budget').then(r => r.json()),
-                  fetch('/api/budget/agents').then(r => r.json())
+                  OpenFangAPI.get('/api/budget'),
+                  OpenFangAPI.get('/api/budget/agents')
                 ]);
                 this.budgetData = b;
                 this.agentRanking = a.agents || [];
@@ -3413,6 +3704,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               this.editDaily = this.budgetData.daily_limit || 0;
               this.editMonthly = this.budgetData.monthly_limit || 0;
               this.editAlert = ((this.budgetData.alert_threshold || 0.8) * 100).toFixed(0);
+              this.editTokenLimit = this.budgetData.default_max_llm_tokens_per_hour || 0;
               this.editMode = true;
             },
             async saveBudget() {
@@ -3424,12 +3716,14 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 if (+this.editMonthly !== this.budgetData.monthly_limit) body.max_monthly_usd = +this.editMonthly;
                 let alertVal = (+this.editAlert) / 100;
                 if (Math.abs(alertVal - this.budgetData.alert_threshold) > 0.001) body.alert_threshold = alertVal;
-                await fetch('/api/budget', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+                if (+this.editTokenLimit !== (this.budgetData.default_max_llm_tokens_per_hour || 0)) body.default_max_llm_tokens_per_hour = +this.editTokenLimit;
+                await OpenFangAPI.put('/api/budget', body);
                 this.editMode = false;
                 await this.loadBudget();
-              } catch(e) { alert('Failed to save: ' + e); }
+              } catch(e) { OpenFangToast.error('Failed to save: ' + (e.message || e)); }
               this.saving = false;
             },
+            fmtTokens(v) { return v > 0 ? (v >= 1000000 ? (v/1000000).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(0)+'K' : v) : 'per-agent'; },
             pctColor(pct) { return pct >= 0.8 ? '#ef4444' : pct >= 0.5 ? '#eab308' : '#22c55e'; },
             fmtUsd(v) { return v > 0 ? '$' + v.toFixed(4) : 'unlimited'; }
           }" x-init="loadBudget()">
@@ -3469,8 +3763,11 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   </div>
                 </div>
               </div>
-              <div class="text-xs text-dim mb-3" x-show="budgetData.alert_threshold > 0 && !editMode">
+              <div class="text-xs text-dim mb-1" x-show="budgetData.alert_threshold > 0 && !editMode">
                 Alert threshold: <span x-text="(budgetData.alert_threshold * 100).toFixed(0) + '%'"></span> of any limit
+              </div>
+              <div class="text-xs text-dim mb-3" x-show="!editMode">
+                Hourly token limit (per agent): <span x-text="fmtTokens(budgetData.default_max_llm_tokens_per_hour || 0)"></span>
               </div>
 
               <!-- Edit limits form -->
@@ -3493,7 +3790,11 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                     <input type="number" step="5" min="0" max="100" x-model="editAlert" class="input" style="width:100%;margin-top:2px" placeholder="80">
                   </div>
                 </div>
-                <div class="text-xs text-dim">Set to 0 for unlimited. Changes apply immediately (in-memory, not persisted to config.toml).</div>
+                <div style="margin-bottom:8px">
+                  <label class="text-xs text-dim">Hourly Token Limit (per agent, 0 = use per-agent values)</label>
+                  <input type="number" step="100000" min="0" x-model="editTokenLimit" class="input" style="width:260px;margin-top:2px" placeholder="0 = per-agent default">
+                </div>
+                <div class="text-xs text-dim">Set to 0 for unlimited/per-agent default. Changes apply immediately (in-memory, not persisted to config.toml).</div>
                 <button class="btn btn-sm mt-2" @click="editMode = false" style="margin-right:8px">Cancel</button>
               </div>
 
@@ -3501,7 +3802,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <h4 style="margin-top:16px;margin-bottom:8px">Top Spenders (Today)</h4>
               <div class="table-wrap" x-show="agentRanking.length">
                 <table>
-                  <thead><tr><th>Agent</th><th>Today</th><th>Hourly Limit</th><th>Daily Limit</th><th>Monthly Limit</th></tr></thead>
+                  <thead><tr><th>Agent</th><th>Today</th><th>Hourly Limit</th><th>Daily Limit</th><th>Monthly Limit</th><th>Token Limit/hr</th></tr></thead>
                   <tbody>
                     <template x-for="a in agentRanking" :key="a.agent_id">
                       <tr>
@@ -3510,6 +3811,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                         <td class="text-dim" x-text="fmtUsd(a.hourly_limit)"></td>
                         <td class="text-dim" x-text="fmtUsd(a.daily_limit)"></td>
                         <td class="text-dim" x-text="fmtUsd(a.monthly_limit)"></td>
+                        <td class="text-dim" x-text="fmtTokens(a.max_llm_tokens_per_hour || 0)"></td>
                       </tr>
                     </template>
                   </tbody>
@@ -4389,7 +4691,29 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 </div>
               </div>
 
-              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj)">
+              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj) && selectedProvider === 'claude-code'">
+                <div class="card" style="border-left:3px solid var(--accent);margin-top:16px">
+                  <div class="card-header">Configure Claude Code</div>
+                  <div class="text-xs text-dim mb-2" style="line-height:1.8">
+                    Claude Code uses its own CLI authentication &mdash; no API key needed.
+                  </div>
+                  <div style="background:var(--bg);border-radius:4px;padding:10px 12px;margin-bottom:12px;font-size:12px;line-height:1.8">
+                    <div><span style="color:var(--accent)">1.</span> Install: <code style="color:var(--accent-light);background:var(--bg-secondary);padding:1px 4px;border-radius:2px">npm install -g @anthropic-ai/claude-code</code></div>
+                    <div><span style="color:var(--accent)">2.</span> Authenticate: <code style="color:var(--accent-light);background:var(--bg-secondary);padding:1px 4px;border-radius:2px">claude auth</code></div>
+                    <div><span style="color:var(--accent)">3.</span> Click <strong>Detect</strong> below to verify</div>
+                  </div>
+                  <button class="btn btn-primary btn-sm" @click="detectClaudeCode()" :disabled="testingProvider">
+                    <span x-show="!testingProvider">Detect Claude Code</span>
+                    <span x-show="testingProvider" class="spinner" style="width:10px;height:10px;border-width:2px"></span>
+                  </button>
+                  <div x-show="testResult" class="mt-2">
+                    <div x-show="testResult && testResult.status === 'ok'" class="badge badge-success" style="padding:6px 12px">Claude Code detected<span x-show="testResult && testResult.latency_ms" x-text="' (' + (testResult ? testResult.latency_ms : '') + 'ms)'"></span></div>
+                    <div x-show="testResult && testResult.status !== 'ok'" class="badge badge-error" style="padding:6px 12px">Claude Code CLI not detected. Make sure you&rsquo;ve run: <code>npm install -g @anthropic-ai/claude-code &amp;&amp; claude auth</code></div>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj) && selectedProvider !== 'claude-code'">
                 <div class="card" style="border-left:3px solid var(--accent);margin-top:16px">
                   <div class="card-header" x-text="'Configure ' + selectedProviderObj.display_name"></div>
                   <div class="text-xs text-dim mb-2" x-show="selectedProviderObj.api_key_env">
@@ -4479,7 +4803,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <div class="card" style="border-left:3px solid var(--accent)">
                 <div class="form-group" style="margin-bottom:8px">
                   <label>Agent Name</label>
-                  <input class="form-input" type="text" x-model="agentName" placeholder="my-assistant" style="max-width:320px" @keydown.enter="createAgent()">
+                  <input class="form-input" type="text" x-model="agentName" placeholder="my-assistant" style="max-width:320px" @keydown.enter="if(!$event.isComposing && $event.keyCode !== 229) createAgent()">
                 </div>
                 <div class="text-xs text-dim" x-text="'Will use ' + templates[selectedTemplate].provider + ' / ' + templates[selectedTemplate].model + ' with ' + profileInfo(templates[selectedTemplate].profile).label + ' profile'"></div>
                 <div class="mt-2">
@@ -4525,7 +4849,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <!-- Input -->
               <div style="display:flex;gap:8px;margin-top:12px">
                 <input class="form-input" type="text" x-model="tryItInput" placeholder="Type a message..."
-                       @keydown.enter="sendTryItMessage(tryItInput)" :disabled="tryItSending" style="flex:1">
+                       @keydown.enter="if(!$event.isComposing && $event.keyCode !== 229) sendTryItMessage(tryItInput)" :disabled="tryItSending" style="flex:1">
                 <button class="btn btn-primary btn-sm" @click="sendTryItMessage(tryItInput)" :disabled="tryItSending || !tryItInput.trim()">Send</button>
               </div>
             </div>
@@ -4711,3 +5035,5 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
 
 <!-- Toast notification container -->
 <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){});}</script>
