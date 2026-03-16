@@ -354,7 +354,7 @@ impl FeishuAdapter {
                 "wide_screen_mode": true
             },
             "header": {
-                "title": { "tag": "plain_text", "content": "⏳ 待审批请求" },
+                "title": { "tag": "plain_text", "content": "⏳ Approval Request" },
                 "template": "blue"
             },
             "elements": [
@@ -362,7 +362,7 @@ impl FeishuAdapter {
                     "tag": "div",
                     "text": {
                         "tag": "plain_text",
-                        "content": format!("Agent: {}\n操作: {} — {}", agent_id, tool_name, action_summary)
+                        "content": format!("Agent: {}\nAction: {} — {}", agent_id, tool_name, action_summary)
                     }
                 },
                 {
@@ -377,13 +377,13 @@ impl FeishuAdapter {
                     "actions": [
                         {
                             "tag": "button",
-                            "text": { "tag": "plain_text", "content": "✅ 批准" },
+                            "text": { "tag": "plain_text", "content": "✅ Approve" },
                             "type": "primary",
                             "value": { "action": "approve", "request_id": request_id }
                         },
                         {
                             "tag": "button",
-                            "text": { "tag": "plain_text", "content": "❌ 拒绝" },
+                            "text": { "tag": "plain_text", "content": "❌ Reject" },
                             "type": "danger",
                             "value": { "action": "reject", "request_id": request_id }
                         }
@@ -414,7 +414,7 @@ impl FeishuAdapter {
             return self.api_send_message(
                 receive_id,
                 "chat_id",
-                &format!("待审批请求 [{}]\nAgent: {}\n操作: {} — {}\n\n回复 /approve {} 或 /reject {}",
+                &format!("Approval Request [{}]\nAgent: {}\nAction: {} — {}\n\nReply /approve {} or /reject {}",
                     &request_id[..8.min(request_id.len())],
                     agent_id,
                     tool_name,
