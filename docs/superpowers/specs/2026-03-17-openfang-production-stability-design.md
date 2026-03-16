@@ -334,9 +334,12 @@ launchctl print gui/$(id -u)/ai.openfang.daemon
 ### 4.3 回滚方案
 如果验证失败：
 1. 恢复配置文件备份: `cp ~/.openfang/config.toml.bak-* ~/.openfang/config.toml`
-2. 卸载 launchd 服务: `launchctl unload ~/Library/LaunchAgents/com.openfang.daemon.plist`
-3. 使用原守护进程脚本: `~/.openfang/bin/openfang-daemon`
+2. 重启 launchd 服务: `launchctl kickstart -k gui/$(id -u)/ai.openfang.daemon`
+3. 使用原守护进程脚本: `~/.openfang/bin/openfang-daemon`（作为备用）
 4. 回退代码修改: `git checkout crates/openfang-types/src/config.rs`
+5. 验证回滚: `curl -s http://127.0.0.1:50051/api/health`（如果回退到旧端口）
+
+**注意**: `daemon.json` 会在首次启动时自动重新生成，包含正确的端口信息
 
 ## 5. 实施计划
 
