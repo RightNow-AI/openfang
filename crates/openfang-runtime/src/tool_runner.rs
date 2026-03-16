@@ -1052,7 +1052,8 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "file_url": { "type": "string", "description": "URL of a file to send as attachment" },
                     "file_path": { "type": "string", "description": "Local file path to send as attachment (reads from disk; use instead of file_url for local files)" },
                     "filename": { "type": "string", "description": "Filename for file attachments (defaults to the basename of file_path, or 'file')" },
-                    "thread_id": { "type": "string", "description": "Thread/topic ID to reply in (e.g., Telegram message_thread_id, Slack thread_ts)" }
+                    "thread_id": { "type": "string", "description": "Thread/topic ID to reply in (e.g., Telegram message_thread_id, Slack thread_ts)" },
+                    "metadata": { "type": "object", "description": "Platform-specific metadata (e.g., {\"reply_to_message_id\": 123} for Telegram to reply to a message, {\"edit_message_id\": 456} to edit an existing message)" }
                 },
                 "required": ["channel", "recipient"]
             }),
@@ -2226,6 +2227,9 @@ async fn tool_channel_send(
 
     let thread_id = input["thread_id"].as_str().filter(|s| !s.is_empty());
 
+    // Extract metadata (e.g., reply_to_message_id, edit_message_id for Telegram)
+    let metadata = input["metadata"].as_object().cloned();
+
     // Check for media content (image_url, file_url, or file_path)
     let image_url = input["image_url"].as_str().filter(|s| !s.is_empty());
     let file_url = input["file_url"].as_str().filter(|s| !s.is_empty());
@@ -2234,7 +2238,7 @@ async fn tool_channel_send(
     if let Some(url) = image_url {
         let caption = input["message"].as_str().filter(|s| !s.is_empty());
         return kh
-            .send_channel_media(&channel, recipient, "image", url, caption, None, thread_id)
+            .send_channel_media(&channel, recipient, "image", url, caption, None, thread_id, metadata.as_ref())
             .await;
     }
 
@@ -2243,7 +2247,7 @@ async fn tool_channel_send(
         let filename = input["filename"].as_str();
         return kh
             .send_channel_media(
-                &channel, recipient, "file", url, caption, filename, thread_id,
+                &channel, recipient, "file", url, caption, filename, thread_id, metadata.as_ref(),
             )
             .await;
     }
@@ -2299,7 +2303,7 @@ async fn tool_channel_send(
         };
 
         return kh
-            .send_channel_file_data(&channel, recipient, data, &filename, mime_type, thread_id)
+            .send_channel_file_data(&channel, recipient, data, &filename, mime_type, thread_id, metadata.as_ref())
             .await;
     }
 
@@ -2330,7 +2334,7 @@ async fn tool_channel_send(
         message.to_string()
     };
 
-    kh.send_channel_message(&channel, recipient, &final_message, thread_id)
+    kh.send_channel_message(&channel, recipient, &final_message, thread_id, metadata.as_ref())
         .await
 }
 

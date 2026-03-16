@@ -5521,7 +5521,7 @@ async fn cron_deliver_response(
                 .structured_set(agent_id, "delivery.last_channel", kv_val);
             // Deliver via the registered channel adapter
             kernel
-                .send_channel_message(channel, to, response, None)
+                .send_channel_message(channel, to, response, None, None)
                 .await
                 .map(|_| {
                     tracing::info!(channel = %channel, to = %to, "Cron: delivered to channel");
@@ -5541,7 +5541,7 @@ async fn cron_deliver_response(
                     let recipient = val["recipient"].as_str().unwrap_or("");
                     if !channel.is_empty() && !recipient.is_empty() {
                         kernel
-                            .send_channel_message(channel, recipient, response, None)
+                            .send_channel_message(channel, recipient, response, None, None)
                             .await
                             .map(|_| {
                                 tracing::info!(channel = %channel, recipient = %recipient, "Cron: delivered to last channel");
@@ -6050,6 +6050,7 @@ impl KernelHandle for OpenFangKernel {
         recipient: &str,
         message: &str,
         thread_id: Option<&str>,
+        metadata: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<String, String> {
         let adapter = self
             .channel_adapters
@@ -6071,6 +6072,7 @@ impl KernelHandle for OpenFangKernel {
             platform_id: recipient.to_string(),
             display_name: recipient.to_string(),
             openfang_user: None,
+            metadata: metadata.cloned(),
         };
 
         let content = openfang_channels::types::ChannelContent::Text(message.to_string());
@@ -6099,6 +6101,7 @@ impl KernelHandle for OpenFangKernel {
         caption: Option<&str>,
         filename: Option<&str>,
         thread_id: Option<&str>,
+        metadata: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<String, String> {
         let adapter = self
             .channel_adapters
@@ -6120,6 +6123,7 @@ impl KernelHandle for OpenFangKernel {
             platform_id: recipient.to_string(),
             display_name: recipient.to_string(),
             openfang_user: None,
+            metadata: metadata.cloned(),
         };
 
         let content = match media_type {
@@ -6164,6 +6168,7 @@ impl KernelHandle for OpenFangKernel {
         filename: &str,
         mime_type: &str,
         thread_id: Option<&str>,
+        metadata: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<String, String> {
         let adapter = self
             .channel_adapters
@@ -6185,6 +6190,7 @@ impl KernelHandle for OpenFangKernel {
             platform_id: recipient.to_string(),
             display_name: recipient.to_string(),
             openfang_user: None,
+            metadata: metadata.cloned(),
         };
 
         let content = openfang_channels::types::ChannelContent::FileData {

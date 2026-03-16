@@ -198,8 +198,9 @@ pub trait KernelHandle: Send + Sync {
         recipient: &str,
         message: &str,
         thread_id: Option<&str>,
+        metadata: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<String, String> {
-        let _ = (channel, recipient, message, thread_id);
+        let _ = (channel, recipient, message, thread_id, metadata);
         Err("Channel send not available".to_string())
     }
 
@@ -215,9 +216,10 @@ pub trait KernelHandle: Send + Sync {
         caption: Option<&str>,
         filename: Option<&str>,
         thread_id: Option<&str>,
+        metadata: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<String, String> {
         let _ = (
-            channel, recipient, media_type, media_url, caption, filename, thread_id,
+            channel, recipient, media_type, media_url, caption, filename, thread_id, metadata,
         );
         Err("Channel media send not available".to_string())
     }
@@ -233,8 +235,9 @@ pub trait KernelHandle: Send + Sync {
         filename: &str,
         mime_type: &str,
         thread_id: Option<&str>,
+        metadata: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<String, String> {
-        let _ = (channel, recipient, data, filename, mime_type, thread_id);
+        let _ = (channel, recipient, data, filename, mime_type, thread_id, metadata);
         Err("Channel file data send not available".to_string())
     }
 
