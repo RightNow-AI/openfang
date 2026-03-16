@@ -177,8 +177,12 @@ pub struct DriverConfig {
     #[serde(default = "default_skip_permissions")]
     pub skip_permissions: bool,
     /// Enable provider prompt caching (Anthropic cache_control, etc.).
-    #[serde(default = "default_skip_permissions")]
+    #[serde(default = "default_prompt_cache")]
     pub prompt_cache: bool,
+}
+
+fn default_prompt_cache() -> bool {
+    true
 }
 
 impl Default for DriverConfig {
@@ -205,6 +209,7 @@ impl std::fmt::Debug for DriverConfig {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("base_url", &self.base_url)
             .field("skip_permissions", &self.skip_permissions)
+            .field("prompt_cache", &self.prompt_cache)
             .finish()
     }
 }

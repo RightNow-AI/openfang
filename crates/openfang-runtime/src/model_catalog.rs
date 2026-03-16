@@ -406,8 +406,19 @@ fn default_true() -> bool {
     true
 }
 
+/// Max catalog file size: 2MB. Prevents OOM from malicious files.
+const MAX_CATALOG_FILE_SIZE: u64 = 2 * 1024 * 1024;
+
+fn read_catalog_file(path: &std::path::Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() > MAX_CATALOG_FILE_SIZE {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
 fn load_toml_providers(path: &std::path::Path) -> Option<Vec<ProviderInfo>> {
-    let data = std::fs::read_to_string(path).ok()?;
+    let data = read_catalog_file(path)?;
     let parsed: TomlProviderList = toml::from_str(&data).ok()?;
     Some(
         parsed
@@ -470,7 +481,7 @@ fn parse_tier(s: &str) -> ModelTier {
 }
 
 fn load_toml_models(path: &std::path::Path) -> Option<Vec<ModelCatalogEntry>> {
-    let data = std::fs::read_to_string(path).ok()?;
+    let data = read_catalog_file(path)?;
     let parsed: TomlModelList = toml::from_str(&data).ok()?;
     Some(
         parsed
@@ -501,7 +512,7 @@ struct TomlAliases {
 }
 
 fn load_toml_aliases(path: &std::path::Path) -> Option<HashMap<String, String>> {
-    let data = std::fs::read_to_string(path).ok()?;
+    let data = read_catalog_file(path)?;
     let parsed: TomlAliases = toml::from_str(&data).ok()?;
     Some(parsed.aliases)
 }

@@ -8778,13 +8778,28 @@ pub async fn list_available_integrations(State(state): State<Arc<AppState>>) -> 
     }))
 }
 
+/// Validate an integration ID: alphanumeric, hyphens, underscores only, max 64 chars.
+fn is_valid_integration_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// POST /api/integrations/add — Install an integration.
 pub async fn add_integration(
     State(state): State<Arc<AppState>>,
     Json(req): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let id = match req.get("id").and_then(|v| v.as_str()) {
-        Some(id) => id.to_string(),
+        Some(id) if is_valid_integration_id(id) => id.to_string(),
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid integration ID: must be 1-64 alphanumeric/hyphen/underscore characters"})),
+            );
+        }
         None => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -8912,14 +8927,17 @@ pub async fn reconnect_integration(
                 "tool_count": tool_count,
             })),
         ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "id": id,
-                "status": "error",
-                "error": e,
-            })),
-        ),
+        Err(e) => {
+            tracing::warn!(integration = %id, error = %e, "Reconnect failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "id": id,
+                    "status": "error",
+                    "error": "Reconnect failed — check daemon logs for details",
+                })),
+            )
+        }
     }
 }
 

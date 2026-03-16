@@ -203,6 +203,34 @@ async fn start_test_server_with_provider(
             "/api/a2a/agents/{*id}",
             axum::routing::get(routes::a2a_get_external_agent),
         )
+        .route(
+            "/api/routing/decisions",
+            axum::routing::get(routes::list_decision_traces),
+        )
+        .route(
+            "/api/integrations",
+            axum::routing::get(routes::list_integrations),
+        )
+        .route(
+            "/api/integrations/available",
+            axum::routing::get(routes::list_available_integrations),
+        )
+        .route(
+            "/api/integrations/add",
+            axum::routing::post(routes::add_integration),
+        )
+        .route(
+            "/api/integrations/{id}",
+            axum::routing::delete(routes::remove_integration),
+        )
+        .route(
+            "/api/integrations/health",
+            axum::routing::get(routes::integrations_health),
+        )
+        .route(
+            "/api/integrations/reload",
+            axum::routing::post(routes::reload_integrations),
+        )
         .route("/api/shutdown", axum::routing::post(routes::shutdown))
         .layer(axum::middleware::from_fn(middleware::request_logging))
         .layer(TraceLayer::new_for_http())
@@ -2098,4 +2126,250 @@ async fn test_auth_disabled_when_no_key() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10-12: Integration management tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_list_available_integrations_returns_bundled_templates() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/integrations/available", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let integrations = body["integrations"].as_array().unwrap();
+    assert!(
+        integrations.len() >= 20,
+        "Expected at least 20 bundled integration templates, got {}",
+        integrations.len()
+    );
+    assert_eq!(body["count"].as_u64().unwrap(), integrations.len() as u64);
+
+    // Each entry must have the required fields
+    for entry in integrations {
+        assert!(
+            entry["id"].is_string(),
+            "Integration entry missing 'id': {:?}",
+            entry
+        );
+        assert!(
+            entry["name"].is_string(),
+            "Integration entry missing 'name': {:?}",
+            entry
+        );
+        assert!(
+            entry["category"].is_string(),
+            "Integration entry missing 'category': {:?}",
+            entry
+        );
+        assert!(
+            entry["description"].is_string(),
+            "Integration entry missing 'description': {:?}",
+            entry
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_install_and_remove_integration() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    // Install brave-search integration
+    let install_resp = client
+        .post(format!("{}/api/integrations/add", server.base_url))
+        .json(&serde_json::json!({"id": "brave-search"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(install_resp.status(), StatusCode::CREATED);
+    let install_body: serde_json::Value = install_resp.json().await.unwrap();
+    assert_eq!(install_body["id"], "brave-search");
+    assert_eq!(install_body["status"], "installed");
+
+    // Verify it appears in the installed list
+    let list_resp = client
+        .get(format!("{}/api/integrations", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list_resp.status(), 200);
+    let list_body: serde_json::Value = list_resp.json().await.unwrap();
+    let installed = list_body["installed"].as_array().unwrap();
+    assert!(
+        installed.iter().any(|i| i["id"] == "brave-search"),
+        "brave-search should appear in installed integrations"
+    );
+
+    // Remove the integration
+    let remove_resp = client
+        .delete(format!(
+            "{}/api/integrations/brave-search",
+            server.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(remove_resp.status(), 200);
+    let remove_body: serde_json::Value = remove_resp.json().await.unwrap();
+    assert_eq!(remove_body["id"], "brave-search");
+    assert_eq!(remove_body["status"], "removed");
+
+    // Verify it's gone from the installed list
+    let list_after_resp = client
+        .get(format!("{}/api/integrations", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list_after_resp.status(), 200);
+    let list_after_body: serde_json::Value = list_after_resp.json().await.unwrap();
+    let installed_after = list_after_body["installed"].as_array().unwrap();
+    assert!(
+        !installed_after.iter().any(|i| i["id"] == "brave-search"),
+        "brave-search should no longer appear in installed integrations"
+    );
+}
+
+#[tokio::test]
+async fn test_install_unknown_integration_returns_404() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/api/integrations/add", server.base_url))
+        .json(&serde_json::json!({"id": "nonexistent-integration"}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("nonexistent-integration"));
+}
+
+#[tokio::test]
+async fn test_install_duplicate_integration_returns_409() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    // First install should succeed
+    let first_resp = client
+        .post(format!("{}/api/integrations/add", server.base_url))
+        .json(&serde_json::json!({"id": "brave-search"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_resp.status(), StatusCode::CREATED);
+
+    // Second install of same ID should conflict
+    let second_resp = client
+        .post(format!("{}/api/integrations/add", server.base_url))
+        .json(&serde_json::json!({"id": "brave-search"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second_resp.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = second_resp.json().await.unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("already installed"));
+}
+
+#[tokio::test]
+async fn test_integrations_health_endpoint() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/integrations/health", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["health"].is_array(), "Response should have 'health' array");
+    assert!(
+        body["count"].is_number(),
+        "Response should have 'count' field"
+    );
+    assert_eq!(
+        body["count"].as_u64().unwrap(),
+        body["health"].as_array().unwrap().len() as u64
+    );
+}
+
+#[tokio::test]
+async fn test_reload_integrations_endpoint() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/api/integrations/reload", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "reloaded");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10-12: Decision trace tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_decision_traces_empty_by_default() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/routing/decisions", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["decisions"].is_array(),
+        "Response should have 'decisions' array"
+    );
+    assert!(
+        body["count"].is_number(),
+        "Response should have 'count' field"
+    );
+}
+
+#[tokio::test]
+async fn test_decision_traces_with_limit_param() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!(
+            "{}/api/routing/decisions?limit=5",
+            server.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["decisions"].is_array());
+    assert!(body["count"].as_u64().unwrap() <= 5);
 }

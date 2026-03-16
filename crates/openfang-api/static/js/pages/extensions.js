@@ -110,7 +110,7 @@ function extensionsPage() {
       OpenFangToast.confirm('Remove Integration', 'Uninstall ' + id + '?', async function () {
         self.removingId = id;
         try {
-          await OpenFangAPI.del('/api/integrations/' + id);
+          await OpenFangAPI.del('/api/integrations/' + encodeURIComponent(id));
           OpenFangToast.success('Removed ' + id);
           await Promise.all([self.loadAvailable(), self.loadInstalled(), self.loadHealth()]);
         } catch (e) {
@@ -123,7 +123,7 @@ function extensionsPage() {
     async reconnect(id) {
       this.reconnectingId = id;
       try {
-        var result = await OpenFangAPI.post('/api/integrations/' + id + '/reconnect', {});
+        var result = await OpenFangAPI.post('/api/integrations/' + encodeURIComponent(id) + '/reconnect', {});
         OpenFangToast.success(id + ' reconnected (' + (result.tool_count || 0) + ' tools)');
         await this.loadHealth();
       } catch (e) {
