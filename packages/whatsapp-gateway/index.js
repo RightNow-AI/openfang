@@ -313,7 +313,7 @@ async function startConnection() {
           // Reply in the same context: group → group, DM → DM
           // Use remoteJid directly to preserve @lid JIDs (WhatsApp Linked Identity)
           const replyJid = remoteJid;
-          await sock.sendMessage(replyJid, { text: response });
+          await sock.sendMessage(replyJid, { text: markdownToWhatsApp(response) });
           console.log(`[gateway] Replied to ${pushName}${isGroup ? ' in group ' + remoteJid : ''}`);
         }
       } catch (err) {
@@ -485,6 +485,53 @@ function forwardToOpenFang(text, phone, pushName, metadata, attachments) {
 }
 
 // ---------------------------------------------------------------------------
+// Convert Markdown to WhatsApp-compatible formatting
+// ---------------------------------------------------------------------------
+function markdownToWhatsApp(text) {
+  if (!text) return text;
+
+  // Protect code blocks from transformation (``` ... ```)
+  const codeBlocks = [];
+  text = text.replace(/```[\s\S]*?```/g, (match) => {
+    codeBlocks.push(match);
+    return `\x00CB${codeBlocks.length - 1}\x00`;
+  });
+
+  // Protect inline code (`...`)
+  const inlineCode = [];
+  text = text.replace(/`[^`]+`/g, (match) => {
+    inlineCode.push(match);
+    return `\x00IC${inlineCode.length - 1}\x00`;
+  });
+
+  // Headers: # Title → *Title* (bold in WhatsApp)
+  text = text.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
+
+  // Bold: **text** → *text*
+  text = text.replace(/\*\*(.+?)\*\*/g, '*$1*');
+
+  // Strikethrough: ~~text~~ → ~text~
+  text = text.replace(/~~(.+?)~~/g, '~$1~');
+
+  // Links: [text](url) → text (url)
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
+
+  // Images: ![alt](url) → alt (url)
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$1 ($2)');
+
+  // Horizontal rules: --- or *** or ___ → ———
+  text = text.replace(/^[-*_]{3,}$/gm, '———');
+
+  // Restore inline code
+  text = text.replace(/\x00IC(\d+)\x00/g, (_, i) => inlineCode[i]);
+
+  // Restore code blocks
+  text = text.replace(/\x00CB(\d+)\x00/g, (_, i) => codeBlocks[i]);
+
+  return text;
+}
+
+// ---------------------------------------------------------------------------
 // Send a message via Baileys (called by OpenFang for outgoing)
 // ---------------------------------------------------------------------------
 async function sendMessage(to, text) {
@@ -495,7 +542,7 @@ async function sendMessage(to, text) {
   // If already a full JID (group or user), use as-is; otherwise normalize phone → JID
   const jid = to.includes('@') ? to : to.replace(/^\+/, '') + '@s.whatsapp.net';
 
-  await sock.sendMessage(jid, { text });
+  await sock.sendMessage(jid, { text: markdownToWhatsApp(text) });
 }
 
 // ---------------------------------------------------------------------------
