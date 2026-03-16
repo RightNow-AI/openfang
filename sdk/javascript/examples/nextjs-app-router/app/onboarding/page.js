@@ -183,7 +183,10 @@ const ONBOARDING_PROVIDERS = [
 
 // ── OnboardingProviderStep component ─────────────────────────────────────────
 function OnboardingProviderStep({ onNext, onBack }) {
-  const [selectedId, setSelectedId] = useState('openrouter');
+  // Restore last-saved provider from session so Back navigation snaps to the right one
+  const [selectedId, setSelectedId] = useState(() => {
+    try { return sessionStorage.getItem('openfang-provider-id') || 'openrouter'; } catch { return 'openrouter'; }
+  });
   const [apiKey,     setApiKey]     = useState('');
   const [showKey,    setShowKey]    = useState(false);
   const [baseUrl,    setBaseUrl]    = useState('');
@@ -192,12 +195,61 @@ function OnboardingProviderStep({ onNext, onBack }) {
   const [result,     setResult]     = useState(null); // { type: 'save'|'test', ok, msg }
   const [reloading,  setReloading]  = useState(false);
   const [reloadMsg,  setReloadMsg]  = useState(null); // { ok: bool, msg: string }
+  const [failCount,  setFailCount]  = useState(0);    // consecutive test failures — used to surface fallback suggestions
+  // Loaded once from daemon to detect an already-configured key without exposing its value
+  const [daemonConfig, setDaemonConfig] = useState(null); // { provider, model, api_key_configured }
   // Tracks whether this session already had a successful key setup (survives Back navigation)
   const [sessionConfigured, setSessionConfigured] = useState(() => {
     try { return sessionStorage.getItem('openfang-provider-configured') === '1'; } catch { return false; }
   });
 
   const meta = ONBOARDING_PROVIDERS.find(p => p.id === selectedId) ?? ONBOARDING_PROVIDERS[0];
+
+  // ── On mount: fetch current config from daemon to detect saved key ──────────
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await apiClient.get('/api/settings/providers/current');
+        if (!cancelled && data?.api_key_configured && data.provider) {
+          setDaemonConfig(data);
+          // Snap dropdown to the provider the daemon already has configured
+          setSelectedId(data.provider);
+        }
+      } catch (_) { /* daemon may not be running yet — ignore silently */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── Client-side key format validation ────────────────────────────────────────
+  function validateKeyFormat(key) {
+    if (!key || meta.local) return null;
+    const trimmed = key.trim();
+    const msgs = [];
+    if (key !== trimmed)
+      msgs.push('Spaces detected at the start or end — they will be trimmed automatically.');
+    if (meta.prefix && trimmed && !trimmed.startsWith(meta.prefix))
+      msgs.push(`${meta.name} keys should start with "${meta.prefix}". Double-check you copied the full key from the right account.`);
+    if (trimmed.length > 0 && trimmed.length < 16)
+      msgs.push('This key looks too short — make sure you copied the whole key, not just part of it.');
+    return msgs.length ? msgs : null;
+  }
+
+  // ── Human-readable error messages for test failures ──────────────────────────
+  function humanizeTestError(rawError) {
+    const s = String(rawError || '').toLowerCase();
+    if (s.includes('401') || s.includes('unauthorized') || s.includes('invalid_api_key') || s.includes('invalid key') || s.includes('incorrect api key'))
+      return 'Invalid API key — copy it again fresh from your provider\'s dashboard and make sure you get the complete key.';
+    if (s.includes('403') || s.includes('forbidden'))
+      return 'Access denied — this key may be disabled or your account may need verification. Check your account dashboard.';
+    if (s.includes('429') || s.includes('rate limit') || s.includes('quota exceeded'))
+      return 'Rate limit reached. Your key is likely valid — wait a moment and try again, or upgrade your plan.';
+    if (s.includes('timeout') || s.includes('timed out') || s.includes('network') || s.includes('connect'))
+      return 'Connection timed out. The AI service may be temporarily busy — your key is probably fine. Try again in a moment.';
+    return rawError;
+  }
+
+  const keyWarnings = !meta.local ? validateKeyFormat(apiKey) : null;
 
   // Reset fields when provider changes
   useEffect(() => {
@@ -217,14 +269,19 @@ function OnboardingProviderStep({ onNext, onBack }) {
   }, [selectedId]);
 
   async function saveAndTest() {
+    // Auto-trim stray whitespace and update the visible field
+    const trimmedKey = apiKey.trim();
+    if (trimmedKey !== apiKey) setApiKey(trimmedKey);
+
     setSaving(true);
     setTesting(false);
     setResult(null);
     try {
       const body = { provider: selectedId, default_model: meta.defaultModel, base_url: baseUrl };
-      if (apiKey.trim()) body.api_key = apiKey.trim();
+      if (trimmedKey) body.api_key = trimmedKey;
       await apiClient.put('/api/settings/providers/current', body);
     } catch (e) {
+      setFailCount(n => n + 1);
       setResult({ type: 'save', ok: false, msg: `Failed to save settings: ${e.message}` });
       setSaving(false);
       return;
@@ -238,10 +295,12 @@ function OnboardingProviderStep({ onNext, onBack }) {
         setResult({ type: 'test', ok: true, msg: `✅ Connected! (${td.latency_ms}ms)` });
         testOk = true;
       } else {
-        setResult({ type: 'test', ok: false, msg: `❌ ${td.error ?? 'Connection failed — check your key and try again.'}` });
+        setFailCount(n => n + 1);
+        setResult({ type: 'test', ok: false, msg: `❌ ${humanizeTestError(td.error ?? 'Connection failed.')}` });
       }
     } catch (e) {
-      setResult({ type: 'test', ok: false, msg: `❌ ${e.message}` });
+      setFailCount(n => n + 1);
+      setResult({ type: 'test', ok: false, msg: `❌ ${humanizeTestError(e.message)}` });
     }
     setTesting(false);
 
@@ -257,8 +316,13 @@ function OnboardingProviderStep({ onNext, onBack }) {
       }
       setReloading(false);
       // Remember for this browser session so Back+return shows confirmation, not a blank form
-      try { sessionStorage.setItem('openfang-provider-configured', '1'); } catch { /* ignore */ }
+      try {
+        sessionStorage.setItem('openfang-provider-configured', '1');
+        sessionStorage.setItem('openfang-provider-id', selectedId);
+      } catch { /* ignore */ }
       setSessionConfigured(true);
+      setFailCount(0); // reset failure counter on success
+      setDaemonConfig(prev => ({ ...(prev ?? {}), api_key_configured: true, provider: selectedId }));
     }
   }
 
@@ -309,8 +373,19 @@ function OnboardingProviderStep({ onNext, onBack }) {
               type={showKey ? 'text' : 'password'}
               value={apiKey}
               onChange={e => setApiKey(e.target.value)}
-              placeholder={`Paste your ${meta.name} key (starts with ${meta.prefix}…)`}
-              style={{ width: '100%', padding: '9px 48px 9px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text)', fontSize: 13, boxSizing: 'border-box' }}
+              placeholder={
+                daemonConfig?.api_key_configured && daemonConfig.provider === selectedId
+                  ? `A key is already saved — paste a new one here to replace it`
+                  : meta.prefix
+                    ? `Paste your ${meta.name} key (starts with ${meta.prefix}…)`
+                    : `Paste your ${meta.name} API key`
+              }
+              style={{
+                width: '100%', padding: '9px 48px 9px 12px',
+                background: 'var(--surface)',
+                border: `1px solid ${keyWarnings ? 'var(--warning)' : 'var(--border)'}`,
+                borderRadius: 'var(--radius-sm)', color: 'var(--text)', fontSize: 13, boxSizing: 'border-box',
+              }}
               autoComplete="off"
               spellCheck={false}
             />
@@ -318,6 +393,20 @@ function OnboardingProviderStep({ onNext, onBack }) {
               style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: 'var(--text-dim)', padding: 4 }}
             >{showKey ? '🙈' : '👁'}</button>
           </div>
+          {/* ── Already-saved indicator (daemon confirms key without exposing it) ── */}
+          {daemonConfig?.api_key_configured && daemonConfig.provider === selectedId && !apiKey && (
+            <div style={{ fontSize: 11, color: 'var(--success)', marginTop: 4 }}>
+              ✅ A key is already saved for {meta.name}. You can click <strong>Test Key</strong> to verify it, or paste a new one above to replace it.
+            </div>
+          )}
+          {/* ── Inline format warnings ────────────────────────────────────────── */}
+          {keyWarnings && (
+            <div style={{ marginTop: 5 }}>
+              {keyWarnings.map((w, i) => (
+                <div key={i} style={{ fontSize: 11, color: 'var(--warning)', marginTop: 2 }}>⚠️ {w}</div>
+              ))}
+            </div>
+          )}
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
             Saved to <code>~/.openfang/secrets.env</code> — never stored in the repo.
           </div>
@@ -339,9 +428,14 @@ function OnboardingProviderStep({ onNext, onBack }) {
         <button
           className="btn btn-primary"
           onClick={saveAndTest}
-          disabled={saving || testing || reloading || (!meta.local && !apiKey.trim())}
+          disabled={saving || testing || reloading || (!meta.local && !apiKey.trim() && !daemonConfig?.api_key_configured)}
         >
-          {saving ? '💾 Saving…' : testing ? '🔌 Testing…' : reloading ? '⚡ Activating…' : '💾 Save & Test'}
+          {saving ? '💾 Saving…'
+            : testing ? '🔌 Testing…'
+            : reloading ? '⚡ Activating…'
+            : daemonConfig?.api_key_configured && daemonConfig.provider === selectedId && !apiKey ? '🔌 Test Key'
+            : keyWarnings?.length ? '⚠️ Test Anyway →'
+            : '💾 Save & Test'}
         </button>
       </div>
 
@@ -358,6 +452,27 @@ function OnboardingProviderStep({ onNext, onBack }) {
               {reloadMsg.msg}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Fallback suggestions after repeated failures ───────────────────── */}
+      {failCount >= 2 && !result?.ok && (
+        <div style={{
+          marginTop: 12, padding: '10px 14px', borderRadius: 'var(--radius-sm)',
+          background: 'var(--surface2)', border: '1px solid var(--border)', fontSize: 13, lineHeight: 1.6,
+        }}>
+          <strong>💡 Still not working?</strong> Try a different provider — they're all free to start:
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+            {ONBOARDING_PROVIDERS.filter(p => !p.local && p.id !== selectedId).slice(0, 3).map(p => (
+              <button
+                key={p.id}
+                className="btn btn-ghost btn-sm"
+                onClick={() => { setSelectedId(p.id); setResult(null); setReloadMsg(null); setFailCount(0); }}
+              >
+                {p.icon} Try {p.name}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
