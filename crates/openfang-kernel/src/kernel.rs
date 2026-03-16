@@ -4058,7 +4058,9 @@ impl OpenFangKernel {
                 );
                 job.outcome = None;
                 changed = true;
-            } else if matches!(job.status, CapabilityProposalJobStatus::TimedOut) && job.error.is_none() {
+            } else if matches!(job.status, CapabilityProposalJobStatus::TimedOut)
+                && job.error.is_none()
+            {
                 job.error = Some(
                     "proposal approval timed out (daemon restarted before timeout was recorded)"
                         .to_string(),

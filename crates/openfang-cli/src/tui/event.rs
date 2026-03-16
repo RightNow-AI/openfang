@@ -1245,9 +1245,7 @@ pub fn spawn_respond_builder_approval(
                     if !status.is_success() || body.get("error").is_some() {
                         let _ = tx.send(AppEvent::BuilderError(format!(
                             "Builder approval: {}",
-                            body["error"]
-                                .as_str()
-                                .unwrap_or(status.as_str())
+                            body["error"].as_str().unwrap_or(status.as_str())
                         )));
                     } else {
                         let msg = if approve {

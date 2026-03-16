@@ -8797,7 +8797,9 @@ pub async fn add_integration(
         Some(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid integration ID: must be 1-64 alphanumeric/hyphen/underscore characters"})),
+                Json(
+                    serde_json::json!({"error": "Invalid integration ID: must be 1-64 alphanumeric/hyphen/underscore characters"}),
+                ),
             );
         }
         None => {

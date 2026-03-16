@@ -62,7 +62,10 @@ struct ApiRequest {
 /// Build the `system` field for the API request.
 /// When `prompt_cache` is true, wraps the system prompt in a block with
 /// `cache_control: {"type": "ephemeral"}` so Anthropic caches the prefix.
-fn build_system_field(system_prompt: Option<&str>, prompt_cache: bool) -> Option<serde_json::Value> {
+fn build_system_field(
+    system_prompt: Option<&str>,
+    prompt_cache: bool,
+) -> Option<serde_json::Value> {
     let text = system_prompt.filter(|s| !s.is_empty())?;
     if prompt_cache {
         Some(serde_json::json!([{

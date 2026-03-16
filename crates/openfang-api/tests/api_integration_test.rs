@@ -2211,10 +2211,7 @@ async fn test_install_and_remove_integration() {
 
     // Remove the integration
     let remove_resp = client
-        .delete(format!(
-            "{}/api/integrations/brave-search",
-            server.base_url
-        ))
+        .delete(format!("{}/api/integrations/brave-search", server.base_url))
         .send()
         .await
         .unwrap();
@@ -2300,7 +2297,10 @@ async fn test_integrations_health_endpoint() {
 
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body["health"].is_array(), "Response should have 'health' array");
+    assert!(
+        body["health"].is_array(),
+        "Response should have 'health' array"
+    );
     assert!(
         body["count"].is_number(),
         "Response should have 'count' field"
@@ -2360,10 +2360,7 @@ async fn test_decision_traces_with_limit_param() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .get(format!(
-            "{}/api/routing/decisions?limit=5",
-            server.base_url
-        ))
+        .get(format!("{}/api/routing/decisions?limit=5", server.base_url))
         .send()
         .await
         .unwrap();

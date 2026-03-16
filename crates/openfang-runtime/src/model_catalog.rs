@@ -4456,8 +4456,7 @@ test = "test-model-1"
 
     #[test]
     fn test_load_catalog_from_missing_dir_falls_back_to_builtins() {
-        let catalog =
-            load_catalog_from_dir(std::path::Path::new("/nonexistent/catalog/path/xyz"));
+        let catalog = load_catalog_from_dir(std::path::Path::new("/nonexistent/catalog/path/xyz"));
         assert_eq!(catalog.list_providers().len(), 41);
         assert!(catalog.list_models().len() >= 30);
     }
