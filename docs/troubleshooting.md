@@ -56,14 +56,14 @@ Startup fails with a refusal to expose the API off-loopback.
 
 ### Cause
 
-The server validates that non-loopback bind addresses must have auth enabled.
+The server validates that non-loopback bind addresses must have auth enabled, and it rejects obvious placeholder API keys on public listeners.
 
 ### Fix
 
 Either:
 
 ```bash
-export OPENFANG_API_KEY=change-me
+export OPENFANG_API_KEY="$(openssl rand -hex 32)"
 ```
 
 or bind locally:
@@ -173,7 +173,7 @@ Use:
 
 ```bash
 OPENFANG_LISTEN=0.0.0.0:4200
-OPENFANG_API_KEY=change-me
+OPENFANG_API_KEY=$(openssl rand -hex 32)
 ```
 
 in Compose or the container environment.

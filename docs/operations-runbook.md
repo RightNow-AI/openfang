@@ -174,40 +174,17 @@ If a provider key is available, also verify one real agent message round-trip an
 Back up the runtime home before upgrades or invasive changes.
 
 ```bash
-TS="$(date +%Y%m%d-%H%M%S)"
-SRC="${OPENFANG_HOME:-$HOME/.openfang}"
-DEST="$HOME/openfang-backups/openfang-$TS"
-mkdir -p "$DEST"
-cp -a "$SRC/config.toml" "$DEST/" 2>/dev/null || true
-cp -a "$SRC/.env" "$DEST/" 2>/dev/null || true
-cp -a "$SRC/vault.enc" "$DEST/" 2>/dev/null || true
-cp -a "$SRC/data" "$DEST/" 2>/dev/null || true
-cp -a "$SRC/agents" "$DEST/" 2>/dev/null || true
-cp -a "$SRC/skills" "$DEST/" 2>/dev/null || true
-cp -a "$SRC/workspaces" "$DEST/" 2>/dev/null || true
-cp -a "$SRC/workflows" "$DEST/" 2>/dev/null || true
-cp -a "$SRC/hand_state.json" "$DEST/" 2>/dev/null || true
-cp -a "$SRC/cron_jobs.json" "$DEST/" 2>/dev/null || true
+scripts/backup-openfang.sh
 ```
 
-For hot systems, stop the service first when possible.
+The backup script creates a consistent SQLite snapshot instead of relying on a raw `cp` of a live WAL-mode database.
+
+For hot systems, stop the service first when possible. If you must back up online, use the script above rather than copying `openfang.db` directly.
 
 ## 8. Restore
 
 ```bash
-SRC="$HOME/openfang-backups/openfang-<timestamp>"
-DST="${OPENFANG_HOME:-$HOME/.openfang}"
-cp -a "$SRC/config.toml" "$DST/" 2>/dev/null || true
-cp -a "$SRC/.env" "$DST/" 2>/dev/null || true
-cp -a "$SRC/vault.enc" "$DST/" 2>/dev/null || true
-rm -rf "$DST/data"
-cp -a "$SRC/data" "$DST/"
-cp -a "$SRC/agents" "$DST/" 2>/dev/null || true
-cp -a "$SRC/skills" "$DST/" 2>/dev/null || true
-cp -a "$SRC/workspaces" "$DST/" 2>/dev/null || true
-cp -a "$SRC/workflows" "$DST/" 2>/dev/null || true
-cp -a "$SRC/hand_state.json" "$DST/" 2>/dev/null || true
-cp -a "$SRC/cron_jobs.json" "$DST/" 2>/dev/null || true
+scripts/restore-openfang.sh "$HOME/openfang-backups/openfang-<timestamp>" --yes
 ```
 
 After restore:
@@ -215,7 +192,8 @@ After restore:
 1. start the daemon
 2. let it recreate `daemon.json`
 3. rerun health checks
-4. verify state-dependent features such as agents, hands, workflows, or channels
+4. run `scripts/smoke-openfang.sh`
+5. verify state-dependent features such as agents, hands, workflows, or channels
 
 ## 9. Upgrade and Rollback
 
@@ -224,7 +202,7 @@ After restore:
 1. back up runtime state
 2. deploy the new binary or image
 3. restart the service
-4. run smoke checks
+4. run `scripts/smoke-openfang.sh`
 5. verify provider, channel, and workflow paths touched by the change
 
 ### Rollback
@@ -233,7 +211,7 @@ After restore:
 2. restore the previous binary or image
 3. restore the latest known-good backup if needed
 4. restart
-5. rerun health checks
+5. rerun health checks and `scripts/smoke-openfang.sh`
 
 ## 10. High-Value Inspection Targets
 

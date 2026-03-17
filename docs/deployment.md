@@ -76,18 +76,18 @@ docker compose up --build
 The repository Compose file now does two things by default:
 
 - publishes only to host loopback: `127.0.0.1:4200:4200`
-- binds inside the container on `0.0.0.0:4200` with `OPENFANG_API_KEY=change-me`
+- binds inside the container on `0.0.0.0:4200`
 
 This keeps local developer access working while avoiding accidental LAN exposure.
 
-If you make the service reachable from other hosts (for example by changing ports to `4200:4200`), set a strong API key instead of the placeholder.
+You must provide a real API key before booting the container. The daemon rejects obvious placeholder values such as `change-me` or `replace-me` on non-loopback listeners.
 
 ### Optional Compose Environment File
 
 ```bash
 cat > .env <<'EOF'
 OPENFANG_LISTEN=0.0.0.0:4200
-OPENFANG_API_KEY=change-me
+OPENFANG_API_KEY=<paste-a-random-hex-string-here>
 GROQ_API_KEY=replace-me
 EOF
 
@@ -113,6 +113,12 @@ curl -H "Authorization: Bearer $OPENFANG_API_KEY" \
 
 If auth is disabled and you are testing from inside the container, omit the header.
 
+For a broader post-deploy check, run:
+
+```bash
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
+```
+
 ## 4. Linux Server with systemd
 
 The repository ships a systemd unit template at `deploy/openfang.service`.
@@ -137,8 +143,14 @@ Create `/etc/openfang/env` with at least:
 
 ```bash
 OPENFANG_HOME=/var/lib/openfang
-OPENFANG_API_KEY=replace-me
+OPENFANG_API_KEY=<generate-a-real-random-key>
 GROQ_API_KEY=replace-me
+```
+
+Generate the API key with something like:
+
+```bash
+openssl rand -hex 32
 ```
 
 Then initialize config as the service user or pre-seed `/var/lib/openfang/config.toml`.

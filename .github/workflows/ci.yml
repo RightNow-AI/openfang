@@ -136,3 +136,38 @@ jobs:
         run: |
           curl -fsSL https://openfang.sh/install.ps1 -o /tmp/install.ps1
           pwsh -NoProfile -Command "Get-Content /tmp/install.ps1 | Out-Null" 2>&1 || true
+
+  ops-scripts:
+    name: Ops Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Syntax check operational scripts
+        run: |
+          bash -n scripts/backup-openfang.sh
+          bash -n scripts/restore-openfang.sh
+          bash -n scripts/smoke-openfang.sh
+      - name: Backup and restore roundtrip
+        run: |
+          export OPENFANG_HOME="$RUNNER_TEMP/openfang-home"
+          export OPENFANG_SKIP_SAFETY_BACKUP=1
+          mkdir -p "$OPENFANG_HOME/data" "$OPENFANG_HOME/agents"
+          printf 'api_listen = "127.0.0.1:4200"\n' > "$OPENFANG_HOME/config.toml"
+          printf 'GROQ_API_KEY=test-key\n' > "$OPENFANG_HOME/.env"
+          printf 'demo = true\n' > "$OPENFANG_HOME/agents/example.toml"
+          python3 - <<'PY'
+          import os
+          import sqlite3
+          db_path = os.path.join(os.environ["OPENFANG_HOME"], "data", "openfang.db")
+          conn = sqlite3.connect(db_path)
+          conn.execute("CREATE TABLE demo (id INTEGER PRIMARY KEY, value TEXT)")
+          conn.execute("INSERT INTO demo (value) VALUES ('ok')")
+          conn.commit()
+          conn.close()
+          PY
+          bash scripts/backup-openfang.sh "$RUNNER_TEMP/backups"
+          backup_dir="$(find "$RUNNER_TEMP/backups" -maxdepth 1 -type d -name 'openfang-*' | head -n 1)"
+          rm -rf "$OPENFANG_HOME"
+          bash scripts/restore-openfang.sh "$backup_dir" --yes
+          test -f "$OPENFANG_HOME/config.toml"
+          test -f "$OPENFANG_HOME/data/openfang.db"
