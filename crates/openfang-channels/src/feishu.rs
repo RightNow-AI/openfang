@@ -807,7 +807,7 @@ impl ChannelAdapter for FeishuAdapter {
                                                     platform_id: chat_id,
                                                     display_name: open_id,
                                                     openfang_user: None,
-            metadata: None,
+                                                    metadata: None,
                                                 },
                                                 content,
                                                 target_agent: None,

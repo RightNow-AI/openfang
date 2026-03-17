@@ -246,7 +246,7 @@ impl ChannelAdapter for TwitchAdapter {
                                 platform_id: channel.clone(),
                                 display_name: sender_nick,
                                 openfang_user: None,
-            metadata: None,
+                                metadata: None,
                             },
                             content: msg_content,
                             target_agent: None,

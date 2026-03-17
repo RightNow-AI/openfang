@@ -448,7 +448,8 @@ impl TelegramAdapter {
 
         match content {
             ChannelContent::Text(text) => {
-                self.api_send_message(chat_id, &text, thread_id, metadata).await?;
+                self.api_send_message(chat_id, &text, thread_id, metadata)
+                    .await?;
             }
             ChannelContent::Image { url, caption } => {
                 self.api_send_photo(chat_id, &url, caption.as_deref(), thread_id)
@@ -838,6 +839,7 @@ async fn merge_media_group_updates(
     // Collect all media URLs and captions from the group
     let mut media_items = Vec::new();
     let mut combined_caption = String::new();
+    let mut messages = Vec::with_capacity(updates.len());
 
     for update in updates {
         let message = update
@@ -850,18 +852,17 @@ async fn merge_media_group_updates(
             message.as_object().map(|o| o.keys().collect::<Vec<_>>())
         );
 
-        // Extract photo
-        if let Some(photos) = message["photo"].as_array() {
-            let file_id = photos.last()?.get("file_id")?.as_str()?;
-            match telegram_get_file_url(token, client, file_id, api_base_url).await {
-                Some(url) => media_items.push(format!("[Photo: {}]", url)),
-                None => {
-                    warn!("Failed to get photo URL for file_id: {}", file_id);
-                    media_items.push("[图片下载失败]".to_string());
-                }
+        // Collect caption (usually only the first item has it)
+        if let Some(caption) = message.get("caption").and_then(|v| v.as_str()) {
+            if !caption.is_empty() && combined_caption.is_empty() {
+                combined_caption = caption.to_string();
             }
         }
 
+        messages.push(message);
+    }
+
+    for message in &messages {
         // Extract video
         if let Some(video) = message.get("video") {
             let file_id = video.get("file_id")?.as_str()?;
@@ -894,10 +895,17 @@ async fn merge_media_group_updates(
                             }
                             Err(e) => {
                                 warn!("Failed to download video {}: {}", file_id, e);
-                                media_items.push(format!(
-                                    "[Video: {} ({}s, {} bytes)]",
-                                    file_info.download_url, duration, file_size
-                                ));
+                                if file_size > 20 * 1024 * 1024 {
+                                    media_items.push(format!(
+                                        "[视频 ({} MB) - 下载失败]",
+                                        file_size / 1024 / 1024
+                                    ));
+                                } else {
+                                    media_items.push(format!(
+                                        "[Video: {} ({}s, {} bytes)]",
+                                        file_info.download_url, duration, file_size
+                                    ));
+                                }
                             }
                         }
                     } else {
@@ -919,11 +927,13 @@ async fn merge_media_group_updates(
                         file_id, file_size
                     );
                     media_items.push(format!(
-                        "[视频下载失败 ({} MB)，请稍后重试或提供下载链接]",
+                        "[视频 ({} MB) - 下载失败]",
                         file_size / 1024 / 1024
                     ));
                 }
             }
+
+            continue;
         }
 
         // Extract document (videos can also be sent as documents)
@@ -979,10 +989,18 @@ async fn merge_media_group_updates(
                             Err(e) => {
                                 warn!("Failed to download document {}: {}", file_id, e);
                                 if is_video {
-                                    media_items.push(format!(
-                                        "[视频（文档形式）: {} - {}]",
-                                        filename, file_info.download_url
-                                    ));
+                                    if file_size > 20 * 1024 * 1024 {
+                                        media_items.push(format!(
+                                            "[视频 {} ({} MB) - 下载失败]",
+                                            filename,
+                                            file_size / 1024 / 1024
+                                        ));
+                                    } else {
+                                        media_items.push(format!(
+                                            "[视频（文档形式）: {} - {}]",
+                                            filename, file_info.download_url
+                                        ));
+                                    }
                                 } else {
                                     media_items.push(format!(
                                         "[文件 {}: {}]",
@@ -1004,7 +1022,8 @@ async fn merge_media_group_updates(
                                 filename, file_info.download_url
                             ));
                         } else {
-                            media_items.push(format!("[文件 {}: {}]", filename, file_info.download_url));
+                            media_items
+                                .push(format!("[文件 {}: {}]", filename, file_info.download_url));
                         }
                     }
                 }
@@ -1015,8 +1034,9 @@ async fn merge_media_group_updates(
                     );
                     if is_video {
                         media_items.push(format!(
-                            "[视频 {} 下载失败 ({} MB)，请稍后重试或提供下载链接]",
-                            filename, file_size / 1024 / 1024
+                            "[视频 {} ({} MB) - 下载失败]",
+                            filename,
+                            file_size / 1024 / 1024
                         ));
                     } else {
                         media_items.push(format!(
@@ -1027,12 +1047,19 @@ async fn merge_media_group_updates(
                     }
                 }
             }
+
+            continue;
         }
 
-        // Collect caption (usually only the first item has it)
-        if let Some(caption) = message.get("caption").and_then(|v| v.as_str()) {
-            if !caption.is_empty() && combined_caption.is_empty() {
-                combined_caption = caption.to_string();
+        // Extract photo
+        if let Some(photos) = message["photo"].as_array() {
+            let file_id = photos.last()?.get("file_id")?.as_str()?;
+            match telegram_get_file_url(token, client, file_id, api_base_url).await {
+                Some(url) => media_items.push(format!("[Photo: {}]", url)),
+                None => {
+                    warn!("Failed to get photo URL for file_id: {}", file_id);
+                    media_items.push("[图片下载失败]".to_string());
+                }
             }
         }
     }
@@ -1587,7 +1614,7 @@ mod tests {
             false, // download_enabled
             &temp_dir,
             2 * 1024 * 1024 * 1024, // 2GB max
-            None, // no progress callback
+            None,                   // no progress callback
         )
         .await
     }
@@ -1613,9 +1640,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
         assert_eq!(msg.sender.display_name, "Alice Smith");
         assert_eq!(msg.sender.platform_id, "111222333");
@@ -1647,9 +1675,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -1682,7 +1711,8 @@ mod tests {
 
         // Empty allowed_users = allow all
         let msg =
-            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await;
         assert!(msg.is_some());
 
         // Non-matching allowed_users = filter out
@@ -1734,9 +1764,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
         assert_eq!(msg.sender.display_name, "Alice Smith");
         assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Edited message!"));
@@ -1772,9 +1803,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agents");
@@ -1798,9 +1830,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         assert!(matches!(msg.content, ChannelContent::Location { .. }));
     }
 
@@ -1824,9 +1857,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         // With a fake token, getFile will fail, so we get a text fallback
         match &msg.content {
             ChannelContent::Text(t) => {
@@ -1861,9 +1895,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.contains("收到文档"));
@@ -1894,9 +1929,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.contains("收到语音消息"));
@@ -1927,9 +1963,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         assert_eq!(msg.thread_id, Some("42".to_string()));
         assert!(msg.is_group);
     }
@@ -1949,9 +1986,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         assert_eq!(msg.thread_id, None);
         assert!(!msg.is_group);
     }
@@ -1973,9 +2011,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         assert_eq!(msg.thread_id, Some("99".to_string()));
     }
 
@@ -1998,9 +2037,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         assert_eq!(msg.sender.display_name, "My Channel");
         assert_eq!(msg.sender.platform_id, "-1001234567890");
         assert!(
@@ -2023,7 +2063,8 @@ mod tests {
 
         let client = test_client();
         let msg =
-            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await;
         assert!(msg.is_none());
     }
 
@@ -2283,9 +2324,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.starts_with("[Replying to Bob: We should use Rust]\n\n"));
@@ -2325,9 +2367,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.starts_with("[Replying to Carol: Sunset view]\n\n"));
@@ -2366,9 +2409,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert_eq!(t, "What was that?");
@@ -2404,9 +2448,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.starts_with("[Replying to Unknown: Anonymous message]\n\n"));
@@ -2431,9 +2476,10 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
-            .await
-            .unwrap();
+        let msg =
+            parse_telegram_update_test(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+                .await
+                .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert_eq!(t, "Just a normal message");
@@ -2441,5 +2487,121 @@ mod tests {
             other => panic!("Expected Text, got {other:?}"),
         }
         assert!(!msg.metadata.contains_key("reply_to_message_id"));
+    }
+
+    async fn start_telegram_test_server() -> (String, tokio::task::JoinHandle<()>) {
+        use axum::extract::Json;
+        use axum::routing::post;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/botfake:token/getFile",
+            post(|Json(payload): Json<serde_json::Value>| async move {
+                let file_id = payload["file_id"].as_str().unwrap_or("unknown");
+                axum::Json(serde_json::json!({
+                    "ok": true,
+                    "result": {
+                        "file_id": file_id,
+                        "file_path": format!("files/{file_id}.bin"),
+                        "file_size": 1024
+                    }
+                }))
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        (format!("http://{addr}"), handle)
+    }
+
+    #[tokio::test]
+    async fn test_merge_media_group_preserves_original_item_order() {
+        let (api_base_url, server_handle) = start_telegram_test_server().await;
+
+        let updates = vec![
+            serde_json::json!({
+                "update_id": 800,
+                "message": {
+                    "message_id": 201,
+                    "media_group_id": "group-1",
+                    "from": { "id": 123, "first_name": "Alice" },
+                    "chat": { "id": 123, "type": "private" },
+                    "date": 1700000000,
+                    "photo": [
+                        { "file_id": "photo_1_small", "file_unique_id": "a", "width": 90, "height": 90 },
+                        { "file_id": "photo_1", "file_unique_id": "b", "width": 800, "height": 600 }
+                    ],
+                    "caption": "Trip recap"
+                }
+            }),
+            serde_json::json!({
+                "update_id": 801,
+                "message": {
+                    "message_id": 202,
+                    "media_group_id": "group-1",
+                    "from": { "id": 123, "first_name": "Alice" },
+                    "chat": { "id": 123, "type": "private" },
+                    "date": 1700000001,
+                    "video": {
+                        "file_id": "video_1",
+                        "file_unique_id": "c",
+                        "duration": 8,
+                        "file_size": 2048
+                    }
+                }
+            }),
+            serde_json::json!({
+                "update_id": 802,
+                "message": {
+                    "message_id": 203,
+                    "media_group_id": "group-1",
+                    "from": { "id": 123, "first_name": "Alice" },
+                    "chat": { "id": 123, "type": "private" },
+                    "date": 1700000002,
+                    "photo": [
+                        { "file_id": "photo_2_small", "file_unique_id": "d", "width": 90, "height": 90 },
+                        { "file_id": "photo_2", "file_unique_id": "e", "width": 800, "height": 600 }
+                    ]
+                }
+            }),
+        ];
+
+        let client = test_client();
+        let temp_dir = std::env::temp_dir();
+        let merged = merge_media_group_updates(
+            &updates,
+            &[],
+            "fake:token",
+            &client,
+            &api_base_url,
+            None,
+            false,
+            &temp_dir,
+            2 * 1024 * 1024 * 1024,
+            None,
+        )
+        .await
+        .unwrap();
+
+        server_handle.abort();
+
+        let ChannelContent::Text(content) = merged.content else {
+            panic!("Expected merged text content");
+        };
+
+        let first_photo = content.find("[Photo: ").unwrap();
+        let video = content.find("[Video: ").unwrap();
+        let second_photo = content.rfind("[Photo: ").unwrap();
+
+        assert!(first_photo < video);
+        assert!(video < second_photo);
+        assert!(content.contains("Trip recap"));
+        assert!(content.contains("Media group (3 items):"));
     }
 }

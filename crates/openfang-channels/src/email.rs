@@ -406,7 +406,7 @@ impl ChannelAdapter for EmailAdapter {
                             platform_id: from_addr.clone(),
                             display_name: from_addr.clone(),
                             openfang_user: None,
-            metadata: None,
+                            metadata: None,
                         },
                         content: ChannelContent::Text(text),
                         target_agent: None, // Routing handled by bridge AgentRouter

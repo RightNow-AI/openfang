@@ -196,7 +196,7 @@ impl ChannelAdapter for SignalAdapter {
                             platform_id: source.clone(),
                             display_name: source_name,
                             openfang_user: None,
-            metadata: None,
+                            metadata: None,
                         },
                         content,
                         target_agent: None,
