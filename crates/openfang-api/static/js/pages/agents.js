@@ -351,7 +351,8 @@ function agentsPage() {
         emoji: (agent.identity && agent.identity.emoji) || '',
         color: (agent.identity && agent.identity.color) || '#FF5C00',
         archetype: (agent.identity && agent.identity.archetype) || '',
-        vibe: (agent.identity && agent.identity.vibe) || ''
+        vibe: (agent.identity && agent.identity.vibe) || '',
+        temperature: agent.temperature != null ? agent.temperature : 0.7
       };
       this.showDetailModal = true;
       // Fetch full agent detail to get fallback_models
