@@ -1394,9 +1394,11 @@ fn detect_best_provider() -> (&'static str, &'static str, &'static str) {
         return ("gemini", "GOOGLE_API_KEY", "gemini-2.5-flash");
     }
     // Check if Ollama is running locally (no API key needed)
-    if check_ollama_available() {
-        ui::success("Detected Ollama running locally (no API key needed)");
-        return ("ollama", "OLLAMA_API_KEY", "llama3.2");
+    if let Some(model) = detect_ollama_model() {
+        ui::success(&format!(
+            "Detected Ollama running locally (defaulting to installed model: {model})"
+        ));
+        return ("ollama", "OLLAMA_API_KEY", Box::leak(model.into_boxed_str()));
     }
     ui::hint("No LLM provider API keys found");
     ui::hint("Groq offers a free tier: https://console.groq.com");
@@ -1426,13 +1428,48 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
     ]
 }
 
-/// Quick probe to check if Ollama is running on localhost.
-fn check_ollama_available() -> bool {
-    std::net::TcpStream::connect_timeout(
+/// Quick probe to check if Ollama is running on localhost and pick a sane default model.
+fn detect_ollama_model() -> Option<String> {
+    if std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], 11434)),
         std::time::Duration::from_millis(500),
     )
-    .is_ok()
+    .is_err()
+    {
+        return None;
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let response = client
+        .get("http://127.0.0.1:11434/api/tags")
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    let body: serde_json::Value = response.json().ok()?;
+    pick_ollama_model_from_tags(&body).or_else(|| Some("llama3.2".to_string()))
+}
+
+fn pick_ollama_model_from_tags(body: &serde_json::Value) -> Option<String> {
+    let models = body.get("models")?.as_array()?;
+    let mut fallback = None;
+    for model in models {
+        let name = model.get("name")?.as_str()?.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if fallback.is_none() {
+            fallback = Some(name.to_string());
+        }
+        let lower = name.to_ascii_lowercase();
+        if !(lower.contains("embed") || lower.contains("embedding")) {
+            return Some(name.to_string());
+        }
+    }
+    fallback
 }
 
 /// Write config.toml if it doesn't already exist.
@@ -6815,8 +6852,36 @@ fn remove_self_binary(exe_path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
+    use super::pick_ollama_model_from_tags;
 
     // --- Doctor command unit tests ---
+
+    #[test]
+    fn test_pick_ollama_model_from_tags_prefers_non_embedding() {
+        let body = serde_json::json!({
+            "models": [
+                {"name": "nomic-embed-text:latest"},
+                {"name": "dolphin:8b"}
+            ]
+        });
+        assert_eq!(
+            pick_ollama_model_from_tags(&body).as_deref(),
+            Some("dolphin:8b")
+        );
+    }
+
+    #[test]
+    fn test_pick_ollama_model_from_tags_falls_back_to_first_model() {
+        let body = serde_json::json!({
+            "models": [
+                {"name": "nomic-embed-text:latest"}
+            ]
+        });
+        assert_eq!(
+            pick_ollama_model_from_tags(&body).as_deref(),
+            Some("nomic-embed-text:latest")
+        );
+    }
 
     #[test]
     fn test_doctor_skill_registry_loads_bundled() {
