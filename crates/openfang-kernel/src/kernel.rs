@@ -3216,6 +3216,18 @@ impl OpenFangKernel {
                 other => KernelError::OpenFang(OpenFangError::Internal(other.to_string())),
             })?;
 
+        // Capture any API-patched tool filters from the existing agent before respawn so that
+        // changes made via PUT /api/agents/{id}/tools persist across daemon restarts and
+        // hand reactivations. The manifest rebuild below overwrites everything from HAND.toml,
+        // so we save and reapply these fields explicitly.
+        let existing_tool_filters: (Vec<String>, Vec<String>) = self
+            .registry
+            .list()
+            .into_iter()
+            .find(|e| e.name == def.agent.name)
+            .map(|e| (e.manifest.tool_allowlist.clone(), e.manifest.tool_blocklist.clone()))
+            .unwrap_or_default();
+
         // Build an agent manifest from the hand definition.
         // If the hand declares provider/model as "default", inherit the kernel's configured LLM.
         let hand_provider = if def.agent.provider == "default" {
@@ -3286,6 +3298,16 @@ impl OpenFangKernel {
             },
             ..Default::default()
         };
+
+        // Restore API-patched tool filters so they survive respawn.
+        // Only apply if non-empty — an empty saved list means "no override set", not "block all".
+        let (saved_allowlist, saved_blocklist) = existing_tool_filters;
+        if !saved_allowlist.is_empty() {
+            manifest.tool_allowlist = saved_allowlist;
+        }
+        if !saved_blocklist.is_empty() {
+            manifest.tool_blocklist = saved_blocklist;
+        }
 
         // Resolve hand settings → prompt block + env vars
         let resolved = openfang_hands::resolve_settings(&def.settings, &instance.config);
