@@ -46,9 +46,13 @@ export async function buildUsageIndex() {
     const tools = agent?.capabilities?.tools ?? agent?.tools ?? [];
     if (!Array.isArray(tools)) continue;
 
+    // Deduplicate within this agent — an agent is counted once per skill even
+    // if it lists the same skill name multiple times (contract invariant §4).
+    const seen = new Set();
     for (const tool of tools) {
       const toolName = typeof tool === 'string' ? tool : tool?.name ?? '';
-      if (!toolName) continue;
+      if (!toolName || seen.has(toolName)) continue;
+      seen.add(toolName);
       if (!index.has(toolName)) index.set(toolName, []);
       index.get(toolName).push(String(name));
     }

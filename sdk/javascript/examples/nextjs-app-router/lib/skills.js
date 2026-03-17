@@ -40,6 +40,9 @@ export function normalizeSkillDetail(raw, used_by = []) {
     ? raw.tools.map(t => (typeof t === 'string' ? t : String(t?.name ?? t?.id ?? '')))
     : [];
 
+  // Deduplicate agent names — callers should never pass duplicates but defend anyway
+  const uniqueUsedBy = [...new Set(used_by)];
+
   return {
     name: String(raw?.name ?? raw?.id ?? ''),
     description: String(raw?.description ?? ''),
@@ -48,10 +51,12 @@ export function normalizeSkillDetail(raw, used_by = []) {
     enabled: raw?.enabled !== false,
     bundled: raw?.bundled ?? raw?.builtin ?? !raw?.custom ?? true,
     version: String(raw?.version ?? ''),
+    tool_count: Number(raw?.tool_count ?? tools.length),
     source: String(raw?.source ?? raw?.repository ?? raw?.path ?? ''),
     entrypoint: String(raw?.entrypoint ?? raw?.entry_point ?? ''),
     prompt_context: String(raw?.prompt_context ?? raw?.system_prompt ?? ''),
     tools,
-    used_by,
+    used_by: uniqueUsedBy,
+    used_by_count: uniqueUsedBy.length,
   };
 }

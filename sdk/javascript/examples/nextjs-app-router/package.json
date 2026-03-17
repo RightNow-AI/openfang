@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "dev": "node --no-webstorage ./node_modules/next/dist/bin/next dev",
     "build": "node --no-webstorage ./node_modules/next/dist/bin/next build",
     "start": "node --no-webstorage ./node_modules/next/dist/bin/next start",
@@ -23,11 +26,17 @@
     "react-dom": "19.1.0"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "19.2.14",
+    "@vitejs/plugin-react": "^6.0.1",
     "cypress": "^13.17.0",
     "eslint": "9.39.4",
     "eslint-config-next": "16.1.6",
+    "jsdom": "^29.0.0",
     "openapi-typescript": "^7",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vitest": "^4.1.0"
   }
 }
