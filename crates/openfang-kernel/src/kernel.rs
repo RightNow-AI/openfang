@@ -1777,7 +1777,7 @@ impl OpenFangKernel {
                 granted_tools: tools.iter().map(|t| t.name.clone()).collect(),
                 recalled_memories: vec![],
                 skill_summary: self.build_skill_summary(&manifest.skills),
-                skill_prompt_context: self.collect_prompt_context(&manifest.skills),
+                skill_prompt_context: String::new(),
                 mcp_summary: if mcp_tool_count > 0 {
                     self.build_mcp_summary(&manifest.mcp_servers)
                 } else {
@@ -2267,6 +2267,9 @@ impl OpenFangKernel {
 
         let messages_before = session.messages.len();
 
+        // Apply model routing if configured (disabled in Stable mode)
+        let mut manifest = entry.manifest.clone();
+
         let tools = self.available_tools(agent_id);
         let tools = entry.mode.filter_tools(tools);
 
@@ -2278,8 +2281,26 @@ impl OpenFangKernel {
             "Tools selected for LLM request"
         );
 
-        // Apply model routing if configured (disabled in Stable mode)
-        let mut manifest = entry.manifest.clone();
+        // Snapshot skill registry before async call (RwLockReadGuard is !Send)
+        let mut skill_snapshot = self
+            .skill_registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot();
+
+        // Load workspace-scoped skills (override global skills with same name)
+        // self skill should be loaded before create prompt_ctx
+        if let Some(ref workspace) = manifest.workspace {
+            let ws_skills = workspace.join("skills");
+            if ws_skills.exists() {
+                if let Err(e) = skill_snapshot.load_workspace_skills(&ws_skills) {
+                    warn!(agent_id = %agent_id, "Failed to load workspace skills: {e}");
+                }
+            }
+        }
+
+        // if skill snapshot is not empty, add skill-tools to tools
+        if skill_snapshot.count() > 0 {}
 
         // Lazy backfill: create workspace for existing agents spawned before workspaces
         if manifest.workspace.is_none() {
@@ -2326,7 +2347,7 @@ impl OpenFangKernel {
                 granted_tools: tools.iter().map(|t| t.name.clone()).collect(),
                 recalled_memories: vec![], // Recalled in agent_loop, not here
                 skill_summary: self.build_skill_summary(&manifest.skills),
-                skill_prompt_context: self.collect_prompt_context(&manifest.skills),
+                skill_prompt_context: String::new(),
                 mcp_summary: if mcp_tool_count > 0 {
                     self.build_mcp_summary(&manifest.mcp_servers)
                 } else {
@@ -2458,23 +2479,6 @@ impl OpenFangKernel {
             cat.find_model(&manifest.model.model)
                 .map(|m| m.context_window as usize)
         });
-
-        // Snapshot skill registry before async call (RwLockReadGuard is !Send)
-        let mut skill_snapshot = self
-            .skill_registry
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .snapshot();
-
-        // Load workspace-scoped skills (override global skills with same name)
-        if let Some(ref workspace) = manifest.workspace {
-            let ws_skills = workspace.join("skills");
-            if ws_skills.exists() {
-                if let Err(e) = skill_snapshot.load_workspace_skills(&ws_skills) {
-                    warn!(agent_id = %agent_id, "Failed to load workspace skills: {e}");
-                }
-            }
-        }
 
         // Build link context from user message (auto-extract URLs for the agent)
         let message_with_links = if let Some(link_ctx) =
@@ -5186,6 +5190,24 @@ impl OpenFangKernel {
             all_tools.retain(|t| t.name != "shell_exec");
         }
 
+        // if skill is not empty, should add skill_load and skill_res_load
+        if !skill_allowlist.is_empty() {
+            let all_builtins = builtin_tool_definitions();
+            if !all_tools.iter().any(|t| t.name == "skill_load") {
+                if let Some(tool) = all_builtins.iter().find(|t| t.name == "skill_load") {
+                    all_tools.push(tool.to_owned());
+                }
+            }
+            if !all_tools.iter().any(|t| t.name == "skill_res_load") {
+                if let Some(tool) = all_builtins
+                    .into_iter()
+                    .find(|t| t.name == "skill_res_load")
+                {
+                    all_tools.push(tool);
+                }
+            }
+        }
+
         all_tools
     }
 
@@ -5233,25 +5255,7 @@ impl OpenFangKernel {
         if skills.is_empty() {
             return String::new();
         }
-        let mut summary = format!("\n\n--- Available Skills ({}) ---\n", skills.len());
-        for skill in &skills {
-            let name = &skill.manifest.skill.name;
-            let desc = &skill.manifest.skill.description;
-            let tools: Vec<_> = skill
-                .manifest
-                .tools
-                .provided
-                .iter()
-                .map(|t| t.name.as_str())
-                .collect();
-            if tools.is_empty() {
-                summary.push_str(&format!("- {name}: {desc}\n"));
-            } else {
-                summary.push_str(&format!("- {name}: {desc} [tools: {}]\n", tools.join(", ")));
-            }
-        }
-        summary.push_str("Use these skill tools when they match the user's request.");
-        summary
+        openfang_skills::loader::skills_to_prompt(skills.as_slice())
     }
 
     /// Build a compact MCP server/tool summary for the system prompt so the
@@ -6047,8 +6051,7 @@ impl KernelHandle for OpenFangKernel {
     }
 
     fn requires_approval(&self, tool_name: &str) -> bool {
-        // self.approval_manager.requires_approval(tool_name)
-        false // TODO 放开权限校验
+        self.approval_manager.requires_approval(tool_name)
     }
 
     async fn request_approval(

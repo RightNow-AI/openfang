@@ -288,8 +288,6 @@ pub fn build_canonical_context_message(ctx: &PromptContext) -> Option<String> {
 ///
 /// Also used by `agent_loop.rs` to append recalled memories after DB lookup.
 pub fn build_memory_section(memories: &[(String, String)]) -> String {
-    // TODO 暂时不做memory_recall，等有需要再放开
-    return String::new();
     let mut out = String::from("## Memory\n");
     if memories.is_empty() {
         out.push_str(
@@ -586,6 +584,8 @@ pub fn tool_hint(name: &str) -> &'static str {
         "process_write" => "write to a process's stdin",
         "process_kill" => "terminate a running process",
         "process_list" => "list active processes",
+        "skill_load" => "load a skill by name",
+        "skill_res_load" => "load a resource from the skill directory",
 
         _ => "",
     }

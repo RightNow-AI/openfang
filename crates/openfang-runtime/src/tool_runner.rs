@@ -447,6 +447,8 @@ pub async fn execute_tool(
 
         // Canvas / A2UI tool
         "canvas_present" => tool_canvas_present(input, workspace_root).await,
+        "skill_load" => skill_load(input, skill_registry),
+        "skill_res_load" => skill_res_load(input, skill_registry).await,
 
         other => {
             // Fallback 1: MCP tools (mcp_{server}_{tool} prefix)
@@ -1246,6 +1248,29 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["html"]
             }),
         },
+        ToolDefinition {
+            name: "skill_load".to_string(),
+            description: "Retrieves the full operational instructions, Standard Operating Procedures (SOPs), and workflow guidelines for a specific skill.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "skill_name": { "type": "string", "description": "The name of the skill" }
+                },
+                "required": ["skill_name"]
+            }),
+        },
+        ToolDefinition {
+            name: "skill_res_load".to_string(),
+            description: "Reads supplementary files (references, templates, configurations, assets) that are contained within a specific Skill's directory.When accessing any file related to an active Skill (e.g., documentation mentioned in  SKILL.md , template files, config JSONs), you MUST use this tool.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "skill_name": { "type": "string", "description": "The name of the skill" },
+                    "res_name": { "type": "string", "description": "The name of the resource to load" }
+                },  
+                "required": ["skill_name", "res_name"]
+            }),
+        },
     ]
 }
 
@@ -1264,7 +1289,7 @@ fn validate_path(path: &str) -> Result<&str, String> {
 }
 
 /// Resolve a file path through the workspace sandbox (if available) or legacy validation.
-fn resolve_file_path(raw_path: &str, workspace_root: Option<&Path>) -> Result<PathBuf, String> {
+pub fn resolve_file_path(raw_path: &str, workspace_root: Option<&Path>) -> Result<PathBuf, String> {
     if let Some(root) = workspace_root {
         crate::workspace_sandbox::resolve_sandbox_path(raw_path, root)
     } else {
@@ -1278,6 +1303,7 @@ async fn tool_file_read(
     workspace_root: Option<&Path>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
+
     let resolved = resolve_file_path(raw_path, workspace_root)?;
     tokio::fs::read_to_string(&resolved)
         .await
@@ -1308,15 +1334,10 @@ async fn tool_file_write(
     ))
 }
 
-async fn tool_file_list(
-    input: &serde_json::Value,
-    workspace_root: Option<&Path>,
-) -> Result<String, String> {
-    let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
-    let mut entries = tokio::fs::read_dir(&resolved)
+async fn read_files_list(resolved: &Path) -> Result<Vec<String>, String> {
+    let mut entries = tokio::fs::read_dir(resolved)
         .await
-        .map_err(|e| format!("Failed to list directory: {e}"))?;
+        .map_err(|e| format!("Failed to list directory: {e} - {}", resolved.display()))?;
     let mut files = Vec::new();
     while let Some(entry) = entries
         .next_entry()
@@ -1332,6 +1353,30 @@ async fn tool_file_list(
         files.push(format!("{name}{suffix}"));
     }
     files.sort();
+    Ok(files)
+}
+
+async fn tool_file_list(
+    input: &serde_json::Value,
+    workspace_root: Option<&Path>,
+) -> Result<String, String> {
+    let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
+
+    // Handle skills directory: global skills
+    let resolved = if raw_path.contains("skills") {
+        let global_skills_dir = openfang_types::config::openfang_home_dir().join("skills").canonicalize().map_err(|e| format!("Failed to canonicalize global skills path: {e}"))?;
+        let path = PathBuf::from(raw_path).canonicalize().map_err(|e| format!("Failed to canonicalize path: {e}"))?;
+        let workspace_root = if path.starts_with(&global_skills_dir) {
+            Some(global_skills_dir.as_path())
+        } else {
+            workspace_root
+        };
+        resolve_file_path(raw_path, workspace_root)?
+    } else {
+        resolve_file_path(raw_path, workspace_root)?
+    };
+
+    let files = read_files_list(&resolved).await?;
     Ok(files.join("\n"))
 }
 
@@ -3297,6 +3342,65 @@ async fn get_git_sh_path() -> Option<&'static str> {
     }
 
     None
+}
+
+pub fn skill_load(
+    input: &serde_json::Value,
+    skill_registry: Option<&SkillRegistry>,
+) -> Result<String, String> {
+    let skill_name = input["skill_name"]
+        .as_str()
+        .ok_or("Missing 'skill_name' parameter")?;
+
+    // L2 layer: get prompt_context from registered skill
+    if let Some(registry) = skill_registry {
+        if let Some(skill) = registry.get(skill_name) {
+            if let Some(ref prompt_context) = skill.manifest.prompt_context {
+                return Ok(prompt_context.clone());
+            }
+        }
+    }
+
+    Err(format!("Skill: '{}' not found in registry", skill_name))
+}
+
+pub async fn skill_res_load(
+    input: &serde_json::Value,
+    skill_registry: Option<&SkillRegistry>,
+) -> Result<String, String> {
+    let skill_name = input["skill_name"]
+        .as_str()
+        .ok_or("Missing 'skill_name' parameter")?;
+    let res_name = input["res_name"]
+        .as_str()
+        .ok_or("Missing 'res_name' parameter")?;
+
+    // L3 layer: get resource from registered skill
+    if let Some(registry) = skill_registry {
+        if let Some(skill) = registry.get(skill_name) {
+            let root_dir = if skill.path.is_dir() {
+                Some(skill.path.as_path())
+            } else {
+                skill.path.parent()
+            };
+            let canon_res_path = resolve_file_path(res_name, root_dir)?;
+
+            // If it's a directory, list its contents
+            if canon_res_path.is_dir() {
+                let files = read_files_list(&canon_res_path).await?;
+                return Ok(files.join("\n"));
+            }
+
+            return std::fs::read_to_string(&canon_res_path).map_err(|e| {
+                format!(
+                    "Failed to read resource '{}': {e}",
+                    canon_res_path.display()
+                )
+            });
+        }
+    }
+
+    Err(format!("Skill: '{}' not found in registry", skill_name))
 }
 
 #[cfg(test)]

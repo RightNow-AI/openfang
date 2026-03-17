@@ -402,6 +402,65 @@ async fn execute_shell(
     }
 }
 
+/// Build the "Available Skills" system prompt section with configurable verbosity.
+pub fn skills_to_prompt(skills: &[&crate::InstalledSkill]) -> String {
+    use std::fmt::Write;
+
+    if skills.is_empty() {
+        return String::new();
+    }
+
+    let mut prompt = String::from(
+            "## Available Skills\n\n\
+             Skill summaries are preloaded below to keep context compact.\n\
+             Skill instructions are loaded on demand: read the skill file in `location` only when needed.\n\n\
+             <available_skills>\n",
+        );
+
+    for skill in skills {
+        let _ = writeln!(prompt, "  <skill>");
+        write_xml_text_element(&mut prompt, 4, "name", &skill.manifest.skill.name);
+        write_xml_text_element(
+            &mut prompt,
+            4,
+            "description",
+            &skill.manifest.skill.description,
+        );
+        let location = skill.path.display().to_string();
+        write_xml_text_element(&mut prompt, 4, "location", &location);
+        let _ = writeln!(prompt, "  </skill>");
+    }
+
+    prompt.push_str("</available_skills>");
+    prompt
+}
+
+fn write_xml_text_element(out: &mut String, indent: usize, tag: &str, value: &str) {
+    for _ in 0..indent {
+        out.push(' ');
+    }
+    out.push('<');
+    out.push_str(tag);
+    out.push('>');
+    append_xml_escaped(out, value);
+    out.push_str("</");
+    out.push_str(tag);
+    out.push_str(">\n");
+}
+
+fn append_xml_escaped(out: &mut String, text: &str) {
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
