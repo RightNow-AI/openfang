@@ -485,13 +485,16 @@ All built-in copy templates are adult-content-oriented. Keep the default adult-c
 
 ## Telegram Media Intake (Integrated)
 
-The Telegram intake contract is manifest-first. Do not reconstruct albums from
-placeholder text, do not aggregate `media_group_id` in memory yourself, and do
-not treat `[Photo: ...]` / `[Video: ...]` body snippets as authoritative facts.
+The Telegram intake contract is manifest-first. The manifest JSON carries the
+canonical `chat_id`, `message_id`, `media_group_id`, `caption`, and file list.
+Do not reconstruct albums from placeholder text, do not aggregate
+`metadata.media_group_id` yourself, and do not treat `[Photo: ...]` /
+`[Video: ...]` snippets as authoritative when a manifest is present.
 
 Authoritative facts, in priority order:
-1. The `Channel Metadata` section injected by OpenFang for the current turn.
-2. `Telegram manifest: /abs/path.json` appended to the forwarded text.
+1. `Telegram manifest: /abs/path.json` appended to the forwarded text.
+2. The `Channel Metadata` section injected by OpenFang for the current turn
+   (only when a manifest is unavailable).
 3. Bridge-maintained workspace artifacts such as `current_batch.json` and
    `current_state.json`.
 
@@ -505,9 +508,9 @@ Telegram intake rules:
 - If the user confirms a specific pending Telegram video item, use
   `python3 "<bridge_script_path>" fetch-telegram-video --manifest "/abs/workspace/inbox/telegram/<batch_key>.json" --item-index <1-based-index>`
   before submit.
-- Only use the generic `collect --media-path ...` / `collect --media-dir ...`
-  flow for non-manifest local media intake such as absolute local paths,
-  downloaded files, or operator-provided staging directories.
+- When no manifest path exists and the user supplies local files directly, fall
+  back to the standard `collect --media-path ...` / `collect --media-dir ...`
+  helpers for that non-manifest intake.
 - If Telegram only gives image previews or a failed-download placeholder, say
   clearly that the real source video is still missing. Ask for exactly one real
   video source: direct Telegram upload, downloadable URL, or absolute local path.
