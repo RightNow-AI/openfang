@@ -1132,9 +1132,13 @@ impl OpenFangKernel {
                         .scheduler
                         .register(agent_id, entry.manifest.resources.clone());
 
-                    // Re-register in the in-memory registry (set state back to Running)
+                    // Re-register in the in-memory registry (set state back to Running).
+                    // Reset last_active to now so the heartbeat monitor doesn't
+                    // immediately flag the agent as unresponsive due to stale
+                    // persisted timestamps from before the shutdown.
                     let mut restored_entry = entry;
                     restored_entry.state = AgentState::Running;
+                    restored_entry.last_active = chrono::Utc::now();
 
                     // Inherit kernel exec_policy for agents that lack one
                     if restored_entry.manifest.exec_policy.is_none() {
