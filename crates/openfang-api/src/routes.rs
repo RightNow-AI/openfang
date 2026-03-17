@@ -5720,6 +5720,19 @@ pub async fn patch_agent(
         }
     }
 
+    if let Some(ids) = body.get("owner_ids").and_then(|v| v.as_array()) {
+        let owner_ids: Vec<String> = ids
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        if let Err(e) = state.kernel.registry.update_owner_ids(agent_id, owner_ids) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("{e}")})),
+            );
+        }
+    }
+
     // Persist updated entry to SQLite
     if let Some(entry) = state.kernel.registry.get(agent_id) {
         let _ = state.kernel.memory.save_agent(&entry);

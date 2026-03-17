@@ -645,10 +645,10 @@ mod tests {
         };
 
         let prompt = ClaudeCodeDriver::build_prompt(&request);
-        assert!(prompt.contains("[System]"));
-        assert!(prompt.contains("You are helpful."));
-        assert!(prompt.contains("[User]"));
-        assert!(prompt.contains("Hello"));
+        assert!(prompt.text.contains("[System]"));
+        assert!(prompt.text.contains("You are helpful."));
+        assert!(prompt.text.contains("[User]"));
+        assert!(prompt.text.contains("Hello"));
     }
 
     #[test]

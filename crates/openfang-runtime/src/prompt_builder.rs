@@ -59,6 +59,11 @@ pub struct PromptContext {
     pub sender_id: Option<String>,
     /// Sender display name.
     pub sender_name: Option<String>,
+    /// Owner identity IDs for automated sender verification.
+    /// When non-empty, the prompt builder compares sender_id against this list
+    /// and injects a deterministic VERIFIED/STRANGER verdict, removing the need
+    /// for the LLM to perform the comparison.
+    pub owner_ids: Vec<String>,
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -154,9 +159,11 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
 
     // Section 9.1 — Sender Identity (skip for subagents)
     if !ctx.is_subagent {
-        if let Some(sender_line) =
-            build_sender_section(ctx.sender_name.as_deref(), ctx.sender_id.as_deref())
-        {
+        if let Some(sender_line) = build_sender_section(
+            ctx.sender_name.as_deref(),
+            ctx.sender_id.as_deref(),
+            &ctx.owner_ids,
+        ) {
             sections.push(sender_line);
         }
     }
@@ -432,13 +439,41 @@ fn build_channel_section(channel: &str) -> String {
     )
 }
 
-fn build_sender_section(sender_name: Option<&str>, sender_id: Option<&str>) -> Option<String> {
-    match (sender_name, sender_id) {
-        (Some(name), Some(id)) => Some(format!("## Sender\nMessage from: {name} ({id})")),
-        (Some(name), None) => Some(format!("## Sender\nMessage from: {name}")),
-        (None, Some(id)) => Some(format!("## Sender\nMessage from: {id}")),
-        (None, None) => None,
-    }
+fn build_sender_section(
+    sender_name: Option<&str>,
+    sender_id: Option<&str>,
+    owner_ids: &[String],
+) -> Option<String> {
+    let id_str = match (sender_name, sender_id) {
+        (Some(name), Some(id)) => format!("{name} ({id})"),
+        (Some(name), None) => name.to_string(),
+        (None, Some(id)) => id.to_string(),
+        (None, None) => return None,
+    };
+
+    // When owner_ids is configured, inject a deterministic verdict so the LLM
+    // does not need to compare phone numbers itself.
+    let verdict = if !owner_ids.is_empty() {
+        if let Some(sid) = sender_id {
+            let norm = |s: &str| s.replace([' ', '-', '(', ')'], "");
+            let normalized_sid = norm(sid);
+            let is_owner = owner_ids.iter().any(|oid| norm(oid) == normalized_sid);
+            if is_owner {
+                "\n🔓 VERIFIED OWNER — This is your owner/master. Respond normally with full access."
+            } else {
+                "\n🚫 STRANGER — This person is NOT your owner. \
+                 Apply PRIVACY-RULES.md strictly. Do NOT share personal information, \
+                 phone numbers, schedules, or finances. Do NOT use owner titles (Signore) \
+                 or familiar tone. Do NOT load MEMORY.md."
+            }
+        } else {
+            "\n⚠️ UNVERIFIED — No sender ID available. Treat as stranger. Apply privacy rules."
+        }
+    } else {
+        "" // No owner_ids configured — no automated verdict
+    };
+
+    Some(format!("## Sender\nMessage from: {id_str}{verdict}"))
 }
 
 fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]) -> String {
@@ -969,5 +1004,52 @@ mod tests {
         assert_eq!(capitalize("files"), "Files");
         assert_eq!(capitalize(""), "");
         assert_eq!(capitalize("MCP"), "MCP");
+    }
+
+    #[test]
+    fn test_sender_section_no_owner_ids() {
+        let result = build_sender_section(Some("Alice"), Some("+123"), &[]);
+        assert_eq!(result, Some("## Sender\nMessage from: Alice (+123)".to_string()));
+    }
+
+    #[test]
+    fn test_sender_section_owner_verified() {
+        let owner_ids = vec!["+393760105565".to_string()];
+        let result = build_sender_section(Some("Federico"), Some("+393760105565"), &owner_ids);
+        let text = result.unwrap();
+        assert!(text.contains("VERIFIED OWNER"));
+        assert!(!text.contains("STRANGER"));
+    }
+
+    #[test]
+    fn test_sender_section_stranger() {
+        let owner_ids = vec!["+393760105565".to_string()];
+        let result = build_sender_section(Some("Unknown"), Some("+391234567890"), &owner_ids);
+        let text = result.unwrap();
+        assert!(text.contains("STRANGER"));
+        assert!(!text.contains("VERIFIED OWNER"));
+    }
+
+    #[test]
+    fn test_sender_section_no_sender_id_with_owners() {
+        let owner_ids = vec!["+393760105565".to_string()];
+        let result = build_sender_section(Some("Unknown"), None, &owner_ids);
+        let text = result.unwrap();
+        assert!(text.contains("UNVERIFIED"));
+    }
+
+    #[test]
+    fn test_sender_section_normalized_comparison() {
+        // Owner configured with spaces, sender without
+        let owner_ids = vec!["+39 376 010 5565".to_string()];
+        let result = build_sender_section(Some("Fed"), Some("+393760105565"), &owner_ids);
+        let text = result.unwrap();
+        assert!(text.contains("VERIFIED OWNER"));
+    }
+
+    #[test]
+    fn test_sender_section_none_when_no_info() {
+        assert!(build_sender_section(None, None, &[]).is_none());
+        assert!(build_sender_section(None, None, &["+123".to_string()]).is_none());
     }
 }

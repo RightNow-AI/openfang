@@ -491,6 +491,12 @@ pub struct AgentManifest {
     /// Tool blocklist — these tools are excluded (applied after allowlist).
     #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
     pub tool_blocklist: Vec<String>,
+    /// Owner identity IDs (e.g. phone numbers) for sender verification.
+    /// When a message arrives with a sender_id, the runtime compares it against
+    /// this list and injects a verified/stranger verdict into the system prompt,
+    /// removing the need for the LLM to perform the comparison itself.
+    #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
+    pub owner_ids: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -525,6 +531,7 @@ impl Default for AgentManifest {
             exec_policy: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            owner_ids: Vec::new(),
         }
     }
 }
@@ -782,6 +789,7 @@ mod tests {
             exec_policy: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            owner_ids: Vec::new(),
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let deserialized: AgentManifest = serde_json::from_str(&json).unwrap();

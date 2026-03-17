@@ -310,6 +310,17 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Update an agent's owner identity IDs for sender verification.
+    pub fn update_owner_ids(&self, id: AgentId, owner_ids: Vec<String>) -> OpenFangResult<()> {
+        let mut entry = self
+            .agents
+            .get_mut(&id)
+            .ok_or_else(|| OpenFangError::AgentNotFound(id.to_string()))?;
+        entry.manifest.owner_ids = owner_ids;
+        entry.last_active = chrono::Utc::now();
+        Ok(())
+    }
+
     /// Mark an agent's onboarding as complete.
     pub fn mark_onboarding_complete(&self, id: AgentId) -> OpenFangResult<()> {
         let mut entry = self
