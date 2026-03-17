@@ -1440,7 +1440,7 @@ impl OpenFangKernel {
             .get()
             .and_then(|w| w.upgrade())
             .map(|arc| arc as Arc<dyn KernelHandle>);
-        self.send_message_with_handle(agent_id, message, handle, None, None)
+        self.send_message_with_handle(agent_id, message, handle, None, None, None)
             .await
     }
 
@@ -1453,6 +1453,7 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
         blocks: Vec<openfang_types::message::ContentBlock>,
+        channel_type: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
         let handle: Option<Arc<dyn KernelHandle>> = self
             .self_handle
@@ -1466,6 +1467,7 @@ impl OpenFangKernel {
             Some(blocks),
             None,
             None,
+            channel_type,
         )
         .await
     }
@@ -1478,6 +1480,7 @@ impl OpenFangKernel {
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        channel_type: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
         self.send_message_with_handle_and_blocks(
             agent_id,
@@ -1486,6 +1489,7 @@ impl OpenFangKernel {
             None,
             sender_id,
             sender_name,
+            channel_type,
         )
         .await
     }
@@ -1507,6 +1511,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        channel_type: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
         // Acquire per-agent lock to serialize concurrent messages for the same agent.
         // This prevents session corruption when multiple messages arrive in quick
@@ -1544,6 +1549,7 @@ impl OpenFangKernel {
                 content_blocks,
                 sender_id,
                 sender_name,
+                channel_type,
             )
             .await
         };
@@ -1601,6 +1607,7 @@ impl OpenFangKernel {
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        channel_type: Option<String>,
     ) -> KernelResult<(
         tokio::sync::mpsc::Receiver<StreamEvent>,
         tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
@@ -1623,8 +1630,14 @@ impl OpenFangKernel {
             let kernel_clone = Arc::clone(self);
             let message_owned = message.to_string();
             let entry_clone = entry.clone();
+            let wasm_lock = self
+                .agent_msg_locks
+                .entry(agent_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone();
 
             let handle = tokio::spawn(async move {
+                let _guard = wasm_lock.lock().await;
                 let result = if is_wasm {
                     kernel_clone
                         .execute_wasm_agent(&entry_clone, &message_owned, kernel_handle)
@@ -1804,7 +1817,7 @@ impl OpenFangKernel {
                     .ok()
                     .and_then(|(s, _)| s),
                 user_name,
-                channel_type: None,
+                channel_type: channel_type.clone(),
                 is_subagent: manifest
                     .metadata
                     .get("is_subagent")
@@ -1871,7 +1884,53 @@ impl OpenFangKernel {
         };
         let kernel_clone = Arc::clone(self);
 
+        // Acquire per-agent lock inside the spawned task to serialize concurrent
+        // messages for the same agent. Without this, a streaming call (WebSocket)
+        // and a non-streaming call (channel bridge) can run in parallel, corrupting
+        // the session and causing cross-channel response delivery.
+        let agent_lock = self
+            .agent_msg_locks
+            .entry(agent_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+
+        let session_id = session.id;
         let handle = tokio::spawn(async move {
+            let _guard = agent_lock.lock().await;
+
+            // Reload the session under the lock to pick up any messages that were
+            // processed while we were waiting (prevents stale-session races between
+            // concurrent WebSocket/streaming and channel-bridge/non-streaming calls
+            // that could cause session corruption and cross-channel response delivery).
+            let mut session = memory
+                .get_session(session_id)
+                .unwrap_or_else(|_| Some(session.clone()))
+                .unwrap_or(session);
+
+            // Re-evaluate compaction need with the fresh session
+            let needs_compact = {
+                use openfang_runtime::compactor::{
+                    estimate_token_count, needs_compaction as check_compact,
+                    needs_compaction_by_tokens, CompactionConfig,
+                };
+                let config = CompactionConfig::default();
+                let by_messages = check_compact(&session, &config);
+                let estimated = estimate_token_count(
+                    &session.messages,
+                    Some(&manifest.model.system_prompt),
+                    None,
+                );
+                let by_tokens = needs_compaction_by_tokens(estimated, &config);
+                let by_quota =
+                    if let Some(headroom) = kernel_clone.scheduler.token_headroom(agent_id) {
+                        let threshold = (headroom as f64 * 0.8) as u64;
+                        estimated as u64 > threshold && session.messages.len() > 4
+                    } else {
+                        false
+                    };
+                by_messages || by_tokens || by_quota
+            };
+
             // Auto-compact if the session is large before running the loop
             if needs_compact {
                 info!(agent_id = %agent_id, messages = session.messages.len(), "Auto-compacting session");
@@ -1879,7 +1938,7 @@ impl OpenFangKernel {
                     Ok(msg) => {
                         info!(agent_id = %agent_id, "{msg}");
                         // Reload the session after compaction
-                        if let Ok(Some(reloaded)) = memory.get_session(session.id) {
+                        if let Ok(Some(reloaded)) = memory.get_session(session_id) {
                             session = reloaded;
                         }
                     }
@@ -2209,6 +2268,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        channel_type: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2349,7 +2409,7 @@ impl OpenFangKernel {
                     .ok()
                     .and_then(|(s, _)| s),
                 user_name,
-                channel_type: None,
+                channel_type: channel_type.clone(),
                 is_subagent: manifest
                     .metadata
                     .get("is_subagent")
@@ -4052,6 +4112,7 @@ impl OpenFangKernel {
                                         agent_id,
                                         message,
                                         Some(kh),
+                                        None,
                                         None,
                                         None,
                                     ),

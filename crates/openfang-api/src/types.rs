@@ -48,6 +48,9 @@ pub struct MessageRequest {
     /// Sender display name.
     #[serde(default)]
     pub sender_name: Option<String>,
+    /// Channel type (e.g. "whatsapp", "telegram", "discord", "web").
+    #[serde(default)]
+    pub channel_type: Option<String>,
 }
 
 /// Response from sending a message.

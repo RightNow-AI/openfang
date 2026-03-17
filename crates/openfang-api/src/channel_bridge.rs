@@ -81,6 +81,30 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         Ok(result.response)
     }
 
+    async fn send_message_with_context(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        ctx: openfang_channels::bridge::ChannelContext,
+    ) -> Result<String, String> {
+        let result = self
+            .kernel
+            .send_message_with_handle(
+                agent_id,
+                message,
+                None,
+                ctx.sender_id,
+                ctx.sender_name,
+                ctx.channel_type,
+            )
+            .await
+            .map_err(|e| format!("{e}"))?;
+        if result.silent {
+            return Ok(String::new());
+        }
+        Ok(result.response)
+    }
+
     async fn send_message_with_blocks(
         &self,
         agent_id: AgentId,
@@ -102,9 +126,47 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         };
         let result = self
             .kernel
-            .send_message_with_blocks(agent_id, &text, blocks)
+            .send_message_with_blocks(agent_id, &text, blocks, None)
             .await
             .map_err(|e| format!("{e}"))?;
+        Ok(result.response)
+    }
+
+    async fn send_message_with_blocks_and_context(
+        &self,
+        agent_id: AgentId,
+        blocks: Vec<openfang_types::message::ContentBlock>,
+        ctx: openfang_channels::bridge::ChannelContext,
+    ) -> Result<String, String> {
+        let text: String = blocks
+            .iter()
+            .filter_map(|b| match b {
+                openfang_types::message::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = if text.is_empty() {
+            "[Image]".to_string()
+        } else {
+            text
+        };
+        let result = self
+            .kernel
+            .send_message_with_handle_and_blocks(
+                agent_id,
+                &text,
+                None,
+                Some(blocks),
+                ctx.sender_id,
+                ctx.sender_name,
+                ctx.channel_type,
+            )
+            .await
+            .map_err(|e| format!("{e}"))?;
+        if result.silent {
+            return Ok(String::new());
+        }
         Ok(result.response)
     }
 

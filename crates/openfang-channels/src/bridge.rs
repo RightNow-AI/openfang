@@ -20,6 +20,21 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
+/// Channel context passed from channel bridges to the kernel alongside messages.
+///
+/// Carries the originating channel type and sender identity so the kernel can
+/// populate `PromptContext.channel_type` / `sender_id` / `sender_name` and the
+/// LLM knows which channel it is responding to.
+#[derive(Debug, Clone, Default)]
+pub struct ChannelContext {
+    /// Channel type string (e.g. "whatsapp", "telegram", "discord").
+    pub channel_type: Option<String>,
+    /// Platform-specific sender ID (e.g. phone number, Telegram user ID).
+    pub sender_id: Option<String>,
+    /// Human-readable sender display name.
+    pub sender_name: Option<String>,
+}
+
 /// Kernel operations needed by channel adapters.
 ///
 /// Defined here to avoid circular deps (openfang-channels can't depend on openfang-kernel).
@@ -27,7 +42,17 @@ use tracing::{debug, error, info, warn};
 #[async_trait]
 pub trait ChannelBridgeHandle: Send + Sync {
     /// Send a message to an agent and get the text response.
-    async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String>;
+    async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String> {
+        self.send_message_with_context(agent_id, message, ChannelContext::default()).await
+    }
+
+    /// Send a message with channel context (channel type, sender identity).
+    async fn send_message_with_context(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        ctx: ChannelContext,
+    ) -> Result<String, String>;
 
     /// Send a message with structured content blocks (text + images) to an agent.
     ///
@@ -36,6 +61,16 @@ pub trait ChannelBridgeHandle: Send + Sync {
         &self,
         agent_id: AgentId,
         blocks: Vec<ContentBlock>,
+    ) -> Result<String, String> {
+        self.send_message_with_blocks_and_context(agent_id, blocks, ChannelContext::default()).await
+    }
+
+    /// Send a message with content blocks and channel context.
+    async fn send_message_with_blocks_and_context(
+        &self,
+        agent_id: AgentId,
+        blocks: Vec<ContentBlock>,
+        ctx: ChannelContext,
     ) -> Result<String, String> {
         // Default: extract text from blocks and send as plain text
         let text: String = blocks
@@ -46,7 +81,7 @@ pub trait ChannelBridgeHandle: Send + Sync {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        self.send_message(agent_id, &text).await
+        self.send_message_with_context(agent_id, &text, ctx).await
     }
 
     /// Find an agent by name, returning its ID.
@@ -890,8 +925,13 @@ async fn dispatch_message(
     // (which expire typing after ~5s) keep showing it during long LLM calls.
     let typing_task = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
 
-    // Send to agent and relay response
-    let result = handle.send_message(agent_id, &text).await;
+    // Send to agent and relay response (with channel context for routing)
+    let ch_ctx = ChannelContext {
+        channel_type: Some(ct_str.to_string()),
+        sender_id: Some(sender_user_id(message).to_string()),
+        sender_name: Some(message.sender.display_name.clone()),
+    };
+    let result = handle.send_message_with_context(agent_id, &text, ch_ctx).await;
 
     // Stop the typing refresh now that we have a response
     typing_task.abort();
@@ -917,7 +957,12 @@ async fn dispatch_message(
             // Try re-resolution before reporting error
             if let Some(new_id) = try_reresolution(&e, &channel_key, handle, router).await {
                 let typing_task2 = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
-                let retry = handle.send_message(new_id, &text).await;
+                let ch_ctx2 = ChannelContext {
+                    channel_type: Some(ct_str.to_string()),
+                    sender_id: Some(sender_user_id(message).to_string()),
+                    sender_name: Some(message.sender.display_name.clone()),
+                };
+                let retry = handle.send_message_with_context(new_id, &text, ch_ctx2).await;
                 typing_task2.abort();
                 match retry {
                     Ok(response) => {
@@ -1287,8 +1332,13 @@ async fn dispatch_with_blocks(
     // Continuous typing indicator (see spawn_typing_loop doc)
     let typing_task = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
 
+    let ch_ctx = ChannelContext {
+        channel_type: Some(ct_str.to_string()),
+        sender_id: Some(sender_user_id(message).to_string()),
+        sender_name: Some(message.sender.display_name.clone()),
+    };
     let result = handle
-        .send_message_with_blocks(agent_id, blocks.clone())
+        .send_message_with_blocks_and_context(agent_id, blocks.clone(), ch_ctx)
         .await;
 
     typing_task.abort();
