@@ -6,6 +6,7 @@
 # Flags (via environment variables):
 #   $env:OPENFANG_INSTALL_DIR = custom install directory
 #   $env:OPENFANG_VERSION     = specific version tag (e.g. "v0.4.4")
+#   $env:OPENFANG_RELEASE_REPO = override release repo (default: tytsxai/openfang-upstream-fork)
 
 $ErrorActionPreference = 'Stop'
 
