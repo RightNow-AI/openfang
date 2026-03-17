@@ -36,12 +36,20 @@ if [[ -n "${API_KEY}" ]]; then
   auth_args=(-H "Authorization: Bearer ${API_KEY}")
 fi
 
+curl_with_auth() {
+  if (( ${#auth_args[@]} > 0 )); then
+    curl -fsS "${auth_args[@]}" "$1"
+  else
+    curl -fsS "$1"
+  fi
+}
+
 require_json_status() {
   local url="$1"
   local description="$2"
   local body
 
-  body="$(curl -fsS "${auth_args[@]}" "${url}")"
+  body="$(curl_with_auth "${url}")"
   python3 - "${body}" "${description}" <<'PY'
 import json
 import sys
@@ -58,7 +66,7 @@ PY
 require_http_200() {
   local url="$1"
   local description="$2"
-  curl -fsS "${auth_args[@]}" "${url}" >/dev/null
+  curl_with_auth "${url}" >/dev/null
   echo "ok  ${description}"
 }
 
@@ -68,7 +76,7 @@ require_json_status "${BASE_URL}/api/health/detail" "health detail"
 require_http_200 "${BASE_URL}/api/metrics" "metrics"
 require_http_200 "${BASE_URL}/api/audit/verify" "audit verify"
 
-if curl -fsS "${auth_args[@]}" "${BASE_URL}/api/integrations/health" >/dev/null 2>&1; then
+if curl_with_auth "${BASE_URL}/api/integrations/health" >/dev/null 2>&1; then
   echo "ok  integrations health"
 fi
 

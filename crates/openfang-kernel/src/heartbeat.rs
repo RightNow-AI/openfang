@@ -126,6 +126,34 @@ impl Default for RecoveryTracker {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryAction {
+    None,
+    Cooldown,
+    Attempt { attempt: u32 },
+    Terminate { attempts: u32 },
+}
+
+pub fn recovery_action(
+    tracker: &RecoveryTracker,
+    agent_id: AgentId,
+    config: &HeartbeatConfig,
+) -> RecoveryAction {
+    let failures = tracker.failure_count(agent_id);
+    if failures >= config.max_recovery_attempts {
+        return RecoveryAction::Terminate { attempts: failures };
+    }
+    if !tracker.can_attempt(agent_id, config.recovery_cooldown_secs) {
+        return RecoveryAction::Cooldown;
+    }
+    let attempt = tracker.record_attempt(agent_id);
+    if attempt > config.max_recovery_attempts {
+        RecoveryAction::Terminate { attempts: attempt }
+    } else {
+        RecoveryAction::Attempt { attempt }
+    }
+}
+
 /// Check all autonomous running agents and crashed agents and return heartbeat status.
 ///
 /// This is a pure function — it doesn't start a background task.
@@ -400,5 +428,38 @@ mod tests {
 
         tracker.reset(agent_id);
         assert_eq!(tracker.failure_count(agent_id), 0);
+    }
+
+    #[test]
+    fn test_recovery_action_attempt_then_cooldown_then_terminate() {
+        let tracker = RecoveryTracker::new();
+        let agent_id = AgentId::new();
+        let config = HeartbeatConfig {
+            max_recovery_attempts: 2,
+            recovery_cooldown_secs: 60,
+            ..HeartbeatConfig::default()
+        };
+
+        assert_eq!(
+            recovery_action(&tracker, agent_id, &config),
+            RecoveryAction::Attempt { attempt: 1 }
+        );
+        assert_eq!(
+            recovery_action(&tracker, agent_id, &config),
+            RecoveryAction::Cooldown
+        );
+
+        tracker.reset(agent_id);
+        assert_eq!(
+            recovery_action(&tracker, agent_id, &config),
+            RecoveryAction::Attempt { attempt: 1 }
+        );
+        tracker.reset(agent_id);
+        tracker.record_attempt(agent_id);
+        tracker.record_attempt(agent_id);
+        assert_eq!(
+            recovery_action(&tracker, agent_id, &config),
+            RecoveryAction::Terminate { attempts: 2 }
+        );
     }
 }

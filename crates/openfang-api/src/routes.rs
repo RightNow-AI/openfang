@@ -244,18 +244,33 @@ pub fn resolve_attachments(
 ) -> Vec<openfang_types::message::ContentBlock> {
     use base64::Engine;
 
-    let upload_dir = std::env::temp_dir().join("openfang_uploads");
     let mut blocks = Vec::new();
 
     for att in attachments {
-        // Look up metadata from the upload registry
+        // Validate file_id is a UUID to prevent path traversal
+        if uuid::Uuid::parse_str(&att.file_id).is_err() {
+            continue;
+        }
+
+        let file_path = upload_path(&att.file_id);
         let meta = UPLOAD_REGISTRY.get(&att.file_id);
         let content_type = if let Some(ref m) = meta {
+            if upload_is_expired(m.created_at) {
+                drop(meta);
+                UPLOAD_REGISTRY.remove(&att.file_id);
+                let _ = std::fs::remove_file(&file_path);
+                continue;
+            }
             m.content_type.clone()
-        } else if !att.content_type.is_empty() {
-            att.content_type.clone()
         } else {
-            continue; // Skip unknown attachments
+            if upload_is_expired_path(&file_path) {
+                let _ = std::fs::remove_file(&file_path);
+                continue;
+            }
+            if att.content_type.is_empty() {
+                continue;
+            }
+            att.content_type.clone()
         };
 
         // Only process image types
@@ -263,12 +278,6 @@ pub fn resolve_attachments(
             continue;
         }
 
-        // Validate file_id is a UUID to prevent path traversal
-        if uuid::Uuid::parse_str(&att.file_id).is_err() {
-            continue;
-        }
-
-        let file_path = upload_dir.join(&att.file_id);
         match std::fs::read(&file_path) {
             Ok(data) => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
@@ -307,8 +316,12 @@ pub fn with_message_text_block(
 
 #[cfg(test)]
 mod tests {
-    use super::with_message_text_block;
+    use super::{
+        resolve_attachments, upload_path, with_message_text_block, AttachmentRef, UploadMeta,
+        UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
+    };
     use openfang_types::message::ContentBlock;
+    use std::time::{Duration, SystemTime};
 
     #[test]
     fn with_message_text_block_returns_none_without_images() {
@@ -327,6 +340,34 @@ mod tests {
             &merged[1],
             ContentBlock::Text { text, .. } if text == "describe this"
         ));
+    }
+
+    #[test]
+    fn resolve_attachments_skips_expired_uploads() {
+        let file_id = uuid::Uuid::new_v4().to_string();
+        let path = upload_path(&file_id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, [1, 2, 3]).unwrap();
+        UPLOAD_REGISTRY.insert(
+            file_id.clone(),
+            UploadMeta {
+                filename: "expired.png".to_string(),
+                content_type: "image/png".to_string(),
+                created_at: SystemTime::now()
+                    .checked_sub(Duration::from_secs(UPLOAD_TTL_SECS + 60))
+                    .unwrap(),
+            },
+        );
+
+        let blocks = resolve_attachments(&[AttachmentRef {
+            file_id: file_id.clone(),
+            filename: "expired.png".to_string(),
+            content_type: "image/png".to_string(),
+        }]);
+
+        assert!(blocks.is_empty());
+        assert!(!path.exists());
+        assert!(UPLOAD_REGISTRY.get(&file_id).is_none());
     }
 }
 
@@ -9209,6 +9250,7 @@ static UPLOAD_REGISTRY: LazyLock<DashMap<String, UploadMeta>> = LazyLock::new(Da
 const MAX_UPLOAD_SIZE: usize = 10 * 1024 * 1024;
 /// Uploaded files are ephemeral and should not accumulate forever.
 const UPLOAD_TTL_SECS: u64 = 24 * 60 * 60;
+const UPLOAD_JANITOR_INTERVAL_SECS: u64 = 15 * 60;
 
 /// Allowed content type prefixes for upload.
 const ALLOWED_CONTENT_TYPES: &[&str] = &["image/", "text/", "application/pdf", "audio/"];
@@ -9223,6 +9265,10 @@ fn upload_dir() -> std::path::PathBuf {
     std::env::temp_dir().join("openfang_uploads")
 }
 
+fn upload_path(file_id: &str) -> std::path::PathBuf {
+    upload_dir().join(file_id)
+}
+
 fn upload_is_expired(created_at: std::time::SystemTime) -> bool {
     match std::time::SystemTime::now()
         .duration_since(created_at)
@@ -9233,22 +9279,65 @@ fn upload_is_expired(created_at: std::time::SystemTime) -> bool {
     }
 }
 
-fn cleanup_expired_uploads() {
+fn upload_created_at_from_path(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    let meta = std::fs::metadata(path).ok()?;
+    meta.modified().ok().or_else(|| meta.created().ok())
+}
+
+fn upload_is_expired_path(path: &std::path::Path) -> bool {
+    upload_created_at_from_path(path)
+        .map(upload_is_expired)
+        .unwrap_or(false)
+}
+
+fn cleanup_expired_uploads() -> usize {
+    let mut removed = 0usize;
     let expired_ids: Vec<String> = UPLOAD_REGISTRY
         .iter()
         .filter(|entry| upload_is_expired(entry.value().created_at))
         .map(|entry| entry.key().clone())
         .collect();
 
-    if expired_ids.is_empty() {
-        return;
-    }
-
     let dir = upload_dir();
     for file_id in expired_ids {
         UPLOAD_REGISTRY.remove(&file_id);
-        let _ = std::fs::remove_file(dir.join(&file_id));
+        if std::fs::remove_file(dir.join(&file_id)).is_ok() {
+            removed += 1;
+        }
     }
+
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || !upload_is_expired_path(&path) {
+                continue;
+            }
+            if let Some(file_id) = path.file_name().and_then(|name| name.to_str()) {
+                UPLOAD_REGISTRY.remove(file_id);
+            }
+            if std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+
+    removed
+}
+
+pub fn start_upload_janitor() {
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(UPLOAD_JANITOR_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            let removed = tokio::task::spawn_blocking(cleanup_expired_uploads)
+                .await
+                .unwrap_or(0);
+            if removed > 0 {
+                tracing::info!(removed, "Upload janitor removed expired files");
+            }
+        }
+    });
 }
 
 /// POST /api/agents/{id}/upload — Upload a file attachment.
@@ -9262,8 +9351,6 @@ pub async fn upload_file(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    cleanup_expired_uploads();
-
     // Validate agent ID format
     let _agent_id: AgentId = match id.parse() {
         Ok(id) => id,
@@ -9274,6 +9361,12 @@ pub async fn upload_file(
             );
         }
     };
+    if state.kernel.registry.get(_agent_id).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Agent not found"})),
+        );
+    }
 
     // Extract content type
     let content_type = headers
@@ -9388,8 +9481,6 @@ pub async fn upload_file(
 
 /// GET /api/uploads/{file_id} — Serve an uploaded file.
 pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
-    cleanup_expired_uploads();
-
     // Validate file_id is a UUID to prevent path traversal
     if uuid::Uuid::parse_str(&file_id).is_err() {
         return (
@@ -9402,7 +9493,7 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
         );
     }
 
-    let file_path = upload_dir().join(&file_id);
+    let file_path = upload_path(&file_id);
 
     // Look up metadata from registry; fall back to disk probe for generated images
     // (image_generate saves files without registering in UPLOAD_REGISTRY).
@@ -9435,6 +9526,17 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
                         "application/json".to_string(),
                     )],
                     b"{\"error\":\"File not found\"}".to_vec(),
+                );
+            }
+            if upload_is_expired_path(&file_path) {
+                let _ = std::fs::remove_file(&file_path);
+                return (
+                    StatusCode::NOT_FOUND,
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "application/json".to_string(),
+                    )],
+                    b"{\"error\":\"File expired\"}".to_vec(),
                 );
             }
             "image/png".to_string()

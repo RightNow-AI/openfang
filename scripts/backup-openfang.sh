@@ -120,7 +120,10 @@ hostname=$(hostname)
 EOF
 
 if [[ "${KEEP_BACKUPS}" =~ ^[0-9]+$ ]] && (( KEEP_BACKUPS > 0 )); then
-  mapfile -t backups < <(find "${BACKUP_ROOT}" -maxdepth 1 -type d -name 'openfang-*' | sort -r)
+  backups=()
+  while IFS= read -r backup_dir; do
+    backups+=("${backup_dir}")
+  done < <(find "${BACKUP_ROOT}" -maxdepth 1 -type d -name 'openfang-*' | sort -r)
   if (( ${#backups[@]} > KEEP_BACKUPS )); then
     for old_backup in "${backups[@]:KEEP_BACKUPS}"; do
       rm -rf "${old_backup}"

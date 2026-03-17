@@ -4444,13 +4444,17 @@ impl OpenFangKernel {
     /// Periodically checks all running agents' last_active timestamps and
     /// publishes `HealthCheckFailed` events for unresponsive agents.
     fn start_heartbeat_monitor(self: &Arc<Self>) {
-        use crate::heartbeat::{check_agents, is_quiet_hours, HeartbeatConfig};
+        use crate::heartbeat::{
+            check_agents, is_quiet_hours, recovery_action, HeartbeatConfig, RecoveryAction,
+            RecoveryTracker,
+        };
 
         let kernel = Arc::clone(self);
         let config = HeartbeatConfig::default();
         let interval_secs = config.check_interval_secs;
 
         tokio::spawn(async move {
+            let recovery_tracker = RecoveryTracker::new();
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(config.check_interval_secs));
 
@@ -4475,6 +4479,10 @@ impl OpenFangKernel {
                         }
                     }
 
+                    if status.state != AgentState::Crashed {
+                        recovery_tracker.reset(status.agent_id);
+                    }
+
                     if status.unresponsive {
                         let event = Event::new(
                             status.agent_id,
@@ -4485,6 +4493,48 @@ impl OpenFangKernel {
                             }),
                         );
                         kernel.event_bus.publish(event).await;
+
+                        if status.state == AgentState::Crashed {
+                            match recovery_action(&recovery_tracker, status.agent_id, &config) {
+                                RecoveryAction::Attempt { attempt } => {
+                                    warn!(
+                                        agent_id = %status.agent_id,
+                                        attempt,
+                                        max_attempts = config.max_recovery_attempts,
+                                        "Heartbeat attempting crashed agent recovery"
+                                    );
+                                    if let Err(e) =
+                                        kernel.registry.set_state(status.agent_id, AgentState::Running)
+                                    {
+                                        warn!(agent_id = %status.agent_id, error = %e, "Heartbeat recovery state transition failed");
+                                    }
+                                }
+                                RecoveryAction::Terminate { attempts } => {
+                                    warn!(
+                                        agent_id = %status.agent_id,
+                                        attempts,
+                                        "Heartbeat exhausted recovery attempts; terminating agent"
+                                    );
+                                    if let Err(e) =
+                                        kernel.registry.set_state(status.agent_id, AgentState::Terminated)
+                                    {
+                                        warn!(agent_id = %status.agent_id, error = %e, "Heartbeat termination state transition failed");
+                                    } else {
+                                        let event = Event::new(
+                                            status.agent_id,
+                                            EventTarget::System,
+                                            EventPayload::Lifecycle(LifecycleEvent::Terminated {
+                                                agent_id: status.agent_id,
+                                                reason: "heartbeat recovery exhausted".to_string(),
+                                            }),
+                                        );
+                                        kernel.event_bus.publish(event).await;
+                                    }
+                                    recovery_tracker.reset(status.agent_id);
+                                }
+                                RecoveryAction::Cooldown | RecoveryAction::None => {}
+                            }
+                        }
                     }
                 }
             }
