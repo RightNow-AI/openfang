@@ -310,6 +310,7 @@ pub async fn run_agent_loop(
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_budget = ContextBudget::new(ctx_window);
     let mut any_tools_executed = false;
+    let mut action_validator_retried = false;
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Agent loop iteration");
@@ -393,6 +394,32 @@ pub async fn run_agent_loop(
                 let (cleaned_text, parsed_directives) =
                     crate::reply_directives::parse_directives(&text);
                 let text = cleaned_text;
+
+                // Action validator: detect when user requested an explicit action
+                // (send, execute+send, etc.) but the LLM responded with text only
+                // and no tool was called — re-prompt once to force tool execution.
+                if !action_validator_retried
+                    && !any_tools_executed
+                    && response.tool_calls.is_empty()
+                    && requires_tool_action(user_message)
+                {
+                    action_validator_retried = true;
+                    warn!(
+                        agent = %manifest.name,
+                        iteration,
+                        "Action validator: user requested explicit action but LLM \
+                         responded with text only — re-prompting to execute tools"
+                    );
+                    messages.push(Message::assistant(text.clone()));
+                    messages.push(Message::user(
+                        "IMPORTANT: You described the action but did NOT execute it. \
+                         The user asked you to perform an action using a tool (e.g. \
+                         channel_send, shell_exec). You MUST call the appropriate tool \
+                         NOW. Do not describe what you would do — actually do it."
+                            .to_string(),
+                    ));
+                    continue;
+                }
 
                 // NO_REPLY: agent intentionally chose not to reply
                 if text.trim() == "NO_REPLY" || parsed_directives.silent {
@@ -954,10 +981,28 @@ async fn call_with_retry(
                 warn!(
                     category = ?classified.category,
                     retryable = classified.is_retryable,
+                    attempt,
                     raw = %raw_error,
                     "LLM error classified: {}",
                     classified.sanitized_message
                 );
+
+                // Retry retryable errors (e.g. timeouts, network issues)
+                if classified.is_retryable && attempt < MAX_RETRIES {
+                    let delay = classified
+                        .suggested_delay_ms
+                        .filter(|&d| d > 0)
+                        .unwrap_or(BASE_RETRY_DELAY_MS * 2u64.pow(attempt));
+                    warn!(
+                        attempt,
+                        delay_ms = delay,
+                        category = ?classified.category,
+                        "Retryable LLM error, retrying after delay"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    last_error = Some(classified.sanitized_message);
+                    continue;
+                }
 
                 if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                     cooldown.record_failure(provider, classified.is_billing);
@@ -1068,10 +1113,28 @@ async fn stream_with_retry(
                 warn!(
                     category = ?classified.category,
                     retryable = classified.is_retryable,
+                    attempt,
                     raw = %raw_error,
                     "LLM stream error classified: {}",
                     classified.sanitized_message
                 );
+
+                // Retry retryable errors (e.g. timeouts, network issues)
+                if classified.is_retryable && attempt < MAX_RETRIES {
+                    let delay = classified
+                        .suggested_delay_ms
+                        .filter(|&d| d > 0)
+                        .unwrap_or(BASE_RETRY_DELAY_MS * 2u64.pow(attempt));
+                    warn!(
+                        attempt,
+                        delay_ms = delay,
+                        category = ?classified.category,
+                        "Retryable LLM stream error, retrying after delay"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    last_error = Some(classified.sanitized_message);
+                    continue;
+                }
 
                 if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                     cooldown.record_failure(provider, classified.is_billing);
@@ -1277,6 +1340,7 @@ pub async fn run_agent_loop_streaming(
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_budget = ContextBudget::new(ctx_window);
     let mut any_tools_executed = false;
+    let mut action_validator_retried = false;
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Streaming agent loop iteration");
@@ -1380,6 +1444,32 @@ pub async fn run_agent_loop_streaming(
                 let (cleaned_text_s, parsed_directives_s) =
                     crate::reply_directives::parse_directives(&text);
                 let text = cleaned_text_s;
+
+                // Action validator (streaming): detect when user requested an explicit
+                // action but the LLM responded with text only — re-prompt once to
+                // force tool execution.
+                if !action_validator_retried
+                    && !any_tools_executed
+                    && response.tool_calls.is_empty()
+                    && requires_tool_action(user_message)
+                {
+                    action_validator_retried = true;
+                    warn!(
+                        agent = %manifest.name,
+                        iteration,
+                        "Action validator (streaming): user requested explicit action but LLM \
+                         responded with text only — re-prompting to execute tools"
+                    );
+                    messages.push(Message::assistant(text.clone()));
+                    messages.push(Message::user(
+                        "IMPORTANT: You described the action but did NOT execute it. \
+                         The user asked you to perform an action using a tool (e.g. \
+                         channel_send, shell_exec). You MUST call the appropriate tool \
+                         NOW. Do not describe what you would do — actually do it."
+                            .to_string(),
+                    ));
+                    continue;
+                }
 
                 // NO_REPLY: agent intentionally chose not to reply
                 if text.trim() == "NO_REPLY" || parsed_directives_s.silent {
@@ -1873,6 +1963,83 @@ pub async fn run_agent_loop_streaming(
 /// 10. `<|plugin|>...<|endofblock|>` — Qwen/ChatGLM thinking-model format
 /// 11. `Action: tool\nAction Input: {"key":"value"}` — ReAct-style (LM Studio, GPT-OSS)
 /// 12. `tool_name\n{"key":"value"}` — bare name + JSON on next line (Llama 4 Scout)
+///
+/// Detect whether a user message contains an explicit request to perform a side-effecting
+/// action that requires a tool call (e.g. "send to Telegram", "execute the script and send").
+///
+/// This is intentionally conservative — it only matches patterns where the user clearly
+/// instructs the agent to *do* something on an external channel/system.  Simple questions
+/// like "what would you send?" or "how do I send an email?" will NOT match.
+fn requires_tool_action(user_message: &str) -> bool {
+    let msg = user_message.to_lowercase();
+
+    // Pattern 1: explicit tool name in the message (user literally says which tool to call)
+    let explicit_tools = [
+        "channel_send",
+        "shell_exec",
+        "web_fetch",
+        "agent_send",
+        "cron_create",
+        "file_write",
+        "schedule_create",
+        "text_to_speech",
+    ];
+    if explicit_tools.iter().any(|t| msg.contains(t)) {
+        return true;
+    }
+
+    // Pattern 2: action verb + target channel/system (multi-language)
+    let action_verbs = [
+        "invia",
+        "manda",
+        "send",
+        "scrivi su",
+        "pubblica su",
+        "posta su",
+        "post to",
+        "forward to",
+        "inoltra su",
+        "riferisci su",
+        "notifica su",
+        "notify on",
+        "deliver to",
+        "recapita su",
+    ];
+    let targets = [
+        "telegram",
+        "whatsapp",
+        "slack",
+        "discord",
+        "email",
+        "e-mail",
+        "al signore",
+    ];
+    for verb in &action_verbs {
+        if msg.contains(verb) {
+            for target in &targets {
+                if msg.contains(target) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Pattern 3: "esegui ... e invia" / "execute ... and send" compound actions
+    let execute_verbs = ["esegui", "execute", "run", "lancia"];
+    let send_verbs = ["invia", "send", "manda"];
+    for ev in &execute_verbs {
+        if msg.contains(ev) {
+            for sv in &send_verbs {
+                if msg.contains(sv) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
 /// 13. `<tool_use>{"name":"tool","arguments":{...}}</tool_use>` — Llama 3.1+ variant
 ///
 /// Validates tool names against available tools and returns synthetic `ToolCall` entries.
