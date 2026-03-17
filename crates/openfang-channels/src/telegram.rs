@@ -130,28 +130,79 @@ impl TelegramAdapter {
         self
     }
 
+    fn getme_error_hint(desc: &str) -> &'static str {
+        let desc_lower = desc.to_lowercase();
+        if desc_lower.contains("unauthorized") {
+            " (Check that the bot token is correct. Get it from @BotFather on Telegram.)"
+        } else if desc_lower.contains("not found") {
+            " (The bot token format may be invalid. Expected format: 123456789:ABCdefGHI...)"
+        } else {
+            ""
+        }
+    }
+
+    fn is_permanent_getme_error(desc: &str) -> bool {
+        let desc_lower = desc.to_lowercase();
+        desc_lower.contains("unauthorized") || desc_lower.contains("not found")
+    }
+
     /// Validate the bot token by calling `getMe`.
+    ///
+    /// When using Local Bot API Server, retries up to 5 times with exponential backoff
+    /// to allow the server time to fully initialize.
     pub async fn validate_token(&self) -> Result<String, Box<dyn std::error::Error>> {
         let url = format!("{}/bot{}/getMe", self.api_base_url, self.token.as_str());
-        let resp: serde_json::Value = self.client.get(&url).send().await?.json().await?;
 
-        if resp["ok"].as_bool() != Some(true) {
-            let desc = resp["description"].as_str().unwrap_or("unknown error");
-            let hint = if desc.to_lowercase().contains("unauthorized") {
-                " (Check that the bot token is correct. Get it from @BotFather on Telegram.)"
-            } else if desc.to_lowercase().contains("not found") {
-                " (The bot token format may be invalid. Expected format: 123456789:ABCdefGHI...)"
-            } else {
-                ""
-            };
-            return Err(format!("Telegram getMe failed: {desc}{hint}").into());
+        // Retry logic for Local Bot API Server startup delay
+        let max_retries = if self.use_local_api { 5 } else { 1 };
+        let mut last_error = None;
+
+        for attempt in 0..max_retries {
+            if attempt > 0 {
+                let delay_ms = 1000 * (1 << (attempt - 1)); // 1s, 2s, 4s, 8s
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                debug!(
+                    "Retrying Telegram getMe (attempt {}/{})",
+                    attempt + 1,
+                    max_retries
+                );
+            }
+
+            match self.client.get(&url).send().await {
+                Ok(resp) => match resp.json::<serde_json::Value>().await {
+                    Ok(json) => {
+                        if json["ok"].as_bool() == Some(true) {
+                            let username = json["result"]["username"]
+                                .as_str()
+                                .ok_or("Missing username in getMe response")?
+                                .to_string();
+                            return Ok(username);
+                        }
+
+                        let desc = json["description"].as_str().unwrap_or("unknown error");
+                        let hint = Self::getme_error_hint(desc);
+                        let err_msg = format!("Telegram getMe failed: {desc}{hint}");
+                        let permanent = Self::is_permanent_getme_error(desc);
+                        last_error = Some(err_msg.clone());
+
+                        // Local API startup can return transient getMe errors; retry only those.
+                        if !self.use_local_api || permanent {
+                            return Err(err_msg.into());
+                        }
+                    }
+                    Err(e) => {
+                        last_error = Some(format!("Failed to parse getMe response: {}", e));
+                    }
+                },
+                Err(e) => {
+                    last_error = Some(format!("Failed to connect to Telegram API: {}", e));
+                }
+            }
         }
 
-        let bot_name = resp["result"]["username"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string();
-        Ok(bot_name)
+        Err(last_error
+            .unwrap_or_else(|| "Unknown error".to_string())
+            .into())
     }
 
     /// Call `sendMessage` on the Telegram API.
@@ -1694,6 +1745,10 @@ fn sanitize_telegram_html(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     fn test_client() -> reqwest::Client {
         reqwest::Client::new()
@@ -2624,6 +2679,160 @@ mod tests {
         });
 
         (format!("http://{addr}"), handle)
+    }
+
+    async fn start_get_me_test_server<F>(
+        handler: F,
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>)
+    where
+        F: Fn(usize) -> (axum::http::StatusCode, String) + Send + Sync + 'static,
+    {
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use axum::Router;
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let handler = Arc::new(handler);
+        let app_attempts = attempts.clone();
+        let app_handler = handler.clone();
+
+        let app = Router::new().route(
+            "/botfake:token/getMe",
+            get(move || {
+                let attempts = app_attempts.clone();
+                let handler = app_handler.clone();
+                async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                    let (status, body) = handler(attempt);
+                    (status, body).into_response()
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        (format!("http://{addr}"), attempts, handle)
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_retries_transient_local_api_failure() {
+        let (api_base_url, attempts, server_handle) = start_get_me_test_server(|attempt| {
+            if attempt == 1 {
+                (
+                    axum::http::StatusCode::OK,
+                    serde_json::json!({
+                        "ok": false,
+                        "description": "Bad Gateway"
+                    })
+                    .to_string(),
+                )
+            } else {
+                (
+                    axum::http::StatusCode::OK,
+                    serde_json::json!({
+                        "ok": true,
+                        "result": {
+                            "username": "local_bot"
+                        }
+                    })
+                    .to_string(),
+                )
+            }
+        })
+        .await;
+
+        let adapter = TelegramAdapter::new(
+            "fake:token".to_string(),
+            vec![],
+            Duration::from_secs(1),
+            Some(api_base_url),
+        )
+        .with_local_api(true);
+
+        let username = adapter.validate_token().await.unwrap();
+
+        server_handle.abort();
+
+        assert_eq!(username, "local_bot");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_does_not_retry_without_local_api() {
+        let (api_base_url, attempts, server_handle) = start_get_me_test_server(|attempt| {
+            if attempt == 1 {
+                (
+                    axum::http::StatusCode::OK,
+                    serde_json::json!({
+                        "ok": false,
+                        "description": "Bad Gateway"
+                    })
+                    .to_string(),
+                )
+            } else {
+                (
+                    axum::http::StatusCode::OK,
+                    serde_json::json!({
+                        "ok": true,
+                        "result": {
+                            "username": "should_not_be_reached"
+                        }
+                    })
+                    .to_string(),
+                )
+            }
+        })
+        .await;
+
+        let adapter = TelegramAdapter::new(
+            "fake:token".to_string(),
+            vec![],
+            Duration::from_secs(1),
+            Some(api_base_url),
+        );
+
+        let err = adapter.validate_token().await.unwrap_err().to_string();
+
+        server_handle.abort();
+
+        assert!(err.contains("Bad Gateway"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_does_not_retry_invalid_token_with_local_api() {
+        let (api_base_url, attempts, server_handle) = start_get_me_test_server(|_| {
+            (
+                axum::http::StatusCode::UNAUTHORIZED,
+                serde_json::json!({
+                    "ok": false,
+                    "description": "Unauthorized"
+                })
+                .to_string(),
+            )
+        })
+        .await;
+
+        let adapter = TelegramAdapter::new(
+            "fake:token".to_string(),
+            vec![],
+            Duration::from_secs(1),
+            Some(api_base_url),
+        )
+        .with_local_api(true);
+
+        let err = adapter.validate_token().await.unwrap_err().to_string();
+
+        server_handle.abort();
+
+        assert!(err.contains("Unauthorized"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

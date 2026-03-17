@@ -251,6 +251,8 @@ python -m vllm.entrypoints.openai.api_server --model ...
 
 See [telegram-large-files.md](telegram-large-files.md) for the full setup guide and additional Docker/native deployment notes.
 
+**Note:** When `use_local_api = true` and `auto_start_local_api` is configured, OpenFang validates the bot token via `getMe` before entering polling. The Local Bot API Server may take a few seconds to accept connections, so OpenFang retries transient connection and response-parse failures with exponential backoff before giving up. If startup still fails, ensure the local server binary is installed, the configured port is reachable, and `telegram_api_id`/`telegram_api_hash_env` point to valid credentials. Authentication failures such as `Telegram getMe failed: Unauthorized` are treated as permanent and should be fixed in configuration before restarting the daemon.
+
 ### Discord bot offline
 
 **Checklist**:
