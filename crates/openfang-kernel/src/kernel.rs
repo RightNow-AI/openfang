@@ -3200,7 +3200,6 @@ impl OpenFangKernel {
         } else {
             def.agent.model.clone()
         };
-
         let mut manifest = AgentManifest {
             name: def.agent.name.clone(),
             description: def.agent.description.clone(),
@@ -4576,8 +4575,8 @@ impl OpenFangKernel {
 
             let driver_config = DriverConfig {
                 provider: agent_provider.clone(),
-                api_key,
-                base_url,
+                api_key: api_key.clone(),
+                base_url: base_url.clone(),
                 skip_permissions: true,
             };
 

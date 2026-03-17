@@ -48,10 +48,10 @@ use openfang_channels::gitter::GitterAdapter;
 use openfang_channels::gotify::GotifyAdapter;
 use openfang_channels::linkedin::LinkedInAdapter;
 use openfang_channels::mumble::MumbleAdapter;
-use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_kernel::OpenFangKernel;
+use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_types::agent::AgentId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1155,10 +1155,8 @@ pub async fn start_channel_bridge_with_config(
                             };
 
                             let mut metadata = serde_json::Map::new();
-                            metadata.insert(
-                                "edit_message_id".to_string(),
-                                serde_json::json!(msg_id),
-                            );
+                            metadata
+                                .insert("edit_message_id".to_string(), serde_json::json!(msg_id));
 
                             let _ = k
                                 .send_channel_message(

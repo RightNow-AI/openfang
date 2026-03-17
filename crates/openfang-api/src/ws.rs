@@ -22,7 +22,9 @@ use futures::{SinkExt, StreamExt};
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::llm_driver::StreamEvent;
 use openfang_runtime::llm_errors;
+use openfang_runtime::reply_directives::parse_directives;
 use openfang_types::agent::AgentId;
+use openfang_types::message::TokenUsage;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, SocketAddr};
@@ -44,6 +46,12 @@ const DEBOUNCE_MS: u64 = 100;
 
 /// Flush text buffer when it exceeds this many characters.
 const DEBOUNCE_CHARS: usize = 200;
+
+enum StreamResponseDisposition {
+    Silent,
+    Content(String),
+    EmptyPlaceholder,
+}
 
 // ---------------------------------------------------------------------------
 // Verbose Level
@@ -524,7 +532,6 @@ async fn handle_text_message(
                         let mut text_buffer = String::new();
                         let mut accumulated_text = String::new();
                         let mut stream_usage: Option<openfang_types::message::TokenUsage> = None;
-                        let mut is_silent = false;
                         let far_future = tokio::time::Instant::now() + Duration::from_secs(86400);
                         let mut flush_deadline = far_future;
 
@@ -622,16 +629,7 @@ async fn handle_text_message(
                             }
                         }
 
-                        // Check if the agent signalled NO_REPLY via the stream
-                        // (PhaseChange with a "silent" marker — currently the
-                        // kernel sets result.silent after the loop, so we detect
-                        // it from empty accumulated text when ContentComplete
-                        // had no text deltas at all).
-                        if accumulated_text.is_empty() && stream_usage.is_some() {
-                            is_silent = true;
-                        }
-
-                        (accumulated_text, stream_usage, is_silent)
+                        (accumulated_text, stream_usage)
                     });
 
                     // Wait for the stream to finish (fast — closes as soon as
@@ -676,7 +674,7 @@ async fn handle_text_message(
 
                     // Send the response immediately from stream data
                     match stream_result {
-                        Ok((accumulated_text, stream_usage, is_silent)) => {
+                        Ok((accumulated_text, stream_usage)) => {
                             // Send typing lifecycle: stop
                             let _ = send_json(
                                 sender,
@@ -689,29 +687,30 @@ async fn handle_text_message(
 
                             let usage = stream_usage.unwrap_or_default();
 
-                            if is_silent {
-                                let _ = send_json(
-                                    sender,
-                                    &serde_json::json!({
-                                        "type": "silent_complete",
-                                        "input_tokens": usage.input_tokens,
-                                        "output_tokens": usage.output_tokens,
-                                    }),
-                                )
-                                .await;
-                                return;
-                            }
-
-                            // Strip <think>...</think> blocks
-                            let cleaned = strip_think_tags(&accumulated_text);
-
-                            let content = if cleaned.trim().is_empty() {
-                                format!(
-                                    "[The agent completed processing but returned no text response. ({} in / {} out)]",
-                                    usage.input_tokens, usage.output_tokens,
-                                )
-                            } else {
-                                cleaned
+                            let content = match finalize_stream_response(
+                                &accumulated_text,
+                                stream_usage,
+                            ) {
+                                Some(StreamResponseDisposition::Silent) => {
+                                    let _ = send_json(
+                                        sender,
+                                        &serde_json::json!({
+                                            "type": "silent_complete",
+                                            "input_tokens": usage.input_tokens,
+                                            "output_tokens": usage.output_tokens,
+                                        }),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                                Some(StreamResponseDisposition::Content(content)) => content,
+                                Some(StreamResponseDisposition::EmptyPlaceholder) => {
+                                    format!(
+                                        "[The agent completed processing but returned no text response. ({} in / {} out)]",
+                                        usage.input_tokens, usage.output_tokens,
+                                    )
+                                }
+                                None => return,
                             };
 
                             // Estimate context pressure
@@ -1263,6 +1262,32 @@ pub fn strip_think_tags(text: &str) -> String {
     result
 }
 
+fn should_emit_empty_response_placeholder(cleaned_text: &str, usage: Option<TokenUsage>) -> bool {
+    cleaned_text.trim().is_empty() && usage.is_some()
+}
+
+fn finalize_stream_response(
+    raw_text: &str,
+    usage: Option<TokenUsage>,
+) -> Option<StreamResponseDisposition> {
+    let without_thinking = strip_think_tags(raw_text);
+    let (visible_text, directives) = parse_directives(&without_thinking);
+
+    if visible_text.trim() == "NO_REPLY" || directives.silent {
+        return Some(StreamResponseDisposition::Silent);
+    }
+
+    if should_emit_empty_response_placeholder(&visible_text, usage) {
+        return Some(StreamResponseDisposition::EmptyPlaceholder);
+    }
+
+    if visible_text.trim().is_empty() {
+        return None;
+    }
+
+    Some(StreamResponseDisposition::Content(visible_text))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1361,5 +1386,59 @@ mod tests {
         );
         assert_eq!(strip_think_tags("No thinking here"), "No thinking here");
         assert_eq!(strip_think_tags("<think>all thinking</think>"), "");
+    }
+
+    #[test]
+    fn test_should_emit_empty_response_placeholder_requires_completion_usage() {
+        let usage = TokenUsage {
+            input_tokens: 12,
+            output_tokens: 3,
+        };
+
+        assert!(should_emit_empty_response_placeholder("", Some(usage)));
+        assert!(!should_emit_empty_response_placeholder("", None));
+        assert!(!should_emit_empty_response_placeholder(
+            "visible text",
+            Some(usage)
+        ));
+    }
+
+    #[test]
+    fn test_finalize_stream_response_detects_no_reply() {
+        let usage = TokenUsage {
+            input_tokens: 4,
+            output_tokens: 1,
+        };
+
+        assert!(matches!(
+            finalize_stream_response("NO_REPLY", Some(usage)),
+            Some(StreamResponseDisposition::Silent)
+        ));
+    }
+
+    #[test]
+    fn test_finalize_stream_response_detects_silent_directive() {
+        let usage = TokenUsage {
+            input_tokens: 7,
+            output_tokens: 2,
+        };
+
+        assert!(matches!(
+            finalize_stream_response("[[silent]] Internal note", Some(usage)),
+            Some(StreamResponseDisposition::Silent)
+        ));
+    }
+
+    #[test]
+    fn test_finalize_stream_response_uses_placeholder_for_think_only_completion() {
+        let usage = TokenUsage {
+            input_tokens: 11,
+            output_tokens: 5,
+        };
+
+        assert!(matches!(
+            finalize_stream_response("<think>reasoning only</think>", Some(usage)),
+            Some(StreamResponseDisposition::EmptyPlaceholder)
+        ));
     }
 }

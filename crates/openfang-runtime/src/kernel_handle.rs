@@ -237,7 +237,9 @@ pub trait KernelHandle: Send + Sync {
         thread_id: Option<&str>,
         metadata: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<String, String> {
-        let _ = (channel, recipient, data, filename, mime_type, thread_id, metadata);
+        let _ = (
+            channel, recipient, data, filename, mime_type, thread_id, metadata,
+        );
         Err("Channel file data send not available".to_string())
     }
 

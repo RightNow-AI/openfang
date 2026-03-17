@@ -2238,7 +2238,16 @@ async fn tool_channel_send(
     if let Some(url) = image_url {
         let caption = input["message"].as_str().filter(|s| !s.is_empty());
         return kh
-            .send_channel_media(&channel, recipient, "image", url, caption, None, thread_id, metadata.as_ref())
+            .send_channel_media(
+                &channel,
+                recipient,
+                "image",
+                url,
+                caption,
+                None,
+                thread_id,
+                metadata.as_ref(),
+            )
             .await;
     }
 
@@ -2247,7 +2256,14 @@ async fn tool_channel_send(
         let filename = input["filename"].as_str();
         return kh
             .send_channel_media(
-                &channel, recipient, "file", url, caption, filename, thread_id, metadata.as_ref(),
+                &channel,
+                recipient,
+                "file",
+                url,
+                caption,
+                filename,
+                thread_id,
+                metadata.as_ref(),
             )
             .await;
     }
@@ -2303,7 +2319,15 @@ async fn tool_channel_send(
         };
 
         return kh
-            .send_channel_file_data(&channel, recipient, data, &filename, mime_type, thread_id, metadata.as_ref())
+            .send_channel_file_data(
+                &channel,
+                recipient,
+                data,
+                &filename,
+                mime_type,
+                thread_id,
+                metadata.as_ref(),
+            )
             .await;
     }
 
@@ -2334,8 +2358,14 @@ async fn tool_channel_send(
         message.to_string()
     };
 
-    kh.send_channel_message(&channel, recipient, &final_message, thread_id, metadata.as_ref())
-        .await
+    kh.send_channel_message(
+        &channel,
+        recipient,
+        &final_message,
+        thread_id,
+        metadata.as_ref(),
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------

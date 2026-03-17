@@ -210,18 +210,9 @@ impl ModelCatalog {
     ///
     /// Each entry maps a provider ID to a custom base URL.
     /// Unknown providers are automatically added as custom OpenAI-compatible entries.
-    /// Providers with explicit URL overrides are marked as configured since
-    /// the user intentionally set them up (e.g. local proxies, custom endpoints).
     pub fn apply_url_overrides(&mut self, overrides: &HashMap<String, String>) {
         for (provider, url) in overrides {
-            if self.set_provider_url(provider, url) {
-                // Mark as configured so models from this provider show as available
-                if let Some(p) = self.providers.iter_mut().find(|p| p.id == *provider) {
-                    if p.auth_status == AuthStatus::Missing {
-                        p.auth_status = AuthStatus::Configured;
-                    }
-                }
-            }
+            let _ = self.set_provider_url(provider, url);
         }
     }
 
@@ -4035,6 +4026,25 @@ mod tests {
             catalog.get_provider("lmstudio").unwrap().base_url,
             LMSTUDIO_BASE_URL
         );
+    }
+
+    #[test]
+    fn test_apply_url_overrides_does_not_fake_auth_for_custom_provider() {
+        let mut catalog = ModelCatalog::new();
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "custom-integrate-api-nvidia-com".to_string(),
+            "https://integrate.api.nvidia.com/v1".to_string(),
+        );
+
+        catalog.apply_url_overrides(&overrides);
+
+        let provider = catalog
+            .get_provider("custom-integrate-api-nvidia-com")
+            .unwrap();
+        assert_eq!(provider.base_url, "https://integrate.api.nvidia.com/v1");
+        assert!(provider.key_required);
+        assert_eq!(provider.auth_status, AuthStatus::Missing);
     }
 
     #[test]
