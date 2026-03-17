@@ -647,6 +647,11 @@ mark.search-highlight {
   color: var(--text);
 }
 
+.message-bubble.markdown-body ul,
+.message-bubble.markdown-body ol {
+  padding-left: 2em;
+}
+
 .copy-btn {
   position: absolute;
   top: 6px;
