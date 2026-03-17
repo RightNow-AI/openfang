@@ -18,10 +18,15 @@ impl LogFileCache {
             .and_then(|path| path.parent().map(|p| p.to_path_buf()))
             .unwrap_or_else(|| PathBuf::from("."));
 
+        let log_dir = exe_dir.join("logs");
+        if !log_dir.exists() {
+            let _ = fs::create_dir_all(&log_dir);
+        }
+
         Self {
             file: Mutex::new(None),
             date_str: Mutex::new(String::new()),
-            log_dir: exe_dir.join("logs"),
+            log_dir,
             dir_created: Mutex::new(false),
         }
     }
@@ -55,20 +60,18 @@ pub fn log_message(message: &str) {
     if file_guard.is_none() {
         let date_str = now.format("%Y-%m-%d").to_string();
         let log_file = cache.log_dir.join(format!("{}.log", date_str));
-
-        *file_guard = Some(
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_file)
-                .expect("Failed to open log file"),
-        );
+        if !log_file.exists() {
+            let _ = fs::create_dir_all(&cache.log_dir);
+        }
+        if let Ok(file) = OpenOptions::new().create(true).append(true).open(&log_file) {
+            *file_guard = Some(file);
+        }
     }
 
-    let file = file_guard.as_mut().unwrap();
+    if let Some(file) = file_guard.as_mut() {
+        let timestamp = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        let log_line = format!("[{}] {}\n", timestamp, message.replace("\\n", "\n"));
 
-    let timestamp = now.format("%Y-%m-%d %H:%M:%S").to_string();
-    let log_line = format!("[{}] {}\n", timestamp, message.replace("\\n", "\n"));
-
-    let _ = file.write_all(log_line.as_bytes());
+        let _ = file.write_all(log_line.as_bytes());
+    }
 }
