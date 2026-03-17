@@ -67,6 +67,8 @@ pub struct TelegramAdapter {
     max_download_size: u64,
     /// Optional callback for download progress updates.
     progress_callback: Option<ProgressCallback>,
+    /// Whether using Local Bot API Server (supports files >20MB).
+    use_local_api: bool,
 }
 
 impl TelegramAdapter {
@@ -99,6 +101,7 @@ impl TelegramAdapter {
             download_dir: std::env::temp_dir().join("openfang-telegram-downloads"),
             max_download_size: 2 * 1024 * 1024 * 1024, // 2GB default
             progress_callback: None,
+            use_local_api: false,
         }
     }
 
@@ -118,6 +121,12 @@ impl TelegramAdapter {
             self.max_download_size = size;
         }
         self.progress_callback = progress_callback;
+        self
+    }
+
+    /// Enable Local Bot API Server mode for large file downloads (>20MB).
+    pub fn with_local_api(mut self, use_local: bool) -> Self {
+        self.use_local_api = use_local;
         self
     }
 
@@ -539,6 +548,7 @@ impl ChannelAdapter for TelegramAdapter {
         let download_dir = self.download_dir.clone();
         let max_download_size = self.max_download_size;
         let progress_callback = self.progress_callback.clone();
+        let use_local_api = self.use_local_api;
 
         tokio::spawn(async move {
             let mut offset: Option<i64> = None;
@@ -577,6 +587,7 @@ impl ChannelAdapter for TelegramAdapter {
                             &download_dir,
                             max_download_size,
                             progress_callback.as_ref(),
+                            use_local_api,
                         )
                         .await
                         {
@@ -724,6 +735,7 @@ impl ChannelAdapter for TelegramAdapter {
                         &download_dir,
                         max_download_size,
                         progress_callback.as_ref(),
+                        use_local_api,
                     )
                     .await
                     {
@@ -816,6 +828,7 @@ async fn merge_media_group_updates(
     download_dir: &Path,
     max_download_size: u64,
     progress_callback: Option<&ProgressCallback>,
+    use_local_api: bool,
 ) -> Option<ChannelMessage> {
     if updates.is_empty() {
         return None;
@@ -833,6 +846,7 @@ async fn merge_media_group_updates(
         download_dir,
         max_download_size,
         progress_callback,
+        use_local_api,
     )
     .await?;
 
@@ -871,7 +885,16 @@ async fn merge_media_group_updates(
             let chat_id = message.get("chat")?.get("id")?.as_i64()?;
             let message_id = message.get("message_id")?.as_i64()?;
 
-            match telegram_get_file_info(token, client, file_id, api_base_url).await {
+            match telegram_get_file_info(
+                token,
+                client,
+                file_id,
+                api_base_url,
+                use_local_api,
+                file_size,
+            )
+            .await
+            {
                 Some(file_info) => {
                     // Check if download is enabled and file size is within limit
                     if download_enabled && file_size <= max_download_size {
@@ -957,7 +980,16 @@ async fn merge_media_group_updates(
             // Check if this is a video document
             let is_video = mime_type.starts_with("video/");
 
-            match telegram_get_file_info(token, client, file_id, api_base_url).await {
+            match telegram_get_file_info(
+                token,
+                client,
+                file_id,
+                api_base_url,
+                use_local_api,
+                file_size,
+            )
+            .await
+            {
                 Some(file_info) => {
                     // Check if download is enabled and file size is within limit
                     if download_enabled && file_size <= max_download_size {
@@ -1054,7 +1086,21 @@ async fn merge_media_group_updates(
         // Extract photo
         if let Some(photos) = message["photo"].as_array() {
             let file_id = photos.last()?.get("file_id")?.as_str()?;
-            match telegram_get_file_url(token, client, file_id, api_base_url).await {
+            let file_size = photos
+                .last()?
+                .get("file_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            match telegram_get_file_url(
+                token,
+                client,
+                file_id,
+                api_base_url,
+                use_local_api,
+                file_size,
+            )
+            .await
+            {
                 Some(url) => media_items.push(format!("[Photo: {}]", url)),
                 None => {
                     warn!("Failed to get photo URL for file_id: {}", file_id);
@@ -1100,7 +1146,24 @@ async fn telegram_get_file_info(
     client: &reqwest::Client,
     file_id: &str,
     api_base_url: &str,
+    use_local_api: bool,
+    file_size: u64,
 ) -> Option<FileInfo> {
+    // Official Bot API has 20MB limit on getFile
+    const OFFICIAL_API_LIMIT: u64 = 20 * 1024 * 1024;
+
+    if !use_local_api && file_size > OFFICIAL_API_LIMIT {
+        warn!(
+            "File {} ({} MB) exceeds official Bot API 20MB limit. \
+             To download large files, deploy a Local Bot API Server \
+             (https://github.com/tdlib/telegram-bot-api) and set \
+             use_local_api=true in config.toml",
+            file_id,
+            file_size / 1024 / 1024
+        );
+        return None;
+    }
+
     let url = format!("{api_base_url}/bot{token}/getFile");
     let resp = client
         .post(&url)
@@ -1195,10 +1258,19 @@ async fn telegram_get_file_url(
     client: &reqwest::Client,
     file_id: &str,
     api_base_url: &str,
+    use_local_api: bool,
+    file_size: u64,
 ) -> Option<String> {
-    telegram_get_file_info(token, client, file_id, api_base_url)
-        .await
-        .map(|info| info.download_url)
+    telegram_get_file_info(
+        token,
+        client,
+        file_id,
+        api_base_url,
+        use_local_api,
+        file_size,
+    )
+    .await
+    .map(|info| info.download_url)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1213,6 +1285,7 @@ async fn parse_telegram_update(
     download_dir: &Path,
     max_download_size: u64,
     progress_callback: Option<&ProgressCallback>,
+    use_local_api: bool,
 ) -> Option<ChannelMessage> {
     let update_id = update["update_id"].as_i64().unwrap_or(0);
     let message = match update
@@ -1314,8 +1387,21 @@ async fn parse_telegram_update(
             .last()
             .and_then(|p| p["file_id"].as_str())
             .unwrap_or("");
+        let file_size = photos
+            .last()
+            .and_then(|p| p["file_size"].as_u64())
+            .unwrap_or(0);
         let caption = message["caption"].as_str().map(String::from);
-        match telegram_get_file_url(token, client, file_id, api_base_url).await {
+        match telegram_get_file_url(
+            token,
+            client,
+            file_id,
+            api_base_url,
+            use_local_api,
+            file_size,
+        )
+        .await
+        {
             Some(url) => ChannelContent::Image { url, caption },
             None => ChannelContent::Text(format!(
                 "[收到图片{}]",
@@ -1334,7 +1420,16 @@ async fn parse_telegram_update(
         let file_size = message["document"]["file_size"].as_u64().unwrap_or(0);
 
         // Try to get file info first
-        match telegram_get_file_info(token, client, file_id, api_base_url).await {
+        match telegram_get_file_info(
+            token,
+            client,
+            file_id,
+            api_base_url,
+            use_local_api,
+            file_size,
+        )
+        .await
+        {
             Some(file_info) => {
                 // Check if download is enabled and file size is within limit
                 if download_enabled && file_size <= max_download_size {
@@ -1383,8 +1478,18 @@ async fn parse_telegram_update(
         }
     } else if message.get("voice").is_some() {
         let file_id = message["voice"]["file_id"].as_str().unwrap_or("");
+        let file_size = message["voice"]["file_size"].as_u64().unwrap_or(0);
         let duration = message["voice"]["duration"].as_u64().unwrap_or(0) as u32;
-        match telegram_get_file_url(token, client, file_id, api_base_url).await {
+        match telegram_get_file_url(
+            token,
+            client,
+            file_id,
+            api_base_url,
+            use_local_api,
+            file_size,
+        )
+        .await
+        {
             Some(url) => ChannelContent::Voice {
                 url,
                 duration_seconds: duration,
@@ -1615,6 +1720,7 @@ mod tests {
             &temp_dir,
             2 * 1024 * 1024 * 1024, // 2GB max
             None,                   // no progress callback
+            false,                  // use_local_api
         )
         .await
     }
@@ -2521,6 +2627,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_large_file_requires_local_api() {
+        let client = test_client();
+        let info = telegram_get_file_info(
+            "fake:token",
+            &client,
+            "large-video",
+            DEFAULT_API_URL,
+            false,
+            21 * 1024 * 1024,
+        )
+        .await;
+
+        assert!(info.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_large_file_works_with_local_api() {
+        let (api_base_url, server_handle) = start_telegram_test_server().await;
+        let client = test_client();
+
+        let info = telegram_get_file_info(
+            "fake:token",
+            &client,
+            "large-video",
+            &api_base_url,
+            true,
+            565 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
+
+        server_handle.abort();
+
+        assert_eq!(info.file_id, "large-video");
+        assert!(info
+            .download_url
+            .contains("/file/botfake:token/files/large-video.bin"));
+    }
+
+    #[tokio::test]
     async fn test_merge_media_group_preserves_original_item_order() {
         let (api_base_url, server_handle) = start_telegram_test_server().await;
 
@@ -2585,6 +2731,7 @@ mod tests {
             &temp_dir,
             2 * 1024 * 1024 * 1024,
             None,
+            false,
         )
         .await
         .unwrap();

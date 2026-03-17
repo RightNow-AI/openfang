@@ -1117,6 +1117,81 @@ pub async fn start_channel_bridge_with_config(
 
     // Telegram
     if let Some(ref tg_config) = config.telegram {
+        let local_api_port = tg_config.local_api_port.unwrap_or(8081);
+        let mut local_api_started = false;
+
+        if tg_config.auto_start_local_api && !tg_config.use_local_api {
+            warn!(
+                "Telegram auto_start_local_api=true but use_local_api=false; skipping local API startup"
+            );
+        }
+
+        // Auto-start Local Bot API Server when local mode is enabled.
+        if tg_config.use_local_api && tg_config.auto_start_local_api {
+            if let (Some(api_id), Some(api_hash_env)) = (
+                tg_config.telegram_api_id.as_ref(),
+                tg_config.telegram_api_hash_env.as_ref(),
+            ) {
+                if let Some(api_hash) = read_token(api_hash_env, "Telegram API Hash") {
+                    let work_dir =
+                        openfang_kernel::config::openfang_home().join("telegram-local-api-data");
+
+                    let local_api_config = openfang_kernel::telegram_local_api::LocalApiConfig {
+                        api_id: api_id.clone(),
+                        api_hash,
+                        port: local_api_port,
+                        work_dir,
+                    };
+
+                    match openfang_kernel::telegram_local_api::start_local_api_server(
+                        local_api_config,
+                        kernel.telegram_local_api_pid.clone(),
+                        kernel.telegram_local_api_stop.clone(),
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            local_api_started = true;
+                            info!(
+                                "Telegram Local Bot API Server started on port {}",
+                                local_api_port
+                            );
+                        }
+                        Err(e) => {
+                            warn!("Failed to start Telegram Local Bot API Server: {}", e);
+                        }
+                    }
+                } else {
+                    warn!(
+                        "Telegram auto_start_local_api enabled but {} not set",
+                        api_hash_env
+                    );
+                }
+            } else {
+                warn!(
+                    "Telegram auto_start_local_api enabled but telegram_api_id or telegram_api_hash_env not configured"
+                );
+            }
+        }
+
+        let mut telegram_api_url = tg_config.api_url.clone();
+        if tg_config.use_local_api && telegram_api_url.is_none() {
+            if tg_config.auto_start_local_api && local_api_started {
+                let inferred = format!("http://127.0.0.1:{local_api_port}");
+                info!(
+                    "Telegram local api_url not configured; using auto-started local endpoint {}",
+                    inferred
+                );
+                telegram_api_url = Some(inferred);
+            } else {
+                warn!(
+                    "Telegram use_local_api=true but api_url not configured. \
+                     Set api_url (e.g. http://127.0.0.1:{}) to avoid large-file getFile failures.",
+                    local_api_port
+                );
+            }
+        }
+
         if let Some(token) = read_token(&tg_config.bot_token_env, "Telegram") {
             let poll_interval = Duration::from_secs(tg_config.poll_interval_secs);
 
@@ -1124,8 +1199,9 @@ pub async fn start_channel_bridge_with_config(
                 token,
                 tg_config.allowed_users.clone(),
                 poll_interval,
-                tg_config.api_url.clone(),
+                telegram_api_url,
             );
+            adapter = adapter.with_local_api(tg_config.use_local_api);
 
             // Enable download functionality if configured
             if tg_config.download_enabled {
@@ -1183,6 +1259,10 @@ pub async fn start_channel_bridge_with_config(
                     max_size / 1024 / 1024,
                     tg_config.download_dir
                 );
+            }
+
+            if tg_config.use_local_api {
+                info!("Telegram Local Bot API mode enabled (supports files >20MB)");
             }
 
             adapters.push((Arc::new(adapter), tg_config.default_agent.clone()));

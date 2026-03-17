@@ -239,6 +239,18 @@ python -m vllm.entrypoints.openai.api_server --model ...
 3. If `allowed_users` is set, your Telegram user ID is in the list
 4. Check logs for "Telegram adapter" messages
 
+### Telegram large files still fail to download
+
+**Checklist**:
+1. `download_enabled = true` and `use_local_api = true` are both set under `[channels.telegram]`.
+2. If you manage `telegram-bot-api` yourself, `api_url` points to that Local Bot API Server.
+3. If you use `auto_start_local_api = true`, `telegram_api_id` and `telegram_api_hash_env` are configured and the referenced env var is set.
+4. Check whether `telegram-bot-api` is installed: `which telegram-bot-api`
+5. Verify the local server port is reachable: `curl "http://127.0.0.1:8081/bot$TELEGRAM_BOT_TOKEN/getMe"`
+6. Restart the daemon after config changes.
+
+See [telegram-large-files.md](telegram-large-files.md) for the full setup guide and additional Docker/native deployment notes.
+
 ### Discord bot offline
 
 **Checklist**:

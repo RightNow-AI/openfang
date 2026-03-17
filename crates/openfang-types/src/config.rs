@@ -1684,6 +1684,29 @@ pub struct TelegramConfig {
     /// Files larger than this will return URLs only, even if download_enabled is true.
     #[serde(default)]
     pub max_download_size: Option<u64>,
+    /// Use Local Bot API Server for large file downloads (>20MB).
+    /// Official Bot API has a 20MB limit on getFile. Set this to true if you've
+    /// deployed a Local Bot API Server (https://github.com/tdlib/telegram-bot-api)
+    /// and configured api_url to point to it. Local API supports files up to 2GB.
+    /// When auto_start_local_api is true and api_url is unset, OpenFang defaults to
+    /// http://127.0.0.1:{local_api_port}.
+    #[serde(default)]
+    pub use_local_api: bool,
+    /// Telegram API ID for Local Bot API Server (from https://my.telegram.org/apps).
+    /// Only required if auto_start_local_api is true.
+    #[serde(default)]
+    pub telegram_api_id: Option<String>,
+    /// Telegram API Hash for Local Bot API Server.
+    /// Only required if auto_start_local_api is true.
+    #[serde(default)]
+    pub telegram_api_hash_env: Option<String>,
+    /// Auto-start Local Bot API Server as a child process.
+    /// Requires telegram_api_id and telegram_api_hash_env to be set.
+    #[serde(default)]
+    pub auto_start_local_api: bool,
+    /// Port for Local Bot API Server (default: 8081).
+    #[serde(default)]
+    pub local_api_port: Option<u16>,
 }
 
 impl Default for TelegramConfig {
@@ -1699,6 +1722,11 @@ impl Default for TelegramConfig {
             download_enabled: false,
             download_dir: None,
             max_download_size: None,
+            use_local_api: false,
+            telegram_api_id: None,
+            telegram_api_hash_env: None,
+            auto_start_local_api: false,
+            local_api_port: None,
         }
     }
 }

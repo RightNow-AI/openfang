@@ -425,6 +425,15 @@ bot_token_env = "TELEGRAM_BOT_TOKEN"
 allowed_users = []
 # default_agent = "assistant"
 poll_interval_secs = 1
+# download_enabled = true
+# download_dir = "/tmp/openfang-telegram-downloads"
+# max_download_size = 2147483648
+# use_local_api = true
+# auto_start_local_api = true
+# telegram_api_id = "12345678"
+# telegram_api_hash_env = "TELEGRAM_API_HASH"
+# local_api_port = 8081
+# api_url = "http://127.0.0.1:8081"
 ```
 
 | Field | Type | Default | Description |
@@ -433,6 +442,16 @@ poll_interval_secs = 1
 | `allowed_users` | list of i64 | `[]` | Telegram user IDs allowed to interact. Empty = allow all. |
 | `default_agent` | string or null | `null` | Agent name to route messages to. |
 | `poll_interval_secs` | u64 | `1` | Long-polling interval in seconds. |
+| `api_url` | string or null | `null` | Override the Telegram Bot API base URL. Required for a manually managed Local Bot API Server. |
+| `default_chat_id` | string or null | `null` | Default chat ID for outgoing Telegram messages when no recipient is supplied. |
+| `download_enabled` | bool | `false` | Download Telegram files to local disk instead of returning URLs only. |
+| `download_dir` | string or null | `null` | Directory for downloaded Telegram files. Defaults to the system temp directory. |
+| `max_download_size` | u64 or null | `null` | Maximum file size to download in bytes. `null` falls back to the adapter default (2GB). |
+| `use_local_api` | bool | `false` | Enable Local Bot API mode for files above Telegram's official 20MB `getFile` limit. |
+| `telegram_api_id` | string or null | `null` | Telegram API ID used when OpenFang auto-starts `telegram-bot-api`. |
+| `telegram_api_hash_env` | string or null | `null` | Environment variable name holding the Telegram API hash used for auto-start. |
+| `auto_start_local_api` | bool | `false` | Start `telegram-bot-api` as a child process during daemon boot. If startup succeeds and `api_url` is unset, OpenFang automatically uses `http://127.0.0.1:<local_api_port>`. |
+| `local_api_port` | u16 or null | `null` | Listen port for the auto-started Local Bot API Server. `null` falls back to `8081`. |
 
 #### `[channels.discord]`
 

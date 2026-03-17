@@ -264,6 +264,41 @@ Connect your agents to every platform your users are on.
 
 Each adapter supports per-channel model overrides, DM/group policies, rate limiting, and output formatting.
 
+### Telegram Large File Support (New in v0.4.4)
+
+OpenFang now supports downloading files up to **2GB** from Telegram, breaking through the official Bot API's 20MB limit.
+
+**Features:**
+- 🚀 Automatic Local Bot API Server integration
+- 📦 Downloads up to 2GB (100x the official limit)
+- 📊 Real-time progress reporting
+- 🔄 Auto-restart on crash
+- 🐳 Docker or native deployment
+
+**Quick Setup:**
+```toml
+# ~/.openfang/config.toml
+[channels.telegram]
+download_enabled = true
+use_local_api = true
+auto_start_local_api = true
+telegram_api_id = "12345678"  # Get from https://my.telegram.org/apps
+telegram_api_hash_env = "TELEGRAM_API_HASH"
+```
+
+When `auto_start_local_api = true`, OpenFang will use `http://127.0.0.1:<local_api_port>` automatically if `api_url` is omitted.
+
+**Documentation:**
+- 📖 [Deployment Guide](docs/telegram-deployment-guide.md) - Quick start and troubleshooting
+- 📚 [Technical Details](docs/telegram-large-files.md) - Full setup guide
+- 🔗 [shipinbot Integration](docs/telegram-shipinbot-integration.md) - Video processing workflow
+- ⚙️ [Config Examples](docs/telegram-config-example.toml) - Copy-paste configs
+
+**Quick Setup Script:**
+```bash
+./scripts/setup-telegram-local-api.sh
+```
+
 ---
 
 ## WhatsApp Web Gateway (QR Code)

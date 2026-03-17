@@ -1,0 +1,64 @@
+# OpenFang Telegram 大文件下载配置示例
+
+# 方式 1：自动启动 Local Bot API Server（推荐）
+# OpenFang 会自动管理 Local API Server 进程
+
+[channels.telegram]
+default_agent = "assistant"
+poll_interval_secs = 1
+
+# 文件下载配置
+download_enabled = true
+download_dir = "/tmp/openfang-telegram-downloads"
+max_download_size = 2147483648  # 2GB
+
+# Local Bot API Server 配置
+use_local_api = true
+auto_start_local_api = true  # 自动启动
+telegram_api_id = "12345678"  # 从 https://my.telegram.org/apps 获取
+telegram_api_hash_env = "TELEGRAM_API_HASH"  # 环境变量名
+local_api_port = 8081  # 可选，默认 8081
+api_url = "http://localhost:8081"
+
+[channels.telegram.overrides]
+dm_policy = "respond"
+group_policy = "all"
+
+# 启动命令：
+# export TELEGRAM_API_HASH="your_api_hash_here"
+# TELEGRAM_BOT_TOKEN=xxx openfang start
+
+# ============================================================
+
+# 方式 2：外部部署 Local Bot API Server（Docker）
+# 适合已有 Docker 环境或需要独立管理的场景
+
+# 先启动 Docker 容器：
+# docker run -d --name telegram-bot-api -p 8081:8081 \
+#   -e TELEGRAM_API_ID=12345678 \
+#   -e TELEGRAM_API_HASH=your_api_hash \
+#   aiogram/telegram-bot-api:latest
+
+# 然后配置 OpenFang：
+# [channels.telegram]
+# default_agent = "assistant"
+# poll_interval_secs = 1
+# download_enabled = true
+# download_dir = "/tmp/openfang-telegram-downloads"
+# max_download_size = 2147483648
+# use_local_api = true
+# auto_start_local_api = false  # 不自动启动
+# api_url = "http://localhost:8081"
+
+# ============================================================
+
+# 方式 3：仅使用官方 API（20MB 限制）
+# 不需要部署 Local API Server，但大文件会下载失败
+
+# [channels.telegram]
+# default_agent = "assistant"
+# poll_interval_secs = 1
+# download_enabled = true
+# download_dir = "/tmp/openfang-telegram-downloads"
+# max_download_size = 20971520  # 20MB（官方限制）
+# use_local_api = false  # 使用官方 API

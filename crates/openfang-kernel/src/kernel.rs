@@ -37,6 +37,7 @@ use openfang_types::tool::ToolDefinition;
 
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock, Weak};
 use tracing::{debug, info, warn};
 
@@ -149,6 +150,10 @@ pub struct OpenFangKernel {
     pub booted_at: std::time::Instant,
     /// WhatsApp Web gateway child process PID (for shutdown cleanup).
     pub whatsapp_gateway_pid: Arc<std::sync::Mutex<Option<u32>>>,
+    /// Telegram Local Bot API Server child process PID (for shutdown cleanup).
+    pub telegram_local_api_pid: Arc<std::sync::Mutex<Option<u32>>>,
+    /// Stop flag for Telegram Local Bot API process manager loop.
+    pub telegram_local_api_stop: Arc<AtomicBool>,
     /// Channel adapters registered at bridge startup (for proactive `channel_send` tool).
     pub channel_adapters:
         dashmap::DashMap<String, Arc<dyn openfang_channels::types::ChannelAdapter>>,
@@ -1045,6 +1050,8 @@ impl OpenFangKernel {
             peer_node: None,
             booted_at: std::time::Instant::now(),
             whatsapp_gateway_pid: Arc::new(std::sync::Mutex::new(None)),
+            telegram_local_api_pid: Arc::new(std::sync::Mutex::new(None)),
+            telegram_local_api_stop: Arc::new(AtomicBool::new(false)),
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
             agent_msg_locks: dashmap::DashMap::new(),
@@ -4438,6 +4445,12 @@ impl OpenFangKernel {
                 }
             }
         }
+
+        // Kill Telegram Local Bot API Server child process if running
+        crate::telegram_local_api::stop_local_api_server(
+            self.telegram_local_api_pid.clone(),
+            self.telegram_local_api_stop.clone(),
+        );
 
         self.supervisor.shutdown();
 

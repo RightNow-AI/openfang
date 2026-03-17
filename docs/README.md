@@ -27,6 +27,7 @@ Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operati
 | Guide | Description |
 |-------|-------------|
 | [Channel Adapters](channel-adapters.md) | 40 messaging channels -- setup, configuration, custom adapters |
+| [Telegram Large Files](telegram-large-files.md) | Local Bot API Server setup for Telegram downloads above 20MB |
 | [Agent ID Auto-refresh](agent-id-auto-refresh.md) | How channel default routes stay in sync when agents are respawned |
 | [LLM Providers](providers.md) | 20 providers, 51 models, 23 aliases -- setup and model routing |
 | [Skills](skill-development.md) | 60 bundled skills, custom skill development, FangHub marketplace |

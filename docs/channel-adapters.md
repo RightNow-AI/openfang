@@ -264,6 +264,12 @@ bot_token_env = "TELEGRAM_BOT_TOKEN"
 default_agent = "assistant"
 # Optional: restrict to specific Telegram user IDs
 # allowed_users = ["123456789"]
+# Optional: enable local downloads for files >20MB
+# download_enabled = true
+# use_local_api = true
+# auto_start_local_api = true
+# telegram_api_id = "12345678"
+# telegram_api_hash_env = "TELEGRAM_API_HASH"
 
 [channels.telegram.overrides]
 # Optional: Telegram-native HTML formatting
@@ -282,6 +288,15 @@ openfang start
 The Telegram adapter uses long-polling via the `getUpdates` API. It polls every few seconds with a 30-second long-poll timeout. On API failures, it applies exponential backoff (starting at 1 second, up to 60 seconds). Shutdown is coordinated via a `watch::channel`.
 
 Messages from authorized users are converted to `ChannelMessage` events and routed to the configured agent. Responses are sent back via the `sendMessage` API. Long responses are automatically split into multiple messages to respect Telegram's 4096-character limit using the shared `split_message()` utility.
+
+### Large Files and Local Bot API Server
+
+The official Telegram Bot API limits `getFile` to 20MB. To download larger videos or documents, set `use_local_api = true` and either:
+
+- Enable `auto_start_local_api = true` so OpenFang manages `telegram-bot-api`.
+- Or point `api_url` at an existing Local Bot API Server deployment.
+
+See [telegram-large-files.md](telegram-large-files.md) for the full setup matrix, config examples, and troubleshooting.
 
 ### Interactive Setup
 
