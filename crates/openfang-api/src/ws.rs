@@ -513,6 +513,7 @@ async fn handle_text_message(
                 None,
                 None,
                 ws_content_blocks,
+                Some("web".to_string()),
             ) {
                 Ok((mut rx, handle)) => {
                     // Forward stream events to WebSocket with debouncing.

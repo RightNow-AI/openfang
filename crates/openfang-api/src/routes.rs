@@ -358,6 +358,7 @@ pub async fn send_message(
             content_blocks,
             req.sender_id,
             req.sender_name,
+            req.channel_type,
         )
         .await
     {
@@ -1396,6 +1397,7 @@ pub async fn send_message_stream(
         req.sender_id,
         req.sender_name,
         None, // no content_blocks for SSE streaming endpoint
+        req.channel_type,
     ) {
         Ok(pair) => pair,
         Err(e) => {
@@ -8512,7 +8514,7 @@ pub async fn run_schedule(
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(target_agent, &run_message, Some(kernel_handle), None, None)
+        .send_message_with_handle(target_agent, &run_message, Some(kernel_handle), None, None, None)
         .await
     {
         Ok(result) => (
