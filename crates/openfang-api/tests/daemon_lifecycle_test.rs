@@ -109,7 +109,6 @@ async fn test_full_daemon_lifecycle() {
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
         started_at: Instant::now(),
-        peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
@@ -234,7 +233,6 @@ async fn test_server_immediate_responsiveness() {
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
         started_at: Instant::now(),
-        peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),

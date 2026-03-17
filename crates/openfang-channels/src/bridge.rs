@@ -17,8 +17,9 @@ use openfang_types::agent::AgentId;
 use openfang_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputFormat};
 use openfang_types::message::ContentBlock;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
@@ -284,10 +285,41 @@ pub trait ChannelBridgeHandle: Send + Sync {
 /// Per-channel rate limiter tracking message timestamps per user.
 ///
 /// Key: `"{channel_type}:{platform_id}"`, Value: timestamps of recent messages.
-#[derive(Debug, Clone, Default)]
+const RATE_LIMITER_CLEANUP_INTERVAL_SECS: u64 = 60;
+const RATE_LIMITER_IDLE_TTL_SECS: u64 = 300;
+const RATE_LIMITER_BUCKET_TRIGGER: usize = 1_000;
+
+#[derive(Debug)]
 pub struct ChannelRateLimiter {
     /// Recent message timestamps per user key.
     buckets: Arc<DashMap<String, Vec<Instant>>>,
+    last_cleanup: AtomicU64,
+}
+
+impl Clone for ChannelRateLimiter {
+    fn clone(&self) -> Self {
+        Self {
+            buckets: Arc::clone(&self.buckets),
+            last_cleanup: AtomicU64::new(
+                self.last_cleanup.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        }
+    }
+}
+
+impl ChannelRateLimiter {
+    pub fn new() -> Self {
+        Self {
+            buckets: Arc::new(DashMap::new()),
+            last_cleanup: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Default for ChannelRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ChannelRateLimiter {
@@ -306,20 +338,90 @@ impl ChannelRateLimiter {
 
         let key = format!("{channel_type}:{platform_id}");
         let now = Instant::now();
-        let window = std::time::Duration::from_secs(60);
+        let window = Duration::from_secs(60);
 
-        let mut entry = self.buckets.entry(key).or_default();
-        // Evict timestamps older than 1 minute
-        entry.retain(|&ts| now.duration_since(ts) < window);
+        {
+            let mut entry = self.buckets.entry(key.clone()).or_default();
+            // Evict timestamps older than 1 minute
+            entry.retain(|&ts| now.duration_since(ts) < window);
 
-        if entry.len() >= max_per_minute as usize {
-            return Err(format!(
-                "Rate limit exceeded ({max_per_minute} messages/minute). Please wait."
-            ));
+            if entry.len() >= max_per_minute as usize {
+                return Err(format!(
+                    "Rate limit exceeded ({max_per_minute} messages/minute). Please wait."
+                ));
+            }
+
+            entry.push(now);
         }
-
-        entry.push(now);
+        let current_secs = current_unix_secs();
+        if self.should_cleanup(current_secs) || self.buckets.len() > RATE_LIMITER_BUCKET_TRIGGER {
+            self.cleanup_idle(now);
+        }
         Ok(())
+    }
+
+    fn should_cleanup(&self, now_secs: u64) -> bool {
+        let last = self.last_cleanup.load(Ordering::Acquire);
+        if now_secs.saturating_sub(last) > RATE_LIMITER_CLEANUP_INTERVAL_SECS {
+            self.last_cleanup
+                .compare_exchange(last, now_secs, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        } else {
+            false
+        }
+    }
+
+    fn cleanup_idle(&self, now: Instant) {
+        let threshold = Duration::from_secs(RATE_LIMITER_IDLE_TTL_SECS);
+        let keys: Vec<String> = self
+            .buckets
+            .iter()
+            .filter_map(|entry| {
+                let has_recent = entry
+                    .value()
+                    .last()
+                    .map(|ts| now.duration_since(*ts) <= threshold)
+                    .unwrap_or(false);
+                if has_recent {
+                    None
+                } else {
+                    Some(entry.key().clone())
+                }
+            })
+            .collect();
+        for key in keys {
+            self.buckets.remove(&key);
+        }
+    }
+
+    #[cfg(test)]
+    fn cleanup_idle_with_instant(&self, now: Instant) {
+        self.cleanup_idle(now);
+    }
+}
+
+fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod rate_limiter_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn cleanup_idle_removes_stale_keys() {
+        let limiter = ChannelRateLimiter::new();
+        let key = "test:123".to_string();
+        limiter.buckets.insert(
+            key.clone(),
+            vec![Instant::now() - Duration::from_secs(RATE_LIMITER_IDLE_TTL_SECS + 10)],
+        );
+        limiter.cleanup_idle_with_instant(Instant::now());
+        assert!(limiter.buckets.get(&key).is_none());
     }
 }
 

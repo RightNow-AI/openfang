@@ -955,7 +955,7 @@ async fn handle_command(
             let msg = if !state.kernel.config.network_enabled {
                 "OFP network disabled.".to_string()
             } else {
-                match state.kernel.peer_registry.as_ref() {
+                match state.kernel.peer_registry.get() {
                     Some(registry) => {
                         let peers = registry.all_peers();
                         if peers.is_empty() {

@@ -89,6 +89,7 @@ async fn execute_python(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
 
     // SECURITY: Isolate environment to prevent secret leakage.
     // Skills are third-party code — they must not inherit API keys,
@@ -194,6 +195,7 @@ async fn execute_node(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
 
     // SECURITY: Isolate environment (same as Python — prevent secret leakage)
     cmd.env_clear();
@@ -337,6 +339,7 @@ async fn execute_shell(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
 
     // SECURITY: Isolate environment to prevent secret leakage.
     // Same as Python/Node — skills are third-party code.

@@ -14,15 +14,16 @@ use tracing::{debug, warn};
 pub type ProcessId = String;
 
 /// A managed persistent process.
+#[derive(Clone)]
 struct ManagedProcess {
-    /// stdin writer.
-    stdin: Option<tokio::process::ChildStdin>,
+    /// stdin writer (lock protects concurrent writes).
+    stdin: Arc<Mutex<Option<tokio::process::ChildStdin>>>,
     /// Accumulated stdout output.
     stdout_buf: Arc<Mutex<Vec<String>>>,
     /// Accumulated stderr output.
     stderr_buf: Arc<Mutex<Vec<String>>>,
-    /// The child process handle.
-    child: tokio::process::Child,
+    /// The child process handle shared with the reaper.
+    child: Arc<Mutex<tokio::process::Child>>,
     /// Agent that owns this process.
     agent_id: String,
     /// Command that was started.
@@ -48,31 +49,42 @@ pub struct ProcessInfo {
 
 /// Manager for persistent agent processes.
 pub struct ProcessManager {
-    processes: DashMap<ProcessId, ManagedProcess>,
+    processes: Arc<DashMap<ProcessId, ManagedProcess>>,
     max_per_agent: usize,
     next_id: std::sync::atomic::AtomicU64,
 }
 
 impl ProcessManager {
-    fn kill_process_nowait(process_id: &str, proc: &mut ManagedProcess) {
-        if let Some(pid) = proc.child.id() {
-            debug!(process_id = %process_id, pid, agent_id = %proc.agent_id, "Stopping persistent process");
-            std::thread::spawn(move || {
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    let _ = rt.block_on(crate::subprocess_sandbox::kill_process_tree(pid, 3000));
-                }
-            });
-        }
-        let _ = proc.child.start_kill();
+    fn kill_process_nowait(
+        process_id: &str,
+        child: Arc<Mutex<tokio::process::Child>>,
+        agent_id: &str,
+    ) {
+        let process_id = process_id.to_string();
+        let agent_id = agent_id.to_string();
+        // Fire-and-forget killing thread so synchronous callers are non-blocking.
+        std::thread::spawn(move || {
+            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                rt.block_on(async {
+                    let mut child = child.lock().await;
+                    if let Some(pid) = child.id() {
+                        debug!(process_id = %process_id, pid, agent_id = %agent_id, "Stopping persistent process");
+                        let _ = crate::subprocess_sandbox::kill_process_tree(pid, 3000).await;
+                    }
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                });
+            }
+        });
     }
 
     /// Create a new process manager.
     pub fn new(max_per_agent: usize) -> Self {
         Self {
-            processes: DashMap::new(),
+            processes: Arc::new(DashMap::new()),
             max_per_agent,
             next_id: std::sync::atomic::AtomicU64::new(1),
         }
@@ -110,6 +122,9 @@ impl ProcessManager {
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
+
+        let stdin = Arc::new(Mutex::new(stdin));
+        let child = Arc::new(Mutex::new(child));
 
         let stdout_buf = Arc::new(Mutex::new(Vec::<String>::new()));
         let stderr_buf = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -166,25 +181,42 @@ impl ProcessManager {
                 stdin,
                 stdout_buf,
                 stderr_buf,
-                child,
+                child: Arc::clone(&child),
                 agent_id: agent_id.to_string(),
                 command: cmd_display,
                 started_at: std::time::Instant::now(),
             },
         );
 
+        // Reaper: wait for the process to exit and free the slot.
+        {
+            let processes = self.processes.clone();
+            let child = Arc::clone(&child);
+            let id = id.clone();
+            let agent_id = agent_id.to_string();
+            tokio::spawn(async move {
+                let _ = child.lock().await.wait().await;
+                if processes.remove(&id).is_some() {
+                    debug!(process_id = %id, agent_id = %agent_id, "Persistent process exited");
+                }
+            });
+        }
+
         Ok(id)
     }
 
     /// Write data to a process's stdin.
     pub async fn write(&self, process_id: &str, data: &str) -> Result<(), String> {
-        let mut entry = self
+        let entry = self
             .processes
-            .get_mut(process_id)
+            .get(process_id)
             .ok_or_else(|| format!("Process '{}' not found", process_id))?;
 
-        let proc = entry.value_mut();
-        if let Some(stdin) = &mut proc.stdin {
+        let stdin = Arc::clone(&entry.value().stdin);
+        drop(entry);
+
+        let mut guard = stdin.lock().await;
+        if let Some(stdin) = guard.as_mut() {
             stdin
                 .write_all(data.as_bytes())
                 .await
@@ -206,8 +238,12 @@ impl ProcessManager {
             .get(process_id)
             .ok_or_else(|| format!("Process '{}' not found", process_id))?;
 
-        let mut stdout = entry.stdout_buf.lock().await;
-        let mut stderr = entry.stderr_buf.lock().await;
+        let stdout_buf = Arc::clone(&entry.value().stdout_buf);
+        let stderr_buf = Arc::clone(&entry.value().stderr_buf);
+        drop(entry);
+
+        let mut stdout = stdout_buf.lock().await;
+        let mut stderr = stderr_buf.lock().await;
 
         let out_lines: Vec<String> = stdout.drain(..).collect();
         let err_lines: Vec<String> = stderr.drain(..).collect();
@@ -217,16 +253,12 @@ impl ProcessManager {
 
     /// Kill a process.
     pub async fn kill(&self, process_id: &str) -> Result<(), String> {
-        let (_, mut proc) = self
+        let (_, proc) = self
             .processes
             .remove(process_id)
             .ok_or_else(|| format!("Process '{}' not found", process_id))?;
 
-        if let Some(pid) = proc.child.id() {
-            debug!(process_id, pid, "Killing persistent process");
-            let _ = crate::subprocess_sandbox::kill_process_tree(pid, 3000).await;
-        }
-        let _ = proc.child.kill().await;
+        Self::kill_process_nowait(process_id, Arc::clone(&proc.child), &proc.agent_id);
         Ok(())
     }
 
@@ -240,8 +272,8 @@ impl ProcessManager {
             .collect();
 
         for id in &ids {
-            if let Some((_, mut proc)) = self.processes.remove(id) {
-                Self::kill_process_nowait(id, &mut proc);
+            if let Some((_, proc)) = self.processes.remove(id) {
+                Self::kill_process_nowait(id, Arc::clone(&proc.child), &proc.agent_id);
             }
         }
 
@@ -257,8 +289,8 @@ impl ProcessManager {
             .collect();
 
         for id in &ids {
-            if let Some((_, mut proc)) = self.processes.remove(id) {
-                Self::kill_process_nowait(id, &mut proc);
+            if let Some((_, proc)) = self.processes.remove(id) {
+                Self::kill_process_nowait(id, Arc::clone(&proc.child), &proc.agent_id);
             }
         }
 
@@ -271,7 +303,12 @@ impl ProcessManager {
             .iter()
             .filter(|entry| entry.value().agent_id == agent_id)
             .map(|entry| {
-                let alive = entry.value().child.id().is_some();
+                let alive = entry
+                    .value()
+                    .child
+                    .try_lock()
+                    .map(|child| child.id().is_some())
+                    .unwrap_or(true);
                 ProcessInfo {
                     id: entry.key().clone(),
                     agent_id: entry.value().agent_id.clone(),
@@ -313,6 +350,7 @@ impl Default for ProcessManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::{sleep, Duration};
 
     #[tokio::test]
     async fn test_start_and_list() {
@@ -358,6 +396,40 @@ mod tests {
         assert!(result.unwrap_err().contains("max: 1"));
 
         let _ = pm.kill(&id1).await;
+    }
+
+    #[tokio::test]
+    async fn test_natural_exit_releases_slot() {
+        let pm = ProcessManager::new(1);
+        let (cmd, args) = if cfg!(windows) {
+            (
+                "cmd",
+                vec![
+                    "/C".to_string(),
+                    "timeout".to_string(),
+                    "/T".to_string(),
+                    "1".to_string(),
+                    "/NOBREAK".to_string(),
+                ],
+            )
+        } else {
+            ("sh", vec!["-c".to_string(), "sleep 0.05".to_string()])
+        };
+
+        let id = pm.start("agent1", cmd, &args).await.unwrap();
+        for _ in 0..20 {
+            if pm.count() == 0 {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(pm.count(), 0, "reaper should remove finished process");
+        assert!(
+            pm.start("agent1", cmd, &args).await.is_ok(),
+            "slot should be free"
+        );
+
+        let _ = pm.kill(&id).await;
     }
 
     #[tokio::test]

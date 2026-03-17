@@ -53,7 +53,6 @@ async fn start_test_server() -> TestServer {
     let state = Arc::new(AppState {
         kernel,
         started_at: Instant::now(),
-        peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),

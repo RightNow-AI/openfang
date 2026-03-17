@@ -1343,6 +1343,28 @@ impl KernelConfig {
     }
 }
 
+/// Return true when an API key is an obvious placeholder or example value.
+///
+/// These values are acceptable in docs and local examples, but they are not
+/// strong enough to protect a publicly reachable API listener.
+pub fn is_placeholder_api_key(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "" | "change-me"
+            | "changeme"
+            | "replace-me"
+            | "replace_me"
+            | "your-api-key"
+            | "your_api_key"
+            | "example"
+            | "example-key"
+            | "example_api_key"
+            | "test"
+            | "secret"
+    )
+}
+
 /// SECURITY: Custom Debug impl redacts sensitive fields (api_key).
 impl std::fmt::Debug for KernelConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2962,6 +2984,25 @@ impl KernelConfig {
     /// Checks that env vars referenced by configured channels are set.
     pub fn validate(&self) -> Vec<String> {
         let mut warnings = Vec::new();
+        let listens_publicly = self
+            .api_listen
+            .parse::<std::net::SocketAddr>()
+            .map(|addr| !addr.ip().is_loopback())
+            .unwrap_or(false);
+
+        if !self.api_key.trim().is_empty() && is_placeholder_api_key(&self.api_key) {
+            warnings.push(
+                "api_key is set to a placeholder/example value; replace it before relying on API auth"
+                    .to_string(),
+            );
+        }
+
+        if listens_publicly && is_placeholder_api_key(&self.api_key) {
+            warnings.push(format!(
+                "api_listen exposes {} while api_key is still a placeholder/example value",
+                self.api_listen
+            ));
+        }
 
         if let Some(ref tg) = self.channels.telegram {
             if std::env::var(&tg.bot_token_env)
@@ -3445,6 +3486,13 @@ mod tests {
     }
 
     #[test]
+    fn test_placeholder_api_key_detection() {
+        assert!(is_placeholder_api_key("change-me"));
+        assert!(is_placeholder_api_key(" replace-me "));
+        assert!(!is_placeholder_api_key("prod_7d2d1f2f9c9042b0"));
+    }
+
+    #[test]
     fn test_config_serialization() {
         let config = KernelConfig::default();
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -3547,6 +3595,30 @@ mod tests {
         let warnings = config.validate();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("Discord"));
+    }
+
+    #[test]
+    fn test_validate_warns_on_public_placeholder_api_key() {
+        let config = KernelConfig {
+            api_listen: "0.0.0.0:4200".to_string(),
+            api_key: "change-me".to_string(),
+            ..KernelConfig::default()
+        };
+
+        let warnings = config.validate();
+
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("placeholder/example value")),
+            "expected placeholder warning, got {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("0.0.0.0:4200")),
+            "expected public listen warning, got {warnings:?}"
+        );
     }
 
     #[test]

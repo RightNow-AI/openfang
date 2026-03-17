@@ -8,6 +8,7 @@ use crate::webchat;
 use crate::ws;
 use axum::Router;
 use openfang_kernel::OpenFangKernel;
+use openfang_types::config::is_placeholder_api_key;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -45,7 +46,6 @@ pub async fn build_router(
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
         started_at: Instant::now(),
-        peer_registry: kernel.peer_registry.as_ref().map(|r| Arc::new(r.clone())),
         bridge_manager: tokio::sync::Mutex::new(bridge),
         channels_config: tokio::sync::RwLock::new(channels_config),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
@@ -967,11 +967,18 @@ fn validate_auth_exposure(
     kernel: &OpenFangKernel,
     addr: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let api_key_enabled = !kernel.config.api_key.trim().is_empty();
+    let api_key = kernel.config.api_key.trim();
+    let api_key_enabled = !api_key.is_empty();
     let session_auth_enabled = kernel.config.auth.enabled;
     if !api_key_enabled && !session_auth_enabled && !addr.ip().is_loopback() {
         return Err(format!(
             "Refusing to expose the API on {addr} without authentication. Set OPENFANG_API_KEY or bind to 127.0.0.1."
+        )
+        .into());
+    }
+    if !addr.ip().is_loopback() && api_key_enabled && is_placeholder_api_key(api_key) {
+        return Err(format!(
+            "Refusing to expose the API on {addr} with placeholder API key '{api_key}'. Set a strong OPENFANG_API_KEY or bind to 127.0.0.1."
         )
         .into());
     }
@@ -1006,5 +1013,21 @@ mod tests {
     fn validate_auth_exposure_allows_loopback_without_auth() {
         let kernel = test_kernel();
         assert!(validate_auth_exposure(&kernel, "127.0.0.1:4200".parse().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn validate_auth_exposure_rejects_placeholder_api_key_on_public_bind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            api_key: "change-me".to_string(),
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).unwrap();
+
+        let err = validate_auth_exposure(&kernel, "0.0.0.0:4200".parse().unwrap()).unwrap_err();
+
+        assert!(err.to_string().contains("placeholder API key"));
     }
 }

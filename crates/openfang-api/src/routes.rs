@@ -25,8 +25,6 @@ use std::time::Instant;
 pub struct AppState {
     pub kernel: Arc<OpenFangKernel>,
     pub started_at: Instant,
-    /// Optional peer registry for OFP mesh networking status.
-    pub peer_registry: Option<Arc<openfang_wire::registry::PeerRegistry>>,
     /// Channel bridge manager — held behind a Mutex so it can be swapped on hot-reload.
     pub bridge_manager: tokio::sync::Mutex<Option<openfang_channels::bridge::BridgeManager>>,
     /// Live channel config — updated on every hot-reload so list_channels() reflects reality.
@@ -4951,7 +4949,7 @@ pub async fn list_peers(State(state): State<Arc<AppState>>) -> impl IntoResponse
     // Peers are tracked in the wire module's PeerRegistry.
     // The kernel doesn't directly hold a PeerRegistry, so we return an empty list
     // unless one is available. The API server can be extended to inject a registry.
-    if let Some(ref peer_registry) = state.peer_registry {
+    if let Some(peer_registry) = state.kernel.peer_registry.get() {
         let peers: Vec<serde_json::Value> = peer_registry
             .all_peers()
             .iter()
@@ -4982,7 +4980,7 @@ pub async fn network_status(State(state): State<Arc<AppState>>) -> impl IntoResp
         && !state.kernel.config.network.shared_secret.is_empty();
 
     let (node_id, listen_address, connected_peers, total_peers) =
-        if let Some(ref peer_node) = state.kernel.peer_node {
+        if let Some(peer_node) = state.kernel.peer_node.get() {
             let registry = peer_node.registry();
             (
                 peer_node.node_id().to_string(),

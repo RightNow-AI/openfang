@@ -798,6 +798,7 @@ fn chromium_candidates() -> Vec<String> {
 /// Manages browser sessions for all agents.
 pub struct BrowserManager {
     sessions: DashMap<String, Arc<Mutex<BrowserSession>>>,
+    creation_locks: DashMap<String, Arc<Mutex<()>>>,
     config: BrowserConfig,
 }
 
@@ -806,6 +807,7 @@ impl BrowserManager {
     pub fn new(config: BrowserConfig) -> Self {
         Self {
             sessions: DashMap::new(),
+            creation_locks: DashMap::new(),
             config,
         }
     }
@@ -845,6 +847,7 @@ impl BrowserManager {
             drop(session);
             info!(agent_id, "Browser session closed");
         }
+        let _ = self.creation_locks.remove(agent_id);
     }
 
     /// Clean up an agent's browser session (called after agent loop ends).
@@ -881,6 +884,17 @@ impl BrowserManager {
                 "Maximum browser sessions reached ({}). Close an existing session first.",
                 self.config.max_sessions
             ));
+        }
+
+        let creation_lock = self
+            .creation_locks
+            .entry(agent_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _guard = creation_lock.lock().await;
+
+        if let Some(entry) = self.sessions.get(agent_id) {
+            return Ok(Arc::clone(entry.value()));
         }
 
         let session = BrowserSession::launch(&self.config).await?;

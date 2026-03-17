@@ -143,9 +143,9 @@ pub struct OpenFangKernel {
     /// Persistent process manager for interactive sessions (REPLs, servers).
     pub process_manager: Arc<openfang_runtime::process_manager::ProcessManager>,
     /// OFP peer registry — tracks connected peers.
-    pub peer_registry: Option<openfang_wire::PeerRegistry>,
+    pub peer_registry: OnceLock<openfang_wire::PeerRegistry>,
     /// OFP peer node — the local networking node.
-    pub peer_node: Option<Arc<openfang_wire::PeerNode>>,
+    pub peer_node: OnceLock<Arc<openfang_wire::PeerNode>>,
     /// Boot timestamp for uptime calculation.
     pub booted_at: std::time::Instant,
     /// WhatsApp Web gateway child process PID (for shutdown cleanup).
@@ -508,6 +508,13 @@ fn gethostname() -> Option<String> {
 }
 
 impl OpenFangKernel {
+    fn agent_message_lock(&self, agent_id: AgentId) -> Arc<tokio::sync::Mutex<()>> {
+        self.agent_msg_locks
+            .entry(agent_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
     /// Boot the kernel with configuration from the given path.
     pub fn boot(config_path: Option<&Path>) -> KernelResult<Self> {
         let config = load_config(config_path);
@@ -1046,8 +1053,8 @@ impl OpenFangKernel {
             auto_reply_engine,
             hooks: openfang_runtime::hooks::HookRegistry::new(),
             process_manager: Arc::new(openfang_runtime::process_manager::ProcessManager::new(5)),
-            peer_registry: None,
-            peer_node: None,
+            peer_registry: OnceLock::new(),
+            peer_node: OnceLock::new(),
             booted_at: std::time::Instant::now(),
             whatsapp_gateway_pid: Arc::new(std::sync::Mutex::new(None)),
             telegram_local_api_pid: Arc::new(std::sync::Mutex::new(None)),
@@ -1538,11 +1545,7 @@ impl OpenFangKernel {
         // This prevents session corruption when multiple messages arrive in quick
         // succession (e.g. rapid voice messages via Telegram). Messages for different
         // agents are not blocked — each agent has its own independent lock.
-        let lock = self
-            .agent_msg_locks
-            .entry(agent_id)
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
+        let lock = self.agent_message_lock(agent_id);
         let _guard = lock.lock().await;
 
         // Enforce quota before running the agent loop
@@ -1688,11 +1691,7 @@ impl OpenFangKernel {
     )> {
         // Acquire the same per-agent lock used by the non-streaming path before
         // reading the session or launching the streaming task.
-        let lock = self
-            .agent_msg_locks
-            .entry(agent_id)
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
+        let lock = self.agent_message_lock(agent_id);
         let agent_guard = lock.lock_owned().await;
 
         // Enforce quota before spawning the streaming task
@@ -1975,7 +1974,7 @@ impl OpenFangKernel {
             // Auto-compact if the session is large before running the loop
             if needs_compact {
                 info!(agent_id = %agent_id, messages = session.messages.len(), "Auto-compacting session");
-                match kernel_clone.compact_agent_session(agent_id).await {
+                match kernel_clone.compact_agent_session_locked(agent_id).await {
                     Ok(msg) => {
                         info!(agent_id = %agent_id, "{msg}");
                         // Reload the session after compaction
@@ -2325,7 +2324,7 @@ impl OpenFangKernel {
             };
             if by_messages || by_tokens || by_quota {
                 info!(agent_id = %agent_id, messages = session.messages.len(), estimated_tokens = estimated, "Pre-emptive compaction before LLM call");
-                match self.compact_agent_session(agent_id).await {
+                match self.compact_agent_session_locked(agent_id).await {
                     Ok(msg) => {
                         info!(agent_id = %agent_id, "{msg}");
                         if let Ok(Some(reloaded)) = self.memory.get_session(session.id) {
@@ -3113,6 +3112,12 @@ impl OpenFangKernel {
     /// Replaces the existing text-truncation compaction with an intelligent
     /// LLM-generated summary of older messages, keeping only recent messages.
     pub async fn compact_agent_session(&self, agent_id: AgentId) -> KernelResult<String> {
+        let lock = self.agent_message_lock(agent_id);
+        let _guard = lock.lock().await;
+        self.compact_agent_session_locked(agent_id).await
+    }
+
+    async fn compact_agent_session_locked(&self, agent_id: AgentId) -> KernelResult<String> {
         use openfang_runtime::compactor::{compact_session, needs_compaction, CompactionConfig};
 
         let entry = self.registry.get(agent_id).ok_or_else(|| {
@@ -4390,13 +4395,11 @@ impl OpenFangKernel {
                     "OFP peer node started"
                 );
 
-                // SAFETY: These fields are only written once during startup.
-                // We use unsafe to set them because start_background_agents runs
-                // after the Arc is created and the kernel is otherwise immutable.
-                let self_ptr = Arc::as_ptr(self) as *mut OpenFangKernel;
-                unsafe {
-                    (*self_ptr).peer_registry = Some(registry.clone());
-                    (*self_ptr).peer_node = Some(node.clone());
+                if self.peer_registry.set(registry.clone()).is_err() {
+                    warn!("OFP peer registry already initialized");
+                }
+                if self.peer_node.set(node.clone()).is_err() {
+                    warn!("OFP peer node already initialized");
                 }
 
                 // Connect to bootstrap peers

@@ -14,8 +14,9 @@ services:
     environment:
       # Bind all container interfaces so Docker port publishing works.
       - OPENFANG_LISTEN=${OPENFANG_LISTEN:-0.0.0.0:4200}
-      # Keep API auth on by default for non-loopback bind.
-      - OPENFANG_API_KEY=${OPENFANG_API_KEY:-change-me}
+      # Public binds require an explicit strong API key. Do not fall back to a
+      # placeholder value here or the daemon will refuse to boot.
+      - OPENFANG_API_KEY=${OPENFANG_API_KEY:?set OPENFANG_API_KEY to a strong random value}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}

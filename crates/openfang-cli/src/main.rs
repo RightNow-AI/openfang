@@ -2528,6 +2528,54 @@ decay_rate = 0.05
                     }
                     checks.push(serde_json::json!({"check": "config_deser", "status": "ok"}));
 
+                    let public_listener = cfg
+                        .api_listen
+                        .parse::<std::net::SocketAddr>()
+                        .map(|addr| !addr.ip().is_loopback())
+                        .unwrap_or(false);
+                    let api_key = cfg.api_key.trim();
+                    if public_listener && openfang_types::config::is_placeholder_api_key(api_key) {
+                        if !json {
+                            ui::check_fail(&format!(
+                                "api_listen={} is public but api_key is still a placeholder/example value",
+                                cfg.api_listen
+                            ));
+                        }
+                        checks.push(serde_json::json!({
+                            "check": "api_auth_exposure",
+                            "status": "fail",
+                            "listen": cfg.api_listen,
+                            "reason": "placeholder_api_key"
+                        }));
+                        all_ok = false;
+                    } else if public_listener && api_key.is_empty() && !cfg.auth.enabled {
+                        if !json {
+                            ui::check_fail(&format!(
+                                "api_listen={} is public but no API auth is configured",
+                                cfg.api_listen
+                            ));
+                        }
+                        checks.push(serde_json::json!({
+                            "check": "api_auth_exposure",
+                            "status": "fail",
+                            "listen": cfg.api_listen,
+                            "reason": "missing_auth"
+                        }));
+                        all_ok = false;
+                    } else if public_listener {
+                        if !json {
+                            ui::check_ok(&format!(
+                                "Public API listener {} has authentication configured",
+                                cfg.api_listen
+                            ));
+                        }
+                        checks.push(serde_json::json!({
+                            "check": "api_auth_exposure",
+                            "status": "ok",
+                            "listen": cfg.api_listen
+                        }));
+                    }
+
                     // Check exec policy
                     let mode = format!("{:?}", cfg.exec_policy.mode);
                     let safe_bins_count = cfg.exec_policy.safe_bins.len();
@@ -2723,13 +2771,45 @@ decay_rate = 0.05
                         }
                         checks.push(serde_json::json!({"check": "daemon_agents", "status": "ok", "count": agents}));
                     }
-                    if let Some(uptime) = body.get("uptime_secs").and_then(|v| v.as_u64()) {
+                    if let Some(uptime) = body.get("uptime_seconds").and_then(|v| v.as_u64()) {
                         let hours = uptime / 3600;
                         let mins = (uptime % 3600) / 60;
                         if !json {
                             ui::check_ok(&format!("Daemon uptime: {hours}h {mins}m"));
                         }
                         checks.push(serde_json::json!({"check": "daemon_uptime", "status": "ok", "secs": uptime}));
+                    }
+                    if let Some(panics) = body.get("panic_count").and_then(|v| v.as_u64()) {
+                        let status = if panics == 0 { "ok" } else { "warn" };
+                        if !json {
+                            if panics == 0 {
+                                ui::check_ok("Supervisor panic count: 0");
+                            } else {
+                                ui::check_warn(&format!(
+                                    "Supervisor recorded {panics} panic restart(s)"
+                                ));
+                            }
+                        }
+                        checks.push(serde_json::json!({
+                            "check": "daemon_panics",
+                            "status": status,
+                            "count": panics
+                        }));
+                    }
+                    if let Some(restarts) = body.get("restart_count").and_then(|v| v.as_u64()) {
+                        let status = if restarts == 0 { "ok" } else { "warn" };
+                        if !json {
+                            if restarts == 0 {
+                                ui::check_ok("Supervisor restart count: 0");
+                            } else {
+                                ui::check_warn(&format!("Supervisor restart count is {restarts}"));
+                            }
+                        }
+                        checks.push(serde_json::json!({
+                            "check": "daemon_restarts",
+                            "status": status,
+                            "count": restarts
+                        }));
                     }
                     if let Some(db_status) = body.get("database").and_then(|v| v.as_str()) {
                         if db_status == "connected" || db_status == "ok" {
