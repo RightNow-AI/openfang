@@ -14,6 +14,13 @@ import { api } from './api-server';
 /**
  * Fetch all agents and build a map of skill name → agent names.
  *
+ * Semantic rule (see docs/skill-state-contract.md §2):
+ *   An agent is counted as using a skill when it references one or more
+ *   tools exposed by that skill through `capabilities.tools`.
+ *   This count is configuration-derived, not runtime-verified.
+ *   An agent is counted once per skill, even if it references multiple
+ *   tools from that skill.
+ *
  * On any error, returns an empty map rather than crashing callers.
  * Usage counts must never be guessed — if agents can't be fetched,
  * the count stays 0 and a warning is logged.

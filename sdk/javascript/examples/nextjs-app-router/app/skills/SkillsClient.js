@@ -180,8 +180,8 @@ export default function SkillsClient({ initialSkills }) {
                   style={{ fontSize: 12, color: 'var(--text-dim)' }}
                 >
                   {s.used_by_count > 0
-                    ? `Used by ${s.used_by_count} agent${s.used_by_count !== 1 ? 's' : ''}`
-                    : 'Not used by any agent'}
+                    ? `Referenced by ${s.used_by_count} agent${s.used_by_count !== 1 ? 's' : ''}`
+                    : 'Not referenced by any agent'}
                 </span>
                 <button
                   data-cy="skill-toggle"

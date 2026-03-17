@@ -181,10 +181,10 @@ export default function SkillDrawer({ skillName, onClose, onToggle, togglePendin
                 </section>
               )}
 
-              {/* Used by */}
+              {/* Agents referencing this skill */}
               <section>
                 <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
-                  Used by ({detail.used_by.length})
+                  Agents referencing this skill ({detail.used_by.length})
                 </div>
                 {detail.used_by.length > 0 ? (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -193,7 +193,7 @@ export default function SkillDrawer({ skillName, onClose, onToggle, togglePendin
                     ))}
                   </div>
                 ) : (
-                  <p style={{ margin: 0, fontSize: 12, color: 'var(--text-dim)' }}>No agents use this skill.</p>
+                  <p style={{ margin: 0, fontSize: 12, color: 'var(--text-dim)' }}>No agents reference this skill.</p>
                 )}
               </section>
             </>
@@ -219,8 +219,8 @@ export default function SkillDrawer({ skillName, onClose, onToggle, togglePendin
                   color: 'var(--warning, #f59e0b)',
                 }}
               >
-                ⚠ This skill is used by {detail.used_by.length} agent{detail.used_by.length !== 1 ? 's' : ''}.
-                Disabling it will block future use at runtime.
+                ⚠ This skill is referenced by {detail.used_by.length} agent{detail.used_by.length !== 1 ? 's' : ''}.
+                Disabling it will block future runtime invocations.
               </div>
             )}
 
