@@ -99,6 +99,10 @@ jobs:
           MAC_CERT_BASE64: ${{ secrets.MAC_CERT_BASE64 }}
           MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
         run: |
+          if [ -z "${MAC_CERT_BASE64:-}" ] || [ -z "${MAC_CERT_PASSWORD:-}" ]; then
+            echo "macOS signing secrets not configured; continuing with unsigned macOS build"
+            exit 0
+          fi
           echo "$MAC_CERT_BASE64" | base64 --decode > $RUNNER_TEMP/certificate.p12
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
