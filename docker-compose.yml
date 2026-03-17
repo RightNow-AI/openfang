@@ -1,17 +1,21 @@
-# NOTE: The GHCR image (ghcr.io/rightnow-ai/openfang) is not yet public.
+# NOTE: The GHCR image (ghcr.io/tytsxai/openfang-upstream-fork) is not yet public.
 # For now, build from source using `docker compose up --build`.
-# See: https://github.com/RightNow-AI/openfang/issues/12
-
-version: "3.8"
+# See: https://github.com/tytsxai/openfang-upstream-fork/issues/12
 services:
   openfang:
     build: .
-    # image: ghcr.io/rightnow-ai/openfang:latest  # Uncomment when GHCR is public
+    # image: ghcr.io/tytsxai/openfang-upstream-fork:latest  # Uncomment when GHCR is published and accessible
     ports:
-      - "4200:4200"
+      # Publish on host loopback by default; change to `4200:4200` only if you
+      # intentionally need LAN/public reachability.
+      - "127.0.0.1:4200:4200"
     volumes:
       - openfang-data:/data
     environment:
+      # Bind all container interfaces so Docker port publishing works.
+      - OPENFANG_LISTEN=${OPENFANG_LISTEN:-0.0.0.0:4200}
+      # Keep API auth on by default for non-loopback bind.
+      - OPENFANG_API_KEY=${OPENFANG_API_KEY:-change-me}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
@@ -19,6 +23,21 @@ services:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
       - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python3 -c \"import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:4200/api/health', timeout=3)); assert d.get('status') in ('ok','degraded')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 45s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: unless-stopped
 
 volumes:

@@ -1,48 +1,76 @@
-# OpenFang Agent OS — Example Configuration
+# OpenFang Agent OS -- example configuration
 # Copy to ~/.openfang/config.toml and customize.
 
-# API server settings
-# api_key = ""                               # Set to enable Bearer auth (recommended)
-# api_listen = "127.0.0.1:50051"             # HTTP API bind address (use 0.0.0.0 for public)
+# HTTP API settings
+api_listen = "127.0.0.1:4200"
+# api_key = ""  # Prefer OPENFANG_API_KEY in production
+# network_enabled = false
+# usage_footer = "full"
 
 [default_model]
-provider = "anthropic"                    # "anthropic", "gemini", "openai", "groq", "ollama", etc.
-model = "claude-sonnet-4-20250514"        # Model identifier
-api_key_env = "ANTHROPIC_API_KEY"         # Environment variable holding API key
-# base_url = "https://api.anthropic.com"  # Optional: override API endpoint
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+api_key_env = "ANTHROPIC_API_KEY"
+# base_url = "https://api.anthropic.com"
 
 [memory]
-decay_rate = 0.05                         # Memory confidence decay rate
-# sqlite_path = "~/.openfang/data/openfang.db"   # Optional: custom DB path
+decay_rate = 0.05
+# sqlite_path = "~/.openfang/data/openfang.db"
 
 [network]
-listen_addr = "127.0.0.1:4200"           # OFP listen address
-# shared_secret = ""                      # Required for P2P authentication
+listen_addresses = ["/ip4/0.0.0.0/tcp/0"]
+# bootstrap_peers = []
+# mdns_enabled = true
+# max_peers = 50
+# shared_secret = ""
 
-# Session compaction (LLM-based context management)
-# [compaction]
-# threshold = 80                          # Compact when messages exceed this count
-# keep_recent = 20                        # Keep this many recent messages after compaction
-# max_summary_tokens = 1024               # Max tokens for LLM summary
+[web]
+search_provider = "auto"
+cache_ttl_minutes = 15
 
-# Usage tracking display
-# usage_footer = "Full"                   # "Off", "Tokens", "Cost", or "Full"
+[browser]
+headless = true
 
-# Channel adapters (configure tokens via environment variables)
-# [telegram]
-# bot_token_env = "TELEGRAM_BOT_TOKEN"
-# allowed_users = []                      # Empty = allow all
+[reload]
+mode = "hybrid"
+debounce_ms = 500
 
-# [discord]
-# bot_token_env = "DISCORD_BOT_TOKEN"
-# guild_ids = []                          # Empty = all guilds
+[budget]
+alert_threshold = 0.8
 
-# [slack]
-# bot_token_env = "SLACK_BOT_TOKEN"
-# app_token_env = "SLACK_APP_TOKEN"
+[auth]
+enabled = false
+username = "admin"
+password_hash = ""
+
+# Channel adapters
+[channels.telegram]
+bot_token_env = "TELEGRAM_BOT_TOKEN"
+allowed_users = []
+poll_interval_secs = 1
+# download_enabled = false
+# use_local_api = false
+# api_url = "http://127.0.0.1:8081"
+# telegram_api_id = "123456"
+# telegram_api_hash_env = "TELEGRAM_API_HASH"
+# auto_start_local_api = false
+# local_api_port = 8081
+
+[channels.discord]
+bot_token_env = "DISCORD_BOT_TOKEN"
+allowed_guilds = []
+
+[channels.slack]
+bot_token_env = "SLACK_BOT_TOKEN"
+app_token_env = "SLACK_APP_TOKEN"
 
 # MCP server connections
-# [[mcp_servers]]
-# name = "filesystem"
-# command = "npx"
-# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+[[mcp_servers]]
+name = "filesystem"
+timeout_secs = 30
+env = []
+
+[mcp_servers.transport]
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OpenFang",
-  "version": "0.1.0",
+  "version": "0.4.4",
   "identifier": "ai.openfang.desktop",
   "build": {},
   "app": {
@@ -14,7 +14,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJDOTE5MDhCRDNGMTUyMEQKUldRTlV2SFRpNUNSdkZRZDcvektwZkN6bUsyM0NJZC9OeXhHRU5id1FnZWllQmNlZGRoSGRQOHkK",
       "endpoints": [
-        "https://github.com/RightNow-AI/openfang/releases/latest/download/latest.json"
+        "https://github.com/tytsxai/openfang-upstream-fork/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"
@@ -23,6 +23,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/icon.ico",

@@ -32,7 +32,7 @@ All responses include security headers (CSP, X-Frame-Options, X-Content-Type-Opt
 
 ## Authentication
 
-When an API key is configured in `config.toml`, all endpoints (except `/api/health` and `/`) require a Bearer token:
+When an API key is configured, protected endpoints require a Bearer token:
 
 ```
 Authorization: Bearer <your-api-key>
@@ -46,14 +46,32 @@ Add to `~/.openfang/config.toml`:
 api_key = "your-secret-api-key"
 ```
 
+Or inject with environment variable (preferred for production):
+
+```bash
+export OPENFANG_API_KEY="your-secret-api-key"
+```
+
 ### No Authentication
 
-If `api_key` is empty or not set, the API is accessible without authentication. CORS is restricted to localhost origins in this mode.
+If `api_key` is empty and dashboard auth is disabled, protected endpoints remain loopback-only.
+
+Important:
+- This mode is only intended for local development on the same machine.
+- Non-loopback binds without auth are rejected at startup.
+- CORS is browser-only and does not protect direct API clients.
+- For production, set `OPENFANG_API_KEY` (or `api_key`) and restrict network access with loopback bind, reverse proxy, firewall, or security group rules.
 
 ### Public Endpoints (No Auth Required)
 
+Public endpoints are intentionally minimal:
+
+- `GET /`
 - `GET /api/health`
-- `GET /` (WebChat UI)
+- dashboard auth bootstrap endpoints under `/api/auth/*`
+- protocol discovery endpoints that must remain reachable (`/.well-known/agent.json`, selected `/a2a/*`)
+
+Treat the API port as sensitive even when using auth. Expose it through a controlled proxy instead of direct public access.
 
 ---
 
@@ -623,16 +641,16 @@ Get a specific template's manifest and raw TOML.
 
 ### GET /api/health
 
-Public health check. Does not require authentication. Returns a redacted subset of system status (no database or agent_count details).
+Public liveness probe. Does not require authentication.
+
+Current response is intentionally minimal:
 
 **Response** `200 OK`:
 
 ```json
 {
   "status": "ok",
-  "uptime_seconds": 3600,
-  "panic_count": 0,
-  "restart_count": 0
+  "version": "0.1.0"
 }
 ```
 
@@ -640,13 +658,15 @@ The `status` field is `"ok"` when all systems are healthy, or `"degraded"` when 
 
 ### GET /api/health/detail
 
-Full health check with all dependency status. Requires authentication. Unlike the public `/api/health`, this endpoint includes database connectivity and agent counts.
+Detailed health diagnostics (`uptime`, supervisor counters, DB connectivity, config warnings).
+Requires authentication.
 
 **Response** `200 OK`:
 
 ```json
 {
   "status": "ok",
+  "version": "0.1.0",
   "uptime_seconds": 3600,
   "panic_count": 0,
   "restart_count": 0,
@@ -659,25 +679,32 @@ Full health check with all dependency status. Requires authentication. Unlike th
 ### GET /api/status
 
 Detailed kernel status including all agents.
+Requires authentication unless you are connecting from loopback with auth disabled.
 
 **Response** `200 OK`:
 
 ```json
 {
   "status": "running",
+  "version": "0.1.0",
   "agent_count": 2,
-  "data_dir": "/home/user/.openfang/data",
   "default_provider": "groq",
   "default_model": "llama-3.3-70b-versatile",
   "uptime_seconds": 3600,
+  "api_listen": "127.0.0.1:4200",
+  "home_dir": "/home/user/.openfang",
+  "log_level": "info",
+  "network_enabled": false,
   "agents": [
     {
       "id": "a1b2c3d4-...",
       "name": "hello-world",
       "state": "Running",
+      "mode": "Normal",
       "created_at": "2025-01-15T10:30:00Z",
       "model_provider": "groq",
-      "model_name": "llama-3.3-70b-versatile"
+      "model_name": "llama-3.3-70b-versatile",
+      "profile": "default"
     }
   ]
 }
@@ -713,6 +740,18 @@ Initiate graceful shutdown. Agent states are preserved to SQLite for restore on 
 }
 ```
 
+### GET /api/metrics
+
+Prometheus metrics endpoint.
+
+Sample:
+
+```text
+# HELP openfang_uptime_seconds Time since daemon started.
+# TYPE openfang_uptime_seconds gauge
+openfang_uptime_seconds 1234
+```
+
 ### GET /api/profiles
 
 List available agent profiles (predefined configurations for common use cases).
@@ -739,6 +778,7 @@ List available agent profiles (predefined configurations for common use cases).
 ### GET /api/tools
 
 List all available tools that agents can use.
+Requires authentication unless you are connecting from loopback with auth disabled.
 
 **Response** `200 OK`:
 
@@ -762,6 +802,7 @@ List all available tools that agents can use.
 ### GET /api/config
 
 Retrieve current kernel configuration (secrets are redacted).
+Requires authentication unless you are connecting from loopback with auth disabled.
 
 **Response** `200 OK`:
 
@@ -2143,7 +2184,7 @@ The `Retry-After` header indicates the window duration in seconds.
 | **System** | | |
 | GET | `/` | WebChat UI |
 | GET | `/api/health` | Health check (no auth, redacted) |
-| GET | `/api/health/detail` | Full health check (auth required) |
+| GET | `/api/health/detail` | Full health diagnostics (auth required) |
 | GET | `/api/status` | Kernel status |
 | GET | `/api/version` | Version info |
 | POST | `/api/shutdown` | Graceful shutdown |

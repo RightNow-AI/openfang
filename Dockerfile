@@ -15,7 +15,7 @@ ENV CARGO_PROFILE_RELEASE_LTO=${LTO} \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CODEGEN_UNITS}
 RUN cargo build --release --bin openfang
 
-FROM rust:1-slim-bookworm
+FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     python3 \
@@ -25,10 +25,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/target/release/openfang /usr/local/bin/
-COPY --from=builder /build/agents /opt/openfang/agents
+RUN useradd --system --create-home --home-dir /home/openfang --shell /usr/sbin/nologin openfang \
+    && install -d -o openfang -g openfang /data /opt/openfang
+
+COPY --from=builder --chown=openfang:openfang /build/target/release/openfang /usr/local/bin/openfang
+COPY --from=builder --chown=openfang:openfang /build/agents /opt/openfang/agents
 EXPOSE 4200
 VOLUME /data
-ENV OPENFANG_HOME=/data
+ENV HOME=/home/openfang \
+    OPENFANG_HOME=/data
+WORKDIR /data
+USER openfang
 ENTRYPOINT ["openfang"]
 CMD ["start"]

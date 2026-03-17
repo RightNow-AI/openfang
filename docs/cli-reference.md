@@ -29,13 +29,15 @@ cargo build --release -p openfang-cli
 ### Docker
 
 ```bash
-docker run -it openfang/openfang:latest
+docker run -it --rm ghcr.io/tytsxai/openfang-upstream-fork:latest --version
 ```
+
+If the GHCR image is not publicly available yet, use `docker compose up --build` from the repository root.
 
 ### Shell installer
 
 ```bash
-curl -fsSL https://get.openfang.ai | sh
+curl -fsSL https://openfang.sh | sh
 ```
 
 ## Global Options
@@ -126,7 +128,7 @@ openfang start [--config <PATH>]
 **Output:**
 
 ```
-  OpenFang Agent OS v0.1.0
+  OpenFang Agent OS v0.4.4
 
   Starting daemon...
 

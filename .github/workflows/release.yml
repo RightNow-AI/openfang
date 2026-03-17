@@ -51,6 +51,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Verify desktop version matches release tag
+        shell: bash
+        run: |
+          DESKTOP_VERSION=$(python3 - <<'PY'
+          import json
+          with open("crates/openfang-desktop/tauri.conf.json", "r", encoding="utf-8") as f:
+              print(json.load(f)["version"])
+          PY
+          )
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          if [ "$DESKTOP_VERSION" != "$TAG_VERSION" ]; then
+            echo "Desktop version $DESKTOP_VERSION does not match tag $TAG_VERSION"
+            exit 1
+          fi
+
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -108,7 +123,7 @@ jobs:
           releaseBody: |
             ## What's New
 
-            See the [CHANGELOG](https://github.com/RightNow-AI/openfang/blob/main/CHANGELOG.md) for full details.
+            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md) for full details.
 
             ## Installation
 
@@ -116,12 +131,19 @@ jobs:
 
             **CLI (Linux/macOS)**:
             ```bash
-            curl -sSf https://openfang.sh | sh
+            curl -sSf https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/scripts/install.sh | sh
+            ```
+
+            **CLI (Windows PowerShell)**:
+            ```powershell
+            irm https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/scripts/install.ps1 | iex
             ```
 
             **Docker**:
             ```bash
-            docker pull ghcr.io/rightnow-ai/openfang:latest
+            git clone --branch ${{ github.ref_name }} --depth 1 https://github.com/${{ github.repository }}.git
+            cd openfang-upstream-fork
+            OPENFANG_LISTEN=0.0.0.0:4200 OPENFANG_API_KEY=replace-me docker compose up --build
             ```
 
             **Coming from OpenClaw?**
@@ -133,6 +155,82 @@ jobs:
           includeUpdaterJson: true
           projectPath: crates/openfang-desktop
           args: ${{ matrix.platform.args }}
+
+  verify-desktop-release-assets:
+    name: Verify Desktop Release Assets
+    runs-on: ubuntu-latest
+    needs: desktop
+    steps:
+      - name: Confirm updater manifest is present and valid
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          tag = os.environ["GITHUB_REF"].removeprefix("refs/tags/")
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/releases/tags/{tag}",
+              headers={
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+              },
+          )
+          with urllib.request.urlopen(req) as resp:
+              release = json.load(resp)
+
+          assets = release.get("assets", [])
+          names = [asset.get("name", "") for asset in assets]
+          latest_manifest = next((a for a in assets if a.get("name") == "latest.json"), None)
+          if latest_manifest is None:
+              print("Release assets:", names)
+              print("Missing required updater artifact: latest.json")
+              sys.exit(1)
+
+          manifest_url = latest_manifest.get("browser_download_url")
+          if not manifest_url:
+              print("latest.json asset is missing browser_download_url")
+              sys.exit(1)
+
+          with urllib.request.urlopen(manifest_url) as resp:
+              manifest = json.load(resp)
+
+          if not isinstance(manifest, dict):
+              print("latest.json is not a JSON object")
+              sys.exit(1)
+
+          platforms = manifest.get("platforms")
+          if not isinstance(platforms, dict) or not platforms:
+              print("latest.json missing non-empty 'platforms' object")
+              sys.exit(1)
+
+          invalid = []
+          for platform, meta in platforms.items():
+              if not isinstance(meta, dict):
+                  invalid.append(platform)
+                  continue
+              if not isinstance(meta.get("url"), str) or not meta["url"].strip():
+                  invalid.append(platform)
+                  continue
+              if not isinstance(meta.get("signature"), str) or not meta["signature"].strip():
+                  invalid.append(platform)
+
+          if invalid:
+              print("latest.json has invalid platform entries:", ", ".join(invalid))
+              sys.exit(1)
+
+          manifest_version = manifest.get("version")
+          expected_version = tag.removeprefix("v")
+          if not isinstance(manifest_version, str) or manifest_version != expected_version:
+              print(
+                  f"latest.json version mismatch: expected {expected_version}, "
+                  f"got {manifest_version!r}"
+              )
+              sys.exit(1)
+          PY
 
   # ── CLI Binary (5 platforms) ──────────────────────────────────────────────
   cli:
@@ -226,6 +324,9 @@ jobs:
       - name: Extract version
         id: version
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+      - name: Compute image name
+        id: image
+        run: echo "name=$(echo "ghcr.io/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
       - name: Build and push (multi-arch)
         uses: docker/build-push-action@v6
         with:
@@ -233,7 +334,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/rightnow-ai/openfang:latest
-            ghcr.io/rightnow-ai/openfang:${{ steps.version.outputs.version }}
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

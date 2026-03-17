@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # OpenFang installer — works on Linux, macOS, WSL
 # Usage: curl -sSf https://openfang.sh | sh
+# Tagged fallback example: curl -sSf https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.sh | sh
 #
 # Environment variables:
 #   OPENFANG_INSTALL_DIR  — custom install directory (default: ~/.openfang/bin)
 #   OPENFANG_VERSION      — install a specific version tag (default: latest)
+#   OPENFANG_RELEASE_REPO — override release repo (default: tytsxai/openfang-upstream-fork)
 
 set -euo pipefail
 
-REPO="RightNow-AI/openfang"
+REPO="${OPENFANG_RELEASE_REPO:-tytsxai/openfang-upstream-fork}"
 INSTALL_DIR="${OPENFANG_INSTALL_DIR:-$HOME/.openfang/bin}"
 
 detect_platform() {

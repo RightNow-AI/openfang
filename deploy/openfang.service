@@ -1,14 +1,18 @@
 [Unit]
 Description=OpenFang Agent OS Daemon
-Documentation=https://github.com/openfang-ai/openfang
+Documentation=https://github.com/RightNow-AI/openfang
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=6
 
 [Service]
 Type=simple
 User=openfang
 Group=openfang
+Environment=OPENFANG_HOME=/var/lib/openfang
 ExecStart=/usr/local/bin/openfang start
+ExecStartPre=/usr/bin/test -x /usr/local/bin/openfang
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
@@ -16,6 +20,9 @@ TimeoutStopSec=30
 # Environment
 EnvironmentFile=-/etc/openfang/env
 WorkingDirectory=/var/lib/openfang
+StateDirectory=openfang
+LogsDirectory=openfang
+SyslogIdentifier=openfang
 
 # Security hardening
 NoNewPrivileges=true

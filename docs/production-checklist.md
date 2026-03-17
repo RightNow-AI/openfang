@@ -1,12 +1,16 @@
 # Production Release Checklist
 
-Everything that must be done before tagging `v0.1.0` and shipping to users. Items are ordered by dependency — complete them top to bottom.
+This document is the release-engineering checklist for shipping OpenFang builds. It is not the primary deployment guide for running the daemon.
+
+For actual deployment procedures, start with [deployment.md](deployment.md). For day-2 operation, use [operations-runbook.md](operations-runbook.md).
+
+Everything that must be done before tagging the next release and shipping to users. Items are ordered by dependency — complete them top to bottom.
 
 ---
 
 ## 1. Generate Tauri Signing Keypair
 
-**Status:** BLOCKING — without this, auto-updater is dead. No user will ever receive an update.
+**Status:** COMPLETE in repo — the current desktop config already contains a public updater key. Only rerun this step if you are rotating signing keys.
 
 The Tauri updater requires an Ed25519 keypair. The private key signs every release bundle, and the public key is embedded in the app binary so it can verify updates.
 
@@ -27,25 +31,21 @@ dW50cnVzdGVkIGNvb...  <-- COPY THIS
 Your private key was saved to: ~/.tauri/openfang.key
 ```
 
-Save both values. You need them for steps 2 and 3.
+Save both values. You need the private key for step 3. The public key is already present in the current repository config.
 
 ---
 
 ## 2. Set the Public Key in `tauri.conf.json`
 
-**Status:** BLOCKING — the placeholder must be replaced before building.
+**Status:** COMPLETE in repo — verify only if you are rotating signing keys.
 
-Open `crates/openfang-desktop/tauri.conf.json` and replace:
-
-```json
-"pubkey": "PLACEHOLDER_REPLACE_WITH_GENERATED_PUBKEY"
-```
-
-with the actual public key string from step 1:
+Open `crates/openfang-desktop/tauri.conf.json` and confirm the configured key matches the signer private key from step 1:
 
 ```json
 "pubkey": "dW50cnVzdGVkIGNvb..."
 ```
+
+If you rotate keys, replace the committed value with the new public key before building release artifacts.
 
 ---
 
@@ -66,12 +66,13 @@ Without these, macOS users will see "app from unidentified developer" warnings. 
 
 | Secret Name | Value |
 |---|---|
-| `APPLE_CERTIFICATE` | Base64-encoded `.p12` certificate file |
-| `APPLE_CERTIFICATE_PASSWORD` | Password for the .p12 file |
-| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Your Name (TEAMID)` |
-| `APPLE_ID` | Your Apple ID email |
-| `APPLE_PASSWORD` | App-specific password from appleid.apple.com |
-| `APPLE_TEAM_ID` | Your 10-character Team ID |
+| `MAC_CERT_BASE64` | Base64-encoded `.p12` certificate file |
+| `MAC_CERT_PASSWORD` | Password for the `.p12` file |
+| `MAC_NOTARIZE_APPLE_ID` | Your Apple ID email |
+| `MAC_NOTARIZE_PASSWORD` | App-specific password from appleid.apple.com |
+| `MAC_NOTARIZE_TEAM_ID` | Your 10-character Team ID |
+
+`APPLE_SIGNING_IDENTITY` is derived in the workflow after the certificate import, so it does not need to be stored as a repository secret.
 
 To generate the base64 certificate:
 ```bash
@@ -115,20 +116,20 @@ convert icon.svg -resize 256x256 -define icon:auto-resize=256,128,64,48,32,16 ic
 
 ## 5. Set Up the `openfang.sh` Domain
 
-**Status:** BLOCKING for install scripts — users run `curl -sSf https://openfang.sh | sh`.
+**Status:** VERIFY — confirm the domain still serves the installer endpoints users rely on.
 
 Options:
 - **GitHub Pages**: Point `openfang.sh` to a GitHub Pages site that redirects `/` to `scripts/install.sh` and `/install.ps1` to `scripts/install.ps1` from the repo's latest release.
 - **Cloudflare Workers / Vercel**: Serve the install scripts with proper `Content-Type: text/plain` headers.
-- **Raw GitHub redirect**: Use `openfang.sh` as a CNAME to `raw.githubusercontent.com/RightNow-AI/openfang/main/scripts/install.sh` (less reliable).
+- **Raw GitHub redirect**: Use `openfang.sh` as a CNAME to a tag-pinned raw script URL such as `raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.sh` (less reliable).
 
 The install scripts reference:
-- `https://openfang.sh` → serves `scripts/install.sh`
-- `https://openfang.sh/install.ps1` → serves `scripts/install.ps1`
+- `https://openfang.sh` → serves `scripts/install.sh` for this fork
+- `https://openfang.sh/install.ps1` → serves `scripts/install.ps1` for this fork
 
-Until the domain is set up, users can install via:
+If the domain is unavailable, users can install via:
 ```bash
-curl -sSf https://raw.githubusercontent.com/RightNow-AI/openfang/main/scripts/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.sh | sh
 ```
 
 ---
@@ -140,7 +141,11 @@ curl -sSf https://raw.githubusercontent.com/RightNow-AI/openfang/main/scripts/in
 ```bash
 docker build -t openfang:local .
 docker run --rm openfang:local --version
-docker run --rm -p 4200:4200 -v openfang-data:/data openfang:local start
+docker run --rm -p 4200:4200 \
+  -e OPENFANG_LISTEN=0.0.0.0:4200 \
+  -e OPENFANG_API_KEY=replace-me \
+  -v openfang-data:/data \
+  openfang:local start
 ```
 
 Confirm:
@@ -181,7 +186,7 @@ docker build -f scripts/docker/install-smoke.Dockerfile .
 
 ---
 
-## 8. Write CHANGELOG.md for v0.1.0
+## 8. Write CHANGELOG.md for the Release
 
 **Status:** VERIFY — confirm it covers all shipped features.
 
@@ -207,17 +212,17 @@ grep '^version' Cargo.toml
 
 # Commit any final changes
 git add -A
-git commit -m "chore: prepare v0.1.0 release"
+git commit -m "chore: prepare release"
 
 # Tag and push
-git tag v0.1.0
+git tag v<release-version>
 git push origin main --tags
 ```
 
 This triggers the release workflow which:
-1. Builds desktop installers for 4 targets (Linux, macOS x86, macOS ARM, Windows)
+1. Builds desktop installers for 5 targets (Linux, macOS x86, macOS ARM, Windows x86, Windows ARM)
 2. Generates signed `latest.json` for the auto-updater
-3. Builds CLI binaries for 5 targets
+3. Builds CLI binaries for 6 targets (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64/aarch64)
 4. Builds and pushes multi-arch Docker image
 5. Creates a GitHub Release with all artifacts
 
@@ -232,12 +237,12 @@ After the release workflow completes (~15-30 min):
 - [ ] `.dmg` present (macOS desktop)
 - [ ] `.AppImage` and `.deb` present (Linux desktop)
 - [ ] `latest.json` present (auto-updater manifest)
-- [ ] CLI `.tar.gz` archives present (5 targets)
-- [ ] CLI `.zip` present (Windows)
+- [ ] CLI `.tar.gz` archives present (Linux + macOS builds, both x86_64 and ARM64)
+- [ ] CLI `.zip` archives present (Windows x86_64 and Windows ARM64)
 - [ ] SHA256 checksum files present for each CLI archive
 
 ### Auto-Updater Manifest
-Visit: `https://github.com/RightNow-AI/openfang/releases/latest/download/latest.json`
+Visit: `https://github.com/tytsxai/openfang-upstream-fork/releases/latest/download/latest.json`
 
 - [ ] JSON is valid
 - [ ] Contains `signature` fields (not empty strings)
@@ -246,28 +251,28 @@ Visit: `https://github.com/RightNow-AI/openfang/releases/latest/download/latest.
 
 ### Docker Image
 ```bash
-docker pull ghcr.io/RightNow-AI/openfang:latest
-docker pull ghcr.io/RightNow-AI/openfang:0.1.0
+docker pull ghcr.io/tytsxai/openfang-upstream-fork:latest
+docker pull ghcr.io/tytsxai/openfang-upstream-fork:<release-version>
 
 # Verify both architectures
-docker run --rm ghcr.io/RightNow-AI/openfang:latest --version
+docker run --rm ghcr.io/tytsxai/openfang-upstream-fork:latest --version
 ```
 
-### Desktop App Auto-Update (test with v0.1.1)
-1. Install v0.1.0 from the release
-2. Tag v0.1.1 and push
+### Desktop App Auto-Update (test with the next release)
+1. Install `v<release-version>` from the release
+2. Tag `v<next-release-version>` and push
 3. Wait for release workflow to complete
-4. Open the v0.1.0 app — after 10 seconds it should:
+4. Open the `v<release-version>` app — after 10 seconds it should:
    - Show "OpenFang Updating..." notification
-   - Download and install v0.1.1
-   - Restart automatically to v0.1.1
+   - Download and install `v<next-release-version>`
+   - Restart automatically to `v<next-release-version>`
 5. Right-click tray → "Check for Updates" → should show "Up to Date"
 
 ### Install Scripts
 ```bash
 # Linux/macOS
 curl -sSf https://openfang.sh | sh
-openfang --version  # Should print v0.1.0
+openfang --version  # Should print the released version
 
 # Windows PowerShell
 irm https://openfang.sh/install.ps1 | iex
@@ -283,7 +288,7 @@ Step 1 (keygen) ──┬──> Step 2 (pubkey in config)
                   └──> Step 3 (secrets in GitHub)
                          │
 Step 4 (icons) ──────────┤
-Step 5 (domain) ─────────┤
+Step 5 (domain verify) ──┤
 Step 6 (Dockerfile) ─────┤
 Step 7 (install scripts) ┤
 Step 8 (CHANGELOG) ──────┘

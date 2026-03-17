@@ -1,14 +1,15 @@
 # OpenFang installer for Windows
 # Usage: iwr -useb https://openfang.sh/install.ps1 | iex
 #   or:  powershell -c "irm https://openfang.sh/install.ps1 | iex"
+# Tagged fallback example: irm https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.ps1 | iex
 #
 # Flags (via environment variables):
 #   $env:OPENFANG_INSTALL_DIR = custom install directory
-#   $env:OPENFANG_VERSION     = specific version tag (e.g. "v0.1.0")
+#   $env:OPENFANG_VERSION     = specific version tag (e.g. "v0.4.4")
 
 $ErrorActionPreference = 'Stop'
 
-$Repo = "RightNow-AI/openfang"
+$Repo = if ($env:OPENFANG_RELEASE_REPO) { $env:OPENFANG_RELEASE_REPO } else { "tytsxai/openfang-upstream-fork" }
 $DefaultInstallDir = Join-Path $env:USERPROFILE ".openfang\bin"
 $InstallDir = if ($env:OPENFANG_INSTALL_DIR) { $env:OPENFANG_INSTALL_DIR } else { $DefaultInstallDir }
 
@@ -53,7 +54,7 @@ function Get-Architecture {
         { $_ -in "ARM64", "AARCH64", "ARM" }     { return "aarch64" }
         default {
             Write-Host "  Unsupported architecture: $arch (detection may have failed)" -ForegroundColor Red
-            Write-Host "  Try: cargo install --git https://github.com/RightNow-AI/openfang openfang-cli" -ForegroundColor Yellow
+            Write-Host "  Try: cargo install --git https://github.com/$Repo openfang-cli" -ForegroundColor Yellow
             exit 1
         }
     }

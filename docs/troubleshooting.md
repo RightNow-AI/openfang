@@ -1,571 +1,319 @@
-# Troubleshooting & FAQ
+# Troubleshooting
 
-Common issues, diagnostics, and answers to frequently asked questions about OpenFang.
+This guide focuses on failures that are common in the current repository and deployment assets.
 
-## Table of Contents
+## 1. Quick Triage Order
 
-- [Quick Diagnostics](#quick-diagnostics)
-- [Installation Issues](#installation-issues)
-- [Configuration Issues](#configuration-issues)
-- [LLM Provider Issues](#llm-provider-issues)
-- [Channel Issues](#channel-issues)
-- [Agent Issues](#agent-issues)
-- [API Issues](#api-issues)
-- [Desktop App Issues](#desktop-app-issues)
-- [Performance](#performance)
-- [FAQ](#faq)
-
----
-
-## Quick Diagnostics
-
-Run the built-in diagnostic tool:
+Start with these commands before guessing:
 
 ```bash
 openfang doctor
-```
-
-This checks:
-- Configuration file exists and is valid TOML
-- API keys are set in environment
-- Database is accessible
-- Daemon status (running or not)
-- Port availability
-- Tool dependencies (Python, signal-cli, etc.)
-
-### Check Daemon Status
-
-```bash
 openfang status
+curl -s http://127.0.0.1:4200/api/health
 ```
 
-### Check Health via API
+If auth is enabled:
 
 ```bash
-curl http://127.0.0.1:4200/api/health
-curl http://127.0.0.1:4200/api/health/detail  # Requires auth
+curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/health/detail
 ```
 
-### View Logs
+Then inspect deployment-specific logs:
 
-OpenFang uses `tracing` for structured logging. Set the log level via environment:
+- local foreground process stderr
+- `docker compose logs`
+- `journalctl -u openfang`
+
+## 2. Daemon Will Not Start
+
+### Symptoms
+
+- `openfang start` exits early
+- the API never appears on port `4200`
+- `openfang status` cannot find a daemon
+
+### Checks
 
 ```bash
-RUST_LOG=info openfang start          # Default
-RUST_LOG=debug openfang start         # Verbose
-RUST_LOG=openfang=debug openfang start  # Only OpenFang debug, deps at info
-```
-
----
-
-## Installation Issues
-
-### `cargo install` fails with compilation errors
-
-**Cause**: Rust toolchain too old or missing system dependencies.
-
-**Fix**:
-```bash
-rustup update stable
-rustup default stable
-rustc --version  # Need 1.75+
-```
-
-On Linux, you may also need:
-```bash
-# Debian/Ubuntu
-sudo apt install pkg-config libssl-dev libsqlite3-dev
-
-# Fedora
-sudo dnf install openssl-devel sqlite-devel
-```
-
-### `openfang` command not found after install
-
-**Fix**: Ensure `~/.cargo/bin` is in your PATH:
-```bash
-export PATH="$HOME/.cargo/bin:$PATH"
-# Add to ~/.bashrc or ~/.zshrc to persist
-```
-
-### Docker container won't start
-
-**Common causes**:
-- No API key provided: `docker run -e GROQ_API_KEY=... ghcr.io/RightNow-AI/openfang`
-- Port already in use: change the port mapping `-p 3001:4200`
-- Permission denied on volume mount: check directory permissions
-
----
-
-## Configuration Issues
-
-### "Config file not found"
-
-**Fix**: Run `openfang init` to create the default config:
-```bash
-openfang init
-```
-
-This creates `~/.openfang/config.toml` with sensible defaults.
-
-### "Missing API key" warnings on start
-
-**Cause**: No LLM provider API key found in environment.
-
-**Fix**: Set at least one provider key:
-```bash
-export GROQ_API_KEY="gsk_..."     # Groq (free tier available)
-# OR
-export ANTHROPIC_API_KEY="sk-ant-..."
-# OR
-export OPENAI_API_KEY="sk-..."
-```
-
-Add to your shell profile to persist across sessions.
-
-### Config validation errors
-
-Run validation manually:
-```bash
+openfang doctor
 openfang config show
+RUST_LOG=debug openfang start
 ```
 
-Common issues:
-- Malformed TOML syntax (use a TOML validator)
-- Invalid port numbers (must be 1-65535)
-- Missing required fields in channel configs
+### Common causes
 
-### "Port already in use"
+- malformed `config.toml`
+- no reachable provider credentials
+- bind/auth conflict
+- another process already using the port
 
-**Fix**: Change the port in config or kill the existing process:
+## 3. Refusing to Expose the API on 0.0.0.0
+
+### Symptom
+
+Startup fails with a refusal to expose the API off-loopback.
+
+### Cause
+
+The server validates that non-loopback bind addresses must have auth enabled.
+
+### Fix
+
+Either:
+
 ```bash
-# Change API port
-# In config.toml:
-# [api]
-# listen_addr = "127.0.0.1:3001"
-
-# Or find and kill the process using the port
-# Linux/macOS:
-lsof -i :4200
-# Windows:
-netstat -aon | findstr :4200
+export OPENFANG_API_KEY=change-me
 ```
 
----
+or bind locally:
 
-## LLM Provider Issues
-
-### "Authentication failed" / 401 errors
-
-**Causes**:
-- API key not set or incorrect
-- API key expired or revoked
-- Wrong env var name
-
-**Fix**: Verify your key:
-```bash
-# Check if the env var is set
-echo $GROQ_API_KEY
-
-# Test the provider
-curl http://127.0.0.1:4200/api/providers/groq/test -X POST
-```
-
-### "Rate limited" / 429 errors
-
-**Cause**: Too many requests to the LLM provider.
-
-**Fix**:
-- The driver automatically retries with exponential backoff
-- Reduce `max_llm_tokens_per_hour` in agent capabilities
-- Switch to a provider with higher rate limits
-- Use multiple providers with model routing
-
-### Slow responses
-
-**Possible causes**:
-- Provider API latency (try Groq for fast inference)
-- Large context window (use `/compact` to shrink session)
-- Complex tool chains (check iteration count in response)
-
-**Fix**: Use per-agent model overrides to use faster models for simple agents:
 ```toml
-[model]
-provider = "groq"
-model = "llama-3.1-8b-instant"  # Fast, small model
+api_listen = "127.0.0.1:4200"
 ```
 
-### "Model not found"
+## 4. CLI Says a Daemon Exists but It Is Not Reachable
 
-**Fix**: Check available models:
+### Symptom
+
+- `openfang status` points to an old daemon
+- commands fail even though no real daemon is serving traffic
+
+### Cause
+
+`~/.openfang/daemon.json` is stale.
+
+### Fix
+
 ```bash
-curl http://127.0.0.1:4200/api/models
+openfang doctor --repair
 ```
 
-Or use an alias:
+Or remove `daemon.json` manually after confirming the daemon is dead.
+
+## 5. `/api/health/detail` Returns 401 or 403
+
+### Cause
+
+`/api/health/detail` is a protected operational endpoint when auth is enabled.
+
+### Fix
+
+Use:
+
+```bash
+curl -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/health/detail
+```
+
+For anonymous liveness checks, use `/api/health` instead.
+
+## 6. Channel Config Is Ignored
+
+### Symptom
+
+You added channel settings, but the adapter does not start.
+
+### Common cause
+
+Using the wrong TOML shape, for example:
+
 ```toml
-[model]
-model = "llama"  # Alias for llama-3.3-70b-versatile
+[telegram]
 ```
 
-See the full alias list:
-```bash
-curl http://127.0.0.1:4200/api/models/aliases
-```
+instead of:
 
-### Ollama / local models not connecting
-
-**Fix**: Ensure the local server is running:
-```bash
-# Ollama
-ollama serve  # Default: http://localhost:11434
-
-# vLLM
-python -m vllm.entrypoints.openai.api_server --model ...
-
-# LM Studio
-# Start from the LM Studio UI, enable API server
-```
-
----
-
-## Channel Issues
-
-### Telegram bot not responding
-
-**Checklist**:
-1. Bot token is correct: `echo $TELEGRAM_BOT_TOKEN`
-2. Bot has been started (send `/start` in Telegram)
-3. If `allowed_users` is set, your Telegram user ID is in the list
-4. Check logs for "Telegram adapter" messages
-
-### Telegram large files still fail to download
-
-**Checklist**:
-1. `download_enabled = true` and `use_local_api = true` are both set under `[channels.telegram]`.
-2. If you manage `telegram-bot-api` yourself, `api_url` points to that Local Bot API Server.
-3. If you use `auto_start_local_api = true`, `telegram_api_id` and `telegram_api_hash_env` are configured and the referenced env var is set.
-4. Check whether `telegram-bot-api` is installed: `which telegram-bot-api`
-5. Verify the local server port is reachable: `curl "http://127.0.0.1:8081/bot$TELEGRAM_BOT_TOKEN/getMe"`
-6. Restart the daemon after config changes.
-
-See [telegram-large-files.md](telegram-large-files.md) for the full setup guide and additional Docker/native deployment notes.
-
-**Note:** When `use_local_api = true` and `auto_start_local_api` is configured, OpenFang validates the bot token via `getMe` before entering polling. The Local Bot API Server may take a few seconds to accept connections, so OpenFang retries transient connection and response-parse failures with exponential backoff before giving up. If startup still fails, ensure the local server binary is installed, the configured port is reachable, and `telegram_api_id`/`telegram_api_hash_env` point to valid credentials. Authentication failures such as `Telegram getMe failed: Unauthorized` are treated as permanent and should be fixed in configuration before restarting the daemon.
-
-### Discord bot offline
-
-**Checklist**:
-1. Bot token is correct
-2. **Message Content Intent** is enabled in Discord Developer Portal
-3. Bot has been invited to the server with correct permissions
-4. Check Gateway connection in logs
-
-### Slack bot not receiving messages
-
-**Checklist**:
-1. Both `SLACK_BOT_TOKEN` (xoxb-) and `SLACK_APP_TOKEN` (xapp-) are set
-2. Socket Mode is enabled in the Slack app settings
-3. Bot has been added to the channels it should monitor
-4. Required scopes: `chat:write`, `app_mentions:read`, `im:history`, `im:read`, `im:write`
-
-### Webhook-based channels (WhatsApp, LINE, Viber, etc.)
-
-**Checklist**:
-1. Your server is publicly accessible (or use a tunnel like ngrok)
-2. Webhook URL is correctly configured in the platform dashboard
-3. Webhook port is open and not blocked by firewall
-4. Verify token matches between config and platform dashboard
-
-### "Channel adapter failed to start"
-
-**Common causes**:
-- Missing or invalid token
-- Port already in use (for webhook-based channels)
-- Network connectivity issues
-
-Check logs for the specific error:
-```bash
-RUST_LOG=openfang_channels=debug openfang start
-```
-
----
-
-## Agent Issues
-
-### Agent stuck in a loop
-
-**Cause**: The agent is repeatedly calling the same tool with the same parameters.
-
-**Automatic protection**: OpenFang has a built-in loop guard:
-- **Warn** at 3 identical tool calls
-- **Block** at 5 identical tool calls
-- **Circuit breaker** at 30 total blocked calls (stops the agent)
-
-**Manual fix**: Cancel the agent's current run:
-```bash
-curl -X POST http://127.0.0.1:4200/api/agents/{id}/stop
-```
-
-Or via chat command: `/stop`
-
-### Agent running out of context
-
-**Cause**: Conversation history is too long for the model's context window.
-
-**Fix**: Compact the session:
-```bash
-curl -X POST http://127.0.0.1:4200/api/agents/{id}/session/compact
-```
-
-Or via chat command: `/compact`
-
-Auto-compaction is enabled by default when the session reaches the threshold (configurable in `[compaction]`).
-
-### Agent not using tools
-
-**Cause**: Tools not granted in the agent's capabilities.
-
-**Fix**: Check the agent's manifest:
 ```toml
-[capabilities]
-tools = ["file_read", "web_fetch", "shell_exec"]  # Must list each tool
-# OR
-# tools = ["*"]  # Grant all tools (use with caution)
+[channels.telegram]
 ```
 
-### "Permission denied" errors in agent responses
+### Fix
 
-**Cause**: The agent is trying to use a tool or access a resource not in its capabilities.
+Move channel config under `channels.<name>`.
 
-**Fix**: Add the required capability to the agent manifest. Common ones:
-- `tools = [...]` for tool access
-- `network = ["*"]` for network access
-- `memory_write = ["self.*"]` for memory writes
-- `shell = ["*"]` for shell commands (use with caution)
+## 7. Wrong Field Used for HTTP Bind
 
-### Agent spawning fails
+### Symptom
 
-**Check**:
-1. TOML manifest is valid: `openfang agent spawn --dry-run manifest.toml`
-2. LLM provider is configured and has a valid key
-3. Model specified in manifest exists in the catalog
+You changed `[network]` and expected the HTTP API to move.
 
----
+### Cause
 
-## API Issues
+`[network]` config is for OFP peer networking. The HTTP API uses top-level `api_listen`.
 
-### 401 Unauthorized
+### Fix
 
-**Cause**: API key required but not provided.
+Set:
 
-**Fix**: Include the Bearer token:
+```toml
+api_listen = "127.0.0.1:4200"
+```
+
+and leave `[network].listen_addresses` for peer networking only.
+
+## 8. Docker Container Is Running but the Host Cannot Reach It
+
+### Checks
+
 ```bash
-curl -H "Authorization: Bearer your-api-key" http://127.0.0.1:4200/api/agents
+docker compose ps
+docker compose logs --tail=200 openfang
 ```
 
-### 429 Too Many Requests
+### Common causes
 
-**Cause**: GCRA rate limiter triggered.
+- `OPENFANG_LISTEN` is still loopback inside the container
+- missing provider key
+- server refused non-loopback bind without auth
 
-**Fix**: Wait for the `Retry-After` period, or increase rate limits in config:
-```toml
-[api]
-rate_limit_per_second = 20  # Increase if needed
+### Fix
+
+Use:
+
+```bash
+OPENFANG_LISTEN=0.0.0.0:4200
+OPENFANG_API_KEY=change-me
 ```
 
-### CORS errors from browser
+in Compose or the container environment.
 
-**Cause**: Trying to access API from a different origin.
+## 9. Config Changes Did Not Apply Live
 
-**Fix**: Add your origin to CORS config:
-```toml
-[api]
-cors_origins = ["http://localhost:5173", "https://your-app.com"]
+### Cause
+
+OpenFang has config reload support, but not every field reloads hot.
+
+### Fix
+
+Try:
+
+```bash
+curl -X POST -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/config/reload
 ```
 
-### WebSocket disconnects
+Restart the daemon after changing:
 
-**Possible causes**:
-- Idle timeout (send periodic pings)
-- Network interruption (reconnect automatically)
-- Agent crashed (check logs)
+- API listen or auth behavior
+- network settings
+- memory backend settings
+- home/data directory settings
+- vault settings
 
-**Client-side fix**: Implement reconnection logic with exponential backoff.
+## 10. `openfang logs` Does Not Show Daemon Output
 
-### OpenAI-compatible API not working with my tool
+### Cause
 
-**Checklist**:
-1. Use `POST /v1/chat/completions` (not `/api/agents/{id}/message`)
-2. Set the model to `openfang:agent-name` (e.g., `openfang:coder`)
-3. Streaming: set `"stream": true` for SSE responses
-4. Images: use `image_url` with `data:image/png;base64,...` format
+`openfang logs` tails `~/.openfang/tui.log`, which is only meaningful for TUI logging.
 
----
+### Fix
 
-## Desktop App Issues
+Use the real runtime log surface for your deployment:
 
-### App won't start
+- foreground stderr for local dev
+- `docker compose logs`
+- `journalctl -u openfang`
 
-**Checklist**:
-1. Only one instance can run at a time (single-instance enforcement)
-2. Check if the daemon is already running on the same ports
-3. Try deleting `~/.openfang/daemon.json` and restarting
+Treat `/api/logs/stream` as an audit stream, not as daemon stderr.
 
-### White/blank screen in app
+## 11. Telegram Bot Does Not Respond
 
-**Cause**: The embedded API server hasn't started yet.
+### Checks
 
-**Fix**: Wait a few seconds. If persistent, check logs for server startup errors.
+```bash
+echo "$TELEGRAM_BOT_TOKEN"
+openfang doctor
+```
 
-### System tray icon missing
+Verify:
 
-**Platform-specific**:
-- **Linux**: Requires a system tray (e.g., `libappindicator` on GNOME)
-- **macOS**: Should work out of the box
-- **Windows**: Check notification area settings, may need to show hidden icons
+- `[channels.telegram]` exists
+- `bot_token_env` points to the right env var
+- allowed-user filters are not blocking you
+- logs show the Telegram adapter actually starting
 
----
+## 12. Telegram Large File Downloads Still Fail
 
-## Performance
+### Checks
 
-### High memory usage
+- `download_enabled = true`
+- `use_local_api = true` when relying on Local Bot API
+- `api_url` or `local_api_port` is correct
+- `telegram_api_id` and `telegram_api_hash_env` are present when auto-starting Local Bot API
 
-**Tips**:
-- Reduce the number of concurrent agents
-- Use session compaction for long-running agents
-- Use smaller models (Llama 8B instead of 70B for simple tasks)
-- Clear old sessions: `DELETE /api/sessions/{id}`
+See [telegram-large-files.md](telegram-large-files.md) for the full Local Bot API path.
 
-### Slow startup
+## 13. Provider Auth Fails Even Though Config Looks Correct
 
-**Normal startup**: <200ms for the kernel, ~1-2s with channel adapters.
+### Cause
 
-If slower:
-- Check database size (`~/.openfang/data/openfang.db`)
-- Reduce the number of enabled channels
-- Check network connectivity (MCP server connections happen at boot)
+The config usually stores env-var names, not secret values.
 
-### High CPU usage
+### Fix
 
-**Possible causes**:
-- WASM sandbox execution (fuel-limited, should self-terminate)
-- Multiple agents running simultaneously
-- Channel adapters reconnecting (exponential backoff)
+If config says:
 
----
-
-## FAQ
-
-### How do I switch the default LLM provider?
-
-Edit `~/.openfang/config.toml`:
 ```toml
-[default_model]
-provider = "groq"
-model = "llama-3.3-70b-versatile"
 api_key_env = "GROQ_API_KEY"
 ```
 
-### Can I use multiple providers at the same time?
+then the process environment or `~/.openfang/.env` must actually contain `GROQ_API_KEY`.
 
-Yes. Each agent can use a different provider via its manifest `[model]` section. The kernel creates a dedicated driver per unique provider configuration.
-
-### How do I add a new channel?
-
-1. Add the channel config to `~/.openfang/config.toml` under `[channels]`
-2. Set the required environment variables (tokens, secrets)
-3. Restart the daemon
-
-### How do I update OpenFang?
+Use:
 
 ```bash
-# From source
-cd openfang && git pull && cargo install --path crates/openfang-cli
-
-# Docker
-docker pull ghcr.io/RightNow-AI/openfang:latest
+openfang doctor
+openfang config show
 ```
 
-### Can agents talk to each other?
+to confirm both config and secret presence.
 
-Yes. Agents can use the `agent_send`, `agent_spawn`, `agent_find`, and `agent_list` tools to communicate. The orchestrator template is specifically designed for multi-agent delegation.
+## 14. Permission Errors Under `~/.openfang`
 
-### Is my data sent to the cloud?
+### Symptoms
 
-Only LLM API calls go to the provider's servers. All agent data, memory, sessions, and configuration are stored locally in SQLite (`~/.openfang/data/openfang.db`). The OFP wire protocol uses HMAC-SHA256 mutual authentication for P2P communication.
+- database cannot open
+- workspaces cannot be created
+- `daemon.json` cannot be written
 
-### How do I back up my data?
+### Fix
 
-Back up these files:
-- `~/.openfang/config.toml` (configuration)
-- `~/.openfang/data/openfang.db` (all agent data, memory, sessions)
-- `~/.openfang/skills/` (installed skills)
-
-### How do I reset everything?
+Verify that the runtime user owns the runtime home:
 
 ```bash
-rm -rf ~/.openfang
-openfang init  # Start fresh
+ls -la ~/.openfang
 ```
 
-### Can I run OpenFang without an internet connection?
+For server installs, also verify `/var/lib/openfang` ownership and the systemd `User=` setting.
 
-Yes, if you use a local LLM provider:
-- **Ollama**: `ollama serve` + `ollama pull llama3.2`
-- **vLLM**: Self-hosted model server
-- **LM Studio**: GUI-based local model runner
+## 15. Route Compiles but Endpoint Is Missing
 
-Set the provider in config:
-```toml
-[default_model]
-provider = "ollama"
-model = "llama3.2"
-```
+### Cause
 
-### What's the difference between OpenFang and OpenClaw?
+The handler exists, but the router was not updated.
 
-| Aspect | OpenFang | OpenClaw |
-|--------|----------|----------|
-| Language | Rust | Python |
-| Channels | 40 | 38 |
-| Skills | 60 | 57 |
-| Providers | 20 | 3 |
-| Security | 16 systems | Config-based |
-| Binary size | ~30 MB | ~200 MB |
-| Startup | <200 ms | ~3 s |
+### Fix
 
-OpenFang can import OpenClaw configs: `openfang migrate --from openclaw`
+For API changes, always verify both:
 
-### How do I report a bug or request a feature?
+- `crates/openfang-api/src/routes.rs`
+- `crates/openfang-api/src/server.rs`
 
-- Bugs: Open an issue on GitHub
-- Security: See [SECURITY.md](../SECURITY.md) for responsible disclosure
-- Features: Open a GitHub discussion or PR
+Then run a live daemon and hit the endpoint directly.
 
-### What are the system requirements?
+## 16. What to Inspect First
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| RAM | 128 MB | 512 MB |
-| Disk | 50 MB (binary) | 500 MB (with data) |
-| CPU | Any x86_64/ARM64 | 2+ cores |
-| OS | Linux, macOS, Windows | Any |
-| Rust | 1.75+ (build only) | Latest stable |
+| Area | File |
+| --- | --- |
+| Config schema | `crates/openfang-types/src/config.rs` |
+| Config loading and include behavior | `crates/openfang-kernel/src/config.rs` |
+| Config reload | `crates/openfang-kernel/src/config_reload.rs` |
+| Boot sequence | `crates/openfang-kernel/src/kernel.rs` |
+| Router assembly | `crates/openfang-api/src/server.rs` |
+| Runtime request handling | `crates/openfang-runtime/` |
+| Channel ingress | `crates/openfang-channels/` |
 
-### How do I enable debug logging for a specific crate?
+## 17. Escalation Rule
 
-```bash
-RUST_LOG=openfang_runtime=debug,openfang_channels=info openfang start
-```
-
-### Can I use OpenFang as a library?
-
-Yes. Each crate is independently usable:
-```toml
-[dependencies]
-openfang-runtime = { path = "crates/openfang-runtime" }
-openfang-memory = { path = "crates/openfang-memory" }
-```
-
-The `openfang-kernel` crate assembles everything, but you can use individual crates for custom integrations.
+If a problem crosses OpenFang and `projects/shipinbot/`, treat it as a contract issue, not a one-sided bug. Check both sides before changing schema, batch files, or runtime assumptions.
