@@ -2,44 +2,115 @@
   <img src="public/assets/openfang-logo.png" width="160" alt="OpenFang Logo" />
 </p>
 
-<h1 align="center">OpenFang</h1>
-<h3 align="center">The Agent Operating System</h3>
+<h1 align="center">OpenFang + shipinbot</h1>
+<h3 align="center">Autonomous Telegram Video Processing Workflow</h3>
 
 <p align="center">
-  Open-source Agent OS built in Rust. 137K LOC. 14 crates. 1,767+ tests. Zero clippy warnings.<br/>
-  <strong>One binary. Battle-tested. Agents that actually work for you.</strong>
+  Private fork integrating OpenFang Agent OS with shipinbot video processing agent.<br/>
+  <strong>Telegram → Structured Media Batches → Selective Video Download → AI Watermark Removal → Auto-Publish</strong>
 </p>
 
 <p align="center">
-  <a href="https://openfang.sh/docs">Documentation</a> &bull;
-  <a href="https://openfang.sh/docs/getting-started">Quick Start</a> &bull;
-  <a href="https://x.com/openfangg">Twitter / X</a>
+  <a href="PROJECTS.md">Project Structure</a> &bull;
+  <a href="TELEGRAM_MEDIA_BATCH_IMPLEMENTATION.md">Implementation Details</a> &bull;
+  <a href="SHIPINBOT_INTEGRATION_GUIDE.md">Integration Guide</a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
+  <img src="https://img.shields.io/badge/language-Rust%20%2B%20Python-orange?style=flat-square" alt="Rust + Python" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-0.3.30-green?style=flat-square" alt="v0.3.30" />
-  <img src="https://img.shields.io/badge/tests-1,767%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-1,747%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
-  <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
 </p>
 
 ---
 
-> **v0.3.30 — Security Hardening Release (March 2026)**
->
-> OpenFang is feature-complete but still pre-1.0. You may encounter rough edges or breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
+## 🎯 What This Does
+
+**Automated Video Processing Pipeline:**
+
+1. **User sends media to Telegram** (1 video + 9 images)
+2. **OpenFang receives and structures** the media group into a batch manifest
+3. **shipinfabu-hand agent processes**:
+   - Reads structured batch from inbox
+   - Asks user to select source video (if multiple)
+   - Downloads only the selected video (saves bandwidth)
+   - Removes watermarks using AI pipeline
+   - Publishes to target platforms
+4. **All automated** through OpenFang's agent system
+
+**Key Innovation**: Structured media batches instead of text degradation. OpenFang knows exactly what media exists, shipinbot downloads only what's needed.
+
+## What is This Repository?
+
+This is a **private fork** of OpenFang (open-source Agent OS) integrated with **shipinbot** (video processing agent) via Git submodule.
+
+### Two Projects, One Workflow
+
+**OpenFang Core** (`crates/*`) - Rust framework:
+- Telegram adapter with media group support
+- Structured batch manifest generation
+- Message routing to agents
+- Inbox manifest writing
+
+**shipinbot** (`projects/shipinbot/`) - Python video agent:
+- Reads Telegram batch manifests
+- Selective video download (only user-selected videos)
+- AI watermark removal pipeline
+- Multi-platform publishing
+
+### Architecture
+
+```
+Telegram Media Group (1 video + 9 images)
+    ↓
+OpenFang Channels Layer
+    ↓ (merges into structured batch)
+TelegramMediaBatch {
+    batch_key: "group_123_abc",
+    items: [
+        { kind: Video, status: NeedsProjectDownload, download_hint: {...} },
+        { kind: Image, status: Ready, local_path: "/tmp/img1.jpg" },
+        ...
+    ]
+}
+    ↓
+Bridge Layer (writes manifest)
+    ↓
+~/.openfang/workspaces/shipinfabu-hand/inbox/telegram/<batch_key>.json
+    ↓
+shipinfabu-hand Agent
+    ↓ (reads manifest)
+Python Bridge: collect-telegram-batch
+    ↓ (user selects video)
+Python Bridge: fetch-telegram-video --item-index 1
+    ↓ (downloads selected video only)
+Python Bridge: clean_publish_submit
+    ↓
+AI Watermark Removal → Publish
+```
+
+> **Note:** This repository includes the shipinbot video processing agent as a submodule at `projects/shipinbot/`. The integration demonstrates OpenFang's Telegram media handling and autonomous video workflow capabilities.
 
 ---
 
-## What is OpenFang?
+## Project Structure
 
-OpenFang is an **open-source Agent Operating System** — not a chatbot framework, not a Python wrapper around an LLM, not a "multi-agent orchestrator." It is a full operating system for autonomous agents, built from scratch in Rust.
+See [PROJECTS.md](PROJECTS.md) for detailed structure and submodule management.
 
-Traditional agent frameworks wait for you to type something. OpenFang runs **autonomous agents that work for you** — on schedules, 24/7, building knowledge graphs, monitoring targets, generating leads, managing your social media, and reporting results to your dashboard.
+**Key directories:**
+- `crates/openfang-channels/` - Telegram adapter and media batch handling
+- `crates/openfang-kernel/` - Agent orchestration and workflows
+- `projects/shipinbot/` - Video processing agent (Git submodule)
+- `docs/` - Documentation including Telegram integration guides
 
-The entire system compiles to a **single ~32MB binary**. One install, one command, your agents are live.
+**Key files:**
+- `crates/openfang-channels/src/telegram.rs` - Media group merging logic
+- `crates/openfang-channels/src/telegram_media_batch.rs` - Batch structure definitions
+- `projects/shipinbot/scripts/openfang_clean_publish_bridge.py` - Python CLI bridge
+- `projects/shipinbot/openfang-hand/shipinfabu/HAND.toml` - Agent manifest (1759 lines)
+
+---
 
 ```bash
 curl -fsSL https://openfang.sh/install | sh
@@ -480,6 +551,12 @@ openfang start
 ## Development
 
 ```bash
+# Clone with submodules
+git clone --recurse-submodules <repo-url>
+
+# Or if already cloned, initialize submodules
+git submodule update --init --recursive
+
 # Build the workspace
 cargo build --workspace --lib
 
@@ -491,6 +568,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 # Format
 cargo fmt --all -- --check
+
+# Update shipinbot submodule to latest
+git submodule update --remote projects/shipinbot
 ```
 
 ---
@@ -524,6 +604,7 @@ MIT — use it however you want.
 
 - [Website & Documentation](https://openfang.sh)
 - [Quick Start Guide](https://openfang.sh/docs/getting-started)
+- [Projects Structure](PROJECTS.md) - OpenFang + shipinbot integration guide
 - [GitHub](https://github.com/RightNow-AI/openfang)
 - [Discord](https://discord.gg/sSJqgNnq6X)
 - [Twitter / X](https://x.com/openfangg)

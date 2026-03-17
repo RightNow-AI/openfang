@@ -1,5 +1,75 @@
 # Telegram 大文件下载功能 - 部署指南
 
+## 媒体组处理（v0.4.4+）
+
+### 结构化媒体批次
+
+从 v0.4.4 开始，Telegram 媒体组（media group）会生成结构化的 `telegram_media_batch` metadata，而不是降级成文本链接。这使得下游 agent（如 `shipinfabu-hand`）可以：
+
+1. **精确了解批次内容**：知道有多少视频、多少图片、每个文件的大小和状态
+2. **选择性下载**：只下载需要的视频，而不是全部下载
+3. **业务决策**：根据批次结构决定是否继续、是否需要用户确认
+
+### `telegram_media_batch` 结构示例
+
+```json
+{
+  "batch_key": "group-123_456_789",
+  "chat_id": 456,
+  "message_id": 789,
+  "media_group_id": "group-123",
+  "caption": "用户提供的说明文字",
+  "items": [
+    {
+      "kind": "video",
+      "file_id": "BAACAgIAAxkBAAI...",
+      "file_size": 150000000,
+      "duration_seconds": 30,
+      "status": "needs_project_download",
+      "local_path": null,
+      "download_hint": "Video exceeds 100MB safe limit, needs project-side download"
+    },
+    {
+      "kind": "image",
+      "file_id": "AgACAgIAAxkBAAI...",
+      "file_size": 500000,
+      "status": "ready",
+      "local_path": "/tmp/openfang-telegram-downloads/photo_123.jpg",
+      "download_hint": null
+    }
+  ]
+}
+```
+
+### 媒体项状态
+
+- `ready`: 媒体已下载到本地，`local_path` 可用
+- `needs_project_download`: 媒体超过安全下载阈值，需要项目侧下载器处理
+- `skipped_safe_limit`: 媒体超过 Local Bot API 安全阈值（100MB），已跳过 `getFile` 调用
+- `download_failed`: 下载尝试失败
+
+### shipinfabu-hand 集成
+
+当 Telegram 媒体组发送给 `shipinfabu-hand` 时，bridge 层会自动将 `telegram_media_batch` 写入：
+
+```
+~/.openfang/workspaces/shipinfabu-hand/inbox/telegram/<batch_key>.json
+```
+
+`shipinfabu-hand` 可以：
+1. 读取 inbox manifest 获取完整批次信息
+2. 根据批次内容决定是否需要用户确认（多视频场景）
+3. 调用项目侧下载器（如 `openfang_clean_publish_bridge.py fetch-telegram-video`）下载选中的视频
+4. 只下载被选中的视频，避免浪费带宽和存储
+
+### 安全阈值
+
+- **Local Bot API 安全阈值**: 100MB
+  - 超过此阈值的文件不会触发 `getFile` 调用，避免 Local Bot API Server 重启
+  - 状态标记为 `skipped_safe_limit` 或 `needs_project_download`
+- **官方 Bot API 限制**: 20MB
+  - 使用官方 API 时，超过 20MB 的文件无法下载
+
 ## 快速开始
 
 ### 前提条件
@@ -22,6 +92,7 @@
 # 添加到 ~/.zshrc 或 ~/.bashrc
 export TELEGRAM_BOT_TOKEN="你的bot_token"
 export TELEGRAM_API_HASH="你的api_hash"
+export NVIDIA_INTEGRATE_API_KEY="你的nvidia_api_key"
 
 # 重新加载
 source ~/.zshrc
@@ -62,19 +133,29 @@ mkdir -p /tmp/openfang-telegram-downloads
 
 ### 启动服务
 
-#### 方式 1：前台运行（推荐用于测试）
+#### 方式 1：生产启动（推荐）
 
 ```bash
 cd /Users/xiaomo/Desktop/openfang-upstream-fork
-TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx target/release/openfang start
+scripts/start-telegram-production.sh
 ```
 
-#### 方式 2：后台运行
+这个脚本会做四件事：
+
+1. 检查 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_API_HASH`、`NVIDIA_INTEGRATE_API_KEY`
+2. 清理旧的 `openfang start` 和 `telegram-bot-api` 进程
+3. 启动 release 二进制并写入 `~/.openfang/logs/openfang.log`
+4. 等待 `/api/health` 通过后再返回成功
+
+#### 方式 2：前台运行（仅用于临时调试）
 
 ```bash
 cd /Users/xiaomo/Desktop/openfang-upstream-fork
-nohup target/release/openfang start > ~/.openfang/logs/openfang.log 2>&1 &
+TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx NVIDIA_INTEGRATE_API_KEY=xxx target/release/openfang start
 ```
+
+不要再使用裸 `nohup target/release/openfang start`。
+这种方式依赖当前 shell 是否已经注入全部环境变量，容易产生“能启动但模型/Telegram 不可用”的假成功。
 
 ### 验证部署
 

@@ -76,6 +76,18 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         Ok(result.response)
     }
 
+    async fn send_message_with_metadata(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        _metadata: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<String, String> {
+        // Kernel does not yet consume channel metadata in agent turns.
+        // Keep the metadata-aware bridge interface so metadata is available to
+        // bridge-level routing/wiring before entering the kernel.
+        self.send_message(agent_id, message).await
+    }
+
     async fn send_message_with_blocks(
         &self,
         agent_id: AgentId,
@@ -115,6 +127,17 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .iter()
             .map(|e| (e.id, e.name.clone()))
             .collect())
+    }
+
+    async fn get_agent_name_and_workspace(
+        &self,
+        agent_id: AgentId,
+    ) -> Result<Option<(String, Option<std::path::PathBuf>)>, String> {
+        Ok(self
+            .kernel
+            .registry
+            .get(agent_id)
+            .map(|entry| (entry.name, entry.manifest.workspace)))
     }
 
     async fn spawn_agent_by_name(&self, manifest_name: &str) -> Result<AgentId, String> {

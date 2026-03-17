@@ -1,10 +1,69 @@
 # OpenFang — Agent Instructions
 
-## Project Overview
-OpenFang is an open-source Agent Operating System written in Rust (14 crates).
-- Config: `~/.openfang/config.toml`
-- Default API: `http://127.0.0.1:4200`
-- CLI binary: `target/release/openfang.exe` (or `target/debug/openfang.exe`)
+## 🎯 What This Project Does
+
+This is a **private fork** of OpenFang (Agent OS) integrated with **shipinbot** (video processing agent). The main purpose:
+
+**Autonomous Telegram Video Processing Workflow:**
+1. User sends video + images to Telegram
+2. OpenFang receives media group, creates structured batch manifest
+3. shipinfabu-hand agent processes batch:
+   - Asks user to select source video (if multiple)
+   - Downloads selected video only (saves bandwidth)
+   - Removes watermarks using AI
+   - Publishes to target platforms
+4. All automated through OpenFang's agent system
+
+## Project Structure
+
+This repository contains **two integrated projects via Git submodule**:
+
+### 1. OpenFang Core (`crates/*`) - Rust Framework
+- **Purpose**: Agent Operating System, handles Telegram integration, message routing
+- **Key files**:
+  - `crates/openfang-channels/src/telegram.rs` - Telegram adapter with media group support
+  - `crates/openfang-channels/src/telegram_media_batch.rs` - Structured media batch types
+  - `crates/openfang-channels/src/bridge.rs` - Routes messages to agents, writes inbox manifests
+- **Config**: `~/.openfang/config.toml`
+- **API**: `http://127.0.0.1:4200`
+- **Binary**: `target/release/openfang.exe`
+
+### 2. shipinbot (`projects/shipinbot/`) - Python Video Agent
+- **Purpose**: Video watermark removal and publishing automation
+- **Location**: Git submodule pointing to `/Users/xiaomo/Desktop/shipinbot`
+- **Key files**:
+  - `projects/shipinbot/scripts/openfang_clean_publish_bridge.py` - Python CLI bridge (2733 lines)
+    - `collect-telegram-batch` - Reads manifest, stages media files
+    - `fetch-telegram-video` - Downloads user-selected video
+    - `clean_publish_submit` - Submits watermark removal job
+    - `clean_publish_poll` - Polls job status
+  - `projects/shipinbot/openfang-hand/shipinfabu/HAND.toml` - Agent manifest (1759 lines)
+  - `projects/shipinbot/openfang-hand/shipinfabu/README.md` - Agent documentation
+
+### Integration Flow
+
+```
+Telegram → OpenFang Channels → Bridge → shipinfabu-hand Agent
+                                  ↓
+                    Inbox Manifest: ~/.openfang/workspaces/shipinfabu-hand/inbox/telegram/<batch_key>.json
+                                  ↓
+                    Python Bridge: collect-telegram-batch → fetch-telegram-video → clean_publish_submit
+```
+
+## 🔄 Cross-Project Development
+
+When modifying Telegram media handling, **both codebases must stay synchronized**:
+
+### OpenFang Side (Rust)
+- `crates/openfang-channels/src/telegram.rs` - Media group merging logic
+- `crates/openfang-channels/src/telegram_media_batch.rs` - Batch structure definitions
+- `crates/openfang-channels/src/bridge.rs` - Inbox manifest writing
+
+### shipinbot Side (Python)
+- `projects/shipinbot/scripts/openfang_clean_publish_bridge.py` - Manifest parsing and video download
+- `projects/shipinbot/openfang-hand/shipinfabu/HAND.toml` - Agent prompt and tool definitions
+
+**Important**: The submodule at `projects/shipinbot/` is a **link** to the original repository at `/Users/xiaomo/Desktop/shipinbot`. Changes in either location affect the same Git repository.
 
 ## Build & Verify Workflow
 After every feature implementation, run ALL THREE checks:
@@ -114,6 +173,56 @@ taskkill //PID <pid> //F
 - Dashboard is Alpine.js SPA in `static/index_body.html` — new tabs need both HTML and JS data/methods
 - Config fields need: struct field + `#[serde(default)]` + Default impl entry + Serialize/Deserialize derives
 
+## Telegram Media Batch Architecture
+
+**Key Innovation**: Structured media batches instead of text degradation.
+
+### Data Flow
+1. **Telegram Adapter** (`telegram.rs:merge_media_group_updates`):
+   - Collects media group items (500ms buffer)
+   - Builds `TelegramMediaBatch` with structured metadata
+   - Marks large videos (>100MB) as `needs_project_download` to avoid Local Bot API restarts
+   - Writes batch to message metadata
+
+2. **Bridge Layer** (`bridge.rs:dispatch_message`):
+   - Detects `telegram_media_batch` in metadata
+   - If target agent is `shipinfabu-hand`, writes manifest to inbox:
+     `~/.openfang/workspaces/shipinfabu-hand/inbox/telegram/<batch_key>.json`
+   - Forwards short summary text to agent
+
+3. **shipinfabu-hand Agent** (Python):
+   - Reads inbox manifest
+   - Calls `collect-telegram-batch --manifest <path>` to stage ready media
+   - If multiple videos, asks user to select source
+   - Calls `fetch-telegram-video --item-index <N>` to download selected video
+   - Submits watermark removal job
+
+### Batch Structure
+```rust
+pub struct TelegramMediaBatch {
+    pub batch_key: String,           // Stable ID: "group_<chat_id>_<media_group_id>"
+    pub chat_id: i64,
+    pub message_id: i64,
+    pub media_group_id: String,
+    pub caption: Option<String>,
+    pub items: Vec<TelegramMediaItem>,
+}
+
+pub struct TelegramMediaItem {
+    pub kind: MediaItemKind,         // Image/Video/Document
+    pub file_id: String,
+    pub file_size: u64,
+    pub status: MediaItemStatus,     // Ready/NeedsProjectDownload/SkippedSafeLimit
+    pub local_path: Option<String>,  // If already downloaded
+    pub download_hint: Option<TelegramDownloadHint>,
+}
+```
+
+### Safety Thresholds
+- **Local Bot API**: Skip `getFile` for videos >100MB (prevents server restart)
+- **Official Bot API**: Skip for videos >20MB (hard limit)
+- Videos marked `needs_project_download` are downloaded by shipinbot only if user selects them
+
 ## Common Gotchas
 - `openfang.exe` may be locked if daemon is running — use `--lib` flag or kill daemon first
 - `PeerRegistry` is `Option<PeerRegistry>` on kernel but `Option<Arc<PeerRegistry>>` on `AppState` — wrap with `.as_ref().map(|r| Arc::new(r.clone()))`
@@ -121,3 +230,61 @@ taskkill //PID <pid> //F
 - `AgentLoopResult` field is `.response` not `.response_text`
 - CLI command to start daemon is `start` not `daemon`
 - On Windows: use `taskkill //PID <pid> //F` (double slashes in MSYS2/Git Bash)
+
+## Git Submodule Management
+
+**Important**: `projects/shipinbot/` is a Git submodule, not a copy.
+
+### How It Works
+- `projects/shipinbot/` links to `/Users/xiaomo/Desktop/shipinbot` (original repo)
+- Changes in either location affect the same Git repository
+- OpenFang repo only stores a pointer (commit hash), not the actual files
+
+### Common Operations
+
+**Update submodule to latest**:
+```bash
+cd projects/shipinbot
+git pull origin main
+cd ../..
+git add projects/shipinbot
+git commit -m "Update shipinbot submodule"
+```
+
+**Commit changes in submodule**:
+```bash
+cd projects/shipinbot
+git add <files>
+git commit -m "Update shipinbot code"
+git push origin main
+cd ../..
+git add projects/shipinbot
+git commit -m "Update submodule pointer"
+```
+
+**Clone this repo elsewhere**:
+```bash
+git clone --recurse-submodules <repo-url>
+# Or if already cloned:
+git submodule update --init --recursive
+```
+
+## Quick Reference: Key Files
+
+### OpenFang (Rust)
+- `crates/openfang-channels/src/telegram.rs:1076` - Video handling with safety thresholds
+- `crates/openfang-channels/src/telegram.rs:merge_media_group_updates` - Media group merging
+- `crates/openfang-channels/src/telegram_media_batch.rs` - Batch structure definitions
+- `crates/openfang-channels/src/bridge.rs:dispatch_message` - Inbox manifest writing
+
+### shipinbot (Python)
+- `projects/shipinbot/scripts/openfang_clean_publish_bridge.py:2487` - `_collect_telegram_batch`
+- `projects/shipinbot/scripts/openfang_clean_publish_bridge.py:2673` - `_fetch_telegram_video`
+- `projects/shipinbot/scripts/openfang_clean_publish_bridge.py:2633` - `_telegram_resolve_download_url`
+- `projects/shipinbot/openfang-hand/shipinfabu/HAND.toml` - Agent prompt and tools
+
+### Documentation
+- `TELEGRAM_MEDIA_BATCH_IMPLEMENTATION.md` - OpenFang implementation summary
+- `SHIPINBOT_INTEGRATION_GUIDE.md` - shipinbot integration guide
+- `PROJECTS.md` - Project structure and submodule management
+- `docs/telegram-deployment-guide.md` - Telegram setup guide

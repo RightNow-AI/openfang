@@ -17,6 +17,7 @@ pub mod signal;
 pub mod slack;
 pub mod teams;
 pub mod telegram;
+pub mod telegram_media_batch;
 pub mod twitch;
 pub mod types;
 pub mod whatsapp;

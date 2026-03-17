@@ -3,6 +3,9 @@
 //! Uses long-polling via `getUpdates` with exponential backoff on failures.
 //! No external Telegram crate — just `reqwest` for full control over error handling.
 
+use crate::telegram_media_batch::{
+    MediaItemKind, MediaItemStatus, TelegramDownloadHint, TelegramMediaBatch, TelegramMediaItem,
+};
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
     LifecycleReaction,
@@ -29,6 +32,62 @@ const LONG_POLL_TIMEOUT: u64 = 30;
 
 /// Default Telegram Bot API base URL.
 const DEFAULT_API_URL: &str = "https://api.telegram.org";
+/// Safety cap for `getFile` when using Telegram Local Bot API.
+///
+/// In real deployments we observed `telegram-bot-api` restart on very large
+/// `getFile` requests. Files above this size are surfaced as metadata only so
+/// the bridge stays alive instead of repeatedly crashing the local server.
+const LOCAL_API_SAFE_GETFILE_LIMIT: u64 = 100 * 1024 * 1024;
+
+fn build_get_updates_query(offset: Option<i64>) -> Vec<(&'static str, String)> {
+    let mut query = vec![
+        ("timeout", LONG_POLL_TIMEOUT.to_string()),
+        (
+            "allowed_updates",
+            serde_json::json!(["message", "edited_message"]).to_string(),
+        ),
+    ];
+    if let Some(off) = offset {
+        query.push(("offset", off.to_string()));
+    }
+    query
+}
+
+fn file_size_mb(file_size: u64) -> u64 {
+    file_size / 1024 / 1024
+}
+
+fn should_skip_get_file(file_size: u64, use_local_api: bool) -> bool {
+    use_local_api && file_size > LOCAL_API_SAFE_GETFILE_LIMIT
+}
+
+fn get_file_safety_limit_mb() -> u64 {
+    file_size_mb(LOCAL_API_SAFE_GETFILE_LIMIT)
+}
+
+fn prepend_caption(caption: Option<&str>, body: String) -> String {
+    match caption.map(str::trim).filter(|caption| !caption.is_empty()) {
+        Some(caption) => format!("{caption}\n\n{body}"),
+        None => body,
+    }
+}
+
+fn build_download_hint(
+    file_id: &str,
+    api_base_url: &str,
+    use_local_api: bool,
+    download_url: Option<String>,
+    reason: Option<String>,
+) -> TelegramDownloadHint {
+    TelegramDownloadHint {
+        strategy: "telegram_bot_api_file".to_string(),
+        file_id: file_id.to_string(),
+        api_base_url: api_base_url.to_string(),
+        use_local_api,
+        download_url,
+        reason,
+    }
+}
 
 /// Progress information for file downloads.
 #[derive(Debug, Clone)]
@@ -609,6 +668,8 @@ impl ChannelAdapter for TelegramAdapter {
                 HashMap::new();
             const MEDIA_GROUP_WAIT_MS: u64 = 500; // Wait 500ms for all media in a group
 
+            info!("Telegram polling loop started");
+
             loop {
                 // Check shutdown
                 if *shutdown.borrow() {
@@ -649,6 +710,9 @@ impl ChannelAdapter for TelegramAdapter {
                                 merged_msg.content
                             );
                             if tx.send(merged_msg).await.is_err() {
+                                warn!(
+                                    "Telegram bridge consumer dropped while sending merged media group; stopping polling loop"
+                                );
                                 return;
                             }
                         }
@@ -657,13 +721,7 @@ impl ChannelAdapter for TelegramAdapter {
 
                 // Build getUpdates request
                 let url = format!("{}/bot{}/getUpdates", api_base_url, token.as_str());
-                let mut params = serde_json::json!({
-                    "timeout": LONG_POLL_TIMEOUT,
-                    "allowed_updates": ["message", "edited_message"],
-                });
-                if let Some(off) = offset {
-                    params["offset"] = serde_json::json!(off);
-                }
+                let query = build_get_updates_query(offset);
 
                 // Make the request with a timeout slightly longer than the long-poll timeout
                 let request_timeout = Duration::from_secs(LONG_POLL_TIMEOUT + 10);
@@ -671,7 +729,7 @@ impl ChannelAdapter for TelegramAdapter {
                     res = async {
                         client
                             .get(&url)
-                            .json(&params)
+                            .query(&query)
                             .timeout(request_timeout)
                             .send()
                             .await
@@ -748,6 +806,14 @@ impl ChannelAdapter for TelegramAdapter {
                     }
                 };
 
+                if !updates.is_empty() {
+                    info!(
+                        count = updates.len(),
+                        next_offset = offset,
+                        "Telegram getUpdates returned messages"
+                    );
+                }
+
                 for update in updates {
                     // Track offset for dedup
                     if let Some(update_id) = update["update_id"].as_i64() {
@@ -801,6 +867,9 @@ impl ChannelAdapter for TelegramAdapter {
 
                     if tx.send(msg).await.is_err() {
                         // Receiver dropped — bridge is shutting down
+                        warn!(
+                            "Telegram bridge consumer dropped while sending message; stopping polling loop"
+                        );
                         return;
                     }
                 }
@@ -901,7 +970,7 @@ async fn merge_media_group_updates(
     )
     .await?;
 
-    // Collect all media URLs and captions from the group
+    // Collect all media items with structured metadata
     let mut media_items = Vec::new();
     let mut combined_caption = String::new();
     let mut messages = Vec::with_capacity(updates.len());
@@ -930,16 +999,45 @@ async fn merge_media_group_updates(
     for message in &messages {
         // Extract video
         if let Some(video) = message.get("video") {
-            let file_id = video.get("file_id")?.as_str()?;
+            let file_id = video.get("file_id")?.as_str()?.to_string();
             let file_size = video.get("file_size").and_then(|v| v.as_u64()).unwrap_or(0);
             let duration = video.get("duration").and_then(|v| v.as_u64()).unwrap_or(0);
             let chat_id = message.get("chat")?.get("id")?.as_i64()?;
             let message_id = message.get("message_id")?.as_i64()?;
 
+            if should_skip_get_file(file_size, use_local_api) {
+                info!(
+                    "Video {} ({} MB) exceeds safe getFile limit ({} MB), skipping download to prevent Local Bot API restarts",
+                    file_id,
+                    file_size_mb(file_size),
+                    get_file_safety_limit_mb()
+                );
+                media_items.push(TelegramMediaItem {
+                    kind: MediaItemKind::Video,
+                    file_id: file_id.clone(),
+                    original_name: None,
+                    file_size,
+                    duration_seconds: Some(duration),
+                    status: MediaItemStatus::SkippedSafeLimit,
+                    local_path: None,
+                    download_hint: Some(build_download_hint(
+                        &file_id,
+                        api_base_url,
+                        use_local_api,
+                        None,
+                        Some(format!(
+                            "video exceeds {}MB safe getFile limit",
+                            get_file_safety_limit_mb()
+                        )),
+                    )),
+                });
+                continue;
+            }
+
             match telegram_get_file_info(
                 token,
                 client,
-                file_id,
+                &file_id,
                 api_base_url,
                 use_local_api,
                 file_size,
@@ -960,50 +1058,89 @@ async fn merge_media_group_updates(
                         .await
                         {
                             Ok(local_path) => {
-                                media_items.push(format!(
-                                    "[Video: file://{} ({}s, {} bytes)]",
-                                    local_path.display(),
-                                    duration,
-                                    file_size
-                                ));
+                                media_items.push(TelegramMediaItem {
+                                    kind: MediaItemKind::Video,
+                                    file_id: file_id.clone(),
+                                    original_name: None,
+                                    file_size,
+                                    duration_seconds: Some(duration),
+                                    status: MediaItemStatus::Ready,
+                                    local_path: Some(local_path.display().to_string()),
+                                    download_hint: None,
+                                });
                             }
                             Err(e) => {
                                 warn!("Failed to download video {}: {}", file_id, e);
-                                if file_size > 20 * 1024 * 1024 {
-                                    media_items.push(format!(
-                                        "[视频 ({} MB) - 下载失败]",
-                                        file_size / 1024 / 1024
-                                    ));
-                                } else {
-                                    media_items.push(format!(
-                                        "[Video: {} ({}s, {} bytes)]",
-                                        file_info.download_url, duration, file_size
-                                    ));
-                                }
+                                media_items.push(TelegramMediaItem {
+                                    kind: MediaItemKind::Video,
+                                    file_id: file_id.clone(),
+                                    original_name: None,
+                                    file_size,
+                                    duration_seconds: Some(duration),
+                                    status: MediaItemStatus::DownloadFailed,
+                                    local_path: None,
+                                    download_hint: Some(build_download_hint(
+                                        &file_id,
+                                        api_base_url,
+                                        use_local_api,
+                                        Some(file_info.download_url.clone()),
+                                        Some(format!("bridge download failed: {e}")),
+                                    )),
+                                });
                             }
                         }
                     } else {
-                        if file_size > max_download_size {
+                        let reason = if file_size > max_download_size {
                             info!(
                                 "Video {} ({} bytes) exceeds max download size, returning URL only",
                                 file_id, file_size
                             );
-                        }
-                        media_items.push(format!(
-                            "[Video: {} ({}s, {} bytes)]",
-                            file_info.download_url, duration, file_size
-                        ));
+                            format!(
+                                "video exceeds bridge max_download_size ({} bytes)",
+                                max_download_size
+                            )
+                        } else {
+                            "bridge download disabled".to_string()
+                        };
+                        media_items.push(TelegramMediaItem {
+                            kind: MediaItemKind::Video,
+                            file_id: file_id.clone(),
+                            original_name: None,
+                            file_size,
+                            duration_seconds: Some(duration),
+                            status: MediaItemStatus::NeedsProjectDownload,
+                            local_path: None,
+                            download_hint: Some(build_download_hint(
+                                &file_id,
+                                api_base_url,
+                                use_local_api,
+                                Some(file_info.download_url),
+                                Some(reason),
+                            )),
+                        });
                     }
                 }
                 None => {
-                    warn!(
-                        "Failed to get video info for file_id: {} (size: {} bytes)",
+                    info!(
+                        "Skipped video file_id: {} (size: {} bytes) - likely exceeds safe limit",
                         file_id, file_size
                     );
-                    media_items.push(format!(
-                        "[视频 ({} MB) - 下载失败]",
-                        file_size / 1024 / 1024
-                    ));
+                    media_items.push(TelegramMediaItem {
+                        kind: MediaItemKind::Video,
+                        file_id: file_id.clone(),
+                        original_name: None,
+                        file_size,
+                        duration_seconds: Some(duration),
+                        status: MediaItemStatus::DownloadFailed,
+                        local_path: None,
+                        download_hint: Some(build_download_hint(
+                            &file_id,
+                            api_base_url,
+                            use_local_api,
+                            None,
+                            Some("failed to resolve file path via getFile".to_string()),
+                        )),
+                    });
                 }
             }
 
@@ -1012,11 +1149,11 @@ async fn merge_media_group_updates(
 
         // Extract document (videos can also be sent as documents)
         if let Some(document) = message.get("document") {
-            let file_id = document.get("file_id")?.as_str()?;
+            let file_id = document.get("file_id")?.as_str()?.to_string();
             let filename = document
                 .get("file_name")
                 .and_then(|v| v.as_str())
-                .unwrap_or("file");
+                .map(String::from);
             let file_size = document
                 .get("file_size")
                 .and_then(|v| v.as_u64())
@@ -1030,11 +1167,45 @@ async fn merge_media_group_updates(
 
             // Check if this is a video document
             let is_video = mime_type.starts_with("video/");
+            let kind = if is_video {
+                MediaItemKind::Video
+            } else {
+                MediaItemKind::Document
+            };
+
+            if should_skip_get_file(file_size, use_local_api) {
+                info!(
+                    "Document {} ({} MB) exceeds safe getFile limit ({} MB), skipping download to prevent Local Bot API restarts",
+                    file_id,
+                    file_size_mb(file_size),
+                    get_file_safety_limit_mb()
+                );
+                media_items.push(TelegramMediaItem {
+                    kind,
+                    file_id: file_id.clone(),
+                    original_name: filename,
+                    file_size,
+                    duration_seconds: None,
+                    status: MediaItemStatus::SkippedSafeLimit,
+                    local_path: None,
+                    download_hint: Some(build_download_hint(
+                        &file_id,
+                        api_base_url,
+                        use_local_api,
+                        None,
+                        Some(format!(
+                            "document exceeds {}MB safe getFile limit",
+                            get_file_safety_limit_mb()
+                        )),
+                    )),
+                });
+                continue;
+            }
 
             match telegram_get_file_info(
                 token,
                 client,
-                file_id,
+                &file_id,
                 api_base_url,
                 use_local_api,
                 file_size,
@@ -1055,79 +1226,89 @@ async fn merge_media_group_updates(
                         .await
                         {
                             Ok(local_path) => {
-                                if is_video {
-                                    media_items.push(format!(
-                                        "[视频（文档形式）: {} - file://{}]",
-                                        filename,
-                                        local_path.display()
-                                    ));
-                                } else {
-                                    media_items.push(format!(
-                                        "[文件 {}: file://{}]",
-                                        filename,
-                                        local_path.display()
-                                    ));
-                                }
+                                media_items.push(TelegramMediaItem {
+                                    kind: kind.clone(),
+                                    file_id: file_id.clone(),
+                                    original_name: filename,
+                                    file_size,
+                                    duration_seconds: None,
+                                    status: MediaItemStatus::Ready,
+                                    local_path: Some(local_path.display().to_string()),
+                                    download_hint: None,
+                                });
                             }
                             Err(e) => {
                                 warn!("Failed to download document {}: {}", file_id, e);
-                                if is_video {
-                                    if file_size > 20 * 1024 * 1024 {
-                                        media_items.push(format!(
-                                            "[视频 {} ({} MB) - 下载失败]",
-                                            filename,
-                                            file_size / 1024 / 1024
-                                        ));
-                                    } else {
-                                        media_items.push(format!(
-                                            "[视频（文档形式）: {} - {}]",
-                                            filename, file_info.download_url
-                                        ));
-                                    }
-                                } else {
-                                    media_items.push(format!(
-                                        "[文件 {}: {}]",
-                                        filename, file_info.download_url
-                                    ));
-                                }
+                                media_items.push(TelegramMediaItem {
+                                    kind: kind.clone(),
+                                    file_id: file_id.clone(),
+                                    original_name: filename,
+                                    file_size,
+                                    duration_seconds: None,
+                                    status: MediaItemStatus::DownloadFailed,
+                                    local_path: None,
+                                    download_hint: Some(build_download_hint(
+                                        &file_id,
+                                        api_base_url,
+                                        use_local_api,
+                                        Some(file_info.download_url.clone()),
+                                        Some(format!("bridge download failed: {e}")),
+                                    )),
+                                });
                             }
                         }
                     } else {
-                        if file_size > max_download_size {
+                        let reason = if file_size > max_download_size {
                             info!(
                                 "Document {} ({} bytes) exceeds max download size, returning URL only",
                                 file_id, file_size
                             );
-                        }
-                        if is_video {
-                            media_items.push(format!(
-                                "[视频（文档形式）: {} - {}]",
-                                filename, file_info.download_url
-                            ));
+                            format!(
+                                "document exceeds bridge max_download_size ({} bytes)",
+                                max_download_size
+                            )
                         } else {
-                            media_items
-                                .push(format!("[文件 {}: {}]", filename, file_info.download_url));
-                        }
+                            "bridge download disabled".to_string()
+                        };
+                        media_items.push(TelegramMediaItem {
+                            kind: kind.clone(),
+                            file_id: file_id.clone(),
+                            original_name: filename,
+                            file_size,
+                            duration_seconds: None,
+                            status: MediaItemStatus::NeedsProjectDownload,
+                            local_path: None,
+                            download_hint: Some(build_download_hint(
+                                &file_id,
+                                api_base_url,
+                                use_local_api,
+                                Some(file_info.download_url),
+                                Some(reason),
+                            )),
+                        });
                     }
                 }
                 None => {
-                    warn!(
-                        "Failed to get document info for file_id: {} (size: {} bytes, mime: {})",
+                    info!(
+                        "Skipped document file_id: {} (size: {} bytes, mime: {}) - likely exceeds safe limit",
                         file_id, file_size, mime_type
                     );
-                    if is_video {
-                        media_items.push(format!(
-                            "[视频 {} ({} MB) - 下载失败]",
-                            filename,
-                            file_size / 1024 / 1024
-                        ));
-                    } else {
-                        media_items.push(format!(
-                            "[文件 {} 下载失败 ({} MB)]",
-                            filename,
-                            file_size / 1024 / 1024
-                        ));
-                    }
+                    media_items.push(TelegramMediaItem {
+                        kind,
+                        file_id: file_id.clone(),
+                        original_name: filename,
+                        file_size,
+                        duration_seconds: None,
+                        status: MediaItemStatus::DownloadFailed,
+                        local_path: None,
+                        download_hint: Some(build_download_hint(
+                            &file_id,
+                            api_base_url,
+                            use_local_api,
+                            None,
+                            Some("failed to resolve file path via getFile".to_string()),
+                        )),
+                    });
                 }
             }
 
@@ -1136,49 +1317,165 @@ async fn merge_media_group_updates(
 
         // Extract photo
         if let Some(photos) = message["photo"].as_array() {
-            let file_id = photos.last()?.get("file_id")?.as_str()?;
+            let file_id = photos.last()?.get("file_id")?.as_str()?.to_string();
             let file_size = photos
                 .last()?
                 .get("file_size")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            match telegram_get_file_url(
+            let chat_id = message.get("chat")?.get("id")?.as_i64()?;
+            let message_id = message.get("message_id")?.as_i64()?;
+            match telegram_get_file_info(
                 token,
                 client,
-                file_id,
+                &file_id,
                 api_base_url,
                 use_local_api,
                 file_size,
             )
             .await
             {
-                Some(url) => media_items.push(format!("[Photo: {}]", url)),
+                Some(file_info) => {
+                    if download_enabled && file_size <= max_download_size {
+                        match download_file(
+                            client,
+                            &file_info,
+                            download_dir,
+                            progress_callback,
+                            chat_id,
+                            Some(message_id),
+                        )
+                        .await
+                        {
+                            Ok(local_path) => {
+                                media_items.push(TelegramMediaItem {
+                                    kind: MediaItemKind::Image,
+                                    file_id: file_id.clone(),
+                                    original_name: None,
+                                    file_size,
+                                    duration_seconds: None,
+                                    status: MediaItemStatus::Ready,
+                                    local_path: Some(local_path.display().to_string()),
+                                    download_hint: None,
+                                });
+                            }
+                            Err(e) => {
+                                warn!("Failed to download photo {}: {}", file_id, e);
+                                media_items.push(TelegramMediaItem {
+                                    kind: MediaItemKind::Image,
+                                    file_id: file_id.clone(),
+                                    original_name: None,
+                                    file_size,
+                                    duration_seconds: None,
+                                    status: MediaItemStatus::DownloadFailed,
+                                    local_path: None,
+                                    download_hint: Some(build_download_hint(
+                                        &file_id,
+                                        api_base_url,
+                                        use_local_api,
+                                        Some(file_info.download_url),
+                                        Some(format!("bridge download failed: {e}")),
+                                    )),
+                                });
+                            }
+                        }
+                    } else {
+                        media_items.push(TelegramMediaItem {
+                            kind: MediaItemKind::Image,
+                            file_id: file_id.clone(),
+                            original_name: None,
+                            file_size,
+                            duration_seconds: None,
+                            status: MediaItemStatus::NeedsProjectDownload,
+                            local_path: None,
+                            download_hint: Some(build_download_hint(
+                                &file_id,
+                                api_base_url,
+                                use_local_api,
+                                Some(file_info.download_url),
+                                Some(if file_size > max_download_size {
+                                    format!(
+                                        "image exceeds bridge max_download_size ({} bytes)",
+                                        max_download_size
+                                    )
+                                } else {
+                                    "bridge download disabled".to_string()
+                                }),
+                            )),
+                        });
+                    }
+                }
                 None => {
                     warn!("Failed to get photo URL for file_id: {}", file_id);
-                    media_items.push("[图片下载失败]".to_string());
+                    media_items.push(TelegramMediaItem {
+                        kind: MediaItemKind::Image,
+                        file_id: file_id.clone(),
+                        original_name: None,
+                        file_size,
+                        duration_seconds: None,
+                        status: MediaItemStatus::DownloadFailed,
+                        local_path: None,
+                        download_hint: Some(build_download_hint(
+                            &file_id,
+                            api_base_url,
+                            use_local_api,
+                            None,
+                            Some("failed to resolve file path via getFile".to_string()),
+                        )),
+                    });
                 }
             }
         }
     }
 
-    // Build combined content
-    let content_text = if combined_caption.is_empty() {
-        format!(
-            "Media group ({} items):\n{}",
-            media_items.len(),
-            media_items.join("\n")
-        )
-    } else {
-        format!(
-            "{}\n\nMedia group ({} items):\n{}",
-            combined_caption,
-            media_items.len(),
-            media_items.join("\n")
-        )
+    // Build TelegramMediaBatch structure
+    let chat_id = updates[0]
+        .get("message")
+        .or_else(|| updates[0].get("edited_message"))?
+        .get("chat")?
+        .get("id")?
+        .as_i64()?;
+
+    let message_id = updates[0]
+        .get("message")
+        .or_else(|| updates[0].get("edited_message"))?
+        .get("message_id")?
+        .as_i64()?;
+
+    let media_group_id = updates[0]
+        .get("message")
+        .or_else(|| updates[0].get("edited_message"))?
+        .get("media_group_id")?
+        .as_str()?
+        .to_string();
+    let batch_key = TelegramMediaBatch::stable_batch_key(chat_id, &media_group_id);
+
+    let batch = TelegramMediaBatch {
+        batch_key: batch_key.clone(),
+        chat_id,
+        message_id,
+        media_group_id,
+        caption: if combined_caption.is_empty() {
+            None
+        } else {
+            Some(combined_caption)
+        },
+        items: media_items,
     };
 
+    // Generate short summary text
+    let summary_text = batch.summary();
+
+    // Serialize batch to metadata
+    let mut metadata = first_msg.metadata.clone();
+    metadata.insert(
+        "telegram_media_batch".to_string(),
+        serde_json::to_value(&batch).ok()?,
+    );
+
     Some(ChannelMessage {
-        content: ChannelContent::Text(content_text),
+        content: ChannelContent::Text(summary_text),
+        metadata,
         ..first_msg
     })
 }
@@ -1188,7 +1485,20 @@ async fn merge_media_group_updates(
 struct FileInfo {
     file_id: String,
     file_size: u64,
+    file_path: String,
     download_url: String,
+}
+
+fn infer_download_extension(file_path: &str) -> String {
+    Path::new(file_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| match ext.to_ascii_lowercase().as_str() {
+            "jpeg" => "jpg".to_string(),
+            other => other.to_string(),
+        })
+        .unwrap_or_else(|| "dat".to_string())
 }
 
 /// Resolve a Telegram file_id to file information via the Bot API.
@@ -1216,25 +1526,71 @@ async fn telegram_get_file_info(
     }
 
     let url = format!("{api_base_url}/bot{token}/getFile");
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({"file_id": file_id}))
-        .send()
-        .await
-        .ok()?;
-    let body: serde_json::Value = resp.json().await.ok()?;
-    if body["ok"].as_bool() != Some(true) {
-        return None;
-    }
-    let file_path = body["result"]["file_path"].as_str()?;
-    let file_size = body["result"]["file_size"].as_u64().unwrap_or(0);
-    let download_url = format!("{api_base_url}/file/bot{token}/{file_path}");
+    let attempts = if use_local_api { 3 } else { 1 };
 
-    Some(FileInfo {
-        file_id: file_id.to_string(),
-        file_size,
-        download_url,
-    })
+    for attempt in 1..=attempts {
+        let resp = match client
+            .post(&url)
+            .json(&serde_json::json!({"file_id": file_id}))
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                if attempt < attempts {
+                    warn!(
+                        "Telegram getFile transport error for {} on attempt {}/{}: {}",
+                        file_id, attempt, attempts, err
+                    );
+                    tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+                    continue;
+                }
+                return None;
+            }
+        };
+
+        let status = resp.status();
+        let body: serde_json::Value = match resp.json().await {
+            Ok(body) => body,
+            Err(err) => {
+                if attempt < attempts {
+                    warn!(
+                        "Telegram getFile parse error for {} on attempt {}/{}: {}",
+                        file_id, attempt, attempts, err
+                    );
+                    tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+                    continue;
+                }
+                return None;
+            }
+        };
+
+        if !status.is_success() || body["ok"].as_bool() != Some(true) {
+            let description = body["description"].as_str().unwrap_or("unknown error");
+            if use_local_api && attempt < attempts {
+                warn!(
+                    "Telegram getFile failed for {} on attempt {}/{} (status {}): {}",
+                    file_id, attempt, attempts, status, description
+                );
+                tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+                continue;
+            }
+            return None;
+        }
+
+        let file_path = body["result"]["file_path"].as_str()?.to_string();
+        let file_size = body["result"]["file_size"].as_u64().unwrap_or(0);
+        let download_url = format!("{api_base_url}/file/bot{token}/{file_path}");
+
+        return Some(FileInfo {
+            file_id: file_id.to_string(),
+            file_size,
+            file_path,
+            download_url,
+        });
+    }
+
+    None
 }
 
 /// Download a file from Telegram to local disk with progress reporting.
@@ -1250,10 +1606,12 @@ async fn download_file(
     tokio::fs::create_dir_all(dest_dir).await?;
 
     // Generate unique filename
+    let extension = infer_download_extension(&file_info.file_path);
     let filename = format!(
-        "{}_{}.dat",
+        "{}_{}.{}",
         file_info.file_id,
-        chrono::Utc::now().timestamp_millis()
+        chrono::Utc::now().timestamp_millis(),
+        extension
     );
     let dest_path = dest_dir.join(&filename);
 
@@ -1443,34 +1801,6 @@ async fn parse_telegram_update(
             .and_then(|p| p["file_size"].as_u64())
             .unwrap_or(0);
         let caption = message["caption"].as_str().map(String::from);
-        match telegram_get_file_url(
-            token,
-            client,
-            file_id,
-            api_base_url,
-            use_local_api,
-            file_size,
-        )
-        .await
-        {
-            Some(url) => ChannelContent::Image { url, caption },
-            None => ChannelContent::Text(format!(
-                "[收到图片{}]",
-                caption
-                    .as_deref()
-                    .map(|c| format!(": {c}"))
-                    .unwrap_or_default()
-            )),
-        }
-    } else if message.get("document").is_some() {
-        let file_id = message["document"]["file_id"].as_str().unwrap_or("");
-        let filename = message["document"]["file_name"]
-            .as_str()
-            .unwrap_or("document")
-            .to_string();
-        let file_size = message["document"]["file_size"].as_u64().unwrap_or(0);
-
-        // Try to get file info first
         match telegram_get_file_info(
             token,
             client,
@@ -1481,6 +1811,162 @@ async fn parse_telegram_update(
         )
         .await
         {
+            Some(file_info) => {
+                if download_enabled && file_size <= max_download_size {
+                    match download_file(
+                        client,
+                        &file_info,
+                        download_dir,
+                        progress_callback,
+                        chat_id,
+                        Some(message_id),
+                    )
+                    .await
+                    {
+                        Ok(local_path) => ChannelContent::Image {
+                            url: format!("file://{}", local_path.display()),
+                            caption,
+                        },
+                        Err(e) => {
+                            warn!("Failed to download photo {}: {}", file_id, e);
+                            ChannelContent::Image {
+                                url: file_info.download_url,
+                                caption,
+                            }
+                        }
+                    }
+                } else {
+                    ChannelContent::Image {
+                        url: file_info.download_url,
+                        caption,
+                    }
+                }
+            }
+            None => ChannelContent::Text(format!(
+                "[收到图片{}]",
+                caption
+                    .as_deref()
+                    .map(|c| format!(": {c}"))
+                    .unwrap_or_default()
+            )),
+        }
+    } else if message.get("video").is_some() {
+        let file_id = message["video"]["file_id"].as_str().unwrap_or("");
+        let file_size = message["video"]["file_size"].as_u64().unwrap_or(0);
+        let duration = message["video"]["duration"].as_u64().unwrap_or(0);
+        let caption = message["caption"].as_str();
+        let fallback_text = || {
+            prepend_caption(
+                caption,
+                format!(
+                    "[视频 ({} MB, {}s) - 文件过大，已跳过下载]",
+                    file_size_mb(file_size),
+                    duration
+                ),
+            )
+        };
+
+        if should_skip_get_file(file_size, use_local_api) {
+            info!(
+                "Video {} ({} MB) exceeds safe getFile limit ({} MB), skipping to prevent Local Bot API restarts",
+                file_id,
+                file_size_mb(file_size),
+                get_file_safety_limit_mb()
+            );
+            ChannelContent::Text(fallback_text())
+        } else {
+            match telegram_get_file_info(
+                token,
+                client,
+                file_id,
+                api_base_url,
+                use_local_api,
+                file_size,
+            )
+            .await
+            {
+                Some(file_info) => {
+                    if download_enabled && file_size <= max_download_size {
+                        match download_file(
+                            client,
+                            &file_info,
+                            download_dir,
+                            progress_callback,
+                            chat_id,
+                            Some(message_id),
+                        )
+                        .await
+                        {
+                            Ok(local_path) => {
+                                let body = format!(
+                                    "[Video: file://{} ({}s, {} bytes)]",
+                                    local_path.display(),
+                                    duration,
+                                    file_size
+                                );
+                                ChannelContent::Text(prepend_caption(caption, body))
+                            }
+                            Err(e) => {
+                                warn!("Failed to download video {}: {}", file_id, e);
+                                let body = format!(
+                                    "[Video: {} ({}s, {} bytes)]",
+                                    file_info.download_url, duration, file_size
+                                );
+                                ChannelContent::Text(prepend_caption(caption, body))
+                            }
+                        }
+                    } else {
+                        if file_size > max_download_size {
+                            info!(
+                                "Video {} ({} bytes) exceeds max download size ({} bytes), returning metadata only",
+                                file_id, file_size, max_download_size
+                            );
+                        }
+                        let body = format!(
+                            "[Video: {} ({}s, {} bytes)]",
+                            file_info.download_url, duration, file_size
+                        );
+                        ChannelContent::Text(prepend_caption(caption, body))
+                    }
+                }
+                None => ChannelContent::Text(prepend_caption(
+                    caption,
+                    format!("[收到视频，时长 {duration}s，大小 {} MB]", file_size_mb(file_size)),
+                )),
+            }
+        }
+    } else if message.get("document").is_some() {
+        let file_id = message["document"]["file_id"].as_str().unwrap_or("");
+        let filename = message["document"]["file_name"]
+            .as_str()
+            .unwrap_or("document")
+            .to_string();
+        let file_size = message["document"]["file_size"].as_u64().unwrap_or(0);
+
+        if should_skip_get_file(file_size, use_local_api) {
+            info!(
+                "Document {} ({} MB) exceeds safe getFile limit ({} MB), skipping to prevent Local Bot API restarts",
+                file_id,
+                file_size_mb(file_size),
+                get_file_safety_limit_mb()
+            );
+            ChannelContent::Text(format!(
+                "[文件 {} ({} MB) - 文件过大，已跳过下载]",
+                filename,
+                file_size_mb(file_size)
+            ))
+        } else {
+            // Try to get file info first
+            match telegram_get_file_info(
+                token,
+                client,
+                file_id,
+                api_base_url,
+                use_local_api,
+                file_size,
+            )
+            .await
+            {
             Some(file_info) => {
                 // Check if download is enabled and file size is within limit
                 if download_enabled && file_size <= max_download_size {
@@ -1526,6 +2012,7 @@ async fn parse_telegram_update(
                 }
             }
             None => ChannelContent::Text(format!("[收到文档: {filename}]")),
+            }
         }
     } else if message.get("voice").is_some() {
         let file_id = message["voice"]["file_id"].as_str().unwrap_or("");
@@ -1763,6 +2250,27 @@ mod tests {
         api_base_url: &str,
         bot_username: Option<&str>,
     ) -> Option<ChannelMessage> {
+        parse_telegram_update_test_with_options(
+            update,
+            allowed_users,
+            token,
+            client,
+            api_base_url,
+            bot_username,
+            false,
+        )
+        .await
+    }
+
+    async fn parse_telegram_update_test_with_options(
+        update: &serde_json::Value,
+        allowed_users: &[String],
+        token: &str,
+        client: &reqwest::Client,
+        api_base_url: &str,
+        bot_username: Option<&str>,
+        use_local_api: bool,
+    ) -> Option<ChannelMessage> {
         let temp_dir = std::env::temp_dir();
         parse_telegram_update(
             update,
@@ -1775,7 +2283,7 @@ mod tests {
             &temp_dir,
             2 * 1024 * 1024 * 1024, // 2GB max
             None,                   // no progress callback
-            false,                  // use_local_api
+            use_local_api,
         )
         .await
     }
@@ -2038,6 +2546,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_parse_telegram_video_skips_oversized_local_api_lookup() {
+        let update = serde_json::json!({
+            "update_id": 3001,
+            "message": {
+                "message_id": 6001,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "caption": "Huge upload",
+                "video": {
+                    "file_id": "huge_video_id",
+                    "file_unique_id": "hv1",
+                    "duration": 42,
+                    "file_size": 150 * 1024 * 1024
+                }
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update_test_with_options(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+
+        match &msg.content {
+            ChannelContent::Text(text) => {
+                assert!(text.contains("Huge upload"));
+                assert!(text.contains("文件过大，已跳过下载"));
+                assert!(text.contains("150 MB"));
+            }
+            other => panic!("Expected Text fallback for oversized video, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn test_parse_telegram_document_fallback() {
         let update = serde_json::json!({
             "update_id": 301,
@@ -2069,6 +2619,47 @@ mod tests {
                 assert_eq!(filename, "report.pdf");
             }
             other => panic!("Expected Text or File for document, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_telegram_document_skips_oversized_local_api_lookup() {
+        let update = serde_json::json!({
+            "update_id": 3011,
+            "message": {
+                "message_id": 6011,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000000,
+                "document": {
+                    "file_id": "huge_doc_id",
+                    "file_unique_id": "hd1",
+                    "file_name": "archive.zip",
+                    "file_size": 150 * 1024 * 1024
+                }
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update_test_with_options(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+
+        match &msg.content {
+            ChannelContent::Text(text) => {
+                assert!(text.contains("archive.zip"));
+                assert!(text.contains("文件过大，已跳过下载"));
+                assert!(text.contains("150 MB"));
+            }
+            other => panic!("Expected Text fallback for oversized document, got {other:?}"),
         }
     }
 
@@ -2652,22 +3243,33 @@ mod tests {
 
     async fn start_telegram_test_server() -> (String, tokio::task::JoinHandle<()>) {
         use axum::extract::Json;
-        use axum::routing::post;
+        use axum::routing::{get, post};
         use axum::Router;
 
         let app = Router::new().route(
             "/botfake:token/getFile",
             post(|Json(payload): Json<serde_json::Value>| async move {
                 let file_id = payload["file_id"].as_str().unwrap_or("unknown");
+                let extension = if file_id.contains("photo") {
+                    "jpg"
+                } else if file_id.contains("video") {
+                    "mp4"
+                } else {
+                    "bin"
+                };
                 axum::Json(serde_json::json!({
                     "ok": true,
                     "result": {
                         "file_id": file_id,
-                        "file_path": format!("files/{file_id}.bin"),
+                        "file_path": format!("files/{file_id}.{extension}"),
                         "file_size": 1024
                     }
                 }))
             }),
+        )
+        .route(
+            "/file/botfake:token/{*path}",
+            get(|| async { axum::body::Bytes::from_static(b"test-media") }),
         );
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -2679,6 +3281,48 @@ mod tests {
         });
 
         (format!("http://{addr}"), handle)
+    }
+
+    async fn start_telegram_getfile_counter_server() -> (
+        String,
+        Arc<AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::extract::Json;
+        use axum::routing::post;
+        use axum::Router;
+
+        let get_file_calls = Arc::new(AtomicUsize::new(0));
+        let app_calls = get_file_calls.clone();
+
+        let app = Router::new().route(
+            "/botfake:token/getFile",
+            post(move |Json(payload): Json<serde_json::Value>| {
+                let calls = app_calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    let file_id = payload["file_id"].as_str().unwrap_or("unknown");
+                    axum::Json(serde_json::json!({
+                        "ok": true,
+                        "result": {
+                            "file_id": file_id,
+                            "file_path": format!("files/{file_id}.mp4"),
+                            "file_size": 1024
+                        }
+                    }))
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        (format!("http://{addr}"), get_file_calls, handle)
     }
 
     async fn start_get_me_test_server<F>(
@@ -2835,6 +3479,21 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn test_build_get_updates_query_uses_query_params() {
+        let no_offset = build_get_updates_query(None);
+        assert!(no_offset.iter().any(|(k, v)| *k == "timeout" && v == "30"));
+        assert!(no_offset.iter().any(|(k, v)| {
+            *k == "allowed_updates" && v == "[\"message\",\"edited_message\"]"
+        }));
+        assert!(!no_offset.iter().any(|(k, _)| *k == "offset"));
+
+        let with_offset = build_get_updates_query(Some(42));
+        assert!(with_offset
+            .iter()
+            .any(|(k, v)| *k == "offset" && v == "42"));
+    }
+
     #[tokio::test]
     async fn test_large_file_requires_local_api() {
         let client = test_client();
@@ -2872,7 +3531,7 @@ mod tests {
         assert_eq!(info.file_id, "large-video");
         assert!(info
             .download_url
-            .contains("/file/botfake:token/files/large-video.bin"));
+            .contains("/file/botfake:token/files/large-video.mp4"));
     }
 
     #[tokio::test]
@@ -2947,17 +3606,170 @@ mod tests {
 
         server_handle.abort();
 
+        // Verify the content is now a short summary
         let ChannelContent::Text(content) = merged.content else {
             panic!("Expected merged text content");
         };
 
-        let first_photo = content.find("[Photo: ").unwrap();
-        let video = content.find("[Video: ").unwrap();
-        let second_photo = content.rfind("[Photo: ").unwrap();
+        // The new format should be a short summary
+        assert!(content.contains("收到 Telegram 媒体批次"));
+        assert!(content.contains("1 个视频"));
+        assert!(content.contains("2 张图片"));
 
-        assert!(first_photo < video);
-        assert!(video < second_photo);
-        assert!(content.contains("Trip recap"));
-        assert!(content.contains("Media group (3 items):"));
+        // Verify telegram_media_batch exists in metadata
+        let batch_value = merged
+            .metadata
+            .get("telegram_media_batch")
+            .expect("telegram_media_batch should exist in metadata");
+
+        let batch: crate::telegram_media_batch::TelegramMediaBatch =
+            serde_json::from_value(batch_value.clone()).expect("Should deserialize batch");
+
+        // Verify batch structure
+        assert_eq!(batch.items.len(), 3);
+        assert_eq!(batch.caption, Some("Trip recap".to_string()));
+        assert_eq!(batch.batch_key, "group_123_group_1");
+
+        // Verify order: photo, video, photo
+        assert_eq!(
+            batch.items[0].kind,
+            crate::telegram_media_batch::MediaItemKind::Image
+        );
+        assert_eq!(
+            batch.items[1].kind,
+            crate::telegram_media_batch::MediaItemKind::Video
+        );
+        assert_eq!(
+            batch.items[2].kind,
+            crate::telegram_media_batch::MediaItemKind::Image
+        );
+    }
+
+    #[tokio::test]
+    async fn test_merge_media_group_one_video_nine_images_summary_and_order() {
+        let (api_base_url, server_handle) = start_telegram_test_server().await;
+        let mut updates = Vec::new();
+        for idx in 0..10 {
+            let message = if idx == 0 {
+                serde_json::json!({
+                    "message_id": 300 + idx,
+                    "media_group_id": "album-10",
+                    "from": { "id": 456, "first_name": "Bob" },
+                    "chat": { "id": 456, "type": "private" },
+                    "date": 1700001000 + idx,
+                    "video": { "file_id": "video_main", "file_unique_id": "v1", "duration": 12, "file_size": 4096 },
+                    "caption": "batch caption"
+                })
+            } else {
+                serde_json::json!({
+                    "message_id": 300 + idx,
+                    "media_group_id": "album-10",
+                    "from": { "id": 456, "first_name": "Bob" },
+                    "chat": { "id": 456, "type": "private" },
+                    "date": 1700001000 + idx,
+                    "photo": [
+                        { "file_id": format!("photo_{idx}_small"), "file_unique_id": format!("s{idx}"), "width": 90, "height": 90 },
+                        { "file_id": format!("photo_{idx}"), "file_unique_id": format!("b{idx}"), "width": 800, "height": 600 }
+                    ]
+                })
+            };
+            updates.push(serde_json::json!({
+                "update_id": 900 + idx,
+                "message": message
+            }));
+        }
+
+        let client = test_client();
+        let merged = merge_media_group_updates(
+            &updates,
+            &[],
+            "fake:token",
+            &client,
+            &api_base_url,
+            None,
+            false,
+            &std::env::temp_dir(),
+            2 * 1024 * 1024 * 1024,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+        server_handle.abort();
+
+        let ChannelContent::Text(content) = merged.content else {
+            panic!("Expected merged text content");
+        };
+        assert!(content.contains("收到 Telegram 媒体批次"));
+        assert!(content.contains("1 个视频"));
+        assert!(content.contains("9 张图片"));
+
+        let batch_value = merged.metadata.get("telegram_media_batch").unwrap();
+        let batch: crate::telegram_media_batch::TelegramMediaBatch =
+            serde_json::from_value(batch_value.clone()).unwrap();
+        assert_eq!(batch.items.len(), 10);
+        assert_eq!(
+            batch.items[0].kind,
+            crate::telegram_media_batch::MediaItemKind::Video
+        );
+        for item in batch.items.iter().skip(1) {
+            assert_eq!(item.kind, crate::telegram_media_batch::MediaItemKind::Image);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_large_video_safe_limit_skips_getfile_with_structured_hint() {
+        let (api_base_url, calls, server_handle) = start_telegram_getfile_counter_server().await;
+        let update = serde_json::json!({
+            "update_id": 1200,
+            "message": {
+                "message_id": 510,
+                "media_group_id": "large-video-group",
+                "from": { "id": 999, "first_name": "Carol" },
+                "chat": { "id": 999, "type": "private" },
+                "date": 1700010000,
+                "video": {
+                    "file_id": "huge_video",
+                    "file_unique_id": "hv",
+                    "duration": 30,
+                    "file_size": 150 * 1024 * 1024
+                }
+            }
+        });
+
+        let client = test_client();
+        let merged = merge_media_group_updates(
+            &[update],
+            &[],
+            "fake:token",
+            &client,
+            &api_base_url,
+            None,
+            false,
+            &std::env::temp_dir(),
+            2 * 1024 * 1024 * 1024,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+
+        server_handle.abort();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let batch_value = merged.metadata.get("telegram_media_batch").unwrap();
+        let batch: crate::telegram_media_batch::TelegramMediaBatch =
+            serde_json::from_value(batch_value.clone()).unwrap();
+        assert_eq!(batch.items.len(), 1);
+        let item = &batch.items[0];
+        assert_eq!(item.status, crate::telegram_media_batch::MediaItemStatus::SkippedSafeLimit);
+        let hint = item.download_hint.as_ref().unwrap();
+        assert_eq!(hint.strategy, "telegram_bot_api_file");
+        assert_eq!(hint.file_id, "huge_video");
+        assert_eq!(hint.api_base_url, api_base_url);
+        assert!(hint.use_local_api);
+        assert!(hint.download_url.is_none());
+        assert!(hint.reason.as_deref().unwrap_or_default().contains("safe getFile limit"));
     }
 }

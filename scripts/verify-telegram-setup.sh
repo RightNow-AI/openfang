@@ -67,6 +67,14 @@ else
     echo "   请设置: export TELEGRAM_API_HASH='你的api_hash'"
 fi
 
+if [ -n "$NVIDIA_INTEGRATE_API_KEY" ]; then
+    check_pass "NVIDIA_INTEGRATE_API_KEY 已设置"
+    echo "   值: ${NVIDIA_INTEGRATE_API_KEY:0:10}..."
+else
+    check_fail "NVIDIA_INTEGRATE_API_KEY 未设置"
+    echo "   请设置: export NVIDIA_INTEGRATE_API_KEY='你的nvidia_api_key'"
+fi
+
 echo ""
 
 # 3. 检查配置文件
@@ -176,12 +184,13 @@ echo "=== 验证完成 ==="
 echo ""
 
 # 总结
-if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_API_HASH" ]; then
+if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_API_HASH" ] || [ -z "$NVIDIA_INTEGRATE_API_KEY" ]; then
     echo -e "${RED}❌ 环境变量未完全设置，无法启动${NC}"
     echo ""
     echo "请设置环境变量："
     echo "  export TELEGRAM_BOT_TOKEN='你的bot_token'"
     echo "  export TELEGRAM_API_HASH='你的api_hash'"
+    echo "  export NVIDIA_INTEGRATE_API_KEY='你的nvidia_api_key'"
     echo ""
     exit 1
 fi
@@ -191,7 +200,7 @@ echo ""
 echo "下一步："
 echo "1. 启动 OpenFang："
 echo "   cd /Users/xiaomo/Desktop/openfang-upstream-fork"
-echo "   target/release/openfang start"
+echo "   scripts/start-telegram-production.sh"
 echo ""
 echo "2. 查看日志："
 echo "   tail -f ~/.openfang/logs/openfang.log"

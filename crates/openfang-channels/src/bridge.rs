@@ -5,6 +5,7 @@
 
 use crate::formatter;
 use crate::router::AgentRouter;
+use crate::telegram_media_batch::TelegramMediaBatch;
 use crate::types::{
     default_phase_emoji, AgentPhase, ChannelAdapter, ChannelContent, ChannelMessage, ChannelUser,
     LifecycleReaction,
@@ -15,10 +16,13 @@ use futures::StreamExt;
 use openfang_types::agent::AgentId;
 use openfang_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputFormat};
 use openfang_types::message::ContentBlock;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::fs;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
+use url::Url;
 
 /// Kernel operations needed by channel adapters.
 ///
@@ -28,6 +32,18 @@ use tracing::{debug, error, info, warn};
 pub trait ChannelBridgeHandle: Send + Sync {
     /// Send a message to an agent and get the text response.
     async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String>;
+
+    /// Send a message to an agent while preserving channel metadata.
+    ///
+    /// Default implementation forwards as plain text.
+    async fn send_message_with_metadata(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        _metadata: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<String, String> {
+        self.send_message(agent_id, message).await
+    }
 
     /// Send a message with structured content blocks (text + images) to an agent.
     ///
@@ -54,6 +70,22 @@ pub trait ChannelBridgeHandle: Send + Sync {
 
     /// List running agents as (id, name) pairs.
     async fn list_agents(&self) -> Result<Vec<(AgentId, String)>, String>;
+
+    /// Get agent name and workspace path by ID.
+    ///
+    /// Default implementation returns agent name from `list_agents()` and no workspace.
+    async fn get_agent_name_and_workspace(
+        &self,
+        agent_id: AgentId,
+    ) -> Result<Option<(String, Option<PathBuf>)>, String> {
+        let name = self
+            .list_agents()
+            .await?
+            .into_iter()
+            .find(|(id, _)| *id == agent_id)
+            .map(|(_, name)| name);
+        Ok(name.map(|name| (name, None)))
+    }
 
     /// Spawn an agent by manifest name, returning its ID.
     async fn spawn_agent_by_name(&self, manifest_name: &str) -> Result<AgentId, String>;
@@ -808,6 +840,64 @@ async fn dispatch_message(
         return;
     }
 
+    let mut forwarded_text = text.clone();
+    let metadata_map = if message.metadata.is_empty() {
+        None
+    } else {
+        Some(
+            message
+                .metadata
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<serde_json::Map<String, serde_json::Value>>(),
+        )
+    };
+
+    // If this is a Telegram media batch routed to shipinfabu-hand, write inbox manifest.
+    if let Some(batch_value) = message.metadata.get("telegram_media_batch") {
+        let batch = match serde_json::from_value::<TelegramMediaBatch>(batch_value.clone()) {
+            Ok(batch) => batch,
+            Err(err) => {
+                let msg = format!("Bridge error: invalid telegram_media_batch metadata: {err}");
+                send_response(adapter, &message.sender, msg, thread_id, output_format).await;
+                return;
+            }
+        };
+
+        let agent_info = match handle.get_agent_name_and_workspace(agent_id).await {
+            Ok(info) => info,
+            Err(err) => {
+                let msg = format!("Bridge error: failed to resolve agent metadata: {err}");
+                send_response(adapter, &message.sender, msg, thread_id, output_format).await;
+                return;
+            }
+        };
+
+        if let Some((agent_name, workspace)) = agent_info {
+            if agent_name == "shipinfabu-hand" {
+                let manifest_path = match write_telegram_batch_to_inbox(&batch, workspace).await {
+                    Ok(path) => path,
+                    Err(err) => {
+                        let msg =
+                            format!("Bridge error: failed to write Telegram inbox manifest: {err}");
+                        send_response(adapter, &message.sender, msg, thread_id, output_format)
+                            .await;
+                        return;
+                    }
+                };
+                forwarded_text = format!(
+                    "{text}\n\nTelegram manifest: {}",
+                    manifest_path.display()
+                );
+                info!(
+                    "Wrote telegram batch {} to shipinfabu-hand inbox: {}",
+                    batch.batch_key,
+                    manifest_path.display()
+                );
+            }
+        }
+    }
+
     // Auto-reply check — if enabled, the engine decides whether to process this message.
     // If auto-reply is enabled but suppressed for this message, skip agent call entirely.
     if let Some(reply) = handle.check_auto_reply(agent_id, &text).await {
@@ -840,7 +930,9 @@ async fn dispatch_message(
     let typing_task = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
 
     // Send to agent and relay response
-    let result = handle.send_message(agent_id, &text).await;
+    let result = handle
+        .send_message_with_metadata(agent_id, &forwarded_text, metadata_map.as_ref())
+        .await;
 
     // Stop the typing refresh now that we have a response
     typing_task.abort();
@@ -888,6 +980,34 @@ async fn dispatch_message(
                 .await;
         }
     }
+}
+
+/// Write a TelegramMediaBatch to the shipinfabu-hand inbox directory.
+///
+/// Preferred location is `<agent_workspace>/inbox/telegram`. Fallback is
+/// `~/.openfang/workspaces/shipinfabu-hand/inbox/telegram`.
+async fn write_telegram_batch_to_inbox(
+    batch: &TelegramMediaBatch,
+    agent_workspace: Option<PathBuf>,
+) -> std::io::Result<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let workspace = agent_workspace.unwrap_or_else(|| {
+        PathBuf::from(home)
+            .join(".openfang")
+            .join("workspaces")
+            .join("shipinfabu-hand")
+    });
+    let inbox_dir = workspace.join("inbox").join("telegram");
+
+    // Create inbox directory if it doesn't exist
+    fs::create_dir_all(&inbox_dir).await?;
+
+    let manifest_path = inbox_dir.join(format!("{}.json", batch.batch_key));
+    let json = serde_json::to_string_pretty(batch)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    fs::write(&manifest_path, json).await?;
+    Ok(manifest_path)
 }
 
 fn sanitize_agent_error(raw: &str) -> String {
@@ -1006,38 +1126,56 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
 
     // 5 MB limit to prevent memory abuse from oversized images
     const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
-
-    let client = reqwest::Client::new();
-    let resp = match client.get(url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("Failed to download image from channel: {e}");
-            return vec![ContentBlock::Text {
-                text: format!("[Image download failed: {e}]"),
-                provider_metadata: None,
-            }];
-        }
+    let local_path = if url.starts_with("file://") {
+        Url::parse(url)
+            .ok()
+            .and_then(|parsed| parsed.to_file_path().ok())
+    } else {
+        None
     };
 
-    // Detect media type from Content-Type header — but only trust it if it's
-    // actually an image/* type. Many APIs (Telegram, S3 pre-signed URLs) return
-    // `application/octet-stream` for all files, which breaks vision.
-    let header_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_string())
-        .filter(|ct| ct.starts_with("image/"));
-
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!("Failed to read image bytes: {e}");
-            return vec![ContentBlock::Text {
-                text: format!("[Image read failed: {e}]"),
-                provider_metadata: None,
-            }];
+    let (header_type, bytes) = if let Some(path) = local_path.as_ref() {
+        match tokio::fs::read(path).await {
+            Ok(bytes) => (None, bytes.into()),
+            Err(e) => {
+                warn!("Failed to read local image from channel: {}", e);
+                return vec![ContentBlock::Text {
+                    text: format!("[Image read failed: {e}]"),
+                    provider_metadata: None,
+                }];
+            }
         }
+    } else {
+        let client = reqwest::Client::new();
+        let resp = match client.get(url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Failed to download image from channel: {e}");
+                return vec![ContentBlock::Text {
+                    text: format!("[Image download failed: {e}]"),
+                    provider_metadata: None,
+                }];
+            }
+        };
+
+        let header_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_string())
+            .filter(|ct| ct.starts_with("image/"));
+
+        let bytes = match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("Failed to read image bytes: {e}");
+                return vec![ContentBlock::Text {
+                    text: format!("[Image read failed: {e}]"),
+                    provider_metadata: None,
+                }];
+            }
+        };
+        (header_type, bytes)
     };
 
     // Three-tier media type detection:
@@ -1068,6 +1206,13 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
     let mut blocks = Vec::new();
+
+    if let Some(path) = local_path {
+        blocks.push(ContentBlock::Text {
+            text: format!("[User sent a photo saved at: {}]", path.display()),
+            provider_metadata: None,
+        });
+    }
 
     // Caption as text block first (gives the LLM context about the image)
     if let Some(cap) = caption {
@@ -1491,17 +1636,35 @@ async fn handle_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use futures::{stream, Stream};
     use crate::types::ChannelType;
+    use std::collections::HashMap;
+    use std::pin::Pin;
     use std::sync::Mutex;
+    use tokio::sync::Mutex as AsyncMutex;
+    use uuid::Uuid;
 
     /// Mock kernel handle for testing.
     struct MockHandle {
         agents: Mutex<Vec<(AgentId, String)>>,
+        agent_workspaces: Mutex<HashMap<AgentId, Option<PathBuf>>>,
+        last_forwarded: Mutex<Option<String>>,
     }
 
     #[async_trait]
     impl ChannelBridgeHandle for MockHandle {
         async fn send_message(&self, _agent_id: AgentId, message: &str) -> Result<String, String> {
+            Ok(format!("Echo: {message}"))
+        }
+        async fn send_message_with_metadata(
+            &self,
+            _agent_id: AgentId,
+            message: &str,
+            _metadata: Option<&serde_json::Map<String, serde_json::Value>>,
+        ) -> Result<String, String> {
+            let mut guard = self.last_forwarded.lock().unwrap();
+            *guard = Some(message.to_string());
             Ok(format!("Echo: {message}"))
         }
         async fn find_agent_by_name(&self, name: &str) -> Result<Option<AgentId>, String> {
@@ -1511,8 +1674,70 @@ mod tests {
         async fn list_agents(&self) -> Result<Vec<(AgentId, String)>, String> {
             Ok(self.agents.lock().unwrap().clone())
         }
+        async fn get_agent_name_and_workspace(
+            &self,
+            agent_id: AgentId,
+        ) -> Result<Option<(String, Option<PathBuf>)>, String> {
+            let agents = self.agents.lock().unwrap();
+            let workspace = self
+                .agent_workspaces
+                .lock()
+                .unwrap()
+                .get(&agent_id)
+                .cloned()
+                .unwrap_or(None);
+            Ok(agents
+                .iter()
+                .find(|(id, _)| *id == agent_id)
+                .map(|(_, name)| (name.clone(), workspace)))
+        }
         async fn spawn_agent_by_name(&self, _manifest_name: &str) -> Result<AgentId, String> {
             Err("spawn not implemented in mock".to_string())
+        }
+    }
+
+    struct MockAdapter {
+        sent_texts: AsyncMutex<Vec<String>>,
+    }
+
+    impl MockAdapter {
+        fn new() -> Self {
+            Self {
+                sent_texts: AsyncMutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ChannelAdapter for MockAdapter {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn channel_type(&self) -> ChannelType {
+            ChannelType::Telegram
+        }
+
+        async fn start(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = ChannelMessage> + Send>>, Box<dyn std::error::Error>>
+        {
+            Ok(Box::pin(stream::empty()))
+        }
+
+        async fn send(
+            &self,
+            _user: &ChannelUser,
+            content: ChannelContent,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            if let ChannelContent::Text(text) = content {
+                self.sent_texts.lock().await.push(text);
+            }
+            Ok(())
+        }
+
+        async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+            Ok(())
         }
     }
 
@@ -1537,6 +1762,8 @@ mod tests {
         let agent_id = AgentId::new();
         let mock = Arc::new(MockHandle {
             agents: Mutex::new(vec![(agent_id, "test-agent".to_string())]),
+            agent_workspaces: Mutex::new(HashMap::new()),
+            last_forwarded: Mutex::new(None),
         });
 
         let handle: Arc<dyn ChannelBridgeHandle> = mock;
@@ -1558,6 +1785,8 @@ mod tests {
         let agent_id = AgentId::new();
         let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
             agents: Mutex::new(vec![(agent_id, "coder".to_string())]),
+            agent_workspaces: Mutex::new(HashMap::new()),
+            last_forwarded: Mutex::new(None),
         });
         let router = Arc::new(AgentRouter::new());
         let sender = ChannelUser {
@@ -1579,6 +1808,8 @@ mod tests {
         let agent_id = AgentId::new();
         let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
             agents: Mutex::new(vec![(agent_id, "coder".to_string())]),
+            agent_workspaces: Mutex::new(HashMap::new()),
+            last_forwarded: Mutex::new(None),
         });
         let router = Arc::new(AgentRouter::new());
         let sender = ChannelUser {
@@ -1663,6 +1894,8 @@ mod tests {
         let agent_id = AgentId::new();
         let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
             agents: Mutex::new(vec![(agent_id, "vision-agent".to_string())]),
+            agent_workspaces: Mutex::new(HashMap::new()),
+            last_forwarded: Mutex::new(None),
         });
 
         let blocks = vec![
@@ -1690,6 +1923,8 @@ mod tests {
         let agent_id = AgentId::new();
         let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
             agents: Mutex::new(vec![(agent_id, "vision-agent".to_string())]),
+            agent_workspaces: Mutex::new(HashMap::new()),
+            last_forwarded: Mutex::new(None),
         });
 
         let blocks = vec![ContentBlock::Image {
@@ -1742,6 +1977,165 @@ mod tests {
     #[test]
     fn test_detect_image_magic_empty() {
         assert_eq!(detect_image_magic(&[]), None);
+    }
+
+    #[tokio::test]
+    async fn test_download_image_to_blocks_supports_file_urls() {
+        let path = std::env::temp_dir().join(format!(
+            "openfang-bridge-test-{}.png",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::write(&path, [0x89, 0x50, 0x4E, 0x47, 0x00])
+            .await
+            .unwrap();
+
+        let url = format!("file://{}", path.display());
+        let blocks = download_image_to_blocks(&url, Some("caption")).await;
+
+        tokio::fs::remove_file(&path).await.unwrap();
+
+        assert!(blocks.iter().any(|block| match block {
+            ContentBlock::Text { text, .. } => text.contains(path.to_string_lossy().as_ref()),
+            _ => false,
+        }));
+        assert!(blocks.iter().any(|block| matches!(block, ContentBlock::Image { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_telegram_batch_writes_manifest_and_forwards_path() {
+        let agent_id = AgentId::new();
+        let workspace = std::env::temp_dir().join(format!("openfang-bridge-ws-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let mock = Arc::new(MockHandle {
+            agents: Mutex::new(vec![(agent_id, "shipinfabu-hand".to_string())]),
+            agent_workspaces: Mutex::new(HashMap::from([(agent_id, Some(workspace.clone()))])),
+            last_forwarded: Mutex::new(None),
+        });
+        let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
+        let router = Arc::new(AgentRouter::new());
+        router.set_user_default("u1".to_string(), agent_id);
+        let adapter = Arc::new(MockAdapter::new());
+
+        let batch = TelegramMediaBatch {
+            batch_key: "group_100_abc".to_string(),
+            chat_id: 100,
+            message_id: 10,
+            media_group_id: "abc".to_string(),
+            caption: Some("cap".to_string()),
+            items: vec![],
+        };
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "telegram_media_batch".to_string(),
+            serde_json::to_value(batch).unwrap(),
+        );
+        let msg = ChannelMessage {
+            channel: ChannelType::Telegram,
+            platform_message_id: "m1".to_string(),
+            sender: ChannelUser {
+                platform_id: "u1".to_string(),
+                display_name: "user".to_string(),
+                openfang_user: None,
+                metadata: None,
+            },
+            content: ChannelContent::Text("收到 Telegram 媒体批次：1 个视频。".to_string()),
+            target_agent: None,
+            timestamp: Utc::now(),
+            is_group: false,
+            thread_id: None,
+            metadata,
+        };
+
+        dispatch_message(
+            &msg,
+            &handle,
+            &router,
+            adapter.as_ref(),
+            &(adapter.clone() as Arc<dyn ChannelAdapter>),
+            &ChannelRateLimiter::default(),
+        )
+        .await;
+
+        let forwarded = mock.last_forwarded.lock().unwrap().clone().unwrap();
+        assert!(forwarded.contains("Telegram manifest:"));
+        assert!(forwarded.contains("group_100_abc.json"));
+
+        let manifest = workspace
+            .join("inbox")
+            .join("telegram")
+            .join("group_100_abc.json");
+        assert!(manifest.exists());
+
+        let _ = tokio::fs::remove_dir_all(&workspace).await;
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_telegram_batch_manifest_write_failure_returns_bridge_error() {
+        let agent_id = AgentId::new();
+        let workspace_file =
+            std::env::temp_dir().join(format!("openfang-bridge-fail-{}", Uuid::new_v4()));
+        tokio::fs::write(&workspace_file, b"not-a-directory")
+            .await
+            .unwrap();
+
+        let mock = Arc::new(MockHandle {
+            agents: Mutex::new(vec![(agent_id, "shipinfabu-hand".to_string())]),
+            agent_workspaces: Mutex::new(HashMap::from([(agent_id, Some(workspace_file.clone()))])),
+            last_forwarded: Mutex::new(None),
+        });
+        let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
+        let router = Arc::new(AgentRouter::new());
+        router.set_user_default("u1".to_string(), agent_id);
+        let adapter = Arc::new(MockAdapter::new());
+
+        let batch = TelegramMediaBatch {
+            batch_key: "group_100_fail".to_string(),
+            chat_id: 100,
+            message_id: 10,
+            media_group_id: "abc".to_string(),
+            caption: None,
+            items: vec![],
+        };
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "telegram_media_batch".to_string(),
+            serde_json::to_value(batch).unwrap(),
+        );
+        let msg = ChannelMessage {
+            channel: ChannelType::Telegram,
+            platform_message_id: "m1".to_string(),
+            sender: ChannelUser {
+                platform_id: "u1".to_string(),
+                display_name: "user".to_string(),
+                openfang_user: None,
+                metadata: None,
+            },
+            content: ChannelContent::Text("收到 Telegram 媒体批次：1 个视频。".to_string()),
+            target_agent: None,
+            timestamp: Utc::now(),
+            is_group: false,
+            thread_id: None,
+            metadata,
+        };
+
+        dispatch_message(
+            &msg,
+            &handle,
+            &router,
+            adapter.as_ref(),
+            &(adapter.clone() as Arc<dyn ChannelAdapter>),
+            &ChannelRateLimiter::default(),
+        )
+        .await;
+
+        assert!(mock.last_forwarded.lock().unwrap().is_none());
+        let sent = adapter.sent_texts.lock().await.clone();
+        assert!(sent
+            .iter()
+            .any(|text| text.contains("Bridge error: failed to write Telegram inbox manifest")));
+
+        let _ = tokio::fs::remove_file(&workspace_file).await;
     }
 
     #[test]

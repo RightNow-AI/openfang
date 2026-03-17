@@ -137,7 +137,7 @@ publish_status == "publish_failed"
 
 用途要分清：
 
-- `current_batch.json`：记录这批本地媒体收件、稳定文件名、候选主视频和参考图/遮罩
+- `current_batch.json`：记录这批本地媒体收件、稳定文件名、`telegram_manifest`、`pending_video_items`、`selected_video_index`、`download_status`，以及在可用时的 `suggested_source_video`
 - `current_task.json`：记录这次明确用户任务和整理后的请求意图
 - `current_job_id.txt`：只记录真实 job id
 - `current_state.json`：记录当前状态、最新 status/stage、这次是草稿链还是正式发布、是否在等澄清
@@ -145,7 +145,7 @@ publish_status == "publish_failed"
 这 4 个文件是“给人看、给后续排查”的，不是任务触发器。
 当前这只 Hand 自己没有独立写文件工具，所以不要承诺“澄清一开始就已经把 `awaiting_clarification` 写进磁盘”。
 实际规则是：
-- `collect` 负责写 `current_batch.json` / 批次态 `current_state.json`
+- `collect` / `collect-telegram-batch` 负责写 `current_batch.json` / 批次态 `current_state.json`
 - `clean_publish_submit` 负责写提交前后的 `current_task.json` / `current_state.json`
 - `clean_publish_poll` 负责刷新轮询和终态的 `current_state.json`
 - 本地同步/修复脚本会在发现旧残留时重置这些文件
@@ -183,15 +183,21 @@ openfang hand install "$PWD/openfang-hand/shipinfabu"
      - 当已有状态是 `job_submitted` / `polling` 时，只允许做状态检查、memory 检查、任务轮询
      - 其他情况直接保持 `idle`
 2. Read the user task and identify the source video path or URL.
+   - Telegram 媒体组入口优先读 OpenFang 写入的 manifest（`workspace/inbox/telegram/<batch_key>.json`）和 `current_batch.json`，不要依赖正文里的 `[Photo: ...]` / `[Video: ...]` 占位文本。
+   - **Telegram 自动下载支持**：当用户在 Telegram 中直接发送视频文件时，OpenFang 可能先把文件落到本机，并返回 `file://` 格式的本地路径（例如：`file:///tmp/openfang-telegram-downloads/video_abc123.mp4`）。这已经是真实本地文件，不是远程 URL；提交给 helper bridge 时可以直接带上这个值，bridge 会自动归一化成实际文件路径。
    - 如果用户明确给了本地绝对路径，`source_video` 必须原样照抄。
    - 不要擅自把 `-` 改成空格，也不要擅自补空格、改标点、改扩展名。
    - 如果用户给的是本地目录路径，而且意思明显是“处理这个文件夹里的图片和视频”，不要回一句“当前环境没有列目录权限工具”就卡住。
    - 更不要回“当前环境没有直接列出目录内容的权限工具”这种话；这在当前 Hand 里属于错误判断。
    - 这种目录任务优先直接用 bridge 收件：`python3 "<bridge_script_path>" collect --media-dir "/abs/materials-dir" --caption "用户原话"`
-   - 如果用户是在 Telegram 里直接发媒体，或者当前这轮已经落出了多个本地媒体文件，先用 bridge `collect` 收件，再决定哪个文件是 `source_video`。
-- 如果当前会话里只看到 `[image: image/jpeg]` 这类图片占位符，或者当前只落出了图片文件，没有真实视频路径 / URL / mp4 副本，就按“只收到了预览图”处理。
-- 这在 Telegram 转发视频时很常见：bot 可能只拿到缩略图 / 封面，没有拿到真实视频文件。
-- 这时要直接说明“我这边只收到了图片预览，没有收到真实视频文件”，并只要求用户补一个真实视频来源：重新直接发送原视频、给可下载链接、或给本地绝对路径。
+   - 如果是 Telegram 媒体组，优先用：`python3 "<bridge_script_path>" collect-telegram-batch --manifest "/abs/workspace/inbox/telegram/<batch_key>.json"`。
+   - 用户确认具体视频后，用：`python3 "<bridge_script_path>" fetch-telegram-video --manifest "/abs/workspace/inbox/telegram/<batch_key>.json" --item-index <1-based>`。
+- 如果 manifest 标明是纯图片批次，直接说明“已收件（纯图片）”，走 `input_mode=image_only`；不要误报成“只收到了图片预览”。
+- 如果 manifest 里有视频但 `pending_video_items` 仍未下载，明确说“视频已收件但待下载/待选择”，不要误报成“只收到了图片”。
+- 如果当前会话里只看到 `[image: image/jpeg]` 这类占位符，且 manifest / batch 里也没有可用视频，再按“只收到了预览图”处理。
+- 这通常发生在：视频超过当前 `max_download_size` 下载上限、来自隐私受限频道、或外部链接而非 Telegram 内部文件。
+- **下载进度提示**：当 OpenFang 正在下载大文件时，会自动发送进度消息（例如：”⬇️ 下载中... 45%”），下载完成后会显示”✅ 下载完成”。这些是系统自动消息，无需手动处理。
+- 这时要直接说明”我这边只收到了图片预览，没有收到真实视频文件”，并只要求用户补一个真实视频来源：重新直接发送原视频（不要超过当前下载上限）、给可下载链接、或给本地绝对路径。
 - 不要假装能从这张预览图里“下载视频”，也不要在已经说明缺真实视频之后，又把整套水印 / 发布 / 风格问题重问一遍。
 - 如果用户随后又明确说“这次不用视频”“只处理图片”“只要文图草稿/草稿箱测试”，就不要再从旧批次里捞 `suggested_source_video` 继续提视频任务。
 - 这种场景要切到 `input_mode=image_only`，并把图片路径写进 `publish.article_image_paths`，而不是继续复用旧的 mp4 候选。
@@ -205,6 +211,8 @@ openfang hand install "$PWD/openfang-hand/shipinfabu"
    - 只有自动暂存不可用，或者自动暂存后仍然失败时，才让用户手工搬到白名单目录。
 2.1. 如果是一批媒体，先走收件而不是建单。
    - 先调用：
+     - Telegram manifest 路径：`python3 "<bridge_script_path>" collect-telegram-batch --manifest "/abs/workspace/inbox/telegram/<batch_key>.json"`
+     - 若用户在多视频里指定了某一段：`python3 "<bridge_script_path>" fetch-telegram-video --manifest "/abs/workspace/inbox/telegram/<batch_key>.json" --item-index <1-based>`
      - `python3 "<bridge_script_path>" collect --media-path "/abs/video.mp4" --media-path "/abs/ref-1.jpg" --caption "用户原话"`
      - 或者目录任务时：`python3 "<bridge_script_path>" collect --media-dir "/abs/materials-dir" --caption "用户原话"`
    - 需要回看最近批次时，用：
@@ -221,9 +229,8 @@ openfang hand install "$PWD/openfang-hand/shipinfabu"
      - 明确告诉用户“我收到了几段视频，请指定处理哪一个”
      - 不要直接提交
    - 如果这批里是 1 个视频 + 多张图片：
-     - 如果用户已经明确说“处理这个文件夹里的图片和视频”“图片和视频一起走流程”这类意思，就把这些图片按正文配图处理，不要再额外卡一轮确认
+     - 结构上不需要 bridge 层再确认是否继续；由 hand 根据当前用户意图决定直接继续或补一句澄清
      - 一旦决定这些图片要参与本任务，提交时就要真正把它们带进 `publish.article_image_paths`；不要出现“回复里说会处理图片，但实际请求里图片数组还是空的”
-     - 只有用户没说清这些图片是不是要参与本任务时，才进入 `awaiting_batch_confirmation`
 2.2. 如果用户明确说本轮就是“图片 + 文案 + 草稿箱”测试：
    - 不要再坚持补视频。
    - 用 bridge 提交 `input_mode=image_only`：
@@ -404,6 +411,7 @@ openfang hand install "$PWD/openfang-hand/shipinfabu"
 }
 ```
 - `source_video` 如果来自用户给出的本地绝对路径，必须逐字符原样保留
+- **处理 `file://` 路径**：如果 `source_video` 是 `file://` 格式（来自 Telegram 自动下载），把它当成真实本地文件即可；helper bridge 会自动去掉 `file://` 前缀并解码成本机路径，例如 `file:///tmp/openfang-telegram-downloads/video%20demo.mp4` 会提交成 `/tmp/openfang-telegram-downloads/video demo.mp4`
 - 生成 `idempotency_key` 时，优先基于已经确认存在的真实文件名；不要基于自己脑补过的路径
 - `local_source_staging_dir` 非空时，`clean_publish_submit` 才会把 allowlist 外的本地源视频自动复制到这个目录下的 `openfang-staged/` 再提交
 - `mask_mode` 只允许使用服务真实支持值：`manual_shapes`、`sam2_points`、`upload_mask`
@@ -833,6 +841,8 @@ openfang hand install "$PWD/openfang-hand/shipinfabu"
 - 当前 runtime 走 helper bridge 时：
   - bridge 脚本名固定就是 `openfang_clean_publish_bridge.py`
   - 先读 `bridge_script_path` 设置里的绝对路径，再写成字面量命令
+  - Telegram 媒体组先走：`python3 "<bridge_script_path>" collect-telegram-batch --manifest "/abs/workspace/inbox/telegram/<batch_key>.json"`
+  - 选中具体视频再走：`python3 "<bridge_script_path>" fetch-telegram-video --manifest "/abs/workspace/inbox/telegram/<batch_key>.json" --item-index <1-based>`
   - `python3 "<bridge_script_path>" submit --source-video "/abs/path.mp4" --publish-mode publish --publish-auto true --copy-provider hive_grok_gateway --style-profile clean --content-category adult_general --publish-type feature_article --notify-channel telegram --notify-recipient "<notify_recipient>" --notify-stage-updates true --poll-interval-seconds 10 --poll-timeout-seconds 1800 --execution-mode fallback_only`
   - 如果这次 `submit` 是接着上一批 Telegram 收件确认继续跑，必须写成：`python3 "<bridge_script_path>" submit --chat-id "<telegram_chat_id>" --raw-user-message "对" --publish-mode publish --publish-auto true --copy-provider hive_grok_gateway ...`
   - 如果这次要显式关闭主动通知，也要把 `--notify-channel noop --notify-recipient ""` 原样带上，不要省略成“让 runtime 默认处理”
