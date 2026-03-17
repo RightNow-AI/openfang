@@ -302,9 +302,8 @@ mod tests {
 
     #[test]
     fn test_write_if_changed_creates_new_file() {
-        let tmp = std::env::temp_dir().join("openfang_test_gateway");
-        let _ = std::fs::create_dir_all(&tmp);
-        let path = tmp.join("test_write.js");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test_write.js");
         let hash_path = path.with_extension("hash");
 
         // Clean up any previous runs
@@ -324,11 +323,6 @@ mod tests {
         // Different content should return true
         let changed = write_if_changed(&path, "console.log('v2')").unwrap();
         assert!(changed);
-
-        // Clean up
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&hash_path);
-        let _ = std::fs::remove_dir(&tmp);
     }
 
     #[test]
