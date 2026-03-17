@@ -1154,12 +1154,9 @@
                     <div class="form-group">
                       <label>Provider</label>
                       <select class="form-select" x-model="spawnForm.provider">
-                        <option value="anthropic">Anthropic</option><option value="openai">OpenAI</option>
-                        <option value="groq">Groq</option><option value="ollama">Ollama</option>
-                        <option value="google">Google</option><option value="mistral">Mistral</option>
-                        <option value="xai">xAI</option><option value="deepseek">DeepSeek</option>
-                        <option value="cerebras">Cerebras</option><option value="sambanova">SambaNova</option>
-                        <option value="together">Together</option>
+                        <template x-for="p in spawnProviders" :key="p.id">
+                          <option :value="p.id" x-text="p.display_name"></option>
+                        </template>
                       </select>
                     </div>
                     <div class="form-group">

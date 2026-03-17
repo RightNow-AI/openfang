@@ -40,6 +40,7 @@ function agentsPage() {
     },
 
     // -- Multi-step wizard state --
+    spawnProviders: [],
     spawnStep: 1,
     spawnIdentity: { emoji: '', color: '#FF5C00', archetype: '' },
     selectedPreset: '',
@@ -395,6 +396,13 @@ function agentsPage() {
     },
 
     // ── Multi-step wizard navigation ──
+    async loadSpawnProviders() {
+      try {
+        var data = await OpenFangAPI.get('/api/providers');
+        this.spawnProviders = (data.providers || []);
+      } catch(e) { this.spawnProviders = []; }
+    },
+
     async openSpawnWizard() {
       this.showSpawnModal = true;
       this.spawnStep = 1;
@@ -407,6 +415,7 @@ function agentsPage() {
       this.spawnForm.model = 'llama-3.3-70b-versatile';
       this.spawnForm.systemPrompt = 'You are a helpful assistant.';
       this.spawnForm.profile = 'full';
+      await this.loadSpawnProviders();
       try {
         var res = await fetch('/api/status');
         if (res.ok) {
