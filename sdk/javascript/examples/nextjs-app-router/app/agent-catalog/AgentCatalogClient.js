@@ -3,6 +3,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiClient } from '../../lib/api-client';
 import { track } from '../../lib/telemetry';
+import { validateSpawnName } from '../../lib/spawn-validation';
 
 function normalizeEntry(raw) {
   return {
@@ -34,16 +35,6 @@ function extractTomlMultiline(toml, field) {
   if (!toml) return '';
   const m = toml.match(new RegExp(`^${field}\\s*=\\s*"""([\\s\\S]*?)"""`, 'm'));
   return m ? m[1].trim() : extractTomlField(toml, field);
-}
-
-// ─── validate and sanitize a user-supplied agent name ───────────────────────
-function validateSpawnName(raw) {
-  const name = raw.trim();
-  if (!name) return { error: 'Name is required.' };
-  if (name.length > 64) return { error: 'Name must be 64 characters or less.' };
-  if (/[\n\r\t]/.test(name)) return { error: 'Name cannot contain newlines or tabs.' };
-  if (/[<>:"/\\|?*\x00-\x1f]/.test(name)) return { error: 'Name contains invalid characters.' };
-  return { name };
 }
 
 // ─── patch the name= line in a TOML string ──────────────────────────────────
