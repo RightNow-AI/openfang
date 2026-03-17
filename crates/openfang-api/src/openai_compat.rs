@@ -240,6 +240,26 @@ fn convert_messages(oai_messages: &[OaiMessage]) -> Vec<Message> {
         .collect()
 }
 
+fn extract_last_user_input(messages: &[Message]) -> Option<(String, Option<Vec<ContentBlock>>)> {
+    let message = messages.iter().rev().find(|m| m.role == Role::User)?;
+    match &message.content {
+        MessageContent::Text(text) => {
+            if text.is_empty() {
+                None
+            } else {
+                Some((text.clone(), None))
+            }
+        }
+        MessageContent::Blocks(blocks) => {
+            if blocks.is_empty() {
+                None
+            } else {
+                Some((message.content.text_content(), Some(blocks.clone())))
+            }
+        }
+    }
+}
+
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 /// POST /v1/chat/completions
@@ -266,14 +286,7 @@ pub async fn chat_completions(
 
     // Extract the last user message as the input
     let messages = convert_messages(&req.messages);
-    let last_user_msg = messages
-        .iter()
-        .rev()
-        .find(|m| m.role == Role::User)
-        .map(|m| m.content.text_content())
-        .unwrap_or_default();
-
-    if last_user_msg.is_empty() {
+    let Some((last_user_msg, content_blocks)) = extract_last_user_input(&messages) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -285,7 +298,7 @@ pub async fn chat_completions(
             })),
         )
             .into_response();
-    }
+    };
 
     let request_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
     let created = std::time::SystemTime::now()
@@ -300,6 +313,7 @@ pub async fn chat_completions(
             agent_id,
             agent_name,
             &last_user_msg,
+            content_blocks,
             request_id,
             created,
         )
@@ -323,7 +337,14 @@ pub async fn chat_completions(
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(agent_id, &last_user_msg, Some(kernel_handle), None, None)
+        .send_message_with_handle_and_blocks(
+            agent_id,
+            &last_user_msg,
+            Some(kernel_handle),
+            content_blocks,
+            None,
+            None,
+        )
         .await
     {
         Ok(result) => {
@@ -372,6 +393,7 @@ async fn stream_response(
     agent_id: AgentId,
     agent_name: String,
     message: &str,
+    content_blocks: Option<Vec<ContentBlock>>,
     request_id: String,
     created: u64,
 ) -> Result<axum::response::Response, String> {
@@ -379,7 +401,15 @@ async fn stream_response(
 
     let (mut rx, _handle) = state
         .kernel
-        .send_message_streaming(agent_id, message, Some(kernel_handle), None, None)
+        .send_message_streaming_with_blocks(
+            agent_id,
+            message,
+            Some(kernel_handle),
+            content_blocks,
+            None,
+            None,
+        )
+        .await
         .map_err(|e| format!("Streaming setup failed: {e}"))?;
 
     let (tx, stream_rx) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(64);
@@ -619,6 +649,29 @@ mod tests {
             }
             _ => panic!("Expected Blocks"),
         }
+    }
+
+    #[test]
+    fn test_extract_last_user_input_preserves_blocks() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "What is this?".to_string(),
+                    provider_metadata: None,
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".to_string(),
+                    data: "abc123".to_string(),
+                },
+            ]),
+        }];
+
+        let (text, blocks) = extract_last_user_input(&messages).expect("user input");
+        assert_eq!(text, "What is this?");
+        let blocks = blocks.expect("blocks should be preserved");
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(&blocks[1], ContentBlock::Image { .. }));
     }
 
     #[test]

@@ -24,6 +24,14 @@ use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 use url::Url;
 
+/// Minimal per-agent metadata needed by bridge routing/wiring.
+#[derive(Debug, Clone)]
+pub struct BridgeAgentInfo {
+    pub name: String,
+    pub workspace: Option<PathBuf>,
+    pub tags: Vec<String>,
+}
+
 /// Kernel operations needed by channel adapters.
 ///
 /// Defined here to avoid circular deps (openfang-channels can't depend on openfang-kernel).
@@ -85,6 +93,21 @@ pub trait ChannelBridgeHandle: Send + Sync {
             .find(|(id, _)| *id == agent_id)
             .map(|(_, name)| name);
         Ok(name.map(|name| (name, None)))
+    }
+
+    /// Get structured bridge agent info.
+    ///
+    /// Default implementation reuses `get_agent_name_and_workspace()` and
+    /// returns empty tags.
+    async fn get_agent_info(&self, agent_id: AgentId) -> Result<Option<BridgeAgentInfo>, String> {
+        Ok(self
+            .get_agent_name_and_workspace(agent_id)
+            .await?
+            .map(|(name, workspace)| BridgeAgentInfo {
+                name,
+                workspace,
+                tags: Vec::new(),
+            }))
     }
 
     /// Spawn an agent by manifest name, returning its ID.
@@ -853,7 +876,7 @@ async fn dispatch_message(
         )
     };
 
-    // If this is a Telegram media batch routed to shipinfabu-hand, write inbox manifest.
+    // If this is a Telegram media batch routed to shipinfabu, write inbox manifest.
     if let Some(batch_value) = message.metadata.get("telegram_media_batch") {
         let batch = match serde_json::from_value::<TelegramMediaBatch>(batch_value.clone()) {
             Ok(batch) => batch,
@@ -864,7 +887,7 @@ async fn dispatch_message(
             }
         };
 
-        let agent_info = match handle.get_agent_name_and_workspace(agent_id).await {
+        let agent_info = match handle.get_agent_info(agent_id).await {
             Ok(info) => info,
             Err(err) => {
                 let msg = format!("Bridge error: failed to resolve agent metadata: {err}");
@@ -873,9 +896,19 @@ async fn dispatch_message(
             }
         };
 
-        if let Some((agent_name, workspace)) = agent_info {
-            if agent_name == "shipinfabu-hand" {
-                let manifest_path = match write_telegram_batch_to_inbox(&batch, workspace).await {
+        if let Some(agent_info) = agent_info {
+            let is_shipinfabu_target = agent_info.tags.iter().any(|tag| tag == "hand:shipinfabu")
+                // Backward compatibility with old kernels/test mocks that only expose name.
+                || agent_info.name == "shipinfabu-hand";
+
+            if is_shipinfabu_target {
+                let manifest_path = match write_telegram_batch_to_inbox(
+                    &batch,
+                    agent_info.workspace.clone(),
+                    Some(&agent_info.name),
+                )
+                .await
+                {
                     Ok(path) => path,
                     Err(err) => {
                         let msg =
@@ -885,13 +918,12 @@ async fn dispatch_message(
                         return;
                     }
                 };
-                forwarded_text = format!(
-                    "{text}\n\nTelegram manifest: {}",
-                    manifest_path.display()
-                );
+                forwarded_text =
+                    format!("{text}\n\nTelegram manifest: {}", manifest_path.display());
                 info!(
-                    "Wrote telegram batch {} to shipinfabu-hand inbox: {}",
+                    "Wrote telegram batch {} to shipinfabu inbox (agent={}): {}",
                     batch.batch_key,
+                    agent_info.name,
                     manifest_path.display()
                 );
             }
@@ -982,20 +1014,25 @@ async fn dispatch_message(
     }
 }
 
-/// Write a TelegramMediaBatch to the shipinfabu-hand inbox directory.
+/// Write a TelegramMediaBatch to a target hand inbox directory.
 ///
 /// Preferred location is `<agent_workspace>/inbox/telegram`. Fallback is
-/// `~/.openfang/workspaces/shipinfabu-hand/inbox/telegram`.
+/// `~/.openfang/workspaces/<agent-name>/inbox/telegram`.
 async fn write_telegram_batch_to_inbox(
     batch: &TelegramMediaBatch,
     agent_workspace: Option<PathBuf>,
+    fallback_workspace_name: Option<&str>,
 ) -> std::io::Result<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let workspace_name = fallback_workspace_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("shipinfabu-hand");
     let workspace = agent_workspace.unwrap_or_else(|| {
         PathBuf::from(home)
             .join(".openfang")
             .join("workspaces")
-            .join("shipinfabu-hand")
+            .join(workspace_name)
     });
     let inbox_dir = workspace.join("inbox").join("telegram");
 
@@ -1636,9 +1673,9 @@ async fn handle_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ChannelType;
     use chrono::Utc;
     use futures::{stream, Stream};
-    use crate::types::ChannelType;
     use std::collections::HashMap;
     use std::pin::Pin;
     use std::sync::Mutex;
@@ -1649,6 +1686,7 @@ mod tests {
     struct MockHandle {
         agents: Mutex<Vec<(AgentId, String)>>,
         agent_workspaces: Mutex<HashMap<AgentId, Option<PathBuf>>>,
+        agent_tags: Mutex<HashMap<AgentId, Vec<String>>>,
         last_forwarded: Mutex<Option<String>>,
     }
 
@@ -1690,6 +1728,34 @@ mod tests {
                 .iter()
                 .find(|(id, _)| *id == agent_id)
                 .map(|(_, name)| (name.clone(), workspace)))
+        }
+        async fn get_agent_info(
+            &self,
+            agent_id: AgentId,
+        ) -> Result<Option<BridgeAgentInfo>, String> {
+            let agents = self.agents.lock().unwrap();
+            let workspace = self
+                .agent_workspaces
+                .lock()
+                .unwrap()
+                .get(&agent_id)
+                .cloned()
+                .unwrap_or(None);
+            let tags = self
+                .agent_tags
+                .lock()
+                .unwrap()
+                .get(&agent_id)
+                .cloned()
+                .unwrap_or_default();
+            Ok(agents
+                .iter()
+                .find(|(id, _)| *id == agent_id)
+                .map(|(_, name)| BridgeAgentInfo {
+                    name: name.clone(),
+                    workspace,
+                    tags,
+                }))
         }
         async fn spawn_agent_by_name(&self, _manifest_name: &str) -> Result<AgentId, String> {
             Err("spawn not implemented in mock".to_string())
@@ -1763,6 +1829,7 @@ mod tests {
         let mock = Arc::new(MockHandle {
             agents: Mutex::new(vec![(agent_id, "test-agent".to_string())]),
             agent_workspaces: Mutex::new(HashMap::new()),
+            agent_tags: Mutex::new(HashMap::new()),
             last_forwarded: Mutex::new(None),
         });
 
@@ -1786,6 +1853,7 @@ mod tests {
         let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
             agents: Mutex::new(vec![(agent_id, "coder".to_string())]),
             agent_workspaces: Mutex::new(HashMap::new()),
+            agent_tags: Mutex::new(HashMap::new()),
             last_forwarded: Mutex::new(None),
         });
         let router = Arc::new(AgentRouter::new());
@@ -1809,6 +1877,7 @@ mod tests {
         let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
             agents: Mutex::new(vec![(agent_id, "coder".to_string())]),
             agent_workspaces: Mutex::new(HashMap::new()),
+            agent_tags: Mutex::new(HashMap::new()),
             last_forwarded: Mutex::new(None),
         });
         let router = Arc::new(AgentRouter::new());
@@ -1895,6 +1964,7 @@ mod tests {
         let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
             agents: Mutex::new(vec![(agent_id, "vision-agent".to_string())]),
             agent_workspaces: Mutex::new(HashMap::new()),
+            agent_tags: Mutex::new(HashMap::new()),
             last_forwarded: Mutex::new(None),
         });
 
@@ -1924,6 +1994,7 @@ mod tests {
         let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
             agents: Mutex::new(vec![(agent_id, "vision-agent".to_string())]),
             agent_workspaces: Mutex::new(HashMap::new()),
+            agent_tags: Mutex::new(HashMap::new()),
             last_forwarded: Mutex::new(None),
         });
 
@@ -1981,10 +2052,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_image_to_blocks_supports_file_urls() {
-        let path = std::env::temp_dir().join(format!(
-            "openfang-bridge-test-{}.png",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("openfang-bridge-test-{}.png", uuid::Uuid::new_v4()));
         tokio::fs::write(&path, [0x89, 0x50, 0x4E, 0x47, 0x00])
             .await
             .unwrap();
@@ -1998,7 +2067,9 @@ mod tests {
             ContentBlock::Text { text, .. } => text.contains(path.to_string_lossy().as_ref()),
             _ => false,
         }));
-        assert!(blocks.iter().any(|block| matches!(block, ContentBlock::Image { .. })));
+        assert!(blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Image { .. })));
     }
 
     #[tokio::test]
@@ -2008,8 +2079,12 @@ mod tests {
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
         let mock = Arc::new(MockHandle {
-            agents: Mutex::new(vec![(agent_id, "shipinfabu-hand".to_string())]),
+            agents: Mutex::new(vec![(agent_id, "any-name".to_string())]),
             agent_workspaces: Mutex::new(HashMap::from([(agent_id, Some(workspace.clone()))])),
+            agent_tags: Mutex::new(HashMap::from([(
+                agent_id,
+                vec!["hand:shipinfabu".to_string()],
+            )])),
             last_forwarded: Mutex::new(None),
         });
         let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
@@ -2080,8 +2155,12 @@ mod tests {
             .unwrap();
 
         let mock = Arc::new(MockHandle {
-            agents: Mutex::new(vec![(agent_id, "shipinfabu-hand".to_string())]),
+            agents: Mutex::new(vec![(agent_id, "custom-shipinfabu-agent".to_string())]),
             agent_workspaces: Mutex::new(HashMap::from([(agent_id, Some(workspace_file.clone()))])),
+            agent_tags: Mutex::new(HashMap::from([(
+                agent_id,
+                vec!["hand:shipinfabu".to_string()],
+            )])),
             last_forwarded: Mutex::new(None),
         });
         let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
@@ -2136,6 +2215,79 @@ mod tests {
             .any(|text| text.contains("Bridge error: failed to write Telegram inbox manifest")));
 
         let _ = tokio::fs::remove_file(&workspace_file).await;
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_single_telegram_batch_writes_manifest_without_media_group_id() {
+        let agent_id = AgentId::new();
+        let workspace = std::env::temp_dir().join(format!("openfang-bridge-ws-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let mock = Arc::new(MockHandle {
+            agents: Mutex::new(vec![(agent_id, "shipinfabu-hand".to_string())]),
+            agent_workspaces: Mutex::new(HashMap::from([(agent_id, Some(workspace.clone()))])),
+            agent_tags: Mutex::new(HashMap::from([(
+                agent_id,
+                vec!["hand:shipinfabu".to_string()],
+            )])),
+            last_forwarded: Mutex::new(None),
+        });
+        let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
+        let router = Arc::new(AgentRouter::new());
+        router.set_user_default("u1".to_string(), agent_id);
+        let adapter = Arc::new(MockAdapter::new());
+
+        let batch = TelegramMediaBatch {
+            batch_key: "single_100_42".to_string(),
+            chat_id: 100,
+            message_id: 42,
+            media_group_id: String::new(),
+            caption: Some("single video".to_string()),
+            items: vec![],
+        };
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "telegram_media_batch".to_string(),
+            serde_json::to_value(batch).unwrap(),
+        );
+        let msg = ChannelMessage {
+            channel: ChannelType::Telegram,
+            platform_message_id: "m2".to_string(),
+            sender: ChannelUser {
+                platform_id: "u1".to_string(),
+                display_name: "user".to_string(),
+                openfang_user: None,
+                metadata: None,
+            },
+            content: ChannelContent::Text("[收到视频，时长 42s，大小 150 MB]".to_string()),
+            target_agent: None,
+            timestamp: Utc::now(),
+            is_group: false,
+            thread_id: None,
+            metadata,
+        };
+
+        dispatch_message(
+            &msg,
+            &handle,
+            &router,
+            adapter.as_ref(),
+            &(adapter.clone() as Arc<dyn ChannelAdapter>),
+            &ChannelRateLimiter::default(),
+        )
+        .await;
+
+        let forwarded = mock.last_forwarded.lock().unwrap().clone().unwrap();
+        assert!(forwarded.contains("Telegram manifest:"));
+        assert!(forwarded.contains("single_100_42.json"));
+
+        let manifest = workspace
+            .join("inbox")
+            .join("telegram")
+            .join("single_100_42.json");
+        assert!(manifest.exists());
+
+        let _ = tokio::fs::remove_dir_all(&workspace).await;
     }
 
     #[test]

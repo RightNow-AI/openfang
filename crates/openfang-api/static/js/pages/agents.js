@@ -24,6 +24,7 @@ function agentsPage() {
     showSpawnModal: false,
     showDetailModal: false,
     detailAgent: null,
+    detailRequestToken: 0,
     spawnMode: 'wizard',
     spawning: false,
     spawnToml: '',
@@ -337,7 +338,8 @@ function agentsPage() {
     },
 
     async showDetail(agent) {
-      this.detailAgent = agent;
+      var requestToken = ++this.detailRequestToken;
+      this.detailAgent = Object.assign({}, agent);
       this.detailAgent._fallbacks = [];
       this.detailTab = 'info';
       this.agentFiles = [];
@@ -347,17 +349,28 @@ function agentsPage() {
       this.newFallbackValue = '';
       this.configForm = {
         name: agent.name || '',
-        system_prompt: agent.system_prompt || '',
         emoji: (agent.identity && agent.identity.emoji) || '',
         color: (agent.identity && agent.identity.color) || '#FF5C00',
-        archetype: (agent.identity && agent.identity.archetype) || '',
-        vibe: (agent.identity && agent.identity.vibe) || ''
+        system_prompt: undefined,
+        archetype: undefined,
+        vibe: undefined
       };
       this.showDetailModal = true;
-      // Fetch full agent detail to get fallback_models
       try {
         var full = await OpenFangAPI.get('/api/agents/' + agent.id);
+        if (!this.detailAgent || this.detailAgent.id !== agent.id || requestToken !== this.detailRequestToken) {
+          return;
+        }
+        this.detailAgent = Object.assign({}, this.detailAgent, full);
         this.detailAgent._fallbacks = full.fallback_models || [];
+        this.configForm = {
+          name: full.name || '',
+          system_prompt: full.system_prompt,
+          emoji: (full.identity && full.identity.emoji) || '',
+          color: (full.identity && full.identity.color) || '#FF5C00',
+          archetype: full.identity ? full.identity.archetype : undefined,
+          vibe: full.identity ? full.identity.vibe : undefined
+        };
       } catch(e) { /* ignore */ }
     },
 
@@ -408,12 +421,9 @@ function agentsPage() {
       this.spawnForm.systemPrompt = 'You are a helpful assistant.';
       this.spawnForm.profile = 'full';
       try {
-        var res = await fetch('/api/status');
-        if (res.ok) {
-          var status = await res.json();
-          if (status.default_provider) this.spawnForm.provider = status.default_provider;
-          if (status.default_model) this.spawnForm.model = status.default_model;
-        }
+        var status = await OpenFangAPI.get('/api/status');
+        if (status.default_provider) this.spawnForm.provider = status.default_provider;
+        if (status.default_model) this.spawnForm.model = status.default_model;
       } catch(e) { /* keep hardcoded defaults */ }
     },
 

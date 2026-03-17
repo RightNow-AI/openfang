@@ -447,6 +447,7 @@ async fn handle_text_message(
 
             // Resolve file attachments into image content blocks
             let mut has_images = false;
+            let mut content_blocks = None;
             if let Some(attachments) = parsed["attachments"].as_array() {
                 let refs: Vec<crate::types::AttachmentRef> = attachments
                     .iter()
@@ -456,11 +457,8 @@ async fn handle_text_message(
                     let image_blocks = crate::routes::resolve_attachments(&refs);
                     if !image_blocks.is_empty() {
                         has_images = true;
-                        crate::routes::inject_attachments_into_session(
-                            &state.kernel,
-                            agent_id,
-                            image_blocks,
-                        );
+                        content_blocks =
+                            crate::routes::with_message_text_block(&content, image_blocks);
                     }
                 }
             }
@@ -510,13 +508,18 @@ async fn handle_text_message(
             // Send message to agent with streaming
             let kernel_handle: Arc<dyn KernelHandle> =
                 state.kernel.clone() as Arc<dyn KernelHandle>;
-            match state.kernel.send_message_streaming(
-                agent_id,
-                &content,
-                Some(kernel_handle),
-                None,
-                None,
-            ) {
+            match state
+                .kernel
+                .send_message_streaming_with_blocks(
+                    agent_id,
+                    &content,
+                    Some(kernel_handle),
+                    content_blocks,
+                    None,
+                    None,
+                )
+                .await
+            {
                 Ok((mut rx, handle)) => {
                     // Forward stream events to WebSocket with debouncing.
                     //

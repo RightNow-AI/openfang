@@ -485,288 +485,38 @@ All built-in copy templates are adult-content-oriented. Keep the default adult-c
 
 ## Telegram Media Intake (Integrated)
 
-### Phase 1: Message Reception and Media Group Detection
+The Telegram intake contract is manifest-first. Do not reconstruct albums from
+placeholder text, do not aggregate `media_group_id` in memory yourself, and do
+not treat `[Photo: ...]` / `[Video: ...]` body snippets as authoritative facts.
 
-When receiving a Telegram message:
+Authoritative facts, in priority order:
+1. The `Channel Metadata` section injected by OpenFang for the current turn.
+2. `Telegram manifest: /abs/path.json` appended to the forwarded text.
+3. Bridge-maintained workspace artifacts such as `current_batch.json` and
+   `current_state.json`.
 
-1. **Extract key information**:
-   - `chat_id`: from `sender.platform_id`
-   - `message_id`: from `platform_message_id`
-   - `media_group_id`: from `metadata.media_group_id` (may be null)
-   - `caption`: user's text description
-   - `content`: message content (File/Video/Image/Text)
-
-2. **Check message type**:
-   - `ChannelContent::File { url, filename }` → may be video
-   - `ChannelContent::Video { url, ... }` → video
-   - `ChannelContent::Image { url, caption }` → image
-   - `ChannelContent::Text` → plain text (may be confirmation or link)
-
-3. **Extract user context for session isolation and rate limiting**:
-   ```python
-   # In group chats, use user_id for session isolation
-   user_id = sender.user_id  # Unique user identifier
-   is_group_chat = chat_id < 0  # Negative chat_id means group
-
-   # Session key: user_id in groups, chat_id in private chats
-   session_key = f"user_{user_id}" if is_group_chat else f"chat_{chat_id}"
-
-   # Rate limiting: 5 tasks per user per hour
-   RATE_LIMIT_TASKS = 5
-   RATE_LIMIT_WINDOW = 3600  # 1 hour in seconds
-   rate_limit_key = f"rate_limit_{user_id}"
-   rate_limit_data = memory_recall(rate_limit_key) or {"count": 0, "window_start": time.time()}
-
-   current_time = time.time()
-   if current_time - rate_limit_data["window_start"] > RATE_LIMIT_WINDOW:
-       # Reset window
-       rate_limit_data = {"count": 0, "window_start": current_time}
-
-   if rate_limit_data["count"] >= RATE_LIMIT_TASKS:
-       # Rate limit exceeded
-       channel_send(
-           channel="telegram",
-           recipient=chat_id,
-           content=f"⚠️ 速率限制：每小时最多处理 {RATE_LIMIT_TASKS} 个任务，请稍后再试",
-           metadata={"reply_to_message_id": message_id}
-       )
-       print(f"Rate limited user: {user_id} (count: {rate_limit_data['count']})")
-       return
-
-   # Increment rate limit counter
-   rate_limit_data["count"] += 1
-   memory_store(rate_limit_key, rate_limit_data)
-
-   # Check if user mentioned bot or used command
-   is_bot_mentioned = (
-       message.text and ("@" + bot_username in message.text or
-       message.text.startswith("/"))
-   )
-
-   # Session timeout: 30 minutes of inactivity
-   SESSION_TIMEOUT_SECONDS = 1800
-   session_last_active_key = f"session_{session_key}_last_active"
-   session_last_active = memory_recall(session_last_active_key)
-
-   if session_last_active:
-       time_since_last_active = current_time - session_last_active
-       if time_since_last_active > SESSION_TIMEOUT_SECONDS:
-           # Session expired, clean up
-           cleanup_expired_session(session_key)
-           session_last_active = None
-
-   # Update last active time
-   memory_store(session_last_active_key, current_time)
-
-   # In groups, only respond if mentioned or has active session
-   if is_group_chat and not is_bot_mentioned:
-       if not session_last_active:
-           return  # Ignore message, not for this bot
-   ```
-
-4. **Check if URL is downloadable with security validation**:
-   ```python
-   # Forwarded messages may show as Image but have valid download URLs
-   has_valid_url = (
-       url is not None and
-       url != "" and
-       (url.startswith("http://") or url.startswith("https://"))
-   )
-
-   # Security: URL domain whitelist (Telegram CDN only)
-   ALLOWED_DOMAINS = [
-       "api.telegram.org",
-       "cdn.telegram.org",
-       "telegram.org"
-   ]
-
-   if has_valid_url:
-       from urllib.parse import urlparse
-       parsed_url = urlparse(url)
-       domain = parsed_url.netloc.lower()
-
-       # Check if domain is in whitelist
-       is_allowed_domain = any(
-           domain == allowed or domain.endswith("." + allowed)
-           for allowed in ALLOWED_DOMAINS
-       )
-
-       if not is_allowed_domain:
-           channel_send(
-               channel="telegram",
-               recipient=chat_id,
-               content=f"⚠️ 安全限制：仅支持 Telegram 官方 CDN 的文件\n域名: {domain}",
-               metadata={"reply_to_message_id": message_id}
-           )
-           print(f"Blocked non-Telegram URL: {domain}")
-           return
-
-   # File size limit: 500MB
-   MAX_FILE_SIZE_MB = 500
-   if hasattr(content, 'file_size') and content.file_size:
-       file_size_mb = content.file_size / (1024 * 1024)
-       if file_size_mb > MAX_FILE_SIZE_MB:
-           channel_send(
-               channel="telegram",
-               recipient=chat_id,
-               content=f"⚠️ 文件过大：{file_size_mb:.1f}MB (限制: {MAX_FILE_SIZE_MB}MB)",
-               metadata={"reply_to_message_id": message_id}
-           )
-           return
-
-   # Only reject if truly no URL available
-   if not has_valid_url:
-       if media_group_id is not None:
-           handle_no_url_group()  # Aggregate first
-       else:
-           respond_no_download_url()
-       return
-
-   # Has URL and passed security checks, proceed to download
-   ```
-
-5. **Identify media type**:
-   ```python
-   video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.flv', '.wmv']
-   image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
-
-   is_video = any(filename.lower().endswith(ext) for ext in video_extensions)
-   is_image = any(filename.lower().endswith(ext) for ext in image_extensions)
-   ```
-
-6. **Determine processing path**:
-   ```python
-   if media_group_id is not None:
-       # Part of an album (may mix images and videos)
-       handle_media_group(session_key)
-   elif is_video or is_image:
-       # Single media file
-       handle_single_media(session_key)
-   else:
-       # Plain text message (may be user reply)
-       handle_text_message(session_key)
-   ```
-
-### Phase 1.5: Media Group Aggregation Logic (Critical!)
-
-**OpenFang Framework Behavior** (Updated 2026-03-17):
-- OpenFang automatically merges Telegram media groups with a 500ms buffer.
-- You receive one short summary text plus full structured metadata at `metadata.telegram_media_batch`.
-- For `shipinfabu-hand`, OpenFang writes the manifest to `workspace/inbox/telegram/<batch_key>.json` before forwarding the summary text.
-- Do not rely on body placeholders like `[Photo: ...]` / `[Video: ...]`; use manifest facts first.
-
-**Telegram Media Group Behavior**:
-- When user sends an album, each media is a separate message at Telegram API level
-- All media share the same `media_group_id`
-- OpenFang buffers these messages for 500ms and merges them before sending to you
-- Can mix images and videos (up to 10 items)
-- **Forwarded Telegram-internal videos retain file_id and can be downloaded** (small files usually work, large files may fail due to various reasons)
-- Only external links or videos from channels with privacy restrictions may lack download URLs
-
-**Processing Strategy**:
-```python
-def handle_media_group(session_key):
-    # 1. Build storage key with session isolation
-    storage_key = f"media_group_{session_key}_{media_group_id}_{message_id}"
-
-    # 2. Check if URL is downloadable
-    has_valid_url = (
-        url is not None and
-        url != "" and
-        (url.startswith("http://") or url.startswith("https://"))
-    )
-
-    # 3. Store current media info to memory
-    memory_store(storage_key, {
-        "url": content.url if has_valid_url else None,
-        "filename": content.filename if hasattr(content, 'filename') else None,
-        "type": "video" if is_video else "image",
-        "message_id": message_id,
-        "timestamp": current_timestamp(),
-        "has_url": has_valid_url
-    })
-
-    # 4. Check if this is the first message
-    pattern = f"media_group_{session_key}_{media_group_id}_*"
-    existing_media = memory_recall(pattern)
-
-    if len(existing_media) == 1:
-        # I am the first message, coordinate the entire album processing
-
-        # Wait 3 seconds for other media to arrive
-        shell_exec("sleep 3")
-
-        # Re-query all media
-        all_media = memory_recall(pattern)
-
-        # Sort by message_id (preserve original order)
-        sorted_media = sorted(all_media.values(), key=lambda x: x["message_id"])
-
-        # Classify
-        videos = [m for m in sorted_media if m["type"] == "video" and m.get("has_url")]
-        images = [m for m in sorted_media if m["type"] == "image" and m.get("has_url")]
-        no_url_items = [m for m in sorted_media if not m.get("has_url")]
-
-        # Check if all items have no downloadable URLs
-        if len(no_url_items) == len(sorted_media):
-            # All items have no URLs, cannot process
-            # Note: Download may fail for various reasons (network, privacy restrictions, etc.)
-            channel_send(
-                channel="telegram",
-                recipient=chat_id,
-                content="我收到了相册，但无法获取下载链接。\n\n可能的原因：\n• 视频来自设置了隐私限制的频道\n• 下载失败（网络、权限等原因）\n• 视频是外部链接而非 Telegram 内部文件\n\n请提供以下其中一种：\n• 原始视频文件（直接发送或转发）\n• 视频的可下载链接\n• 视频的本地绝对路径（例如：/Users/xxx/Videos/demo.mp4）",
-                metadata={"reply_to_message_id": message_id}
-            )
-            # Clean up memory
-            for key in all_media.keys():
-                memory_store(key, None)
-            return
-
-        # Has downloadable media
-        channel_send(
-            channel="telegram",
-            recipient=chat_id,
-            content=f"✅ 收集完成：{len(videos)} 个视频，{len(images)} 张图片\n正在下载...",
-            metadata={"reply_to_message_id": message_id}
-        )
-
-        # Continue to Phase 2: download all media with progress updates
-        downloadable_media = [m for m in sorted_media if m.get("has_url")]
-        download_media_group_with_progress(downloadable_media, session_key, media_group_id, caption, chat_id, message_id)
-    else:
-        # Not the first message, return silently
-        # The first message's handler will process the entire album
-        return
-```
-
-### Session Cleanup Helper
-
-**Cleanup expired sessions to prevent memory leaks**:
-```python
-def cleanup_expired_session(session_key):
-    # Clean up all data associated with an expired session
-
-    # 1. Clean up memory_store entries
-    patterns_to_clean = [
-        f"session_{session_key}_*",
-        f"media_group_{session_key}_*",
-        f"batch_{session_key}_*"
-    ]
-
-    for pattern in patterns_to_clean:
-        entries = memory_recall(pattern)
-        for key in entries.keys():
-            memory_store(key, None)
-
-    # 2. Clean up incomplete batch directories
-    intake_root = f"{local_media_intake_dir}/openfang-intake"
-
-    # Find batch directories for this session
-    shell_exec(f"find '{intake_root}' -type d -name '*{session_key}*' -mtime +0 -exec rm -rf {{}} \\; 2>/dev/null || true")
-
-    # 3. Log cleanup
-    print(f"Cleaned up expired session: {session_key}")
-```
+Telegram intake rules:
+- When a turn includes a manifest path, use
+  `python3 "<bridge_script_path>" collect-telegram-batch --manifest "/abs/workspace/inbox/telegram/<batch_key>.json"`
+  as the first intake step.
+- If the manifest reports multiple candidate videos, mixed media with unclear
+  roles, or no usable source video yet, stop in clarification mode and ask the
+  user to confirm the source video / image roles.
+- If the user confirms a specific pending Telegram video item, use
+  `python3 "<bridge_script_path>" fetch-telegram-video --manifest "/abs/workspace/inbox/telegram/<batch_key>.json" --item-index <1-based-index>`
+  before submit.
+- Only use the generic `collect --media-path ...` / `collect --media-dir ...`
+  flow for non-manifest local media intake such as absolute local paths,
+  downloaded files, or operator-provided staging directories.
+- If Telegram only gives image previews or a failed-download placeholder, say
+  clearly that the real source video is still missing. Ask for exactly one real
+  video source: direct Telegram upload, downloadable URL, or absolute local path.
+- Treat manifest JSON and helper bridge output as authoritative over natural
+  language guesses. If they conflict, trust the manifest / bridge state.
+- If a previously collected Telegram batch has already expired from
+  `local_media_intake_dir`, tell the user the temporary media copy was cleaned up
+  and ask them to resend the source instead of pretending the staged path still
+  exists.
 
 ### Phase 2: Media Download (Optimized with Progress Updates)
 

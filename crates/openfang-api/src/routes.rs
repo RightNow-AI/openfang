@@ -288,40 +288,47 @@ pub fn resolve_attachments(
     blocks
 }
 
-/// Pre-insert image attachments into an agent's session so the LLM can see them.
+/// Combine resolved image blocks with the user text prompt.
 ///
-/// This injects image content blocks into the session BEFORE the kernel
-/// adds the text user message, so the LLM receives: [..., User(images), User(text)].
-pub fn inject_attachments_into_session(
-    kernel: &OpenFangKernel,
-    agent_id: AgentId,
-    image_blocks: Vec<openfang_types::message::ContentBlock>,
-) {
-    use openfang_types::message::{Message, MessageContent, Role};
-
-    let entry = match kernel.registry.get(agent_id) {
-        Some(e) => e,
-        None => return,
-    };
-
-    let mut session = match kernel.memory.get_session(entry.session_id) {
-        Ok(Some(s)) => s,
-        _ => openfang_memory::session::Session {
-            id: entry.session_id,
-            agent_id,
-            messages: Vec::new(),
-            context_window_tokens: 0,
-            label: None,
-        },
-    };
-
-    session.messages.push(Message {
-        role: Role::User,
-        content: MessageContent::Blocks(image_blocks),
+/// `run_agent_loop` treats `user_content_blocks` as authoritative user input,
+/// so the text prompt must be included as a text block whenever attachments
+/// are present.
+pub fn with_message_text_block(
+    message: &str,
+    mut image_blocks: Vec<openfang_types::message::ContentBlock>,
+) -> Option<Vec<openfang_types::message::ContentBlock>> {
+    if image_blocks.is_empty() {
+        return None;
+    }
+    image_blocks.push(openfang_types::message::ContentBlock::Text {
+        text: message.to_string(),
+        provider_metadata: None,
     });
+    Some(image_blocks)
+}
 
-    if let Err(e) = kernel.memory.save_session(&session) {
-        tracing::warn!(error = %e, "Failed to save session with image attachments");
+#[cfg(test)]
+mod tests {
+    use super::with_message_text_block;
+    use openfang_types::message::ContentBlock;
+
+    #[test]
+    fn with_message_text_block_returns_none_without_images() {
+        assert!(with_message_text_block("hello", Vec::new()).is_none());
+    }
+
+    #[test]
+    fn with_message_text_block_appends_user_text() {
+        let blocks = vec![ContentBlock::Image {
+            media_type: "image/png".to_string(),
+            data: "aGVsbG8=".to_string(),
+        }];
+        let merged = with_message_text_block("describe this", blocks).unwrap();
+        assert_eq!(merged.len(), 2);
+        assert!(matches!(
+            &merged[1],
+            ContentBlock::Text { text, .. } if text == "describe this"
+        ));
     }
 }
 
@@ -358,21 +365,20 @@ pub async fn send_message(
         );
     }
 
-    // Resolve file attachments into image content blocks
-    if !req.attachments.is_empty() {
-        let image_blocks = resolve_attachments(&req.attachments);
-        if !image_blocks.is_empty() {
-            inject_attachments_into_session(&state.kernel, agent_id, image_blocks);
-        }
-    }
+    let content_blocks = if req.attachments.is_empty() {
+        None
+    } else {
+        with_message_text_block(&req.message, resolve_attachments(&req.attachments))
+    };
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(
+        .send_message_with_handle_and_blocks(
             agent_id,
             &req.message,
             Some(kernel_handle),
+            content_blocks,
             req.sender_id,
             req.sender_name,
         )
@@ -492,6 +498,7 @@ pub async fn get_agent_session(
                                                     media_type.rsplit('/').next().unwrap_or("png")
                                                 ),
                                                 content_type: media_type.clone(),
+                                                created_at: std::time::SystemTime::now(),
                                             },
                                         );
                                         msg_images.push(serde_json::json!({
@@ -1339,11 +1346,15 @@ pub async fn get_agent(
                 "network": entry.manifest.capabilities.network,
             },
             "description": entry.manifest.description,
+            "system_prompt": entry.manifest.model.system_prompt,
             "tags": entry.manifest.tags,
             "identity": {
                 "emoji": entry.identity.emoji,
                 "avatar_url": entry.identity.avatar_url,
                 "color": entry.identity.color,
+                "archetype": entry.identity.archetype,
+                "vibe": entry.identity.vibe,
+                "greeting_style": entry.identity.greeting_style,
             },
             "skills": entry.manifest.skills,
             "skills_mode": if entry.manifest.skills.is_empty() { "all" } else { "allowlist" },
@@ -1393,14 +1404,25 @@ pub async fn send_message_stream(
             .into_response();
     }
 
+    let content_blocks = if req.attachments.is_empty() {
+        None
+    } else {
+        with_message_text_block(&req.message, resolve_attachments(&req.attachments))
+    };
+
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
-    let (rx, _handle) = match state.kernel.send_message_streaming(
-        agent_id,
-        &req.message,
-        Some(kernel_handle),
-        req.sender_id,
-        req.sender_name,
-    ) {
+    let (rx, _handle) = match state
+        .kernel
+        .send_message_streaming_with_blocks(
+            agent_id,
+            &req.message,
+            Some(kernel_handle),
+            content_blocks,
+            req.sender_id,
+            req.sender_name,
+        )
+        .await
+    {
         Ok(pair) => pair,
         Err(e) => {
             tracing::warn!("Streaming message failed for agent {id}: {e}");
@@ -9179,6 +9201,7 @@ struct UploadMeta {
     #[allow(dead_code)]
     filename: String,
     content_type: String,
+    created_at: std::time::SystemTime,
 }
 
 /// In-memory upload metadata registry.
@@ -9186,6 +9209,8 @@ static UPLOAD_REGISTRY: LazyLock<DashMap<String, UploadMeta>> = LazyLock::new(Da
 
 /// Maximum upload size: 10 MB.
 const MAX_UPLOAD_SIZE: usize = 10 * 1024 * 1024;
+/// Uploaded files are ephemeral and should not accumulate forever.
+const UPLOAD_TTL_SECS: u64 = 24 * 60 * 60;
 
 /// Allowed content type prefixes for upload.
 const ALLOWED_CONTENT_TYPES: &[&str] = &["image/", "text/", "application/pdf", "audio/"];
@@ -9194,6 +9219,38 @@ fn is_allowed_content_type(ct: &str) -> bool {
     ALLOWED_CONTENT_TYPES
         .iter()
         .any(|prefix| ct.starts_with(prefix))
+}
+
+fn upload_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("openfang_uploads")
+}
+
+fn upload_is_expired(created_at: std::time::SystemTime) -> bool {
+    match std::time::SystemTime::now()
+        .duration_since(created_at)
+        .map(|elapsed| elapsed.as_secs())
+    {
+        Ok(age_secs) => age_secs > UPLOAD_TTL_SECS,
+        Err(_) => false,
+    }
+}
+
+fn cleanup_expired_uploads() {
+    let expired_ids: Vec<String> = UPLOAD_REGISTRY
+        .iter()
+        .filter(|entry| upload_is_expired(entry.value().created_at))
+        .map(|entry| entry.key().clone())
+        .collect();
+
+    if expired_ids.is_empty() {
+        return;
+    }
+
+    let dir = upload_dir();
+    for file_id in expired_ids {
+        UPLOAD_REGISTRY.remove(&file_id);
+        let _ = std::fs::remove_file(dir.join(&file_id));
+    }
 }
 
 /// POST /api/agents/{id}/upload — Upload a file attachment.
@@ -9207,6 +9264,8 @@ pub async fn upload_file(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
+    cleanup_expired_uploads();
+
     // Validate agent ID format
     let _agent_id: AgentId = match id.parse() {
         Ok(id) => id,
@@ -9260,7 +9319,7 @@ pub async fn upload_file(
 
     // Generate file ID and save
     let file_id = uuid::Uuid::new_v4().to_string();
-    let upload_dir = std::env::temp_dir().join("openfang_uploads");
+    let upload_dir = upload_dir();
     if let Err(e) = std::fs::create_dir_all(&upload_dir) {
         tracing::warn!("Failed to create upload dir: {e}");
         return (
@@ -9284,6 +9343,7 @@ pub async fn upload_file(
         UploadMeta {
             filename: filename.clone(),
             content_type: content_type.clone(),
+            created_at: std::time::SystemTime::now(),
         },
     );
 
@@ -9330,6 +9390,8 @@ pub async fn upload_file(
 
 /// GET /api/uploads/{file_id} — Serve an uploaded file.
 pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
+    cleanup_expired_uploads();
+
     // Validate file_id is a UUID to prevent path traversal
     if uuid::Uuid::parse_str(&file_id).is_err() {
         return (
@@ -9342,12 +9404,29 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
         );
     }
 
-    let file_path = std::env::temp_dir().join("openfang_uploads").join(&file_id);
+    let file_path = upload_dir().join(&file_id);
 
     // Look up metadata from registry; fall back to disk probe for generated images
     // (image_generate saves files without registering in UPLOAD_REGISTRY).
     let content_type = match UPLOAD_REGISTRY.get(&file_id) {
-        Some(m) => m.content_type.clone(),
+        Some(m) => {
+            let created_at = m.created_at;
+            let content_type = m.content_type.clone();
+            drop(m);
+            if upload_is_expired(created_at) {
+                UPLOAD_REGISTRY.remove(&file_id);
+                let _ = std::fs::remove_file(&file_path);
+                return (
+                    StatusCode::NOT_FOUND,
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "application/json".to_string(),
+                    )],
+                    b"{\"error\":\"File expired\"}".to_vec(),
+                );
+            }
+            content_type
+        }
         None => {
             // Infer content type from file magic bytes
             if !file_path.exists() {
@@ -10990,7 +11069,7 @@ pub async fn comms_task(
 
 // ── Dashboard Authentication (username/password sessions) ──
 
-/// POST /api/auth/login — Authenticate with username/password, returns session token.
+/// POST /api/auth/login — Authenticate with username/password and set a session cookie.
 pub async fn auth_login(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -11069,7 +11148,6 @@ pub async fn auth_login(
         .body(Body::from(
             serde_json::json!({
                 "status": "ok",
-                "token": token,
                 "username": username,
             })
             .to_string(),

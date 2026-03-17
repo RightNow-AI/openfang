@@ -836,6 +836,11 @@ impl BrowserManager {
 
     /// Close an agent's browser session.
     pub async fn close_session(&self, agent_id: &str) {
+        self.close_session_nowait(agent_id);
+    }
+
+    /// Close an agent's browser session without awaiting.
+    pub fn close_session_nowait(&self, agent_id: &str) {
         if let Some((_, session)) = self.sessions.remove(agent_id) {
             drop(session);
             info!(agent_id, "Browser session closed");
@@ -844,7 +849,25 @@ impl BrowserManager {
 
     /// Clean up an agent's browser session (called after agent loop ends).
     pub async fn cleanup_agent(&self, agent_id: &str) {
-        self.close_session(agent_id).await;
+        self.close_session_nowait(agent_id);
+    }
+
+    /// Best-effort synchronous cleanup for an agent.
+    pub fn cleanup_agent_nowait(&self, agent_id: &str) {
+        self.close_session_nowait(agent_id);
+    }
+
+    /// Best-effort synchronous cleanup for all browser sessions.
+    pub fn shutdown_all(&self) -> usize {
+        let agent_ids: Vec<String> = self
+            .sessions
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        for agent_id in &agent_ids {
+            self.close_session_nowait(agent_id);
+        }
+        agent_ids.len()
     }
 
     /// Get existing session or create a new one.

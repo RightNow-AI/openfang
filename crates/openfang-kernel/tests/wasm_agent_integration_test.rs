@@ -304,6 +304,7 @@ async fn test_wasm_agent_streaming_fallback() {
 
     let (mut rx, handle) = kernel
         .send_message_streaming(agent_id, "Hi!", None, None, None)
+        .await
         .expect("Streaming should start");
 
     // Collect all stream events

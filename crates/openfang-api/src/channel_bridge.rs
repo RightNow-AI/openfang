@@ -3,7 +3,7 @@
 //! Implements `ChannelBridgeHandle` on `OpenFangKernel` and provides the
 //! `start_channel_bridge()` entry point called by the daemon.
 
-use openfang_channels::bridge::{BridgeManager, ChannelBridgeHandle};
+use openfang_channels::bridge::{BridgeAgentInfo, BridgeManager, ChannelBridgeHandle};
 use openfang_channels::discord::DiscordAdapter;
 use openfang_channels::email::EmailAdapter;
 use openfang_channels::google_chat::GoogleChatAdapter;
@@ -80,12 +80,14 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         &self,
         agent_id: AgentId,
         message: &str,
-        _metadata: Option<&serde_json::Map<String, serde_json::Value>>,
+        metadata: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<String, String> {
-        // Kernel does not yet consume channel metadata in agent turns.
-        // Keep the metadata-aware bridge interface so metadata is available to
-        // bridge-level routing/wiring before entering the kernel.
-        self.send_message(agent_id, message).await
+        let result = self
+            .kernel
+            .send_message_with_metadata(agent_id, message, metadata.cloned())
+            .await
+            .map_err(|e| format!("{e}"))?;
+        Ok(result.response)
     }
 
     async fn send_message_with_blocks(
@@ -138,6 +140,18 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .registry
             .get(agent_id)
             .map(|entry| (entry.name, entry.manifest.workspace)))
+    }
+
+    async fn get_agent_info(&self, agent_id: AgentId) -> Result<Option<BridgeAgentInfo>, String> {
+        Ok(self
+            .kernel
+            .registry
+            .get(agent_id)
+            .map(|entry| BridgeAgentInfo {
+                name: entry.name,
+                workspace: entry.manifest.workspace,
+                tags: entry.tags,
+            }))
     }
 
     async fn spawn_agent_by_name(&self, manifest_name: &str) -> Result<AgentId, String> {

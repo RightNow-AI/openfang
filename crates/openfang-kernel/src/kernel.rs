@@ -1259,15 +1259,16 @@ impl OpenFangKernel {
         parent: Option<AgentId>,
     ) -> KernelResult<AgentId> {
         let agent_id = AgentId::new();
-        let session_id = SessionId::new();
         let name = manifest.name.clone();
 
         info!(agent = %name, id = %agent_id, parent = ?parent, "Spawning agent");
 
         // Create session
-        self.memory
+        let session = self
+            .memory
             .create_session(agent_id)
             .map_err(KernelError::OpenFang)?;
+        let session_id = session.id;
 
         // Inherit kernel exec_policy as fallback if agent manifest doesn't have one
         let mut manifest = manifest;
@@ -1474,6 +1475,30 @@ impl OpenFangKernel {
         .await
     }
 
+    /// Send a message to an agent with structured channel metadata.
+    pub async fn send_message_with_metadata(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        channel_metadata: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> KernelResult<AgentLoopResult> {
+        let handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+        self.send_message_with_handle_blocks_and_metadata(
+            agent_id,
+            message,
+            handle,
+            None,
+            None,
+            None,
+            channel_metadata,
+        )
+        .await
+    }
+
     /// Send a message with an optional kernel handle for inter-agent tools.
     pub async fn send_message_with_handle(
         &self,
@@ -1494,16 +1519,12 @@ impl OpenFangKernel {
         .await
     }
 
-    /// Send a message with optional content blocks and an optional kernel handle.
+    /// Send a message with optional content blocks, optional kernel handle, and
+    /// optional channel metadata.
     ///
-    /// When `content_blocks` is `Some`, the LLM agent loop receives structured
-    /// multimodal content (text + images) instead of just a text string. This
-    /// enables vision models to process images sent from channels like Telegram.
-    ///
-    /// Per-agent locking ensures that concurrent messages for the same agent
-    /// are serialized (preventing session corruption), while messages for
-    /// different agents run in parallel.
-    pub async fn send_message_with_handle_and_blocks(
+    /// Channel metadata is injected into the authoritative system prompt context.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_message_with_handle_blocks_and_metadata(
         &self,
         agent_id: AgentId,
         message: &str,
@@ -1511,6 +1532,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        channel_metadata: Option<serde_json::Map<String, serde_json::Value>>,
     ) -> KernelResult<AgentLoopResult> {
         // Acquire per-agent lock to serialize concurrent messages for the same agent.
         // This prevents session corruption when multiple messages arrive in quick
@@ -1548,6 +1570,7 @@ impl OpenFangKernel {
                 content_blocks,
                 sender_id,
                 sender_name,
+                channel_metadata,
             )
             .await
         };
@@ -1590,6 +1613,36 @@ impl OpenFangKernel {
         }
     }
 
+    /// Send a message with optional content blocks and an optional kernel handle.
+    ///
+    /// When `content_blocks` is `Some`, the LLM agent loop receives structured
+    /// multimodal content (text + images) instead of just a text string. This
+    /// enables vision models to process images sent from channels like Telegram.
+    ///
+    /// Per-agent locking ensures that concurrent messages for the same agent
+    /// are serialized (preventing session corruption), while messages for
+    /// different agents run in parallel.
+    pub async fn send_message_with_handle_and_blocks(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> KernelResult<AgentLoopResult> {
+        self.send_message_with_handle_blocks_and_metadata(
+            agent_id,
+            message,
+            kernel_handle,
+            content_blocks,
+            sender_id,
+            sender_name,
+            None,
+        )
+        .await
+    }
+
     /// Send a message to an agent with streaming responses.
     ///
     /// Returns a receiver for incremental `StreamEvent`s and a `JoinHandle`
@@ -1598,7 +1651,7 @@ impl OpenFangKernel {
     ///
     /// WASM and Python agents don't support true streaming — they execute
     /// synchronously and emit a single `TextDelta` + `ContentComplete` pair.
-    pub fn send_message_streaming(
+    pub async fn send_message_streaming(
         self: &Arc<Self>,
         agent_id: AgentId,
         message: &str,
@@ -1609,6 +1662,39 @@ impl OpenFangKernel {
         tokio::sync::mpsc::Receiver<StreamEvent>,
         tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
     )> {
+        self.send_message_streaming_with_blocks(
+            agent_id,
+            message,
+            kernel_handle,
+            None,
+            sender_id,
+            sender_name,
+        )
+        .await
+    }
+
+    /// Send a streaming message to an agent with optional multimodal content blocks.
+    pub async fn send_message_streaming_with_blocks(
+        self: &Arc<Self>,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> KernelResult<(
+        tokio::sync::mpsc::Receiver<StreamEvent>,
+        tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
+    )> {
+        // Acquire the same per-agent lock used by the non-streaming path before
+        // reading the session or launching the streaming task.
+        let lock = self
+            .agent_msg_locks
+            .entry(agent_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let agent_guard = lock.lock_owned().await;
+
         // Enforce quota before spawning the streaming task
         self.scheduler
             .check_quota(agent_id)
@@ -1629,6 +1715,7 @@ impl OpenFangKernel {
             let entry_clone = entry.clone();
 
             let handle = tokio::spawn(async move {
+                let _agent_guard = agent_guard;
                 let result = if is_wasm {
                     kernel_clone
                         .execute_wasm_agent(&entry_clone, &message_owned, kernel_handle)
@@ -1639,7 +1726,7 @@ impl OpenFangKernel {
                         .await
                 };
 
-                match result {
+                let outcome = match result {
                     Ok(result) => {
                         // Emit the complete response as a single text delta
                         let _ = tx
@@ -1666,9 +1753,15 @@ impl OpenFangKernel {
                         warn!(agent_id = %agent_id, error = %e, "Non-LLM agent failed");
                         Err(e)
                     }
-                }
+                };
+
+                kernel_clone.running_tasks.remove(&agent_id);
+                outcome
             });
 
+            // Register abort handle so remove_agent/shutdown can cancel streaming tasks
+            // consistently across LLM and non-LLM agents.
+            self.running_tasks.insert(agent_id, handle.abort_handle());
             return Ok((rx, handle));
         }
 
@@ -1848,6 +1941,7 @@ impl OpenFangKernel {
                 ),
                 sender_id,
                 sender_name,
+                channel_metadata: None,
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -1872,9 +1966,12 @@ impl OpenFangKernel {
         } else {
             message.to_string()
         };
+        let content_blocks_owned = content_blocks;
         let kernel_clone = Arc::clone(self);
 
         let handle = tokio::spawn(async move {
+            let _agent_guard = agent_guard;
+
             // Auto-compact if the session is large before running the loop
             if needs_compact {
                 info!(agent_id = %agent_id, messages = session.messages.len(), "Auto-compacting session");
@@ -1960,11 +2057,11 @@ impl OpenFangKernel {
                 Some(&kernel_clone.hooks),
                 ctx_window,
                 Some(&kernel_clone.process_manager),
-                None, // content_blocks (streaming path uses text only for now)
+                content_blocks_owned,
             )
             .await;
 
-            match result {
+            let outcome = match result {
                 Ok(result) => {
                     // Append new messages to canonical session for cross-channel memory
                     if session.messages.len() > messages_before {
@@ -2018,7 +2115,10 @@ impl OpenFangKernel {
                     warn!(agent_id = %agent_id, error = %e, "Streaming agent loop failed");
                     Err(KernelError::OpenFang(e))
                 }
-            }
+            };
+
+            kernel_clone.running_tasks.remove(&agent_id);
+            outcome
         });
 
         // Store abort handle for cancellation support
@@ -2184,6 +2284,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        channel_metadata: Option<serde_json::Map<String, serde_json::Value>>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2364,6 +2465,7 @@ impl OpenFangKernel {
                 ),
                 sender_id,
                 sender_name,
+                channel_metadata,
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -3135,11 +3237,21 @@ impl OpenFangKernel {
             .registry
             .remove(agent_id)
             .map_err(KernelError::OpenFang)?;
+        if let Some((_, handle)) = self.running_tasks.remove(&agent_id) {
+            handle.abort();
+        }
         self.background.stop_agent(agent_id);
         self.scheduler.unregister(agent_id);
         self.capabilities.revoke_all(agent_id);
         self.event_bus.unsubscribe_agent(agent_id);
         self.triggers.remove_agent_triggers(agent_id);
+        self.browser_ctx.cleanup_agent_nowait(&agent_id.to_string());
+        let killed_processes = self
+            .process_manager
+            .kill_agent_processes(&agent_id.to_string());
+        if killed_processes > 0 {
+            info!(agent_id = %agent_id, count = killed_processes, "Stopped persistent agent processes");
+        }
 
         // Remove cron jobs so they don't linger as orphans (#504)
         let cron_removed = self.cron_scheduler.remove_agent_jobs(agent_id);
@@ -4424,6 +4536,16 @@ impl OpenFangKernel {
     pub fn shutdown(&self) {
         info!("Shutting down OpenFang kernel...");
 
+        let abort_handles: Vec<tokio::task::AbortHandle> = self
+            .running_tasks
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        for handle in abort_handles {
+            handle.abort();
+        }
+        self.running_tasks.clear();
+
         // Kill WhatsApp gateway child process if running
         if let Ok(guard) = self.whatsapp_gateway_pid.lock() {
             if let Some(pid) = *guard {
@@ -4453,6 +4575,20 @@ impl OpenFangKernel {
         );
 
         self.supervisor.shutdown();
+        let closed_browser_sessions = self.browser_ctx.shutdown_all();
+        if closed_browser_sessions > 0 {
+            info!(
+                count = closed_browser_sessions,
+                "Closed browser sessions during shutdown"
+            );
+        }
+        let stopped_processes = self.process_manager.shutdown_all();
+        if stopped_processes > 0 {
+            info!(
+                count = stopped_processes,
+                "Stopped persistent processes during shutdown"
+            );
+        }
 
         // Update agent states to Suspended in persistent storage (not delete)
         for entry in self.registry.list() {

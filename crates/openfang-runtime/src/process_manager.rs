@@ -54,6 +54,21 @@ pub struct ProcessManager {
 }
 
 impl ProcessManager {
+    fn kill_process_nowait(process_id: &str, proc: &mut ManagedProcess) {
+        if let Some(pid) = proc.child.id() {
+            debug!(process_id = %process_id, pid, agent_id = %proc.agent_id, "Stopping persistent process");
+            std::thread::spawn(move || {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    let _ = rt.block_on(crate::subprocess_sandbox::kill_process_tree(pid, 3000));
+                }
+            });
+        }
+        let _ = proc.child.start_kill();
+    }
+
     /// Create a new process manager.
     pub fn new(max_per_agent: usize) -> Self {
         Self {
@@ -213,6 +228,41 @@ impl ProcessManager {
         }
         let _ = proc.child.kill().await;
         Ok(())
+    }
+
+    /// Best-effort synchronous cleanup for every process owned by an agent.
+    pub fn kill_agent_processes(&self, agent_id: &str) -> usize {
+        let ids: Vec<ProcessId> = self
+            .processes
+            .iter()
+            .filter(|entry| entry.value().agent_id == agent_id)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        for id in &ids {
+            if let Some((_, mut proc)) = self.processes.remove(id) {
+                Self::kill_process_nowait(id, &mut proc);
+            }
+        }
+
+        ids.len()
+    }
+
+    /// Best-effort synchronous shutdown for all managed processes.
+    pub fn shutdown_all(&self) -> usize {
+        let ids: Vec<ProcessId> = self
+            .processes
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        for id in &ids {
+            if let Some((_, mut proc)) = self.processes.remove(id) {
+                Self::kill_process_nowait(id, &mut proc);
+            }
+        }
+
+        ids.len()
     }
 
     /// List all processes for an agent.

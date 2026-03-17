@@ -183,9 +183,16 @@ document.addEventListener('alpine:init', function() {
         this.version = s.version || '0.1.0';
         this.agentCount = s.agent_count || 0;
       } catch(e) {
+        var msg = e && e.message ? e.message : 'Unknown error';
+        if (msg.indexOf('401') >= 0 || msg.indexOf('Unauthorized') >= 0) {
+          this.connected = true;
+          this.booting = false;
+          this.lastError = '';
+          return;
+        }
         this.connected = false;
-        this.lastError = e.message || 'Unknown error';
-        console.warn('[OpenFang] Status check failed:', e.message);
+        this.lastError = msg;
+        console.warn('[OpenFang] Status check failed:', msg);
       }
     },
 
@@ -199,7 +206,10 @@ document.addEventListener('alpine:init', function() {
           this.showOnboarding = true;
         }
       } catch(e) {
-        // If config endpoint fails, still show onboarding if no agents
+        var msg = e && e.message ? e.message : '';
+        if (msg.indexOf('401') >= 0 || msg.indexOf('403') >= 0 || msg.indexOf('Unauthorized') >= 0 || msg.indexOf('localhost-only') >= 0) {
+          return;
+        }
         if (this.agentCount === 0) this.showOnboarding = true;
       }
     },

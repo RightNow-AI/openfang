@@ -730,6 +730,7 @@ pub async fn run_daemon(
     daemon_info_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = listen_addr.parse()?;
+    validate_auth_exposure(&kernel, addr)?;
 
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
@@ -959,5 +960,51 @@ fn is_daemon_responding(addr: &str) -> bool {
         std::net::TcpStream::connect(addr_only)
             .map(|_| true)
             .unwrap_or(false)
+    }
+}
+
+fn validate_auth_exposure(
+    kernel: &OpenFangKernel,
+    addr: SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let api_key_enabled = !kernel.config.api_key.trim().is_empty();
+    let session_auth_enabled = kernel.config.auth.enabled;
+    if !api_key_enabled && !session_auth_enabled && !addr.ip().is_loopback() {
+        return Err(format!(
+            "Refusing to expose the API on {addr} without authentication. Set OPENFANG_API_KEY or bind to 127.0.0.1."
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openfang_types::config::KernelConfig;
+
+    fn test_kernel() -> OpenFangKernel {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            ..KernelConfig::default()
+        };
+        OpenFangKernel::boot_with_config(config).unwrap()
+    }
+
+    #[test]
+    fn validate_auth_exposure_rejects_remote_bind_without_auth() {
+        let kernel = test_kernel();
+        let err = validate_auth_exposure(&kernel, "0.0.0.0:4200".parse().unwrap()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Refusing to expose the API on 0.0.0.0:4200 without authentication"));
+    }
+
+    #[test]
+    fn validate_auth_exposure_allows_loopback_without_auth() {
+        let kernel = test_kernel();
+        assert!(validate_auth_exposure(&kernel, "127.0.0.1:4200".parse().unwrap()).is_ok());
     }
 }

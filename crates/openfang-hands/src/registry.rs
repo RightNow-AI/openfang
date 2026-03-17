@@ -57,6 +57,20 @@ pub struct HandRegistry {
     instances: DashMap<Uuid, HandInstance>,
 }
 
+fn backup_path(path: &Path) -> PathBuf {
+    match path.extension() {
+        Some(ext) => path.with_extension(format!("{}.bak", ext.to_string_lossy())),
+        None => path.with_extension("bak"),
+    }
+}
+
+fn temp_path(path: &Path) -> PathBuf {
+    match path.extension() {
+        Some(ext) => path.with_extension(format!("{}.tmp", ext.to_string_lossy())),
+        None => path.with_extension("tmp"),
+    }
+}
+
 impl HandRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
@@ -92,25 +106,38 @@ impl HandRegistry {
             .collect();
         let json = serde_json::to_string_pretty(&entries)
             .map_err(|e| HandError::Config(format!("serialize hand state: {e}")))?;
-        std::fs::write(path, json)
-            .map_err(|e| HandError::Config(format!("write hand state: {e}")))?;
+        let tmp_path = temp_path(path);
+        let bak_path = backup_path(path);
+        std::fs::write(&tmp_path, json)
+            .map_err(|e| HandError::Config(format!("write hand state temp file: {e}")))?;
+        if path.exists() {
+            let _ = std::fs::copy(path, &bak_path);
+        }
+        std::fs::rename(&tmp_path, path)
+            .map_err(|e| HandError::Config(format!("rename hand state file: {e}")))?;
         Ok(())
     }
 
     /// Load persisted hand state entries that should be restored on boot.
     pub fn load_state(path: &Path) -> Vec<PersistedHandStateEntry> {
-        let data = match std::fs::read_to_string(path) {
-            Ok(d) => d,
-            Err(_) => return Vec::new(),
-        };
-        let entries: Vec<PersistedHandStateEntry> = match serde_json::from_str(&data) {
-            Ok(entries) => entries,
-            Err(e) => {
-                warn!("Failed to parse hand state file: {e}");
-                return Vec::new();
+        for candidate in [path.to_path_buf(), backup_path(path)] {
+            let data = match std::fs::read_to_string(&candidate) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            match serde_json::from_str::<Vec<PersistedHandStateEntry>>(&data) {
+                Ok(entries) => {
+                    if candidate != path {
+                        warn!(path = %candidate.display(), "Recovered hand state from backup file");
+                    }
+                    return entries;
+                }
+                Err(e) => {
+                    warn!(path = %candidate.display(), "Failed to parse hand state file: {e}");
+                }
             }
-        };
-        entries
+        }
+        Vec::new()
     }
 
     /// Load all bundled hand definitions. Returns count of definitions loaded.
@@ -986,5 +1013,51 @@ metrics = []
             .unwrap_or_default()
             .contains("external-test"));
         assert_eq!(entry.skill_content.as_deref(), Some("External skill body"));
+    }
+
+    #[test]
+    fn load_state_recovers_from_backup_file() {
+        let reg = HandRegistry::new();
+        let hand_dir = tempdir().unwrap();
+        let state_dir = tempdir().unwrap();
+
+        std::fs::write(
+            hand_dir.path().join("HAND.toml"),
+            r#"
+id = "backup-test"
+name = "Backup Test"
+description = "External hand for backup test"
+category = "development"
+tools = []
+
+[agent]
+name = "backup-test-hand"
+description = "Backup test agent"
+system_prompt = "Test prompt"
+
+[dashboard]
+metrics = []
+"#,
+        )
+        .unwrap();
+        std::fs::write(hand_dir.path().join("SKILL.md"), "Backup skill body").unwrap();
+
+        reg.install_from_path(hand_dir.path()).unwrap();
+        reg.activate("backup-test", HashMap::new()).unwrap();
+
+        let state_path = state_dir.path().join("hand_state.json");
+        reg.persist_state(&state_path).unwrap();
+
+        let backup = backup_path(&state_path);
+        std::fs::copy(&state_path, &backup).unwrap();
+        std::fs::write(&state_path, "{bad json").unwrap();
+
+        let loaded = HandRegistry::load_state(&state_path);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].hand_id, "backup-test");
+        assert_eq!(
+            loaded[0].skill_content.as_deref(),
+            Some("Backup skill body")
+        );
     }
 }

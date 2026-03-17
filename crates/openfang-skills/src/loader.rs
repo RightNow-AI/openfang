@@ -331,10 +331,8 @@ async fn execute_shell(
 
     debug!("Executing Shell skill: {} {}", shell, script_path.display());
 
-    // Use -s to read from stdin, -c to execute command
     let mut cmd = tokio::process::Command::new(&shell);
-    cmd.arg("-s")
-        .arg(&script_path)
+    cmd.arg(&script_path)
         .current_dir(skill_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -457,5 +455,34 @@ mod tests {
         assert!(!result.is_error);
         let note = result.output["note"].as_str().unwrap();
         assert!(note.contains("system prompt"));
+    }
+
+    #[tokio::test]
+    async fn test_shell_execution_runs_entry_script() {
+        use tempfile::TempDir;
+
+        if find_shell().is_none() {
+            return;
+        }
+
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("echo.sh"),
+            "#!/bin/sh\npayload=$(cat)\nprintf '%s' \"$payload\"\n",
+        )
+        .unwrap();
+
+        let result = execute_shell(
+            dir.path(),
+            "echo.sh",
+            "echo_tool",
+            &serde_json::json!({"value": 42}),
+        )
+        .await
+        .unwrap();
+
+        assert!(!result.is_error);
+        assert_eq!(result.output["tool"], "echo_tool");
+        assert_eq!(result.output["input"]["value"], 42);
     }
 }

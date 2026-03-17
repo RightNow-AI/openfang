@@ -1,9 +1,9 @@
 //! Heartbeat monitor — detects unresponsive agents for 24/7 autonomous operation.
 //!
 //! The heartbeat monitor runs as a background tokio task, periodically checking
-//! each running agent's `last_active` timestamp. If an agent hasn't been active
-//! for longer than 2x its heartbeat interval, a `HealthCheckFailed` event is
-//! published to the event bus.
+//! each autonomous running agent's `last_active` timestamp. If an autonomous
+//! agent hasn't been active for longer than 2x its heartbeat interval, a
+//! `HealthCheckFailed` event is published to the event bus.
 //!
 //! Crashed agents are tracked for auto-recovery: the heartbeat will attempt to
 //! reset crashed agents back to Running up to `max_recovery_attempts` times.
@@ -126,7 +126,7 @@ impl Default for RecoveryTracker {
     }
 }
 
-/// Check all running and crashed agents and return their heartbeat status.
+/// Check all autonomous running agents and crashed agents and return heartbeat status.
 ///
 /// This is a pure function — it doesn't start a background task.
 /// The caller (kernel) can run this periodically or in a background task.
@@ -143,16 +143,23 @@ pub fn check_agents(registry: &AgentRegistry, config: &HeartbeatConfig) -> Vec<H
 
         let inactive_secs = (now - entry_ref.last_active).num_seconds();
 
-        // Determine timeout: use agent's autonomous config if set, else default
+        // Crashed agents are always considered unresponsive.
+        // For Running agents, heartbeat liveness is only enforced for autonomous agents.
+        // Non-autonomous chat/hands can stay idle for long periods and should not be
+        // treated as unresponsive noise.
         let timeout_secs = entry_ref
             .manifest
             .autonomous
             .as_ref()
             .map(|a| a.heartbeat_interval_secs * UNRESPONSIVE_MULTIPLIER)
             .unwrap_or(config.default_timeout_secs) as i64;
-
-        // Crashed agents are always considered unresponsive
-        let unresponsive = entry_ref.state == AgentState::Crashed || inactive_secs > timeout_secs;
+        let unresponsive = if entry_ref.state == AgentState::Crashed {
+            true
+        } else if entry_ref.manifest.autonomous.is_some() {
+            inactive_secs > timeout_secs
+        } else {
+            false
+        };
 
         if unresponsive && entry_ref.state == AgentState::Running {
             warn!(
@@ -330,6 +337,46 @@ mod tests {
         assert_eq!(summary.unresponsive, 1);
         assert_eq!(summary.unresponsive_agents.len(), 1);
         assert_eq!(summary.unresponsive_agents[0].name, "agent-2");
+    }
+
+    #[test]
+    fn test_non_autonomous_running_agent_is_not_marked_unresponsive() {
+        let reg = AgentRegistry::new();
+        let manifest = openfang_types::agent::AgentManifest {
+            name: "manual-chat-agent".to_string(),
+            autonomous: None,
+            ..Default::default()
+        };
+
+        let mut entry = openfang_types::agent::AgentEntry {
+            id: openfang_types::agent::AgentId::new(),
+            name: manifest.name.clone(),
+            manifest,
+            state: AgentState::Suspended,
+            mode: openfang_types::agent::AgentMode::Full,
+            created_at: Utc::now(),
+            last_active: Utc::now(),
+            parent: None,
+            children: Vec::new(),
+            session_id: openfang_types::agent::SessionId::new(),
+            tags: Vec::new(),
+            identity: Default::default(),
+            onboarding_completed: false,
+            onboarding_completed_at: None,
+        };
+        entry.state = AgentState::Running;
+        // Simulate long idle.
+        entry.last_active = Utc::now() - chrono::Duration::seconds(10_000);
+        let agent_id = entry.id;
+        reg.register(entry).unwrap();
+
+        let statuses = check_agents(&reg, &HeartbeatConfig::default());
+        let status = statuses
+            .iter()
+            .find(|s| s.agent_id == agent_id)
+            .expect("status should exist");
+        assert_eq!(status.state, AgentState::Running);
+        assert!(!status.unresponsive);
     }
 
     #[test]

@@ -51,6 +51,14 @@ pub struct AuthState {
     pub session_secret: String,
 }
 
+fn request_is_loopback(request: &Request<Body>) -> bool {
+    request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().is_loopback())
+        .unwrap_or(false)
+}
+
 /// Bearer token authentication middleware.
 ///
 /// When `api_key` is non-empty (after trimming), requests to non-public
@@ -69,63 +77,25 @@ pub async fn auth(
 
     // Shutdown is loopback-only (CLI on same machine) — skip token auth
     let path = request.uri().path();
-    if path == "/api/shutdown" {
-        let is_loopback = request
-            .extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|ci| ci.0.ip().is_loopback())
-            .unwrap_or(false); // SECURITY: default-deny — unknown origin is NOT loopback
-        if is_loopback {
-            return next.run(request).await;
-        }
+    if path == "/api/shutdown" && request_is_loopback(&request) {
+        return next.run(request).await;
     }
 
-    // Public endpoints that don't require auth (dashboard needs these).
-    // SECURITY: /api/agents is GET-only (listing). POST (spawn) requires auth.
-    // SECURITY: Public endpoints are GET-only unless explicitly noted.
-    // POST/PUT/DELETE to any endpoint ALWAYS requires auth to prevent
-    // unauthenticated writes (cron job creation, skill install, etc.).
+    // Public endpoints that don't require auth.
+    // Keep this list intentionally small: the dashboard shell, liveness probe,
+    // auth bootstrap, and protocol discovery endpoints that must be reachable
+    // before a user has authenticated.
     let is_get = method == axum::http::Method::GET;
     let is_post = method == axum::http::Method::POST;
     let is_public = path == "/"
         || path == "/logo.png"
         || path == "/favicon.ico"
+        || path == "/manifest.json"
+        || path == "/sw.js"
         || (path == "/.well-known/agent.json" && is_get)
         || (path.starts_with("/a2a/") && is_get)
         || path == "/api/health"
-        || path == "/api/health/detail"
-        || path == "/api/status"
         || path == "/api/version"
-        || (path == "/api/agents" && is_get)
-        || (path == "/api/profiles" && is_get)
-        || (path == "/api/config" && is_get)
-        || (path == "/api/config/schema" && is_get)
-        || (path.starts_with("/api/uploads/") && is_get)
-        // Dashboard read endpoints — allow unauthenticated so the SPA can
-        // render before the user enters their API key.
-        || (path == "/api/models" && is_get)
-        || (path == "/api/models/aliases" && is_get)
-        || (path == "/api/providers" && is_get)
-        || (path == "/api/budget" && is_get)
-        || (path == "/api/budget/agents" && is_get)
-        || (path.starts_with("/api/budget/agents/") && is_get)
-        || (path == "/api/network/status" && is_get)
-        || (path == "/api/a2a/agents" && is_get)
-        || (path == "/api/approvals" && is_get)
-        || (path.starts_with("/api/approvals/") && is_get)
-        || (path == "/api/channels" && is_get)
-        || (path == "/api/hands" && is_get)
-        || (path == "/api/hands/active" && is_get)
-        || (path.starts_with("/api/hands/") && is_get)
-        || (path == "/api/skills" && is_get)
-        || (path == "/api/sessions" && is_get)
-        || (path == "/api/integrations" && is_get)
-        || (path == "/api/integrations/available" && is_get)
-        || (path == "/api/integrations/health" && is_get)
-        || (path == "/api/workflows" && is_get)
-        || path == "/api/logs/stream"  // SSE stream, read-only
-        || (path.starts_with("/api/cron/") && is_get)
-        || path.starts_with("/api/providers/github-copilot/oauth/")
         || (path == "/api/auth/login" && is_post)
         || (path == "/api/auth/logout" && is_post)
         || (path == "/api/auth/check" && is_get);
@@ -134,12 +104,24 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    // If no API key configured (empty, whitespace-only, or missing), skip auth
-    // entirely. Users who don't set api_key accept that all endpoints are open.
-    // To secure the dashboard, set a non-empty api_key in config.toml.
+    // If no API key is configured and session auth is disabled, stay in
+    // localhost-only mode: unauthenticated requests from loopback are allowed,
+    // but remote requests to protected endpoints are rejected.
     let api_key_trimmed = auth_state.api_key.trim().to_string();
     if api_key_trimmed.is_empty() && !auth_state.auth_enabled {
-        return next.run(request).await;
+        if request_is_loopback(&request) {
+            return next.run(request).await;
+        }
+
+        return Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(Body::from(
+                serde_json::json!({
+                    "error": "Protected endpoints are localhost-only when API auth is disabled"
+                })
+                .to_string(),
+            ))
+            .unwrap_or_default();
     }
     let api_key = api_key_trimmed.as_str();
 
@@ -262,9 +244,40 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Bo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::ConnectInfo;
+    use axum::http::Request;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
 
     #[test]
     fn test_request_id_header_constant() {
         assert_eq!(REQUEST_ID_HEADER, "x-request-id");
+    }
+
+    #[tokio::test]
+    async fn test_protected_endpoint_is_remote_forbidden_when_auth_disabled() {
+        let auth_state = AuthState {
+            api_key: String::new(),
+            auth_enabled: false,
+            session_secret: "secret".to_string(),
+        };
+        let app = Router::new()
+            .route("/api/status", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(auth_state, auth));
+        let mut request = Request::builder()
+            .uri("/api/status")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                [203, 0, 113, 9],
+                4242,
+            ))));
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }

@@ -710,9 +710,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_patch_integration() {
-        let dir = std::env::temp_dir().join("openfang_patch_test");
-        let _ = tokio::fs::remove_dir_all(&dir).await;
-        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
 
         // Write a file to update
         tokio::fs::write(dir.join("existing.txt"), "line1\nline2\nline3\n")
@@ -736,7 +735,7 @@ mod tests {
             },
         ];
 
-        let result = apply_patch(&ops, &dir).await;
+        let result = apply_patch(&ops, dir).await;
         assert!(result.is_ok());
         assert_eq!(result.files_added, 1);
         assert_eq!(result.files_updated, 1);
@@ -752,15 +751,12 @@ mod tests {
             .unwrap();
         assert!(updated.contains("replaced"));
         assert!(!updated.contains("line2"));
-
-        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
     #[tokio::test]
     async fn test_apply_patch_delete() {
-        let dir = std::env::temp_dir().join("openfang_patch_del_test");
-        let _ = tokio::fs::remove_dir_all(&dir).await;
-        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
 
         tokio::fs::write(dir.join("doomed.txt"), "goodbye")
             .await
@@ -770,11 +766,9 @@ mod tests {
             path: "doomed.txt".to_string(),
         }];
 
-        let result = apply_patch(&ops, &dir).await;
+        let result = apply_patch(&ops, dir).await;
         assert!(result.is_ok());
         assert_eq!(result.files_deleted, 1);
         assert!(!dir.join("doomed.txt").exists());
-
-        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 }

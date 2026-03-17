@@ -20,6 +20,13 @@ use tracing::{debug, info, warn};
 /// Maximum consecutive errors before a job is auto-disabled.
 const MAX_CONSECUTIVE_ERRORS: u32 = 5;
 
+fn backup_path(path: &Path) -> PathBuf {
+    match path.extension() {
+        Some(ext) => path.with_extension(format!("{}.bak", ext.to_string_lossy())),
+        None => path.with_extension("bak"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // JobMeta — extra runtime state not stored in CronJob itself
 // ---------------------------------------------------------------------------
@@ -98,16 +105,41 @@ impl CronScheduler {
     /// Returns the number of jobs loaded. If the persistence file does not
     /// exist, returns `Ok(0)` without error.
     pub fn load(&self) -> OpenFangResult<usize> {
-        if !self.persist_path.exists() {
+        let backup = backup_path(&self.persist_path);
+        if !self.persist_path.exists() && !backup.exists() {
             return Ok(0);
         }
-        let data = std::fs::read_to_string(&self.persist_path)
-            .map_err(|e| OpenFangError::Internal(format!("Failed to read cron jobs: {e}")))?;
-        let metas: Vec<JobMeta> = serde_json::from_str(&data)
-            .map_err(|e| OpenFangError::Internal(format!("Failed to parse cron jobs: {e}")))?;
+        let mut loaded_from = None;
+        let mut metas = None;
+        for candidate in [&self.persist_path, &backup] {
+            let data = match std::fs::read_to_string(candidate) {
+                Ok(data) => data,
+                Err(_) => continue,
+            };
+            match serde_json::from_str::<Vec<JobMeta>>(&data) {
+                Ok(parsed) => {
+                    loaded_from = Some(candidate.clone());
+                    metas = Some(parsed);
+                    break;
+                }
+                Err(e) => {
+                    warn!(path = %candidate.display(), "Failed to parse cron jobs file: {e}");
+                }
+            }
+        }
+        let metas = metas.ok_or_else(|| {
+            OpenFangError::Internal(
+                "Failed to load cron jobs from primary or backup file".to_string(),
+            )
+        })?;
         let count = metas.len();
         for meta in metas {
             self.jobs.insert(meta.job.id, meta);
+        }
+        if let Some(path) = loaded_from {
+            if path != self.persist_path {
+                warn!(path = %path.display(), "Recovered cron jobs from backup file");
+            }
         }
         info!(count, "Loaded cron jobs from disk");
         Ok(count)
@@ -119,9 +151,13 @@ impl CronScheduler {
         let data = serde_json::to_string_pretty(&metas)
             .map_err(|e| OpenFangError::Internal(format!("Failed to serialize cron jobs: {e}")))?;
         let tmp_path = self.persist_path.with_extension("json.tmp");
+        let backup = backup_path(&self.persist_path);
         std::fs::write(&tmp_path, data.as_bytes()).map_err(|e| {
             OpenFangError::Internal(format!("Failed to write cron jobs temp file: {e}"))
         })?;
+        if self.persist_path.exists() {
+            let _ = std::fs::copy(&self.persist_path, &backup);
+        }
         std::fs::rename(&tmp_path, &self.persist_path).map_err(|e| {
             OpenFangError::Internal(format!("Failed to rename cron jobs file: {e}"))
         })?;
@@ -756,6 +792,29 @@ mod tests {
             let meta = sched.get_meta(b_id).unwrap();
             assert!(meta.one_shot);
         }
+    }
+
+    #[test]
+    fn test_load_recovers_from_backup_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = AgentId::new();
+        let sched = CronScheduler::new(tmp.path(), 100);
+        let mut job = make_job(agent);
+        job.name = "recover-me".into();
+        sched.add_job(job, false).unwrap();
+        sched.persist().unwrap();
+
+        let persist_path = tmp.path().join("cron_jobs.json");
+        let backup = backup_path(&persist_path);
+        std::fs::copy(&persist_path, &backup).unwrap();
+        std::fs::write(&persist_path, "{not valid json").unwrap();
+
+        let recovered = CronScheduler::new(tmp.path(), 100);
+        let count = recovered.load().unwrap();
+        assert_eq!(count, 1);
+        let jobs = recovered.list_jobs(agent);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name, "recover-me");
     }
 
     #[test]

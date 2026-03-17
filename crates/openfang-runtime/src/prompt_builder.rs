@@ -59,6 +59,8 @@ pub struct PromptContext {
     pub sender_id: Option<String>,
     /// Sender display name.
     pub sender_name: Option<String>,
+    /// Structured channel metadata attached to the incoming turn.
+    pub channel_metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -158,6 +160,15 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
             build_sender_section(ctx.sender_name.as_deref(), ctx.sender_id.as_deref())
         {
             sections.push(sender_line);
+        }
+    }
+
+    // Section 9.2 — Channel Metadata (skip for subagents)
+    if !ctx.is_subagent {
+        if let Some(ref metadata) = ctx.channel_metadata {
+            if let Some(metadata_section) = build_channel_metadata_section(metadata) {
+                sections.push(metadata_section);
+            }
         }
     }
 
@@ -439,6 +450,22 @@ fn build_sender_section(sender_name: Option<&str>, sender_id: Option<&str>) -> O
         (None, Some(id)) => Some(format!("## Sender\nMessage from: {id}")),
         (None, None) => None,
     }
+}
+
+fn build_channel_metadata_section(
+    metadata: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    if metadata.is_empty() {
+        return None;
+    }
+    let json = serde_json::to_string_pretty(metadata).unwrap_or_else(|_| "{}".to_string());
+    Some(format!(
+        "## Channel Metadata\n\
+Use this structured channel metadata as the source of truth for channel-specific context.\n\
+Do not infer conflicting facts from placeholder text when metadata is present.\n\n\
+{}",
+        cap_str(&json, 2000)
+    ))
 }
 
 fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]) -> String {
@@ -887,6 +914,31 @@ mod tests {
         let ctx = basic_ctx();
         let prompt = build_system_prompt(&ctx);
         assert!(prompt.contains("don't know the user's name"));
+    }
+
+    #[test]
+    fn test_channel_metadata_section_present() {
+        let mut ctx = basic_ctx();
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("media_group_id".to_string(), serde_json::json!("abc123"));
+        metadata.insert(
+            "telegram_media_batch".to_string(),
+            serde_json::json!({"batch_key":"group_1_abc123"}),
+        );
+        ctx.channel_metadata = Some(metadata);
+
+        let prompt = build_system_prompt(&ctx);
+        assert!(prompt.contains("## Channel Metadata"));
+        assert!(prompt.contains("media_group_id"));
+        assert!(prompt.contains("telegram_media_batch"));
+    }
+
+    #[test]
+    fn test_channel_metadata_section_omitted_when_empty() {
+        let mut ctx = basic_ctx();
+        ctx.channel_metadata = Some(serde_json::Map::new());
+        let prompt = build_system_prompt(&ctx);
+        assert!(!prompt.contains("## Channel Metadata"));
     }
 
     #[test]

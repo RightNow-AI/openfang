@@ -88,30 +88,39 @@ pub struct TelegramMediaBatch {
 }
 
 impl TelegramMediaBatch {
+    fn sanitize(input: &str) -> String {
+        let cleaned: String = input
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect();
+        let collapsed = cleaned
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("_");
+        if collapsed.is_empty() {
+            "unknown".to_string()
+        } else {
+            collapsed
+        }
+    }
+
     /// Build stable batch key with normalized format:
     /// `group_<safe_chat_id>_<safe_media_group_id>`.
     pub fn stable_batch_key(chat_id: i64, media_group_id: &str) -> String {
-        fn sanitize(input: &str) -> String {
-            let cleaned: String = input
-                .chars()
-                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-                .collect();
-            let collapsed = cleaned
-                .split('_')
-                .filter(|part| !part.is_empty())
-                .collect::<Vec<_>>()
-                .join("_");
-            if collapsed.is_empty() {
-                "unknown".to_string()
-            } else {
-                collapsed
-            }
-        }
-
         format!(
             "group_{}_{}",
-            sanitize(&chat_id.to_string()),
-            sanitize(media_group_id),
+            Self::sanitize(&chat_id.to_string()),
+            Self::sanitize(media_group_id),
+        )
+    }
+
+    /// Build a stable key for a non-media-group Telegram message.
+    pub fn single_message_key(chat_id: i64, message_id: i64) -> String {
+        format!(
+            "single_{}_{}",
+            Self::sanitize(&chat_id.to_string()),
+            Self::sanitize(&message_id.to_string()),
         )
     }
 
@@ -184,7 +193,10 @@ mod tests {
         };
 
         assert_eq!(batch.count_by_kind(), (1, 1, 0));
-        assert_eq!(batch.summary(), "收到 Telegram 媒体批次：1 个视频、1 张图片。");
+        assert_eq!(
+            batch.summary(),
+            "收到 Telegram 媒体批次：1 个视频、1 张图片。"
+        );
     }
 
     #[test]
@@ -207,6 +219,14 @@ mod tests {
         assert_eq!(
             TelegramMediaBatch::stable_batch_key(-100123, "173552@abc"),
             "group_100123_173552_abc"
+        );
+    }
+
+    #[test]
+    fn test_single_message_key() {
+        assert_eq!(
+            TelegramMediaBatch::single_message_key(-100123, 456),
+            "single_100123_456"
         );
     }
 }

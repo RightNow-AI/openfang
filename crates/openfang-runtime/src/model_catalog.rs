@@ -226,7 +226,7 @@ impl ModelCatalog {
     /// Adds models not already in the catalog with `Local` tier and zero cost.
     /// Also updates the provider's `model_count`.
     pub fn merge_discovered_models(&mut self, provider: &str, model_ids: &[String]) {
-        let existing_ids: std::collections::HashSet<String> = self
+        let mut existing_ids: std::collections::HashSet<String> = self
             .models
             .iter()
             .filter(|m| m.provider == provider)
@@ -254,6 +254,7 @@ impl ModelCatalog {
                 supports_streaming: true,
                 aliases: Vec::new(),
             });
+            existing_ids.insert(id.to_lowercase());
             added += 1;
         }
 

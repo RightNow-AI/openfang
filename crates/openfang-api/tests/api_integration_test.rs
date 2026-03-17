@@ -13,6 +13,7 @@ use openfang_api::routes::{self, AppState};
 use openfang_api::ws;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::cors::CorsLayer;
@@ -82,6 +83,10 @@ async fn start_test_server_with_provider(
 
     let app = Router::new()
         .route("/api/health", axum::routing::get(routes::health))
+        .route(
+            "/api/health/detail",
+            axum::routing::get(routes::health_detail),
+        )
         .route("/api/status", axum::routing::get(routes::status))
         .route(
             "/api/agents",
@@ -132,7 +137,12 @@ async fn start_test_server_with_provider(
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     TestServer {
@@ -724,6 +734,10 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
 
     let app = Router::new()
         .route("/api/health", axum::routing::get(routes::health))
+        .route(
+            "/api/health/detail",
+            axum::routing::get(routes::health_detail),
+        )
         .route("/api/status", axum::routing::get(routes::status))
         .route(
             "/api/agents",
@@ -778,7 +792,12 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     TestServer {
@@ -840,6 +859,10 @@ async fn start_test_server_with_session_auth(username: &str, password: &str) -> 
 
     let app = Router::new()
         .route("/api/health", axum::routing::get(routes::health))
+        .route(
+            "/api/health/detail",
+            axum::routing::get(routes::health_detail),
+        )
         .route("/api/status", axum::routing::get(routes::status))
         .route("/api/auth/login", axum::routing::post(routes::auth_login))
         .route("/api/auth/logout", axum::routing::post(routes::auth_logout))
@@ -863,7 +886,12 @@ async fn start_test_server_with_session_auth(username: &str, password: &str) -> 
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     TestServer {
@@ -885,6 +913,27 @@ async fn test_auth_health_is_public() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_auth_health_detail_requires_auth() {
+    let server = start_test_server_with_auth("secret-key-123").await;
+    let client = reqwest::Client::new();
+
+    let unauthenticated = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), 401);
+
+    let authenticated = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .header("authorization", "Bearer secret-key-123")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(authenticated.status(), 200);
 }
 
 #[tokio::test]
@@ -941,11 +990,11 @@ async fn test_auth_accepts_correct_token() {
 
 #[tokio::test]
 async fn test_auth_disabled_when_no_key() {
-    // Empty API key = auth disabled
-    let server = start_test_server().await;
+    // Empty API key still permits loopback access to protected routes.
+    let server = start_test_server_with_auth("").await;
     let client = reqwest::Client::new();
 
-    // Protected endpoint accessible without auth when no key is configured
+    // Protected endpoint remains accessible from loopback when no key is configured.
     let resp = client
         .get(format!("{}/api/status", server.base_url))
         .send()
@@ -976,6 +1025,9 @@ async fn test_session_login_allows_access_to_protected_endpoint() {
         .and_then(|v| v.to_str().ok())
         .unwrap()
         .to_string();
+    let login_body: serde_json::Value = login.json().await.unwrap();
+    assert_eq!(login_body["status"], "ok");
+    assert!(login_body.get("token").is_none());
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Strict"));
 
