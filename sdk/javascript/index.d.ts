@@ -74,7 +74,7 @@ export class AgentResource {
   switchSession(id: string, sessionId: string): Promise<unknown>;
   getSkills(id: string): Promise<unknown>;
   setSkills(id: string, skills: unknown): Promise<unknown>;
-  upload(id: string, file: Blob | File, filename: string): Promise<unknown>;
+  upload(id: string, file: Blob | File, filename?: string): Promise<unknown>;
   setIdentity(id: string, identity: Record<string, unknown>): Promise<unknown>;
   patchConfig(id: string, config: Record<string, unknown>): Promise<unknown>;
 }
@@ -100,6 +100,7 @@ export class SkillResource {
   getClawHubBrowse(query: Record<string, unknown>): Promise<unknown[]>;
   installClawHub(query: Record<string, unknown>): Promise<unknown>;
   searchClawHub(query: Record<string, unknown>): Promise<unknown[]>;
+  create(query: Record<string, unknown>): Promise<unknown>;
 }
 
 export class ChannelResource {

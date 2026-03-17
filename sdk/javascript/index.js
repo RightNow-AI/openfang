@@ -478,6 +478,11 @@ class SkillResource {
   async installClawHub(query) {
     return this._c._request("POST", "/api/clawhub/install", query);
   }
+
+  // created skill
+  async create(query) {
+    return this._c._request("POST", "/api/skills/create", query);
+  }
 }
 
 // ── Channel Resource ────────────────────────────────────────────

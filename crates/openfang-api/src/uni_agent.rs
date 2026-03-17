@@ -75,6 +75,241 @@ pub struct AgentConfigRequest {
     pub patch: Option<PatchAgentConfigRequest>,
 }
 
+/// GET /api/agents — List all agents.
+pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Snapshot catalog once for enrichment
+    let catalog = state.kernel.model_catalog.read().ok();
+    let dm = &state.kernel.config.default_model;
+
+    let entries = state.kernel.registry.list();
+    let mut agents_to_kill = Vec::new();
+
+    // Check each agent's workspace and collect agents to kill
+    for entry in &entries {
+        let should_kill = match &entry.manifest.workspace {
+            None => {
+                // No workspace configured - kill the agent
+                tracing::warn!(
+                    "Agent {} has no workspace configured",
+                    entry.id
+                );
+                true
+            }
+            Some(workspace_path) => {
+                if !workspace_path.exists() {
+                    tracing::warn!(
+                        "Agent {} workspace not found: {}",
+                        entry.id,
+                        workspace_path.display()
+                    );
+                    true
+                } else if workspace_path.is_dir() {
+                    // Check if directory is empty
+                    match std::fs::read_dir(workspace_path) {
+                        Ok(mut dir_entries) => {
+                            let is_empty = dir_entries.next().is_none();
+                            if is_empty {
+                                tracing::warn!(
+                                    "Agent {} workspace is empty: {}",
+                                    entry.id,
+                                    workspace_path.display()
+                                );
+                            }
+                            is_empty
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Agent {} workspace read error: {} - {}",
+                                entry.id,
+                                workspace_path.display(),
+                                e
+                            );
+                            true
+                        }
+                    }
+                } else {
+                    false
+                }
+            }
+        };
+
+        if should_kill {
+            agents_to_kill.push(entry.id);
+        }
+    }
+
+    // Kill agents with invalid workspaces
+    for agent_id in agents_to_kill {
+        match state.kernel.kill_agent(agent_id) {
+            Ok(()) => {
+                tracing::info!("Killed agent {} due to invalid workspace", agent_id);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to kill agent {}: {}", agent_id, e);
+            }
+        }
+    }
+
+    // Re-fetch the list after cleanup
+    let agents: Vec<serde_json::Value> = state
+        .kernel
+        .registry
+        .list()
+        .into_iter()
+        .map(|e| {
+            // Resolve "default" provider/model to actual kernel defaults
+            let provider =
+                if e.manifest.model.provider.is_empty() || e.manifest.model.provider == "default" {
+                    dm.provider.as_str()
+                } else {
+                    e.manifest.model.provider.as_str()
+                };
+            let model = if e.manifest.model.model.is_empty() || e.manifest.model.model == "default"
+            {
+                dm.model.as_str()
+            } else {
+                e.manifest.model.model.as_str()
+            };
+
+            // Enrich from catalog
+            let (tier, auth_status) = catalog
+                .as_ref()
+                .map(|cat| {
+                    let tier = cat
+                        .find_model(model)
+                        .map(|m| format!("{:?}", m.tier).to_lowercase())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let auth = cat
+                        .get_provider(provider)
+                        .map(|p| format!("{:?}", p.auth_status).to_lowercase())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    (tier, auth)
+                })
+                .unwrap_or(("unknown".to_string(), "unknown".to_string()));
+
+            let ready = matches!(e.state, openfang_types::agent::AgentState::Running)
+                && auth_status != "missing";
+
+            serde_json::json!({
+                "id": e.id.to_string(),
+                "name": e.name,
+                "state": format!("{:?}", e.state),
+                "mode": e.mode,
+                "created_at": e.created_at.to_rfc3339(),
+                "last_active": e.last_active.to_rfc3339(),
+                "model_provider": provider,
+                "model_name": model,
+                "model_tier": tier,
+                "auth_status": auth_status,
+                "ready": ready,
+                "profile": e.manifest.profile,
+                "identity": {
+                    "emoji": e.identity.emoji,
+                    "avatar_url": e.identity.avatar_url,
+                    "color": e.identity.color,
+                },
+            })
+        })
+        .collect();
+
+    Json(agents)
+}
+
+/// DELETE /api/agents/:id — Kill an agent.
+pub async fn kill_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            );
+        }
+    };
+
+    match state.kernel.kill_agent(agent_id) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "killed", "agent_id": id})),
+        ),
+        Err(e) => {
+            tracing::warn!("kill_agent failed for {id}: {e}");
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found or already terminated"})),
+            )
+        }
+    }
+}
+
+/// GET /api/agents/:id — Get a single agent's detailed info.
+pub async fn get_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            );
+        }
+    };
+
+    let entry = match state.kernel.registry.get(agent_id) {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            );
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "id": entry.id.to_string(),
+            "name": entry.name,
+            "state": format!("{:?}", entry.state),
+            "mode": entry.mode,
+            "profile": entry.manifest.profile,
+            "created_at": entry.created_at.to_rfc3339(),
+            "session_id": entry.session_id.0.to_string(),
+            "model": {
+                "provider": entry.manifest.model.provider,
+                "model": entry.manifest.model.model,
+            },
+            "capabilities": {
+                "tools": entry.manifest.capabilities.tools,
+                "network": entry.manifest.capabilities.network,
+            },
+            "description": entry.manifest.description,
+            "tags": entry.manifest.tags,
+            "identity": {
+                "emoji": entry.identity.emoji,
+                "avatar_url": entry.identity.avatar_url,
+                "color": entry.identity.color,
+            },
+            "system_prompt": entry.manifest.model.system_prompt,
+            "skills": entry.manifest.skills,
+            "skills_mode": if entry.manifest.skills.is_empty() { "all" } else { "allowlist" },
+            "mcp_servers": entry.manifest.mcp_servers,
+            "mcp_servers_mode": if entry.manifest.mcp_servers.is_empty() { "all" } else { "allowlist" },
+            "fallback_models": entry.manifest.fallback_models,
+            "tool_allowlist": entry.manifest.tool_allowlist,
+            "tool_blocklist": entry.manifest.tool_blocklist,
+            "workspace": entry.manifest.workspace,
+            "vibe": entry.identity.vibe,
+            "archetype": entry.identity.archetype,
+        })),
+    )
+}
+
 /// POST /api/agents — Spawn a new agent.
 pub async fn spawn_agent(
     State(state): State<Arc<AppState>>,
