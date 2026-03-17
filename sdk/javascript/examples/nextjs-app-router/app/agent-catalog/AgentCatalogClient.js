@@ -2,6 +2,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiClient } from '../../lib/api-client';
+import { track } from '../../lib/telemetry';
 
 function normalizeEntry(raw) {
   return {
@@ -35,9 +36,21 @@ function extractTomlMultiline(toml, field) {
   return m ? m[1].trim() : extractTomlField(toml, field);
 }
 
+// ─── validate and sanitize a user-supplied agent name ───────────────────────
+function validateSpawnName(raw) {
+  const name = raw.trim();
+  if (!name) return { error: 'Name is required.' };
+  if (name.length > 64) return { error: 'Name must be 64 characters or less.' };
+  if (/[\n\r\t]/.test(name)) return { error: 'Name cannot contain newlines or tabs.' };
+  if (/[<>:"/\\|?*\x00-\x1f]/.test(name)) return { error: 'Name contains invalid characters.' };
+  return { name };
+}
+
 // ─── patch the name= line in a TOML string ──────────────────────────────────
 function patchTomlName(toml, newName) {
-  return toml.replace(/^name\s*=\s*"[^"]*"/m, `name = "${newName.replace(/"/g, '\\"')}"`);
+  // escape backslashes first, then quotes
+  const safe = newName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return toml.replace(/^name\s*=\s*"[^"]*"/m, `name = "${safe}"`);
 }
 
 // ─── Detail Modal ──────────────────────────────────────────────────────────
@@ -53,18 +66,22 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
 
   useEffect(() => {
     nameRef.current?.focus();
+    const controller = new AbortController();
     const templateKey = entry.agent_id || entry.name;
     setLoadingTemplate(true);
     setLoadError('');
-    apiClient.get(`/api/templates/${encodeURIComponent(templateKey)}`)
+    fetch(`/api/templates/${encodeURIComponent(templateKey)}`, { signal: controller.signal })
+      .then(r => r.json())
       .then(data => {
         setTemplateData(data);
         setLoadingTemplate(false);
       })
       .catch(e => {
+        if (e.name === 'AbortError') return;
         setLoadError(e.message || 'Could not load template details.');
         setLoadingTemplate(false);
       });
+    return () => controller.abort();
   }, [entry.agent_id, entry.name]);
 
   // Close on Escape
@@ -75,21 +92,31 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
   }, [onClose]);
 
   const handleSpawn = async () => {
-    const name = spawnName.trim();
-    if (!name) { nameRef.current?.focus(); return; }
+    if (spawning) return; // guard against double-click
+    const validation = validateSpawnName(spawnName);
+    if (validation.error) {
+      setSpawnError(validation.error);
+      nameRef.current?.focus();
+      return;
+    }
+    const name = validation.name;
     if (!templateData?.manifest_toml) {
       setSpawnError('Template TOML not available. Cannot spawn.');
       return;
     }
     setSpawning(true);
     setSpawnError('');
+    track('spawn_started', { template: entry.name, name });
     try {
       const toml = patchTomlName(templateData.manifest_toml, name);
       const data = await apiClient.post('/api/agents/spawn', { manifest_toml: toml });
-      const agentId = data?.agent_id ?? data?.id ?? '';
-      onSpawnSuccess({ agentId, name });
+      const spawnedId = data?.agent_id ?? data?.id ?? '';
+      track('spawn_succeeded', { template: entry.name, name, agentId: spawnedId });
+      onSpawnSuccess({ agentId: spawnedId, name });
     } catch (e) {
-      setSpawnError(e.message || 'Spawn failed. Is the daemon running?');
+      const msg = e.message || 'Spawn failed. Is the daemon running?';
+      track('spawn_failed', { template: entry.name, name, error: msg });
+      setSpawnError(msg);
       setSpawning(false);
     }
   };
@@ -283,9 +310,10 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
               data-cy="spawn-name-input"
               type="text"
               value={spawnName}
-              onChange={e => setSpawnName(e.target.value)}
+              onChange={e => { setSpawnName(e.target.value); setSpawnError(''); }}
               onKeyDown={e => { if (e.key === 'Enter' && !spawning) handleSpawn(); }}
               placeholder="Agent name…"
+              maxLength={64}
               disabled={spawning}
               style={{
                 flex: 1, padding: '7px 11px',
@@ -370,6 +398,7 @@ export default function AgentCatalogClient({ initialEntries }) {
   const openDetail = useCallback((entry) => {
     setSpawnResult(null);
     setDetailEntry(entry);
+    track('detail_opened', { agent: entry.name });
   }, []);
 
   const closeDetail = useCallback(() => setDetailEntry(null), []);

@@ -17,6 +17,8 @@ import Composer from '../components/Composer';
 import RunTimeline from '../components/RunTimeline';
 import RunOutput from '../components/RunOutput';
 import AgentTrace from '../components/AgentTrace';
+import { sendViaRun, sendDirect } from '../../lib/chat-transport';
+import { track } from '../../lib/telemetry';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -75,25 +77,30 @@ export default function ChatClient({ agentId = null, agentName = null }) {
 
       // ── Direct agent mode (POST /api/agents/{id}/chat) ────────────────────
       if (isDirect) {
+        track('direct_chat_sent', { agentId });
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30_000);
         try {
-          const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message }),
-          });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          const { reply } = await sendDirect(agentId, message, controller.signal);
+          clearTimeout(timeout);
           setTurns((prev) =>
             prev.map((t) =>
               t.id === turnId
-                ? { ...t, directReply: data.reply ?? '', status: 'completed' }
+                ? { ...t, directReply: reply, status: 'completed' }
                 : t,
             ),
           );
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          clearTimeout(timeout);
+          const msg =
+            err.name === 'AbortError'
+              ? 'No reply within 30 seconds. Try again.'
+              : (err instanceof Error ? err.message : String(err));
           setError(msg);
-          setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, status: 'failed' } : t)));
+          setTurns((prev) =>
+            prev.map((t) => (t.id === turnId ? { ...t, directReply: msg, status: 'failed' } : t)),
+          );
+          track('direct_chat_failed', { agentId, error: msg });
         }
         setRunning(false);
         return;
@@ -102,14 +109,7 @@ export default function ChatClient({ agentId = null, agentName = null }) {
       // ── Normal mode (POST /api/runs → SSE) ───────────────────────────────
       let runId;
       try {
-        const res = await fetch('/api/runs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId, message }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        runId = data.runId;
+        runId = await sendViaRun(sessionId, message);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         setError(msg);
@@ -166,7 +166,7 @@ export default function ChatClient({ agentId = null, agentName = null }) {
         setRunning(false);
       };
     },
-    [running, sessionId],
+    [running, sessionId, isDirect, agentId],
   );
 
   const handleCancel = useCallback(async () => {
