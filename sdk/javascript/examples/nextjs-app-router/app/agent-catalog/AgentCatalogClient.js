@@ -1,5 +1,6 @@
 'use client';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { apiClient } from '../../lib/api-client';
 
 function normalizeEntry(raw) {
@@ -21,12 +22,369 @@ function normalizeEntry(raw) {
   };
 }
 
+// ─── extract relevant lines from raw TOML ──────────────────────────────────
+function extractTomlField(toml, field) {
+  if (!toml) return '';
+  const m = toml.match(new RegExp(`^${field}\\s*=\\s*"([^"]*)"`, 'm'));
+  return m ? m[1] : '';
+}
+
+function extractTomlMultiline(toml, field) {
+  if (!toml) return '';
+  const m = toml.match(new RegExp(`^${field}\\s*=\\s*"""([\\s\\S]*?)"""`, 'm'));
+  return m ? m[1].trim() : extractTomlField(toml, field);
+}
+
+// ─── patch the name= line in a TOML string ──────────────────────────────────
+function patchTomlName(toml, newName) {
+  return toml.replace(/^name\s*=\s*"[^"]*"/m, `name = "${newName.replace(/"/g, '\\"')}"`);
+}
+
+// ─── Detail Modal ──────────────────────────────────────────────────────────
+function DetailModal({ entry, onClose, onSpawnSuccess }) {
+  const [templateData, setTemplateData] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [loadingTemplate, setLoadingTemplate] = useState(true);
+  const [spawnName, setSpawnName] = useState(entry.name);
+  const [spawning, setSpawning] = useState(false);
+  const [spawnError, setSpawnError] = useState('');
+  const [promptExpanded, setPromptExpanded] = useState(false);
+  const nameRef = useRef(null);
+
+  useEffect(() => {
+    nameRef.current?.focus();
+    const templateKey = entry.agent_id || entry.name;
+    setLoadingTemplate(true);
+    setLoadError('');
+    apiClient.get(`/api/templates/${encodeURIComponent(templateKey)}`)
+      .then(data => {
+        setTemplateData(data);
+        setLoadingTemplate(false);
+      })
+      .catch(e => {
+        setLoadError(e.message || 'Could not load template details.');
+        setLoadingTemplate(false);
+      });
+  }, [entry.agent_id, entry.name]);
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  const handleSpawn = async () => {
+    const name = spawnName.trim();
+    if (!name) { nameRef.current?.focus(); return; }
+    if (!templateData?.manifest_toml) {
+      setSpawnError('Template TOML not available. Cannot spawn.');
+      return;
+    }
+    setSpawning(true);
+    setSpawnError('');
+    try {
+      const toml = patchTomlName(templateData.manifest_toml, name);
+      const data = await apiClient.post('/api/agents/spawn', { manifest_toml: toml });
+      const agentId = data?.agent_id ?? data?.id ?? '';
+      onSpawnSuccess({ agentId, name });
+    } catch (e) {
+      setSpawnError(e.message || 'Spawn failed. Is the daemon running?');
+      setSpawning(false);
+    }
+  };
+
+  const manifest = templateData?.manifest ?? {};
+  const systemPrompt = extractTomlMultiline(templateData?.manifest_toml, 'system_prompt');
+  const provider = manifest?.model?.provider ?? entry.division ?? '—';
+  const model = manifest?.model?.model ?? '—';
+  const temperature = manifest?.model?.temperature ?? '—';
+  const maxTokens = manifest?.model?.max_tokens ?? '—';
+  const tools = manifest?.capabilities?.tools ?? [];
+
+  return (
+    <div
+      data-cy="agent-detail-overlay"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 24,
+      }}
+    >
+      <div
+        data-cy="agent-detail-panel"
+        style={{
+          background: 'var(--bg-elevated)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius)',
+          boxShadow: 'var(--shadow-lg, 0 20px 60px rgba(0,0,0,.4))',
+          width: '100%', maxWidth: 580,
+          maxHeight: '90vh',
+          display: 'flex', flexDirection: 'column',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Header */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '16px 20px', borderBottom: '1px solid var(--border)',
+          flexShrink: 0,
+        }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>{entry.name}</div>
+            <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+              {entry.division && <span className="badge badge-info" style={{ fontSize: 10 }}>{entry.division}</span>}
+              <span className={`badge ${entry.source === 'imported' ? 'badge-warning' : 'badge-success'}`} style={{ fontSize: 10 }}>
+                {entry.source === 'imported' ? 'Imported' : 'Native'}
+              </span>
+              {entry.tags.slice(0, 3).map(t => (
+                <span key={t} className="badge badge-dim" style={{ fontSize: 10 }}>{t}</span>
+              ))}
+            </div>
+          </div>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={onClose}
+            style={{ flexShrink: 0, marginLeft: 12, fontSize: 16, padding: '2px 8px' }}
+            aria-label="Close"
+          >✕</button>
+        </div>
+
+        {/* Scrollable body */}
+        <div style={{ overflowY: 'auto', flex: 1, padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+          {/* Description */}
+          {entry.description && (
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+              {entry.description}
+            </p>
+          )}
+
+          {loadingTemplate && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-dim)', fontSize: 13 }}>
+              <div className="spinner" style={{ width: 14, height: 14 }} />
+              Loading template…
+            </div>
+          )}
+
+          {loadError && (
+            <div className="error-state" style={{ fontSize: 12 }}>⚠ {loadError}</div>
+          )}
+
+          {!loadingTemplate && !loadError && (
+            <>
+              {/* Model config */}
+              <section>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+                  Model Config
+                </div>
+                <div style={{
+                  display: 'grid', gridTemplateColumns: '1fr 1fr',
+                  gap: '6px 16px', fontSize: 12,
+                  background: 'var(--surface2)', borderRadius: 'var(--radius-sm)',
+                  padding: '10px 14px',
+                }}>
+                  <div><span style={{ color: 'var(--text-dim)' }}>Provider</span></div>
+                  <div style={{ fontFamily: 'var(--font-mono,monospace)', color: 'var(--accent)' }}>{provider}</div>
+                  <div><span style={{ color: 'var(--text-dim)' }}>Model</span></div>
+                  <div style={{ fontFamily: 'var(--font-mono,monospace)' }}>{model}</div>
+                  <div><span style={{ color: 'var(--text-dim)' }}>Temperature</span></div>
+                  <div>{temperature}</div>
+                  <div><span style={{ color: 'var(--text-dim)' }}>Max tokens</span></div>
+                  <div>{maxTokens}</div>
+                </div>
+              </section>
+
+              {/* Capabilities */}
+              {tools.length > 0 && (
+                <section>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+                    Tools ({tools.length})
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {tools.map(t => (
+                      <span key={t} className="badge badge-dim" style={{ fontFamily: 'var(--font-mono,monospace)', fontSize: 11 }}>{t}</span>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* System prompt */}
+              {systemPrompt && (
+                <section>
+                  <button
+                    onClick={() => setPromptExpanded(v => !v)}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      padding: 0, display: 'flex', alignItems: 'center', gap: 6,
+                      fontSize: 11, fontWeight: 700, color: 'var(--text-dim)',
+                      textTransform: 'uppercase', letterSpacing: '.05em',
+                    }}
+                  >
+                    <span style={{ transition: 'transform .15s', display: 'inline-block', transform: promptExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+                    System Prompt
+                    <span className="badge badge-muted" style={{ fontSize: 10, textTransform: 'none', letterSpacing: 0 }}>
+                      {systemPrompt.length} chars
+                    </span>
+                  </button>
+                  {promptExpanded && (
+                    <pre style={{
+                      marginTop: 8, padding: '10px 12px',
+                      background: 'var(--surface2)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: 11, lineHeight: 1.6,
+                      color: 'var(--text-secondary)',
+                      fontFamily: 'var(--font-mono,monospace)',
+                      whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                      maxHeight: 220, overflowY: 'auto',
+                    }}>
+                      {systemPrompt}
+                    </pre>
+                  )}
+                </section>
+              )}
+            </>
+          )}
+
+          {/* Best for / example */}
+          {entry.best_for && (
+            <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+              <span style={{ fontWeight: 600 }}>Best for:</span> {entry.best_for}
+            </div>
+          )}
+          {entry.example && (
+            <div style={{
+              fontSize: 12, background: 'var(--surface2)',
+              borderRadius: 'var(--radius-sm)', padding: '7px 11px',
+              color: 'var(--text-dim)', fontStyle: 'italic',
+            }}>
+              "{entry.example}"
+            </div>
+          )}
+        </div>
+
+        {/* Spawn footer */}
+        <div style={{
+          borderTop: '1px solid var(--border)', padding: '14px 20px',
+          display: 'flex', flexDirection: 'column', gap: 10, flexShrink: 0,
+          background: 'var(--bg-elevated)',
+        }}>
+          {spawnError && (
+            <div data-cy="spawn-error" style={{ fontSize: 12, color: 'var(--error, #f87171)' }}>
+              ⚠ {spawnError}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              ref={nameRef}
+              data-cy="spawn-name-input"
+              type="text"
+              value={spawnName}
+              onChange={e => setSpawnName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !spawning) handleSpawn(); }}
+              placeholder="Agent name…"
+              disabled={spawning}
+              style={{
+                flex: 1, padding: '7px 11px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border)',
+                background: 'var(--bg)',
+                color: 'var(--text)', fontSize: 13,
+                outline: 'none',
+                fontFamily: 'var(--font-mono, monospace)',
+              }}
+            />
+            <button
+              data-cy="spawn-btn"
+              className="btn btn-primary btn-sm"
+              onClick={handleSpawn}
+              disabled={spawning || loadingTemplate || !spawnName.trim()}
+              style={{ whiteSpace: 'nowrap', minWidth: 110 }}
+            >
+              {spawning ? (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div className="spinner" style={{ width: 12, height: 12 }} /> Spawning…
+                </span>
+              ) : '▶ Spawn Agent'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Spawn Success Banner ───────────────────────────────────────────────────
+function SpawnSuccessBanner({ agentId, agentName, onDismiss, onOpenChat }) {
+  return (
+    <div
+      data-cy="spawn-success-banner"
+      style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        flexWrap: 'wrap', gap: 10,
+        padding: '12px 16px',
+        background: 'var(--success)18',
+        border: '1px solid var(--success)44',
+        borderRadius: 'var(--radius-sm)',
+        marginBottom: 16,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ color: 'var(--success)', fontSize: 16 }}>✓</span>
+        <span style={{ fontSize: 13, color: 'var(--text)' }}>
+          <strong>{agentName}</strong> spawned successfully.
+        </span>
+        {agentId && (
+          <span style={{ fontSize: 11, fontFamily: 'var(--font-mono,monospace)', color: 'var(--text-dim)' }}>
+            {agentId.slice(0, 8)}…
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          data-cy="spawn-open-chat-btn"
+          className="btn btn-primary btn-sm"
+          onClick={() => onOpenChat(agentId, agentName)}
+        >
+          Open Chat →
+        </button>
+        <button className="btn btn-ghost btn-sm" onClick={onDismiss}>Dismiss</button>
+      </div>
+    </div>
+  );
+}
+
 export default function AgentCatalogClient({ initialEntries }) {
+  const router = useRouter();
   const [entries, setEntries] = useState(initialEntries ?? []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [toggling, setToggling] = useState({});
   const [filter, setFilter] = useState('');
+  const [detailEntry, setDetailEntry] = useState(null);     // open modal
+  const [spawnResult, setSpawnResult] = useState(null);     // { agentId, name }
+
+  const openDetail = useCallback((entry) => {
+    setSpawnResult(null);
+    setDetailEntry(entry);
+  }, []);
+
+  const closeDetail = useCallback(() => setDetailEntry(null), []);
+
+  const handleSpawnSuccess = useCallback(({ agentId, name }) => {
+    setDetailEntry(null);
+    setSpawnResult({ agentId, name });
+  }, []);
+
+  const openChat = useCallback((agentId, agentName) => {
+    const params = new URLSearchParams();
+    if (agentId) params.set('agentId', agentId);
+    if (agentName) params.set('agentName', agentName);
+    router.push(`/chat?${params.toString()}`);
+  }, [router]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -67,6 +425,15 @@ export default function AgentCatalogClient({ initialEntries }) {
 
   return (
     <div data-cy="catalog-page">
+      {/* Detail modal */}
+      {detailEntry && (
+        <DetailModal
+          entry={detailEntry}
+          onClose={closeDetail}
+          onSpawnSuccess={handleSpawnSuccess}
+        />
+      )}
+
       <div className="page-header">
         <h1>Agent Catalog</h1>
         <div className="flex items-center gap-2">
@@ -100,6 +467,17 @@ export default function AgentCatalogClient({ initialEntries }) {
             <button className="btn btn-ghost btn-sm" onClick={refresh}>Retry</button>
           </div>
         )}
+
+        {/* Spawn success banner */}
+        {spawnResult && (
+          <SpawnSuccessBanner
+            agentId={spawnResult.agentId}
+            agentName={spawnResult.name}
+            onDismiss={() => setSpawnResult(null)}
+            onOpenChat={openChat}
+          />
+        )}
+
         {!error && entries.length === 0 && (
           <div data-cy="catalog-empty" className="empty-state">No agents in catalog. Add agent.toml files to the agents/ directory.</div>
         )}
@@ -110,7 +488,7 @@ export default function AgentCatalogClient({ initialEntries }) {
           {filtered.map(entry => (
             <div key={entry.catalog_id} data-cy="catalog-card" className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
-                <div style={{ minWidth: 0 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
                   <div className="card-header" style={{ marginBottom: 2 }}>{entry.name}</div>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3 }}>
                     {entry.division && (
@@ -127,15 +505,29 @@ export default function AgentCatalogClient({ initialEntries }) {
                     <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>{entry.role}</div>
                   )}
                 </div>
-                <button
-                  data-cy="catalog-toggle-btn"
-                  className={`btn btn-sm ${entry.enabled ? 'btn-ghost' : 'btn-primary'}`}
-                  style={entry.enabled ? { color: 'var(--success)', borderColor: 'var(--success)' } : {}}
-                  onClick={() => toggleEnabled(entry.catalog_id, entry.enabled)}
-                  disabled={!!toggling[entry.catalog_id]}
-                >
-                  {toggling[entry.catalog_id] ? '…' : entry.enabled ? 'Enabled' : 'Disabled'}
-                </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5, flexShrink: 0 }}>
+                  <button
+                    data-cy="catalog-details-btn"
+                    className="btn btn-primary btn-sm"
+                    style={{ whiteSpace: 'nowrap', fontSize: 11 }}
+                    onClick={() => openDetail(entry)}
+                  >
+                    Details / Spawn
+                  </button>
+                  <button
+                    data-cy="catalog-toggle-btn"
+                    className={`btn btn-sm ${entry.enabled ? 'btn-ghost' : 'btn-ghost'}`}
+                    style={{
+                      fontSize: 11,
+                      color: entry.enabled ? 'var(--success)' : 'var(--text-dim)',
+                      borderColor: entry.enabled ? 'var(--success)44' : 'var(--border)',
+                    }}
+                    onClick={() => toggleEnabled(entry.catalog_id, entry.enabled)}
+                    disabled={!!toggling[entry.catalog_id]}
+                  >
+                    {toggling[entry.catalog_id] ? '…' : entry.enabled ? '● Enabled' : '○ Disabled'}
+                  </button>
+                </div>
               </div>
 
               {entry.description && (

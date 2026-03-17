@@ -3,12 +3,13 @@
 /**
  * ChatClient — run-based conversation interface.
  *
- * All messages enter through alive.
- * Each assistant response is a Run with a timeline, agent trace, and output.
+ * Two modes:
+ *   Normal mode (agentId=null): routes through alive service via POST /api/runs
+ *   Direct mode  (agentId set):  routes directly to POST /api/agents/{id}/chat
  *
- * Architecture:
- *   POST /api/runs  →  alive service  →  specialist  →  done
- *   GET  /api/runs/:id/events  (SSE)  →  live events streamed here
+ * Direct mode is entered when spawned from the Agent Catalog.
+ * Normal mode: uses SSE run events for live streaming.
+ * Direct mode: synchronous fetch, no SSE.
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
@@ -33,7 +34,8 @@ function statusFromEvent(event) {
 
 // ─── ChatClient ───────────────────────────────────────────────────────────────
 
-export default function ChatClient() {
+export default function ChatClient({ agentId = null, agentName = null }) {
+  const isDirect = Boolean(agentId);
   const [turns, setTurns] = useState([]);
   const [running, setRunning] = useState(false);
   const [showTrace, setShowTrace] = useState(false);
@@ -65,12 +67,39 @@ export default function ChatClient() {
       const turnId = crypto.randomUUID();
       activeTurnIdRef.current = turnId;
 
-      // Optimistic turn — no runId yet
+      // Optimistic turn
       setTurns((prev) => [
         ...prev,
-        { id: turnId, userMessage: message, runId: null, events: [], status: 'queued' },
+        { id: turnId, userMessage: message, runId: null, directReply: null, events: [], status: 'queued' },
       ]);
 
+      // ── Direct agent mode (POST /api/agents/{id}/chat) ────────────────────
+      if (isDirect) {
+        try {
+          const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === turnId
+                ? { ...t, directReply: data.reply ?? '', status: 'completed' }
+                : t,
+            ),
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setError(msg);
+          setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, status: 'failed' } : t)));
+        }
+        setRunning(false);
+        return;
+      }
+
+      // ── Normal mode (POST /api/runs → SSE) ───────────────────────────────
       let runId;
       try {
         const res = await fetch('/api/runs', {
@@ -160,20 +189,37 @@ export default function ChatClient() {
       <div className="page-header">
         <div className="flex items-center gap-3">
           <h1>Chat</h1>
-          <span
-            title="All messages route through alive"
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 700,
-              background: 'var(--accent)22', color: 'var(--accent)',
-              border: '1px solid var(--accent)44',
-              fontFamily: 'var(--font-mono, monospace)',
-              userSelect: 'none',
-            }}
-          >
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)' }} />
-            alive
-          </span>
+          {isDirect ? (
+            <span
+              title={`Direct chat with agent ${agentId}`}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 700,
+                background: 'var(--success)22', color: 'var(--success)',
+                border: '1px solid var(--success)44',
+                fontFamily: 'var(--font-mono, monospace)',
+                userSelect: 'none',
+              }}
+            >
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--success)' }} />
+              {agentName ?? 'agent'}
+            </span>
+          ) : (
+            <span
+              title="All messages route through alive"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 700,
+                background: 'var(--accent)22', color: 'var(--accent)',
+                border: '1px solid var(--accent)44',
+                fontFamily: 'var(--font-mono, monospace)',
+                userSelect: 'none',
+              }}
+            >
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)' }} />
+              alive
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -205,7 +251,9 @@ export default function ChatClient() {
       >
         {turns.length === 0 && (
           <div data-cy="chat-empty-state" className="empty-state" style={{ marginTop: 60 }}>
-            Send a message. alive will route it to the right specialist.
+            {isDirect
+              ? `Say something to ${agentName ?? 'this agent'}.`
+              : 'Send a message. alive will route it to the right specialist.'}
           </div>
         )}
 
@@ -236,8 +284,8 @@ export default function ChatClient() {
               </div>
             </div>
 
-            {/* Run response */}
-            {turn.runId && (
+            {/* Run response — normal mode */}
+            {!isDirect && turn.runId && (
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                 <div
                   style={{
@@ -267,6 +315,35 @@ export default function ChatClient() {
                     <AgentTrace events={turn.events} runId={turn.runId} />
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Direct reply — direct agent mode */}
+            {isDirect && (turn.directReply !== null || turn.status === 'queued') && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <div
+                  style={{
+                    flex: 1, padding: '12px 14px',
+                    borderRadius: '4px 14px 14px 14px',
+                    background: 'var(--bg-elevated)',
+                    border: '1px solid var(--border)',
+                    boxShadow: 'var(--shadow-xs)',
+                    fontSize: 13, lineHeight: 1.6,
+                    color: 'var(--text)',
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                    minHeight: 40,
+                  }}
+                >
+                  {turn.status === 'queued' && (
+                    <span style={{ color: 'var(--text-dim)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div className="spinner" style={{ width: 12, height: 12 }} /> Thinking…
+                    </span>
+                  )}
+                  {turn.status === 'failed' && (
+                    <span style={{ color: 'var(--error, #f87171)', fontSize: 12 }}>⚠ {turn.directReply || 'Request failed'}</span>
+                  )}
+                  {turn.status === 'completed' && (turn.directReply ?? '')}
+                </div>
               </div>
             )}
           </div>
