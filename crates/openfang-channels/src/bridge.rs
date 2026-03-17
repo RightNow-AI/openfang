@@ -13,12 +13,84 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
 use openfang_types::agent::AgentId;
+use openfang_types::approval::ApprovalRequest;
 use openfang_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputFormat};
 use openfang_types::message::ContentBlock;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChatCommandSpec {
+    pub name: &'static str,
+    pub desc: &'static str,
+    pub help: &'static str,
+    pub section: &'static str,
+}
+
+const CHANNEL_COMMAND_SPECS: &[ChatCommandSpec] = &[
+    ChatCommandSpec { name: "start", desc: "Show welcome message", help: "/start - show welcome message", section: "General" },
+    ChatCommandSpec { name: "help", desc: "Show available commands", help: "/help - show this help", section: "General" },
+    ChatCommandSpec { name: "agents", desc: "List running agents", help: "/agents - list running agents", section: "Session" },
+    ChatCommandSpec { name: "agent", desc: "Select agent (/agent <name>)", help: "/agent <name> - select which agent to talk to", section: "Session" },
+    ChatCommandSpec { name: "new", desc: "Reset session (clear history)", help: "/new - reset session (clear messages)", section: "Session" },
+    ChatCommandSpec { name: "compact", desc: "Trigger LLM session compaction", help: "/compact - trigger LLM session compaction", section: "Session" },
+    ChatCommandSpec { name: "model", desc: "Show or switch model", help: "/model [name] - show or switch agent model", section: "Session" },
+    ChatCommandSpec { name: "stop", desc: "Cancel current agent run", help: "/stop - cancel current agent run", section: "Session" },
+    ChatCommandSpec { name: "usage", desc: "Show session usage and cost", help: "/usage - show session token usage and cost", section: "Session" },
+    ChatCommandSpec { name: "think", desc: "Toggle extended thinking", help: "/think [on|off] - toggle extended thinking", section: "Session" },
+    ChatCommandSpec { name: "status", desc: "Show system status", help: "/status - show system status", section: "Info" },
+    ChatCommandSpec { name: "models", desc: "List available AI models", help: "/models - list available AI models", section: "Info" },
+    ChatCommandSpec { name: "providers", desc: "Show configured providers", help: "/providers - show configured providers", section: "Info" },
+    ChatCommandSpec { name: "skills", desc: "List installed skills", help: "/skills - list installed skills", section: "Info" },
+    ChatCommandSpec { name: "hands", desc: "List available and active hands", help: "/hands - list available and active hands", section: "Info" },
+    ChatCommandSpec { name: "workflows", desc: "List workflows", help: "/workflows - list workflows", section: "Automation" },
+    ChatCommandSpec { name: "workflow", desc: "Run workflow (/workflow run <name> [input])", help: "/workflow run <name> [input] - run a workflow", section: "Automation" },
+    ChatCommandSpec { name: "triggers", desc: "List event triggers", help: "/triggers - list event triggers", section: "Automation" },
+    ChatCommandSpec { name: "trigger", desc: "Manage triggers", help: "/trigger add <agent> <pattern> <prompt> | /trigger del <id>", section: "Automation" },
+    ChatCommandSpec { name: "schedules", desc: "List cron jobs", help: "/schedules - list cron jobs", section: "Automation" },
+    ChatCommandSpec { name: "schedule", desc: "Manage schedules", help: "/schedule add <agent> <cron-5-fields> <message> | /schedule del <id> | /schedule run <id>", section: "Automation" },
+    ChatCommandSpec { name: "approvals", desc: "List pending approvals", help: "/approvals - list pending approvals", section: "Automation" },
+    ChatCommandSpec { name: "approve", desc: "Approve request", help: "/approve <id> - approve a request", section: "Automation" },
+    ChatCommandSpec { name: "reject", desc: "Reject request", help: "/reject <id> - reject a request", section: "Automation" },
+    ChatCommandSpec { name: "budget", desc: "Show spending limits and costs", help: "/budget - show spending limits and current costs", section: "Monitoring" },
+    ChatCommandSpec { name: "peers", desc: "Show OFP peer network status", help: "/peers - show OFP peer network status", section: "Monitoring" },
+    ChatCommandSpec { name: "a2a", desc: "List discovered external A2A agents", help: "/a2a - list discovered external A2A agents", section: "Monitoring" },
+];
+
+pub fn channel_command_specs() -> &'static [ChatCommandSpec] {
+    CHANNEL_COMMAND_SPECS
+}
+
+fn is_channel_command(name: &str) -> bool {
+    channel_command_specs().iter().any(|spec| spec.name == name)
+}
+
+fn format_channel_help() -> String {
+    let sections = ["General", "Session", "Info", "Automation", "Monitoring"];
+    let mut msg = String::from("OpenFang Bot Commands:");
+
+    for section in sections {
+        let commands: Vec<&ChatCommandSpec> = channel_command_specs()
+            .iter()
+            .filter(|spec| spec.section == section)
+            .collect();
+        if commands.is_empty() {
+            continue;
+        }
+        msg.push_str("\n\n");
+        msg.push_str(section);
+        msg.push_str(":\n");
+        for spec in commands {
+            msg.push_str(spec.help);
+            msg.push('\n');
+        }
+        msg.pop();
+    }
+
+    msg
+}
 
 /// Kernel operations needed by channel adapters.
 ///
@@ -57,6 +129,20 @@ pub trait ChannelBridgeHandle: Send + Sync {
 
     /// Spawn an agent by manifest name, returning its ID.
     async fn spawn_agent_by_name(&self, manifest_name: &str) -> Result<AgentId, String>;
+
+    /// Transcribe raw audio bytes to text.
+    async fn transcribe_audio(
+        &self,
+        _audio_bytes: Vec<u8>,
+        _mime_type: &str,
+    ) -> Result<String, String> {
+        Err("Audio transcription not available.".to_string())
+    }
+
+    /// List pending approval requests for a specific agent.
+    async fn pending_approvals_for_agent(&self, _agent_id: AgentId) -> Vec<ApprovalRequest> {
+        Vec::new()
+    }
 
     /// Return uptime info string (e.g., "2h 15m, 5 agents").
     async fn uptime_info(&self) -> String {
@@ -693,36 +779,7 @@ async fn dispatch_message(
             vec![]
         };
 
-        if matches!(
-            cmd,
-            "start"
-                | "help"
-                | "agents"
-                | "agent"
-                | "status"
-                | "models"
-                | "providers"
-                | "new"
-                | "compact"
-                | "model"
-                | "stop"
-                | "usage"
-                | "think"
-                | "skills"
-                | "hands"
-                | "workflows"
-                | "workflow"
-                | "triggers"
-                | "trigger"
-                | "schedules"
-                | "schedule"
-                | "approvals"
-                | "approve"
-                | "reject"
-                | "budget"
-                | "peers"
-                | "a2a"
-        ) {
+        if is_channel_command(cmd) {
             let result = handle_command(cmd, &args, handle, router, &message.sender).await;
             send_response(adapter, &message.sender, result, thread_id, output_format).await;
             return;
@@ -1445,47 +1502,7 @@ async fn handle_command(
             msg.push_str("\nCommands:\n/agents - list agents\n/agent <name> - select an agent\n/help - show this help");
             msg
         }
-        "help" => "OpenFang Bot Commands:\n\
-             \n\
-             Session:\n\
-             /agents - list running agents\n\
-             /agent <name> - select which agent to talk to\n\
-             /new - reset session (clear messages)\n\
-             /compact - trigger LLM session compaction\n\
-             /model [name] - show or switch agent model\n\
-             /stop - cancel current agent run\n\
-             /usage - show session token usage and cost\n\
-             /think [on|off] - toggle extended thinking\n\
-             \n\
-             Info:\n\
-             /models - list available AI models\n\
-             /providers - show configured providers\n\
-             /skills - list installed skills\n\
-             /hands - list available and active hands\n\
-             /status - show system status\n\
-             \n\
-             Automation:\n\
-             /workflows - list workflows\n\
-             /workflow run <name> [input] - run a workflow\n\
-             /triggers - list event triggers\n\
-             /trigger add <agent> <pattern> <prompt> - create trigger\n\
-             /trigger del <id> - remove trigger\n\
-             /schedules - list cron jobs\n\
-             /schedule add <agent> <cron-5-fields> <message> - create job\n\
-             /schedule del <id> - remove job\n\
-             /schedule run <id> - run job now\n\
-             /approvals - list pending approvals\n\
-             /approve <id> - approve a request\n\
-             /reject <id> - reject a request\n\
-             \n\
-             Monitoring:\n\
-             /budget - show spending limits and current costs\n\
-             /peers - show OFP peer network status\n\
-             /a2a - list discovered external A2A agents\n\
-             \n\
-             /start - show welcome message\n\
-             /help - show this help"
-            .to_string(),
+        "help" => format_channel_help(),
         "status" => handle.uptime_info().await,
         "agents" => {
             let agents = handle.list_agents().await.unwrap_or_default();
@@ -1501,7 +1518,15 @@ async fn handle_command(
         }
         "agent" => {
             if args.is_empty() {
-                return "Usage: /agent <name>".to_string();
+                let agents = handle.list_agents().await.unwrap_or_default();
+                if agents.is_empty() {
+                    return "No agents running. Usage: /agent <name>".to_string();
+                }
+                let mut msg = "Usage: /agent <name>\n\nAvailable agents:\n".to_string();
+                for (_, name) in &agents {
+                    msg.push_str(&format!("  - {name}\n"));
+                }
+                return msg.trim_end().to_string();
             }
             let agent_name = &args[0];
             match handle.find_agent_by_name(agent_name).await {
@@ -1802,6 +1827,32 @@ mod tests {
         // Verify router was updated
         let resolved = router.resolve(&ChannelType::Telegram, "user1", None);
         assert_eq!(resolved, Some(agent_id));
+    }
+
+    #[tokio::test]
+    async fn test_handle_command_agent_without_args_lists_agents() {
+        let agent_id = AgentId::new();
+        let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
+            agents: Mutex::new(vec![(agent_id, "coder".to_string())]),
+        });
+        let router = Arc::new(AgentRouter::new());
+        let sender = ChannelUser {
+            platform_id: "user1".to_string(),
+            display_name: "Test".to_string(),
+            openfang_user: None,
+        };
+
+        let result = handle_command("agent", &[], &handle, &router, &sender).await;
+        assert!(result.contains("Usage: /agent <name>"));
+        assert!(result.contains("coder"));
+    }
+
+    #[test]
+    fn test_channel_command_specs_include_agent_and_help() {
+        let specs = channel_command_specs();
+        assert!(specs.iter().any(|spec| spec.name == "help"));
+        assert!(specs.iter().any(|spec| spec.name == "agent"));
+        assert!(specs.iter().any(|spec| spec.name == "agents"));
     }
 
     #[test]
