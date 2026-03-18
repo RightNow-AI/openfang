@@ -231,6 +231,42 @@ pub struct TelegramMediaItem {
 - CLI command to start daemon is `start` not `daemon`
 - On Windows: use `taskkill //PID <pid> //F` (double slashes in MSYS2/Git Bash)
 
+## Telegram Group Configuration
+
+**CRITICAL**: For bot to work in groups, you MUST configure BOTH layers:
+
+### Layer 1: BotFather Settings (Telegram Server)
+1. Open @BotFather in Telegram
+2. Send `/mybots` → Select your bot → `Bot Settings` → `Group Privacy`
+3. Choose **Turn off**
+
+**Why**: With Group Privacy ON, Telegram only sends `/commands` to the bot, NOT @mentions.
+
+### Layer 2: OpenFang Config (Application)
+```toml
+[channels.telegram]
+bot_token_env = "TELEGRAM_BOT_TOKEN"
+allowed_users = ["user_id", "-group_id"]  # Group IDs are negative
+
+[channels.telegram.overrides]
+dm_policy = "respond"
+group_policy = "mention_only"  # Only respond to @mentions
+```
+
+### Register Group as RBAC User
+```toml
+[[users]]
+name = "group-123456789"
+role = "admin"
+
+[users.channel_bindings]
+telegram = "-123456789"  # Negative number for groups
+```
+
+**Result**: Bot receives all messages (Telegram layer) but only responds to @mentions (OpenFang layer).
+
+**See**: `docs/telegram-group-setup.md` for detailed guide.
+
 ## Git Submodule Management
 
 **Important**: `projects/shipinbot/` is a Git submodule, not a copy.

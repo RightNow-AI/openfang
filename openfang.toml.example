@@ -41,6 +41,9 @@ alert_threshold = 0.8
 [auth]
 enabled = false
 username = "admin"
+# Generate with: openfang security hash-password
+# When auth.enabled = true, password_hash must be a valid Argon2id PHC string.
+# A 64-character legacy SHA-256 hex digest is also accepted for compatibility.
 password_hash = ""
 
 # Channel adapters
@@ -55,6 +58,32 @@ poll_interval_secs = 1
 # telegram_api_hash_env = "TELEGRAM_API_HASH"
 # auto_start_local_api = false
 # local_api_port = 8081
+
+# IMPORTANT: Telegram Group Configuration
+# For the bot to work in groups, you MUST configure BOTH layers:
+#
+# 1. Telegram Layer (BotFather settings):
+#    - Open @BotFather in Telegram
+#    - Send /mybots → Select your bot → Bot Settings → Group Privacy
+#    - Choose "Turn off" to allow the bot to receive group messages
+#    - Without this, the bot will ONLY receive /commands, NOT @mentions
+#
+# 2. OpenFang Layer (config below):
+#    - Use [channels.telegram.overrides] to control bot behavior
+#    - group_policy options:
+#      * "ignore" - Don't respond to any group messages
+#      * "commands_only" - Only respond to /commands
+#      * "mention_only" - Only respond when @mentioned (RECOMMENDED)
+#      * "all" - Respond to all group messages (not recommended)
+#
+# Recommended setup for groups:
+# - BotFather: Group Privacy = OFF
+# - Config: group_policy = "mention_only"
+# Result: Bot receives all messages but only responds to @mentions
+#
+# [channels.telegram.overrides]
+# dm_policy = "respond"      # How to handle direct messages: "ignore" | "allowed_only" | "respond"
+# group_policy = "mention_only"  # How to handle group messages: "ignore" | "commands_only" | "mention_only" | "all"
 
 [channels.discord]
 bot_token_env = "DISCORD_BOT_TOKEN"

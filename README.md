@@ -8,6 +8,7 @@ This repository is a working fork of OpenFang with an integrated `shipinbot` pro
 - Repository structure: [PROJECTS.md](PROJECTS.md)
 - shipinbot docs: [projects/shipinbot/docs/INDEX.md](projects/shipinbot/docs/INDEX.md)
 - Telegram workflow notes: [SHIPINBOT_INTEGRATION_GUIDE.md](SHIPINBOT_INTEGRATION_GUIDE.md)
+- **Telegram group setup**: [docs/telegram-group-setup.md](docs/telegram-group-setup.md) ⚠️ Required for group bots
 
 ## Repository Scope
 
@@ -40,14 +41,14 @@ Open the dashboard at `http://127.0.0.1:4200/`.
 Release installers and CLI binaries are published from this fork.
 
 ```bash
-curl -sSf https://openfang.sh | sh
+curl -sSf https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/main/scripts/install.sh | sh
 ```
 
 ```powershell
-irm https://openfang.sh/install.ps1 | iex
+irm https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/main/scripts/install.ps1 | iex
 ```
 
-The scripts pull assets from `raw.githubusercontent.com/tytsxai/openfang-upstream-fork`, and `openfang.sh` should redirect to those files (update the DNS target if you manage the domain).
+If you manage `openfang.sh`, treat it as an optional vanity redirect only. The supported source of truth is this fork's GitHub release and Raw GitHub installer paths.
 
 ### Verification
 
@@ -57,6 +58,7 @@ After code changes, run the workspace checks expected by this fork:
 cargo build --workspace --lib
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+scripts/preflight-openfang.sh
 ```
 
 If you change API wiring, routes, config deserialization, or runtime integration, also run live integration checks against a real daemon instance. The workflow used in this repository is documented in `AGENTS.md`.

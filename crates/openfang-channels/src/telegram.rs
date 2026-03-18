@@ -1520,6 +1520,51 @@ struct FileInfo {
     file_size: u64,
     file_path: String,
     download_url: String,
+    local_path: Option<String>,
+}
+
+fn looks_like_local_bot_api_path(file_path: &str) -> bool {
+    let bytes = file_path.as_bytes();
+    file_path.starts_with('/')
+        || file_path.starts_with("\\\\")
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/'))
+}
+
+fn telegram_entity_utf16_range_to_bytes(
+    text: &str,
+    offset_utf16: usize,
+    length_utf16: usize,
+) -> Option<std::ops::Range<usize>> {
+    let end_utf16 = offset_utf16.checked_add(length_utf16)?;
+    let mut utf16_index = 0usize;
+    let mut start_byte = None;
+    let mut end_byte = None;
+
+    for (byte_index, ch) in text.char_indices() {
+        if start_byte.is_none() && utf16_index == offset_utf16 {
+            start_byte = Some(byte_index);
+        }
+        if end_byte.is_none() && utf16_index == end_utf16 {
+            end_byte = Some(byte_index);
+            break;
+        }
+        utf16_index += ch.len_utf16();
+    }
+
+    if start_byte.is_none() && utf16_index == offset_utf16 {
+        start_byte = Some(text.len());
+    }
+    if end_byte.is_none() && utf16_index == end_utf16 {
+        end_byte = Some(text.len());
+    }
+
+    match (start_byte, end_byte) {
+        (Some(start), Some(end)) if start <= end => Some(start..end),
+        _ => None,
+    }
 }
 
 fn infer_download_extension(file_path: &str) -> String {
@@ -1613,13 +1658,24 @@ async fn telegram_get_file_info(
 
         let file_path = body["result"]["file_path"].as_str()?.to_string();
         let file_size = body["result"]["file_size"].as_u64().unwrap_or(0);
-        let download_url = format!("{api_base_url}/file/bot{token}/{file_path}");
+
+        // Local Bot API returns absolute file paths, official API returns relative paths.
+        let local_path = if use_local_api && looks_like_local_bot_api_path(&file_path) {
+            Some(file_path.clone())
+        } else {
+            None
+        };
+        let download_url = match &local_path {
+            Some(path) => format!("file://{}", path),
+            None => format!("{api_base_url}/file/bot{token}/{file_path}"),
+        };
 
         return Some(FileInfo {
             file_id: file_id.to_string(),
             file_size,
             file_path,
             download_url,
+            local_path,
         });
     }
 
@@ -1648,7 +1704,30 @@ async fn download_file(
     );
     let dest_path = dest_dir.join(&filename);
 
-    // Start download
+    // Check if this is a local file (Local Bot API)
+    if let Some(local_path) = file_info.local_path.as_deref() {
+        let source = Path::new(local_path);
+
+        // Copy file from Local Bot API storage to destination
+        tokio::fs::copy(source, &dest_path).await?;
+
+        // Report completion
+        if let Some(callback) = progress_callback {
+            callback(ProgressInfo {
+                file_id: file_info.file_id.clone(),
+                file_name: filename.clone(),
+                total_bytes: file_info.file_size,
+                downloaded_bytes: file_info.file_size,
+                percentage: 100.0,
+                chat_id,
+                message_id,
+            });
+        }
+
+        return Ok(dest_path);
+    }
+
+    // HTTP download (official Bot API)
     let response = client.get(&file_info.download_url).send().await?;
     if !response.status().is_success() {
         return Err(format!("HTTP error: {}", response.status()).into());
@@ -2387,8 +2466,28 @@ async fn parse_telegram_update(
 
 /// Check whether the bot was @mentioned in a Telegram message.
 ///
+/// **IMPORTANT: Telegram Group Privacy Mode**
+///
+/// For this function to work in groups, you MUST disable "Group Privacy" in BotFather:
+/// 1. Open @BotFather in Telegram
+/// 2. Send /mybots
+/// 3. Select your bot
+/// 4. Bot Settings → Group Privacy → Turn off
+///
+/// **Why this is required:**
+/// - Group Privacy ON: Telegram only sends /commands to the bot, @mentions are NOT delivered
+/// - Group Privacy OFF: Telegram sends all messages, then OpenFang filters by @mention
+///
+/// **Two-layer filtering:**
+/// 1. Telegram layer (Group Privacy): Controls what messages reach the bot
+/// 2. OpenFang layer (group_policy): Controls what messages the bot responds to
+///
+/// With Group Privacy OFF + group_policy="mention_only", the bot will:
+/// - Receive all group messages (Telegram layer)
+/// - Only respond to @mentions (OpenFang layer)
+///
 /// Inspects both `entities` (for text messages) and `caption_entities` (for media
-/// with captions) for entity type `"mention"` whose text matches `@bot_username`.
+/// with captions) for entity type `"mention"` or `"text_mention"` whose text matches `@bot_username`.
 fn check_mention_entities(message: &serde_json::Value, bot_username: &str) -> bool {
     let bot_mention = format!("@{}", bot_username.to_lowercase());
 
@@ -2403,20 +2502,45 @@ fn check_mention_entities(message: &serde_json::Value, bot_username: &str) -> bo
             };
 
             for entity in entities {
-                if entity["type"].as_str() != Some("mention") {
-                    continue;
+                let entity_type = entity["type"].as_str();
+
+                // Check for regular mentions (@username)
+                if entity_type == Some("mention") {
+                    let offset = entity["offset"].as_i64().unwrap_or(0) as usize;
+                    let length = entity["length"].as_i64().unwrap_or(0) as usize;
+                    if let Some(range) = telegram_entity_utf16_range_to_bytes(text, offset, length)
+                    {
+                        let mention_text = &text[range];
+                        if mention_text.to_lowercase() == bot_mention {
+                            return true;
+                        }
+                    }
                 }
-                let offset = entity["offset"].as_i64().unwrap_or(0) as usize;
-                let length = entity["length"].as_i64().unwrap_or(0) as usize;
-                if offset + length <= text.len() {
-                    let mention_text = &text[offset..offset + length];
-                    if mention_text.to_lowercase() == bot_mention {
-                        return true;
+
+                // Check for text_mention (when user @mentions via UI picker)
+                if entity_type == Some("text_mention") {
+                    if let Some(user) = entity.get("user") {
+                        if let Some(username) = user["username"].as_str() {
+                            if username.to_lowercase() == bot_username.to_lowercase() {
+                                return true;
+                            }
+                        }
                     }
                 }
             }
         }
     }
+
+    // Fallback: check if text contains @botusername (case-insensitive)
+    let text = message["text"]
+        .as_str()
+        .or_else(|| message["caption"].as_str())
+        .unwrap_or("");
+
+    if text.to_lowercase().contains(&bot_mention) {
+        return true;
+    }
+
     false
 }
 
@@ -4032,6 +4156,29 @@ mod tests {
         assert!(info
             .download_url
             .contains("/file/botfake:token/files/large-video.mp4"));
+        assert!(info.local_path.is_none());
+    }
+
+    #[test]
+    fn test_check_mention_entities_handles_utf16_offsets() {
+        let message = serde_json::json!({
+            "text": "🙂 @mybot world",
+            "entities": [{
+                "type": "mention",
+                "offset": 3,
+                "length": 6
+            }]
+        });
+
+        assert!(check_mention_entities(&message, "mybot"));
+    }
+
+    #[test]
+    fn test_looks_like_local_bot_api_path_supports_windows_and_unix() {
+        assert!(looks_like_local_bot_api_path("/var/lib/telegram/file.bin"));
+        assert!(looks_like_local_bot_api_path("C:\\telegram\\file.bin"));
+        assert!(looks_like_local_bot_api_path("\\\\server\\share\\file.bin"));
+        assert!(!looks_like_local_bot_api_path("files/file.bin"));
     }
 
     #[tokio::test]
