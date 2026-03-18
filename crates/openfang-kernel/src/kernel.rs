@@ -6067,7 +6067,7 @@ impl KernelHandle for OpenFangKernel {
         self.deactivate_hand(uuid).map_err(|e| format!("{e}"))
     }
 
-    fn requires_approval(&self, tool_name: &str) -> bool {
+    fn requires_approval(&self, _tool_name: &str) -> bool {
         // self.approval_manager.requires_approval(tool_name)
         false // TODO 放开权限校验
     }
