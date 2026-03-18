@@ -13,8 +13,9 @@ Environment:
   OPENFANG_BASE_URL          Base URL override (default: http://127.0.0.1:4200)
   OPENFANG_API_KEY           Bearer token used for protected API checks
   OPENFANG_ENV_FILE          Optional external env file (for example /etc/openfang/env)
-                             If unset, preflight auto-detects /etc/openfang/env when present
+                             If unset, preflight only auto-detects /etc/openfang/env when it matches the current OPENFANG_HOME
   OPENFANG_PREFLIGHT_OFFLINE Set to 1/true/yes/on to skip live API checks
+  OPENFANG_STRICT_PRODUCTION Set to 1/true/yes/on to fail unless protected checks have a machine API key
 EOF
 }
 
@@ -54,9 +55,68 @@ done
 OPENFANG_HOME="${OPENFANG_HOME:-$HOME/.openfang}"
 BASE_URL_OVERRIDE="${BASE_URL_CLI_ARG:-${OPENFANG_BASE_URL:-}}"
 CONFIG_PATH="${OPENFANG_HOME}/config.toml"
+STRICT_PRODUCTION="${OPENFANG_STRICT_PRODUCTION:-0}"
+
+normalize_path() {
+  local path="${1:-}"
+  if [[ -z "${path}" ]]; then
+    return 0
+  fi
+  if [[ "${path}" != "/" ]]; then
+    path="${path%/}"
+  fi
+  printf '%s\n' "${path}"
+}
+
+env_file_var() {
+  local env_file="$1"
+  local wanted="$2"
+  [[ -f "${env_file}" ]] || return 0
+  awk -F= -v wanted="${wanted}" '
+    /^[[:space:]]*#/ { next }
+    index($0, "=") == 0 { next }
+    {
+      key = $1
+      sub(/^[[:space:]]+/, "", key)
+      sub(/[[:space:]]+$/, "", key)
+      if (key != wanted) next
+      value = substr($0, index($0, "=") + 1)
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      if ((value ~ /^".*"$/) || (value ~ /^'\''.*'\''$/)) {
+        value = substr(value, 2, length(value) - 2)
+      }
+      print value
+      exit
+    }
+  ' "${env_file}"
+}
+
+auto_detect_external_env_file() {
+  local openfang_home="$1"
+  local candidate="/etc/openfang/env"
+  [[ -f "${candidate}" ]] || return 1
+
+  local normalized_home candidate_home
+  normalized_home="$(normalize_path "${openfang_home}")"
+  candidate_home="$(env_file_var "${candidate}" "OPENFANG_HOME")"
+  candidate_home="$(normalize_path "${candidate_home}")"
+
+  if [[ -n "${candidate_home}" && "${candidate_home}" != "${normalized_home}" ]]; then
+    echo "warn ignoring /etc/openfang/env because it belongs to OPENFANG_HOME=${candidate_home}, not ${normalized_home}" >&2
+    return 1
+  fi
+  if [[ -z "${candidate_home}" && "${normalized_home}" != "/var/lib/openfang" ]]; then
+    echo "warn ignoring /etc/openfang/env because it does not declare OPENFANG_HOME and current OPENFANG_HOME is ${normalized_home}" >&2
+    return 1
+  fi
+
+  printf '%s\n' "${candidate}"
+}
+
 EXTERNAL_ENV_FILE="${OPENFANG_ENV_FILE:-}"
-if [[ -z "${EXTERNAL_ENV_FILE}" && -f /etc/openfang/env ]]; then
-  EXTERNAL_ENV_FILE="/etc/openfang/env"
+if [[ -z "${EXTERNAL_ENV_FILE}" ]]; then
+  EXTERNAL_ENV_FILE="$(auto_detect_external_env_file "${OPENFANG_HOME}" || true)"
 fi
 
 if [[ -n "${OPENFANG_ENV_FILE:-}" && ! -f "${OPENFANG_ENV_FILE}" ]]; then
@@ -274,7 +334,8 @@ if not isinstance(network_cfg, dict):
 
 api_listen = str(env.get("OPENFANG_LISTEN", cfg.get("api_listen", "127.0.0.1:4200"))).strip()
 config_api_key = str(cfg.get("api_key", "")).strip()
-effective_api_key = config_api_key or str(env.get("OPENFANG_API_KEY", "")).strip()
+runtime_api_key = str(env.get("OPENFANG_API_KEY", "")).strip()
+effective_api_key = runtime_api_key or config_api_key
 auth_enabled = bool(auth_cfg.get("enabled", False))
 password_hash = str(auth_cfg.get("password_hash", "")).strip()
 network_enabled = bool(cfg.get("network_enabled", False))
@@ -318,10 +379,10 @@ if effective_api_key.strip().lower() in PLACEHOLDER_API_KEYS:
     raise SystemExit("api_key is still a placeholder/example value")
 
 print(f"ok  dashboard_auth={'enabled' if auth_enabled else 'disabled'}")
-if config_api_key:
-    print("ok  api_key=set-in-config")
-elif effective_api_key:
+if runtime_api_key:
     print("ok  api_key=set-via-runtime-env")
+elif config_api_key:
+    print("ok  api_key=set-in-config")
 else:
     print("ok  api_key=not-set")
 
@@ -352,6 +413,11 @@ BASE_URL="${BASE_URL_OVERRIDE:-$(runtime_inspect base_url)}"
 API_KEY="${OPENFANG_API_KEY:-$(runtime_inspect effective_api_key)}"
 preflight_failures=0
 protected_failures=0
+
+if truthy "${STRICT_PRODUCTION}" && [[ -z "${API_KEY}" ]]; then
+  echo "error OPENFANG_STRICT_PRODUCTION requires a machine API key so protected readiness, metrics, and audit checks cannot silently degrade" >&2
+  exit 1
+fi
 
 mark_failure() {
   preflight_failures=1
@@ -550,7 +616,30 @@ if status != "ok":
 PY
   }
 
-  for path in /api/status /api/metrics /api/audit/verify; do
+  require_audit_valid() {
+    local url="$1"
+    local body
+
+    body="$(curl_with_auth "${url}")"
+    python3 - "${body}" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+if payload.get("valid") is not True:
+    raise SystemExit(f"/api/audit/verify reported invalid audit chain: {payload!r}")
+
+entries = int(payload.get("entries", 0) or 0)
+warning = payload.get("warning")
+if entries == 0 or warning:
+    print(
+        warning or "Audit log is empty — preflight passed but this node has no forensic history yet.",
+        file=sys.stderr,
+    )
+PY
+  }
+
+  for path in /api/status /api/metrics; do
     if curl_with_auth "${BASE_URL}${path}" >/dev/null 2>&1; then
       echo "ok  ${path}"
     else
@@ -563,6 +652,17 @@ PY
     fi
   done
 
+  if require_audit_valid "${BASE_URL}/api/audit/verify" >/dev/null 2>&1; then
+    echo "ok  /api/audit/verify"
+  else
+    if [[ -n "${API_KEY}" ]]; then
+      echo "error /api/audit/verify reported an invalid audit chain, or was unavailable under the current auth context" >&2
+      protected_failures=1
+    else
+      echo "warn /api/audit/verify unavailable with current auth context; set OPENFANG_API_KEY for full operational verification" >&2
+    fi
+  fi
+
   if require_ok_status "${BASE_URL}/api/health/detail" "/api/health/detail" >/dev/null 2>&1; then
     echo "ok  /api/health/detail"
   else
@@ -572,6 +672,10 @@ PY
     else
       echo "warn /api/health/detail unavailable or not ready with current auth context"
     fi
+  fi
+
+  if [[ -z "${API_KEY}" ]]; then
+    echo "warn protected readiness, metrics, and audit checks remain partial without OPENFANG_API_KEY; keep a machine API key for production probes and Prometheus" >&2
   fi
 
 else

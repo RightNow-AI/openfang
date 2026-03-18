@@ -11,7 +11,7 @@ Restore an OpenFang runtime backup created by backup-openfang.sh.
 Environment:
   OPENFANG_HOME               Restore target (default: $HOME/.openfang)
   OPENFANG_ENV_FILE           Optional external env restore target (for example /etc/openfang/env)
-                              If unset, restore auto-detects /etc/openfang/env when present
+                              If unset, restore only auto-detects /etc/openfang/env when it matches the current OPENFANG_HOME
   OPENFANG_SKIP_SAFETY_BACKUP Set to 1 to skip creating a pre-restore backup
   OPENFANG_ALLOW_LEGACY_RESTORE Set to 1 to restore a directory without BACKUP.txt
   OPENFANG_UID                Target owner uid for restored files (optional)
@@ -61,6 +61,63 @@ HOME_PARENT="$(dirname "${OPENFANG_HOME}")"
 HOME_BASENAME="$(basename "${OPENFANG_HOME}")"
 STAGING_HOME="${HOME_PARENT}/.${HOME_BASENAME}.restore-${RESTORE_STAMP}-$$"
 ROLLBACK_HOME="${HOME_PARENT}/.${HOME_BASENAME}.rollback-${RESTORE_STAMP}-$$"
+
+normalize_path() {
+  local path="${1:-}"
+  if [[ -z "${path}" ]]; then
+    return 0
+  fi
+  if [[ "${path}" != "/" ]]; then
+    path="${path%/}"
+  fi
+  printf '%s\n' "${path}"
+}
+
+env_file_var() {
+  local env_file="$1"
+  local wanted="$2"
+  [[ -f "${env_file}" ]] || return 0
+  awk -F= -v wanted="${wanted}" '
+    /^[[:space:]]*#/ { next }
+    index($0, "=") == 0 { next }
+    {
+      key = $1
+      sub(/^[[:space:]]+/, "", key)
+      sub(/[[:space:]]+$/, "", key)
+      if (key != wanted) next
+      value = substr($0, index($0, "=") + 1)
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      if ((value ~ /^".*"$/) || (value ~ /^'\''.*'\''$/)) {
+        value = substr(value, 2, length(value) - 2)
+      }
+      print value
+      exit
+    }
+  ' "${env_file}"
+}
+
+auto_detect_external_env_file() {
+  local openfang_home="$1"
+  local candidate="/etc/openfang/env"
+  [[ -f "${candidate}" ]] || return 1
+
+  local normalized_home candidate_home
+  normalized_home="$(normalize_path "${openfang_home}")"
+  candidate_home="$(env_file_var "${candidate}" "OPENFANG_HOME")"
+  candidate_home="$(normalize_path "${candidate_home}")"
+
+  if [[ -n "${candidate_home}" && "${candidate_home}" != "${normalized_home}" ]]; then
+    echo "warn ignoring /etc/openfang/env because it belongs to OPENFANG_HOME=${candidate_home}, not ${normalized_home}" >&2
+    return 1
+  fi
+  if [[ -z "${candidate_home}" && "${normalized_home}" != "/var/lib/openfang" ]]; then
+    echo "warn ignoring /etc/openfang/env because it does not declare OPENFANG_HOME and current OPENFANG_HOME is ${normalized_home}" >&2
+    return 1
+  fi
+
+  printf '%s\n' "${candidate}"
+}
 
 config_dependency_paths() {
   local config_path="$1"
@@ -233,12 +290,8 @@ backup_manifest_value() {
 
 BACKUP_EXTERNAL_ENV_SOURCE="$(backup_manifest_value external_env_source)"
 EXTERNAL_ENV_FILE="${OPENFANG_ENV_FILE:-}"
-if [[ -z "${EXTERNAL_ENV_FILE}" && -f /etc/openfang/env ]]; then
-  EXTERNAL_ENV_FILE="/etc/openfang/env"
-fi
-if [[ -z "${EXTERNAL_ENV_FILE}" && -n "${BACKUP_EXTERNAL_ENV_SOURCE}" ]]; then
-  EXTERNAL_ENV_FILE="${BACKUP_EXTERNAL_ENV_SOURCE}"
-  echo "warn external env target auto-derived from backup manifest: ${EXTERNAL_ENV_FILE}" >&2
+if [[ -z "${EXTERNAL_ENV_FILE}" ]]; then
+  EXTERNAL_ENV_FILE="$(auto_detect_external_env_file "${OPENFANG_HOME}" || true)"
 fi
 
 daemon_health_url() {
@@ -283,8 +336,10 @@ PY
 
 config_health_url() {
   local config_path="$1"
-  python3 - "${config_path}" <<'PY'
+  local external_env_file="${2:-}"
+  python3 - "${config_path}" "${external_env_file}" <<'PY'
 import ipaddress
+import os
 import sys
 from pathlib import Path
 
@@ -294,6 +349,27 @@ except ModuleNotFoundError:
     raise SystemExit(1)
 
 MAX_INCLUDE_DEPTH = 10
+
+
+def parse_env_file(path):
+    values = {}
+    if not path.exists():
+        return values
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and (
+            (value.startswith('"') and value.endswith('"'))
+            or (value.startswith("'") and value.endswith("'"))
+        ):
+            value = value[1:-1]
+        if key:
+            values[key] = value
+    return values
 
 
 def deep_merge(base, overlay):
@@ -352,12 +428,23 @@ def load_config_with_includes(config_path, visited=None, depth=0):
     return merged
 
 path = Path(sys.argv[1])
+external_env_path = Path(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
 try:
     cfg = load_config_with_includes(path)
 except Exception:
     raise SystemExit(1)
 
-listen_addr = str(cfg.get("api_listen", "")).strip()
+effective_env = {}
+if external_env_path is not None:
+    effective_env.update(parse_env_file(external_env_path))
+effective_env.update(os.environ)
+
+listen_addr = str(
+    effective_env.get(
+        "OPENFANG_LISTEN",
+        cfg.get("api_listen", ""),
+    )
+).strip()
 if not listen_addr and isinstance(cfg.get("api"), dict):
     listen_addr = str(cfg["api"].get("api_listen", "")).strip()
 if not listen_addr:
@@ -406,7 +493,7 @@ if [[ -f "${OPENFANG_HOME}/daemon.json" ]]; then
 fi
 
 if [[ -f "${OPENFANG_HOME}/config.toml" ]]; then
-  config_health_endpoint="$(config_health_url "${OPENFANG_HOME}/config.toml" || true)"
+  config_health_endpoint="$(config_health_url "${OPENFANG_HOME}/config.toml" "${EXTERNAL_ENV_FILE}" || true)"
   probe_health_endpoint "${config_health_endpoint}" "config.toml"
 fi
 
@@ -467,23 +554,34 @@ restore_config_tree() {
 restore_external_env_file() {
   local backup_env_file="$1"
   local target_env_file="$2"
+  local recorded_source="$3"
+  local target_home="$4"
 
   if [[ ! -f "${backup_env_file}" ]]; then
     return 0
   fi
 
   if [[ -z "${target_env_file}" ]]; then
-    echo "warn backup includes external-env.env but no target path was resolved. Set OPENFANG_ENV_FILE to restore it." >&2
-    return 0
+    echo "error backup includes external-env.env but no safe restore target was resolved. Set OPENFANG_ENV_FILE explicitly for ${recorded_source:-the recorded external env path}." >&2
+    return 1
+  fi
+
+  local expected_home normalized_target_home
+  expected_home="$(env_file_var "${backup_env_file}" "OPENFANG_HOME")"
+  expected_home="$(normalize_path "${expected_home}")"
+  normalized_target_home="$(normalize_path "${target_home}")"
+  if [[ -n "${expected_home}" && "${expected_home}" != "${normalized_target_home}" ]]; then
+    echo "error backup external env expects OPENFANG_HOME=${expected_home}, not ${normalized_target_home}. Refusing to restore it to ${target_env_file}." >&2
+    return 1
   fi
 
   if ! mkdir -p "$(dirname "${target_env_file}")" 2>/dev/null; then
-    echo "warn could not create directory for external env file ${target_env_file}; skipping external env restore." >&2
-    return 0
+    echo "error could not create directory for external env file ${target_env_file}." >&2
+    return 1
   fi
   if ! cp -a "${backup_env_file}" "${target_env_file}" 2>/dev/null; then
-    echo "warn could not restore external env file to ${target_env_file}; check permissions or set OPENFANG_ENV_FILE explicitly." >&2
-    return 0
+    echo "error could not restore external env file to ${target_env_file}; check permissions or set OPENFANG_ENV_FILE explicitly." >&2
+    return 1
   fi
   chmod 600 "${target_env_file}" 2>/dev/null || true
   echo "ok  restored external env file ${target_env_file}"
@@ -596,7 +694,11 @@ fi
 
 STAGING_HOME=""
 rm -rf "${ROLLBACK_HOME}"
-restore_external_env_file "${BACKUP_DIR}/external-env.env" "${EXTERNAL_ENV_FILE}"
+restore_external_env_file \
+  "${BACKUP_DIR}/external-env.env" \
+  "${EXTERNAL_ENV_FILE}" \
+  "${BACKUP_EXTERNAL_ENV_SOURCE}" \
+  "${OPENFANG_HOME}"
 
 echo "Restore completed."
 echo "Next steps:"

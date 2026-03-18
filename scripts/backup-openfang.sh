@@ -12,7 +12,7 @@ Create a timestamped OpenFang runtime backup under:
 Environment:
   OPENFANG_HOME          Runtime home to back up (default: $HOME/.openfang)
   OPENFANG_ENV_FILE      Optional external env file to back up (for example /etc/openfang/env)
-                         If unset, backup auto-detects /etc/openfang/env when present
+                         If unset, backup only auto-detects /etc/openfang/env when it matches the current OPENFANG_HOME
   OPENFANG_KEEP_BACKUPS  Number of backups to keep in backup-root (default: 5)
   OPENFANG_ALLOW_LIVE_BACKUP
                          Set to 1 only when you intentionally accept a live,
@@ -29,9 +29,67 @@ OPENFANG_HOME="${OPENFANG_HOME:-$HOME/.openfang}"
 BACKUP_ROOT="${1:-$HOME/openfang-backups}"
 KEEP_BACKUPS="${OPENFANG_KEEP_BACKUPS:-5}"
 ALLOW_LIVE_BACKUP="${OPENFANG_ALLOW_LIVE_BACKUP:-0}"
+
+normalize_path() {
+  local path="${1:-}"
+  if [[ -z "${path}" ]]; then
+    return 0
+  fi
+  if [[ "${path}" != "/" ]]; then
+    path="${path%/}"
+  fi
+  printf '%s\n' "${path}"
+}
+
+env_file_var() {
+  local env_file="$1"
+  local wanted="$2"
+  [[ -f "${env_file}" ]] || return 0
+  awk -F= -v wanted="${wanted}" '
+    /^[[:space:]]*#/ { next }
+    index($0, "=") == 0 { next }
+    {
+      key = $1
+      sub(/^[[:space:]]+/, "", key)
+      sub(/[[:space:]]+$/, "", key)
+      if (key != wanted) next
+      value = substr($0, index($0, "=") + 1)
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      if ((value ~ /^".*"$/) || (value ~ /^'\''.*'\''$/)) {
+        value = substr(value, 2, length(value) - 2)
+      }
+      print value
+      exit
+    }
+  ' "${env_file}"
+}
+
+auto_detect_external_env_file() {
+  local openfang_home="$1"
+  local candidate="/etc/openfang/env"
+  [[ -f "${candidate}" ]] || return 1
+
+  local normalized_home candidate_home
+  normalized_home="$(normalize_path "${openfang_home}")"
+  candidate_home="$(env_file_var "${candidate}" "OPENFANG_HOME")"
+  candidate_home="$(normalize_path "${candidate_home}")"
+
+  if [[ -n "${candidate_home}" && "${candidate_home}" != "${normalized_home}" ]]; then
+    echo "warn ignoring /etc/openfang/env because it belongs to OPENFANG_HOME=${candidate_home}, not ${normalized_home}" >&2
+    return 1
+  fi
+  if [[ -z "${candidate_home}" && "${normalized_home}" != "/var/lib/openfang" ]]; then
+    echo "warn ignoring /etc/openfang/env because it does not declare OPENFANG_HOME and current OPENFANG_HOME is ${normalized_home}" >&2
+    return 1
+  fi
+
+  printf '%s\n' "${candidate}"
+}
+
 EXTERNAL_ENV_FILE="${OPENFANG_ENV_FILE:-}"
-if [[ -z "${EXTERNAL_ENV_FILE}" && -f /etc/openfang/env ]]; then
-  EXTERNAL_ENV_FILE="/etc/openfang/env"
+if [[ -z "${EXTERNAL_ENV_FILE}" ]]; then
+  EXTERNAL_ENV_FILE="$(auto_detect_external_env_file "${OPENFANG_HOME}" || true)"
 fi
 
 if [[ -n "${OPENFANG_ENV_FILE:-}" && ! -f "${OPENFANG_ENV_FILE}" ]]; then
@@ -94,11 +152,13 @@ PY
 
 config_health_url() {
   local config_path="$1"
+  local external_env_file="${2:-}"
 
   command -v python3 >/dev/null 2>&1 || return 1
 
-  python3 - "${config_path}" <<'PY'
+  python3 - "${config_path}" "${external_env_file}" <<'PY'
 import ipaddress
+import os
 import sys
 from pathlib import Path
 
@@ -108,6 +168,27 @@ except ModuleNotFoundError:
     raise SystemExit(1)
 
 MAX_INCLUDE_DEPTH = 10
+
+
+def parse_env_file(path):
+    values = {}
+    if not path.exists():
+        return values
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and (
+            (value.startswith('"') and value.endswith('"'))
+            or (value.startswith("'") and value.endswith("'"))
+        ):
+            value = value[1:-1]
+        if key:
+            values[key] = value
+    return values
 
 
 def deep_merge(base, overlay):
@@ -166,9 +247,20 @@ def load_config_with_includes(config_path, visited=None, depth=0):
     return merged
 
 path = Path(sys.argv[1])
+external_env_path = Path(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
 cfg = load_config_with_includes(path)
 
-listen_addr = str(cfg.get("api_listen", "")).strip()
+effective_env = {}
+if external_env_path is not None:
+    effective_env.update(parse_env_file(external_env_path))
+effective_env.update(os.environ)
+
+listen_addr = str(
+    effective_env.get(
+        "OPENFANG_LISTEN",
+        cfg.get("api_listen", ""),
+    )
+).strip()
 if not listen_addr and isinstance(cfg.get("api"), dict):
     listen_addr = str(cfg["api"].get("api_listen", "")).strip()
 if not listen_addr:
@@ -207,7 +299,7 @@ daemon_seems_running() {
   fi
 
   if [[ -f "${OPENFANG_HOME}/config.toml" ]] && command -v curl >/dev/null 2>&1; then
-    endpoint="$(config_health_url "${OPENFANG_HOME}/config.toml" || true)"
+    endpoint="$(config_health_url "${OPENFANG_HOME}/config.toml" "${EXTERNAL_ENV_FILE}" || true)"
     if [[ -n "${endpoint}" ]] && curl -fsS --max-time 2 "${endpoint}" >/dev/null 2>&1; then
       return 0
     fi
