@@ -141,17 +141,20 @@
       </div>
 
       <!-- Drives -->
-      <div class="nav-section" x-data="{ collapsed: false }" aria-label="Drives">
+      <div class="nav-section" x-data="{ collapsed: false, navDrives: [] }" x-init="fetch('/api/drives',{headers:window.apiHeaders?window.apiHeaders():{}}).then(r=>r.json()).then(d=>{navDrives=Array.isArray(d)?d:[]}).catch(()=>{})" aria-label="Drives">
         <div class="nav-section-title" @click="collapsed = !collapsed">
           <span class="nav-label">Drives</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
         <template x-if="!collapsed">
           <div x-transition>
-            <a class="nav-item" :class="{ active: page === 'drives' }" @click="navigate('drives')" :aria-current="page === 'drives' ? 'page' : false">
-              <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
-              <span class="nav-label">Explorer</span>
-            </a>
+            <!-- Show each drive as a nav item (default: "main" → "Drive") -->
+            <template x-for="d in (navDrives.length ? navDrives : [{name:'main'}])" :key="d.name">
+              <a class="nav-item" :class="{ active: page === 'drives' }" @click="navigate('drives')" :aria-current="page === 'drives' ? 'page' : false">
+                <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
+                <span class="nav-label" x-text="d.name === 'main' ? 'Drive' : d.name"></span>
+              </a>
+            </template>
           </div>
         </template>
       </div>

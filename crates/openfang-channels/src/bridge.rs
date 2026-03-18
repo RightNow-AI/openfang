@@ -224,6 +224,23 @@ pub trait ChannelBridgeHandle: Send + Sync {
     async fn a2a_agents_text(&self) -> String {
         "A2A agents not available.".to_string()
     }
+
+    /// Save a file to an agent's workspace directory.
+    ///
+    /// Returns the workspace-relative path on success (e.g. "downloads/report.pdf").
+    async fn save_file_to_workspace(
+        &self,
+        _agent_id: AgentId,
+        _filename: &str,
+        _data: &[u8],
+    ) -> Result<String, String> {
+        Err("Not implemented".to_string())
+    }
+
+    /// Get the workspace root path for an agent (as a string).
+    async fn agent_workspace_path(&self, _agent_id: AgentId) -> Option<String> {
+        None
+    }
 }
 
 /// Per-channel rate limiter tracking message timestamps per user.
@@ -650,6 +667,48 @@ async fn dispatch_message(
         // Image download failed — fall through to text description below
     }
 
+    // For files: try to download allowed types to agent workspace.
+    // `channel_file_saved` holds the workspace-relative path if download succeeded.
+    let mut channel_file_saved: Option<(String, String, usize)> = None; // (filename, rel_path, size)
+    if let ChannelContent::File {
+        ref url,
+        ref filename,
+    } = message.content
+    {
+        if is_allowed_file_type(filename) {
+            let agent_id = router.resolve(
+                &message.channel,
+                &message.sender.platform_id,
+                message.sender.openfang_user.as_deref(),
+            );
+
+            if let Some(aid) = agent_id {
+                match download_channel_file(url, filename).await {
+                    Ok(data) => {
+                        let data_len = data.len();
+                        match handle.save_file_to_workspace(aid, filename, &data).await {
+                            Ok(rel_path) => {
+                                channel_file_saved =
+                                    Some((filename.clone(), rel_path, data_len));
+                            }
+                            Err(e) => {
+                                warn!("Failed to save file to workspace: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to download file from channel: {e}");
+                    }
+                }
+            }
+        } else {
+            info!(
+                filename = filename,
+                "File type not in allowlist — skipping download"
+            );
+        }
+    }
+
     let text = match &message.content {
         ChannelContent::Text(t) => t.clone(),
         ChannelContent::Command { .. } => unreachable!(), // handled above
@@ -667,7 +726,22 @@ async fn dispatch_message(
             ref url,
             ref filename,
         } => {
-            format!("[User sent a file ({filename}): {url}]")
+            if let Some((ref fname, ref rel_path, size)) = channel_file_saved {
+                let size_kb = size / 1024;
+                format!(
+                    "The user sent a file via {}. It has been saved to your workspace:\n\
+                     - File: {fname}\n\
+                     - Workspace path: {rel_path}\n\
+                     - Size: {size_kb} KB\n\n\
+                     You can read it with `file_read` using the path above. \
+                     If this file should be kept long-term (e.g. tax documents, reports, \
+                     important data), use `drive_write` to save it to the Drive where it will be \
+                     organized, indexed, and searchable.",
+                    ct_str,
+                )
+            } else {
+                format!("[User sent a file ({filename}): {url}]")
+            }
         }
         ChannelContent::Voice {
             ref url,
@@ -1680,6 +1754,74 @@ async fn handle_command(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Channel file download with allowlist
+// ---------------------------------------------------------------------------
+
+/// Allowed file extensions for channel file downloads.
+/// Files not matching these are ignored to prevent abuse.
+const ALLOWED_FILE_EXTENSIONS: &[&str] = &[
+    // Documents
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    "odt", "ods", "odp", "rtf",
+    // Text & data
+    "txt", "csv", "tsv", "json", "xml", "yaml", "yml", "toml",
+    "md", "markdown", "log",
+    // Code
+    "rs", "py", "js", "ts", "go", "java", "c", "cpp", "h", "hpp",
+    "rb", "php", "swift", "kt", "sh", "bash", "zsh", "sql",
+    "html", "css", "scss",
+    // Archives (user may send zipped docs)
+    "zip", "tar", "gz", "tgz",
+    // Images (if not handled by the image path)
+    "png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "tiff",
+];
+
+/// Maximum file size for channel downloads (20 MB).
+const MAX_CHANNEL_FILE_BYTES: usize = 20 * 1024 * 1024;
+
+/// Check if a filename has an allowed extension for download.
+fn is_allowed_file_type(filename: &str) -> bool {
+    let ext = filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    ALLOWED_FILE_EXTENSIONS.contains(&ext.as_str())
+}
+
+/// Download a file from a channel URL with size limits.
+async fn download_channel_file(url: &str, filename: &str) -> Result<Vec<u8>, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Download failed for {filename}: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Download returned status {} for {filename}",
+            resp.status()
+        ));
+    }
+
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read bytes for {filename}: {e}"))?;
+
+    if bytes.len() > MAX_CHANNEL_FILE_BYTES {
+        return Err(format!(
+            "File too large ({} MB, max {} MB): {filename}",
+            bytes.len() / (1024 * 1024),
+            MAX_CHANNEL_FILE_BYTES / (1024 * 1024),
+        ));
+    }
+
+    Ok(bytes.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1977,5 +2119,25 @@ mod tests {
             media_type_from_url("https://api.telegram.org/file/bot123/photos/file_42"),
             "image/jpeg"
         );
+    }
+
+    #[test]
+    fn test_allowed_file_types() {
+        // Allowed
+        assert!(is_allowed_file_type("report.pdf"));
+        assert!(is_allowed_file_type("data.csv"));
+        assert!(is_allowed_file_type("code.rs"));
+        assert!(is_allowed_file_type("PHOTO.JPG"));
+        assert!(is_allowed_file_type("archive.zip"));
+        assert!(is_allowed_file_type("config.toml"));
+        assert!(is_allowed_file_type("document.docx"));
+
+        // Denied
+        assert!(!is_allowed_file_type("malware.exe"));
+        assert!(!is_allowed_file_type("script.bat"));
+        assert!(!is_allowed_file_type("library.dll"));
+        assert!(!is_allowed_file_type("noextension"));
+        assert!(!is_allowed_file_type("binary.bin"));
+        assert!(!is_allowed_file_type("app.dmg"));
     }
 }

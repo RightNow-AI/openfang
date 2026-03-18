@@ -980,6 +980,53 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         }
         msg
     }
+
+    async fn save_file_to_workspace(
+        &self,
+        agent_id: AgentId,
+        filename: &str,
+        data: &[u8],
+    ) -> Result<String, String> {
+        // Find the agent's workspace path
+        let entry = self
+            .kernel
+            .registry
+            .get(agent_id)
+            .ok_or("Agent not found")?;
+        let workspace = entry
+            .manifest
+            .workspace
+            .as_ref()
+            .ok_or("Agent has no workspace")?;
+
+        // Save to downloads/ subdirectory within the workspace
+        let downloads_dir = workspace.join("downloads");
+        std::fs::create_dir_all(&downloads_dir)
+            .map_err(|e| format!("Failed to create downloads dir: {e}"))?;
+
+        // Sanitize filename — strip path components, reject suspicious names
+        let safe_name = std::path::Path::new(filename)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file");
+        let safe_name = safe_name.replace("..", "_").replace('/', "_");
+
+        let dest = downloads_dir.join(&safe_name);
+        std::fs::write(&dest, data)
+            .map_err(|e| format!("Failed to write file: {e}"))?;
+
+        // Return workspace-relative path
+        Ok(format!("downloads/{safe_name}"))
+    }
+
+    async fn agent_workspace_path(&self, agent_id: AgentId) -> Option<String> {
+        let entry = self.kernel.registry.get(agent_id)?;
+        entry
+            .manifest
+            .workspace
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+    }
 }
 
 /// Parse a trigger pattern string from chat into a `TriggerPattern`.
