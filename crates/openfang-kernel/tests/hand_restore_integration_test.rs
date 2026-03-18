@@ -77,3 +77,23 @@ metrics = []
 
     kernel.shutdown();
 }
+
+#[tokio::test]
+async fn invalid_hand_state_marks_restore_health_not_ready() {
+    let home = tempdir().unwrap();
+    std::fs::write(home.path().join("hand_state.json"), "{bad json").unwrap();
+
+    let kernel =
+        Arc::new(OpenFangKernel::boot_with_config(test_config(home.path().to_path_buf())).unwrap());
+    kernel.set_self_handle();
+    kernel.start_background_agents();
+
+    let restore = kernel.restore_health_status();
+    assert!(!restore.hand_warnings.is_empty());
+    assert!(restore
+        .hand_warnings
+        .iter()
+        .any(|warning| warning.contains("hand state restore failed")));
+
+    kernel.shutdown();
+}

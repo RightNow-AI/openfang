@@ -58,6 +58,27 @@ impl LlmDriver for StubDriver {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RestoreHealthStatus {
+    pub persisted_agent_rows: usize,
+    pub restored_agent_rows: usize,
+    pub agent_warnings: Vec<String>,
+    pub cron_warnings: Vec<String>,
+    pub hand_warnings: Vec<String>,
+}
+
+impl RestoreHealthStatus {
+    pub fn has_failures(&self) -> bool {
+        !self.agent_warnings.is_empty()
+            || !self.cron_warnings.is_empty()
+            || !self.hand_warnings.is_empty()
+    }
+
+    pub fn total_warning_count(&self) -> usize {
+        self.agent_warnings.len() + self.cron_warnings.len() + self.hand_warnings.len()
+    }
+}
+
 pub struct OpenFangKernel {
     /// Kernel configuration.
     pub config: KernelConfig,
@@ -164,6 +185,8 @@ pub struct OpenFangKernel {
         std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
     /// Hot-reloadable budget override used by runtime edits and config reload.
     pub budget_override: std::sync::RwLock<Option<openfang_types::config::BudgetConfig>>,
+    /// Restore diagnostics collected during boot and hand restoration.
+    restore_health: std::sync::RwLock<RestoreHealthStatus>,
     /// Effective provider URL overrides after runtime writes and hot-reload.
     pub effective_provider_urls: std::sync::RwLock<std::collections::HashMap<String, String>>,
     /// Per-agent message locks — serializes LLM calls for the same agent to prevent
@@ -527,15 +550,13 @@ impl OpenFangKernel {
             config.api_listen = listen;
         }
 
-        // OPENFANG_API_KEY: env var sets the API authentication key when
-        // config.toml doesn't already have one. Config file takes precedence.
-        if config.api_key.trim().is_empty() {
-            if let Ok(key) = std::env::var("OPENFANG_API_KEY") {
-                let key = key.trim().to_string();
-                if !key.is_empty() {
-                    info!("Using API key from OPENFANG_API_KEY environment variable");
-                    config.api_key = key;
-                }
+        // OPENFANG_API_KEY is a deploy-time override so container/systemd
+        // environments can rotate credentials without rewriting config.toml.
+        if let Ok(key) = std::env::var("OPENFANG_API_KEY") {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                info!("Using API key from OPENFANG_API_KEY environment variable");
+                config.api_key = key;
             }
         }
 
@@ -703,10 +724,15 @@ impl OpenFangKernel {
                                 env_var
                             );
                             driver_chain.push(d);
-                            // Update the running config so agents get the right model
-                            config.default_model.provider = provider.to_string();
-                            config.default_model.model = model.to_string();
-                            config.default_model.api_key_env = env_var.to_string();
+                            // Only update config if it was using the default placeholder values.
+                            // Preserve explicit user config even when driver init fails.
+                            if config.default_model.provider == "anthropic"
+                                && config.default_model.model == "claude-sonnet-4-20250514"
+                            {
+                                config.default_model.provider = provider.to_string();
+                                config.default_model.model = model.to_string();
+                                config.default_model.api_key_env = env_var.to_string();
+                            }
                         }
                         Err(e2) => {
                             warn!(provider = %provider, error = %e2, "Auto-detected provider also failed");
@@ -1043,14 +1069,24 @@ impl OpenFangKernel {
         // Initialize cron scheduler
         let cron_scheduler =
             crate::cron::CronScheduler::new(&config.home_dir, config.max_cron_jobs);
-        match cron_scheduler.load() {
-            Ok(count) => {
-                if count > 0 {
-                    info!("Loaded {count} cron job(s) from disk");
+        let mut restore_health = RestoreHealthStatus::default();
+        match cron_scheduler.load_report() {
+            Ok(report) => {
+                if report.recovered_from_backup {
+                    restore_health.cron_warnings.push(
+                        "cron jobs were recovered from backup; review persisted schedule state"
+                            .to_string(),
+                    );
+                }
+                if report.count > 0 {
+                    info!("Loaded {} cron job(s) from disk", report.count);
                 }
             }
             Err(e) => {
                 warn!("Failed to load cron jobs: {e}");
+                restore_health
+                    .cron_warnings
+                    .push(format!("cron restore failed: {e}"));
             }
         }
 
@@ -1115,16 +1151,28 @@ impl OpenFangKernel {
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
             budget_override: std::sync::RwLock::new(None),
+            restore_health: std::sync::RwLock::new(restore_health),
             effective_provider_urls: std::sync::RwLock::new(initial_provider_urls),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
         };
 
         // Restore persisted agents from SQLite
-        match kernel.memory.load_all_agents() {
-            Ok(agents) => {
-                let count = agents.len();
-                for entry in agents {
+        match kernel.memory.load_all_agents_report() {
+            Ok(report) => {
+                {
+                    let mut status = kernel
+                        .restore_health
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner());
+                    status.persisted_agent_rows = report.total_rows;
+                    status
+                        .agent_warnings
+                        .extend(report.warnings.iter().cloned());
+                }
+
+                let mut registered_count = 0usize;
+                for entry in report.agents {
                     let agent_id = entry.id;
                     let name = entry.name.clone();
 
@@ -1250,43 +1298,77 @@ impl OpenFangKernel {
 
                     if let Err(e) = kernel.registry.register(restored_entry) {
                         tracing::warn!(agent = %name, "Failed to restore agent: {e}");
+                        kernel
+                            .restore_health
+                            .write()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .agent_warnings
+                            .push(format!(
+                                "agent '{name}' failed to register during restore: {e}"
+                            ));
                     } else {
+                        registered_count += 1;
                         tracing::debug!(agent = %name, id = %agent_id, "Restored agent");
                     }
                 }
-                if count > 0 {
-                    info!("Restored {count} agent(s) from persistent storage");
+                kernel
+                    .restore_health
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .restored_agent_rows = registered_count;
+                if report.total_rows > 0 {
+                    info!(
+                        restored = registered_count,
+                        persisted = report.total_rows,
+                        "Restored agent(s) from persistent storage"
+                    );
                 }
             }
             Err(e) => {
                 tracing::warn!("Failed to load persisted agents: {e}");
+                kernel
+                    .restore_health
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .agent_warnings
+                    .push(format!("agent restore failed: {e}"));
             }
         }
 
         // If no agents exist (fresh install), spawn a default assistant
         if kernel.registry.list().is_empty() {
-            info!("No agents found — spawning default assistant");
-            let dm = &kernel.config.default_model;
-            let manifest = AgentManifest {
-                name: "assistant".to_string(),
-                description: "General-purpose assistant".to_string(),
-                model: openfang_types::agent::ModelConfig {
-                    provider: dm.provider.clone(),
-                    model: dm.model.clone(),
-                    system_prompt: "You are a helpful AI assistant.".to_string(),
-                    api_key_env: if dm.api_key_env.is_empty() {
-                        None
-                    } else {
-                        Some(dm.api_key_env.clone())
+            let restore_status = kernel.restore_health_status();
+            if restore_status.persisted_agent_rows == 0 && restore_status.agent_warnings.is_empty()
+            {
+                info!("No agents found — spawning default assistant");
+                let dm = &kernel.config.default_model;
+                let manifest = AgentManifest {
+                    name: "assistant".to_string(),
+                    description: "General-purpose assistant".to_string(),
+                    model: openfang_types::agent::ModelConfig {
+                        provider: dm.provider.clone(),
+                        model: dm.model.clone(),
+                        system_prompt: "You are a helpful AI assistant.".to_string(),
+                        api_key_env: if dm.api_key_env.is_empty() {
+                            None
+                        } else {
+                            Some(dm.api_key_env.clone())
+                        },
+                        base_url: dm.base_url.clone(),
+                        ..Default::default()
                     },
-                    base_url: dm.base_url.clone(),
                     ..Default::default()
-                },
-                ..Default::default()
-            };
-            match kernel.spawn_agent(manifest) {
-                Ok(id) => info!(id = %id, "Default assistant spawned"),
-                Err(e) => warn!("Failed to spawn default assistant: {e}"),
+                };
+                match kernel.spawn_agent(manifest) {
+                    Ok(id) => info!(id = %id, "Default assistant spawned"),
+                    Err(e) => warn!("Failed to spawn default assistant: {e}"),
+                }
+            } else {
+                warn!(
+                    persisted_agent_rows = restore_status.persisted_agent_rows,
+                    agent_restore_failures = restore_status.agent_warnings.len(),
+                    "Agent registry is empty after restore; refusing to auto-spawn default assistant because persisted agent recovery was not clean"
+                );
             }
         }
 
@@ -3772,6 +3854,13 @@ impl OpenFangKernel {
             .unwrap_or_else(|| self.config.budget.clone())
     }
 
+    pub fn restore_health_status(&self) -> RestoreHealthStatus {
+        self.restore_health
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub fn set_effective_budget_config(&self, budget: openfang_types::config::BudgetConfig) {
         let mut guard = self
             .budget_override
@@ -3987,7 +4076,25 @@ impl OpenFangKernel {
     pub fn start_background_agents(self: &Arc<Self>) {
         // Restore previously active hands from persisted state
         let state_path = self.config.home_dir.join("hand_state.json");
-        let saved_hands = openfang_hands::registry::HandRegistry::load_state(&state_path);
+        let hand_state_report =
+            openfang_hands::registry::HandRegistry::load_state_report(&state_path);
+        if hand_state_report.recovered_from_backup {
+            self.restore_health
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .hand_warnings
+                .push(
+                    "hand state was recovered from backup; review persisted hand state".to_string(),
+                );
+        }
+        if !hand_state_report.warnings.is_empty() {
+            self.restore_health
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .hand_warnings
+                .extend(hand_state_report.warnings.iter().cloned());
+        }
+        let saved_hands = hand_state_report.entries;
         if !saved_hands.is_empty() {
             info!("Restoring {} persisted hand(s)", saved_hands.len());
             for saved in saved_hands {
@@ -4029,6 +4136,14 @@ impl OpenFangKernel {
                             error = %err,
                             "Failed to reload persisted hand definition"
                         );
+                        self.restore_health
+                            .write()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .hand_warnings
+                            .push(format!(
+                                "hand '{}' failed to reload persisted definition: {err}",
+                                saved.hand_id
+                            ));
                         continue;
                     }
                 }
@@ -4077,7 +4192,14 @@ impl OpenFangKernel {
                             }
                         }
                     }
-                    Err(e) => warn!(hand = %saved.hand_id, error = %e, "Failed to restore hand"),
+                    Err(e) => {
+                        warn!(hand = %saved.hand_id, error = %e, "Failed to restore hand");
+                        self.restore_health
+                            .write()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .hand_warnings
+                            .push(format!("hand '{}' failed to restore: {e}", saved.hand_id));
+                    }
                 }
             }
         }
@@ -4862,6 +4984,10 @@ impl OpenFangKernel {
                 .map(|value| !value.trim().is_empty())
                 .unwrap_or(false)
         })
+    }
+
+    pub fn runtime_restore_warnings(&self) -> RestoreHealthStatus {
+        self.restore_health_status()
     }
 
     /// Store a credential in the vault (best-effort — falls through silently if no vault).
@@ -7120,6 +7246,23 @@ mod tests {
         );
         assert_eq!(kernel.config.api_listen, "127.0.0.1:43111");
         assert_eq!(kernel.config.api_key, "env-reload-secret");
+    }
+
+    #[test]
+    fn test_boot_runtime_api_key_env_overrides_non_empty_config_value() {
+        let _lock = env_lock();
+        let _api_key_guard = EnvVarGuard::set("OPENFANG_API_KEY", "env-boot-secret");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            api_key: "config-secret".to_string(),
+            ..KernelConfig::default()
+        })
+        .unwrap();
+
+        assert_eq!(kernel.config.api_key, "env-boot-secret");
     }
 
     #[test]
