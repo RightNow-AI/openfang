@@ -122,6 +122,78 @@ impl MatrixAdapter {
     }
 }
 
+/// Accept a room invite by calling POST /_matrix/client/v3/rooms/{room_id}/join.
+async fn accept_invite(
+    client: &reqwest::Client,
+    homeserver: &str,
+    access_token: &str,
+    room_id: &str,
+) {
+    let url = format!("{homeserver}/_matrix/client/v3/rooms/{room_id}/join");
+    match client
+        .post(&url)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            info!("Matrix: auto-accepted invite to {room_id}");
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            warn!("Matrix: failed to accept invite to {room_id}: {status}");
+        }
+        Err(e) => {
+            warn!("Matrix: error accepting invite to {room_id}: {e}");
+        }
+    }
+}
+
+/// Get the number of joined members in a room.
+async fn get_room_member_count(
+    client: &reqwest::Client,
+    homeserver: &str,
+    access_token: &str,
+    room_id: &str,
+) -> Option<usize> {
+    let url = format!("{homeserver}/_matrix/client/v3/rooms/{room_id}/joined_members");
+    let resp = client
+        .get(&url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    body["joined"].as_object().map(|m| m.len())
+}
+
+/// Do an initial /sync with timeout=0 to get the since token without processing events.
+/// This prevents replaying old messages when the adapter first connects.
+async fn initial_sync(
+    client: &reqwest::Client,
+    homeserver: &str,
+    access_token: &str,
+) -> Option<String> {
+    let url = format!(
+        "{homeserver}/_matrix/client/v3/sync?timeout=0&filter={{\"room\":{{\"timeline\":{{\"limit\":0}}}}}}"
+    );
+    let resp = client
+        .get(&url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    body["next_batch"].as_str().map(String::from)
+}
+
 #[async_trait]
 impl ChannelAdapter for MatrixAdapter {
     fn name(&self) -> &str {
@@ -203,6 +275,24 @@ impl ChannelAdapter for MatrixAdapter {
                     *since_token.write().await = Some(next.to_string());
                 }
 
+                // FIX #1: Auto-accept room invites.
+                if auto_accept {
+                    if let Some(invites) = body["rooms"]["invite"].as_object() {
+                        for (room_id, _invite_data) in invites {
+                            if !allowed_rooms.is_empty()
+                                && !allowed_rooms.iter().any(|r| r == room_id)
+                            {
+                                debug!(
+                                    "Matrix: ignoring invite to {room_id} (not in allowed_rooms)"
+                                );
+                                continue;
+                            }
+                            accept_invite(&client, &homeserver, access_token.as_str(), room_id)
+                                .await;
+                        }
+                    }
+                }
+
                 // Process room events
                 if let Some(rooms) = body["rooms"]["join"].as_object() {
                     for (room_id, room_data) in rooms {
@@ -244,6 +334,35 @@ impl ChannelAdapter for MatrixAdapter {
                                 };
 
                                 let event_id = event["event_id"].as_str().unwrap_or("").to_string();
+
+                                // FIX #2: Detect @mentions in message text.
+                                let mut metadata = HashMap::new();
+                                if content.contains(&user_id) {
+                                    metadata.insert(
+                                        "was_mentioned".to_string(),
+                                        serde_json::json!(true),
+                                    );
+                                }
+
+                                // FIX #3: Determine if room is a DM (2 members) or group.
+                                let is_group = get_room_member_count(
+                                    &client,
+                                    &homeserver,
+                                    access_token.as_str(),
+                                    room_id,
+                                )
+                                .await
+                                .map(|count| count > 2)
+                                .unwrap_or(true);
+
+                                // For DMs, auto-set was_mentioned so dm_policy works.
+                                if !is_group {
+                                    metadata.insert(
+                                        "was_mentioned".to_string(),
+                                        serde_json::json!(true),
+                                    );
+                                    metadata.insert("is_dm".to_string(), serde_json::json!(true));
+                                }
 
                                 let channel_msg = ChannelMessage {
                                     channel: ChannelType::Matrix,

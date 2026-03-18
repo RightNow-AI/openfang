@@ -1,6 +1,6 @@
 //! Compile-time embedded Hand definitions.
 
-use crate::{HandDefinition, HandError};
+use crate::{parse_hand_toml, HandDefinition, HandError};
 
 /// Returns all bundled hand definitions as (id, HAND.toml content, SKILL.md content).
 pub fn bundled_hands() -> Vec<(&'static str, &'static str, &'static str)> {
@@ -50,7 +50,7 @@ pub fn parse_bundled(
     skill_content: &str,
 ) -> Result<HandDefinition, HandError> {
     let mut def: HandDefinition =
-        toml::from_str(toml_content).map_err(|e| HandError::TomlParse(e.to_string()))?;
+        parse_hand_toml(toml_content).map_err(|e| HandError::TomlParse(e.to_string()))?;
     if !skill_content.is_empty() {
         def.skill_content = Some(skill_content.to_string());
     }
@@ -216,7 +216,14 @@ mod tests {
 
     #[test]
     fn all_einstein_hands_have_schedules() {
-        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter"];
+        let einstein_ids = [
+            "lead",
+            "collector",
+            "predictor",
+            "researcher",
+            "twitter",
+            "trader",
+        ];
         for (id, toml_content, skill_content) in bundled_hands() {
             if einstein_ids.contains(&id) {
                 let def = parse_bundled(id, toml_content, skill_content).unwrap();
@@ -241,7 +248,14 @@ mod tests {
 
     #[test]
     fn all_einstein_hands_have_memory() {
-        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter"];
+        let einstein_ids = [
+            "lead",
+            "collector",
+            "predictor",
+            "researcher",
+            "twitter",
+            "trader",
+        ];
         for (id, toml_content, skill_content) in bundled_hands() {
             if einstein_ids.contains(&id) {
                 let def = parse_bundled(id, toml_content, skill_content).unwrap();
@@ -261,7 +275,14 @@ mod tests {
 
     #[test]
     fn all_einstein_hands_have_knowledge_graph() {
-        let einstein_ids = ["lead", "collector", "predictor", "researcher", "twitter"];
+        let einstein_ids = [
+            "lead",
+            "collector",
+            "predictor",
+            "researcher",
+            "twitter",
+            "trader",
+        ];
         for (id, toml_content, skill_content) in bundled_hands() {
             if einstein_ids.contains(&id) {
                 let def = parse_bundled(id, toml_content, skill_content).unwrap();

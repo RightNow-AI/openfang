@@ -72,7 +72,7 @@ pub enum OpenFangError {
     Serialization(String),
 
     /// The agent loop exceeded the maximum iteration count.
-    #[error("Max iterations exceeded: {0}")]
+    #[error("Max iterations exceeded ({0}). Configure a higher limit in agent.toml under [autonomous] max_iterations")]
     MaxIterationsExceeded(u32),
 
     /// The kernel is shutting down.

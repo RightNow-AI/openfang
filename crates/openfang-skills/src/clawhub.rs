@@ -251,6 +251,127 @@ impl ClawHubClient {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Private: HTTP GET with retry on 429 / 5xx
+    // -----------------------------------------------------------------------
+
+    /// Issue a GET request with automatic retry on rate-limit (429) and
+    /// server-error (5xx) responses. Respects the `Retry-After` header
+    /// when present, otherwise uses exponential backoff with jitter.
+    ///
+    /// Returns the successful `reqwest::Response` or a `SkillError`.
+    async fn get_with_retry(
+        &self,
+        url: &str,
+        context: &str,
+    ) -> Result<reqwest::Response, SkillError> {
+        let mut last_status: Option<u16> = None;
+
+        for attempt in 0..MAX_RETRIES {
+            if attempt > 0 {
+                // Compute delay: use Retry-After from previous response if we
+                // saved it, otherwise exponential backoff with jitter.
+                let base = BASE_DELAY_MS.saturating_mul(1u64 << attempt.min(5));
+                let delay_ms = base.min(MAX_DELAY_MS);
+                // Add light jitter (0-25%) using system clock nanos.
+                let jitter = {
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .subsec_nanos();
+                    let frac = (nanos.wrapping_mul(2654435761) as f64) / (u32::MAX as f64);
+                    (delay_ms as f64 * frac * 0.25) as u64
+                };
+                let total = delay_ms + jitter;
+                debug!(
+                    attempt,
+                    delay_ms = total,
+                    context,
+                    "retrying ClawHub request after rate limit / server error"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(total)).await;
+            }
+
+            let result = self
+                .client
+                .get(url)
+                .header("User-Agent", "OpenFang/0.1")
+                .send()
+                .await;
+
+            match result {
+                Ok(resp) => {
+                    let status = resp.status();
+
+                    if status.is_success() {
+                        return Ok(resp);
+                    }
+
+                    // Rate-limited or server error — retryable.
+                    if status.as_u16() == 429 || status.is_server_error() {
+                        last_status = Some(status.as_u16());
+
+                        // If the server sent Retry-After, respect it (capped).
+                        if let Some(ra) = resp
+                            .headers()
+                            .get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.parse::<u64>().ok())
+                        {
+                            let capped = (ra * 1000).min(MAX_DELAY_MS);
+                            if attempt + 1 < MAX_RETRIES {
+                                debug!(
+                                    retry_after_secs = ra,
+                                    "ClawHub sent Retry-After, sleeping {capped}ms"
+                                );
+                                tokio::time::sleep(std::time::Duration::from_millis(capped)).await;
+                            }
+                        }
+
+                        let is_last = attempt + 1 >= MAX_RETRIES;
+                        if is_last {
+                            if status.as_u16() == 429 {
+                                return Err(SkillError::RateLimited(format!(
+                                    "{context} returned 429 Too Many Requests after {MAX_RETRIES} attempts \
+                                     — the ClawHub API rate limit has been exceeded, \
+                                     please wait a few seconds and try again"
+                                )));
+                            }
+                            return Err(SkillError::Network(format!(
+                                "{context} returned {status} after {MAX_RETRIES} attempts"
+                            )));
+                        }
+                        // Loop around to retry.
+                        continue;
+                    }
+
+                    // Non-retryable HTTP error (4xx other than 429).
+                    return Err(SkillError::Network(format!("{context} returned {status}")));
+                }
+                Err(e) => {
+                    // Network / timeout error — retryable.
+                    last_status = None;
+                    let is_last = attempt + 1 >= MAX_RETRIES;
+                    if is_last {
+                        return Err(SkillError::Network(format!(
+                            "{context} failed after {MAX_RETRIES} attempts: {e}"
+                        )));
+                    }
+                    warn!(attempt, context, error = %e, "ClawHub request failed, will retry");
+                }
+            }
+        }
+
+        // Should be unreachable, but handle gracefully.
+        Err(SkillError::Network(format!(
+            "{context} failed (status: {last_status:?}) after {MAX_RETRIES} attempts"
+        )))
+    }
+
+    // -----------------------------------------------------------------------
+    // Public API methods — all use get_with_retry
+    // -----------------------------------------------------------------------
+
     /// Search for skills on ClawHub using vector/semantic search.
     ///
     /// Uses `GET /api/v1/search?q=...&limit=...`.

@@ -205,10 +205,7 @@ struct QwenStreamEvent {
 
 #[async_trait]
 impl LlmDriver for QwenCodeDriver {
-    async fn complete(
-        &self,
-        request: CompletionRequest,
-    ) -> Result<CompletionResponse, LlmError> {
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let prompt = Self::build_prompt(&request);
         let args = self.build_args(&prompt, &request.model, false);
 
@@ -224,14 +221,13 @@ impl LlmDriver for QwenCodeDriver {
 
         debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, "Spawning Qwen Code CLI");
 
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| LlmError::Http(format!(
+        let output = cmd.output().await.map_err(|e| {
+            LlmError::Http(format!(
                 "Qwen Code CLI not found or failed to start ({}). \
                  Install: npm install -g @qwen-code/qwen-code && qwen auth",
                 e
-            )))?;
+            ))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -244,9 +240,7 @@ impl LlmDriver for QwenCodeDriver {
                 || detail.contains("login")
                 || detail.contains("credentials")
             {
-                format!(
-                    "Qwen Code CLI is not authenticated. Run: qwen auth\nDetail: {detail}"
-                )
+                format!("Qwen Code CLI is not authenticated. Run: qwen auth\nDetail: {detail}")
             } else {
                 format!("Qwen Code CLI exited with code {code}: {detail}")
             };
@@ -315,13 +309,13 @@ impl LlmDriver for QwenCodeDriver {
 
         debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, "Spawning Qwen Code CLI (streaming)");
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| LlmError::Http(format!(
+        let mut child = cmd.spawn().map_err(|e| {
+            LlmError::Http(format!(
                 "Qwen Code CLI not found or failed to start ({}). \
                  Install: npm install -g @qwen-code/qwen-code && qwen auth",
                 e
-            )))?;
+            ))
+        })?;
 
         let stdout = child
             .stdout
@@ -386,9 +380,7 @@ impl LlmDriver for QwenCodeDriver {
                 Err(e) => {
                     warn!(line = %line, error = %e, "Non-JSON line from Qwen CLI");
                     full_text.push_str(&line);
-                    let _ = tx
-                        .send(StreamEvent::TextDelta { text: line })
-                        .await;
+                    let _ = tx.send(StreamEvent::TextDelta { text: line }).await;
                 }
             }
         }
@@ -448,9 +440,7 @@ fn home_dir() -> Option<std::path::PathBuf> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("HOME")
-            .ok()
-            .map(std::path::PathBuf::from)
+        std::env::var("HOME").ok().map(std::path::PathBuf::from)
     }
 }
 
@@ -590,8 +580,7 @@ mod tests {
 
     #[test]
     fn test_stream_event_result() {
-        let json =
-            r#"{"type":"result","result":"Final answer","usage":{"input_tokens":20,"output_tokens":10}}"#;
+        let json = r#"{"type":"result","result":"Final answer","usage":{"input_tokens":20,"output_tokens":10}}"#;
         let event: QwenStreamEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event.r#type, "result");
         assert_eq!(event.result.unwrap(), "Final answer");

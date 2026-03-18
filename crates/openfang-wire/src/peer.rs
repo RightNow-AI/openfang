@@ -51,11 +51,15 @@ impl NonceTracker {
         let now = Instant::now();
 
         // Garbage-collect expired nonces (older than window)
-        self.seen.retain(|_, ts| now.duration_since(*ts) < self.window);
+        self.seen
+            .retain(|_, ts| now.duration_since(*ts) < self.window);
 
         // Check for replay
         if self.seen.contains_key(nonce) {
-            return Err(format!("Nonce replay detected: {}", &nonce[..nonce.len().min(16)]));
+            return Err(format!(
+                "Nonce replay detected: {}",
+                openfang_types::truncate_str(nonce, 16)
+            ));
         }
 
         // Record the nonce
@@ -287,11 +291,7 @@ impl PeerNode {
                 }
 
                 // SECURITY: Derive per-session key for authenticated messages
-                let key = derive_session_key(
-                    &self.config.shared_secret,
-                    &our_nonce,
-                    ack_nonce,
-                );
+                let key = derive_session_key(&self.config.shared_secret, &our_nonce, ack_nonce);
 
                 info!(
                     "OFP: handshake complete with {} ({}) — {} agents",
@@ -333,8 +333,15 @@ impl PeerNode {
         // Spawn a task to handle ongoing communication with per-message HMAC
         let registry = self.registry.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                connection_loop(&mut reader, &mut writer, &peer_node_id, &registry, &*handle, Some(&sess_key)).await
+            if let Err(e) = connection_loop(
+                &mut reader,
+                &mut writer,
+                &peer_node_id,
+                &registry,
+                &*handle,
+                Some(&sess_key),
+            )
+            .await
             {
                 debug!("OFP: connection to {} ended: {}", peer_node_id, e);
             }
@@ -573,8 +580,8 @@ impl PeerNode {
                 // SECURITY: Derive per-session key (server side: their nonce first, our nonce second)
                 let session_key = derive_session_key(
                     &node.config.shared_secret,
-                    nonce,        // client's nonce
-                    &ack_nonce,   // our nonce
+                    nonce,      // client's nonce
+                    &ack_nonce, // our nonce
                 );
 
                 info!(
@@ -622,8 +629,15 @@ impl PeerNode {
         };
 
         // Enter the message dispatch loop with per-message HMAC
-        if let Err(e) =
-            connection_loop(&mut reader, &mut writer, &peer_node_id, registry, handle, Some(&session_key)).await
+        if let Err(e) = connection_loop(
+            &mut reader,
+            &mut writer,
+            &peer_node_id,
+            registry,
+            handle,
+            Some(&session_key),
+        )
+        .await
         {
             debug!("OFP: connection with {} ended: {}", peer_node_id, e);
         }
@@ -940,8 +954,7 @@ pub async fn broadcast_notification(
                 // SECURITY: Derive a per-message key from shared secret + fresh nonce
                 let nonce = uuid::Uuid::new_v4().to_string();
                 let session_key = hmac_sign(shared_secret, nonce.as_bytes());
-                if let Err(e) = write_message_authenticated(&mut writer, &msg, &session_key).await
-                {
+                if let Err(e) = write_message_authenticated(&mut writer, &msg, &session_key).await {
                     errors.push((peer.node_id.clone(), e));
                 }
             }

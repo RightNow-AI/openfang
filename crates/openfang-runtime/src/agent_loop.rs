@@ -51,6 +51,36 @@ const MAX_CONTINUATIONS: u32 = 5;
 /// Maximum message history size before auto-trimming to prevent context overflow.
 const MAX_HISTORY_MESSAGES: usize = 20;
 
+/// Detect when the LLM claims to have performed an action (sent, posted, emailed)
+/// without actually calling any tools. Prevents hallucinated completions.
+fn phantom_action_detected(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let action_verbs = ["sent ", "posted ", "emailed ", "delivered ", "forwarded "];
+    let channel_refs = [
+        "telegram", "whatsapp", "slack", "discord", "email", "channel",
+        "message sent", "successfully sent", "has been sent",
+    ];
+    let has_action = action_verbs.iter().any(|v| lower.contains(v));
+    let has_channel = channel_refs.iter().any(|c| lower.contains(c));
+    has_action && has_channel
+}
+
+/// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
+const TOOL_ERROR_GUIDANCE: &str =
+    "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. If your next steps depend on a failed tool, either retry with a materially different approach or explain the failure to the user and stop. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
+
+fn append_tool_error_guidance(tool_result_blocks: &mut Vec<ContentBlock>) {
+    let has_tool_error = tool_result_blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }));
+    if has_tool_error {
+        tool_result_blocks.push(ContentBlock::Text {
+            text: TOOL_ERROR_GUIDANCE.to_string(),
+            provider_metadata: None,
+        });
+    }
+}
+
 /// Strip a provider prefix from a model ID before sending to the API.
 ///
 /// Many models are stored as `provider/org/model` (e.g. `openrouter/google/gemini-2.5-flash`)
@@ -231,13 +261,32 @@ pub async fn run_agent_loop(
     session.messages.push(Message::user(user_message));
 
     // Build the messages for the LLM, filtering system messages
-    // System prompt goes into the separate `system` field
+    // System prompt goes into the separate `system` field.
+    // NOTE: We build llm_messages BEFORE stripping images so the LLM
+    // sees the full image data for the current turn.
     let llm_messages: Vec<Message> = session
         .messages
         .iter()
         .filter(|m| m.role != Role::System)
         .cloned()
         .collect();
+
+    // Strip Image blocks from session to prevent base64 bloat.
+    // The LLM already received them via llm_messages above.
+    for msg in session.messages.iter_mut() {
+        if let MessageContent::Blocks(blocks) = &mut msg.content {
+            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            if had_images {
+                blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
+                if blocks.is_empty() {
+                    blocks.push(ContentBlock::Text {
+                        text: "[Image processed]".to_string(),
+                        provider_metadata: None,
+                    });
+                }
+            }
+        }
+    }
 
     // Validate and repair session history (drop orphans, merge consecutive)
     let mut messages = crate::session_repair::validate_and_repair(&llm_messages);
@@ -389,7 +438,8 @@ pub async fn run_agent_loop(
                 if text.trim() == "NO_REPLY" || parsed_directives.silent {
                     debug!(agent = %manifest.name, "Agent chose NO_REPLY/silent — silent completion");
                     memory
-                        .save_session(session)
+                        .save_session_async(session)
+                        .await
                         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
                     return Ok(AgentLoopResult {
                         response: String::new(),
@@ -405,14 +455,30 @@ pub async fn run_agent_loop(
                     });
                 }
 
-                // One-shot retry: if the very first LLM call returns empty text
-                // with no tool use, try once more before accepting the empty result.
-                // This catches transient LLM hiccups (overload, empty stream, etc.).
-                if text.trim().is_empty() && iteration == 0 && response.tool_calls.is_empty() {
-                    warn!(agent = %manifest.name, "Empty response on first call, retrying once");
-                    messages.push(Message::assistant("[no response]".to_string()));
-                    messages.push(Message::user("Please provide your response.".to_string()));
-                    continue;
+                // One-shot retry: if the LLM returns empty text with no tool use,
+                // try once more before accepting the empty result.
+                // Triggers on first call OR when input_tokens=0 (silently failed request).
+                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
+                    let is_silent_failure =
+                        response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
+                    if iteration == 0 || is_silent_failure {
+                        warn!(
+                            agent = %manifest.name,
+                            iteration,
+                            input_tokens = response.usage.input_tokens,
+                            output_tokens = response.usage.output_tokens,
+                            silent_failure = is_silent_failure,
+                            "Empty response, retrying once"
+                        );
+                        // Re-validate messages before retry — the history may have
+                        // broken tool_use/tool_result pairs that caused the failure.
+                        if is_silent_failure {
+                            messages = crate::session_repair::validate_and_repair(&messages);
+                        }
+                        messages.push(Message::assistant("[no response]".to_string()));
+                        messages.push(Message::user("Please provide your response.".to_string()));
+                        continue;
+                    }
                 }
 
                 // Guard against empty response — covers both iteration 0 and post-tool cycles
@@ -433,6 +499,23 @@ pub async fn run_agent_loop(
                 } else {
                     text
                 };
+                // Phantom action detection: if the LLM claims it performed a
+                // channel action (send, post, email, etc.) but never actually
+                // called the corresponding tool, re-prompt once to force real
+                // tool usage instead of hallucinated completion.
+                let text = if !any_tools_executed && iteration == 0 && phantom_action_detected(&text) {
+                    warn!(agent = %manifest.name, "Phantom action detected — re-prompting for real tool use");
+                    messages.push(Message::assistant(text));
+                    messages.push(Message::user(
+                        "[System: You claimed to perform an action but did not call any tools. \
+                         You must use the appropriate tool (e.g., channel_send, web_fetch, file_write) \
+                         to actually perform the action. Do not claim completion without executing tools.]"
+                    ));
+                    continue;
+                } else {
+                    text
+                };
+
                 final_response = text.clone();
                 session.messages.push(Message::assistant(text));
 
@@ -449,7 +532,8 @@ pub async fn run_agent_loop(
 
                 // Save session
                 memory
-                    .save_session(session)
+                    .save_session_async(session)
+                    .await
                     .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
                 // Remember this interaction (with embedding if available)
@@ -565,7 +649,7 @@ pub async fn run_agent_loop(
                         LoopGuardVerdict::CircuitBreak(msg) => {
                             warn!(tool = %tool_call.name, "Circuit breaker triggered");
                             // Save session before bailing
-                            if let Err(e) = memory.save_session(session) {
+                            if let Err(e) = memory.save_session_async(session).await {
                                 warn!("Failed to save session on circuit break: {e}");
                             }
                             // Fire AgentLoopEnd hook on circuit break
@@ -715,26 +799,35 @@ pub async fn run_agent_loop(
                     });
                 }
 
+                append_tool_error_guidance(&mut tool_result_blocks);
+
                 // Detect approval denials and inject guidance to prevent infinite retry loops
-                let denial_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
+                let denial_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| {
+                        matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
                         if content.contains("requires human approval and was denied"))
-                }).count();
+                    })
+                    .count();
                 if denial_count > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
                         text: format!(
                             "[System: {} tool call(s) were denied by approval policy. \
                              Do NOT retry denied tools. Explain to the user what you \
-                             wanted to do and that it requires their approval.]",
+                             wanted to do and that it requires their approval. \
+                             Hint: set auto_approve = true in [approval] section of \
+                             config.toml, or start with --yolo flag, to auto-approve \
+                             all tool calls.]",
                             denial_count
                         ),
                     });
                 }
 
                 // Detect tool errors and inject guidance to prevent fabrication
-                let error_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { is_error: true, .. })
-                }).count();
+                let error_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| matches!(b, ContentBlock::ToolResult { is_error: true, .. }))
+                    .count();
                 let non_denial_errors = error_count.saturating_sub(denial_count);
                 if non_denial_errors > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
@@ -757,7 +850,7 @@ pub async fn run_agent_loop(
                 messages.push(tool_results_msg);
 
                 // Interim save after tool execution to prevent data loss on crash
-                if let Err(e) = memory.save_session(session) {
+                if let Err(e) = memory.save_session_async(session).await {
                     warn!("Failed to interim-save session: {e}");
                 }
             }
@@ -772,7 +865,7 @@ pub async fn run_agent_loop(
                         text
                     };
                     session.messages.push(Message::assistant(&text));
-                    if let Err(e) = memory.save_session(session) {
+                    if let Err(e) = memory.save_session_async(session).await {
                         warn!("Failed to save session on max continuations: {e}");
                     }
                     warn!(
@@ -814,7 +907,7 @@ pub async fn run_agent_loop(
     }
 
     // Save session before failing so conversation history is preserved
-    if let Err(e) = memory.save_session(session) {
+    if let Err(e) = memory.save_session_async(session).await {
         warn!("Failed to save session on max iterations: {e}");
     }
 
@@ -1185,6 +1278,23 @@ pub async fn run_agent_loop_streaming(
         .cloned()
         .collect();
 
+    // Strip Image blocks from session to prevent base64 bloat.
+    // The LLM already received them via llm_messages above.
+    for msg in session.messages.iter_mut() {
+        if let MessageContent::Blocks(blocks) = &mut msg.content {
+            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            if had_images {
+                blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
+                if blocks.is_empty() {
+                    blocks.push(ContentBlock::Text {
+                        text: "[Image processed]".to_string(),
+                        provider_metadata: None,
+                    });
+                }
+            }
+        }
+    }
+
     // Validate and repair session history (drop orphans, merge consecutive)
     let mut messages = crate::session_repair::validate_and_repair(&llm_messages);
 
@@ -1420,7 +1530,8 @@ pub async fn run_agent_loop_streaming(
                 if suppress_visible_text {
                     debug!(agent = %manifest.name, "Agent chose NO_REPLY/silent (streaming) — silent completion");
                     memory
-                        .save_session(session)
+                        .save_session_async(session)
+                        .await
                         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
                     return Ok(AgentLoopResult {
                         response: String::new(),
@@ -1436,13 +1547,30 @@ pub async fn run_agent_loop_streaming(
                     });
                 }
 
-                // One-shot retry: if the very first LLM call returns empty text
-                // with no tool use, try once more before accepting the empty result.
-                if text.trim().is_empty() && iteration == 0 && response.tool_calls.is_empty() {
-                    warn!(agent = %manifest.name, "Empty response on first call (streaming), retrying once");
-                    messages.push(Message::assistant("[no response]".to_string()));
-                    messages.push(Message::user("Please provide your response.".to_string()));
-                    continue;
+                // One-shot retry: if the LLM returns empty text with no tool use,
+                // try once more before accepting the empty result.
+                // Triggers on first call OR when input_tokens=0 (silently failed request).
+                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
+                    let is_silent_failure =
+                        response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
+                    if iteration == 0 || is_silent_failure {
+                        warn!(
+                            agent = %manifest.name,
+                            iteration,
+                            input_tokens = response.usage.input_tokens,
+                            output_tokens = response.usage.output_tokens,
+                            silent_failure = is_silent_failure,
+                            "Empty response (streaming), retrying once"
+                        );
+                        // Re-validate messages before retry — the history may have
+                        // broken tool_use/tool_result pairs that caused the failure.
+                        if is_silent_failure {
+                            messages = crate::session_repair::validate_and_repair(&messages);
+                        }
+                        messages.push(Message::assistant("[no response]".to_string()));
+                        messages.push(Message::user("Please provide your response.".to_string()));
+                        continue;
+                    }
                 }
 
                 // Guard against empty response — covers both iteration 0 and post-tool cycles
@@ -1477,7 +1605,8 @@ pub async fn run_agent_loop_streaming(
                 crate::session_repair::prune_heartbeat_turns(&mut session.messages, 10);
 
                 memory
-                    .save_session(session)
+                    .save_session_async(session)
+                    .await
                     .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
                 // Remember this interaction (with embedding if available)
@@ -1589,7 +1718,7 @@ pub async fn run_agent_loop_streaming(
                     match &verdict {
                         LoopGuardVerdict::CircuitBreak(msg) => {
                             warn!(tool = %tool_call.name, "Circuit breaker triggered (streaming)");
-                            if let Err(e) = memory.save_session(session) {
+                            if let Err(e) = memory.save_session_async(session).await {
                                 warn!("Failed to save session on circuit break: {e}");
                             }
                             // Fire AgentLoopEnd hook on circuit break
@@ -1753,26 +1882,35 @@ pub async fn run_agent_loop_streaming(
                     });
                 }
 
+                append_tool_error_guidance(&mut tool_result_blocks);
+
                 // Detect approval denials and inject guidance to prevent infinite retry loops
-                let denial_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
+                let denial_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| {
+                        matches!(b, ContentBlock::ToolResult { content, is_error: true, .. }
                         if content.contains("requires human approval and was denied"))
-                }).count();
+                    })
+                    .count();
                 if denial_count > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
                         text: format!(
                             "[System: {} tool call(s) were denied by approval policy. \
                              Do NOT retry denied tools. Explain to the user what you \
-                             wanted to do and that it requires their approval.]",
+                             wanted to do and that it requires their approval. \
+                             Hint: set auto_approve = true in [approval] section of \
+                             config.toml, or start with --yolo flag, to auto-approve \
+                             all tool calls.]",
                             denial_count
                         ),
                     });
                 }
 
                 // Detect tool errors and inject guidance to prevent fabrication
-                let error_count = tool_result_blocks.iter().filter(|b| {
-                    matches!(b, ContentBlock::ToolResult { is_error: true, .. })
-                }).count();
+                let error_count = tool_result_blocks
+                    .iter()
+                    .filter(|b| matches!(b, ContentBlock::ToolResult { is_error: true, .. }))
+                    .count();
                 let non_denial_errors = error_count.saturating_sub(denial_count);
                 if non_denial_errors > 0 {
                     tool_result_blocks.push(ContentBlock::Text {
@@ -1793,7 +1931,7 @@ pub async fn run_agent_loop_streaming(
                 session.messages.push(tool_results_msg.clone());
                 messages.push(tool_results_msg);
 
-                if let Err(e) = memory.save_session(session) {
+                if let Err(e) = memory.save_session_async(session).await {
                     warn!("Failed to interim-save session: {e}");
                 }
             }
@@ -1807,7 +1945,7 @@ pub async fn run_agent_loop_streaming(
                         text
                     };
                     session.messages.push(Message::assistant(&text));
-                    if let Err(e) = memory.save_session(session) {
+                    if let Err(e) = memory.save_session_async(session).await {
                         warn!("Failed to save session on max continuations: {e}");
                     }
                     warn!(
@@ -1847,7 +1985,7 @@ pub async fn run_agent_loop_streaming(
         }
     }
 
-    if let Err(e) = memory.save_session(session) {
+    if let Err(e) = memory.save_session_async(session).await {
         warn!("Failed to save session on max iterations: {e}");
     }
 
@@ -2119,6 +2257,321 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
                     }
                 }
             }
+        }
+    }
+
+    // Pattern 6: [TOOL_CALL]...[/TOOL_CALL] blocks (Ollama models like Qwen, issue #354)
+    // Handles both JSON args and custom `{tool => "name", args => {--key "value"}}` syntax.
+    search_from = 0;
+    while let Some(start) = text[search_from..].find("[TOOL_CALL]") {
+        let abs_start = search_from + start;
+        let after_tag = abs_start + "[TOOL_CALL]".len();
+
+        let Some(close_offset) = text[after_tag..].find("[/TOOL_CALL]") else {
+            search_from = after_tag;
+            continue;
+        };
+        let inner = text[after_tag..after_tag + close_offset].trim();
+        search_from = after_tag + close_offset + "[/TOOL_CALL]".len();
+
+        // Try standard JSON first: {"name":"tool","arguments":{...}}
+        if let Some((tool_name, input)) = parse_json_tool_call_object(inner, &tool_names) {
+            if !calls
+                .iter()
+                .any(|c| c.name == tool_name && c.input == input)
+            {
+                info!(
+                    tool = tool_name.as_str(),
+                    "Recovered tool call from [TOOL_CALL] block (JSON)"
+                );
+                calls.push(ToolCall {
+                    id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                    name: tool_name,
+                    input,
+                });
+            }
+            continue;
+        }
+
+        // Custom arrow syntax: {tool => "name", args => {--key "value"}}
+        if let Some((tool_name, input)) = parse_arrow_syntax_tool_call(inner, &tool_names) {
+            if !calls
+                .iter()
+                .any(|c| c.name == tool_name && c.input == input)
+            {
+                info!(
+                    tool = tool_name.as_str(),
+                    "Recovered tool call from [TOOL_CALL] block (arrow syntax)"
+                );
+                calls.push(ToolCall {
+                    id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                    name: tool_name,
+                    input,
+                });
+            }
+        }
+    }
+
+    // Pattern 7: <tool_call>JSON</tool_call> (Qwen3 models on Ollama, issue #332)
+    search_from = 0;
+    while let Some(start) = text[search_from..].find("<tool_call>") {
+        let abs_start = search_from + start;
+        let after_tag = abs_start + "<tool_call>".len();
+
+        let Some(close_offset) = text[after_tag..].find("</tool_call>") else {
+            search_from = after_tag;
+            continue;
+        };
+        let inner = text[after_tag..after_tag + close_offset].trim();
+        search_from = after_tag + close_offset + "</tool_call>".len();
+
+        if let Some((tool_name, input)) = parse_json_tool_call_object(inner, &tool_names) {
+            if !calls
+                .iter()
+                .any(|c| c.name == tool_name && c.input == input)
+            {
+                info!(
+                    tool = tool_name.as_str(),
+                    "Recovered tool call from <tool_call> block"
+                );
+                calls.push(ToolCall {
+                    id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                    name: tool_name,
+                    input,
+                });
+            }
+        }
+    }
+
+    // Pattern 9: <function name="tool" parameters="{...}" /> — XML attribute style
+    // Groq/Llama sometimes emit self-closing XML with name/parameters attributes.
+    // The parameters value is HTML-entity-escaped JSON (&quot; etc.).
+    {
+        use regex_lite::Regex;
+        // Match both self-closing <function ... /> and <function ...></function>
+        let re =
+            Regex::new(r#"<function\s+name="([^"]+)"\s+parameters="([^"]*)"[^/]*/?>"#).unwrap();
+        for caps in re.captures_iter(text) {
+            let tool_name = caps.get(1).unwrap().as_str();
+            let raw_params = caps.get(2).unwrap().as_str();
+
+            if !tool_names.contains(&tool_name) {
+                warn!(
+                    tool = tool_name,
+                    "XML-attribute tool call for unknown tool — skipping"
+                );
+                continue;
+            }
+
+            // Unescape HTML entities (&quot; &amp; &lt; &gt; &apos;)
+            let unescaped = raw_params
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&apos;", "'");
+
+            let input: serde_json::Value = match serde_json::from_str(&unescaped) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(tool = tool_name, error = %e, "Failed to parse XML-attribute tool call params — skipping");
+                    continue;
+                }
+            };
+
+            if calls
+                .iter()
+                .any(|c| c.name == tool_name && c.input == input)
+            {
+                continue;
+            }
+
+            info!(
+                tool = tool_name,
+                "Recovered XML-attribute tool call → synthetic ToolUse"
+            );
+            calls.push(ToolCall {
+                id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                name: tool_name.to_string(),
+                input,
+            });
+        }
+    }
+
+    // Pattern 10: <|plugin|>...<|endofblock|> (Qwen/ChatGLM thinking-model format)
+    search_from = 0;
+    while let Some(start) = text[search_from..].find("<|plugin|>") {
+        let abs_start = search_from + start;
+        let after_tag = abs_start + "<|plugin|>".len();
+
+        let close_tag = "<|endofblock|>";
+        let Some(close_offset) = text[after_tag..].find(close_tag) else {
+            search_from = after_tag;
+            continue;
+        };
+        let inner = text[after_tag..after_tag + close_offset].trim();
+        search_from = after_tag + close_offset + close_tag.len();
+
+        if let Some((tool_name, input)) = parse_json_tool_call_object(inner, &tool_names) {
+            if !calls
+                .iter()
+                .any(|c| c.name == tool_name && c.input == input)
+            {
+                info!(
+                    tool = tool_name.as_str(),
+                    "Recovered tool call from <|plugin|> block"
+                );
+                calls.push(ToolCall {
+                    id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                    name: tool_name,
+                    input,
+                });
+            }
+        }
+    }
+
+    // Pattern 11: Action: tool_name\nAction Input: {JSON} (ReAct-style, LM Studio / GPT-OSS)
+    {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut i = 0;
+        while i < lines.len() {
+            let line = lines[i].trim();
+            if let Some(tool_part) = line
+                .strip_prefix("Action:")
+                .or_else(|| line.strip_prefix("action:"))
+            {
+                let tool_name = tool_part.trim();
+                if tool_names.contains(&tool_name) {
+                    // Look for "Action Input:" on the next line(s)
+                    if i + 1 < lines.len() {
+                        let next = lines[i + 1].trim();
+                        if let Some(json_part) = next
+                            .strip_prefix("Action Input:")
+                            .or_else(|| next.strip_prefix("action input:"))
+                            .or_else(|| next.strip_prefix("action_input:"))
+                        {
+                            let json_str = json_part.trim();
+                            if let Ok(input) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                if !calls
+                                    .iter()
+                                    .any(|c| c.name == tool_name && c.input == input)
+                                {
+                                    info!(
+                                        tool = tool_name,
+                                        "Recovered tool call from Action/Action Input pattern"
+                                    );
+                                    calls.push(ToolCall {
+                                        id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                                        name: tool_name.to_string(),
+                                        input,
+                                    });
+                                }
+                            }
+                            i += 2;
+                            continue;
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+
+    // Pattern 12: tool_name\n{"key":"value"} — bare name + JSON on next line (Llama 4 Scout)
+    {
+        let lines: Vec<&str> = text.lines().collect();
+        for i in 0..lines.len().saturating_sub(1) {
+            let name_line = lines[i].trim();
+            // Tool name must be a single word matching a known tool
+            if name_line.contains(' ') || name_line.contains('{') || name_line.is_empty() {
+                continue;
+            }
+            if !tool_names.contains(&name_line) {
+                continue;
+            }
+            // Next line must be valid JSON
+            let json_line = lines[i + 1].trim();
+            if !json_line.starts_with('{') {
+                continue;
+            }
+            if let Ok(input) = serde_json::from_str::<serde_json::Value>(json_line) {
+                if !calls
+                    .iter()
+                    .any(|c| c.name == name_line && c.input == input)
+                {
+                    info!(
+                        tool = name_line,
+                        "Recovered tool call from name+JSON line pair"
+                    );
+                    calls.push(ToolCall {
+                        id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                        name: name_line.to_string(),
+                        input,
+                    });
+                }
+            }
+        }
+    }
+
+    // Pattern 13: <tool_use>JSON</tool_use> (Llama 3.1+ variant)
+    search_from = 0;
+    while let Some(start) = text[search_from..].find("<tool_use>") {
+        let abs_start = search_from + start;
+        let after_tag = abs_start + "<tool_use>".len();
+
+        let Some(close_offset) = text[after_tag..].find("</tool_use>") else {
+            search_from = after_tag;
+            continue;
+        };
+        let inner = text[after_tag..after_tag + close_offset].trim();
+        search_from = after_tag + close_offset + "</tool_use>".len();
+
+        if let Some((tool_name, input)) = parse_json_tool_call_object(inner, &tool_names) {
+            if !calls
+                .iter()
+                .any(|c| c.name == tool_name && c.input == input)
+            {
+                info!(
+                    tool = tool_name.as_str(),
+                    "Recovered tool call from <tool_use> block"
+                );
+                calls.push(ToolCall {
+                    id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                    name: tool_name,
+                    input,
+                });
+            }
+        }
+    }
+
+    // Pattern 8: Bare JSON tool call objects in text (common Ollama fallback)
+    // Matches: {"name":"tool_name","arguments":{"key":"value"}} not already inside tags
+    // Only try this if no calls were found by tag-based patterns, to avoid false positives.
+    if calls.is_empty() {
+        // Scan for JSON objects that look like tool calls
+        let mut scan_from = 0;
+        while let Some(brace_start) = text[scan_from..].find('{') {
+            let abs_brace = scan_from + brace_start;
+            // Try to parse a JSON object starting here
+            if let Some((tool_name, input)) =
+                try_parse_bare_json_tool_call(&text[abs_brace..], &tool_names)
+            {
+                if !calls
+                    .iter()
+                    .any(|c| c.name == tool_name && c.input == input)
+                {
+                    info!(
+                        tool = tool_name.as_str(),
+                        "Recovered tool call from bare JSON object in text"
+                    );
+                    calls.push(ToolCall {
+                        id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                        name: tool_name,
+                        input,
+                    });
+                }
+            }
+            scan_from = abs_brace + 1;
         }
     }
 
@@ -2514,6 +2967,61 @@ mod tests {
             result.response.contains("Task completed"),
             "Expected fallback message, got: {:?}",
             result.response
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tool_error_injects_no_fabrication_guidance() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(EmptyAfterToolUseDriver::new());
+
+        run_agent_loop(
+            &manifest,
+            "Do something with tools",
+            &mut session,
+            &memory,
+            driver,
+            &[], // no tools registered — the tool call will fail, which is fine
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // on_phase
+            None, // media_engine
+            None, // tts_engine
+            None, // docker_config
+            None, // hooks
+            None, // context_window_tokens
+            None, // process_manager
+            None, // user_content_blocks
+        )
+        .await
+        .expect("Loop should complete without error");
+
+        let guidance_seen = session.messages.iter().any(|msg| {
+            match &msg.content {
+            MessageContent::Blocks(blocks) => blocks.iter().any(|block| {
+                matches!(block, ContentBlock::Text { text, .. } if text == TOOL_ERROR_GUIDANCE)
+            }),
+            _ => false,
+        }
+        });
+
+        assert!(
+            guidance_seen,
+            "Expected tool error guidance in session messages after failed tool call"
         );
     }
 
@@ -3212,9 +3720,444 @@ mod tests {
             input_schema: serde_json::json!({}),
         }];
         // Same call in both function tag and tool tag — should only appear once
-        let text = r#"<function=exec>{"command":"ls"}</function> <tool>exec{"command":"ls"}</tool>"#;
+        let text =
+            r#"<function=exec>{"command":"ls"}</function> <tool>exec{"command":"ls"}</tool>"#;
         let calls = recover_text_tool_calls(text, &tools);
         assert_eq!(calls.len(), 1);
+    }
+
+    // --- Pattern 6: [TOOL_CALL]...[/TOOL_CALL] tests (issue #354) ---
+
+    #[test]
+    fn test_recover_tool_call_block_json() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute shell command".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "[TOOL_CALL]\n{\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ls -la\"}}\n[/TOOL_CALL]";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell_exec");
+        assert_eq!(calls[0].input["command"], "ls -la");
+    }
+
+    #[test]
+    fn test_recover_tool_call_block_arrow_syntax() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute shell command".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        // Exact format from issue #354
+        let text = "[TOOL_CALL]\n{tool => \"shell_exec\", args => {\n--command \"ls -F /\"\n}}\n[/TOOL_CALL]";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell_exec");
+        assert_eq!(calls[0].input["command"], "ls -F /");
+    }
+
+    #[test]
+    fn test_recover_tool_call_block_unknown_tool() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "[TOOL_CALL]\n{\"name\": \"hack_system\", \"arguments\": {\"cmd\": \"rm -rf /\"}}\n[/TOOL_CALL]";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_recover_tool_call_block_multiple() {
+        let tools = vec![
+            ToolDefinition {
+                name: "shell_exec".into(),
+                description: "Execute".into(),
+                input_schema: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "file_read".into(),
+                description: "Read".into(),
+                input_schema: serde_json::json!({}),
+            },
+        ];
+        let text = "[TOOL_CALL]\n{\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ls\"}}\n[/TOOL_CALL]\nSome text.\n[TOOL_CALL]\n{\"name\": \"file_read\", \"arguments\": {\"path\": \"/tmp/test.txt\"}}\n[/TOOL_CALL]";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "shell_exec");
+        assert_eq!(calls[1].name, "file_read");
+    }
+
+    #[test]
+    fn test_recover_tool_call_block_unclosed() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        // Unclosed [TOOL_CALL] — pattern 6 skips it, but pattern 8 (bare JSON)
+        // still finds the valid JSON tool call object.
+        let text = "[TOOL_CALL]\n{\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ls\"}}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1, "Bare JSON fallback should recover this");
+        assert_eq!(calls[0].name, "shell_exec");
+    }
+
+    // --- Pattern 7: <tool_call>JSON</tool_call> tests (Qwen3, issue #332) ---
+
+    #[test]
+    fn test_recover_tool_call_xml_basic() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<tool_call>\n{\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ls -la\"}}\n</tool_call>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell_exec");
+        assert_eq!(calls[0].input["command"], "ls -la");
+    }
+
+    #[test]
+    fn test_recover_tool_call_xml_with_surrounding_text() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "I'll search for that.\n\n<tool_call>\n{\"name\": \"web_search\", \"arguments\": {\"query\": \"rust async\"}}\n</tool_call>\n\nLet me get results.";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "web_search");
+        assert_eq!(calls[0].input["query"], "rust async");
+    }
+
+    #[test]
+    fn test_recover_tool_call_xml_function_field() {
+        let tools = vec![ToolDefinition {
+            name: "file_read".into(),
+            description: "Read".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<tool_call>{\"function\": \"file_read\", \"arguments\": {\"path\": \"/etc/hosts\"}}</tool_call>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "file_read");
+    }
+
+    #[test]
+    fn test_recover_tool_call_xml_parameters_field() {
+        let tools = vec![ToolDefinition {
+            name: "web_fetch".into(),
+            description: "Fetch".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<tool_call>{\"name\": \"web_fetch\", \"parameters\": {\"url\": \"https://example.com\"}}</tool_call>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "web_fetch");
+        assert_eq!(calls[0].input["url"], "https://example.com");
+    }
+
+    #[test]
+    fn test_recover_tool_call_xml_stringified_args() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<tool_call>{\"name\": \"shell_exec\", \"arguments\": \"{\\\"command\\\": \\\"pwd\\\"}\"}</tool_call>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell_exec");
+        assert_eq!(calls[0].input["command"], "pwd");
+    }
+
+    #[test]
+    fn test_recover_tool_call_xml_unknown_tool() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<tool_call>{\"name\": \"hack_system\", \"arguments\": {\"cmd\": \"rm -rf /\"}}</tool_call>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_recover_tool_call_xml_multiple() {
+        let tools = vec![
+            ToolDefinition {
+                name: "shell_exec".into(),
+                description: "Execute".into(),
+                input_schema: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "web_search".into(),
+                description: "Search".into(),
+                input_schema: serde_json::json!({}),
+            },
+        ];
+        let text = "<tool_call>{\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ls\"}}</tool_call>\n<tool_call>{\"name\": \"web_search\", \"arguments\": {\"query\": \"rust\"}}</tool_call>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "shell_exec");
+        assert_eq!(calls[1].name, "web_search");
+    }
+
+    // --- Pattern 8: Bare JSON tool call object tests ---
+
+    #[test]
+    fn test_recover_bare_json_tool_call() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text =
+            "I'll run that: {\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ls -la\"}}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell_exec");
+        assert_eq!(calls[0].input["command"], "ls -la");
+    }
+
+    #[test]
+    fn test_recover_bare_json_no_false_positive() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "The config looks like {\"debug\": true, \"level\": \"info\"}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_recover_bare_json_skipped_when_tags_found() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<function=shell_exec>{\"command\":\"ls\"}</function> {\"name\": \"shell_exec\", \"arguments\": {\"command\": \"pwd\"}}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].input["command"], "ls");
+    }
+
+    // --- Pattern 9: XML-attribute style <function name="..." parameters="..." /> ---
+
+    #[test]
+    fn test_recover_xml_attribute_basic() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = r#"<function name="web_search" parameters="{&quot;query&quot;: &quot;best crypto 2024&quot;}" />"#;
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "web_search");
+        assert_eq!(calls[0].input["query"], "best crypto 2024");
+    }
+
+    #[test]
+    fn test_recover_xml_attribute_unknown_tool() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = r#"<function name="unknown_tool" parameters="{&quot;x&quot;: 1}" />"#;
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_recover_xml_attribute_non_selfclosing() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = r#"<function name="shell_exec" parameters="{&quot;command&quot;: &quot;ls&quot;}"></function>"#;
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell_exec");
+    }
+
+    // --- Pattern 10: <|plugin|>...<|endofblock|> tests ---
+
+    #[test]
+    fn test_recover_plugin_block() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<|plugin|>\n{\"name\": \"web_search\", \"arguments\": {\"query\": \"rust\"}}\n<|endofblock|>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "web_search");
+        assert_eq!(calls[0].input["query"], "rust");
+    }
+
+    #[test]
+    fn test_recover_plugin_block_unknown_tool() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text =
+            "<|plugin|>\n{\"name\": \"hack\", \"arguments\": {\"cmd\": \"rm\"}}\n<|endofblock|>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    // --- Pattern 11: Action/Action Input tests ---
+
+    #[test]
+    fn test_recover_action_input() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "Action: web_search\nAction Input: {\"query\": \"rust programming\"}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "web_search");
+        assert_eq!(calls[0].input["query"], "rust programming");
+    }
+
+    #[test]
+    fn test_recover_action_input_unknown_tool() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "Action: unknown_tool\nAction Input: {\"key\": \"value\"}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    // --- Pattern 12: name + JSON on next line tests ---
+
+    #[test]
+    fn test_recover_name_json_nextline() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "shell_exec\n{\"command\": \"ls -la\"}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell_exec");
+        assert_eq!(calls[0].input["command"], "ls -la");
+    }
+
+    #[test]
+    fn test_recover_name_json_nextline_unknown() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "unknown_tool\n{\"command\": \"ls\"}";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    // --- Pattern 13: <tool_use> tests ---
+
+    #[test]
+    fn test_recover_tool_use_block() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text =
+            "<tool_use>{\"name\": \"web_search\", \"arguments\": {\"query\": \"test\"}}</tool_use>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "web_search");
+    }
+
+    #[test]
+    fn test_recover_tool_use_block_unknown() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = "<tool_use>{\"name\": \"hack\", \"arguments\": {\"cmd\": \"rm\"}}</tool_use>";
+        let calls = recover_text_tool_calls(text, &tools);
+        assert!(calls.is_empty());
+    }
+
+    // --- Helper function tests ---
+
+    #[test]
+    fn test_parse_dash_dash_args_basic() {
+        let result = parse_dash_dash_args("{--command \"ls -F /\"}");
+        assert_eq!(result["command"], "ls -F /");
+    }
+
+    #[test]
+    fn test_parse_dash_dash_args_multiple() {
+        let result = parse_dash_dash_args("{--file \"test.txt\", --verbose}");
+        assert_eq!(result["file"], "test.txt");
+        assert_eq!(result["verbose"], true);
+    }
+
+    #[test]
+    fn test_parse_dash_dash_args_unquoted_value() {
+        let result = parse_dash_dash_args("{--count 5}");
+        assert_eq!(result["count"], "5");
+    }
+
+    #[test]
+    fn test_parse_json_tool_call_object_standard() {
+        let tool_names = vec!["shell_exec"];
+        let result = parse_json_tool_call_object(
+            "{\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ls\"}}",
+            &tool_names,
+        );
+        assert!(result.is_some());
+        let (name, args) = result.unwrap();
+        assert_eq!(name, "shell_exec");
+        assert_eq!(args["command"], "ls");
+    }
+
+    #[test]
+    fn test_parse_json_tool_call_object_function_field() {
+        let tool_names = vec!["web_fetch"];
+        let result = parse_json_tool_call_object(
+            "{\"function\": \"web_fetch\", \"parameters\": {\"url\": \"https://x.com\"}}",
+            &tool_names,
+        );
+        assert!(result.is_some());
+        let (name, args) = result.unwrap();
+        assert_eq!(name, "web_fetch");
+        assert_eq!(args["url"], "https://x.com");
+    }
+
+    #[test]
+    fn test_parse_json_tool_call_object_unknown_tool() {
+        let tool_names = vec!["shell_exec"];
+        let result =
+            parse_json_tool_call_object("{\"name\": \"unknown\", \"arguments\": {}}", &tool_names);
+        assert!(result.is_none());
     }
 
     // --- End-to-end integration test: text-as-tool-call recovery through agent loop ---

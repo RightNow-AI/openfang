@@ -101,7 +101,7 @@ pub async fn build_router(
         local_capabilities: tokio::sync::RwLock::new(None),
         local_status: tokio::sync::RwLock::new(crate::local_inference::LocalModelStatus::default()),
         started_at: Instant::now(),
-        peer_registry: kernel.peer_registry.as_ref().map(|r| Arc::new(r.clone())),
+        peer_registry: kernel.peer_registry.get().map(|r| Arc::new(r.clone())),
         bridge_manager: tokio::sync::Mutex::new(bridge),
         channels_config: tokio::sync::RwLock::new(channels_config),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
@@ -200,6 +200,8 @@ pub async fn build_router(
         .route("/", axum::routing::get(webchat::webchat_page))
         .route("/logo.png", axum::routing::get(webchat::logo_png))
         .route("/favicon.ico", axum::routing::get(webchat::favicon_ico))
+        .route("/manifest.json", axum::routing::get(webchat::manifest_json))
+        .route("/sw.js", axum::routing::get(webchat::sw_js))
         .route(
             "/api-doc/openapi.json",
             axum::routing::get({
@@ -232,13 +234,23 @@ pub async fn build_router(
         )
         .route(
             "/api/agents/{id}",
-            axum::routing::get(routes::get_agent).delete(routes::kill_agent).patch(routes::patch_agent),
+            axum::routing::get(routes::get_agent)
+                .delete(routes::kill_agent)
+                .patch(routes::patch_agent),
         )
         .route(
             "/api/agents/{id}/mode",
             axum::routing::put(routes::set_agent_mode),
         )
         .route("/api/profiles", axum::routing::get(routes::list_profiles))
+        .route(
+            "/api/agents/{id}/restart",
+            axum::routing::post(routes::restart_agent),
+        )
+        .route(
+            "/api/agents/{id}/start",
+            axum::routing::post(routes::restart_agent),
+        )
         .route(
             "/api/agents/{id}/message",
             axum::routing::post(routes::send_message),
@@ -486,6 +498,12 @@ pub async fn build_router(
             axum::routing::get(routes::list_workflows).post(routes::create_workflow),
         )
         .route(
+            "/api/workflows/{id}",
+            axum::routing::get(routes::get_workflow)
+                .put(routes::update_workflow)
+                .delete(routes::delete_workflow),
+        )
+        .route(
             "/api/workflows/{id}/run",
             axum::routing::post(routes::run_workflow),
         )
@@ -535,6 +553,10 @@ pub async fn build_router(
             axum::routing::post(routes::install_hand),
         )
         .route(
+            "/api/hands/upsert",
+            axum::routing::post(routes::upsert_hand),
+        )
+        .route(
             "/api/hands/active",
             axum::routing::get(routes::list_active_hands),
         )
@@ -553,8 +575,7 @@ pub async fn build_router(
         )
         .route(
             "/api/hands/{hand_id}/settings",
-            axum::routing::get(routes::get_hand_settings)
-                .put(routes::update_hand_settings),
+            axum::routing::get(routes::get_hand_settings).put(routes::update_hand_settings),
         )
         .route(
             "/api/hands/instances/{id}/pause",
@@ -611,14 +632,11 @@ pub async fn build_router(
             "/api/comms/events/stream",
             axum::routing::get(routes::comms_events_stream),
         )
-        .route(
-            "/api/comms/send",
-            axum::routing::post(routes::comms_send),
-        )
-        .route(
-            "/api/comms/task",
-            axum::routing::post(routes::comms_task),
-        )
+        .route("/api/comms/send", axum::routing::post(routes::comms_send))
+        .route("/api/comms/task", axum::routing::post(routes::comms_task));
+
+    // Split into a second router chunk to stay within axum's type nesting limit.
+    let app = app
         // Tools endpoint
         .route("/api/tools", axum::routing::get(routes::list_tools))
         // Config endpoints
@@ -663,8 +681,7 @@ pub async fn build_router(
         )
         .route(
             "/api/budget/agents/{id}",
-            axum::routing::get(routes::agent_budget_status)
-                .put(routes::update_agent_budget),
+            axum::routing::get(routes::agent_budget_status).put(routes::update_agent_budget),
         )
         // Session endpoints
         .route("/api/sessions", axum::routing::get(routes::list_sessions))
@@ -979,6 +996,10 @@ pub async fn build_router(
             "/v1/models",
             axum::routing::get(crate::openai_compat::list_models),
         )
+        // Dashboard authentication endpoints
+        .route("/api/auth/login", axum::routing::post(routes::auth_login))
+        .route("/api/auth/logout", axum::routing::post(routes::auth_logout))
+        .route("/api/auth/check", axum::routing::get(routes::auth_check))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::auth,
@@ -1142,8 +1163,7 @@ pub async fn run_daemon(
     socket.set_nonblocking(true)?;
     socket.bind(&addr.into())?;
     socket.listen(1024)?;
-    let listener =
-        tokio::net::TcpListener::from_std(std::net::TcpListener::from(socket))?;
+    let listener = tokio::net::TcpListener::from_std(std::net::TcpListener::from(socket))?;
 
     // Run server with graceful shutdown.
     // SECURITY: `into_make_service_with_connect_info` injects the peer
@@ -1274,11 +1294,8 @@ fn is_daemon_responding(addr: &str) -> bool {
         .or_else(|| addr.strip_prefix("https://"))
         .unwrap_or(addr);
     if let Ok(sock_addr) = addr_only.parse::<std::net::SocketAddr>() {
-        std::net::TcpStream::connect_timeout(
-            &sock_addr,
-            std::time::Duration::from_millis(500),
-        )
-        .is_ok()
+        std::net::TcpStream::connect_timeout(&sock_addr, std::time::Duration::from_millis(500))
+            .is_ok()
     } else {
         // Fallback: try connecting to hostname
         std::net::TcpStream::connect(addr_only)

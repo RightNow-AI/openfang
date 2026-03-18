@@ -178,6 +178,37 @@ pub async fn auth(
             response
         }
     }
+
+    // Determine error message: was a credential provided but wrong, or missing entirely?
+    let credential_provided = header_auth.is_some() || query_auth.is_some();
+    let error_msg = if credential_provided {
+        "Invalid API key"
+    } else {
+        "Missing Authorization: Bearer <api_key> header"
+    };
+
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("www-authenticate", "Bearer")
+        .body(Body::from(
+            serde_json::json!({"error": error_msg}).to_string(),
+        ))
+        .unwrap_or_default()
+}
+
+/// Extract the `openfang_session` cookie value from a request.
+fn extract_session_cookie(request: &Request<Body>) -> Option<String> {
+    request
+        .headers()
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|c| {
+                c.trim()
+                    .strip_prefix("openfang_session=")
+                    .map(|v| v.to_string())
+            })
+        })
 }
 
 /// Security headers middleware — applied to ALL API responses.

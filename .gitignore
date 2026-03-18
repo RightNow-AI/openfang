@@ -34,6 +34,7 @@ BUILD_LOG.md
 
 # OS
 .DS_Store
+._*
 Thumbs.db
 
 # Node
@@ -53,8 +54,4 @@ sdk/javascript/examples/nextjs-app-router/.data/
 *.swp
 *.swo
 *~
-
-# Cypress test output
-cypress-output.txt
-cypress-run2.txt
-cy-combined.txt
+.serena/

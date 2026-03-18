@@ -99,13 +99,12 @@ impl StructuredStore {
         let mut pairs = Vec::new();
         for row in rows {
             let (key, blob) = row.map_err(|e| OpenFangError::Memory(e.to_string()))?;
-            let value: serde_json::Value = serde_json::from_slice(&blob)
-                .unwrap_or_else(|_| {
-                    // Fallback: try as UTF-8 string
-                    String::from_utf8(blob)
-                        .map(serde_json::Value::String)
-                        .unwrap_or(serde_json::Value::Null)
-                });
+            let value: serde_json::Value = serde_json::from_slice(&blob).unwrap_or_else(|_| {
+                // Fallback: try as UTF-8 string
+                String::from_utf8(blob)
+                    .map(serde_json::Value::String)
+                    .unwrap_or(serde_json::Value::Null)
+            });
             pairs.push((key, value));
         }
         Ok(pairs)
@@ -192,7 +191,14 @@ impl StructuredStore {
             } else {
                 None
             };
-            Ok((name, manifest_blob, state_str, created_str, session_id_str, identity_str))
+            Ok((
+                name,
+                manifest_blob,
+                state_str,
+                created_str,
+                session_id_str,
+                identity_str,
+            ))
         });
 
         match result {
@@ -307,13 +313,14 @@ impl StructuredStore {
         let mut repair_queue: Vec<(String, Vec<u8>, String)> = Vec::new();
 
         for row in rows {
-            let (id_str, name, manifest_blob, state_str, created_str, session_id_str, identity_str) = match row {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("Skipping agent row with read error: {e}");
-                    continue;
-                }
-            };
+            let (id_str, name, manifest_blob, state_str, created_str, session_id_str, identity_str) =
+                match row {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("Skipping agent row with read error: {e}");
+                        continue;
+                    }
+                };
 
             // Deduplicate: skip agents with names we've already seen
             let name_lower = name.to_lowercase();

@@ -24,9 +24,14 @@ zeroize = { workspace = true }
 axum = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+sha1 = { workspace = true }
+aes = "0.8"
+cbc = "0.1"
 base64 = { workspace = true }
 hex = { workspace = true }
 html-escape = { workspace = true }
+regex-lite = "0.1"
+roxmltree = "0.20"
 
 lettre = { workspace = true }
 imap = { workspace = true }

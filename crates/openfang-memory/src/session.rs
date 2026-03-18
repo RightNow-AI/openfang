@@ -560,7 +560,9 @@ impl SessionStore {
                             ContentBlock::Text { text } => {
                                 text_parts.push(text.clone());
                             }
-                            ContentBlock::ToolUse { id, name, input } => {
+                            ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => {
                                 tool_parts.push(serde_json::json!({
                                     "type": "tool_use",
                                     "id": id,

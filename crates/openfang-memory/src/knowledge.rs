@@ -100,9 +100,14 @@ impl KnowledgeStore {
         let mut idx = 1;
 
         if let Some(ref source) = pattern.source {
-            sql.push_str(&format!(" AND (s.id = ?{idx} OR s.name = ?{idx})"));
+            sql.push_str(&format!(
+                " AND (s.id = ?{} OR s.name = ?{})",
+                idx,
+                idx + 1
+            ));
             params.push(Box::new(source.clone()));
-            idx += 1;
+            params.push(Box::new(source.clone()));
+            idx += 2;
         }
         if let Some(ref relation) = pattern.relation {
             let rel_str = serde_json::to_string(relation)
@@ -112,10 +117,16 @@ impl KnowledgeStore {
             idx += 1;
         }
         if let Some(ref target) = pattern.target {
-            sql.push_str(&format!(" AND (t.id = ?{idx} OR t.name = ?{idx})"));
+            sql.push_str(&format!(
+                " AND (t.id = ?{} OR t.name = ?{})",
+                idx,
+                idx + 1
+            ));
             params.push(Box::new(target.clone()));
-            let _ = idx;
+            params.push(Box::new(target.clone()));
+            idx += 2;
         }
+        let _ = idx;
 
         sql.push_str(" LIMIT 100");
 

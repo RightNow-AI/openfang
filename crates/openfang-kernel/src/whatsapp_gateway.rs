@@ -10,10 +10,8 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 /// Gateway source files embedded at compile time.
-const GATEWAY_INDEX_JS: &str =
-    include_str!("../../../packages/whatsapp-gateway/index.js");
-const GATEWAY_PACKAGE_JSON: &str =
-    include_str!("../../../packages/whatsapp-gateway/package.json");
+const GATEWAY_INDEX_JS: &str = include_str!("../../../packages/whatsapp-gateway/index.js");
+const GATEWAY_PACKAGE_JSON: &str = include_str!("../../../packages/whatsapp-gateway/package.json");
 
 /// Default port for the WhatsApp Web gateway.
 const DEFAULT_GATEWAY_PORT: u16 = 3009;
@@ -69,8 +67,8 @@ async fn ensure_gateway_installed() -> Result<PathBuf, String> {
     let package_path = dir.join("package.json");
 
     // Write files only if content changed (avoids unnecessary npm install)
-    let index_changed =
-        write_if_changed(&index_path, GATEWAY_INDEX_JS).map_err(|e| format!("Write index.js: {e}"))?;
+    let index_changed = write_if_changed(&index_path, GATEWAY_INDEX_JS)
+        .map_err(|e| format!("Write index.js: {e}"))?;
     let package_changed = write_if_changed(&package_path, GATEWAY_PACKAGE_JSON)
         .map_err(|e| format!("Write package.json: {e}"))?;
 
@@ -164,7 +162,10 @@ pub async fn start_whatsapp_gateway(kernel: &Arc<super::kernel::OpenFangKernel>)
         .to_string();
 
     // Auto-set the env var so the rest of the system finds the gateway
-    std::env::set_var("WHATSAPP_WEB_GATEWAY_URL", format!("http://127.0.0.1:{port}"));
+    std::env::set_var(
+        "WHATSAPP_WEB_GATEWAY_URL",
+        format!("http://127.0.0.1:{port}"),
+    );
     info!("WHATSAPP_WEB_GATEWAY_URL set to http://127.0.0.1:{port}");
 
     // Spawn with crash monitoring
@@ -247,9 +248,7 @@ pub async fn start_whatsapp_gateway(kernel: &Arc<super::kernel::OpenFangKernel>)
 
             restarts += 1;
             if restarts >= MAX_RESTARTS {
-                warn!(
-                    "WhatsApp gateway exceeded max restarts ({MAX_RESTARTS}), giving up"
-                );
+                warn!("WhatsApp gateway exceeded max restarts ({MAX_RESTARTS}), giving up");
                 return;
             }
 

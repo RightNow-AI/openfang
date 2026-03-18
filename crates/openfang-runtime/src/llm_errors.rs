@@ -91,9 +91,37 @@ const AUTH_PATTERNS: &[&str] = &[
     "incorrect api key",
     "invalid token",
     "unauthorized",
-    "forbidden",
-    "authentication",
-    "permission denied",
+    "invalid_auth",
+    "authentication_error",
+    "authentication failed",
+    "api key not found",
+    "api key is missing",
+    "invalid credentials",
+    "not authenticated",
+];
+
+/// Patterns that indicate 403 is NOT an auth issue (quota, region, model
+/// permission). Checked before falling back to Auth for status 403.
+const FORBIDDEN_NON_AUTH_PATTERNS: &[&str] = &[
+    "quota",
+    "limit",
+    "balance",
+    "credit",
+    "billing",
+    "region",
+    "not available",
+    "not supported",
+    "not allowed",
+    "access denied", // model/resource access, not API key
+    "permission",    // model permission, not API key auth
+    "insufficient",
+    "exceeded",
+    "capacity",
+    "blocked",
+    "restricted",
+    "not enabled",
+    "does not exist",
+    "model", // model-level 403 (e.g., "model access forbidden")
 ];
 
 /// Rate-limit patterns.
@@ -337,8 +365,123 @@ pub fn sanitize_for_user(category: LlmErrorCategory, _raw: &str) -> String {
             "The requested model was not found. Check the model name."
         }
     };
-    // Cap at 200 chars (all built-in messages are under 200, but defensive).
-    if msg.chars().count() > 200 {
+
+    let detail = sanitize_raw_excerpt(raw);
+    if detail.is_empty() {
+        // Fall back to a helpful generic message when there is no raw detail.
+        match category {
+            LlmErrorCategory::RateLimit => "Rate limited — retrying shortly.".to_string(),
+            LlmErrorCategory::Overloaded => {
+                "Provider temporarily overloaded — retrying.".to_string()
+            }
+            LlmErrorCategory::Timeout => {
+                "Request timed out. Check your network connection.".to_string()
+            }
+            LlmErrorCategory::Billing => {
+                "Billing issue. Check your API plan and balance.".to_string()
+            }
+            LlmErrorCategory::Auth => "Auth error. Check your API key configuration.".to_string(),
+            LlmErrorCategory::ContextOverflow => {
+                "Context too long for the model's context window.".to_string()
+            }
+            LlmErrorCategory::Format => {
+                "Request failed. Check API key and model config.".to_string()
+            }
+            LlmErrorCategory::ModelNotFound => "Model not found. Check the model name.".to_string(),
+        }
+    } else {
+        // Include the sanitized detail — cap total at 300 chars.
+        let full = format!("{prefix}: {detail}");
+        cap_message(&full, 300)
+    }
+}
+
+/// Extract a safe excerpt from the raw error for display to the user.
+///
+/// Strips potential API key fragments (sk-xxx, key-xxx, Bearer xxx) and
+/// truncates to avoid dumping huge HTML error pages.
+fn sanitize_raw_excerpt(raw: &str) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+
+    // If it looks like an HTML error page, don't show HTML to the user.
+    if is_html_error_page(raw) {
+        return "provider returned an error page (possible outage)".to_string();
+    }
+
+    // Try to extract the "message" field from JSON error bodies.
+    let excerpt = extract_json_message(raw).unwrap_or_else(|| raw.to_string());
+
+    // Strip anything that looks like a secret.
+    let cleaned = redact_secrets(&excerpt);
+
+    // Strip the "LLM driver error: API error (NNN): " wrapper if present —
+    // the status code is already captured by the classifier.
+    let cleaned = strip_llm_wrapper(&cleaned);
+
+    // Cap length.
+    cap_message(&cleaned, 200)
+}
+
+/// Try to pull `.error.message` or `.message` from a JSON error body.
+fn extract_json_message(raw: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+    // OpenAI / most providers: {"error": {"message": "..."}}
+    if let Some(msg) = v.pointer("/error/message").and_then(|v| v.as_str()) {
+        return Some(msg.to_string());
+    }
+    // Anthropic: {"error": {"type": "...", "message": "..."}}
+    if let Some(msg) = v.pointer("/message").and_then(|v| v.as_str()) {
+        return Some(msg.to_string());
+    }
+    // Some providers: {"detail": "..."}
+    if let Some(msg) = v.pointer("/detail").and_then(|v| v.as_str()) {
+        return Some(msg.to_string());
+    }
+    None
+}
+
+/// Redact anything that looks like an API key or bearer token.
+fn redact_secrets(s: &str) -> String {
+    let mut result = s.to_string();
+    // Common key prefixes: sk-..., key-..., Bearer ...
+    // Replace sequences that look like keys (long alphanumeric after prefix).
+    for prefix in &["sk-", "key-", "Bearer ", "bearer "] {
+        while let Some(start) = result.find(prefix) {
+            let end = result[start + prefix.len()..]
+                .find(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+                .map(|i| start + prefix.len() + i)
+                .unwrap_or(result.len());
+            if end > start + prefix.len() + 4 {
+                result.replace_range(start..end, "<redacted>");
+            } else {
+                break; // Avoid infinite loop on short matches
+            }
+        }
+    }
+    result
+}
+
+/// Strip the "LLM driver error: API error (NNN): " prefix if present.
+fn strip_llm_wrapper(s: &str) -> String {
+    // Pattern: "LLM driver error: API error (NNN): actual message"
+    if let Some(idx) = s.find("API error (") {
+        if let Some(close) = s[idx..].find("): ") {
+            return s[idx + close + 3..].to_string();
+        }
+    }
+    if let Some(rest) = s.strip_prefix("LLM driver error: ") {
+        return rest.to_string();
+    }
+    s.to_string()
+}
+
+/// Cap a message at `max` chars, adding "..." if truncated.
+fn cap_message(msg: &str, max: usize) -> String {
+    if msg.chars().count() <= max {
+        msg.to_string()
+    } else {
         let end = msg
             .char_indices()
             .nth(197)
@@ -661,6 +804,44 @@ mod tests {
                 m.len()
             );
         }
+    }
+
+    #[test]
+    fn test_sanitize_redacts_secrets() {
+        let msg = sanitize_raw_excerpt("Invalid key: sk-proj-abcdefg12345");
+        assert!(!msg.contains("sk-proj-abcdefg12345"));
+        assert!(msg.contains("<redacted>"));
+
+        let msg = sanitize_raw_excerpt("Bearer eyJhbGciOiJIUzI1NiJ9 was rejected");
+        assert!(!msg.contains("eyJhbGciOiJIUzI1NiJ9"));
+    }
+
+    #[test]
+    fn test_sanitize_extracts_json_message() {
+        let msg = sanitize_raw_excerpt(
+            r#"{"error":{"message":"Rate limit exceeded","type":"rate_limit"}}"#,
+        );
+        assert_eq!(msg, "Rate limit exceeded");
+    }
+
+    #[test]
+    fn test_sanitize_html_page() {
+        let msg = sanitize_raw_excerpt("<!DOCTYPE html><html><body>502 Bad Gateway</body></html>");
+        assert!(msg.contains("error page"));
+        assert!(!msg.contains("<html>"));
+    }
+
+    #[test]
+    fn test_strip_llm_wrapper() {
+        assert_eq!(
+            strip_llm_wrapper("LLM driver error: API error (403): quota exceeded"),
+            "quota exceeded"
+        );
+        assert_eq!(
+            strip_llm_wrapper("LLM driver error: some other error"),
+            "some other error"
+        );
+        assert_eq!(strip_llm_wrapper("plain error"), "plain error");
     }
 
     #[test]

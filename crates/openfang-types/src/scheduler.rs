@@ -299,6 +299,34 @@ impl CronJob {
                     }
                 }
             }
+            CronAction::WorkflowRun {
+                workflow_id,
+                input,
+                timeout_secs,
+            } => {
+                if workflow_id.is_empty() {
+                    return Err("workflow_id must not be empty".into());
+                }
+                if let Some(i) = input {
+                    if i.len() > MAX_TURN_MESSAGE_LEN {
+                        return Err(format!(
+                            "workflow input too long ({} chars, max {MAX_TURN_MESSAGE_LEN})",
+                            i.len()
+                        ));
+                    }
+                }
+                if let Some(t) = timeout_secs {
+                    if *t < MIN_TIMEOUT_SECS {
+                        return Err(format!(
+                            "timeout_secs too small ({t}, min {MIN_TIMEOUT_SECS})"
+                        ));
+                    }
+                    // Workflows can run longer than agent turns (max 3600s = 1h)
+                    if *t > 3600 {
+                        return Err(format!("timeout_secs too large ({t}, max 3600)"));
+                    }
+                }
+            }
         }
         Ok(())
     }

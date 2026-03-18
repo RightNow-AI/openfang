@@ -93,6 +93,17 @@ impl CompletionResponse {
             .collect::<Vec<_>>()
             .join("")
     }
+
+    /// Check if the response has any meaningful content (including Thinking blocks).
+    /// Used to distinguish true empty responses from thinking-only responses.
+    pub fn has_any_content(&self) -> bool {
+        self.content.iter().any(|block| match block {
+            ContentBlock::Text { text, .. } => !text.is_empty(),
+            ContentBlock::Thinking { thinking, .. } => !thinking.is_empty(),
+            ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => true,
+            _ => false,
+        })
+    }
 }
 
 /// Events emitted during streaming LLM completion.

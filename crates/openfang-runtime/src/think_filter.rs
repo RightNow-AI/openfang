@@ -202,10 +202,7 @@ mod tests {
 
         // Delta 3: closing tag + visible text
         let a3 = filter.process("</think>The answer is 42.");
-        assert_eq!(
-            a3,
-            vec![FilterAction::EmitText("The answer is 42.".into())]
-        );
+        assert_eq!(a3, vec![FilterAction::EmitText("The answer is 42.".into())]);
         assert!(!filter.is_inside_think());
     }
 
@@ -221,10 +218,7 @@ mod tests {
         // Delta 2: completes the tag
         let a2 = filter.process("nk>deep thought");
         // The tag is complete. "deep thought" is thinking.
-        assert_eq!(
-            a2,
-            vec![FilterAction::EmitThinking("deep thought".into())]
-        );
+        assert_eq!(a2, vec![FilterAction::EmitThinking("deep thought".into())]);
         assert!(filter.is_inside_think());
     }
 
@@ -234,10 +228,7 @@ mod tests {
 
         // Enter think block
         let a1 = filter.process("<think>thinking here</thi");
-        assert_eq!(
-            a1,
-            vec![FilterAction::EmitThinking("thinking here".into())]
-        );
+        assert_eq!(a1, vec![FilterAction::EmitThinking("thinking here".into())]);
         assert!(filter.is_inside_think());
 
         // Complete the closing tag
@@ -272,8 +263,7 @@ mod tests {
     #[test]
     fn test_multiple_think_blocks() {
         let mut filter = StreamingThinkFilter::new();
-        let actions =
-            filter.process("<think>first</think>middle<think>second</think>end");
+        let actions = filter.process("<think>first</think>middle<think>second</think>end");
         assert_eq!(
             actions,
             vec![
@@ -315,10 +305,7 @@ mod tests {
     fn test_flush_inside_think_with_pending() {
         let mut filter = StreamingThinkFilter::new();
         let a1 = filter.process("<think>thinking</thi");
-        assert_eq!(
-            a1,
-            vec![FilterAction::EmitThinking("thinking".into())]
-        );
+        assert_eq!(a1, vec![FilterAction::EmitThinking("thinking".into())]);
         assert!(filter.is_inside_think());
 
         // Stream ends with partial close tag buffered
@@ -330,10 +317,7 @@ mod tests {
     fn test_empty_think_block() {
         let mut filter = StreamingThinkFilter::new();
         let actions = filter.process("<think></think>The answer.");
-        assert_eq!(
-            actions,
-            vec![FilterAction::EmitText("The answer.".into())]
-        );
+        assert_eq!(actions, vec![FilterAction::EmitText("The answer.".into())]);
     }
 
     #[test]
@@ -380,10 +364,7 @@ mod tests {
         assert!(filter.is_inside_think());
 
         let a9 = filter.process("deep thought");
-        assert_eq!(
-            a9,
-            vec![FilterAction::EmitThinking("deep thought".into())]
-        );
+        assert_eq!(a9, vec![FilterAction::EmitThinking("deep thought".into())]);
 
         let a10 = filter.process("</think>done");
         assert_eq!(a10, vec![FilterAction::EmitText("done".into())]);

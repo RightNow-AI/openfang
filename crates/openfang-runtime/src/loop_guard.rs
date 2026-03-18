@@ -336,18 +336,17 @@ impl LoopGuard {
         if POLL_TOOLS.contains(&tool_name) {
             if let Some(cmd) = params.get("command").and_then(|v| v.as_str()) {
                 let cmd_lower = cmd.to_lowercase();
-                // Short commands that explicitly check status/wait/poll
-                if cmd.len() < 50
-                    && (cmd_lower.contains("status")
-                        || cmd_lower.contains("poll")
-                        || cmd_lower.contains("wait")
-                        || cmd_lower.contains("watch")
-                        || cmd_lower.contains("tail")
-                        || cmd_lower.contains("ps ")
-                        || cmd_lower.contains("jobs")
-                        || cmd_lower.contains("pgrep")
-                        || cmd_lower.contains("docker ps")
-                        || cmd_lower.contains("kubectl get"))
+                // Commands that explicitly check status/wait/poll
+                if cmd_lower.contains("status")
+                    || cmd_lower.contains("poll")
+                    || cmd_lower.contains("wait")
+                    || cmd_lower.contains("watch")
+                    || cmd_lower.contains("tail")
+                    || cmd_lower.contains("ps ")
+                    || cmd_lower.contains("jobs")
+                    || cmd_lower.contains("pgrep")
+                    || cmd_lower.contains("docker ps")
+                    || cmd_lower.contains("kubectl get")
                 {
                     return true;
                 }
@@ -767,7 +766,7 @@ mod tests {
             &serde_json::json!({"command": "echo hi"})
         ));
 
-        // shell_exec with long command — NOT a poll
+        // shell_exec with no poll keywords — NOT a poll
         assert!(!LoopGuard::is_poll_call(
             "shell_exec",
             &serde_json::json!({"command": "this is a very long command that definitely exceeds fifty characters in length"})

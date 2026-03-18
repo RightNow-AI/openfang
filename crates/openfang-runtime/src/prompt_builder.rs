@@ -90,83 +90,10 @@ pub struct PromptContext {
     pub peer_agents: Vec<(String, String, String)>,
     /// Current date/time string for temporal awareness.
     pub current_date: Option<String>,
-    /// True when the current request is a developer-facing coding task.
-    pub is_developer_task: bool,
-    /// True when the current flow explicitly requires hardening guidance.
-    pub requires_hardening: bool,
-    /// True when the current flow explicitly requires security review guidance.
-    pub requires_security_review: bool,
-    /// Maximum characters to include per recalled memory item. Zero = default.
-    pub memory_content_limit: usize,
-    /// Maximum number of memory items. Zero = default.
-    pub memory_item_limit: usize,
-    /// Maximum characters to include from canonical context. Zero = default.
-    pub canonical_context_limit: usize,
-    /// Maximum number of peer agents to render. Zero = default.
-    pub peer_list_limit: usize,
-}
-
-const DEFAULT_MEMORY_CONTENT_LIMIT: usize = 500;
-const DEFAULT_MEMORY_ITEM_LIMIT: usize = 5;
-const DEFAULT_CANONICAL_CONTEXT_LIMIT: usize = 500;
-const DEFAULT_PEER_LIST_LIMIT: usize = 10;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PromptTelemetry {
-    pub total_chars: usize,
-    pub estimated_tokens: usize,
-    pub sections: Vec<PromptSectionTelemetry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PromptSectionTelemetry {
-    pub name: &'static str,
-    pub chars: usize,
-    pub estimated_tokens: usize,
-}
-
-#[derive(Debug, Clone)]
-struct PromptSection {
-    name: &'static str,
-    content: String,
-}
-
-impl PromptContext {
-    fn include_hardening_section(&self) -> bool {
-        self.requires_hardening || self.requires_security_review || self.is_developer_task
-    }
-
-    fn effective_memory_content_limit(&self) -> usize {
-        if self.memory_content_limit == 0 {
-            DEFAULT_MEMORY_CONTENT_LIMIT
-        } else {
-            self.memory_content_limit
-        }
-    }
-
-    fn effective_memory_item_limit(&self) -> usize {
-        if self.memory_item_limit == 0 {
-            DEFAULT_MEMORY_ITEM_LIMIT
-        } else {
-            self.memory_item_limit
-        }
-    }
-
-    fn effective_canonical_context_limit(&self) -> usize {
-        if self.canonical_context_limit == 0 {
-            DEFAULT_CANONICAL_CONTEXT_LIMIT
-        } else {
-            self.canonical_context_limit
-        }
-    }
-
-    fn effective_peer_list_limit(&self) -> usize {
-        if self.peer_list_limit == 0 {
-            DEFAULT_PEER_LIST_LIMIT
-        } else {
-            self.peer_list_limit
-        }
-    }
+    /// Sender identity (e.g. WhatsApp phone number, Telegram user ID).
+    pub sender_id: Option<String>,
+    /// Sender display name.
+    pub sender_name: Option<String>,
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -302,6 +229,15 @@ fn collect_prompt_sections(ctx: &PromptContext) -> Vec<PromptSection> {
     if !ctx.is_subagent {
         if let Some(ref channel) = ctx.channel_type {
             push_section(&mut sections, "Channel Awareness", build_channel_section(channel));
+        }
+    }
+
+    // Section 9.1 — Sender Identity (skip for subagents)
+    if !ctx.is_subagent {
+        if let Some(sender_line) =
+            build_sender_section(ctx.sender_name.as_deref(), ctx.sender_id.as_deref())
+        {
+            sections.push(sender_line);
         }
     }
 
@@ -584,36 +520,26 @@ fn omitted_memories_text(count: usize) -> String {
 }
 
 /// Build the memory section (Section 4).
-pub fn build_memory_section(prompt_ctx: &PromptContext) -> String {
-    let mut section = String::from(
-        "## Memory\n\
-         - When the user asks about something from a previous conversation, use memory_recall first.\n\
-         - Store important preferences, decisions, and context with memory_store for future use.",
-    );
-
-    if prompt_ctx.recalled_memories.is_empty() {
-        return section;
-    }
-
-    let mut memories = prompt_ctx.recalled_memories.clone();
-    rank_recalled_memories(&mut memories);
-
-    let total_count = memories.len();
-    let item_limit = prompt_ctx.effective_memory_item_limit().max(1);
-    let selected: Vec<_> = memories.into_iter().take(item_limit).collect();
-
-    let mut lines = Vec::with_capacity(selected.len());
-    for memory in selected {
-        let content = cap_str(memory.content.trim(), prompt_ctx.effective_memory_content_limit());
-        if !content.is_empty() {
-            // H6: Scan recalled memory for injection patterns before injecting into prompt.
-            if contains_injection_pattern(&content) {
-                tracing::warn!(
-                    memory_id = %memory.id.0,
-                    scope = %memory.scope,
-                    "Possible prompt injection detected in recalled memory — content omitted"
-                );
-                lines.push("- [memory content flagged by safety filter]".to_string());
+///
+/// Also used by `agent_loop.rs` to append recalled memories after DB lookup.
+pub fn build_memory_section(memories: &[(String, String)]) -> String {
+    let mut out = String::from("## Memory\n");
+    if memories.is_empty() {
+        out.push_str(
+            "- When the user asks about something from a previous conversation, use memory_recall first.\n\
+             - Store important preferences, decisions, and context with memory_store for future use.",
+        );
+    } else {
+        out.push_str(
+            "- Use the recalled memories below to inform your responses.\n\
+             - Only call memory_recall if you need information not already shown here.\n\
+             - Store important preferences, decisions, and context with memory_store for future use.",
+        );
+        out.push_str("\n\nRecalled memories:\n");
+        for (key, content) in memories.iter().take(5) {
+            let capped = cap_str(content, 500);
+            if key.is_empty() {
+                out.push_str(&format!("- {capped}\n"));
             } else {
                 lines.push(format!("- {}", content));
             }
@@ -757,23 +683,16 @@ fn build_channel_section(channel: &str) -> String {
     )
 }
 
-fn build_peer_agents_section(
-    self_name: &str,
-    peers: &[(String, String, String)],
-    max_visible: usize,
-) -> String {
-    let visible_limit = max_visible.max(1);
-    let active_peers: Vec<&(String, String, String)> = peers
-        .iter()
-        .filter(|(name, state, _)| {
-            name != self_name && state.eq_ignore_ascii_case("running")
-        })
-        .collect();
-
-    if active_peers.is_empty() {
-        return String::new();
+fn build_sender_section(sender_name: Option<&str>, sender_id: Option<&str>) -> Option<String> {
+    match (sender_name, sender_id) {
+        (Some(name), Some(id)) => Some(format!("## Sender\nMessage from: {name} ({id})")),
+        (Some(name), None) => Some(format!("## Sender\nMessage from: {name}")),
+        (None, Some(id)) => Some(format!("## Sender\nMessage from: {id}")),
+        (None, None) => None,
     }
+}
 
+fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]) -> String {
     let mut out = String::from(
         "## Peer Agents\n\
          You are part of a multi-agent system. These active agents are running alongside you:\n",
@@ -1341,7 +1260,7 @@ mod tests {
     fn test_memory_section_empty() {
         let section = build_memory_section(&basic_ctx());
         assert!(section.contains("## Memory"));
-        assert!(section.contains("memory_recall"));
+        assert!(section.contains("use memory_recall first"));
         assert!(!section.contains("Recalled memories"));
     }
 
@@ -1370,8 +1289,10 @@ mod tests {
         ];
         let section = build_memory_section(&ctx);
         assert!(section.contains("Recalled memories"));
-        assert!(section.contains("User likes dark mode"));
-        assert!(section.contains("Working on Rust project"));
+        assert!(section.contains("[pref] User likes dark mode"));
+        assert!(section.contains("[ctx] Working on Rust project"));
+        assert!(section.contains("Use the recalled memories below"));
+        assert!(!section.contains("use memory_recall first"));
     }
 
     #[test]
