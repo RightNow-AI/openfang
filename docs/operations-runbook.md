@@ -57,6 +57,8 @@ sudo journalctl -u openfang -f
 sudo systemctl restart openfang
 ```
 
+The shipped systemd unit now performs a lightweight pre-start check. It always verifies that the binary exists, `config.toml` is readable, and the runtime home/data directories are writable. If `/usr/local/lib/openfang/preflight-openfang.sh` is installed, the unit also runs `preflight-openfang.sh --offline` before every start, so malformed config or broken state files fail fast instead of entering a restart loop.
+
 ### API shutdown
 
 ```bash

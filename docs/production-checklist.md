@@ -178,6 +178,7 @@ Pass criteria:
 - offline preflight validates config resolution, state-file integrity, writable runtime paths, and SQLite quick-check
 - live preflight validates runtime reachability and checks `/api/health/detail` readiness when the provided auth context can access protected endpoints
 - if the release is meant to serve provider-backed traffic, one real `scripts/provider-canary-openfang.sh` run succeeds and is archived with the release evidence
+- if you deploy via systemd, install `scripts/preflight-openfang.sh` to `/usr/local/lib/openfang/preflight-openfang.sh` so `ExecStartPre` can block obvious bad config/state before `Restart=on-failure` turns it into a restart loop
 
 ---
 
