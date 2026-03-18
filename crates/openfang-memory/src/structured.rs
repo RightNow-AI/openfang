@@ -12,6 +12,15 @@ pub struct StructuredStore {
     conn: Arc<Mutex<Connection>>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AgentLoadReport {
+    pub agents: Vec<AgentEntry>,
+    pub total_rows: usize,
+    pub restored_rows: usize,
+    pub skipped_rows: usize,
+    pub warnings: Vec<String>,
+}
+
 impl StructuredStore {
     /// Create a new structured store wrapping the given connection.
     pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
@@ -260,6 +269,10 @@ impl StructuredStore {
     /// automatically re-saved to upgrade the stored blob. Duplicate agent names
     /// are deduplicated (first occurrence wins).
     pub fn load_all_agents(&self) -> OpenFangResult<Vec<AgentEntry>> {
+        Ok(self.load_all_agents_report()?.agents)
+    }
+
+    pub fn load_all_agents_report(&self) -> OpenFangResult<AgentLoadReport> {
         let conn = self
             .conn
             .lock()
@@ -268,13 +281,13 @@ impl StructuredStore {
         // Try with identity+session_id columns first, fall back gracefully
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, manifest, state, created_at, updated_at, session_id, identity FROM agents",
+                "SELECT id, name, manifest, state, created_at, updated_at, session_id, identity FROM agents ORDER BY lower(name), created_at, id",
             )
             .or_else(|_| {
-                conn.prepare("SELECT id, name, manifest, state, created_at, updated_at, session_id FROM agents")
+                conn.prepare("SELECT id, name, manifest, state, created_at, updated_at, session_id FROM agents ORDER BY lower(name), created_at, id")
             })
             .or_else(|_| {
-                conn.prepare("SELECT id, name, manifest, state, created_at, updated_at FROM agents")
+                conn.prepare("SELECT id, name, manifest, state, created_at, updated_at FROM agents ORDER BY lower(name), created_at, id")
             })
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
@@ -308,7 +321,7 @@ impl StructuredStore {
             })
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
-        let mut agents = Vec::new();
+        let mut report = AgentLoadReport::default();
         let mut seen_names = std::collections::HashSet::new();
         let mut repair_queue: Vec<(String, Vec<u8>, String)> = Vec::new();
 
@@ -318,22 +331,24 @@ impl StructuredStore {
                     Ok(r) => r,
                     Err(e) => {
                         tracing::warn!("Skipping agent row with read error: {e}");
+                        report.skipped_rows += 1;
+                        report
+                            .warnings
+                            .push(format!("agent row skipped due to read error: {e}"));
                         continue;
                     }
                 };
-
-            // Deduplicate: skip agents with names we've already seen
-            let name_lower = name.to_lowercase();
-            if !seen_names.insert(name_lower) {
-                tracing::info!(agent = %name, id = %id_str, "Skipping duplicate agent name");
-                continue;
-            }
+            report.total_rows += 1;
 
             let agent_id = match uuid::Uuid::parse_str(&id_str).map(openfang_types::agent::AgentId)
             {
                 Ok(id) => id,
                 Err(e) => {
                     tracing::warn!(agent = %name, "Skipping agent with bad UUID '{id_str}': {e}");
+                    report.skipped_rows += 1;
+                    report.warnings.push(format!(
+                        "agent '{name}' skipped due to invalid UUID '{id_str}': {e}"
+                    ));
                     continue;
                 }
             };
@@ -347,6 +362,10 @@ impl StructuredStore {
                         agent = %name, id = %id_str,
                         "Skipping agent with incompatible manifest (schema may have changed): {e}"
                     );
+                    report.skipped_rows += 1;
+                    report.warnings.push(format!(
+                        "agent '{name}' skipped due to incompatible manifest: {e}"
+                    ));
                     continue;
                 }
             };
@@ -367,6 +386,10 @@ impl StructuredStore {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!(agent = %name, "Skipping agent with bad state: {e}");
+                    report.skipped_rows += 1;
+                    report
+                        .warnings
+                        .push(format!("agent '{name}' skipped due to invalid state: {e}"));
                     continue;
                 }
             };
@@ -382,7 +405,17 @@ impl StructuredStore {
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
 
-            agents.push(AgentEntry {
+            let name_lower = name.to_lowercase();
+            if !seen_names.insert(name_lower) {
+                tracing::info!(agent = %name, id = %id_str, "Skipping duplicate agent name");
+                report.skipped_rows += 1;
+                report.warnings.push(format!(
+                    "agent '{name}' skipped because a prior valid row with the same name was already restored"
+                ));
+                continue;
+            }
+
+            report.agents.push(AgentEntry {
                 id: agent_id,
                 name,
                 manifest,
@@ -398,6 +431,7 @@ impl StructuredStore {
                 onboarding_completed: false,
                 onboarding_completed_at: None,
             });
+            report.restored_rows += 1;
         }
 
         // Apply queued repairs (re-save upgraded blobs)
@@ -410,7 +444,7 @@ impl StructuredStore {
             }
         }
 
-        Ok(agents)
+        Ok(report)
     }
 
     /// List all agents in the database.
@@ -489,5 +523,114 @@ mod tests {
         store.set(agent_id, "key", serde_json::json!("v2")).unwrap();
         let value = store.get(agent_id, "key").unwrap();
         assert_eq!(value, Some(serde_json::json!("v2")));
+    }
+
+    #[test]
+    fn test_load_all_agents_report_keeps_later_valid_duplicate_when_first_row_is_invalid() {
+        let store = setup();
+        let conn = store.conn.lock().unwrap();
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN session_id TEXT DEFAULT ''",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN identity TEXT DEFAULT '{}'",
+            [],
+        );
+        conn.execute(
+            "INSERT INTO agents (id, name, manifest, state, created_at, updated_at, session_id, identity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "not-a-uuid",
+                "dup-agent",
+                vec![0_u8],
+                "\"Running\"",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+                openfang_types::agent::SessionId::new().0.to_string(),
+                "{}",
+            ],
+        )
+        .unwrap();
+
+        let valid = AgentEntry {
+            id: AgentId::new(),
+            name: "dup-agent".to_string(),
+            manifest: openfang_types::agent::AgentManifest::default(),
+            state: openfang_types::agent::AgentState::Running,
+            mode: Default::default(),
+            created_at: Utc::now(),
+            last_active: Utc::now(),
+            parent: None,
+            children: vec![],
+            session_id: openfang_types::agent::SessionId::new(),
+            tags: vec![],
+            identity: Default::default(),
+            onboarding_completed: false,
+            onboarding_completed_at: None,
+        };
+        drop(conn);
+        store.save_agent(&valid).unwrap();
+
+        let report = store.load_all_agents_report().unwrap();
+        assert_eq!(report.total_rows, 2);
+        assert_eq!(report.restored_rows, 1);
+        assert_eq!(report.skipped_rows, 1);
+        assert_eq!(report.agents.len(), 1);
+        assert_eq!(report.agents[0].id, valid.id);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("invalid UUID")));
+    }
+
+    #[test]
+    fn test_load_all_agents_report_deduplicates_deterministically() {
+        let store = setup();
+        let first = AgentEntry {
+            id: AgentId::new(),
+            name: "same-name".to_string(),
+            manifest: openfang_types::agent::AgentManifest {
+                description: "first".to_string(),
+                ..Default::default()
+            },
+            state: openfang_types::agent::AgentState::Running,
+            mode: Default::default(),
+            created_at: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            last_active: Utc::now(),
+            parent: None,
+            children: vec![],
+            session_id: openfang_types::agent::SessionId::new(),
+            tags: vec![],
+            identity: Default::default(),
+            onboarding_completed: false,
+            onboarding_completed_at: None,
+        };
+        let second = AgentEntry {
+            id: AgentId::new(),
+            name: "same-name".to_string(),
+            manifest: openfang_types::agent::AgentManifest {
+                description: "second".to_string(),
+                ..Default::default()
+            },
+            created_at: chrono::DateTime::parse_from_rfc3339("2026-01-02T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            ..first.clone()
+        };
+        store.save_agent(&second).unwrap();
+        store.save_agent(&first).unwrap();
+
+        let report = store.load_all_agents_report().unwrap();
+        assert_eq!(report.total_rows, 2);
+        assert_eq!(report.restored_rows, 1);
+        assert_eq!(report.skipped_rows, 1);
+        assert_eq!(report.agents[0].manifest.description, "first");
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("same-name")));
     }
 }

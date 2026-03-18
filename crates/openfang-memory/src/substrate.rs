@@ -105,6 +105,11 @@ impl MemorySubstrate {
         self.structured.load_all_agents()
     }
 
+    /// Load all agent entries plus restore diagnostics.
+    pub fn load_all_agents_report(&self) -> OpenFangResult<crate::structured::AgentLoadReport> {
+        self.structured.load_all_agents_report()
+    }
+
     /// List all saved agents.
     pub fn list_agents(&self) -> OpenFangResult<Vec<(String, String, String)>> {
         self.structured.list_agents()
