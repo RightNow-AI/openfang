@@ -26,7 +26,7 @@ Important precedence behavior verified in the current code:
 1. `OPENFANG_HOME` changes the runtime home before config lookup
 2. `config.toml` is loaded and deep-merged with any `include` files
 3. `OPENFANG_LISTEN` overrides top-level `api_listen`
-4. `OPENFANG_API_KEY` sets `api_key` only when `config.toml` left it empty
+4. `OPENFANG_API_KEY` overrides `api_key` when it is set to a non-empty value
 5. provider credentials are resolved through vault -> runtime env files -> process environment
 6. within runtime env files, `~/.openfang/secrets.env` overrides `~/.openfang/.env` when both define the same key
 
@@ -253,7 +253,7 @@ Useful deployment environment variables:
 | --- | --- |
 | `OPENFANG_HOME` | change runtime home directory |
 | `OPENFANG_LISTEN` | override `api_listen` at boot |
-| `OPENFANG_API_KEY` | inject API key when config left it empty |
+| `OPENFANG_API_KEY` | override `api_key` at boot when set to a non-empty value |
 | provider keys such as `GROQ_API_KEY` | authenticate LLM calls |
 | channel tokens such as `TELEGRAM_BOT_TOKEN` | authenticate channel adapters |
 

@@ -111,7 +111,7 @@ curl -H "Authorization: Bearer $OPENFANG_API_KEY" \
 
 For anonymous liveness checks, use `/api/health` instead.
 
-If `/api/health/detail` returns HTTP 200 but `status = "degraded"`, treat the node as not ready for production traffic yet. Common causes now include config warnings, missing default-provider auth, shutdown-in-progress, or recorded supervisor panics.
+If `/api/health/detail` returns HTTP 200 but `status = "degraded"`, treat the node as not ready for production traffic yet. Common causes now include config warnings, restore warnings, missing default-provider auth, shutdown-in-progress, or recorded supervisor panics.
 
 ## 6. Channel Config Is Ignored
 

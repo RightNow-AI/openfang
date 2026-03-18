@@ -162,7 +162,7 @@ Before shipping a production image or binary cutover, also verify operator safet
 ```bash
 scripts/backup-openfang.sh
 OPENFANG_PREFLIGHT_OFFLINE=1 scripts/preflight-openfang.sh --offline
-OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
+OPENFANG_STRICT_PRODUCTION=1 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
 
 For systemd-style deployments using `/etc/openfang/env`, include:
@@ -170,7 +170,7 @@ For systemd-style deployments using `/etc/openfang/env`, include:
 ```bash
 OPENFANG_ENV_FILE=/etc/openfang/env scripts/backup-openfang.sh
 OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_PREFLIGHT_OFFLINE=1 scripts/preflight-openfang.sh --offline
-OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
+OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_STRICT_PRODUCTION=1 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
 
 Pass criteria:

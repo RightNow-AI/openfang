@@ -69,7 +69,7 @@ Important boot-time behaviors:
 
 - `OPENFANG_HOME` changes the config/state root
 - `OPENFANG_LISTEN` overrides `config.toml` `api_listen`
-- `OPENFANG_API_KEY` only fills `config.api_key` when the config file leaves it empty
+- `OPENFANG_API_KEY` overrides `config.api_key` when it is set to a non-empty value
 - provider credentials are resolved through vault -> `~/.openfang/.env` -> process environment
 - the kernel restores persisted agents and hands during boot
 

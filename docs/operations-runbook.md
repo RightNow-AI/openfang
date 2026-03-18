@@ -7,7 +7,7 @@ This is the maintainer runbook for day-2 operation of the OpenFang daemon in thi
 - default API bind: `127.0.0.1:4200`
 - runtime home: `~/.openfang` unless `OPENFANG_HOME` overrides it
 - main persisted state includes: `config.toml`, `.env`, `secrets.env`, `vault.enc`, `custom_models.json`, `integrations.toml`, `data/`, `agents/`, `skills/`, `workspaces/`, `workflows/`, `hand_state.json`, `cron_jobs.json`
-- systemd deployments often also use `/etc/openfang/env` as an external env source; scripts auto-detect it (or honor `OPENFANG_ENV_FILE`)
+- systemd deployments often also use `/etc/openfang/env` as an external env source; scripts honor `OPENFANG_ENV_FILE` explicitly and only auto-detect `/etc/openfang/env` when it matches the current `OPENFANG_HOME`
 - `daemon.json` is a discovery file for the CLI, not a restore asset
 - if the API is bound off-loopback, auth must be enabled with `OPENFANG_API_KEY` or dashboard auth
 
@@ -72,7 +72,7 @@ curl -X POST -H "Authorization: Bearer $OPENFANG_API_KEY" \
 | `openfang status` | daemon discovery and runtime status | no when local |
 | `openfang health` | quick CLI health probe | no when local |
 | `/api/health` | liveness probe | no |
-| `/api/health/detail` | readiness probe plus detailed health and config warnings | yes when auth is enabled |
+| `/api/health/detail` | readiness probe plus detailed health, config, and restore warnings | yes when auth is enabled |
 | `/api/status` | daemon status, model, agent summary | yes when auth is enabled |
 | `/api/metrics` | Prometheus metrics | yes when auth is enabled |
 | `/api/audit/verify` | audit-chain integrity check | yes when auth is enabled |
@@ -95,7 +95,7 @@ curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
 Interpretation:
 
 - `/api/health` answers "is the process alive enough for a liveness probe?"
-- `/api/health/detail` answers "is the node ready to serve traffic?" and now degrades when boot-time config warnings, missing default-provider auth, shutdown-in-progress, or supervisor panics are present
+- `/api/health/detail` answers "is the node ready to serve traffic?" and now degrades when boot-time config warnings, restore warnings, missing default-provider auth, shutdown-in-progress, or supervisor panics are present
 
 Common smoke checks:
 
@@ -108,7 +108,9 @@ target/release/openfang doctor
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
 
-`scripts/preflight-openfang.sh` resolves `config.toml` includes plus runtime `.env` / `secrets.env` / external env file / process env overrides. It honors `OPENFANG_ENV_FILE`; if unset and `/etc/openfang/env` exists, that file is auto-detected. When both runtime files define the same key, `secrets.env` wins so API/dashboard-managed secrets survive restart. When preflight can resolve an API key, it now treats failures on protected operational endpoints as blocking instead of advisory, and it requires `/api/health/detail` to report `status = "ok"` rather than merely returning HTTP 200.
+`scripts/preflight-openfang.sh` resolves `config.toml` includes plus runtime `.env` / `secrets.env` / external env file / process env overrides. It honors `OPENFANG_ENV_FILE`; if unset and `/etc/openfang/env` exists, that file is auto-detected only when it matches the current `OPENFANG_HOME`. When both runtime files define the same key, `secrets.env` wins so API/dashboard-managed secrets survive restart. When preflight can resolve an API key, it now treats failures on protected operational endpoints as blocking instead of advisory, and it requires `/api/health/detail` to report `status = "ok"` rather than merely returning HTTP 200.
+For production hosts, keep a machine API key available even when dashboard auth is enabled, otherwise protected-path checks remain advisory instead of fully enforceable.
+Use `OPENFANG_STRICT_PRODUCTION=1` in deployment automation so missing machine auth becomes a hard failure instead of a warning.
 It is strict by default: if `/api/health` is unreachable, preflight fails. Use `--offline` (or `OPENFANG_PREFLIGHT_OFFLINE=1`) only when you intentionally want file-only checks without a live daemon.
 These scripts are expected to run from a host/runner checkout of this repository; they are not guaranteed to be present inside runtime container images.
 
@@ -133,7 +135,7 @@ Important logging realities:
 Prometheus and alerting:
 
 - `/api/metrics` is the scrape surface for production monitoring
-- the metrics set now includes `openfang_readiness_ready`, `openfang_database_ok`, `openfang_shutdown_requested`, `openfang_default_provider_auth_missing`, and `openfang_config_warnings`
+- the metrics set now includes `openfang_readiness_ready`, `openfang_database_ok`, `openfang_shutdown_requested`, `openfang_default_provider_auth_missing`, `openfang_config_warnings`, and `openfang_restore_warnings`
 - readiness-related warnings are resolved against the active credential chain (vault, `secrets.env`, `.env`, process env), so vault-backed or runtime-file-backed secrets do not create false degraded alerts
 - sample Prometheus alert rules live in `deploy/openfang-alerts.yml`
 
@@ -226,7 +228,7 @@ scripts/backup-openfang.sh
 The backup script creates a consistent SQLite snapshot instead of relying on a raw `cp` of a live WAL-mode database.
 It now refuses to back up a running daemon unless you explicitly set `OPENFANG_ALLOW_LIVE_BACKUP=1`.
 It also preserves `config.toml` include dependencies under `OPENFANG_HOME` so split-config deployments restore with the same effective config tree.
-When `OPENFANG_ENV_FILE` is set (or `/etc/openfang/env` is auto-detected), backup also captures that external env file as `external-env.env` in the backup directory and records its source path in `BACKUP.txt`.
+When `OPENFANG_ENV_FILE` is set (or a matching `/etc/openfang/env` is auto-detected), backup also captures that external env file as `external-env.env` in the backup directory and records its source path in `BACKUP.txt`.
 
 For hot systems, stop the service first when possible. If you must back up online, set `OPENFANG_ALLOW_LIVE_BACKUP=1` and understand that the database snapshot is consistent but concurrently changing directories can still reflect a live point in time.
 
@@ -248,7 +250,7 @@ It also rejects empty/malformed backup directories before deleting managed runti
 It now reapplies ownership on restored files/directories by preferring the existing `OPENFANG_HOME` owner/group; override explicitly with `OPENFANG_UID` and `OPENFANG_GID` when restoring into a service-owned home such as `/var/lib/openfang`.
 It restores the backed-up `config.toml` include tree alongside the root config so include-based deployments do not come back missing provider or environment fragments.
 Restore now stages files into a sibling temporary home and only swaps the runtime directory into place after the staged copy is complete, reducing the chance of ending up with a half-restored runtime.
-If `external-env.env` is present in the backup, restore writes it back to `OPENFANG_ENV_FILE` (or auto-detected `/etc/openfang/env`, or the manifest-recorded source path) when possible.
+If `external-env.env` is present in the backup, restore writes it back to `OPENFANG_ENV_FILE` (or a matching auto-detected `/etc/openfang/env`). If no safe target can be resolved, or if the file cannot be restored, the restore now fails closed instead of reporting success with a warning.
 
 After restore:
 

@@ -78,7 +78,7 @@ Treat the API port as sensitive even when using auth. Expose it through a contro
 Health semantics:
 
 - `GET /api/health` is a minimal liveness probe and intentionally redacts operational detail.
-- `GET /api/health/detail` is the readiness-oriented probe. It now returns `status = "degraded"` when the node is shutting down, the supervisor has recorded panics, boot-time config warnings are present, or the default provider auth is still missing.
+- `GET /api/health/detail` is the readiness-oriented probe. It now returns `status = "degraded"` when the node is shutting down, the supervisor has recorded panics, boot-time config warnings or restore warnings are present, or the default provider auth is still missing.
 
 ---
 
@@ -665,7 +665,7 @@ The `status` field is `"ok"` when all systems are healthy, or `"degraded"` when 
 
 ### GET /api/health/detail
 
-Detailed health diagnostics (`uptime`, supervisor counters, DB connectivity, config warnings).
+Detailed health diagnostics (`uptime`, supervisor counters, DB connectivity, config warnings, restore warnings).
 Requires authentication.
 
 **Response** `200 OK`:
@@ -681,6 +681,13 @@ Requires authentication.
   "agent_count": 3,
   "database": "connected",
   "config_warnings": [],
+  "restore_warnings": {
+    "persisted_agent_rows": 3,
+    "restored_agent_rows": 3,
+    "agent": [],
+    "cron": [],
+    "hand": []
+  },
   "readiness": {
     "ready": true,
     "default_provider_auth": "configured",
@@ -689,7 +696,7 @@ Requires authentication.
 }
 ```
 
-`config_warnings` is evaluated against the daemon's active credential chain, not only raw process env vars. Secrets resolved from `vault.enc`, `secrets.env`, or `.env` therefore no longer cause false degraded readiness warnings.
+`config_warnings` is evaluated against the daemon's active credential chain, not only raw process env vars. Secrets resolved from `vault.enc`, `secrets.env`, or `.env` therefore no longer cause false degraded readiness warnings. `restore_warnings` surfaces boot-time fallback or skipped persisted state; any non-empty restore warning set makes readiness degrade until an operator reviews the node.
 
 ### GET /api/status
 
@@ -766,6 +773,7 @@ Key gauges and counters now include:
 - `openfang_shutdown_requested` — `1` after graceful shutdown has started
 - `openfang_default_provider_auth_missing` — `1` when the effective default provider is missing credentials
 - `openfang_config_warnings` — current count of runtime config warnings
+- `openfang_restore_warnings` — current count of restore warnings raised during boot
 - `openfang_panics_total` / `openfang_restarts_total` — supervisor stability counters
 
 Sample:
