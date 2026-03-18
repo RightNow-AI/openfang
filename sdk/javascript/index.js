@@ -526,7 +526,12 @@ class SkillResource {
   async searchClawHub(query) {
     return this._c._request(
       "GET",
-      "/api/clawhub/search?q=" + query.q + "&limit=" + query.limit
+      "/api/clawhub/search?keyword=" +
+        query.keyword +
+        "&page=" +
+        query.page +
+        "&pageSize=" +
+        query.pageSize
     );
   }
 

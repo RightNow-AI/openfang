@@ -148,20 +148,26 @@ pub struct ClawHubBrowseResponse {
 // -- Search: GET /api/v1/search?q=...&limit=N ------------------------------
 
 /// A skill entry from the search endpoint (`GET /api/v1/search`).
-///
-/// Search results are much flatter than browse results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ClawHubSearchEntry {
     #[serde(default)]
     pub score: f64,
     pub slug: String,
     #[serde(default)]
-    pub display_name: String,
+    pub name: String,
     #[serde(default)]
-    pub summary: String,
+    pub description: String,
     #[serde(default)]
-    pub version: Option<String>,
+    pub version: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub downloads: u64,
+    #[serde(default)]
+    pub stars: u64,
+    #[serde(default)]
+    pub owner_name: String,
     /// Unix ms timestamp.
     #[serde(default)]
     pub updated_at: i64,
@@ -421,18 +427,19 @@ impl ClawHubClient {
 
     /// Search for skills on ClawHub using vector/semantic search.
     ///
-    /// Uses `GET /api/v1/search?q=...&limit=...`.
-    /// Returns `ClawHubSearchResponse` whose root key is `results` (not `items`).
+    /// Uses `GET /api/v1/search?keyword=...&pageSize=...`.
     pub async fn search(
         &self,
-        query: &str,
-        limit: u32,
+        keyword: &str,
+        page_size: u32,
+        page: u32,
     ) -> Result<ClawHubSearchResponse, SkillError> {
         let url = format!(
-            "{}/search?q={}&limit={}",
+            "{}/skills?keyword={}&pageSize={}&page={}&sortBy=score&order=desc",
             self.base_url,
-            urlencoded(query),
-            limit.min(50)
+            urlencoded(keyword),
+            page_size.min(50),
+            page
         );
 
         let response = self.get_with_retry(&url, "ClawHub search").await?;
@@ -838,10 +845,10 @@ mod tests {
                 "skills": [{
                     "score": 3.5,
                     "slug": "test",
-                    "displayName": "Test",
-                    "summary": "A test",
+                    "name": "Test",
+                    "description": "A test",
                     "version": "0.1.0",
-                    "updatedAt": 0
+                    "updated_at": 0
                 }],
                 "total": 1
             }

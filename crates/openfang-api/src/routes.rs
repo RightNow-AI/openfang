@@ -3548,21 +3548,19 @@ pub async fn clawhub_search(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let query = params.get("q").cloned().unwrap_or_default();
-    if query.is_empty() {
+    let keyword = params.get("keyword").cloned().unwrap_or_default();
+    if keyword.is_empty() {
         return (
             StatusCode::OK,
-            Json(serde_json::json!({"items": [], "next_cursor": null})),
+            Json(serde_json::json!({"data": {"skills": [], "total": 0}, "next_cursor": null})),
         );
     }
 
-    let limit: u32 = params
-        .get("limit")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20);
+    let page_size: u32 = params.get("pageSize").and_then(|v| v.parse().ok()).unwrap_or(20);
+    let page: u32 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
 
     // Check cache (120s TTL)
-    let cache_key = format!("search:{}:{}", query, limit);
+    let cache_key = format!("search:{}:{}:{}", keyword, page, page_size);
     if let Some(entry) = state.clawhub_cache.get(&cache_key) {
         if entry.0.elapsed().as_secs() < 120 {
             return (StatusCode::OK, Json(entry.1.clone()));
@@ -3573,9 +3571,9 @@ pub async fn clawhub_search(
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
     let skills_dir = state.kernel.config.home_dir.join("skills");
-    match client.search(&query, limit).await {
+    match client.search(&keyword, page_size,page).await {
         Ok(results) => {
-            let items: Vec<serde_json::Value> = results
+            let skills: Vec<serde_json::Value> = results
                 .data
                 .skills
                 .iter()
@@ -3583,17 +3581,22 @@ pub async fn clawhub_search(
                     let installed = skills_dir.join(&e.slug).exists();
                     serde_json::json!({
                         "slug": e.slug,
-                        "name": e.display_name,
-                        "description": e.summary,
+                        "name": e.name,
+                        "description": e.description,
                         "version": e.version,
                         "score": e.score,
+                        "downloads": e.downloads,
+                        "stars": e.stars,
                         "updated_at": e.updated_at,
                         "installed": installed,
                     })
                 })
                 .collect();
             let resp = serde_json::json!({
-                "items": items,
+                "data": {
+                    "skills": skills,
+                    "total": results.data.total,
+                },
                 "next_cursor": null,
             });
             state
@@ -3611,7 +3614,7 @@ pub async fn clawhub_search(
             };
             (
                 status,
-                Json(serde_json::json!({"items": [], "next_cursor": null, "error": msg})),
+                Json(serde_json::json!({"data": {"skills": [], "total": 0}, "next_cursor": null, "error": msg})),
             )
         }
     }
