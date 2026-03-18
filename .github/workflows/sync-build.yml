@@ -98,15 +98,17 @@ jobs:
       - name: Notify Telegram (success)
         if: success() && (github.event_name == 'push' || env.NEW_RELEASE == 'true')
         run: |
+          COMMIT_MSG=$(git log -1 --format=%s)
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
             -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
             -d parse_mode="Markdown" \
-            -d text="✅ *OpenFang Build OK*%0A%0ATag: \`${{ env.LATEST_TAG || 'custom' }}\`%0ABranch: \`custom\`%0ACommit: \`${GITHUB_SHA::7}\`%0A[View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            -d text="✅ *OpenFang Build OK*%0A%0ATag: \`${{ env.LATEST_TAG || 'custom' }}\`%0A\`${COMMIT_MSG}\`"
 
       - name: Notify Telegram (failure)
         if: failure()
         run: |
+          COMMIT_MSG=$(git log -1 --format=%s)
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
             -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
             -d parse_mode="Markdown" \
-            -d text="❌ *OpenFang Build FAILED*%0A%0ABranch: \`custom\`%0ACommit: \`${GITHUB_SHA::7}\`%0A[View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            -d text="❌ *OpenFang Build FAILED*%0A%0A\`${COMMIT_MSG}\`"
