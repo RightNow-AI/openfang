@@ -1236,15 +1236,6 @@ impl OpenFangKernel {
                         }
                     }
 
-                    // Re-grant capabilities
-                    let caps = manifest_to_capabilities(&entry.manifest);
-                    kernel.capabilities.grant(agent_id, caps);
-
-                    // Re-register with scheduler
-                    kernel
-                        .scheduler
-                        .register(agent_id, entry.manifest.resources.clone());
-
                     // Re-register in the in-memory registry (set state back to Running)
                     let mut restored_entry = entry;
                     restored_entry.state = AgentState::Running;
@@ -1296,6 +1287,9 @@ impl OpenFangKernel {
                         }
                     }
 
+                    let caps = manifest_to_capabilities(&restored_entry.manifest);
+                    let resources = restored_entry.manifest.resources.clone();
+
                     if let Err(e) = kernel.registry.register(restored_entry) {
                         tracing::warn!(agent = %name, "Failed to restore agent: {e}");
                         kernel
@@ -1307,6 +1301,8 @@ impl OpenFangKernel {
                                 "agent '{name}' failed to register during restore: {e}"
                             ));
                     } else {
+                        kernel.capabilities.grant(agent_id, caps);
+                        kernel.scheduler.register(agent_id, resources);
                         registered_count += 1;
                         tracing::debug!(agent = %name, id = %agent_id, "Restored agent");
                     }

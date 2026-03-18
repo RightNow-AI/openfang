@@ -326,6 +326,7 @@ impl StructuredStore {
         let mut repair_queue: Vec<(String, Vec<u8>, String)> = Vec::new();
 
         for row in rows {
+            report.total_rows += 1;
             let (id_str, name, manifest_blob, state_str, created_str, session_id_str, identity_str) =
                 match row {
                     Ok(r) => r,
@@ -338,7 +339,6 @@ impl StructuredStore {
                         continue;
                     }
                 };
-            report.total_rows += 1;
 
             let agent_id = match uuid::Uuid::parse_str(&id_str).map(openfang_types::agent::AgentId)
             {
@@ -632,5 +632,33 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("same-name")));
+    }
+
+    #[test]
+    fn test_load_all_agents_report_counts_rows_with_read_errors() {
+        let store = setup();
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO agents (id, name, manifest, state, created_at, updated_at)
+             VALUES (?1, ?2, 123, ?3, ?4, ?5)",
+            rusqlite::params![
+                AgentId::new().to_string(),
+                "broken-row",
+                "\"Running\"",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let report = store.load_all_agents_report().unwrap();
+        assert_eq!(report.total_rows, 1);
+        assert_eq!(report.restored_rows, 0);
+        assert_eq!(report.skipped_rows, 1);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("read error")));
     }
 }
