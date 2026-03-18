@@ -12,6 +12,29 @@ groups:
             The daemon has reported degraded readiness for more than 2 minutes.
             Check /api/health/detail, deployment logs, and preflight output.
 
+      - alert: OpenFangMetricsAbsent
+        expr: absent(openfang_info)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: OpenFang metrics are absent
+          description: >
+            Prometheus has stopped receiving OpenFang metrics for at least 5
+            minutes. Check target discovery, scrape auth, and daemon reachability.
+
+      - alert: OpenFangPrometheusTargetDown
+        expr: up{job="openfang"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: OpenFang Prometheus target is down
+          description: >
+            The Prometheus target with job="openfang" is failing scrapes. Adjust
+            the job label in this sample rule if your deployment uses a different
+            scrape job name.
+
       - alert: OpenFangDatabaseUnavailable
         expr: openfang_database_ok == 0
         for: 1m
@@ -45,6 +68,18 @@ groups:
             Runtime config validation is reporting warnings. Review
             /api/health/detail and the daemon boot log to remove drift before it
             becomes a production incident.
+
+      - alert: OpenFangRestoreWarningsPresent
+        expr: openfang_restore_warnings > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: OpenFang restore warnings are active
+          description: >
+            The node booted with restore warnings such as backup fallback or
+            skipped persisted state. Review /api/health/detail before treating
+            the node as fully healthy.
 
       - alert: OpenFangSupervisorPanics
         expr: increase(openfang_panics_total[5m]) > 0
