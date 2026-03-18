@@ -12,8 +12,8 @@ env:
 
 jobs:
   # ── Rust library crates (all 3 platforms) ──────────────────────────────────
-  check:
-    name: Check / ${{ matrix.os }}
+  build:
+    name: Build / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -24,7 +24,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: check-${{ matrix.os }}
+          key: build-${{ matrix.os }}
       - name: Install Tauri system deps (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -35,7 +35,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
-      - run: cargo check --workspace
+      - run: cargo build --workspace --lib
 
   test:
     name: Test / ${{ matrix.os }}
