@@ -336,7 +336,129 @@ fn convert_messages(
         }
     }
 
+    // Post-process: enforce Gemini turn-ordering invariant.
+    // A "model" turn containing functionCall parts MUST be immediately followed
+    // by a "user" turn containing functionResponse parts.  Intervening turns
+    // (e.g. "[no response]" / "Please continue" injected by the agent loop or
+    // session-repair) violate this and cause INVALID_ARGUMENT 400 errors.
+    let contents = enforce_function_call_ordering(contents);
+
     (contents, system_instruction)
+}
+
+/// Enforce Gemini's strict function-call turn ordering.
+///
+/// Rules:
+/// 1. A `model` turn with `functionCall` parts must be immediately followed by
+///    a `user` turn with `functionResponse` parts.
+/// 2. Any intervening text-only turns between a function-call model turn and
+///    its function-response user turn are removed.
+/// 3. A `model` turn with `functionCall` that has no matching `functionResponse`
+///    anywhere after it gets the functionCall parts stripped (keeping any text).
+fn enforce_function_call_ordering(contents: Vec<GeminiContent>) -> Vec<GeminiContent> {
+    if contents.is_empty() {
+        return contents;
+    }
+
+    // First pass: identify which model turns contain functionCall parts.
+    let has_function_call = |c: &GeminiContent| -> bool {
+        c.role.as_deref() == Some("model")
+            && c.parts
+                .iter()
+                .any(|p| matches!(p, GeminiPart::FunctionCall { .. }))
+    };
+
+    let has_function_response = |c: &GeminiContent| -> bool {
+        c.role.as_deref() == Some("user")
+            && c.parts
+                .iter()
+                .any(|p| matches!(p, GeminiPart::FunctionResponse { .. }))
+    };
+
+    let mut result: Vec<GeminiContent> = Vec::with_capacity(contents.len());
+
+    let mut i = 0;
+    while i < contents.len() {
+        if has_function_call(&contents[i]) {
+            // Found a model turn with functionCall.
+            // Look ahead for the matching user turn with functionResponse,
+            // skipping any intervening text-only turns.
+            result.push(contents[i].clone());
+            i += 1;
+
+            // Collect and skip intervening turns until we find functionResponse
+            let mut skipped = Vec::new();
+            while i < contents.len() && !has_function_response(&contents[i]) {
+                skipped.push(i);
+                i += 1;
+            }
+
+            if i < contents.len() && has_function_response(&contents[i]) {
+                // Found the matching functionResponse — drop skipped turns
+                if !skipped.is_empty() {
+                    warn!(
+                        skipped_turns = skipped.len(),
+                        "Gemini: removed intervening turns between functionCall and functionResponse"
+                    );
+                }
+                result.push(contents[i].clone());
+                i += 1;
+            } else {
+                // No functionResponse found — strip functionCall parts from the
+                // model turn we already pushed, keeping any text parts.
+                if let Some(last) = result.last_mut() {
+                    last.parts
+                        .retain(|p| !matches!(p, GeminiPart::FunctionCall { .. }));
+                    if last.parts.is_empty() {
+                        last.parts.push(GeminiPart::Text {
+                            text: "[tool call removed — no response received]".to_string(),
+                            thought_signature: None,
+                        });
+                    }
+                    warn!("Gemini: stripped orphaned functionCall with no matching functionResponse");
+                }
+                // Re-add the skipped turns since there's no functionResponse to pair with
+                for &idx in &skipped {
+                    result.push(contents[idx].clone());
+                }
+            }
+        } else {
+            result.push(contents[i].clone());
+            i += 1;
+        }
+    }
+
+    // Final pass: merge consecutive same-role turns (Gemini also rejects these)
+    let mut merged: Vec<GeminiContent> = Vec::with_capacity(result.len());
+    for content in result {
+        if let Some(last) = merged.last_mut() {
+            if last.role == content.role {
+                last.parts.extend(content.parts);
+                continue;
+            }
+        }
+        merged.push(content);
+    }
+
+    // Gemini requires the conversation to start with a "user" turn.
+    // If the first turn is "model", prepend a synthetic user turn.
+    if let Some(first) = merged.first() {
+        if first.role.as_deref() == Some("model") {
+            warn!("Gemini: conversation starts with model turn — prepending synthetic user turn");
+            merged.insert(
+                0,
+                GeminiContent {
+                    role: Some("user".to_string()),
+                    parts: vec![GeminiPart::Text {
+                        text: "Continue.".to_string(),
+                        thought_signature: None,
+                    }],
+                },
+            );
+        }
+    }
+
+    merged
 }
 
 /// Extract system prompt from messages or the explicit system field.
@@ -496,11 +618,48 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
 
 // ── LlmDriver implementation ──────────────────────────────────────────
 
+/// Log the turn structure being sent to Gemini for debugging.
+/// Each turn is summarized as role + part types, so you can spot ordering violations.
+fn log_gemini_turn_structure(contents: &[GeminiContent]) {
+    let mut summary = String::new();
+    for (i, c) in contents.iter().enumerate() {
+        let role = c.role.as_deref().unwrap_or("none");
+        let part_types: Vec<&str> = c
+            .parts
+            .iter()
+            .map(|p| match p {
+                GeminiPart::Text { .. } => "text",
+                GeminiPart::FunctionCall { .. } => "functionCall",
+                GeminiPart::FunctionResponse { .. } => "functionResponse",
+                GeminiPart::InlineData { .. } => "inlineData",
+                GeminiPart::Thought { .. } => "thought",
+            })
+            .collect();
+        if !summary.is_empty() {
+            summary.push_str(" → ");
+        }
+        summary.push_str(&format!("[{}] {}:{}", i, role, part_types.join("+")));
+    }
+    debug!(turns = contents.len(), structure = %summary, "Gemini request turn structure");
+}
+
+/// Truncate a string for logging, appending "…" if truncated.
+fn truncate_for_log(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}…[truncated, {} total bytes]", &s[..max_len], s.len())
+    }
+}
+
 #[async_trait]
 impl LlmDriver for GeminiDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let (contents, system_instruction) = convert_messages(&request.messages, &request.system);
         let tools = convert_tools(&request);
+
+        // Log the turn structure being sent to Gemini for debugging
+        log_gemini_turn_structure(&contents);
 
         let gemini_request = GeminiRequest {
             contents,
@@ -555,6 +714,13 @@ impl LlmDriver for GeminiDriver {
             if !resp.status().is_success() {
                 let body = resp.text().await.unwrap_or_default();
                 let message = parse_gemini_error(&body);
+                warn!(
+                    status,
+                    error_message = %message,
+                    raw_body_len = body.len(),
+                    raw_body_preview = %truncate_for_log(&body, 1000),
+                    "Gemini API error response"
+                );
                 if status == 401 || status == 403 {
                     return Err(LlmError::AuthenticationFailed(message));
                 }
@@ -568,6 +734,11 @@ impl LlmDriver for GeminiDriver {
                 .text()
                 .await
                 .map_err(|e| LlmError::Http(e.to_string()))?;
+            debug!(
+                body_len = body.len(),
+                body_preview = %truncate_for_log(&body, 500),
+                "Gemini API success response"
+            );
             let gemini_response: GeminiResponse =
                 serde_json::from_str(&body).map_err(|e| LlmError::Parse(e.to_string()))?;
 
@@ -587,6 +758,9 @@ impl LlmDriver for GeminiDriver {
     ) -> Result<CompletionResponse, LlmError> {
         let (contents, system_instruction) = convert_messages(&request.messages, &request.system);
         let tools = convert_tools(&request);
+
+        // Log the turn structure being sent to Gemini for debugging
+        log_gemini_turn_structure(&contents);
 
         let gemini_request = GeminiRequest {
             contents,
@@ -662,13 +836,24 @@ impl LlmDriver for GeminiDriver {
             let mut fn_calls: Vec<(String, serde_json::Value, Option<String>)> = Vec::new();
             let mut finish_reason: Option<String> = None;
             let mut usage = TokenUsage::default();
+            let mut events_parsed: usize = 0;
 
             let mut byte_stream = resp.bytes_stream();
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                let chunk_str = String::from_utf8_lossy(&chunk);
+                debug!(
+                    chunk_len = chunk.len(),
+                    chunk_preview = %truncate_for_log(&chunk_str, 200),
+                    "Gemini SSE chunk received"
+                );
+                buffer.push_str(&chunk_str);
 
-                // Process complete SSE events (delimited by \n\n or \r\n\r\n)
+                // Normalize \r\n to \n so the SSE delimiter \n\n works for
+                // both Unix (\n\n) and HTTP-standard (\r\n\r\n) line endings.
+                buffer = buffer.replace("\r\n", "\n");
+
+                // Process complete SSE events (delimited by \n\n)
                 while let Some(pos) = buffer.find("\n\n") {
                     let event_text = buffer[..pos].to_string();
                     buffer = buffer[pos + 2..].to_string();
@@ -685,8 +870,16 @@ impl LlmDriver for GeminiDriver {
 
                     let json: GeminiResponse = match serde_json::from_str(data) {
                         Ok(v) => v,
-                        Err(_) => continue,
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                data_preview = %truncate_for_log(data, 200),
+                                "Gemini SSE: failed to parse event JSON"
+                            );
+                            continue;
+                        }
                     };
+                    events_parsed += 1;
 
                     // Extract usage from each chunk (last one wins)
                     if let Some(ref u) = json.usage_metadata {
@@ -765,6 +958,37 @@ impl LlmDriver for GeminiDriver {
                             }
                         }
                     }
+                }
+            }
+
+            // Log stream completion summary
+            debug!(
+                events_parsed,
+                text_len = text_content.len(),
+                fn_call_count = fn_calls.len(),
+                finish_reason = ?finish_reason,
+                input_tokens = usage.input_tokens,
+                output_tokens = usage.output_tokens,
+                remaining_buffer_len = buffer.len(),
+                remaining_buffer_preview = %truncate_for_log(&buffer, 200),
+                "Gemini SSE stream completed"
+            );
+
+            // If no events were parsed but there's data in the buffer,
+            // try to parse it as a single JSON response (non-SSE fallback).
+            if events_parsed == 0 && !buffer.trim().is_empty() {
+                warn!(
+                    buffer_len = buffer.len(),
+                    buffer_preview = %truncate_for_log(&buffer, 300),
+                    "Gemini SSE: no events parsed, attempting fallback parse of buffer"
+                );
+                // Try stripping "data:" prefix if present
+                let fallback_data = buffer
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data:").map(|d| d.trim_start().to_string()))
+                    .unwrap_or_else(|| buffer.trim().to_string());
+                if let Ok(json) = serde_json::from_str::<GeminiResponse>(&fallback_data) {
+                    return convert_response(json);
                 }
             }
 
