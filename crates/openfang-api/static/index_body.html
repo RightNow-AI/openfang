@@ -1154,12 +1154,28 @@
                     <div class="form-group">
                       <label>Provider</label>
                       <select class="form-select" x-model="spawnForm.provider">
-                        <option value="anthropic">Anthropic</option><option value="openai">OpenAI</option>
-                        <option value="groq">Groq</option><option value="ollama">Ollama</option>
-                        <option value="google">Google</option><option value="mistral">Mistral</option>
-                        <option value="xai">xAI</option><option value="deepseek">DeepSeek</option>
-                        <option value="cerebras">Cerebras</option><option value="sambanova">SambaNova</option>
-                        <option value="together">Together</option>
+                        <optgroup label="Cloud">
+                          <option value="anthropic">Anthropic</option>
+                          <option value="openai">OpenAI</option>
+                          <option value="gemini">Google Gemini</option>
+                          <option value="groq">Groq</option>
+                          <option value="deepseek">DeepSeek</option>
+                          <option value="openrouter">OpenRouter</option>
+                          <option value="mistral">Mistral</option>
+                          <option value="xai">xAI</option>
+                          <option value="together">Together</option>
+                          <option value="fireworks">Fireworks</option>
+                          <option value="cerebras">Cerebras</option>
+                          <option value="sambanova">SambaNova</option>
+                          <option value="azure">Azure OpenAI</option>
+                          <option value="nvidia">NVIDIA NIM</option>
+                        </optgroup>
+                        <optgroup label="Local">
+                          <option value="ollama">Ollama</option>
+                          <option value="lmstudio">LM Studio</option>
+                          <option value="vllm">vLLM</option>
+                          <option value="lemonade">Lemonade</option>
+                        </optgroup>
                       </select>
                     </div>
                     <div class="form-group">

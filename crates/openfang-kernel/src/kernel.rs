@@ -1202,7 +1202,11 @@ impl OpenFangKernel {
                                             || disk_manifest.model.model
                                                 != entry.manifest.model.model
                                             || disk_manifest.capabilities.tools
-                                                != entry.manifest.capabilities.tools;
+                                                != entry.manifest.capabilities.tools
+                                            || disk_manifest.tool_allowlist
+                                                != entry.manifest.tool_allowlist
+                                            || disk_manifest.tool_blocklist
+                                                != entry.manifest.tool_blocklist;
                                         if changed {
                                             info!(
                                                 agent = %name,
@@ -1393,21 +1397,24 @@ impl OpenFangKernel {
 
     /// Spawn a new agent from a manifest, optionally linking to a parent agent.
     pub fn spawn_agent(&self, manifest: AgentManifest) -> KernelResult<AgentId> {
-        self.spawn_agent_with_parent(manifest, None)
+        self.spawn_agent_with_parent(manifest, None, None)
     }
 
     /// Spawn a new agent with an optional parent for lineage tracking.
+    /// If fixed_id is provided, use it instead of generating a new UUID.
     pub fn spawn_agent_with_parent(
         &self,
         manifest: AgentManifest,
         parent: Option<AgentId>,
+        fixed_id: Option<AgentId>,
     ) -> KernelResult<AgentId> {
-        let agent_id = AgentId::new();
+        let agent_id = fixed_id.unwrap_or_default();
         let name = manifest.name.clone();
 
         info!(agent = %name, id = %agent_id, parent = ?parent, "Spawning agent");
 
-        // Create session
+        // Create session — use the returned session_id so the registry
+        // and database are in sync (fixes duplicate session bug #651).
         let session = self
             .memory
             .create_session(agent_id)
@@ -3586,8 +3593,10 @@ impl OpenFangKernel {
             let _ = self.kill_agent(old.id);
         }
 
-        // Spawn the agent
-        let agent_id = self.spawn_agent(manifest)?;
+        // Spawn the agent with a fixed ID based on hand_id for stable identity across restarts.
+        // This ensures triggers and cron jobs continue to work after daemon restart.
+        let fixed_agent_id = AgentId::from_string(hand_id);
+        let agent_id = self.spawn_agent_with_parent(manifest, None, Some(fixed_agent_id))?;
 
         // Restore triggers from the old agent under the new agent ID (#519).
         if !saved_triggers.is_empty() {
@@ -5194,6 +5203,17 @@ impl OpenFangKernel {
                 McpTransportEntry::Sse { url } => McpTransport::Sse { url: url.clone() },
             };
 
+            // Resolve env vars from vault/dotenv before passing to MCP subprocess.
+            // The MCP spawn calls env_clear() then re-adds only whitelisted vars
+            // from std::env — so we must ensure they're in std::env first.
+            for var_name in &server_config.env {
+                if std::env::var(var_name).is_err() {
+                    if let Some(val) = self.resolve_credential(var_name) {
+                        std::env::set_var(var_name, &val);
+                    }
+                }
+            }
+
             let mcp_config = McpServerConfig {
                 name: server_config.name.clone(),
                 transport,
@@ -6126,7 +6146,7 @@ impl KernelHandle for OpenFangKernel {
         let name = manifest.name.clone();
         let parent = parent_id.and_then(|pid| pid.parse::<AgentId>().ok());
         let id = self
-            .spawn_agent_with_parent(manifest, parent)
+            .spawn_agent_with_parent(manifest, parent, None)
             .map_err(|e| format!("Spawn failed: {e}"))?;
         Ok((id.to_string(), name))
     }
