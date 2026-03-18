@@ -422,6 +422,36 @@ impl ChannelAdapter for MatrixAdapter {
         Ok(())
     }
 
+    async fn broadcast(&self, message: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Get all joined rooms and send the message to each
+        let url = format!(
+            "{}/_matrix/client/v3/joined_rooms",
+            self.homeserver_url
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&*self.access_token)
+            .send()
+            .await?;
+        if resp.status().is_success() {
+            let body: serde_json::Value = resp.json().await?;
+            if let Some(rooms) = body["joined_rooms"].as_array() {
+                for room in rooms {
+                    if let Some(room_id) = room.as_str() {
+                        if !self.allowed_rooms.is_empty()
+                            && !self.allowed_rooms.iter().any(|r| r == room_id)
+                        {
+                            continue;
+                        }
+                        let _ = self.api_send_message(room_id, message).await;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn send_typing(&self, user: &ChannelUser) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "{}/_matrix/client/v3/rooms/{}/typing/{}",

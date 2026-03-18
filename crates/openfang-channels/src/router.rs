@@ -94,6 +94,15 @@ impl AgentRouter {
             .insert(channel_key.to_string(), new_agent_id);
     }
 
+    /// Find platform_ids (room IDs) that are currently routed to the given agent.
+    pub fn rooms_for_agent(&self, agent_id: AgentId) -> Vec<String> {
+        self.user_defaults
+            .iter()
+            .filter(|entry| *entry.value() == agent_id)
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
     /// Set a user's default agent.
     pub fn set_user_default(&self, user_key: String, agent_id: AgentId) {
         self.user_defaults.insert(user_key, agent_id);

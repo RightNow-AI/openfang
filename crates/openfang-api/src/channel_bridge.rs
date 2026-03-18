@@ -1727,7 +1727,7 @@ pub async fn start_channel_bridge_with_config(
         started_at: Instant::now(),
     });
     let router = Arc::new(router);
-    let mut manager = BridgeManager::new(bridge_handle, router);
+    let mut manager = BridgeManager::new(bridge_handle, router.clone());
 
     let mut started_names = Vec::new();
     for (adapter, _) in adapters {
@@ -1747,6 +1747,67 @@ pub async fn start_channel_bridge_with_config(
                 error!("Failed to start {name} bridge: {e}");
             }
         }
+    }
+
+    // Spawn a task that listens for approval requests and notifies
+    // the originating channel room so users can /approve or /deny from chat.
+    if !started_names.is_empty() {
+        let mut approval_rx = kernel.approval_manager.subscribe();
+        let adapters_map = kernel.channel_adapters.clone();
+        let approval_router = router.clone();
+        tokio::spawn(async move {
+            while let Ok(req) = approval_rx.recv().await {
+                let id_str = req.id.to_string();
+                let id_short = &id_str[..8];
+                let msg = format!(
+                    "Approval required\n  Tool: {}\n  Risk: {:?}\n  Agent: {}\n  {}\n\nReply /approve {} or /reject {}",
+                    req.tool_name,
+                    req.risk_level,
+                    req.agent_id,
+                    req.action_summary,
+                    id_short,
+                    id_short,
+                );
+
+                // Try to send only to the room that originated the request
+                // by reverse-looking up which rooms route to this agent.
+                let target_rooms: Vec<String> = req
+                    .agent_id
+                    .parse::<openfang_types::agent::AgentId>()
+                    .ok()
+                    .map(|aid| approval_router.rooms_for_agent(aid))
+                    .unwrap_or_default();
+
+                let adapters: Vec<_> = adapters_map
+                    .iter()
+                    .map(|entry| entry.value().clone())
+                    .collect();
+
+                if target_rooms.is_empty() {
+                    // Fallback: broadcast to all rooms if no route found
+                    for adapter in &adapters {
+                        let _ = adapter.broadcast(&msg).await;
+                    }
+                } else {
+                    // Send only to the originating room(s)
+                    for adapter in &adapters {
+                        for room_id in &target_rooms {
+                            let user = openfang_channels::types::ChannelUser {
+                                platform_id: room_id.clone(),
+                                display_name: "system".to_string(),
+                                openfang_user: None,
+                            };
+                            let _ = adapter
+                                .send(
+                                    &user,
+                                    openfang_channels::types::ChannelContent::Text(msg.clone()),
+                                )
+                                .await;
+                        }
+                    }
+                }
+            }
+        });
     }
 
     if started_names.is_empty() {

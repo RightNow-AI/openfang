@@ -259,6 +259,13 @@ pub trait ChannelAdapter: Send + Sync {
         ChannelStatus::default()
     }
 
+    /// Broadcast a system message to all connected rooms/conversations.
+    /// Used for approval notifications and other system-wide alerts.
+    /// Default: no-op (adapters that support it should override).
+    async fn broadcast(&self, _message: &str) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
     /// Send a response as a thread reply (optional — default falls back to `send()`).
     async fn send_in_thread(
         &self,

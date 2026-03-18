@@ -15,6 +15,9 @@ const MAX_PENDING_PER_AGENT: usize = 5;
 pub struct ApprovalManager {
     pending: DashMap<Uuid, PendingRequest>,
     policy: std::sync::RwLock<ApprovalPolicy>,
+    /// Broadcast channel for notifying external systems (channel bridge, websockets)
+    /// about new approval requests. Receivers can display the request in chat.
+    notify_tx: tokio::sync::broadcast::Sender<ApprovalRequest>,
 }
 
 struct PendingRequest {
@@ -24,10 +27,18 @@ struct PendingRequest {
 
 impl ApprovalManager {
     pub fn new(policy: ApprovalPolicy) -> Self {
+        let (notify_tx, _) = tokio::sync::broadcast::channel(16);
         Self {
             pending: DashMap::new(),
             policy: std::sync::RwLock::new(policy),
+            notify_tx,
         }
+    }
+
+    /// Subscribe to approval request notifications.
+    /// Returns a receiver that gets a copy of each new `ApprovalRequest`.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<ApprovalRequest> {
+        self.notify_tx.subscribe()
     }
 
     /// Check if a tool requires approval based on current policy.
@@ -62,6 +73,11 @@ impl ApprovalManager {
         );
 
         info!(request_id = %id, "Approval request submitted, waiting for resolution");
+
+        // Notify subscribers (channel bridge, etc.) — best-effort, ignore if no receivers
+        if let Some(entry) = self.pending.get(&id) {
+            let _ = self.notify_tx.send(entry.request.clone());
+        }
 
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(decision)) => {
