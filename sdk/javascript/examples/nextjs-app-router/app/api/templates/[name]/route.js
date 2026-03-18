@@ -28,6 +28,7 @@ import {
   deriveSuggestedSkills,
   validateSkillBindings,
 } from '../../../../../lib/agent-skills';
+import { guardDevToken } from '../../../../../lib/dev-token-guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -68,6 +69,9 @@ export async function GET(request, { params }) {
 }
 
 export async function PUT(request, { params }) {
+  const denied = guardDevToken(request);
+  if (denied) return denied;
+
   const name = params?.name;
   if (!name) {
     return NextResponse.json({ error: 'Template name is required.' }, { status: 400 });

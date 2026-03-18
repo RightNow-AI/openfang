@@ -79,7 +79,8 @@ export default function ChatClient({ agentId = null, agentName = null }) {
       if (isDirect) {
         track('direct_chat_sent', { agentId });
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30_000);
+        const DIRECT_CHAT_TIMEOUT_MS = 30_000;
+        const timeout = setTimeout(() => controller.abort(), DIRECT_CHAT_TIMEOUT_MS);
         try {
           const { reply } = await sendDirect(agentId, message, controller.signal);
           clearTimeout(timeout);

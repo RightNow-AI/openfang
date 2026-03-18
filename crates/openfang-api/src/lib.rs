@@ -6,6 +6,7 @@
 pub mod api_response;
 pub mod auth;
 pub mod channel_bridge;
+pub mod command_center;
 pub mod local_inference;
 pub mod middleware;
 pub mod openai_compat;

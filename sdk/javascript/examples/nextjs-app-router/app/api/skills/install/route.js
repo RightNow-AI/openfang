@@ -18,11 +18,14 @@
 import { NextResponse } from 'next/server';
 import { api } from '../../../../lib/api-server';
 import { buildLocalSets } from '../../../../lib/skill-registry';
+import { guardDevToken } from '../../../../lib/dev-token-guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request) {
+  const denied = guardDevToken(request);
+  if (denied) return denied;
   let body;
   try {
     body = await request.json();

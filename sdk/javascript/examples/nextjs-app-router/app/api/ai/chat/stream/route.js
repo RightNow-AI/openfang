@@ -1,3 +1,17 @@
+/**
+ * LEGACY COMPATIBILITY ROUTE — POST /api/ai/chat/stream
+ *
+ * This route is NOT part of the current dashboard architecture.
+ * It is retained for backward compatibility with the original SDK example
+ * contract (SSE streaming pattern) and any external integrations that
+ * depend on it.
+ *
+ * Current dashboard route for streaming: /api/agents/[id]/chat
+ * Current dashboard docs:               README.md § API Routes
+ *
+ * Do NOT add new UI features here. If the compatibility layer is no longer
+ * needed, remove this file and lib/openfang-proxy.js together.
+ */
 import { NextResponse } from "next/server";
 
 import { applyIdentityCookie, resolveUserIdentity } from "../../../../../lib/auth";

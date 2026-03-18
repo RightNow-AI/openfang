@@ -3,8 +3,11 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiClient } from '../../lib/api-client';
 import { track } from '../../lib/telemetry';
-import { validateSpawnName } from '../../lib/spawn-validation';
+import { validateSpawnName, AGENT_NAME_MAX_LENGTH } from '../../lib/spawn-validation';
 import { deriveSuggestedSkills } from '../../lib/agent-skills';
+import { extractTomlField, extractTomlMultiline, patchTomlName } from '../../lib/toml-helpers';
+import BoundSkillsSection from './BoundSkillsSection';
+import SpawnSuccessBanner from './SpawnSuccessBanner';
 
 function normalizeEntry(raw) {
   return {
@@ -23,79 +26,6 @@ function normalizeEntry(raw) {
     purpose: raw?.purpose ?? '',
     role: raw?.role ?? '',
   };
-}
-
-// ─── extract relevant lines from raw TOML ──────────────────────────────────
-function extractTomlField(toml, field) {
-  if (!toml) return '';
-  const m = toml.match(new RegExp(`^${field}\\s*=\\s*"([^"]*)"`, 'm'));
-  return m ? m[1] : '';
-}
-
-function extractTomlMultiline(toml, field) {
-  if (!toml) return '';
-  const m = toml.match(new RegExp(`^${field}\\s*=\\s*"""([\\s\\S]*?)"""`, 'm'));
-  return m ? m[1].trim() : extractTomlField(toml, field);
-}
-
-// ─── patch the name= line in a TOML string ──────────────────────────────────
-function patchTomlName(toml, newName) {
-  // escape backslashes first, then quotes
-  const safe = newName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  return toml.replace(/^name\s*=\s*"[^"]*"/m, `name = "${safe}"`);
-}
-
-// ─── Bound Skills section (inline in DetailModal) ──────────────────────────
-function BoundSkillsSection({ bindings, suggested }) {
-  const items = bindings ?? suggested ?? [];
-  if (!items.length) return null;
-  const issuggested = !bindings?.length && !!suggested?.length;
-
-  return (
-    <section>
-      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
-        {issuggested ? 'Suggested Skills' : `Bound Skills (${items.length})`}
-      </div>
-      {issuggested && (
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', fontStyle: 'italic', marginBottom: 6 }}>
-          Derived from tool references — not yet explicitly bound.
-        </div>
-      )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {items.map(skill => (
-          <div
-            key={skill.name}
-            data-cy="bound-skill-row"
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
-              padding: '5px 10px',
-              background: 'var(--surface2)',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 12,
-            }}
-          >
-            <span style={{ fontFamily: 'var(--font-mono,monospace)', fontWeight: 600 }}>
-              {skill.name}
-            </span>
-            {skill.version && (
-              <span className="badge badge-dim" style={{ fontSize: 10, fontFamily: 'var(--font-mono,monospace)' }}>
-                v{skill.version}
-              </span>
-            )}
-            <span className={`badge ${skill.required === false ? 'badge-muted' : 'badge-info'}`} style={{ fontSize: 10 }}>
-              {skill.required === false ? 'optional' : 'required'}
-            </span>
-            {skill.suggested && (
-              <span className="badge badge-warning" style={{ fontSize: 10 }}>suggested</span>
-            )}
-            {skill.source && skill.source !== 'unknown' && (
-              <span className="badge badge-dim" style={{ fontSize: 10 }}>{skill.source}</span>
-            )}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
 }
 
 // ─── Detail Modal ──────────────────────────────────────────────────────────
@@ -452,7 +382,7 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
               onChange={e => { setSpawnName(e.target.value); setSpawnError(''); }}
               onKeyDown={e => { if (e.key === 'Enter' && !spawning) handleSpawn(); }}
               placeholder="Agent name…"
-              maxLength={64}
+              maxLength={AGENT_NAME_MAX_LENGTH}
               disabled={spawning}
               style={{
                 flex: 1, padding: '7px 11px',
@@ -479,46 +409,6 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
             </button>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Spawn Success Banner ───────────────────────────────────────────────────
-function SpawnSuccessBanner({ agentId, agentName, onDismiss, onOpenChat }) {
-  return (
-    <div
-      data-cy="spawn-success-banner"
-      style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        flexWrap: 'wrap', gap: 10,
-        padding: '12px 16px',
-        background: 'var(--success)18',
-        border: '1px solid var(--success)44',
-        borderRadius: 'var(--radius-sm)',
-        marginBottom: 16,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ color: 'var(--success)', fontSize: 16 }}>✓</span>
-        <span style={{ fontSize: 13, color: 'var(--text)' }}>
-          <strong>{agentName}</strong> spawned successfully.
-        </span>
-        {agentId && (
-          <span style={{ fontSize: 11, fontFamily: 'var(--font-mono,monospace)', color: 'var(--text-dim)' }}>
-            {agentId.slice(0, 8)}…
-          </span>
-        )}
-      </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button
-          data-cy="spawn-open-chat-btn"
-          className="btn btn-primary btn-sm"
-          onClick={() => onOpenChat(agentId, agentName)}
-        >
-          Open Chat →
-        </button>
-        <button className="btn btn-ghost btn-sm" onClick={onDismiss}>Dismiss</button>
       </div>
     </div>
   );

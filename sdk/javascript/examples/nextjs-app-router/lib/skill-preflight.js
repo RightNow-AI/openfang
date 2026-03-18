@@ -87,14 +87,35 @@ export function satisfiesConstraint(installed, constraint) {
  * Run compatibility preflight checks for an agent manifest.
  *
  * @param {object}                    params
- * @param {object}                    params.manifest       Parsed manifest object
- * @param {object[]}                  params.localSkills    Installed skills from daemon
- * @param {Map<string, string[]>}     [params.collisionMap] tool → [owning skill names]
+ * @param {object}                    params.manifest           Parsed manifest object
+ * @param {object[]}                  params.localSkills        Installed skills from daemon
+ * @param {Map<string, string[]>}     [params.collisionMap]     tool → [owning skill names]
+ * @param {boolean}                   [params.registryAvailable] false when the skills endpoint
+ *                                                               could not be reached — avoids
+ *                                                               false SKILL_NOT_INSTALLED errors
  * @returns {PreflightResult}
  */
-export function runPreflight({ manifest = {}, localSkills = [], collisionMap = new Map() }) {
+export function runPreflight({ manifest = {}, localSkills = [], collisionMap = new Map(), registryAvailable = true }) {
   const bindings  = parseSkillBindings(manifest);
   const agentName = String(manifest?.name ?? '');
+
+  // ── Short-circuit: registry unavailable ──────────────────────────────────
+  // When the skill registry could not be loaded, we cannot distinguish "not
+  // installed" from "registry is down".  Return a warning instead of lying
+  // about every required skill being missing.
+  if (registryAvailable === false) {
+    return {
+      ok:                true,
+      agent:             agentName,
+      checks:            [],
+      errors:            [],
+      warnings:          [{
+        code:    'REGISTRY_UNAVAILABLE',
+        message: 'Skill registry could not be loaded. Preflight checks were skipped — install-time skill validation did not run.',
+      }],
+      registryUnavailable: true,
+    };
+  }
   const agentTools = new Set(
     Array.isArray(manifest?.capabilities?.tools) ? manifest.capabilities.tools : []
   );

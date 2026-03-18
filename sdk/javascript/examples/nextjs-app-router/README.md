@@ -1,83 +1,173 @@
-# Next.js App Router Example
+# OpenFang Next.js Dashboard
 
-This example shows the same backend-owned integration pattern as `backend-proxy-server.js`, but in Next.js App Router route handlers.
+Full-stack dashboard for the OpenFang Agent OS.  Runs on port 3002 and proxies all backend calls to the Rust daemon at `http://127.0.0.1:50051`.
 
-It also includes a minimal client page so a developer can run the example, type one prompt, and watch a streamed reply render in the browser.
+The original SDK example routes (`/api/ai/chat`, `/api/session`, etc.) are retained for backward compatibility but are **not** part of the current dashboard architecture.  See [§ Legacy Compatibility Routes](#legacy-compatibility-routes) below.
 
-## Contract
+---
 
-```text
-Frontend -> Next.js route handlers -> OpenFang
+## Quick Start
+
+### 1 — Start the daemon
+
+```bash
+# from repo root
+cargo build --release -p openfang-cli
+GROQ_API_KEY=<your-key> target/release/openfang.exe start
 ```
 
-The example exposes:
+Verify: `curl http://127.0.0.1:50051/api/health`
 
-- `GET /api/session`
-- `POST /api/ai/chat`
-- `POST /api/ai/chat/stream`
-- `GET /api/ai/chat/history`
-- `GET /api/health`
-
-It now persists example infrastructure in a local JSON store under `.data/openfang-sessions.json` with three collections:
-
-- `users`
-- `agent_sessions`
-- `conversation_messages`
-
-That file-backed store is example-only. Do not copy `.data/openfang-sessions.json` into production.
-
-## Files
-
-- `app/page.js`: minimal client page with health badge, textarea, send button, and streamed response area
-- `lib/env.js`: centralized config validation for OpenFang environment variables
-- `lib/auth.js`: custom session-cookie identity example
-- `lib/openfang-proxy.js`: shared OpenFang client and per-user agent lifecycle helper
-- `lib/session-store.js`: example-only JSON persistence for users, agent sessions, and conversation history
-- `app/api/ai/chat/route.js`: non-streaming JSON chat route
-- `app/api/ai/chat/stream/route.js`: SSE streaming route
-- `app/api/ai/chat/history/route.js`: recent conversation history for the current server-derived user
-- `app/api/session/route.js`: derives the current user identity from the server-side session cookie
-- `app/api/health/route.js`: backend health route
-- `.env.example`: required environment variables
-
-## Install
+### 2 — Start the frontend
 
 ```bash
 cd sdk/javascript/examples/nextjs-app-router
+cp .env.example .env.local   # edit as needed
 npm install
+npm run dev -- --port 3002
 ```
 
-This folder now includes its own `package.json`, so you can run it directly from here.
+Open `http://localhost:3002`.
 
-It now also includes the standard Next.js app files you would expect from a small `create-next-app` scaffold: `app/layout.js`, `app/globals.css`, `next.config.mjs`, and `jsconfig.json`.
+---
 
-Copy `.env.example` to `.env.local`.
+## Environment Variables
 
-## Environment
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `OPENFANG_BASE_URL` | yes | `http://127.0.0.1:50051` | Daemon base URL |
+| `OPENFANG_API_KEY` | no | — | API key forwarded to daemon |
+| `OPENFANG_DEFAULT_TEMPLATE` | no | `assistant` | Default agent template for new spawns |
+| `OPENFANG_TIMEOUT_MS` | no | `15000` | Request timeout in ms |
+| `NEXT_PUBLIC_OPENFANG_BASE_URL` | no | same as above | Client-side daemon URL (feature flags) |
+| `OPENFANG_REQUIRE_DEV_TOKEN` | no | — | Set to a secret string to enable the dev-token guard (see [§ Production](#production-hardening)) |
+
+---
+
+## Scripts
+
+| Command | Purpose |
+|---|---|
+| `npm run dev` | Start dev server (add `-- --port 3002` to pin port) |
+| `npm run build` | Production build |
+| `npm start` | Start production server |
+| `npm test` | Run Vitest unit tests |
+| `npm run test:watch` | Vitest in watch mode |
+| `npm run cy:run` | Cypress end-to-end tests (requires running daemon + frontend) |
+
+---
+
+## Architecture
+
+```
+Browser
+  └─ Next.js pages / Client Components
+       └─ lib/api-client.js   (fetch wrapper, base URL from env)
+            └─ /api/*  Next.js Route Handlers   (server-side)
+                  └─ lib/api-server.js   (authenticated fetch to daemon)
+                        └─ Daemon  http://127.0.0.1:50051
+                              ├─ /api/agents
+                              ├─ /api/skills
+                              ├─ /api/templates
+                              └─ /api/budget  (etc.)
+```
+
+---
+
+## API Routes
+
+### Primary dashboard routes
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/health` | Daemon health passthrough |
+| GET | `/api/agents` | List all agents |
+| POST | `/api/agents/spawn` | Spawn agent from TOML manifest |
+| POST | `/api/agents/preflight` | Pre-spawn skill compatibility check |
+| POST | `/api/agents/[id]/chat` | Send message to agent |
+| GET | `/api/templates` | List templates |
+| GET/PUT | `/api/templates/[name]` | Read / update template |
+| GET | `/api/skills` | List installed skills |
+| POST | `/api/skills/install` | Install skill from registry |
+| PUT | `/api/skills/[name]/enabled` | Enable / disable skill |
+| GET | `/api/skills/collisions` | Check tool-name collisions |
+| GET | `/api/budget` | Global budget status |
+| GET | `/api/budget/agents` | Per-agent cost ranking |
+| GET | `/api/runs` | List active runs |
+
+### Legacy compatibility routes
+
+These routes are **not** called by any current dashboard page.  They exist for projects that depend on the original SDK example contract.  A `LEGACY COMPATIBILITY ROUTE` comment is present at the top of each file.
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/ai/chat` | Non-streaming JSON chat (legacy) |
+| POST | `/api/ai/chat/stream` | SSE streaming chat (legacy) |
+| GET | `/api/ai/chat/history` | Conversation history (legacy) |
+| GET | `/api/session` | Cookie-based session identity (legacy) |
+
+`lib/auth.js`, `lib/session-store.js`, and `lib/openfang-proxy.js` exist solely to support these routes.  If the compatibility layer is removed, those three files can be deleted together.
+
+---
+
+## Testing
+
+All tests live next to their source files in `__tests__/` subdirectories.
 
 ```bash
-OPENFANG_BASE_URL=http://127.0.0.1:50051
-OPENFANG_API_KEY=replace-me
-OPENFANG_DEFAULT_TEMPLATE=assistant
-OPENFANG_TIMEOUT_MS=15000
+npm test            # run full suite and exit
+npm run test:watch  # live re-run on file change
 ```
 
-## Run
+Rules:
+- Any new `lib/` file must have a corresponding `lib/__tests__/*.test.js`.
+- New route files must have a corresponding `app/api/**/__tests__/*.test.js`.
+- The full suite must pass before merging: `npm test`.
+
+---
+
+## Production Hardening
+
+### Dev-Token Guard
+
+The dashboard has no authentication by default.  This is intentional for local development.
+
+**Before deploying to any networked environment**, set `OPENFANG_REQUIRE_DEV_TOKEN` to a strong random secret.  When set, every state-changing request (`POST /api/agents/spawn`, `POST /api/skills/install`, `PUT /api/skills/*/enabled`, `PUT /api/templates/*`) must include the header:
+
+```
+X-Dev-Token: <your-secret>
+```
+
+Requests without a matching token receive HTTP 401.
 
 ```bash
-cd sdk/javascript/examples/nextjs-app-router
-npm run dev
+# Example .env.local for a shared test server
+OPENFANG_REQUIRE_DEV_TOKEN=replace-with-a-real-secret
 ```
 
-The bundled scripts force `--no-webstorage` for Node. That avoids a Node 25 runtime issue on some Windows setups where server-side `localStorage` is exposed in a broken state and crashes Next.js dev rendering.
+**This is a single shared secret, not per-user auth.**  It prevents accidental open writes, not a determined attacker.  Replace with OAuth2, JWTs, or per-API-key auth before public-facing deployment.
 
-Then open `http://127.0.0.1:3000`, type a prompt, and the page will:
+### Known Limitations
 
-- call `/api/health` on load
-- derive user identity from `/api/session`
-- load recent turns from `/api/ai/chat/history`
-- post to `/api/ai/chat/stream` when you click Send
-- append streamed chunks live
+| Item | Status |
+|---|---|
+| No per-user authentication | Mitigated by `OPENFANG_REQUIRE_DEV_TOKEN` guard; full auth deferred |
+| `AgentCatalogClient.js` still ~730 lines | `DetailModal` not extracted; next refactor pass |
+| TOML `patchTomlName` is regex-based | Only the write path; read path uses char scanner |
+| No HTTPS enforcement in the Next.js layer | Enforce at reverse proxy / load balancer |
+
+---
+
+## Phase Status
+
+| Phase | Description | Status |
+|---|---|---|
+| 1 | Agent listing, health badge, basic scaffolding | ✅ shipped |
+| 2 | Agent detail, preflight, skill binding UI | ✅ shipped |
+| 3 | Spawn flow, success banner, collision detection | ✅ shipped |
+| 4 | Skills management, ClaWhub browse/install, budget, runs | ✅ shipped |
+| 5 | Auth layer, multi-user, production hardening | 🔜 planned |
+
 - restore recent conversation on refresh
 
 ## How It Works

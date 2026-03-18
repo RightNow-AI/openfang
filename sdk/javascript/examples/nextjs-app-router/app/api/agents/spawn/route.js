@@ -26,11 +26,14 @@ import {
 } from '../../../../lib/agent-skills';
 import { runPreflight } from '../../../../lib/skill-preflight';
 import { buildCollisionMap } from '../../../../lib/skill-collisions';
+import { guardDevToken } from '../../../../lib/dev-token-guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request) {
+  const denied = guardDevToken(request);
+  if (denied) return denied;
   let body;
   try {
     body = await request.json();
@@ -65,19 +68,20 @@ export async function POST(request) {
       capabilities: { tools },
     };
 
-    let localSkills = [];
+    let localSkills     = [];
+    let registryAvailable = true;
     try {
       const result = await api.get('/api/skills');
-      localSkills  = Array.isArray(result) ? result : (result?.skills ?? []);
+      localSkills   = Array.isArray(result) ? result : (result?.skills ?? []);
     } catch {
-      // Skills endpoint unreachable — propagate as a soft failure rather than
-      // blocking the spawn: the daemon spawn call below will fail independently
-      // if the daemon itself is down, so we let it surface there instead.
-      localSkills = [];
+      // Skills endpoint unreachable — record that the registry is unavailable so
+      // runPreflight can return a structured warning instead of false
+      // SKILL_NOT_INSTALLED errors for every required skill.
+      registryAvailable = false;
     }
 
     const collisionMap = buildCollisionMap(localSkills);
-    preflight          = runPreflight({ manifest, localSkills, collisionMap });
+    preflight          = runPreflight({ manifest, localSkills, collisionMap, registryAvailable });
 
     if (!preflight.ok) {
       return NextResponse.json(

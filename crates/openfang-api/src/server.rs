@@ -1013,9 +1013,14 @@ pub async fn build_router(
     // Only unknown paths hit outer_catch_all (OPTIONS → 204, other → 404 JSON).
     // A separate explicit `OPTIONS /` handler covers the root path since
     // `/{*path}` requires at least one non-empty segment.
+    let command_center_state = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::command_center::CommandCenterStore::default(),
+    ));
+
     let app = axum::Router::new()
         .route("/{*path}", axum::routing::any(outer_catch_all))
         .route("/", axum::routing::options(|| async { axum::http::StatusCode::NO_CONTENT }))
+        .merge(crate::command_center::router(command_center_state))
         .merge(app)
         .layer(cors2);
 

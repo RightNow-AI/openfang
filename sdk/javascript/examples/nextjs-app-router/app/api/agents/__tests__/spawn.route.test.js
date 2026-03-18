@@ -83,15 +83,14 @@ describe('POST /api/agents/spawn — preflight gate', () => {
     expect(res.body.preflight.ok).toBe(true);
   });
 
-  it('proceeds without preflight when skills endpoint is unreachable (graceful fallback)', async () => {
+  it('proceeds with registry-unavailable warning when skills endpoint is unreachable', async () => {
     api.get.mockRejectedValue({ message: 'Connection refused', status: 502 });
     const toml = `name = "my-agent"\n\n[[skills]]\nname = "calc"\nversion = "1.0.0"\nrequired = true\n`;
-    // Skills fetch failed → localSkills = [] but preflight still runs and will catch missing skill
-    // However, if get() rejects, the spawn route catches it gracefully (localSkills=[])
-    // In current impl the run still happens with empty localSkills → the preflight will fail
-    // since the skill is required and not in []. This is correct behavior.
+    // Skills fetch failed → registryAvailable = false → runPreflight returns
+    // REGISTRY_UNAVAILABLE warning instead of false SKILL_NOT_INSTALLED errors.
+    // Spawn proceeds (201) with the warning included in the response.
     const res = await POST(makeRequest({ manifest_toml: toml }));
-    expect(res.status).toBe(400);  // preflight blocks because skill not found in empty list
-    expect(res.body.code).toBe('PREFLIGHT_FAILED');
+    expect(res.status).toBe(201);
+    expect(res.body.preflight?.warnings?.[0]?.code).toBe('REGISTRY_UNAVAILABLE');
   });
 });

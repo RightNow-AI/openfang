@@ -38,6 +38,18 @@ const NAV = [
     ],
   },
   {
+    label: 'Brand',
+    items: [
+      { href: '/brand', label: 'Brand Center', icon: I(<><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></>) },
+    ],
+  },
+  {
+    label: 'Work',
+    items: [
+      { href: '/command-center/new', label: 'Command Center', icon: I(<><path d="M9 12l2 2 4-4"/><path d="M21 12c0 4.97-4.03 9-9 9S3 16.97 3 12 7.03 3 12 3s9 4.03 9 9z"/></>) },
+    ],
+  },
+  {
     label: 'Agents',
     items: [
       { href: '/sessions',  label: 'Sessions',  icon: I(<><path d="m12 2-10 5 10 5 10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></>) },

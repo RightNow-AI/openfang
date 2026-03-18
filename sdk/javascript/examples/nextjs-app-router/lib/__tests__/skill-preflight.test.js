@@ -211,3 +211,63 @@ describe('runPreflight — no bindings', () => {
     expect(result.errors).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// runPreflight — registry unavailable
+// ---------------------------------------------------------------------------
+describe('runPreflight — registry unavailable', () => {
+  it('returns ok:true with REGISTRY_UNAVAILABLE warning — does not produce false SKILL_NOT_INSTALLED errors', () => {
+    const result = runPreflight({
+      manifest:          makeManifest([makeBinding({ name: 'missing-skill' })]),
+      localSkills:       [],
+      registryAvailable: false,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.registryUnavailable).toBe(true);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0].code).toBe('REGISTRY_UNAVAILABLE');
+    expect(result.errors).toHaveLength(0);
+    expect(result.checks).toHaveLength(0);
+  });
+
+  it('returns ok:true regardless of how many required skills the manifest has', () => {
+    const result = runPreflight({
+      manifest: makeManifest([
+        makeBinding({ name: 'skill-a', required: true }),
+        makeBinding({ name: 'skill-b', required: true }),
+      ]),
+      localSkills:       [],
+      registryAvailable: false,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('normal missing-skill check still fails when registry IS available', () => {
+    const result = runPreflight({
+      manifest:    makeManifest([makeBinding({ name: 'not-installed' })]),
+      localSkills: [],
+      // registryAvailable defaults to true
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors[0].code).toBe('SKILL_NOT_INSTALLED');
+  });
+
+  it('normal disabled-skill check still fails when registry IS available', () => {
+    const result = runPreflight({
+      manifest:    makeManifest([makeBinding()]),
+      localSkills: [makeSkill({ enabled: false })],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors[0].code).toBe('SKILL_DISABLED');
+  });
+
+  it('version mismatch check still fails when registry IS available', () => {
+    const result = runPreflight({
+      manifest:    makeManifest([makeBinding({ version: '1.0.0', constraint: '^1.0.0' })]),
+      localSkills: [makeSkill({ version: '2.0.0' })],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors[0].code).toBe('VERSION_CONSTRAINT_FAILED');
+  });
+});

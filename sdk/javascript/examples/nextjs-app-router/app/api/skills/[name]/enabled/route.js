@@ -13,11 +13,14 @@
  */
 import { NextResponse } from 'next/server';
 import { api } from '../../../../../lib/api-server';
+import { guardDevToken } from '../../../../../lib/dev-token-guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function PUT(request, { params }) {
+  const denied = guardDevToken(request);
+  if (denied) return denied;
   const name = params?.name;
   if (!name) {
     return NextResponse.json({ error: 'Skill name is required.' }, { status: 400 });
