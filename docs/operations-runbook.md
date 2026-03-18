@@ -6,21 +6,23 @@ This is the maintainer runbook for day-2 operation of the OpenFang daemon in thi
 
 - default API bind: `127.0.0.1:4200`
 - runtime home: `~/.openfang` unless `OPENFANG_HOME` overrides it
-- main persisted state includes:
-  - `config.toml`
-  - `.env`
-  - `vault.enc`
-  - `data/`
-  - `agents/`
-  - `skills/`
-  - `workspaces/`
-  - `workflows/`
-  - `hand_state.json`
-  - `cron_jobs.json`
+- main persisted state includes: `config.toml`, `.env`, `secrets.env`, `vault.enc`, `custom_models.json`, `integrations.toml`, `data/`, `agents/`, `skills/`, `workspaces/`, `workflows/`, `hand_state.json`, `cron_jobs.json`
 - `daemon.json` is a discovery file for the CLI, not a restore asset
 - if the API is bound off-loopback, auth must be enabled with `OPENFANG_API_KEY` or dashboard auth
 
 ## 2. Start and Stop
+
+### Command Matrix
+
+Use the command form that matches how the daemon is installed on that host:
+
+| Environment | Start / Stop / Status / Doctor |
+| --- | --- |
+| source checkout, release binary built locally | `target/release/openfang ...` |
+| source checkout, no built binary | `cargo run -p openfang-cli -- ...` |
+| installed host / package / release artifact | `openfang ...` |
+
+The examples below use `openfang ...` for the installed-path form and `target/release/openfang ...` for the local release-binary form. On a source checkout without an installed binary, swap in `cargo run -p openfang-cli -- ...`.
 
 ### Local source process
 
@@ -33,7 +35,7 @@ target/release/openfang start
 Stop:
 
 ```bash
-openfang stop
+target/release/openfang stop
 ```
 
 ### Docker / Compose
@@ -69,7 +71,7 @@ curl -X POST -H "Authorization: Bearer $OPENFANG_API_KEY" \
 | `openfang status` | daemon discovery and runtime status | no when local |
 | `openfang health` | quick CLI health probe | no when local |
 | `/api/health` | liveness probe | no |
-| `/api/health/detail` | detailed health and config warnings | yes when auth is enabled |
+| `/api/health/detail` | readiness probe plus detailed health and config warnings | yes when auth is enabled |
 | `/api/status` | daemon status, model, agent summary | yes when auth is enabled |
 | `/api/metrics` | Prometheus metrics | yes when auth is enabled |
 | `/api/audit/verify` | audit-chain integrity check | yes when auth is enabled |
@@ -89,15 +91,25 @@ curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
   http://127.0.0.1:4200/api/health/detail
 ```
 
+Interpretation:
+
+- `/api/health` answers "is the process alive enough for a liveness probe?"
+- `/api/health/detail` answers "is the node ready to serve traffic?" and now degrades when boot-time config warnings, missing default-provider auth, shutdown-in-progress, or supervisor panics are present
+
 Common smoke checks:
 
 ```bash
 curl -s http://127.0.0.1:4200/api/health
 curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
   http://127.0.0.1:4200/api/status
-openfang status
-openfang doctor
+target/release/openfang status
+target/release/openfang doctor
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
+
+`scripts/preflight-openfang.sh` resolves `config.toml` includes plus runtime `.env` / `secrets.env` / process env overrides. When both runtime files define the same key, `secrets.env` wins so API/dashboard-managed secrets survive restart. When preflight can resolve an API key, it now treats failures on protected operational endpoints as blocking instead of advisory, and it requires `/api/health/detail` to report `status = "ok"` rather than merely returning HTTP 200.
+It is strict by default: if `/api/health` is unreachable, preflight fails. Use `--offline` (or `OPENFANG_PREFLIGHT_OFFLINE=1`) only when you intentionally want file-only checks without a live daemon.
+These scripts are expected to run from a host/runner checkout of this repository; they are not guaranteed to be present inside runtime container images.
 
 ## 4. Logging and Observability
 
@@ -115,6 +127,7 @@ Important logging realities:
 - there is no universal daemon log file by default
 - `openfang logs` reads `~/.openfang/tui.log`, which only exists for TUI-driven logging
 - `/api/logs/stream` is an audit-log SSE stream, not a full daemon stderr stream
+- API requests now run inside a request-scoped tracing span; use the shared `x-request-id` response header and `request_id` log field together when correlating a failing request across logs
 
 Fast triage order:
 
@@ -131,6 +144,10 @@ The daemon has both automatic and manual reload paths:
 - config watcher polling at runtime
 - `POST /api/config/reload` for explicit reload
 
+Operational caveat:
+- the automatic watcher now tracks the root `config.toml` plus resolved `include = [...]` files
+- if a config edit changes boot-time wiring or reload reports pending follow-up actions, restart the daemon instead of assuming it is live
+
 Manual reload:
 
 ```bash
@@ -142,6 +159,13 @@ Remember the reload boundary:
 
 - hot-reloadable: channels, skills, usage footer, web, browser, approval, cron, webhook, extensions, MCP, A2A, fallback providers, provider URLs, default model
 - restart required: listen address, API auth key, network, memory, home/data directories, vault
+
+Today only a subset auto-applies immediately without follow-up:
+
+- `approval`
+- `max_cron_jobs`
+- `provider_urls`
+- `default_model`
 
 When config changes affect boot-time wiring, restart the daemon instead of trusting hot reload.
 
@@ -167,7 +191,21 @@ curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
   http://127.0.0.1:4200/api/status
 ```
 
+If startup fails after a config edit, treat that as expected until the config parses and deserializes cleanly again. The daemon no longer silently falls back to defaults when `config.toml` or an included config file is malformed.
+
 If a provider key is available, also verify one real agent message round-trip and any side effects the feature is supposed to create.
+
+For a repeatable provider canary, use:
+
+```bash
+OPENFANG_API_KEY="$OPENFANG_API_KEY" \
+OPENFANG_CANARY_PROVIDER=groq \
+OPENFANG_CANARY_MODEL=llama-3.3-70b-versatile \
+OPENFANG_CANARY_API_KEY_ENV=GROQ_API_KEY \
+scripts/provider-canary-openfang.sh
+```
+
+Canary pass criteria now include strict per-agent token growth after the message round-trip. Spend counters are still checked for non-regression, but may legitimately stay flat for free/local provider paths.
 
 ## 7. Backup
 
@@ -178,8 +216,16 @@ scripts/backup-openfang.sh
 ```
 
 The backup script creates a consistent SQLite snapshot instead of relying on a raw `cp` of a live WAL-mode database.
+It now refuses to back up a running daemon unless you explicitly set `OPENFANG_ALLOW_LIVE_BACKUP=1`.
+It also preserves `config.toml` include dependencies under `OPENFANG_HOME` so split-config deployments restore with the same effective config tree.
 
-For hot systems, stop the service first when possible. If you must back up online, use the script above rather than copying `openfang.db` directly.
+For hot systems, stop the service first when possible. If you must back up online, set `OPENFANG_ALLOW_LIVE_BACKUP=1` and understand that the database snapshot is consistent but concurrently changing directories can still reflect a live point in time.
+
+Before upgrades or cutovers, also run:
+
+```bash
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
+```
 
 ## 8. Restore
 
@@ -187,13 +233,22 @@ For hot systems, stop the service first when possible. If you must back up onlin
 scripts/restore-openfang.sh "$HOME/openfang-backups/openfang-<timestamp>" --yes
 ```
 
+The restore script now refuses to run if `daemon.json` points to a responding API. Stop the daemon first; if the file is stale, verify the API is really down and then re-run the restore.
+It also refuses manifest-less backup directories by default; set `OPENFANG_ALLOW_LEGACY_RESTORE=1` only for an older backup you have already verified out of band.
+It also rejects empty/malformed backup directories before deleting managed runtime state and re-hardens restored secrets/config file permissions.
+It now reapplies ownership on restored files/directories by preferring the existing `OPENFANG_HOME` owner/group; override explicitly with `OPENFANG_UID` and `OPENFANG_GID` when restoring into a service-owned home such as `/var/lib/openfang`.
+It restores the backed-up `config.toml` include tree alongside the root config so include-based deployments do not come back missing provider or environment fragments.
+Restore now stages files into a sibling temporary home and only swaps the runtime directory into place after the staged copy is complete, reducing the chance of ending up with a half-restored runtime.
+
 After restore:
 
 1. start the daemon
 2. let it recreate `daemon.json`
 3. rerun health checks
 4. run `scripts/smoke-openfang.sh`
-5. verify state-dependent features such as agents, hands, workflows, or channels
+5. run `scripts/preflight-openfang.sh`
+6. if provider-backed traffic matters, run `scripts/provider-canary-openfang.sh`
+7. verify state-dependent features such as agents, hands, workflows, or channels
 
 ## 9. Upgrade and Rollback
 

@@ -114,20 +114,20 @@ convert icon.svg -resize 256x256 -define icon:auto-resize=256,128,64,48,32,16 ic
 
 ---
 
-## 5. Set Up the `openfang.sh` Domain
+## 5. Optional `openfang.sh` Vanity Domain
 
-**Status:** VERIFY — confirm the domain still serves the installer endpoints users rely on.
+**Status:** OPTIONAL — release readiness must not depend on this domain.
 
 Options:
 - **GitHub Pages**: Point `openfang.sh` to a GitHub Pages site that redirects `/` to `scripts/install.sh` and `/install.ps1` to `scripts/install.ps1` from the repo's latest release.
 - **Cloudflare Workers / Vercel**: Serve the install scripts with proper `Content-Type: text/plain` headers.
 - **Raw GitHub redirect**: Use `openfang.sh` as a CNAME to a tag-pinned raw script URL such as `raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.sh` (less reliable).
 
-The install scripts reference:
-- `https://openfang.sh` → serves `scripts/install.sh` for this fork
+If you enable the vanity domain, it should reference:
+- `https://openfang.sh/install` → serves `scripts/install.sh`
 - `https://openfang.sh/install.ps1` → serves `scripts/install.ps1` for this fork
 
-If the domain is unavailable, users can install via:
+The supported install source of truth is GitHub. Users can always install via:
 ```bash
 curl -sSf https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.sh | sh
 ```
@@ -141,9 +141,10 @@ curl -sSf https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<rel
 ```bash
 docker build -t openfang:local .
 docker run --rm openfang:local --version
+OPENFANG_API_KEY="$(openssl rand -hex 32)"
 docker run --rm -p 4200:4200 \
   -e OPENFANG_LISTEN=0.0.0.0:4200 \
-  -e OPENFANG_API_KEY=replace-me \
+  -e OPENFANG_API_KEY="$OPENFANG_API_KEY" \
   -v openfang-data:/data \
   openfang:local start
 ```
@@ -153,6 +154,21 @@ Confirm:
 - `start` command boots the kernel and API server
 - Port 4200 is accessible
 - `/data` volume persists between container restarts
+- `/api/health/detail` reports `status = "ok"` with the same auth mode the deployment will use
+
+Before shipping a production image or binary cutover, also verify operator safety rails:
+
+```bash
+scripts/backup-openfang.sh
+OPENFANG_PREFLIGHT_OFFLINE=1 scripts/preflight-openfang.sh --offline
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
+```
+
+Pass criteria:
+- backup succeeds while the daemon is stopped, or live backup is explicitly opted into
+- offline preflight validates config resolution, state-file integrity, writable runtime paths, and SQLite quick-check
+- live preflight validates runtime reachability and checks `/api/health/detail` readiness when the provided auth context can access protected endpoints
+- if the release is meant to serve provider-backed traffic, one real `scripts/provider-canary-openfang.sh` run succeeds and is archived with the release evidence
 
 ---
 
@@ -271,11 +287,11 @@ docker run --rm ghcr.io/tytsxai/openfang-upstream-fork:latest --version
 ### Install Scripts
 ```bash
 # Linux/macOS
-curl -sSf https://openfang.sh | sh
+curl -sSf https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.sh | sh
 openfang --version  # Should print the released version
 
 # Windows PowerShell
-irm https://openfang.sh/install.ps1 | iex
+irm https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.ps1 | iex
 openfang --version
 ```
 

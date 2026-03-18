@@ -25,8 +25,10 @@ Then move to the detailed references for your area.
 | [Deployment](deployment.md) | Local, container, and server deployment paths |
 | [Configuration](configuration.md) | Config layout, precedence, secrets, hot reload boundaries |
 | [Operations Runbook](operations-runbook.md) | Health checks, backup, restore, upgrade, rollback |
+| `scripts/preflight-openfang.sh` | Runtime and deployment preflight for production cutovers |
 | [Release Runbook](release-runbook.md) | Step-by-step release publishing and post-release verification |
 | [Troubleshooting](troubleshooting.md) | Symptom-based fault isolation |
+| [Telegram @Mention Troubleshooting](telegram-mention-troubleshooting.md) | Telegram group @mention issues and UTF-16 bug fixes |
 | [CLI Reference](cli-reference.md) | Command surface and examples |
 | [API Reference](api-reference.md) | HTTP routes, payloads, and responses |
 | [Channel Adapters](channel-adapters.md) | Channel-specific setup and routing |

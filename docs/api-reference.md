@@ -59,8 +59,10 @@ If `api_key` is empty and dashboard auth is disabled, protected endpoints remain
 Important:
 - This mode is only intended for local development on the same machine.
 - Non-loopback binds without auth are rejected at startup.
+- A same-host reverse proxy does not make this mode safe for production; the daemon may still see proxied traffic as loopback.
 - CORS is browser-only and does not protect direct API clients.
 - For production, set `OPENFANG_API_KEY` (or `api_key`) and restrict network access with loopback bind, reverse proxy, firewall, or security group rules.
+- The `?token=` query parameter is only accepted on streaming/browser transports such as SSE or WebSocket endpoints. Use bearer headers for normal API requests.
 
 ### Public Endpoints (No Auth Required)
 
@@ -72,6 +74,11 @@ Public endpoints are intentionally minimal:
 - protocol discovery endpoints that must remain reachable (`/.well-known/agent.json`, selected `/a2a/*`)
 
 Treat the API port as sensitive even when using auth. Expose it through a controlled proxy instead of direct public access.
+
+Health semantics:
+
+- `GET /api/health` is a minimal liveness probe and intentionally redacts operational detail.
+- `GET /api/health/detail` is the readiness-oriented probe. It now returns `status = "degraded"` when the node is shutting down, the supervisor has recorded panics, boot-time config warnings are present, or the default provider auth is still missing.
 
 ---
 
@@ -730,7 +737,7 @@ Build and version information.
 
 ### POST /api/shutdown
 
-Initiate graceful shutdown. Agent states are preserved to SQLite for restore on next boot.
+Initiate graceful shutdown. The daemon enters shutdown mode immediately, stops accepting new work, then lets the HTTP server exit sequence perform final kernel teardown and agent-state persistence.
 
 **Response** `200 OK`:
 

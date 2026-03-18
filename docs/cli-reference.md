@@ -37,8 +37,10 @@ If the GHCR image is not publicly available yet, use `docker compose up --build`
 ### Shell installer
 
 ```bash
-curl -fsSL https://openfang.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.sh | sh
 ```
+
+Use tag-pinned installer URLs for production. Treat `main` branch installer URLs as development-only.
 
 ## Global Options
 

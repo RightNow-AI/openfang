@@ -1346,6 +1346,26 @@ if api_key.is_empty() {
 }
 ```
 
+Important:
+- This check uses the TCP peer address seen by OpenFang itself.
+- It is only a local-development fallback, not a production security boundary.
+- If OpenFang sits behind a same-host reverse proxy, proxied traffic can still appear as loopback to the daemon.
+- In any reverse-proxy or multi-host deployment, configure `OPENFANG_API_KEY` and/or dashboard auth before exposing the service.
+
+### 17.4 Query-Token Scope
+
+OpenFang accepts `?token=` only on browser-oriented streaming transports that
+cannot reliably attach custom bearer headers:
+
+- `/api/logs/stream`
+- `/api/comms/events/stream`
+- `/api/agents/{id}/ws`
+
+Normal protected API endpoints require `Authorization: Bearer ...` or
+dashboard session cookies. Do not use query-string credentials for ordinary
+REST requests because URLs are more likely to leak via logs, browser history,
+monitoring tools, and shared debugging artifacts.
+
 ---
 
 ## 18. Security Configuration

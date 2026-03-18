@@ -41,9 +41,12 @@ openfang config show
 RUST_LOG=debug openfang start
 ```
 
+OpenFang now fails closed on malformed `config.toml`, broken `include` chains, and invalid boot-time settings such as an empty `network.shared_secret` when `network_enabled = true` or an unusable `auth.password_hash`. If startup exits after a config change, fix the config instead of expecting the daemon to fall back to defaults.
+
 ### Common causes
 
 - malformed `config.toml`
+- invalid `auth.password_hash` or missing `network.shared_secret` for an enabled network listener
 - no reachable provider credentials
 - bind/auth conflict
 - another process already using the port
@@ -107,6 +110,8 @@ curl -H "Authorization: Bearer $OPENFANG_API_KEY" \
 ```
 
 For anonymous liveness checks, use `/api/health` instead.
+
+If `/api/health/detail` returns HTTP 200 but `status = "degraded"`, treat the node as not ready for production traffic yet. Common causes now include config warnings, missing default-provider auth, shutdown-in-progress, or recorded supervisor panics.
 
 ## 6. Channel Config Is Ignored
 
@@ -201,6 +206,11 @@ Restart the daemon after changing:
 - home/data directory settings
 - vault settings
 
+Also note:
+
+- `/api/config/reload` now separates `hot_actions_applied` from `hot_actions_pending_follow_up`
+- if changes are only detected but not yet applied, treat the node as requiring operational follow-up before considering the config live
+
 ## 10. `openfang logs` Does Not Show Daemon Output
 
 ### Cause
@@ -258,7 +268,8 @@ If config says:
 api_key_env = "GROQ_API_KEY"
 ```
 
-then the process environment or `~/.openfang/.env` must actually contain `GROQ_API_KEY`.
+then the process environment, `~/.openfang/secrets.env`, or `~/.openfang/.env` must actually contain `GROQ_API_KEY`.
+If the same key is present in both runtime files, `secrets.env` takes precedence.
 
 Use:
 

@@ -38,6 +38,7 @@ Confirm GitHub-side prerequisites:
 
 - Actions secrets include `TAURI_SIGNING_PRIVATE_KEY`
 - Actions secrets include `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+- Actions secrets include `GROQ_API_KEY` for the mandatory release provider canary
 - optional macOS signing/notarization secrets are present if you are shipping signed macOS builds
 - the `ghcr.io/tytsxai/openfang-upstream-fork` package exists or can be created by the workflow
 
@@ -59,7 +60,8 @@ git push origin main --tags
 Then watch the workflow:
 
 - GitHub Actions → `Release`
-- confirm `desktop`, `verify-desktop-release-assets`, `cli`, and `docker` all finish successfully
+- confirm `preflight`, `desktop`, `verify-desktop-release-assets`, `cli`, `docker`, `verify-docker-release-image`, `provider-canary`, and `publish-release` all finish successfully
+- expect the GitHub release to stay in draft until `publish-release` runs
 
 ## 3. Verify GitHub Release Assets
 
@@ -116,12 +118,18 @@ docker manifest inspect "ghcr.io/tytsxai/openfang-upstream-fork:latest"
 docker manifest inspect "ghcr.io/tytsxai/openfang-upstream-fork:${RELEASE_VERSION}"
 ```
 
+`latest` is promoted only after the release draft and asset checks are fully green. If the workflow fails before `publish-release`, only the versioned image tag should exist.
+
 If pulls are meant to be public, also test:
 
 ```bash
 docker pull "ghcr.io/tytsxai/openfang-upstream-fork:latest"
 docker run --rm "ghcr.io/tytsxai/openfang-upstream-fork:latest" --version
 ```
+
+The release workflow now smoke-tests the just-pushed versioned image before it
+promotes `latest`, so a broken container boot path blocks publication instead
+of reaching users.
 
 If you get `unauthorized`:
 
@@ -148,17 +156,30 @@ If Docker is available locally:
 ```bash
 docker build -t openfang:local .
 docker run --rm openfang:local --version
+OPENFANG_API_KEY="$(openssl rand -hex 32)"
 docker run --rm -p 4200:4200 \
   -e OPENFANG_LISTEN=0.0.0.0:4200 \
-  -e OPENFANG_API_KEY=replace-me \
+  -e OPENFANG_API_KEY="$OPENFANG_API_KEY" \
   openfang:local start
 ```
 
 In another terminal:
 
 ```bash
-curl -s -H "Authorization: Bearer replace-me" \
-  http://127.0.0.1:4200/api/health
+curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/health/detail
+```
+
+### Provider path
+
+Before calling the release healthy, run one real provider-backed canary and keep the output:
+
+```bash
+OPENFANG_API_KEY="$OPENFANG_API_KEY" \
+OPENFANG_CANARY_PROVIDER=groq \
+OPENFANG_CANARY_MODEL=llama-3.3-70b-versatile \
+OPENFANG_CANARY_API_KEY_ENV=GROQ_API_KEY \
+scripts/provider-canary-openfang.sh
 ```
 
 ## 6. Rollback and Triage
@@ -168,6 +189,7 @@ If the workflow fails before publishing:
 - fix the failing job
 - delete the bad local tag if needed: `git tag -d "v${RELEASE_VERSION}"`
 - delete the remote tag if it was pushed: `git push --delete origin "v${RELEASE_VERSION}"`
+- delete the draft release if one was created
 - create a corrected tag and push again
 
 If the release exists but `latest.json` is missing or invalid:

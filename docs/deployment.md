@@ -22,10 +22,12 @@ Local models are optional. If you plan to use Groq, OpenAI, Gemini, or another r
 Default runtime paths:
 
 - config: `~/.openfang/config.toml`
-- env file: `~/.openfang/.env`
+- env files: `~/.openfang/.env` and `~/.openfang/secrets.env`
 - data: `~/.openfang/data/openfang.db`
 
 `OPENFANG_HOME` changes that root.
+
+At runtime, OpenFang resolves credentials from the vault, `secrets.env`, `.env`, and process environment variables. If you save provider keys through the dashboard, preserve `secrets.env` as part of the deployment state.
 
 ## 1. Local Source Build
 
@@ -108,16 +110,34 @@ For real agent responses, you still need at least one working provider configura
 
 ```bash
 curl -H "Authorization: Bearer $OPENFANG_API_KEY" \
-  http://127.0.0.1:4200/api/health
+  http://127.0.0.1:4200/api/health/detail
 ```
 
 If auth is disabled and you are testing from inside the container, omit the header.
+Treat `/api/health` as liveness only. For deploy validation and orchestrator health checks, prefer `/api/health/detail` and require `status = "ok"`.
+The container image and Compose healthcheck use `/api/health/detail` when `OPENFANG_API_KEY` is available to the probe. If a deployment relies on dashboard auth only, the baked-in probe falls back to `/api/health` because it cannot reuse a login session cookie.
 
 For a broader post-deploy check, run:
 
 ```bash
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
+
+These operational scripts are repository artifacts and are typically run from the host (or CI runner) that has this repo checked out. Do not assume they exist inside the runtime container image.
+`scripts/preflight-openfang.sh` is strict by default and fails if the live API is unreachable or if `/api/health/detail` reports a degraded node. Use `--offline` (or `OPENFANG_PREFLIGHT_OFFLINE=1`) only for intentional file-only checks.
+
+If this node is supposed to serve real provider-backed responses, also run a real canary:
+
+```bash
+OPENFANG_API_KEY="$OPENFANG_API_KEY" \
+OPENFANG_CANARY_PROVIDER=groq \
+OPENFANG_CANARY_MODEL=llama-3.3-70b-versatile \
+OPENFANG_CANARY_API_KEY_ENV=GROQ_API_KEY \
+scripts/provider-canary-openfang.sh
+```
+
+The canary now requires per-agent token usage to increase after the LLM round-trip. Spend counters are still checked for non-regression, but they may remain unchanged for free or local provider paths.
 
 ## 4. Linux Server with systemd
 
@@ -137,6 +157,7 @@ sudo useradd --system --home /var/lib/openfang --shell /usr/sbin/nologin openfan
 sudo install -d -o openfang -g openfang /var/lib/openfang
 sudo install -d /etc/openfang
 sudo install -m 0644 deploy/openfang.service /etc/systemd/system/openfang.service
+sudo install -m 0600 -o root -g openfang /dev/null /etc/openfang/env
 ```
 
 Create `/etc/openfang/env` with at least:
@@ -154,6 +175,9 @@ openssl rand -hex 32
 ```
 
 Then initialize config as the service user or pre-seed `/var/lib/openfang/config.toml`.
+If you enable dashboard auth in `config.toml`, set a valid Argon2id `password_hash` before first boot.
+Legacy 64-character SHA-256 hex digests still work for compatibility, but do not use them for new deployments.
+Keep `/etc/openfang/env` owner-readable only; `UMask=0077` in the unit protects files created by the daemon, not this pre-created env file.
 
 ### Service Management
 
@@ -169,6 +193,7 @@ sudo journalctl -u openfang -f
 This repository does not ship a production Nginx, Caddy, or Traefik config. If you place OpenFang behind a reverse proxy:
 
 - keep OpenFang bound to loopback or a private interface when possible
+- do not rely on "localhost-only" mode as your auth model behind the proxy; configure `OPENFANG_API_KEY` and/or dashboard auth first
 - preserve `Authorization` headers
 - terminate TLS at the proxy
 - rate-limit and IP-filter at the proxy where appropriate
@@ -179,7 +204,8 @@ This repository does not ship a production Nginx, Caddy, or Traefik config. If y
 Do not confuse the repository root `.env.example` with the runtime env file.
 
 - `.env.example` is a reference template in the repository
-- `~/.openfang/.env` is what CLI and kernel logic actually load at runtime
+- runtime credentials can come from both `~/.openfang/.env` and `~/.openfang/secrets.env`
+- when both files define the same key, `secrets.env` wins so dashboard/API writes persist across restart
 
 For container deployments, Compose may also load a project-level `.env`, but that is separate from the daemon's own `OPENFANG_HOME` runtime files.
 
@@ -193,3 +219,4 @@ After any deployment change:
 4. one provider is configured and reachable.
 5. state persists across restart.
 6. logs are visible in the chosen execution environment.
+7. `scripts/preflight-openfang.sh` passes against the target runtime home and base URL.

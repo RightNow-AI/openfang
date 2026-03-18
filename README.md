@@ -9,6 +9,7 @@ This repository is a working fork of OpenFang with an integrated `shipinbot` pro
 - shipinbot docs: [projects/shipinbot/docs/INDEX.md](projects/shipinbot/docs/INDEX.md)
 - Telegram workflow notes: [SHIPINBOT_INTEGRATION_GUIDE.md](SHIPINBOT_INTEGRATION_GUIDE.md)
 - **Telegram group setup**: [docs/telegram-group-setup.md](docs/telegram-group-setup.md) ⚠️ Required for group bots
+- **Telegram @mention troubleshooting**: [docs/telegram-mention-troubleshooting.md](docs/telegram-mention-troubleshooting.md) 🔧 UTF-16 bug fixes and Inline Mode issues
 
 ## Repository Scope
 
@@ -41,24 +42,36 @@ Open the dashboard at `http://127.0.0.1:4200/`.
 Release installers and CLI binaries are published from this fork.
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/main/scripts/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.sh | sh
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.ps1 | iex
 ```
 
-If you manage `openfang.sh`, treat it as an optional vanity redirect only. The supported source of truth is this fork's GitHub release and Raw GitHub installer paths.
+For production installs and rollback drills, pin the installer to the release tag you are deploying. Treat `main` branch installer URLs as development-only.
+If you manage `openfang.sh`, treat it as an optional vanity redirect only. The supported source of truth is this fork's GitHub release and tag-pinned Raw GitHub installer paths.
 
 ### Verification
 
-After code changes, run the workspace checks expected by this fork:
+After code changes, run the workspace static checks expected by this fork:
 
 ```bash
 cargo build --workspace --lib
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Then run runtime preflight with a running daemon:
+
+```bash
 scripts/preflight-openfang.sh
+```
+
+If you only need file-level checks without a live daemon, use:
+
+```bash
+scripts/preflight-openfang.sh --offline
 ```
 
 If you change API wiring, routes, config deserialization, or runtime integration, also run live integration checks against a real daemon instance. The workflow used in this repository is documented in `AGENTS.md`.

@@ -10,14 +10,14 @@ OpenFang combines several inputs at boot:
 | --- | --- |
 | `~/.openfang/config.toml` | primary runtime configuration |
 | `include = ["..."]` | extra TOML fragments deep-merged before the root config |
-| `~/.openfang/.env` | runtime helper file for provider and channel secrets |
+| `~/.openfang/.env` + `~/.openfang/secrets.env` | runtime helper files for provider and channel secrets |
 | process environment | deploy-time overrides and secret values |
 | `vault.enc` | encrypted credential store when enabled |
 
 Repository note:
 
 - `.env.example` in the repo is only a reference template
-- the runtime automatically reads `~/.openfang/.env`, not the repo root `.env.example`
+- the runtime reads `~/.openfang/.env` plus `~/.openfang/secrets.env`, not the repo root `.env.example`
 
 ## 2. Precedence Rules
 
@@ -27,7 +27,8 @@ Important precedence behavior verified in the current code:
 2. `config.toml` is loaded and deep-merged with any `include` files
 3. `OPENFANG_LISTEN` overrides top-level `api_listen`
 4. `OPENFANG_API_KEY` sets `api_key` only when `config.toml` left it empty
-5. provider credentials are resolved through vault -> `~/.openfang/.env` -> process environment
+5. provider credentials are resolved through vault -> runtime env files -> process environment
+6. within runtime env files, `~/.openfang/secrets.env` overrides `~/.openfang/.env` when both define the same key
 
 ## 3. Runtime Home Layout
 
@@ -39,8 +40,11 @@ Typical layout:
 ~/.openfang/
   config.toml
   .env
+  secrets.env
   daemon.json
   vault.enc
+  custom_models.json
+  integrations.toml
   data/
   agents/
   skills/
@@ -68,7 +72,7 @@ With that config, set:
 export GROQ_API_KEY=...
 ```
 
-You can also place the same key in `~/.openfang/.env`.
+You can place the same key in `~/.openfang/secrets.env` (preferred for dashboard/API-managed keys) or `~/.openfang/.env`.
 
 ## 5. Canonical Example
 
@@ -109,6 +113,9 @@ alert_threshold = 0.8
 [auth]
 enabled = false
 username = "admin"
+# Generate with: openfang security hash-password
+# Required whenever auth.enabled = true.
+# Legacy 64-character SHA-256 hex digests still work, but Argon2id is recommended.
 password_hash = ""
 
 [channels.telegram]
@@ -231,6 +238,13 @@ However, some sensitive values do exist directly in the schema:
 - `[network].shared_secret`
 - `[auth].password_hash`
 
+Operational requirement:
+
+- if `[auth].enabled = true`, you must also set a non-empty `[auth].password_hash`
+- `password_hash` must be a valid Argon2id PHC string or a 64-character legacy SHA-256 hex digest
+- there is no bootstrap route that creates the first dashboard password for you at runtime
+- for production, prefer `OPENFANG_API_KEY` even if dashboard auth is also enabled
+
 Keep those out of version control and prefer env or vault workflows when practical.
 
 Useful deployment environment variables:
@@ -266,11 +280,20 @@ The reload planner currently classifies config changes like this:
 
 | Category | Fields |
 | --- | --- |
-| hot-reloadable | channels, skills, usage footer, web, browser, approval, cron limits, webhook config, extensions, MCP, A2A, fallback providers, provider URLs, default model |
+| detected as hot-reloadable | channels, skills, usage footer, web, browser, approval, cron limits, webhook config, extensions, MCP, A2A, fallback providers, provider URLs, default model |
 | no-op until later | `log_level`, `language`, `mode`, `provider_api_keys` |
-| restart required | `api_listen`, `api_key`, `network_enabled`, `network`, `memory`, `home_dir`, `data_dir`, `vault` |
+| restart required | `api_listen`, `api_key`, `auth`, `network_enabled`, `network`, `memory`, `home_dir`, `data_dir`, `vault` |
 
-When in doubt, restart after config changes.
+The current kernel only auto-applies a subset immediately:
+
+- `approval`
+- `max_cron_jobs`
+- `provider_urls`
+- `default_model`
+
+For other "hot-reloadable" fields, the planner will detect the change and report it, but operators should still treat it as pending follow-up until the specific subsystem is restarted or reinitialized. When in doubt, restart after config changes.
+
+Reload planning uses the same effective-config precedence as boot: `config.toml` + includes, then runtime env overrides such as `OPENFANG_LISTEN` and `OPENFANG_API_KEY`.
 
 ## 11. Current Schema Areas
 

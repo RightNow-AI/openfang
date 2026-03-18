@@ -265,7 +265,27 @@ telegram = "-123456789"  # Negative number for groups
 
 **Result**: Bot receives all messages (Telegram layer) but only responds to @mentions (OpenFang layer).
 
-**See**: `docs/telegram-group-setup.md` for detailed guide.
+**See**:
+- `docs/telegram-group-setup.md` for detailed setup guide
+- `docs/telegram-mention-troubleshooting.md` for @mention issues and UTF-16 bug fixes
+
+### Common Telegram Issues
+
+**Problem**: Cannot send `@botname 消息` in groups (发送按钮消失)
+
+**Solution**: Check BotFather → Bot Settings → Inline Mode → must be **OFF**
+- Inline Mode ON causes `@botname ` to trigger inline search mode
+- This blocks normal @mention messages
+- Turn off Inline Mode and restart Telegram client
+
+**Problem**: Bot crashes with "byte index is not a char boundary" panic
+
+**Solution**: Update to commit 52ccc8a or later (UTF-16 bug fix)
+- Old code directly used byte indices for Telegram entity offsets
+- Telegram uses UTF-16 encoding, Rust uses UTF-8
+- Fixed by using `telegram_entity_utf16_range_to_bytes` conversion function
+
+**See full troubleshooting guide**: `docs/telegram-mention-troubleshooting.md`
 
 ## Git Submodule Management
 
