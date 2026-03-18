@@ -579,11 +579,22 @@ restore_external_env_file() {
     echo "error could not create directory for external env file ${target_env_file}." >&2
     return 1
   fi
-  if ! cp -a "${backup_env_file}" "${target_env_file}" 2>/dev/null; then
-    echo "error could not restore external env file to ${target_env_file}; check permissions or set OPENFANG_ENV_FILE explicitly." >&2
+  local temp_target
+  temp_target="${target_env_file}.tmp.$$"
+  rm -f "${temp_target}"
+
+  if ! cp -a "${backup_env_file}" "${temp_target}" 2>/dev/null; then
+    rm -f "${temp_target}"
+    echo "error could not stage external env file for ${target_env_file}; check permissions or set OPENFANG_ENV_FILE explicitly." >&2
     return 1
   fi
-  chmod 600 "${target_env_file}" 2>/dev/null || true
+  chmod 600 "${temp_target}" 2>/dev/null || true
+
+  if ! mv -f "${temp_target}" "${target_env_file}" 2>/dev/null; then
+    rm -f "${temp_target}"
+    echo "error could not promote restored external env file to ${target_env_file}; check permissions or set OPENFANG_ENV_FILE explicitly." >&2
+    return 1
+  fi
   echo "ok  restored external env file ${target_env_file}"
 }
 
@@ -693,12 +704,24 @@ if ! mv "${STAGING_HOME}" "${OPENFANG_HOME}"; then
 fi
 
 STAGING_HOME=""
-rm -rf "${ROLLBACK_HOME}"
-restore_external_env_file \
+
+# Keep the rollback tree until any external env file swap also succeeds.
+if ! restore_external_env_file \
   "${BACKUP_DIR}/external-env.env" \
   "${EXTERNAL_ENV_FILE}" \
   "${BACKUP_EXTERNAL_ENV_SOURCE}" \
-  "${OPENFANG_HOME}"
+  "${OPENFANG_HOME}"; then
+  if [[ -e "${ROLLBACK_HOME}" ]]; then
+    echo "Restore failed while applying the external env file; rolling runtime home back into place." >&2
+    rm -rf "${OPENFANG_HOME}"
+    mv "${ROLLBACK_HOME}" "${OPENFANG_HOME}" || true
+  else
+    echo "Restore applied the runtime home, but the external env file step failed; fix the env target and retry before restarting the daemon." >&2
+  fi
+  exit 1
+fi
+
+rm -rf "${ROLLBACK_HOME}"
 
 echo "Restore completed."
 echo "Next steps:"
