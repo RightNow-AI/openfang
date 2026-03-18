@@ -1,39 +1,213 @@
-<p align="center">
-  <img src="public/assets/openfang-logo.png" width="160" alt="OpenFang Logo" />
-</p>
-
-<h1 align="center">OpenFang</h1>
-<h3 align="center">The Agent Operating System</h3>
+<h1 align="center">OpenFang — Aldine Fork</h1>
+<h3 align="center">Agent OS + Business Mode Wizards + Next.js Dashboard</h3>
 
 <p align="center">
-  Open-source Agent OS built in Rust. 137K LOC. 14 crates. 1,767+ tests. Zero clippy warnings.<br/>
-  <strong>One binary. Battle-tested. Agents that actually work for you.</strong>
-</p>
-
-<p align="center">
-  <a href="https://openfang.sh/docs">Documentation</a> &bull;
-  <a href="https://openfang.sh/docs/getting-started">Quick Start</a> &bull;
-  <a href="https://x.com/openfangg">Twitter / X</a>
+  Fork of <a href="https://github.com/RightNow-AI/openfang">RightNow-AI/openfang</a> — synced to v0.4.6 with new Business Mode workflows, Command Center, and a full Next.js frontend.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-0.3.30-green?style=flat-square" alt="v0.3.30" />
-  <img src="https://img.shields.io/badge/tests-1,767%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
-  <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
-  <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
+  <img src="https://img.shields.io/badge/synced-upstream%20v0.4.6-blue?style=flat-square" alt="upstream v0.4.6" />
+  <img src="https://img.shields.io/badge/frontend-Next.js%2015-black?style=flat-square" alt="Next.js" />
+  <img src="https://img.shields.io/badge/backend-Rust%20%2B%20Axum-orange?style=flat-square" alt="Axum" />
 </p>
 
 ---
 
-> **v0.3.30 — Security Hardening Release (March 2026)**
->
-> OpenFang is feature-complete but still pre-1.0. You may encounter rough edges or breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
+## What's in This Fork
+
+This fork extends the upstream OpenFang Agent OS with:
+
+1. **Business Mode Wizards** — three full wizard flows (Agency, Growth, School) with per-mode task catalogs, approval queues, and results tracking
+2. **Command Center** — client onboarding wizard with task planning, approval, and execution pipeline
+3. **Next.js 15 dashboard** — primary frontend replacing the Alpine static UI, running on port 3002
+4. **Rust API routes** — `openfang-api` additions for all business modes and command center (new `modes.rs`, `command_center.rs` files)
+5. **Sidebar reorder** — Brand, Work, and Agents sections moved above Monitor for faster access to core workflows
+6. **Error handling fix** — `mode-api.ts` properly unwraps structured `{code, message}` backend errors instead of showing `[object Object]`
 
 ---
 
-## What is OpenFang?
+## Running This Fork
+
+### Prerequisites
+- Rust toolchain (`rustup`)
+- Node.js 18+
+- An API key for at least one LLM provider (Groq, OpenAI, Anthropic, etc.)
+
+### 1. Build and start the backend
+
+```bash
+cargo build --release -p openfang-cli
+
+# Start the daemon (needs at least one LLM API key)
+GROQ_API_KEY=your_key_here ./target/release/openfang.exe start
+
+# Verify it's up
+curl http://127.0.0.1:50051/api/health
+# → {"status":"ok","version":"0.4.x"}
+```
+
+### 2. Start the Next.js frontend
+
+```bash
+cd sdk/javascript/examples/nextjs-app-router
+npm install
+npm run dev -- --port 3002
+# Open http://localhost:3002
+```
+
+> The backend dashboard root (`GET /`) redirects to `http://localhost:3002`. Override with `OPENFANG_DASHBOARD_URL=http://...` or set `OPENFANG_LEGACY_UI=1` to restore the Alpine UI.
+
+---
+
+## New API Endpoints
+
+### Business Modes (`modes.rs`)
+
+All three modes (Agency, Growth, School) share the same route shape:
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| `POST` | `/modes/{mode}/records` | Create a new mode record (program, campaign, or client brief) |
+| `GET` | `/modes/{mode}/records` | List all records for a mode |
+| `GET` | `/modes/{mode}/records/{id}` | Get a single record |
+| `PUT` | `/modes/{mode}/records/{id}` | Update a record |
+| `POST` | `/modes/{mode}/generate-plan` | Generate task plan from a mode-specific catalog |
+| `GET` | `/modes/{mode}/tasks?record_id=…` | List tasks for a record |
+| `POST` | `/modes/{mode}/tasks/{id}/approve` | Approve a task |
+| `POST` | `/modes/{mode}/tasks/{id}/run` | Run an approved task |
+| `GET` | `/modes/{mode}/approvals?record_id=…` | List pending approvals |
+| `GET` | `/modes/{mode}/results?record_id=…` | List completed results |
+
+`{mode}` must be one of `agency`, `growth`, or `school`.
+
+**Quick test:**
+
+```bash
+# Create a School Mode program
+curl -X POST http://127.0.0.1:50051/modes/school/records \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Rust Fundamentals","goal":"Teach Rust to 50 students"}'
+
+# Generate a task plan
+curl -X POST http://127.0.0.1:50051/modes/school/generate-plan \
+  -H "Content-Type: application/json" \
+  -d '{"record_id":"rec_xxx","selected_task_ids":["define_program_brief","write_lessons"]}'
+```
+
+### Command Center (`command_center.rs`)
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| `POST` | `/clients` | Create a new client profile |
+| `GET` | `/clients/{id}` | Get a client |
+| `PUT` | `/clients/{id}` | Update a client |
+| `POST` | `/wizard/generate-plan` | Generate a task plan for a client |
+| `GET` | `/tasks?client_id=…` | List tasks for a client |
+| `POST` | `/tasks/{id}/approve` | Approve a task |
+| `POST` | `/tasks/{id}/run` | Run an approved task |
+| `GET` | `/approvals?client_id=…` | List pending approvals |
+| `GET` | `/results?client_id=…` | List completed results |
+
+---
+
+## Mode Task Catalogs
+
+Each mode has a curated task catalog. When you call `generate-plan`, you pass a list of catalog IDs and the API creates `ModeTask` records with the appropriate agent assignments, tools, and approval requirements.
+
+### Agency Mode (12 tasks)
+`intake_client_brief` → `scope_service` → `summarize_business` → `research_competitors` → `build_brand_voice` → `build_delivery_plan` → `assign_tasks` → `draft_client_copy` _(approval)_ → `send_client_email` _(approval)_ → `package_delivery` _(approval)_ → `capture_followups` → `identify_upsells`
+
+### Growth Mode (15 tasks)
+`write_campaign_brief` → `sharpen_offer` → `research_competitor_ads` → `build_creative_intelligence` → `generate_hooks` _(approval)_ → `develop_angles` _(approval)_ → `write_scripts` _(approval)_ → `write_email_variants` _(approval)_ → `video_studio_flow` _(approval)_ → `design_statics` _(approval)_ → `creative_qa` _(approval)_ → `publish_assets` _(approval)_ → `read_performance` → `build_optimization_plan` → `plan_next_experiments` _(approval)_
+
+### School Mode (13 tasks)
+`define_program_brief` → `sharpen_enrollment_offer` → `map_student_needs` → `build_curriculum_outline` _(approval)_ → `write_lessons` _(approval)_ → `design_assignments` _(approval)_ → `build_resources` _(approval)_ → `run_cohort_onboarding` _(approval)_ → `send_email_reminders` _(approval)_ → `review_assignments` _(approval)_ → `track_student_health` → `capture_testimonials` → `find_upsells`
+
+---
+
+## Frontend Structure (`sdk/javascript/examples/nextjs-app-router/`)
+
+```
+app/
+  agency/             Agency Mode wizard + detail pages
+  growth/             Growth Mode wizard + studio + detail pages
+  school/             School Mode wizard + cohort + detail pages
+  command-center/     Command Center wizard + client detail pages
+  components/
+    Sidebar.js        Sidebar nav (Brand, Work, Agents above Monitor)
+  api/modes/          Next.js proxy routes → backend /modes/* endpoints
+lib/
+  mode-api.ts         Typed client for all mode API calls
+  mode-types.ts       Shared TypeScript types for modes, tasks, approvals
+```
+
+### Sidebar order (top to bottom)
+Planner → Chat → **Brand** → **Work** (Command Center, Agency, Growth, School) → **Agents** (Sessions, Approvals, Comms) → Monitor → Automation → Extensions → System
+
+---
+
+## Changed Files
+
+### Rust (`crates/openfang-api/src/`)
+
+| File | Change |
+|------|--------|
+| `modes.rs` | **New** — in-memory store + HTTP handlers for Agency/Growth/School modes |
+| `command_center.rs` | **New** — in-memory store + HTTP handlers for Command Center clients/tasks |
+| `lib.rs` | Added `pub mod modes;` and `pub mod command_center;` |
+| `server.rs` | Registered both new routers into the Axum app + added `ModesState` / `CommandCenterState` to `AppState` |
+
+> **Axum route syntax note:** Routes use `{param}` syntax (not `:param`) required by the axum version in use. Handler extractors use `Path(id): Path<String>` and `Path((mode, id)): Path<(String, String)>` as needed.
+
+### Next.js (`sdk/javascript/examples/nextjs-app-router/`)
+
+| File | Change |
+|------|--------|
+| `lib/mode-api.ts` | **New** — typed fetch wrapper for all `/api/modes/*` routes; extracts `.message` from structured `{code, message}` backend errors |
+| `lib/mode-types.ts` | **New** — TypeScript types for `ModeRecord`, `ModeTask`, `ModeApproval`, `ModeResult`, `BusinessMode` |
+| `app/api/modes/…/route.ts` | **New** — 8 Next.js API proxy routes forwarding to `http://127.0.0.1:50051/modes/*` |
+| `app/school/…` | **New** — `SchoolWizard.tsx`, `StudentHealthDashboard.tsx`, cohort page, program detail page, approvals, results |
+| `app/agency/…` | **New** — `AgencyWizard.tsx`, client detail page, approvals, results |
+| `app/growth/…` | **New** — `GrowthWizard.tsx`, `VideoAdStudio.tsx`, campaign detail page, studio, approvals, results |
+| `app/command-center/…` | Updated — approvals + results detail pages |
+| `app/components/Sidebar.js` | Reordered sections: Brand, Work, Agents now appear directly below Chat |
+
+---
+
+## Development
+
+```bash
+# Build workspace libs
+cargo build --workspace --lib
+
+# Run all tests
+cargo test --workspace
+
+# Lint
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+---
+
+## Upstream
+
+This fork tracks [RightNow-AI/openfang](https://github.com/RightNow-AI/openfang). Currently synced to **v0.4.6**.
+
+To pull future upstream changes:
+
+```bash
+git fetch upstream
+git merge upstream/main -X theirs   # accept upstream for any core conflicts
+```
+
+---
+
+## License
+
+MIT — same as upstream.
+
 
 OpenFang is an **open-source Agent Operating System** — not a chatbot framework, not a Python wrapper around an LLM, not a "multi-agent orchestrator." It is a full operating system for autonomous agents, built from scratch in Rust.
 
