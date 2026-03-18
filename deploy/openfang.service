@@ -14,6 +14,7 @@ Environment=OPENFANG_HOME=/var/lib/openfang
 Environment=OPENFANG_ENV_FILE=/etc/openfang/env
 ExecStart=/usr/local/bin/openfang start
 ExecStartPre=/usr/bin/test -x /usr/local/bin/openfang
+ExecStartPre=/bin/bash -lc 'set -euo pipefail; : "${OPENFANG_HOME:=/var/lib/openfang}"; test -r "$OPENFANG_HOME/config.toml"; mkdir -p "$OPENFANG_HOME/data"; test -w "$OPENFANG_HOME"; test -w "$OPENFANG_HOME/data"; if [[ -x /usr/local/lib/openfang/preflight-openfang.sh ]]; then OPENFANG_HOME="$OPENFANG_HOME" OPENFANG_ENV_FILE="${OPENFANG_ENV_FILE:-/etc/openfang/env}" OPENFANG_PREFLIGHT_OFFLINE=1 /usr/local/lib/openfang/preflight-openfang.sh --offline; fi'
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

@@ -164,7 +164,9 @@ It assumes:
 sudo useradd --system --home /var/lib/openfang --shell /usr/sbin/nologin openfang
 sudo install -d -o openfang -g openfang /var/lib/openfang
 sudo install -d /etc/openfang
+sudo install -d /usr/local/lib/openfang
 sudo install -m 0644 deploy/openfang.service /etc/systemd/system/openfang.service
+sudo install -m 0755 scripts/preflight-openfang.sh /usr/local/lib/openfang/preflight-openfang.sh
 sudo install -m 0600 -o root -g openfang /dev/null /etc/openfang/env
 ```
 
@@ -187,6 +189,7 @@ If you enable dashboard auth in `config.toml`, set a valid Argon2id `password_ha
 Legacy 64-character SHA-256 hex digests still work for compatibility, but do not use them for new deployments.
 Keep `/etc/openfang/env` owner-readable only; `UMask=0077` in the unit protects files created by the daemon, not this pre-created env file.
 The systemd unit template exports `OPENFANG_ENV_FILE=/etc/openfang/env` so operator scripts can consistently find the same external env source.
+The unit also performs a minimal pre-start gate: it requires a readable `config.toml`, writable runtime directories, and, when `/usr/local/lib/openfang/preflight-openfang.sh` is installed, it runs `preflight-openfang.sh --offline` before starting the daemon.
 
 ### Service Management
 
