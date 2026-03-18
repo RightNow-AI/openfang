@@ -4071,6 +4071,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
+ "encoding_rs",
  "futures",
  "hex",
  "http",

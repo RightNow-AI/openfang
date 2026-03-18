@@ -12,6 +12,7 @@ openfang-memory = { path = "../openfang-memory" }
 openfang-skills = { path = "../openfang-skills" }
 tokio = { workspace = true }
 serde = { workspace = true }
+encoding_rs = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }

@@ -1608,8 +1608,8 @@ async fn tool_shell_exec(
 
     match result {
         Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = bytes_to_string_auto(&output.stdout);
+            let stderr = bytes_to_string_auto(&output.stderr);
             tracing::debug!("Command output: stdout={stdout}, stderr={stderr}");
             let exit_code = output.status.code().unwrap_or(-1);
 
@@ -3432,6 +3432,24 @@ pub async fn skill_res_load(
     }
 
     Err(format!("Skill: '{}' not found in registry", skill_name))
+}
+
+fn bytes_to_string_auto(bytes: &[u8]) -> String {
+    // try UTF-8 first
+    if let Ok(s) = String::from_utf8(bytes.to_vec()) {
+        return s;
+    }
+    // windows only: use GBK if UTF-8 fails
+    #[cfg(windows)]
+    {
+        let (cow, _, had_errors) = encoding_rs::GBK.decode(bytes);
+        if !had_errors {
+            return cow.to_string();
+        }
+    }
+
+    // fallback to lossy UTF-8
+    String::from_utf8_lossy(bytes).to_string()
 }
 
 #[cfg(test)]
