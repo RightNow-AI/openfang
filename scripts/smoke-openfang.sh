@@ -47,18 +47,21 @@ curl_with_auth() {
 require_json_status() {
   local url="$1"
   local description="$2"
+  local expected="$3"
   local body
 
   body="$(curl_with_auth "${url}")"
-  python3 - "${body}" "${description}" <<'PY'
+  python3 - "${body}" "${description}" "${expected}" <<'PY'
 import json
 import sys
 
-body, description = sys.argv[1:3]
+body, description, expected = sys.argv[1:4]
 payload = json.loads(body)
 status = payload.get("status")
-if status not in {"ok", "degraded", "running"}:
-    raise SystemExit(f"{description} returned unexpected status: {status!r}")
+if status != expected:
+    raise SystemExit(
+        f"{description} returned unexpected status: {status!r} (expected {expected!r})"
+    )
 PY
   echo "ok  ${description}"
 }
@@ -70,9 +73,9 @@ require_http_200() {
   echo "ok  ${description}"
 }
 
-require_json_status "${BASE_URL}/api/health" "health"
-require_json_status "${BASE_URL}/api/status" "status"
-require_json_status "${BASE_URL}/api/health/detail" "health detail"
+require_json_status "${BASE_URL}/api/health" "health" "ok"
+require_json_status "${BASE_URL}/api/status" "status" "running"
+require_json_status "${BASE_URL}/api/health/detail" "health detail" "ok"
 require_http_200 "${BASE_URL}/api/metrics" "metrics"
 require_http_200 "${BASE_URL}/api/audit/verify" "audit verify"
 

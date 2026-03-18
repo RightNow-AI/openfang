@@ -23,18 +23,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     nodejs \
     npm \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --system --create-home --home-dir /home/openfang --shell /usr/sbin/nologin openfang \
     && install -d -o openfang -g openfang /data /opt/openfang
 
 COPY --from=builder --chown=openfang:openfang /build/target/release/openfang /usr/local/bin/openfang
+COPY --from=builder --chown=openfang:openfang /build/scripts/healthcheck-openfang.py /usr/local/bin/healthcheck-openfang.py
 COPY --from=builder --chown=openfang:openfang /build/agents /opt/openfang/agents
 EXPOSE 4200
 VOLUME /data
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python3 /usr/local/bin/healthcheck-openfang.py
+STOPSIGNAL SIGTERM
 ENV HOME=/home/openfang \
     OPENFANG_HOME=/data
 WORKDIR /data
 USER openfang
-ENTRYPOINT ["openfang"]
+ENTRYPOINT ["/usr/bin/tini", "--", "openfang"]
 CMD ["start"]

@@ -81,7 +81,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   fmt:
     name: Format
@@ -123,19 +123,115 @@ jobs:
             --only-verified \
             --exclude-paths=<(echo -e "target/\n.git/\nCargo.lock")
 
-  # ── Installer smoke test (verify install scripts from Vercel) ──────────────
+  # ── Installer smoke test (verify repo-owned install entrypoints) ───────────
   install-smoke:
     name: Install Script Smoke Test
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch and syntax-check shell installer
+      - uses: actions/checkout@v6
+      - name: Verify installer defaults target this fork
         run: |
-          curl -fsSL https://openfang.sh/install -o /tmp/install.sh
-          bash -n /tmp/install.sh
-      - name: Fetch and syntax-check PowerShell installer
+          grep -q 'OPENFANG_RELEASE_REPO:-tytsxai/openfang-upstream-fork' scripts/install.sh
+          grep -q 'tytsxai/openfang-upstream-fork' scripts/install.ps1
+      - name: Syntax-check shell installer
         run: |
-          curl -fsSL https://openfang.sh/install.ps1 -o /tmp/install.ps1
-          pwsh -NoProfile -Command "Get-Content /tmp/install.ps1 | Out-Null" 2>&1 || true
+          head -n 1 scripts/install.sh | grep -q '^#!'
+          bash -n scripts/install.sh
+      - name: Syntax-check PowerShell installer
+        run: |
+          pwsh -NoProfile -Command "[ScriptBlock]::Create((Get-Content scripts/install.ps1 -Raw)) | Out-Null"
+
+  daemon-smoke:
+    name: Daemon Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: daemon-smoke
+      - name: Build release daemon
+        run: cargo build --release -p openfang-cli
+      - name: Boot daemon and run smoke checks
+        env:
+          OPENFANG_HOME: ${{ runner.temp }}/openfang-home
+          OPENFANG_LISTEN: 127.0.0.1:4200
+          OPENFANG_API_KEY: ci-smoke-key-please-change
+        run: |
+          mkdir -p "$OPENFANG_HOME"
+          cat > "$OPENFANG_HOME/config.toml" <<'EOF'
+          api_listen = "127.0.0.1:4200"
+
+          [default_model]
+          provider = "ollama"
+          model = "test-model"
+          EOF
+          trap 'if [[ -n "${daemon_pid:-}" ]]; then kill "${daemon_pid}" || true; wait "${daemon_pid}" || true; fi' EXIT
+          target/release/openfang start >"$RUNNER_TEMP/openfang-daemon.log" 2>&1 &
+          daemon_pid=$!
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4200/api/health >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl -fsS http://127.0.0.1:4200/api/health >/dev/null
+          bash scripts/smoke-openfang.sh
+          bash scripts/preflight-openfang.sh
+      - name: Upload daemon smoke log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-smoke-log
+          path: ${{ runner.temp }}/openfang-daemon.log
+          if-no-files-found: ignore
+
+  docker-smoke:
+    name: Docker Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build Docker image
+        run: docker build -t openfang-ci-smoke .
+      - name: Verify image starts and serves API
+        env:
+          OPENFANG_API_KEY: ci-docker-smoke-key
+          OPENFANG_BASE_URL: http://127.0.0.1:4210
+        run: |
+          trap 'docker logs openfang-ci-smoke >/dev/null 2>&1 || true; docker rm -f openfang-ci-smoke >/dev/null 2>&1 || true' EXIT
+          docker_home="$RUNNER_TEMP/docker-openfang-home"
+          mkdir -p "$docker_home"
+          chmod 0777 "$docker_home"
+          cat > "$docker_home/config.toml" <<'EOF'
+          api_listen = "0.0.0.0:4200"
+
+          [default_model]
+          provider = "ollama"
+          model = "test-model"
+          EOF
+          chmod 0666 "$docker_home/config.toml"
+          docker run --rm openfang-ci-smoke --version >/dev/null
+          docker run -d --name openfang-ci-smoke \
+            -p 127.0.0.1:4210:4200 \
+            -v "$docker_home:/data" \
+            -e OPENFANG_LISTEN=0.0.0.0:4200 \
+            -e OPENFANG_API_KEY="$OPENFANG_API_KEY" \
+            openfang-ci-smoke start
+
+          for _ in $(seq 1 30); do
+            if curl -fsS "$OPENFANG_BASE_URL/api/health" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          curl -fsS "$OPENFANG_BASE_URL/api/health" >/dev/null
+          bash scripts/smoke-openfang.sh "$OPENFANG_BASE_URL"
+      - name: Upload Docker smoke log on failure
+        if: failure()
+        run: docker logs openfang-ci-smoke || true
 
   ops-scripts:
     name: Ops Scripts
@@ -145,15 +241,33 @@ jobs:
       - name: Syntax check operational scripts
         run: |
           bash -n scripts/backup-openfang.sh
+          bash -n scripts/preflight-openfang.sh
+          bash -n scripts/provider-canary-openfang.sh
           bash -n scripts/restore-openfang.sh
           bash -n scripts/smoke-openfang.sh
+          python3 -m py_compile scripts/healthcheck-openfang.py
+      - name: Restore guardrails reject malformed backups
+        run: |
+          export OPENFANG_HOME="$RUNNER_TEMP/restore-guard-home"
+          export OPENFANG_SKIP_SAFETY_BACKUP=1
+          mkdir -p "$OPENFANG_HOME" "$RUNNER_TEMP/invalid-backup"
+          printf 'sentinel = true\n' > "$OPENFANG_HOME/config.toml"
+          if bash scripts/restore-openfang.sh "$RUNNER_TEMP/invalid-backup" --yes; then
+            echo "restore-openfang.sh unexpectedly accepted an empty backup"
+            exit 1
+          fi
+          grep -q 'sentinel = true' "$OPENFANG_HOME/config.toml"
       - name: Backup and restore roundtrip
         run: |
           export OPENFANG_HOME="$RUNNER_TEMP/openfang-home"
           export OPENFANG_SKIP_SAFETY_BACKUP=1
-          mkdir -p "$OPENFANG_HOME/data" "$OPENFANG_HOME/agents"
-          printf 'api_listen = "127.0.0.1:4200"\n' > "$OPENFANG_HOME/config.toml"
+          mkdir -p "$OPENFANG_HOME/data" "$OPENFANG_HOME/agents" "$OPENFANG_HOME/config.d"
+          printf 'include = ["config.d/providers.toml"]\napi_listen = "127.0.0.1:4200"\n' > "$OPENFANG_HOME/config.toml"
+          printf 'log_level = "debug"\n' > "$OPENFANG_HOME/config.d/providers.toml"
           printf 'GROQ_API_KEY=test-key\n' > "$OPENFANG_HOME/.env"
+          printf 'OPENFANG_API_KEY=backup-restore-secret\n' > "$OPENFANG_HOME/secrets.env"
+          printf '[{"id":"custom-demo","provider":"groq"}]\n' > "$OPENFANG_HOME/custom_models.json"
+          printf '[[installed]]\nid = "github"\nenabled = true\n' > "$OPENFANG_HOME/integrations.toml"
           printf 'demo = true\n' > "$OPENFANG_HOME/agents/example.toml"
           python3 - <<'PY'
           import os
@@ -167,7 +281,39 @@ jobs:
           PY
           bash scripts/backup-openfang.sh "$RUNNER_TEMP/backups"
           backup_dir="$(find "$RUNNER_TEMP/backups" -maxdepth 1 -type d -name 'openfang-*' | head -n 1)"
-          rm -rf "$OPENFANG_HOME"
+          mkdir -p "$OPENFANG_HOME/stale"
+          printf 'include = ["stale/legacy.toml"]\napi_listen = "127.0.0.1:4300"\n' > "$OPENFANG_HOME/config.toml"
+          printf 'log_level = "trace"\n' > "$OPENFANG_HOME/stale/legacy.toml"
           bash scripts/restore-openfang.sh "$backup_dir" --yes
           test -f "$OPENFANG_HOME/config.toml"
+          test -f "$OPENFANG_HOME/config.d/providers.toml"
+          test ! -e "$OPENFANG_HOME/stale/legacy.toml"
+          test -f "$OPENFANG_HOME/secrets.env"
           test -f "$OPENFANG_HOME/data/openfang.db"
+          test -f "$OPENFANG_HOME/custom_models.json"
+          test -f "$OPENFANG_HOME/integrations.toml"
+          grep -q 'include = \["config.d/providers.toml"\]' "$OPENFANG_HOME/config.toml"
+          grep -q 'log_level = "debug"' "$OPENFANG_HOME/config.d/providers.toml"
+          grep -q 'OPENFANG_API_KEY=backup-restore-secret' "$OPENFANG_HOME/secrets.env"
+          grep -q 'GROQ_API_KEY=test-key' "$OPENFANG_HOME/.env"
+          grep -q '"custom-demo"' "$OPENFANG_HOME/custom_models.json"
+          grep -q 'id = "github"' "$OPENFANG_HOME/integrations.toml"
+          grep -q 'demo = true' "$OPENFANG_HOME/agents/example.toml"
+          python3 - <<'PY'
+          import os
+          import stat
+          import sqlite3
+          db_path = os.path.join(os.environ["OPENFANG_HOME"], "data", "openfang.db")
+          conn = sqlite3.connect(db_path)
+          row = conn.execute("SELECT value FROM demo ORDER BY id").fetchone()
+          conn.close()
+          assert row == ("ok",), row
+          for rel in ("config.toml", ".env", "secrets.env"):
+            path = os.path.join(os.environ["OPENFANG_HOME"], rel)
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            assert mode & 0o077 == 0, (rel, oct(mode))
+          include_path = os.path.join(os.environ["OPENFANG_HOME"], "config.d", "providers.toml")
+          include_mode = stat.S_IMODE(os.stat(include_path).st_mode)
+          assert include_mode & 0o077 == 0, oct(include_mode)
+          PY
+          bash scripts/preflight-openfang.sh --offline

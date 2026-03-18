@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # OpenFang installer — works on Linux, macOS, WSL
-# Usage: curl -sSf https://openfang.sh | sh
+# Usage: curl -sSf https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/main/scripts/install.sh | sh
 # Tagged fallback example: curl -sSf https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.sh | sh
 #
 # Environment variables:
@@ -27,7 +27,7 @@ detect_platform() {
         mingw*|msys*|cygwin*)
             echo ""
             echo "  For Windows, use PowerShell instead:"
-            echo "    irm https://openfang.sh/install.ps1 | iex"
+            echo "    irm https://raw.githubusercontent.com/$REPO/main/scripts/install.ps1 | iex"
             echo ""
             echo "  Or download the .msi installer from:"
             echo "    https://github.com/$REPO/releases/latest"

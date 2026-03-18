@@ -1,6 +1,6 @@
 # OpenFang installer for Windows
-# Usage: iwr -useb https://openfang.sh/install.ps1 | iex
-#   or:  powershell -c "irm https://openfang.sh/install.ps1 | iex"
+# Usage: iwr -useb https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/main/scripts/install.ps1 | iex
+#   or:  powershell -c "irm https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/main/scripts/install.ps1 | iex"
 # Tagged fallback example: irm https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.ps1 | iex
 #
 # Flags (via environment variables):

@@ -16,6 +16,7 @@ ExecStartPre=/usr/bin/test -x /usr/local/bin/openfang
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
+UMask=0077
 
 # Environment
 EnvironmentFile=-/etc/openfang/env

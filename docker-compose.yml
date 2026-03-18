@@ -26,10 +26,8 @@ services:
       - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "python3 -c \"import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:4200/api/health', timeout=3)); assert d.get('status') in ('ok','degraded')\"",
-        ]
+        - CMD-SHELL
+        - python3 /usr/local/bin/healthcheck-openfang.py
       interval: 15s
       timeout: 5s
       retries: 5
