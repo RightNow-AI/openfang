@@ -114,7 +114,8 @@ impl UsageStore {
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
-                 WHERE agent_id = ?1 AND timestamp > datetime('now', '-1 hour')",
+                 WHERE agent_id = ?1
+                   AND julianday(timestamp) > julianday('now', '-1 hour')",
                 rusqlite::params![agent_id.0.to_string()],
                 |row| row.get(0),
             )
@@ -131,7 +132,8 @@ impl UsageStore {
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
-                 WHERE agent_id = ?1 AND timestamp > datetime('now', 'start of day')",
+                 WHERE agent_id = ?1
+                   AND julianday(timestamp) > julianday('now', 'start of day')",
                 rusqlite::params![agent_id.0.to_string()],
                 |row| row.get(0),
             )
@@ -148,7 +150,8 @@ impl UsageStore {
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
-                 WHERE agent_id = ?1 AND timestamp > datetime('now', 'start of month')",
+                 WHERE agent_id = ?1
+                   AND julianday(timestamp) > julianday('now', 'start of month')",
                 rusqlite::params![agent_id.0.to_string()],
                 |row| row.get(0),
             )
@@ -165,7 +168,7 @@ impl UsageStore {
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
-                 WHERE timestamp > datetime('now', '-1 hour')",
+                 WHERE julianday(timestamp) > julianday('now', '-1 hour')",
                 [],
                 |row| row.get(0),
             )
@@ -182,7 +185,7 @@ impl UsageStore {
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
-                 WHERE timestamp > datetime('now', 'start of month')",
+                 WHERE julianday(timestamp) > julianday('now', 'start of month')",
                 [],
                 |row| row.get(0),
             )
@@ -278,7 +281,7 @@ impl UsageStore {
                             COALESCE(SUM(input_tokens) + SUM(output_tokens), 0),
                             COUNT(*)
                      FROM usage_events
-                     WHERE timestamp > datetime('now', '-{days} days')
+                     WHERE julianday(timestamp) > julianday('now', '-{days} days')
                      GROUP BY day
                      ORDER BY day ASC"
             ))
@@ -325,7 +328,7 @@ impl UsageStore {
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
-                 WHERE timestamp > datetime('now', 'start of day')",
+                 WHERE julianday(timestamp) > julianday('now', 'start of day')",
                 [],
                 |row| row.get(0),
             )
@@ -342,7 +345,8 @@ impl UsageStore {
         let deleted = conn
             .execute(
                 &format!(
-                    "DELETE FROM usage_events WHERE timestamp < datetime('now', '-{days} days')"
+                    "DELETE FROM usage_events
+                     WHERE julianday(timestamp) < julianday('now', '-{days} days')"
                 ),
                 [],
             )
