@@ -7495,18 +7495,83 @@ pub async fn get_agent_mcp_servers(
             )
         }
     };
-    // Collect known MCP server names from connected tools
-    let mut available: Vec<String> = Vec::new();
-    if let Ok(mcp_tools) = state.kernel.mcp_tools.lock() {
-        let mut seen = std::collections::HashSet::new();
-        for tool in mcp_tools.iter() {
-            if let Some(server) = openfang_runtime::mcp::extract_mcp_server(&tool.name) {
-                if seen.insert(server.to_string()) {
-                    available.push(server.to_string());
-                }
-            }
-        }
+
+    // Build full server info from live connections (same as /api/mcp/servers)
+    let connections = state.kernel.mcp_connections.lock().await;
+
+    // Index connected servers: name → { tools, tools_count }
+    let mut connected_map: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    for conn in connections.iter() {
+        let tools: Vec<serde_json::Value> = conn
+            .tools()
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                })
+            })
+            .collect();
+        connected_map.insert(
+            conn.name().to_string(),
+            serde_json::json!({
+                "tools_count": tools.len(),
+                "tools": tools,
+                "connected": true,
+            }),
+        );
     }
+
+    // Build full server list from config, merging live connection data
+    let all_servers: Vec<serde_json::Value> = state
+        .kernel
+        .config
+        .mcp_servers
+        .iter()
+        .map(|s| {
+            let transport = match &s.transport {
+                openfang_types::config::McpTransportEntry::Stdio { command, args } => {
+                    serde_json::json!({"type": "stdio", "command": command, "args": args})
+                }
+                openfang_types::config::McpTransportEntry::Sse { url } => {
+                    serde_json::json!({"type": "sse", "url": url})
+                }
+            };
+            let mut server = serde_json::json!({
+                "name": s.name,
+                "transport": transport,
+                "timeout_secs": s.timeout_secs,
+                "env": s.env,
+                "connected": false,
+                "tools_count": 0,
+                "tools": [],
+            });
+            // Merge live data if connected
+            if let Some(live) = connected_map.get(&s.name) {
+                server["connected"] = live["connected"].clone();
+                server["tools_count"] = live["tools_count"].clone();
+                server["tools"] = live["tools"].clone();
+            }
+            server
+        })
+        .collect();
+
+    // assigned = servers in the agent's allowlist; available = always all servers
+    let assigned_names: std::collections::HashSet<&str> = entry
+        .manifest
+        .mcp_servers
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+
+    let assigned: Vec<_> = all_servers
+        .iter()
+        .filter(|s| s["name"].as_str().map(|n| assigned_names.contains(n)).unwrap_or(false))
+        .cloned()
+        .collect();
+    let available = all_servers;
+
     let mode = if entry.manifest.mcp_servers.is_empty() {
         "all"
     } else {
@@ -7515,7 +7580,7 @@ pub async fn get_agent_mcp_servers(
     (
         StatusCode::OK,
         Json(serde_json::json!({
-            "assigned": entry.manifest.mcp_servers,
+            "assigned": assigned,
             "available": available,
             "mode": mode,
         })),
