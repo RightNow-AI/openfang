@@ -79,6 +79,12 @@ pub struct CronScheduler {
     max_total_jobs: AtomicUsize,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CronLoadReport {
+    pub count: usize,
+    pub recovered_from_backup: bool,
+}
+
 impl CronScheduler {
     /// Create a new scheduler.
     ///
@@ -110,9 +116,13 @@ impl CronScheduler {
     /// Returns the number of jobs loaded. If the persistence file does not
     /// exist, returns `Ok(0)` without error.
     pub fn load(&self) -> OpenFangResult<usize> {
+        Ok(self.load_report()?.count)
+    }
+
+    pub fn load_report(&self) -> OpenFangResult<CronLoadReport> {
         let backup = backup_path(&self.persist_path);
         if !self.persist_path.exists() && !backup.exists() {
-            return Ok(0);
+            return Ok(CronLoadReport::default());
         }
         let mut loaded_from = None;
         let mut metas = None;
@@ -141,13 +151,20 @@ impl CronScheduler {
         for meta in metas {
             self.jobs.insert(meta.job.id, meta);
         }
-        if let Some(path) = loaded_from {
-            if path != self.persist_path {
+        let recovered_from_backup = loaded_from
+            .as_ref()
+            .map(|path| path != &self.persist_path)
+            .unwrap_or(false);
+        if let Some(ref path) = loaded_from {
+            if *path != self.persist_path {
                 warn!(path = %path.display(), "Recovered cron jobs from backup file");
             }
         }
         info!(count, "Loaded cron jobs from disk");
-        Ok(count)
+        Ok(CronLoadReport {
+            count,
+            recovered_from_backup,
+        })
     }
 
     /// Persist all jobs to disk via atomic write (write to `.tmp`, then rename).
@@ -1268,5 +1285,26 @@ mod tests {
             assert!(sched.list_jobs(agent).is_empty());
             assert_eq!(sched.list_jobs(other).len(), 1);
         }
+    }
+
+    #[test]
+    fn test_load_report_recovers_from_backup_file() {
+        let (sched, tmp) = make_scheduler(100);
+        let agent = AgentId::new();
+
+        sched.add_job(make_job(agent), false).unwrap();
+        sched.persist().unwrap();
+
+        let primary = tmp.path().join("cron_jobs.json");
+        let backup = tmp.path().join("cron_jobs.json.bak");
+        std::fs::copy(&primary, &backup).unwrap();
+        std::fs::write(&primary, "{bad json").unwrap();
+
+        let recovered = CronScheduler::new(tmp.path(), 100);
+        let report = recovered.load_report().unwrap();
+
+        assert!(report.recovered_from_backup);
+        assert_eq!(report.count, 1);
+        assert_eq!(recovered.total_jobs(), 1);
     }
 }
