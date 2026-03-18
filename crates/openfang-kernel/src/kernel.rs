@@ -1108,7 +1108,11 @@ impl OpenFangKernel {
                                             || disk_manifest.model.model
                                                 != entry.manifest.model.model
                                             || disk_manifest.capabilities.tools
-                                                != entry.manifest.capabilities.tools;
+                                                != entry.manifest.capabilities.tools
+                                            || disk_manifest.tool_allowlist
+                                                != entry.manifest.tool_allowlist
+                                            || disk_manifest.tool_blocklist
+                                                != entry.manifest.tool_blocklist;
                                         if changed {
                                             info!(
                                                 agent = %name,
@@ -1277,15 +1281,17 @@ impl OpenFangKernel {
         fixed_id: Option<AgentId>,
     ) -> KernelResult<AgentId> {
         let agent_id = fixed_id.unwrap_or_default();
-        let session_id = SessionId::new();
         let name = manifest.name.clone();
 
         info!(agent = %name, id = %agent_id, parent = ?parent, "Spawning agent");
 
-        // Create session
-        self.memory
+        // Create session — use the returned session_id so the registry
+        // and database are in sync (fixes duplicate session bug #651).
+        let session = self
+            .memory
             .create_session(agent_id)
             .map_err(KernelError::OpenFang)?;
+        let session_id = session.id;
 
         // Inherit kernel exec_policy as fallback if agent manifest doesn't have one
         let mut manifest = manifest;
@@ -4760,6 +4766,17 @@ impl OpenFangKernel {
                 },
                 McpTransportEntry::Sse { url } => McpTransport::Sse { url: url.clone() },
             };
+
+            // Resolve env vars from vault/dotenv before passing to MCP subprocess.
+            // The MCP spawn calls env_clear() then re-adds only whitelisted vars
+            // from std::env — so we must ensure they're in std::env first.
+            for var_name in &server_config.env {
+                if std::env::var(var_name).is_err() {
+                    if let Some(val) = self.resolve_credential(var_name) {
+                        std::env::set_var(var_name, &val);
+                    }
+                }
+            }
 
             let mcp_config = McpServerConfig {
                 name: server_config.name.clone(),

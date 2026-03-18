@@ -51,6 +51,20 @@ const MAX_CONTINUATIONS: u32 = 5;
 /// Maximum message history size before auto-trimming to prevent context overflow.
 const MAX_HISTORY_MESSAGES: usize = 20;
 
+/// Detect when the LLM claims to have performed an action (sent, posted, emailed)
+/// without actually calling any tools. Prevents hallucinated completions.
+fn phantom_action_detected(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let action_verbs = ["sent ", "posted ", "emailed ", "delivered ", "forwarded "];
+    let channel_refs = [
+        "telegram", "whatsapp", "slack", "discord", "email", "channel",
+        "message sent", "successfully sent", "has been sent",
+    ];
+    let has_action = action_verbs.iter().any(|v| lower.contains(v));
+    let has_channel = channel_refs.iter().any(|c| lower.contains(c));
+    has_action && has_channel
+}
+
 /// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
 const TOOL_ERROR_GUIDANCE: &str =
     "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. If your next steps depend on a failed tool, either retry with a materially different approach or explain the failure to the user and stop. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
@@ -244,13 +258,32 @@ pub async fn run_agent_loop(
     }
 
     // Build the messages for the LLM, filtering system messages
-    // System prompt goes into the separate `system` field
+    // System prompt goes into the separate `system` field.
+    // NOTE: We build llm_messages BEFORE stripping images so the LLM
+    // sees the full image data for the current turn.
     let llm_messages: Vec<Message> = session
         .messages
         .iter()
         .filter(|m| m.role != Role::System)
         .cloned()
         .collect();
+
+    // Strip Image blocks from session to prevent base64 bloat.
+    // The LLM already received them via llm_messages above.
+    for msg in session.messages.iter_mut() {
+        if let MessageContent::Blocks(blocks) = &mut msg.content {
+            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            if had_images {
+                blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
+                if blocks.is_empty() {
+                    blocks.push(ContentBlock::Text {
+                        text: "[Image processed]".to_string(),
+                        provider_metadata: None,
+                    });
+                }
+            }
+        }
+    }
 
     // Validate and repair session history (drop orphans, merge consecutive)
     let mut messages = crate::session_repair::validate_and_repair(&llm_messages);
@@ -421,7 +454,7 @@ pub async fn run_agent_loop(
                 // One-shot retry: if the LLM returns empty text with no tool use,
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
-                if text.trim().is_empty() && response.tool_calls.is_empty() {
+                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
                     let is_silent_failure =
                         response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {
@@ -462,6 +495,23 @@ pub async fn run_agent_loop(
                 } else {
                     text
                 };
+                // Phantom action detection: if the LLM claims it performed a
+                // channel action (send, post, email, etc.) but never actually
+                // called the corresponding tool, re-prompt once to force real
+                // tool usage instead of hallucinated completion.
+                let text = if !any_tools_executed && iteration == 0 && phantom_action_detected(&text) {
+                    warn!(agent = %manifest.name, "Phantom action detected — re-prompting for real tool use");
+                    messages.push(Message::assistant(text));
+                    messages.push(Message::user(
+                        "[System: You claimed to perform an action but did not call any tools. \
+                         You must use the appropriate tool (e.g., channel_send, web_fetch, file_write) \
+                         to actually perform the action. Do not claim completion without executing tools.]"
+                    ));
+                    continue;
+                } else {
+                    text
+                };
+
                 final_response = text.clone();
                 session.messages.push(Message::assistant(text));
 
@@ -1221,6 +1271,23 @@ pub async fn run_agent_loop_streaming(
         .cloned()
         .collect();
 
+    // Strip Image blocks from session to prevent base64 bloat.
+    // The LLM already received them via llm_messages above.
+    for msg in session.messages.iter_mut() {
+        if let MessageContent::Blocks(blocks) = &mut msg.content {
+            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            if had_images {
+                blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
+                if blocks.is_empty() {
+                    blocks.push(ContentBlock::Text {
+                        text: "[Image processed]".to_string(),
+                        provider_metadata: None,
+                    });
+                }
+            }
+        }
+    }
+
     // Validate and repair session history (drop orphans, merge consecutive)
     let mut messages = crate::session_repair::validate_and_repair(&llm_messages);
 
@@ -1408,7 +1475,7 @@ pub async fn run_agent_loop_streaming(
                 // One-shot retry: if the LLM returns empty text with no tool use,
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
-                if text.trim().is_empty() && response.tool_calls.is_empty() {
+                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
                     let is_silent_failure =
                         response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {

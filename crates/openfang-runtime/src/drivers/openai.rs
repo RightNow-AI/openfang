@@ -153,9 +153,14 @@ fn rejects_temperature(model: &str) -> bool {
     m.starts_with("o1")
         || m.starts_with("o3")
         || m.starts_with("o4")
-        // GPT-5-mini is a reasoning model that rejects temperature
+        // GPT-5 nano/mini are reasoning models that reject temperature
         || m.starts_with("gpt-5-mini")
+        || m.starts_with("gpt-5-nano")
         || m.starts_with("gpt5-mini")
+        || m.starts_with("gpt5-nano")
+        // DeepSeek-R1 reasoning models
+        || m.contains("deepseek-r1")
+        || m.contains("reasoner")
         // Catch any model explicitly tagged as "reasoning"
         || m.contains("-reasoning")
 }
