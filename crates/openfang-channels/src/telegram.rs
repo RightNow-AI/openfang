@@ -34,10 +34,13 @@ const LONG_POLL_TIMEOUT: u64 = 30;
 const DEFAULT_API_URL: &str = "https://api.telegram.org";
 /// Safety cap for `getFile` when using Telegram Local Bot API.
 ///
-/// In real deployments we observed `telegram-bot-api` restart on very large
-/// `getFile` requests. Files above this size are surfaced as metadata only so
-/// the bridge stays alive instead of repeatedly crashing the local server.
-const LOCAL_API_SAFE_GETFILE_LIMIT: u64 = 100 * 1024 * 1024;
+/// Set to 2GB to match the configured max_download_size and fully utilize
+/// Local Bot API's capability to handle large files. The previous 100MB limit
+/// was too conservative and caused most videos to be skipped.
+///
+/// If Local Bot API crashes on extremely large files, this can be reduced,
+/// but 2GB should be safe for typical video processing workflows.
+const LOCAL_API_SAFE_GETFILE_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 
 fn build_get_updates_query(offset: Option<i64>) -> Vec<(&'static str, String)> {
     let mut query = vec![
@@ -2431,6 +2434,14 @@ async fn parse_telegram_update(
                 serde_json::json!(reply_id),
             );
         }
+        let reply_is_bot = reply_msg["from"]["is_bot"].as_bool().unwrap_or(false)
+            || bot_username
+                .and_then(|name| reply_msg["from"]["username"].as_str().map(|u| (u, name)))
+                .map(|(username, name)| username.eq_ignore_ascii_case(name))
+                .unwrap_or(false);
+        if reply_is_bot {
+            metadata.insert("reply_to_bot_message".to_string(), serde_json::json!(true));
+        }
     }
     if is_group {
         if let Some(bot_uname) = bot_username {
@@ -2621,11 +2632,21 @@ mod tests {
     use super::*;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, OnceLock,
     };
 
     fn test_client() -> reqwest::Client {
         reqwest::Client::new()
+    }
+
+    async fn local_api_test_guard() -> tokio::sync::OwnedSemaphorePermit {
+        static LOCAL_API_TEST_SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+        LOCAL_API_TEST_SEMAPHORE
+            .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("local API test semaphore closed")
     }
 
     // Helper function for tests - uses default download settings (disabled)
@@ -2934,6 +2955,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_telegram_video_skips_oversized_local_api_lookup() {
+        let _guard = local_api_test_guard().await;
+        let oversized = LOCAL_API_SAFE_GETFILE_LIMIT + 1;
         let update = serde_json::json!({
             "update_id": 3001,
             "message": {
@@ -2946,7 +2969,7 @@ mod tests {
                     "file_id": "huge_video_id",
                     "file_unique_id": "hv1",
                     "duration": 42,
-                    "file_size": 150 * 1024 * 1024
+                    "file_size": oversized
                 }
             }
         });
@@ -2968,7 +2991,7 @@ mod tests {
             ChannelContent::Text(text) => {
                 assert!(text.contains("Huge upload"));
                 assert!(text.contains("文件过大，已跳过下载"));
-                assert!(text.contains("150 MB"));
+                assert!(text.contains(&format!("{} MB", file_size_mb(oversized))));
             }
             other => panic!("Expected Text fallback for oversized video, got {other:?}"),
         }
@@ -3029,6 +3052,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_telegram_document_skips_oversized_local_api_lookup() {
+        let _guard = local_api_test_guard().await;
+        let oversized = LOCAL_API_SAFE_GETFILE_LIMIT + 1;
         let update = serde_json::json!({
             "update_id": 3011,
             "message": {
@@ -3040,7 +3065,7 @@ mod tests {
                     "file_id": "huge_doc_id",
                     "file_unique_id": "hd1",
                     "file_name": "archive.zip",
-                    "file_size": 150 * 1024 * 1024
+                    "file_size": oversized
                 }
             }
         });
@@ -3062,7 +3087,7 @@ mod tests {
             ChannelContent::Text(text) => {
                 assert!(text.contains("archive.zip"));
                 assert!(text.contains("文件过大，已跳过下载"));
-                assert!(text.contains("150 MB"));
+                assert!(text.contains(&format!("{} MB", file_size_mb(oversized))));
             }
             other => panic!("Expected Text fallback for oversized document, got {other:?}"),
         }
@@ -3070,6 +3095,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_telegram_single_video_with_download_url_exposes_batch_metadata() {
+        let _guard = local_api_test_guard().await;
         let (api_base_url, server_handle) = start_telegram_test_server().await;
         let update = serde_json::json!({
             "update_id": 3012,
@@ -3126,6 +3152,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_telegram_single_video_download_success_does_not_add_batch_metadata() {
+        let _guard = local_api_test_guard().await;
         let (api_base_url, server_handle) = start_telegram_test_server().await;
         let temp_dir =
             std::env::temp_dir().join(format!("openfang-telegram-test-{}", uuid::Uuid::new_v4()));
@@ -3179,6 +3206,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_telegram_video_document_skips_oversized_local_api_lookup() {
+        let _guard = local_api_test_guard().await;
+        let oversized = LOCAL_API_SAFE_GETFILE_LIMIT + 1;
         let update = serde_json::json!({
             "update_id": 3013,
             "message": {
@@ -3192,7 +3221,7 @@ mod tests {
                     "file_unique_id": "hdv1",
                     "file_name": "clip.mp4",
                     "mime_type": "video/mp4",
-                    "file_size": 150 * 1024 * 1024
+                    "file_size": oversized
                 }
             }
         });
@@ -3214,7 +3243,7 @@ mod tests {
             ChannelContent::Text(text) => {
                 assert!(text.contains("clip.mp4"));
                 assert!(text.contains("文件过大，已跳过下载"));
-                assert!(text.contains("150 MB"));
+                assert!(text.contains(&format!("{} MB", file_size_mb(oversized))));
             }
             other => panic!("Expected Text fallback for oversized video document, got {other:?}"),
         }
@@ -3239,6 +3268,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_telegram_video_document_download_success_does_not_add_batch_metadata() {
+        let _guard = local_api_test_guard().await;
         let (api_base_url, server_handle) = start_telegram_test_server().await;
         let temp_dir =
             std::env::temp_dir().join(format!("openfang-telegram-test-{}", uuid::Uuid::new_v4()));
@@ -3722,6 +3752,7 @@ mod tests {
                 .and_then(|v| v.as_i64()),
             Some(99)
         );
+        assert!(!msg.metadata.contains_key("reply_to_bot_message"));
     }
 
     #[tokio::test]
@@ -3839,6 +3870,52 @@ mod tests {
             }
             other => panic!("Expected Text, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_reply_to_bot_message_sets_reply_to_bot_metadata() {
+        let update = serde_json::json!({
+            "update_id": 705,
+            "message": {
+                "message_id": 105,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": -200, "type": "group" },
+                "date": 1700000000,
+                "text": "Please continue",
+                "reply_to_message": {
+                    "message_id": 104,
+                    "from": { "id": 999, "first_name": "OpenFang", "username": "testbot", "is_bot": true },
+                    "chat": { "id": -200, "type": "group" },
+                    "date": 1699999950,
+                    "text": "Initial answer"
+                }
+            }
+        });
+
+        let client = test_client();
+        let msg = parse_telegram_update_test(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            Some("testbot"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            msg.metadata
+                .get("reply_to_message_id")
+                .and_then(|v| v.as_i64()),
+            Some(104)
+        );
+        assert_eq!(
+            msg.metadata
+                .get("reply_to_bot_message")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     #[tokio::test]
@@ -3992,6 +4069,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_token_retries_transient_local_api_failure() {
+        let _guard = local_api_test_guard().await;
         let (api_base_url, attempts, server_handle) = start_get_me_test_server(|attempt| {
             if attempt == 1 {
                 (
@@ -4077,6 +4155,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_token_does_not_retry_invalid_token_with_local_api() {
+        let _guard = local_api_test_guard().await;
         let (api_base_url, attempts, server_handle) = start_get_me_test_server(|_| {
             (
                 axum::http::StatusCode::UNAUTHORIZED,
@@ -4136,6 +4215,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_large_file_works_with_local_api() {
+        let _guard = local_api_test_guard().await;
         let (api_base_url, server_handle) = start_telegram_test_server().await;
         let client = test_client();
 
@@ -4183,6 +4263,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_media_group_preserves_original_item_order() {
+        let _guard = local_api_test_guard().await;
         let (api_base_url, server_handle) = start_telegram_test_server().await;
 
         let updates = vec![
@@ -4294,6 +4375,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_media_group_one_video_nine_images_summary_and_order() {
+        let _guard = local_api_test_guard().await;
         let (api_base_url, server_handle) = start_telegram_test_server().await;
         let mut updates = Vec::new();
         for idx in 0..10 {
@@ -4367,6 +4449,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_large_video_safe_limit_skips_getfile_with_structured_hint() {
+        let _guard = local_api_test_guard().await;
+        let oversized = LOCAL_API_SAFE_GETFILE_LIMIT + 1;
         let (api_base_url, calls, server_handle) = start_telegram_getfile_counter_server().await;
         let update = serde_json::json!({
             "update_id": 1200,
@@ -4380,7 +4464,7 @@ mod tests {
                     "file_id": "huge_video",
                     "file_unique_id": "hv",
                     "duration": 30,
-                    "file_size": 150 * 1024 * 1024
+                    "file_size": oversized
                 }
             }
         });

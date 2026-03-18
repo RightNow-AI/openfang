@@ -681,15 +681,20 @@ async fn dispatch_message(
                     }
                 }
                 GroupPolicy::MentionOnly => {
-                    // Only allow messages where the bot was @mentioned or commands.
+                    // Only allow messages where the bot was @mentioned, replied to, or commands.
                     let was_mentioned = message
                         .metadata
                         .get("was_mentioned")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
+                    let is_reply_to_bot = message
+                        .metadata
+                        .get("reply_to_bot_message")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     let is_command = matches!(&message.content, ChannelContent::Command { .. });
-                    if !was_mentioned && !is_command {
-                        debug!("Ignoring group message on {ct_str} (group_policy=mention_only, not mentioned)");
+                    if !was_mentioned && !is_reply_to_bot && !is_command {
+                        debug!("Ignoring group message on {ct_str} (group_policy=mention_only, not mentioned/reply-to-bot)");
                         return;
                     }
                 }
@@ -1790,6 +1795,7 @@ mod tests {
         agent_workspaces: Mutex<HashMap<AgentId, Option<PathBuf>>>,
         agent_tags: Mutex<HashMap<AgentId, Vec<String>>>,
         last_forwarded: Mutex<Option<String>>,
+        overrides: Option<ChannelOverrides>,
     }
 
     #[async_trait]
@@ -1862,6 +1868,9 @@ mod tests {
         async fn spawn_agent_by_name(&self, _manifest_name: &str) -> Result<AgentId, String> {
             Err("spawn not implemented in mock".to_string())
         }
+        async fn channel_overrides(&self, _channel_type: &str) -> Option<ChannelOverrides> {
+            self.overrides.clone()
+        }
     }
 
     struct MockAdapter {
@@ -1933,6 +1942,7 @@ mod tests {
             agent_workspaces: Mutex::new(HashMap::new()),
             agent_tags: Mutex::new(HashMap::new()),
             last_forwarded: Mutex::new(None),
+            overrides: None,
         });
 
         let handle: Arc<dyn ChannelBridgeHandle> = mock;
@@ -1957,6 +1967,7 @@ mod tests {
             agent_workspaces: Mutex::new(HashMap::new()),
             agent_tags: Mutex::new(HashMap::new()),
             last_forwarded: Mutex::new(None),
+            overrides: None,
         });
         let router = Arc::new(AgentRouter::new());
         let sender = ChannelUser {
@@ -1981,6 +1992,7 @@ mod tests {
             agent_workspaces: Mutex::new(HashMap::new()),
             agent_tags: Mutex::new(HashMap::new()),
             last_forwarded: Mutex::new(None),
+            overrides: None,
         });
         let router = Arc::new(AgentRouter::new());
         let sender = ChannelUser {
@@ -2047,6 +2059,113 @@ mod tests {
         assert_eq!(GroupPolicy::default(), GroupPolicy::MentionOnly);
     }
 
+    #[tokio::test]
+    async fn test_group_policy_mention_only_ignores_reply_to_non_bot_message() {
+        let agent_id = AgentId::new();
+        let mock = Arc::new(MockHandle {
+            agents: Mutex::new(vec![(agent_id, "chat-agent".to_string())]),
+            agent_workspaces: Mutex::new(HashMap::new()),
+            agent_tags: Mutex::new(HashMap::new()),
+            last_forwarded: Mutex::new(None),
+            overrides: Some(ChannelOverrides {
+                group_policy: GroupPolicy::MentionOnly,
+                ..ChannelOverrides::default()
+            }),
+        });
+        let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
+        let router = Arc::new(AgentRouter::new());
+        router.set_user_default("u1".to_string(), agent_id);
+        let adapter = Arc::new(MockAdapter::new());
+
+        let mut metadata = HashMap::new();
+        metadata.insert("reply_to_message_id".to_string(), serde_json::json!(42));
+        let msg = ChannelMessage {
+            channel: ChannelType::Telegram,
+            platform_message_id: "m1".to_string(),
+            sender: ChannelUser {
+                platform_id: "u1".to_string(),
+                display_name: "user".to_string(),
+                openfang_user: None,
+                metadata: None,
+            },
+            content: ChannelContent::Text("hello".to_string()),
+            target_agent: None,
+            timestamp: Utc::now(),
+            is_group: true,
+            thread_id: None,
+            metadata,
+        };
+
+        dispatch_message(
+            &msg,
+            &handle,
+            &router,
+            adapter.as_ref(),
+            &(adapter.clone() as Arc<dyn ChannelAdapter>),
+            &ChannelRateLimiter::default(),
+        )
+        .await;
+
+        assert!(mock.last_forwarded.lock().unwrap().is_none());
+        assert!(adapter.sent_texts.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_group_policy_mention_only_allows_reply_to_bot_message() {
+        let agent_id = AgentId::new();
+        let mock = Arc::new(MockHandle {
+            agents: Mutex::new(vec![(agent_id, "chat-agent".to_string())]),
+            agent_workspaces: Mutex::new(HashMap::new()),
+            agent_tags: Mutex::new(HashMap::new()),
+            last_forwarded: Mutex::new(None),
+            overrides: Some(ChannelOverrides {
+                group_policy: GroupPolicy::MentionOnly,
+                ..ChannelOverrides::default()
+            }),
+        });
+        let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
+        let router = Arc::new(AgentRouter::new());
+        router.set_user_default("u1".to_string(), agent_id);
+        let adapter = Arc::new(MockAdapter::new());
+
+        let mut metadata = HashMap::new();
+        metadata.insert("reply_to_message_id".to_string(), serde_json::json!(42));
+        metadata.insert("reply_to_bot_message".to_string(), serde_json::json!(true));
+        let msg = ChannelMessage {
+            channel: ChannelType::Telegram,
+            platform_message_id: "m1".to_string(),
+            sender: ChannelUser {
+                platform_id: "u1".to_string(),
+                display_name: "user".to_string(),
+                openfang_user: None,
+                metadata: None,
+            },
+            content: ChannelContent::Text("hello".to_string()),
+            target_agent: None,
+            timestamp: Utc::now(),
+            is_group: true,
+            thread_id: None,
+            metadata,
+        };
+
+        dispatch_message(
+            &msg,
+            &handle,
+            &router,
+            adapter.as_ref(),
+            &(adapter.clone() as Arc<dyn ChannelAdapter>),
+            &ChannelRateLimiter::default(),
+        )
+        .await;
+
+        assert_eq!(
+            mock.last_forwarded.lock().unwrap().as_deref(),
+            Some("hello")
+        );
+        let sent = adapter.sent_texts.lock().await.clone();
+        assert!(sent.iter().any(|text| text.contains("Echo: hello")));
+    }
+
     #[test]
     fn test_channel_type_str() {
         assert_eq!(channel_type_str(&ChannelType::Telegram), "telegram");
@@ -2068,6 +2187,7 @@ mod tests {
             agent_workspaces: Mutex::new(HashMap::new()),
             agent_tags: Mutex::new(HashMap::new()),
             last_forwarded: Mutex::new(None),
+            overrides: None,
         });
 
         let blocks = vec![
@@ -2098,6 +2218,7 @@ mod tests {
             agent_workspaces: Mutex::new(HashMap::new()),
             agent_tags: Mutex::new(HashMap::new()),
             last_forwarded: Mutex::new(None),
+            overrides: None,
         });
 
         let blocks = vec![ContentBlock::Image {
@@ -2188,6 +2309,7 @@ mod tests {
                 vec!["hand:shipinfabu".to_string()],
             )])),
             last_forwarded: Mutex::new(None),
+            overrides: None,
         });
         let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
         let router = Arc::new(AgentRouter::new());
@@ -2264,6 +2386,7 @@ mod tests {
                 vec!["hand:shipinfabu".to_string()],
             )])),
             last_forwarded: Mutex::new(None),
+            overrides: None,
         });
         let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
         let router = Arc::new(AgentRouter::new());
@@ -2333,6 +2456,7 @@ mod tests {
                 vec!["hand:shipinfabu".to_string()],
             )])),
             last_forwarded: Mutex::new(None),
+            overrides: None,
         });
         let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
         let router = Arc::new(AgentRouter::new());

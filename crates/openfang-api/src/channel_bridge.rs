@@ -1939,16 +1939,6 @@ pub async fn start_channel_bridge_with_config(
 pub async fn reload_channels_from_disk(
     state: &crate::routes::AppState,
 ) -> Result<Vec<String>, String> {
-    // Stop existing bridge
-    {
-        let mut guard = state.bridge_manager.lock().await;
-        if let Some(ref mut bridge) = *guard {
-            bridge.stop().await;
-        }
-        *guard = None;
-    }
-    state.kernel.channel_adapters.clear();
-
     // Re-read secrets.env so new API tokens are available in std::env
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
     if secrets_path.exists() {
@@ -1979,8 +1969,19 @@ pub async fn reload_channels_from_disk(
     }
 
     // Re-read config from disk
-    let config_path = state.kernel.config.home_dir.join("config.toml");
-    let fresh_config = openfang_kernel::config::load_config(Some(&config_path));
+    let config_path = state.kernel.config_path().to_path_buf();
+    let fresh_config = openfang_kernel::config::try_load_config(Some(&config_path))
+        .map_err(|e| format!("Config load failed: {e}"))?;
+
+    // Stop existing bridge only after the new config parsed successfully.
+    {
+        let mut guard = state.bridge_manager.lock().await;
+        if let Some(ref mut bridge) = *guard {
+            bridge.stop().await;
+        }
+        *guard = None;
+    }
+    state.kernel.channel_adapters.clear();
 
     // Update the live channels config so list_channels() reflects reality
     *state.channels_config.write().await = fresh_config.channels.clone();
@@ -2003,6 +2004,12 @@ pub async fn reload_channels_from_disk(
 
 #[cfg(test)]
 mod tests {
+    use crate::routes::AppState;
+    use openfang_kernel::OpenFangKernel;
+    use openfang_types::config::{ChannelsConfig, KernelConfig, TelegramConfig};
+    use std::sync::Arc;
+    use std::time::Instant;
+
     #[tokio::test]
     async fn test_bridge_skips_when_no_config() {
         let config = openfang_types::config::KernelConfig::default();
@@ -2049,5 +2056,36 @@ mod tests {
         assert!(config.channels.gotify.is_none());
         assert!(config.channels.webhook.is_none());
         assert!(config.channels.linkedin.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_reload_channels_from_disk_keeps_live_config_on_parse_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("config.toml"), "channels = [").unwrap();
+
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            ..KernelConfig::default()
+        })
+        .unwrap();
+
+        let state = Arc::new(AppState {
+            kernel: Arc::new(kernel),
+            started_at: Instant::now(),
+            bridge_manager: tokio::sync::Mutex::new(None),
+            channels_config: tokio::sync::RwLock::new(ChannelsConfig {
+                telegram: Some(TelegramConfig::default()),
+                ..ChannelsConfig::default()
+            }),
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            clawhub_cache: dashmap::DashMap::new(),
+            provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        });
+
+        let err = super::reload_channels_from_disk(&state).await.unwrap_err();
+
+        assert!(err.contains("Config load failed"));
+        assert!(state.channels_config.read().await.telegram.is_some());
     }
 }
