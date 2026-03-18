@@ -948,20 +948,65 @@ fn is_process_alive(pid: u32) -> bool {
 /// This avoids false positives where a different process reused the same PID
 /// after a system reboot.
 fn is_daemon_responding(addr: &str) -> bool {
-    // Quick TCP connect check — don't make a full HTTP request to avoid delays
+    use std::io::{Read, Write};
+
     let addr_only = addr
         .strip_prefix("http://")
         .or_else(|| addr.strip_prefix("https://"))
         .unwrap_or(addr);
-    if let Ok(sock_addr) = addr_only.parse::<std::net::SocketAddr>() {
-        std::net::TcpStream::connect_timeout(&sock_addr, std::time::Duration::from_millis(500))
-            .is_ok()
+    let connect_timeout = std::time::Duration::from_millis(500);
+    let io_timeout = Some(std::time::Duration::from_millis(750));
+    let mut stream = if let Ok(sock_addr) = addr_only.parse::<std::net::SocketAddr>() {
+        match std::net::TcpStream::connect_timeout(&sock_addr, connect_timeout) {
+            Ok(stream) => stream,
+            Err(_) => return false,
+        }
     } else {
-        // Fallback: try connecting to hostname
-        std::net::TcpStream::connect(addr_only)
-            .map(|_| true)
-            .unwrap_or(false)
+        match std::net::TcpStream::connect(addr_only) {
+            Ok(stream) => stream,
+            Err(_) => return false,
+        }
+    };
+
+    let _ = stream.set_read_timeout(io_timeout);
+    let _ = stream.set_write_timeout(io_timeout);
+
+    let host_header = addr_only
+        .parse::<std::net::SocketAddr>()
+        .map(|sock| sock.to_string())
+        .unwrap_or_else(|_| addr_only.to_string());
+    let request =
+        format!("GET /api/health HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
     }
+
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+
+    let mut parts = response.splitn(2, "\r\n\r\n");
+    let headers = parts.next().unwrap_or_default();
+    let body = parts.next().unwrap_or_default();
+
+    if !(headers.starts_with("HTTP/1.1 200") || headers.starts_with("HTTP/1.0 200")) {
+        return false;
+    }
+
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .map(|payload| {
+            payload
+                .get("status")
+                .and_then(|value| value.as_str())
+                .is_some()
+                && payload
+                    .get("version")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+        })
+        .unwrap_or(false)
 }
 
 fn snapshot_config_dependencies(
@@ -1148,5 +1193,41 @@ mod tests {
 
         assert!(paths.contains(&root.canonicalize().unwrap()));
         assert!(paths.contains(&include.canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn is_daemon_responding_requires_openfang_health_payload() {
+        use std::io::{Read, Write};
+        use std::sync::mpsc;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request = [0u8; 512];
+                let _ = stream.read(&mut request);
+                let body = r#"{"status":"ok","version":"test"}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        ready_rx.recv().unwrap();
+        assert!(is_daemon_responding(&addr.to_string()));
+    }
+
+    #[test]
+    fn is_daemon_responding_rejects_non_openfang_tcp_listener() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        assert!(!is_daemon_responding(&addr.to_string()));
     }
 }

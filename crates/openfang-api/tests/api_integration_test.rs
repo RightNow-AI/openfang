@@ -12,6 +12,7 @@ use openfang_api::middleware;
 use openfang_api::routes::{self, AppState};
 use openfang_api::ws;
 use openfang_kernel::OpenFangKernel;
+use openfang_memory::MemorySubstrate;
 use openfang_types::config::{ChannelsConfig, DefaultModelConfig, KernelConfig, TelegramConfig};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -361,6 +362,118 @@ async fn test_health_detail_accepts_runtime_env_file_credentials() {
 }
 
 #[tokio::test]
+async fn test_health_detail_degrades_when_agent_restore_fails() {
+    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
+    let db_path = tmp.path().join("data").join("openfang.db");
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let memory = MemorySubstrate::open(&db_path, 0.05).unwrap();
+    {
+        let conn = memory.usage_conn();
+        let conn = conn.lock().unwrap();
+        let session_id = openfang_types::agent::SessionId::new().0.to_string();
+        conn.execute_batch(&format!(
+            "ALTER TABLE agents ADD COLUMN session_id TEXT DEFAULT '';
+             ALTER TABLE agents ADD COLUMN identity TEXT DEFAULT '{{}}';
+             INSERT INTO agents (id, name, manifest, state, created_at, updated_at, session_id, identity)
+             VALUES ('not-a-uuid', 'broken-agent', X'00', '\"Running\"', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{session_id}', '{{}}');"
+        ))
+        .unwrap();
+    }
+
+    let config = KernelConfig {
+        home_dir: tmp.path().to_path_buf(),
+        data_dir: tmp.path().join("data"),
+        default_model: DefaultModelConfig {
+            provider: "ollama".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: "OLLAMA_API_KEY".to_string(),
+            base_url: None,
+        },
+        ..KernelConfig::default()
+    };
+
+    let server = start_test_server_with_config(config, tmp).await;
+    let client = reqwest::Client::new();
+
+    let status_resp = client
+        .get(format!("{}/api/status", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    let status_body: serde_json::Value = status_resp.json().await.unwrap();
+    assert_eq!(status_body["agent_count"], 0);
+
+    let resp = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["readiness"]["ready"], false);
+    assert!(body["readiness"]["failing_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "agent_restore"));
+    assert_eq!(body["restore_warnings"]["persisted_agent_rows"], 1);
+    assert_eq!(body["restore_warnings"]["restored_agent_rows"], 0);
+    assert!(body["restore_warnings"]["agent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .unwrap_or_default()
+            .contains("invalid UUID")));
+}
+
+#[tokio::test]
+async fn test_health_detail_degrades_when_cron_restore_fails() {
+    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
+    std::fs::write(tmp.path().join("cron_jobs.json"), "{bad json").unwrap();
+
+    let config = KernelConfig {
+        home_dir: tmp.path().to_path_buf(),
+        data_dir: tmp.path().join("data"),
+        default_model: DefaultModelConfig {
+            provider: "ollama".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: "OLLAMA_API_KEY".to_string(),
+            base_url: None,
+        },
+        ..KernelConfig::default()
+    };
+
+    let server = start_test_server_with_config(config, tmp).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "degraded");
+    assert!(body["readiness"]["failing_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "cron_restore"));
+    assert!(body["restore_warnings"]["cron"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .unwrap_or_default()
+            .contains("cron restore failed")));
+}
+
+#[tokio::test]
 async fn test_metrics_expose_readiness_gauges() {
     let server = start_test_server().await;
     let client = reqwest::Client::new();
@@ -377,6 +490,7 @@ async fn test_metrics_expose_readiness_gauges() {
     assert!(body.contains("openfang_readiness_ready"));
     assert!(body.contains("openfang_database_ok"));
     assert!(body.contains("openfang_config_warnings"));
+    assert!(body.contains("openfang_restore_warnings"));
 }
 
 #[tokio::test]
@@ -897,7 +1011,12 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
             "/api/health/detail",
             axum::routing::get(routes::health_detail),
         )
+        .route(
+            "/api/metrics",
+            axum::routing::get(routes::prometheus_metrics),
+        )
         .route("/api/status", axum::routing::get(routes::status))
+        .route("/api/commands", axum::routing::get(|| async { "ok" }))
         .route(
             "/api/agents",
             axum::routing::get(routes::list_agents).post(routes::spawn_agent),
@@ -1087,6 +1206,27 @@ async fn test_auth_health_detail_requires_auth() {
 
     let authenticated = client
         .get(format!("{}/api/health/detail", server.base_url))
+        .header("authorization", "Bearer secret-key-123")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(authenticated.status(), 200);
+}
+
+#[tokio::test]
+async fn test_auth_metrics_requires_auth() {
+    let server = start_test_server_with_auth("secret-key-123").await;
+    let client = reqwest::Client::new();
+
+    let unauthenticated = client
+        .get(format!("{}/api/metrics", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), 401);
+
+    let authenticated = client
+        .get(format!("{}/api/metrics", server.base_url))
         .header("authorization", "Bearer secret-key-123")
         .send()
         .await

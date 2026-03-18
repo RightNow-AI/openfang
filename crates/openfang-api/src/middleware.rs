@@ -8,6 +8,7 @@
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, Response, StatusCode};
 use axum::middleware::Next;
+use std::net::IpAddr;
 use std::time::Instant;
 use tracing::{info, Instrument};
 
@@ -87,6 +88,71 @@ fn request_is_loopback(request: &Request<Body>) -> bool {
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|ci| ci.0.ip().is_loopback())
         .unwrap_or(false)
+}
+
+fn normalize_forwarded_ip(raw: &str) -> Option<IpAddr> {
+    let mut candidate = raw.trim().trim_matches('"');
+    if candidate.is_empty() || candidate.eq_ignore_ascii_case("unknown") {
+        return None;
+    }
+
+    if let Some(rest) = candidate.strip_prefix("for=") {
+        candidate = rest.trim().trim_matches('"');
+    }
+
+    if let Some(rest) = candidate.strip_prefix('[') {
+        if let Some((host, _port)) = rest.split_once("]:") {
+            candidate = host;
+        } else if let Some(host) = rest.strip_suffix(']') {
+            candidate = host;
+        }
+    }
+
+    if let Ok(ip) = candidate.parse::<IpAddr>() {
+        return Some(ip);
+    }
+
+    if let Some((host, port)) = candidate.rsplit_once(':') {
+        if !host.contains(':') && !port.is_empty() {
+            return host.parse::<IpAddr>().ok();
+        }
+    }
+
+    None
+}
+
+fn forwarded_header_indicates_remote_client(headers: &HeaderMap) -> bool {
+    let candidate_values = [
+        headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .map(|value| value.split(',').map(str::trim).collect::<Vec<_>>()),
+        headers
+            .get("x-real-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(|value| vec![value.trim()]),
+        headers
+            .get("forwarded")
+            .and_then(|v| v.to_str().ok())
+            .map(|value| {
+                value
+                    .split(';')
+                    .flat_map(|part| part.split(','))
+                    .map(str::trim)
+                    .filter(|part| part.starts_with("for="))
+                    .collect::<Vec<_>>()
+            }),
+    ];
+
+    candidate_values.into_iter().flatten().flatten().any(|raw| {
+        normalize_forwarded_ip(raw)
+            .map(|ip| !ip.is_loopback())
+            .unwrap_or(true)
+    })
+}
+
+fn request_is_effective_loopback(request: &Request<Body>) -> bool {
+    request_is_loopback(request) && !forwarded_header_indicates_remote_client(request.headers())
 }
 
 fn query_token_allowed(path: &str, method: &axum::http::Method) -> bool {
@@ -233,7 +299,7 @@ pub async fn auth(
 
     // Shutdown is loopback-only (CLI on same machine) — skip token auth
     let path = request.uri().path();
-    if path == "/api/shutdown" && request_is_loopback(&request) {
+    if path == "/api/shutdown" && request_is_effective_loopback(&request) {
         return next.run(request).await;
     }
 
@@ -266,7 +332,7 @@ pub async fn auth(
         path,
         request.headers(),
         request.uri().query(),
-        request_is_loopback(&request),
+        request_is_effective_loopback(&request),
     ) {
         Ok(()) => next.run(request).await,
         Err(error) => auth_error_response(error),
@@ -340,6 +406,61 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_loopback_proxy_request_with_forwarded_remote_ip_is_forbidden_when_auth_disabled()
+    {
+        let auth_state = AuthState {
+            api_key: String::new(),
+            auth_enabled: false,
+            session_secret: "secret".to_string(),
+        };
+        let app = Router::new()
+            .route("/api/status", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(auth_state, auth));
+        let mut request = Request::builder()
+            .uri("/api/status")
+            .header("x-forwarded-for", "198.51.100.42")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                4242,
+            ))));
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_loopback_proxy_request_with_forwarded_ipv6_loopback_stays_allowed() {
+        let auth_state = AuthState {
+            api_key: String::new(),
+            auth_enabled: false,
+            session_secret: "secret".to_string(),
+        };
+        let app = Router::new()
+            .route("/api/status", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(auth_state, auth));
+        let mut request = Request::builder()
+            .uri("/api/status")
+            .header("forwarded", "for=\"[::1]:1234\"")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                std::net::Ipv6Addr::LOCALHOST,
+                4242,
+            ))));
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

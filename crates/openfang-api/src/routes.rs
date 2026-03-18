@@ -3326,6 +3326,7 @@ struct RuntimeHealthSnapshot {
     panic_count: u64,
     restart_count: u64,
     config_warnings: Vec<String>,
+    restore_warnings: openfang_kernel::RestoreHealthStatus,
     default_provider_auth: String,
     failing_checks: Vec<String>,
     ready: bool,
@@ -3344,6 +3345,7 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
         .is_ok();
 
     let config_warnings = state.kernel.runtime_config_warnings();
+    let restore_warnings = state.kernel.runtime_restore_warnings();
     let effective_default_model = state.kernel.effective_default_model_config();
     let default_provider_auth = state
         .kernel
@@ -3370,6 +3372,15 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
     if !config_warnings.is_empty() {
         failing_checks.push("config_warnings".to_string());
     }
+    if !restore_warnings.agent_warnings.is_empty() {
+        failing_checks.push("agent_restore".to_string());
+    }
+    if !restore_warnings.cron_warnings.is_empty() {
+        failing_checks.push("cron_restore".to_string());
+    }
+    if !restore_warnings.hand_warnings.is_empty() {
+        failing_checks.push("hand_restore".to_string());
+    }
     if default_provider_auth == "missing" {
         failing_checks.push("default_provider_auth".to_string());
     }
@@ -3380,6 +3391,7 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
         panic_count: health.panic_count,
         restart_count: health.restart_count,
         config_warnings,
+        restore_warnings,
         default_provider_auth,
         ready: failing_checks.is_empty(),
         failing_checks,
@@ -3401,6 +3413,13 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
         "agent_count": state.kernel.registry.count(),
         "database": if snapshot.db_ok { "connected" } else { "error" },
         "config_warnings": snapshot.config_warnings,
+        "restore_warnings": {
+            "persisted_agent_rows": snapshot.restore_warnings.persisted_agent_rows,
+            "restored_agent_rows": snapshot.restore_warnings.restored_agent_rows,
+            "agent": snapshot.restore_warnings.agent_warnings,
+            "cron": snapshot.restore_warnings.cron_warnings,
+            "hand": snapshot.restore_warnings.hand_warnings,
+        },
         "readiness": {
             "ready": snapshot.ready,
             "default_provider_auth": snapshot.default_provider_auth,
@@ -3495,6 +3514,12 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
     out.push_str(&format!(
         "openfang_config_warnings {}\n\n",
         snapshot.config_warnings.len()
+    ));
+    out.push_str("# HELP openfang_restore_warnings Number of active restore warnings.\n");
+    out.push_str("# TYPE openfang_restore_warnings gauge\n");
+    out.push_str(&format!(
+        "openfang_restore_warnings {}\n\n",
+        snapshot.restore_warnings.total_warning_count()
     ));
 
     // Per-agent token and tool usage
