@@ -923,8 +923,8 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
     // ── Budget, Network, A2A ──
 
     async fn budget_text(&self) -> String {
-        let budget = &self.kernel.config.budget;
-        let status = self.kernel.metering.budget_status(budget);
+        let budget = self.kernel.effective_budget_config();
+        let status = self.kernel.metering.budget_status(&budget);
 
         let fmt_limit = |v: f64| -> String {
             if v > 0.0 {

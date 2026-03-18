@@ -12,6 +12,8 @@ Environment:
   OPENFANG_HOME              Runtime home to inspect (default: $HOME/.openfang)
   OPENFANG_BASE_URL          Base URL override (default: http://127.0.0.1:4200)
   OPENFANG_API_KEY           Bearer token used for protected API checks
+  OPENFANG_ENV_FILE          Optional external env file (for example /etc/openfang/env)
+                             If unset, preflight auto-detects /etc/openfang/env when present
   OPENFANG_PREFLIGHT_OFFLINE Set to 1/true/yes/on to skip live API checks
 EOF
 }
@@ -52,6 +54,15 @@ done
 OPENFANG_HOME="${OPENFANG_HOME:-$HOME/.openfang}"
 BASE_URL_OVERRIDE="${BASE_URL_CLI_ARG:-${OPENFANG_BASE_URL:-}}"
 CONFIG_PATH="${OPENFANG_HOME}/config.toml"
+EXTERNAL_ENV_FILE="${OPENFANG_ENV_FILE:-}"
+if [[ -z "${EXTERNAL_ENV_FILE}" && -f /etc/openfang/env ]]; then
+  EXTERNAL_ENV_FILE="/etc/openfang/env"
+fi
+
+if [[ -n "${OPENFANG_ENV_FILE:-}" && ! -f "${OPENFANG_ENV_FILE}" ]]; then
+  echo "OPENFANG_ENV_FILE was set but file does not exist: ${OPENFANG_ENV_FILE}" >&2
+  exit 1
+fi
 
 for cmd in python3 curl; do
   if ! command -v "${cmd}" >/dev/null 2>&1; then
@@ -67,7 +78,7 @@ fi
 
 runtime_inspect() {
   local mode="$1"
-  python3 - "${CONFIG_PATH}" "${OPENFANG_HOME}" "${mode}" <<'PY'
+  python3 - "${CONFIG_PATH}" "${OPENFANG_HOME}" "${mode}" "${EXTERNAL_ENV_FILE}" <<'PY'
 import ipaddress
 import os
 import stat
@@ -115,12 +126,19 @@ def parse_env_file(path):
     return values
 
 
-def effective_env(home_dir):
-    env = dict(os.environ)
+def effective_env(home_dir, external_env_path):
+    env = {}
+
+    # Runtime env files: secrets.env overrides .env
     for env_path in (home_dir / ".env", home_dir / "secrets.env"):
-        for key, value in parse_env_file(env_path).items():
-            if key not in os.environ:
-                env[key] = value
+        env.update(parse_env_file(env_path))
+
+    # Optional external env file (for example systemd EnvironmentFile path)
+    if external_env_path is not None:
+        env.update(parse_env_file(external_env_path))
+
+    # Process environment has final override priority.
+    env.update(os.environ)
     return env
 
 
@@ -241,9 +259,11 @@ def base_url_for(listen_addr):
 config_path = Path(sys.argv[1])
 openfang_home = Path(sys.argv[2])
 mode = sys.argv[3]
+external_env_arg = sys.argv[4].strip() if len(sys.argv) > 4 else ""
+external_env_path = Path(external_env_arg) if external_env_arg else None
 
 cfg = load_config_with_includes(config_path)
-env = effective_env(openfang_home)
+env = effective_env(openfang_home, external_env_path)
 
 auth_cfg = cfg.get("auth") or {}
 if not isinstance(auth_cfg, dict):
@@ -275,7 +295,10 @@ if mode != "validate":
 print("\n== Config Baseline ==")
 print(f"ok  api_listen={api_listen}")
 print(f"ok  effective_base_url={base_url_for(api_listen)}")
-print("ok  config_resolution=config.toml + includes + runtime env precedence")
+if external_env_path is not None and external_env_path.exists():
+    print("ok  config_resolution=config.toml + includes + runtime env + external env + process env precedence")
+else:
+    print("ok  config_resolution=config.toml + includes + runtime env + process env precedence")
 
 if is_public_bind(api_listen) and not effective_api_key and not (auth_enabled and password_hash):
     raise SystemExit(
@@ -304,12 +327,15 @@ else:
 
 if os.name == "posix":
     print("\n== Sensitive File Permissions ==")
-    for candidate in (
+    candidates = [
         config_path,
         openfang_home / ".env",
         openfang_home / "secrets.env",
         openfang_home / "vault.enc",
-    ):
+    ]
+    if external_env_path is not None:
+        candidates.append(external_env_path)
+    for candidate in candidates:
         if not candidate.exists():
             continue
         mode_bits = stat.S_IMODE(candidate.stat().st_mode)
@@ -426,6 +452,14 @@ if [[ -f "${OPENFANG_HOME}/.env" ]]; then
   echo "ok  ${OPENFANG_HOME}/.env"
 else
   echo "warn ${OPENFANG_HOME}/.env missing"
+fi
+
+if [[ -n "${EXTERNAL_ENV_FILE}" ]]; then
+  if [[ -f "${EXTERNAL_ENV_FILE}" ]]; then
+    echo "ok  ${EXTERNAL_ENV_FILE} (external env file)"
+  else
+    echo "warn ${EXTERNAL_ENV_FILE} missing (external env file)"
+  fi
 fi
 
 if [[ -f "${OPENFANG_HOME}/vault.enc" ]]; then

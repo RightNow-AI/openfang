@@ -33,7 +33,7 @@ pub struct PairingRequest {
 
 /// Persistence callback — kernel injects this so PairingManager can save without
 /// taking a direct dependency on openfang-memory.
-pub type PersistFn = Box<dyn Fn(&PairedDevice, PersistOp) + Send + Sync>;
+pub type PersistFn = Box<dyn Fn(&PairedDevice, PersistOp) -> Result<(), String> + Send + Sync>;
 
 /// Persistence operation kind.
 #[derive(Debug, Clone, Copy)]
@@ -154,9 +154,13 @@ impl PairingManager {
         let device_id = device_info.device_id.clone();
         self.devices.insert(device_id.clone(), device_info.clone());
 
-        // Persist to database
+        // Persist to database before reporting success so in-memory and durable
+        // state do not diverge on write failure.
         if let Some(ref persist) = self.persist {
-            persist(&device_info, PersistOp::Save);
+            if let Err(err) = persist(&device_info, PersistOp::Save) {
+                self.devices.remove(&device_id);
+                return Err(format!("Failed to persist paired device: {err}"));
+            }
         }
 
         debug!(device_id = %device_id, "Device paired successfully");
@@ -176,9 +180,13 @@ impl PairingManager {
             .remove(device_id)
             .ok_or_else(|| format!("Device '{device_id}' not found"))?;
 
-        // Persist removal to database
+        // Persist removal before committing the in-memory delete.
         if let Some(ref persist) = self.persist {
-            persist(&removed.1, PersistOp::Remove);
+            if let Err(err) = persist(&removed.1, PersistOp::Remove) {
+                self.devices
+                    .insert(removed.1.device_id.clone(), removed.1.clone());
+                return Err(format!("Failed to persist paired device removal: {err}"));
+            }
         }
 
         Ok(())
@@ -470,6 +478,48 @@ mod tests {
     fn test_remove_nonexistent_device() {
         let mgr = PairingManager::new(enabled_config());
         assert!(mgr.remove_device("nonexistent").is_err());
+    }
+
+    #[test]
+    fn test_pairing_rolls_back_on_persist_failure() {
+        let mut mgr = PairingManager::new(enabled_config());
+        mgr.set_persist(Box::new(|_, _| Err("db offline".to_string())));
+
+        let req = mgr.create_pairing_request().unwrap();
+        let device = PairedDevice {
+            device_id: "dev-1".to_string(),
+            display_name: "My Phone".to_string(),
+            platform: "android".to_string(),
+            paired_at: chrono::Utc::now(),
+            last_seen: chrono::Utc::now(),
+            push_token: None,
+        };
+
+        let result = mgr.complete_pairing(&req.token, device);
+        assert!(result.is_err());
+        assert!(mgr.devices.is_empty());
+    }
+
+    #[test]
+    fn test_remove_device_rolls_back_on_persist_failure() {
+        let mgr = PairingManager::new(enabled_config());
+        let req = mgr.create_pairing_request().unwrap();
+        let device = PairedDevice {
+            device_id: "dev-1".to_string(),
+            display_name: "My Phone".to_string(),
+            platform: "android".to_string(),
+            paired_at: chrono::Utc::now(),
+            last_seen: chrono::Utc::now(),
+            push_token: None,
+        };
+        mgr.complete_pairing(&req.token, device).unwrap();
+
+        let mut mgr = mgr;
+        mgr.set_persist(Box::new(|_, _| Err("db offline".to_string())));
+
+        let result = mgr.remove_device("dev-1");
+        assert!(result.is_err());
+        assert_eq!(mgr.devices.len(), 1);
     }
 
     #[test]

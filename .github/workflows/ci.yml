@@ -214,9 +214,9 @@ jobs:
           chmod 0666 "$docker_home/config.toml"
           docker run --rm openfang-ci-smoke --version >/dev/null
           docker run -d --name openfang-ci-smoke \
-            -p 127.0.0.1:4210:4200 \
+            -p 127.0.0.1:4210:4310 \
             -v "$docker_home:/data" \
-            -e OPENFANG_LISTEN=0.0.0.0:4200 \
+            -e OPENFANG_LISTEN=0.0.0.0:4310 \
             -e OPENFANG_API_KEY="$OPENFANG_API_KEY" \
             openfang-ci-smoke start
 
@@ -228,6 +228,14 @@ jobs:
           done
 
           curl -fsS "$OPENFANG_BASE_URL/api/health" >/dev/null
+          for _ in $(seq 1 30); do
+            health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' openfang-ci-smoke)"
+            if [[ "$health_status" == "healthy" ]]; then
+              break
+            fi
+            sleep 2
+          done
+          test "$health_status" = "healthy"
           bash scripts/smoke-openfang.sh "$OPENFANG_BASE_URL"
       - name: Upload Docker smoke log on failure
         if: failure()
@@ -261,11 +269,14 @@ jobs:
         run: |
           export OPENFANG_HOME="$RUNNER_TEMP/openfang-home"
           export OPENFANG_SKIP_SAFETY_BACKUP=1
+          export OPENFANG_ENV_FILE="$RUNNER_TEMP/openfang-system-env/env"
           mkdir -p "$OPENFANG_HOME/data" "$OPENFANG_HOME/agents" "$OPENFANG_HOME/config.d"
+          mkdir -p "$(dirname "$OPENFANG_ENV_FILE")"
           printf 'include = ["config.d/providers.toml"]\napi_listen = "127.0.0.1:4200"\n' > "$OPENFANG_HOME/config.toml"
           printf 'log_level = "debug"\n' > "$OPENFANG_HOME/config.d/providers.toml"
           printf 'GROQ_API_KEY=test-key\n' > "$OPENFANG_HOME/.env"
           printf 'OPENFANG_API_KEY=backup-restore-secret\n' > "$OPENFANG_HOME/secrets.env"
+          printf 'OPENFANG_API_KEY=external-secret\nEXTERNAL_ONLY=from-external\n' > "$OPENFANG_ENV_FILE"
           printf '[{"id":"custom-demo","provider":"groq"}]\n' > "$OPENFANG_HOME/custom_models.json"
           printf '[[installed]]\nid = "github"\nenabled = true\n' > "$OPENFANG_HOME/integrations.toml"
           printf 'demo = true\n' > "$OPENFANG_HOME/agents/example.toml"
@@ -284,6 +295,7 @@ jobs:
           mkdir -p "$OPENFANG_HOME/stale"
           printf 'include = ["stale/legacy.toml"]\napi_listen = "127.0.0.1:4300"\n' > "$OPENFANG_HOME/config.toml"
           printf 'log_level = "trace"\n' > "$OPENFANG_HOME/stale/legacy.toml"
+          printf 'OPENFANG_API_KEY=drifted\n' > "$OPENFANG_ENV_FILE"
           bash scripts/restore-openfang.sh "$backup_dir" --yes
           test -f "$OPENFANG_HOME/config.toml"
           test -f "$OPENFANG_HOME/config.d/providers.toml"
@@ -299,6 +311,8 @@ jobs:
           grep -q '"custom-demo"' "$OPENFANG_HOME/custom_models.json"
           grep -q 'id = "github"' "$OPENFANG_HOME/integrations.toml"
           grep -q 'demo = true' "$OPENFANG_HOME/agents/example.toml"
+          grep -q 'OPENFANG_API_KEY=external-secret' "$OPENFANG_ENV_FILE"
+          grep -q 'EXTERNAL_ONLY=from-external' "$OPENFANG_ENV_FILE"
           python3 - <<'PY'
           import os
           import stat
@@ -312,6 +326,9 @@ jobs:
             path = os.path.join(os.environ["OPENFANG_HOME"], rel)
             mode = stat.S_IMODE(os.stat(path).st_mode)
             assert mode & 0o077 == 0, (rel, oct(mode))
+          external_env = os.environ["OPENFANG_ENV_FILE"]
+          external_mode = stat.S_IMODE(os.stat(external_env).st_mode)
+          assert external_mode & 0o077 == 0, oct(external_mode)
           include_path = os.path.join(os.environ["OPENFANG_HOME"], "config.d", "providers.toml")
           include_mode = stat.S_IMODE(os.stat(include_path).st_mode)
           assert include_mode & 0o077 == 0, oct(include_mode)

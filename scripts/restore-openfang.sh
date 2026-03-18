@@ -10,6 +10,8 @@ Restore an OpenFang runtime backup created by backup-openfang.sh.
 
 Environment:
   OPENFANG_HOME               Restore target (default: $HOME/.openfang)
+  OPENFANG_ENV_FILE           Optional external env restore target (for example /etc/openfang/env)
+                              If unset, restore auto-detects /etc/openfang/env when present
   OPENFANG_SKIP_SAFETY_BACKUP Set to 1 to skip creating a pre-restore backup
   OPENFANG_ALLOW_LEGACY_RESTORE Set to 1 to restore a directory without BACKUP.txt
   OPENFANG_UID                Target owner uid for restored files (optional)
@@ -217,6 +219,27 @@ validate_backup_dir() {
 }
 
 validate_backup_dir
+
+backup_manifest_value() {
+  local key="$1"
+  local value
+  value="$(
+    grep -E "^${key}=" "${BACKUP_DIR}/BACKUP.txt" 2>/dev/null \
+      | tail -n 1 \
+      | cut -d '=' -f2-
+  )"
+  printf '%s' "${value}"
+}
+
+BACKUP_EXTERNAL_ENV_SOURCE="$(backup_manifest_value external_env_source)"
+EXTERNAL_ENV_FILE="${OPENFANG_ENV_FILE:-}"
+if [[ -z "${EXTERNAL_ENV_FILE}" && -f /etc/openfang/env ]]; then
+  EXTERNAL_ENV_FILE="/etc/openfang/env"
+fi
+if [[ -z "${EXTERNAL_ENV_FILE}" && -n "${BACKUP_EXTERNAL_ENV_SOURCE}" ]]; then
+  EXTERNAL_ENV_FILE="${BACKUP_EXTERNAL_ENV_SOURCE}"
+  echo "warn external env target auto-derived from backup manifest: ${EXTERNAL_ENV_FILE}" >&2
+fi
 
 daemon_health_url() {
   local daemon_info_path="$1"
@@ -441,6 +464,31 @@ restore_config_tree() {
   done < <(config_dependency_paths "${source_config}")
 }
 
+restore_external_env_file() {
+  local backup_env_file="$1"
+  local target_env_file="$2"
+
+  if [[ ! -f "${backup_env_file}" ]]; then
+    return 0
+  fi
+
+  if [[ -z "${target_env_file}" ]]; then
+    echo "warn backup includes external-env.env but no target path was resolved. Set OPENFANG_ENV_FILE to restore it." >&2
+    return 0
+  fi
+
+  if ! mkdir -p "$(dirname "${target_env_file}")" 2>/dev/null; then
+    echo "warn could not create directory for external env file ${target_env_file}; skipping external env restore." >&2
+    return 0
+  fi
+  if ! cp -a "${backup_env_file}" "${target_env_file}" 2>/dev/null; then
+    echo "warn could not restore external env file to ${target_env_file}; check permissions or set OPENFANG_ENV_FILE explicitly." >&2
+    return 0
+  fi
+  chmod 600 "${target_env_file}" 2>/dev/null || true
+  echo "ok  restored external env file ${target_env_file}"
+}
+
 harden_permissions() {
   local target_home="$1"
   chmod go-rwx "${target_home}" 2>/dev/null || true
@@ -548,6 +596,7 @@ fi
 
 STAGING_HOME=""
 rm -rf "${ROLLBACK_HOME}"
+restore_external_env_file "${BACKUP_DIR}/external-env.env" "${EXTERNAL_ENV_FILE}"
 
 echo "Restore completed."
 echo "Next steps:"

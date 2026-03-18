@@ -162,6 +162,8 @@ pub struct OpenFangKernel {
     /// Hot-reloadable default model override (set via config hot-reload, read at agent spawn).
     pub default_model_override:
         std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
+    /// Hot-reloadable budget override used by runtime edits and config reload.
+    pub budget_override: std::sync::RwLock<Option<openfang_types::config::BudgetConfig>>,
     /// Effective provider URL overrides after runtime writes and hot-reload.
     pub effective_provider_urls: std::sync::RwLock<std::collections::HashMap<String, String>>,
     /// Per-agent message locks — serializes LLM calls for the same agent to prevent
@@ -595,27 +597,6 @@ impl OpenFangKernel {
             }
         }
 
-        // Validate configuration and log warnings
-        let warnings = config.validate();
-        for w in &warnings {
-            warn!("Config: {}", w);
-        }
-
-        // Ensure data directory exists
-        std::fs::create_dir_all(&config.data_dir)
-            .map_err(|e| KernelError::BootFailed(format!("Failed to create data dir: {e}")))?;
-
-        // Initialize memory substrate
-        let db_path = config
-            .memory
-            .sqlite_path
-            .clone()
-            .unwrap_or_else(|| config.data_dir.join("openfang.db"));
-        let memory = Arc::new(
-            MemorySubstrate::open(&db_path, config.memory.decay_rate)
-                .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
-        );
-
         // Initialize credential resolver (vault → dotenv → env var)
         let credential_resolver = {
             let vault_path = config.home_dir.join("vault.enc");
@@ -637,6 +618,34 @@ impl OpenFangKernel {
             let dotenv_path = config.home_dir.join(".env");
             openfang_extensions::credentials::CredentialResolver::new(vault, Some(&dotenv_path))
         };
+
+        // Validate configuration and log warnings against the full runtime
+        // credential chain so vault/.env-backed deployments do not report
+        // false missing-secret warnings.
+        let warnings = config.validate_with_credential_lookup(|key| {
+            credential_resolver
+                .resolve(key)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        });
+        for w in &warnings {
+            warn!("Config: {}", w);
+        }
+
+        // Ensure data directory exists
+        std::fs::create_dir_all(&config.data_dir)
+            .map_err(|e| KernelError::BootFailed(format!("Failed to create data dir: {e}")))?;
+
+        // Initialize memory substrate
+        let db_path = config
+            .memory
+            .sqlite_path
+            .clone()
+            .unwrap_or_else(|| config.data_dir.join("openfang.db"));
+        let memory = Arc::new(
+            MemorySubstrate::open(&db_path, config.memory.decay_rate)
+                .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
+        );
 
         // Create LLM driver.
         // For the API key, try: 1) credential resolver (vault → dotenv → env var),
@@ -1007,23 +1016,27 @@ impl OpenFangKernel {
 
             let persist_memory = Arc::clone(&memory);
             pairing.set_persist(Box::new(move |device, op| match op {
-                crate::pairing::PersistOp::Save => {
-                    if let Err(e) = persist_memory.save_paired_device(
+                crate::pairing::PersistOp::Save => persist_memory
+                    .save_paired_device(
                         &device.device_id,
                         &device.display_name,
                         &device.platform,
                         &device.paired_at.to_rfc3339(),
                         &device.last_seen.to_rfc3339(),
                         device.push_token.as_deref(),
-                    ) {
-                        tracing::warn!("Failed to persist paired device: {e}");
-                    }
-                }
-                crate::pairing::PersistOp::Remove => {
-                    if let Err(e) = persist_memory.remove_paired_device(&device.device_id) {
+                    )
+                    .map_err(|e| {
+                        let message = format!("Failed to persist paired device: {e}");
+                        tracing::warn!("{message}");
+                        message
+                    }),
+                crate::pairing::PersistOp::Remove => persist_memory
+                    .remove_paired_device(&device.device_id)
+                    .map_err(|e| {
+                        let message = format!("Failed to remove paired device from DB: {e}");
                         tracing::warn!("Failed to remove paired device from DB: {e}");
-                    }
-                }
+                        message
+                    }),
             }));
         }
 
@@ -1101,6 +1114,7 @@ impl OpenFangKernel {
             telegram_local_api_stop: Arc::new(AtomicBool::new(false)),
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
+            budget_override: std::sync::RwLock::new(None),
             effective_provider_urls: std::sync::RwLock::new(initial_provider_urls),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
@@ -1195,7 +1209,7 @@ impl OpenFangKernel {
 
                     // Apply global budget defaults to restored agents
                     apply_budget_defaults(
-                        &kernel.config.budget,
+                        &kernel.effective_budget_config(),
                         &mut restored_entry.manifest.resources,
                     );
 
@@ -1370,7 +1384,7 @@ impl OpenFangKernel {
         }
 
         // Apply global budget defaults to agent resource quotas
-        apply_budget_defaults(&self.config.budget, &mut manifest.resources);
+        apply_budget_defaults(&self.effective_budget_config(), &mut manifest.resources);
 
         // Create workspace directory for the agent (name-based, so SOUL.md survives recreation)
         let workspace_dir = manifest
@@ -3696,6 +3710,11 @@ impl OpenFangKernel {
                         .set_max_total_jobs(new_config.max_cron_jobs);
                     applied.push(action.clone());
                 }
+                HotAction::UpdateBudget => {
+                    info!("Hot-reload: updating global budget configuration");
+                    self.set_effective_budget_config(new_config.budget.clone());
+                    applied.push(action.clone());
+                }
                 HotAction::ReloadProviderUrls => {
                     info!("Hot-reload: applying provider URL overrides");
                     let mut catalog = self
@@ -3745,6 +3764,22 @@ impl OpenFangKernel {
             .unwrap_or_else(|| self.config.default_model.clone())
     }
 
+    pub fn effective_budget_config(&self) -> openfang_types::config::BudgetConfig {
+        self.budget_override
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_else(|| self.config.budget.clone())
+    }
+
+    pub fn set_effective_budget_config(&self, budget: openfang_types::config::BudgetConfig) {
+        let mut guard = self
+            .budget_override
+            .write()
+            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+        *guard = Some(budget);
+    }
+
     pub fn set_effective_provider_url(&self, provider: &str, base_url: &str) {
         let mut urls = self
             .effective_provider_urls
@@ -3757,6 +3792,7 @@ impl OpenFangKernel {
         let mut config = self.config.clone();
         config.approval = self.approval_manager.policy();
         config.max_cron_jobs = self.cron_scheduler.max_total_jobs();
+        config.budget = self.effective_budget_config();
         config.provider_urls = self
             .effective_provider_urls
             .read()
@@ -4812,6 +4848,20 @@ impl OpenFangKernel {
             .unwrap_or_else(|e| e.into_inner())
             .resolve(key)
             .map(|z| z.to_string())
+    }
+
+    /// Validate runtime configuration against the active credential chain.
+    pub fn runtime_config_warnings(&self) -> Vec<String> {
+        let resolver = self
+            .credential_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.config.validate_with_credential_lookup(|key| {
+            resolver
+                .resolve(key)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        })
     }
 
     /// Store a credential in the vault (best-effort — falls through silently if no vault).

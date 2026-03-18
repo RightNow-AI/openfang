@@ -12,7 +12,7 @@ use openfang_api::middleware;
 use openfang_api::routes::{self, AppState};
 use openfang_api::ws;
 use openfang_kernel::OpenFangKernel;
-use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use openfang_types::config::{ChannelsConfig, DefaultModelConfig, KernelConfig, TelegramConfig};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -92,6 +92,10 @@ async fn start_test_server_with_provider(
         ..KernelConfig::default()
     };
 
+    start_test_server_with_config(config, tmp).await
+}
+
+async fn start_test_server_with_config(config: KernelConfig, tmp: tempfile::TempDir) -> TestServer {
     let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
@@ -111,6 +115,10 @@ async fn start_test_server_with_provider(
         .route(
             "/api/health/detail",
             axum::routing::get(routes::health_detail),
+        )
+        .route(
+            "/api/metrics",
+            axum::routing::get(routes::prometheus_metrics),
         )
         .route("/api/status", axum::routing::get(routes::status))
         .route(
@@ -274,12 +282,7 @@ async fn test_health_detail_uses_effective_default_model_override() {
     let _groq_guard = EnvVarGuard::remove("GROQ_API_KEY");
     let server = start_test_server().await;
     {
-        let mut override_guard = server
-            .state
-            .kernel
-            .default_model_override
-            .write()
-            .unwrap();
+        let mut override_guard = server.state.kernel.default_model_override.write().unwrap();
         *override_guard = Some(DefaultModelConfig {
             provider: "groq".to_string(),
             model: "llama-3.3-70b-versatile".to_string(),
@@ -305,6 +308,75 @@ async fn test_health_detail_uses_effective_default_model_override() {
         .unwrap()
         .iter()
         .any(|value| value == "default_provider_auth"));
+}
+
+#[tokio::test]
+async fn test_health_detail_accepts_runtime_env_file_credentials() {
+    let _telegram_guard = EnvVarGuard::remove("TELEGRAM_BOT_TOKEN");
+    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
+    std::fs::write(
+        tmp.path().join(".env"),
+        "TELEGRAM_BOT_TOKEN=from-runtime-dotenv\n",
+    )
+    .unwrap();
+
+    let channels = ChannelsConfig {
+        telegram: Some(TelegramConfig {
+            bot_token_env: "TELEGRAM_BOT_TOKEN".to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let config = KernelConfig {
+        home_dir: tmp.path().to_path_buf(),
+        data_dir: tmp.path().join("data"),
+        channels,
+        default_model: DefaultModelConfig {
+            provider: "ollama".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: "OLLAMA_API_KEY".to_string(),
+            base_url: None,
+        },
+        ..KernelConfig::default()
+    };
+
+    let server = start_test_server_with_config(config, tmp).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "ok");
+    assert!(body["config_warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|warning| warning.as_str()
+            != Some("Telegram configured but TELEGRAM_BOT_TOKEN is not set")));
+}
+
+#[tokio::test]
+async fn test_metrics_expose_readiness_gauges() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let body = client
+        .get(format!("{}/api/metrics", server.base_url))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(body.contains("openfang_readiness_ready"));
+    assert!(body.contains("openfang_database_ok"));
+    assert!(body.contains("openfang_config_warnings"));
 }
 
 #[tokio::test]

@@ -155,6 +155,7 @@ Confirm:
 - Port 4200 is accessible
 - `/data` volume persists between container restarts
 - `/api/health/detail` reports `status = "ok"` with the same auth mode the deployment will use
+- Container healthcheck follows `OPENFANG_LISTEN` (or explicit `OPENFANG_BASE_URL`) so non-default listen ports do not flap to `unhealthy`
 
 Before shipping a production image or binary cutover, also verify operator safety rails:
 
@@ -162,6 +163,14 @@ Before shipping a production image or binary cutover, also verify operator safet
 scripts/backup-openfang.sh
 OPENFANG_PREFLIGHT_OFFLINE=1 scripts/preflight-openfang.sh --offline
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
+```
+
+For systemd-style deployments using `/etc/openfang/env`, include:
+
+```bash
+OPENFANG_ENV_FILE=/etc/openfang/env scripts/backup-openfang.sh
+OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_PREFLIGHT_OFFLINE=1 scripts/preflight-openfang.sh --offline
+OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
 
 Pass criteria:

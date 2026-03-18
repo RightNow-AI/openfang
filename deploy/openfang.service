@@ -11,6 +11,7 @@ Type=simple
 User=openfang
 Group=openfang
 Environment=OPENFANG_HOME=/var/lib/openfang
+Environment=OPENFANG_ENV_FILE=/etc/openfang/env
 ExecStart=/usr/local/bin/openfang start
 ExecStartPre=/usr/bin/test -x /usr/local/bin/openfang
 Restart=on-failure

@@ -2989,6 +2989,17 @@ impl KernelConfig {
     ///
     /// Checks that env vars referenced by configured channels are set.
     pub fn validate(&self) -> Vec<String> {
+        self.validate_with_credential_lookup(|key| {
+            std::env::var(key)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        })
+    }
+
+    pub fn validate_with_credential_lookup<F>(&self, has_credential: F) -> Vec<String>
+    where
+        F: Fn(&str) -> bool,
+    {
         let mut warnings = Vec::new();
         let listens_publicly = self
             .api_listen
@@ -3023,404 +3034,137 @@ impl KernelConfig {
             ));
         }
 
-        if let Some(ref tg) = self.channels.telegram {
-            if std::env::var(&tg.bot_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Telegram configured but {} is not set",
-                    tg.bot_token_env
-                ));
+        let warn_missing = |warnings: &mut Vec<String>, integration: &str, env_var: &str| {
+            if !has_credential(env_var) {
+                warnings.push(format!("{integration} configured but {env_var} is not set"));
             }
+        };
+
+        if let Some(ref tg) = self.channels.telegram {
+            warn_missing(&mut warnings, "Telegram", &tg.bot_token_env);
         }
         if let Some(ref dc) = self.channels.discord {
-            if std::env::var(&dc.bot_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Discord configured but {} is not set",
-                    dc.bot_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Discord", &dc.bot_token_env);
         }
         if let Some(ref sl) = self.channels.slack {
-            if std::env::var(&sl.app_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Slack configured but {} is not set",
-                    sl.app_token_env
-                ));
-            }
-            if std::env::var(&sl.bot_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Slack configured but {} is not set",
-                    sl.bot_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Slack", &sl.app_token_env);
+            warn_missing(&mut warnings, "Slack", &sl.bot_token_env);
         }
         if let Some(ref wa) = self.channels.whatsapp {
-            if std::env::var(&wa.access_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "WhatsApp configured but {} is not set",
-                    wa.access_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "WhatsApp", &wa.access_token_env);
         }
         if let Some(ref mx) = self.channels.matrix {
-            if std::env::var(&mx.access_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Matrix configured but {} is not set",
-                    mx.access_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Matrix", &mx.access_token_env);
         }
         if let Some(ref em) = self.channels.email {
-            if std::env::var(&em.password_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Email configured but {} is not set",
-                    em.password_env
-                ));
-            }
+            warn_missing(&mut warnings, "Email", &em.password_env);
         }
         if let Some(ref t) = self.channels.teams {
-            if std::env::var(&t.app_password_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Teams configured but {} is not set",
-                    t.app_password_env
-                ));
-            }
+            warn_missing(&mut warnings, "Teams", &t.app_password_env);
         }
         if let Some(ref m) = self.channels.mattermost {
-            if std::env::var(&m.token_env).unwrap_or_default().is_empty() {
-                warnings.push(format!(
-                    "Mattermost configured but {} is not set",
-                    m.token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Mattermost", &m.token_env);
         }
         if let Some(ref z) = self.channels.zulip {
-            if std::env::var(&z.api_key_env).unwrap_or_default().is_empty() {
-                warnings.push(format!("Zulip configured but {} is not set", z.api_key_env));
-            }
+            warn_missing(&mut warnings, "Zulip", &z.api_key_env);
         }
         if let Some(ref tw) = self.channels.twitch {
-            if std::env::var(&tw.oauth_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Twitch configured but {} is not set",
-                    tw.oauth_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Twitch", &tw.oauth_token_env);
         }
         if let Some(ref rc) = self.channels.rocketchat {
-            if std::env::var(&rc.token_env).unwrap_or_default().is_empty() {
-                warnings.push(format!(
-                    "Rocket.Chat configured but {} is not set",
-                    rc.token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Rocket.Chat", &rc.token_env);
         }
         if let Some(ref gc) = self.channels.google_chat {
-            if std::env::var(&gc.service_account_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Google Chat configured but {} is not set",
-                    gc.service_account_env
-                ));
-            }
+            warn_missing(&mut warnings, "Google Chat", &gc.service_account_env);
         }
         if let Some(ref x) = self.channels.xmpp {
-            if std::env::var(&x.password_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!("XMPP configured but {} is not set", x.password_env));
-            }
+            warn_missing(&mut warnings, "XMPP", &x.password_env);
         }
         // Wave 3 channels
         if let Some(ref ln) = self.channels.line {
-            if std::env::var(&ln.access_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "LINE configured but {} is not set",
-                    ln.access_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "LINE", &ln.access_token_env);
         }
         if let Some(ref vb) = self.channels.viber {
-            if std::env::var(&vb.auth_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Viber configured but {} is not set",
-                    vb.auth_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Viber", &vb.auth_token_env);
         }
         if let Some(ref ms) = self.channels.messenger {
-            if std::env::var(&ms.page_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Messenger configured but {} is not set",
-                    ms.page_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Messenger", &ms.page_token_env);
         }
         if let Some(ref rd) = self.channels.reddit {
-            if std::env::var(&rd.client_secret_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Reddit configured but {} is not set",
-                    rd.client_secret_env
-                ));
-            }
+            warn_missing(&mut warnings, "Reddit", &rd.client_secret_env);
         }
         if let Some(ref md) = self.channels.mastodon {
-            if std::env::var(&md.access_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Mastodon configured but {} is not set",
-                    md.access_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Mastodon", &md.access_token_env);
         }
         if let Some(ref bs) = self.channels.bluesky {
-            if std::env::var(&bs.app_password_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Bluesky configured but {} is not set",
-                    bs.app_password_env
-                ));
-            }
+            warn_missing(&mut warnings, "Bluesky", &bs.app_password_env);
         }
         if let Some(ref fs) = self.channels.feishu {
-            if std::env::var(&fs.app_secret_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Feishu configured but {} is not set",
-                    fs.app_secret_env
-                ));
-            }
+            warn_missing(&mut warnings, "Feishu", &fs.app_secret_env);
         }
         if let Some(ref rv) = self.channels.revolt {
-            if std::env::var(&rv.bot_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Revolt configured but {} is not set",
-                    rv.bot_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Revolt", &rv.bot_token_env);
         }
         // Wave 4 channels
         if let Some(ref nc) = self.channels.nextcloud {
-            if std::env::var(&nc.token_env).unwrap_or_default().is_empty() {
-                warnings.push(format!(
-                    "Nextcloud configured but {} is not set",
-                    nc.token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Nextcloud", &nc.token_env);
         }
         if let Some(ref gd) = self.channels.guilded {
-            if std::env::var(&gd.bot_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Guilded configured but {} is not set",
-                    gd.bot_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Guilded", &gd.bot_token_env);
         }
         if let Some(ref kb) = self.channels.keybase {
-            if std::env::var(&kb.paperkey_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Keybase configured but {} is not set",
-                    kb.paperkey_env
-                ));
-            }
+            warn_missing(&mut warnings, "Keybase", &kb.paperkey_env);
         }
         if let Some(ref tm) = self.channels.threema {
-            if std::env::var(&tm.secret_env).unwrap_or_default().is_empty() {
-                warnings.push(format!(
-                    "Threema configured but {} is not set",
-                    tm.secret_env
-                ));
-            }
+            warn_missing(&mut warnings, "Threema", &tm.secret_env);
         }
         if let Some(ref ns) = self.channels.nostr {
-            if std::env::var(&ns.private_key_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Nostr configured but {} is not set",
-                    ns.private_key_env
-                ));
-            }
+            warn_missing(&mut warnings, "Nostr", &ns.private_key_env);
         }
         if let Some(ref wx) = self.channels.webex {
-            if std::env::var(&wx.bot_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Webex configured but {} is not set",
-                    wx.bot_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Webex", &wx.bot_token_env);
         }
         if let Some(ref pb) = self.channels.pumble {
-            if std::env::var(&pb.bot_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Pumble configured but {} is not set",
-                    pb.bot_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Pumble", &pb.bot_token_env);
         }
         if let Some(ref fl) = self.channels.flock {
-            if std::env::var(&fl.bot_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Flock configured but {} is not set",
-                    fl.bot_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Flock", &fl.bot_token_env);
         }
         if let Some(ref tw) = self.channels.twist {
-            if std::env::var(&tw.token_env).unwrap_or_default().is_empty() {
-                warnings.push(format!("Twist configured but {} is not set", tw.token_env));
-            }
+            warn_missing(&mut warnings, "Twist", &tw.token_env);
         }
         // Wave 5 channels
         if let Some(ref mb) = self.channels.mumble {
-            if std::env::var(&mb.password_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Mumble configured but {} is not set",
-                    mb.password_env
-                ));
-            }
+            warn_missing(&mut warnings, "Mumble", &mb.password_env);
         }
         if let Some(ref dt) = self.channels.dingtalk {
-            if std::env::var(&dt.access_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "DingTalk configured but {} is not set",
-                    dt.access_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "DingTalk", &dt.access_token_env);
         }
         if let Some(ref dc) = self.channels.discourse {
-            if std::env::var(&dc.api_key_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Discourse configured but {} is not set",
-                    dc.api_key_env
-                ));
-            }
+            warn_missing(&mut warnings, "Discourse", &dc.api_key_env);
         }
         if let Some(ref gt) = self.channels.gitter {
-            if std::env::var(&gt.token_env).unwrap_or_default().is_empty() {
-                warnings.push(format!("Gitter configured but {} is not set", gt.token_env));
-            }
+            warn_missing(&mut warnings, "Gitter", &gt.token_env);
         }
         if let Some(ref nf) = self.channels.ntfy {
-            if !nf.token_env.is_empty()
-                && std::env::var(&nf.token_env).unwrap_or_default().is_empty()
-            {
+            if !nf.token_env.is_empty() && !has_credential(&nf.token_env) {
                 warnings.push(format!("ntfy configured but {} is not set", nf.token_env));
             }
         }
         if let Some(ref gf) = self.channels.gotify {
-            if std::env::var(&gf.app_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "Gotify configured but {} is not set",
-                    gf.app_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "Gotify", &gf.app_token_env);
         }
         if let Some(ref wh) = self.channels.webhook {
-            if std::env::var(&wh.secret_env).unwrap_or_default().is_empty() {
-                warnings.push(format!(
-                    "Webhook configured but {} is not set",
-                    wh.secret_env
-                ));
-            }
+            warn_missing(&mut warnings, "Webhook", &wh.secret_env);
         }
         if let Some(ref li) = self.channels.linkedin {
-            if std::env::var(&li.access_token_env)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                warnings.push(format!(
-                    "LinkedIn configured but {} is not set",
-                    li.access_token_env
-                ));
-            }
+            warn_missing(&mut warnings, "LinkedIn", &li.access_token_env);
         }
 
         // Web search provider validation
         match self.web.search_provider {
             SearchProvider::Brave => {
-                if std::env::var(&self.web.brave.api_key_env)
-                    .unwrap_or_default()
-                    .is_empty()
-                {
+                if !has_credential(&self.web.brave.api_key_env) {
                     warnings.push(format!(
                         "Brave search selected but {} is not set",
                         self.web.brave.api_key_env
@@ -3428,10 +3172,7 @@ impl KernelConfig {
                 }
             }
             SearchProvider::Tavily => {
-                if std::env::var(&self.web.tavily.api_key_env)
-                    .unwrap_or_default()
-                    .is_empty()
-                {
+                if !has_credential(&self.web.tavily.api_key_env) {
                     warnings.push(format!(
                         "Tavily search selected but {} is not set",
                         self.web.tavily.api_key_env
@@ -3439,10 +3180,7 @@ impl KernelConfig {
                 }
             }
             SearchProvider::Perplexity => {
-                if std::env::var(&self.web.perplexity.api_key_env)
-                    .unwrap_or_default()
-                    .is_empty()
-                {
+                if !has_credential(&self.web.perplexity.api_key_env) {
                     warnings.push(format!(
                         "Perplexity search selected but {} is not set",
                         self.web.perplexity.api_key_env
@@ -3614,6 +3352,23 @@ mod tests {
         let warnings = config.validate();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("Discord"));
+    }
+
+    #[test]
+    fn test_validate_with_credential_lookup_accepts_runtime_secret_sources() {
+        let mut config = KernelConfig::default();
+        config.channels.telegram = Some(TelegramConfig {
+            bot_token_env: "OPENFANG_TEST_TELEGRAM_TOKEN".to_string(),
+            ..Default::default()
+        });
+
+        let warnings =
+            config.validate_with_credential_lookup(|key| key == "OPENFANG_TEST_TELEGRAM_TOKEN");
+
+        assert!(
+            warnings.is_empty(),
+            "runtime credential lookup should suppress false missing-secret warnings: {warnings:?}"
+        );
     }
 
     #[test]

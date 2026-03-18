@@ -1,7 +1,7 @@
 //! Config hot-reload — diffs two `KernelConfig` instances and produces a `ReloadPlan`.
 //!
 //! **Hot-reload safe**: channels, skills, usage footer, web config, browser,
-//! approval policy, cron settings, webhook triggers, extensions.
+//! approval policy, cron settings, budget settings, webhook triggers, extensions.
 //!
 //! **No-op** (informational only): log_level, language, mode.
 //!
@@ -31,6 +31,8 @@ pub enum HotAction {
     UpdateApprovalPolicy,
     /// Cron max jobs changed.
     UpdateCronConfig,
+    /// Global budget configuration changed.
+    UpdateBudget,
     /// Webhook trigger config changed.
     UpdateWebhookConfig,
     /// Extension config changed.
@@ -58,6 +60,7 @@ impl HotAction {
             self,
             Self::UpdateApprovalPolicy
                 | Self::UpdateCronConfig
+                | Self::UpdateBudget
                 | Self::ReloadProviderUrls
                 | Self::UpdateDefaultModel
         )
@@ -260,6 +263,10 @@ pub fn build_reload_plan(old: &KernelConfig, new: &KernelConfig) -> ReloadPlan {
 
     if old.max_cron_jobs != new.max_cron_jobs {
         plan.hot_actions.push(HotAction::UpdateCronConfig);
+    }
+
+    if field_changed(&old.budget, &new.budget) {
+        plan.hot_actions.push(HotAction::UpdateBudget);
     }
 
     if field_changed(&old.webhook_triggers, &new.webhook_triggers) {
@@ -519,6 +526,17 @@ mod tests {
         let plan = build_reload_plan(&a, &b);
         assert!(!plan.restart_required);
         assert!(plan.hot_actions.contains(&HotAction::UpdateUsageFooter));
+    }
+
+    #[test]
+    fn test_budget_hot_reloadable() {
+        let a = default_cfg();
+        let mut b = default_cfg();
+        b.budget.max_daily_usd = 25.0;
+        b.budget.alert_threshold = 0.9;
+        let plan = build_reload_plan(&a, &b);
+        assert!(!plan.restart_required);
+        assert!(plan.hot_actions.contains(&HotAction::UpdateBudget));
     }
 
     #[test]

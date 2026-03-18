@@ -675,13 +675,21 @@ Requires authentication.
   "status": "ok",
   "version": "0.1.0",
   "uptime_seconds": 3600,
+  "shutdown_requested": false,
   "panic_count": 0,
   "restart_count": 0,
   "agent_count": 3,
   "database": "connected",
-  "config_warnings": []
+  "config_warnings": [],
+  "readiness": {
+    "ready": true,
+    "default_provider_auth": "configured",
+    "failing_checks": []
+  }
 }
 ```
+
+`config_warnings` is evaluated against the daemon's active credential chain, not only raw process env vars. Secrets resolved from `vault.enc`, `secrets.env`, or `.env` therefore no longer cause false degraded readiness warnings.
 
 ### GET /api/status
 
@@ -751,12 +759,24 @@ Initiate graceful shutdown. The daemon enters shutdown mode immediately, stops a
 
 Prometheus metrics endpoint.
 
+Key gauges and counters now include:
+
+- `openfang_readiness_ready` — `1` when the node is ready to serve traffic
+- `openfang_database_ok` — `1` when the health probe can reach SQLite
+- `openfang_shutdown_requested` — `1` after graceful shutdown has started
+- `openfang_default_provider_auth_missing` — `1` when the effective default provider is missing credentials
+- `openfang_config_warnings` — current count of runtime config warnings
+- `openfang_panics_total` / `openfang_restarts_total` — supervisor stability counters
+
 Sample:
 
 ```text
 # HELP openfang_uptime_seconds Time since daemon started.
 # TYPE openfang_uptime_seconds gauge
 openfang_uptime_seconds 1234
+# HELP openfang_readiness_ready Whether the node is ready to serve traffic (1 = ready).
+# TYPE openfang_readiness_ready gauge
+openfang_readiness_ready 1
 ```
 
 ### GET /api/profiles

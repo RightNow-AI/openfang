@@ -3320,8 +3320,18 @@ pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }))
 }
 
-/// GET /api/health/detail — Full health diagnostics (requires auth).
-pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+struct RuntimeHealthSnapshot {
+    db_ok: bool,
+    shutdown_requested: bool,
+    panic_count: u64,
+    restart_count: u64,
+    config_warnings: Vec<String>,
+    default_provider_auth: String,
+    failing_checks: Vec<String>,
+    ready: bool,
+}
+
+fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
     let health = state.kernel.supervisor.health();
 
     let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
@@ -3333,7 +3343,7 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
         .structured_get(shared_id, "__health_check__")
         .is_ok();
 
-    let config_warnings = state.kernel.config.validate();
+    let config_warnings = state.kernel.runtime_config_warnings();
     let effective_default_model = state.kernel.effective_default_model_config();
     let default_provider_auth = state
         .kernel
@@ -3346,6 +3356,7 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
                 .map(|provider| format!("{:?}", provider.auth_status).to_lowercase())
         })
         .unwrap_or_else(|| "unknown".to_string());
+
     let mut failing_checks = Vec::new();
     if !db_ok {
         failing_checks.push("database".to_string());
@@ -3362,23 +3373,38 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
     if default_provider_auth == "missing" {
         failing_checks.push("default_provider_auth".to_string());
     }
-    let ready = failing_checks.is_empty();
-    let status = if ready { "ok" } else { "degraded" };
+
+    RuntimeHealthSnapshot {
+        db_ok,
+        shutdown_requested: health.is_shutting_down,
+        panic_count: health.panic_count,
+        restart_count: health.restart_count,
+        config_warnings,
+        default_provider_auth,
+        ready: failing_checks.is_empty(),
+        failing_checks,
+    }
+}
+
+/// GET /api/health/detail — Full health diagnostics (requires auth).
+pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let snapshot = runtime_health_snapshot(&state);
+    let status = if snapshot.ready { "ok" } else { "degraded" };
 
     Json(serde_json::json!({
         "status": status,
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": state.started_at.elapsed().as_secs(),
-        "shutdown_requested": health.is_shutting_down,
-        "panic_count": health.panic_count,
-        "restart_count": health.restart_count,
+        "shutdown_requested": snapshot.shutdown_requested,
+        "panic_count": snapshot.panic_count,
+        "restart_count": snapshot.restart_count,
         "agent_count": state.kernel.registry.count(),
-        "database": if db_ok { "connected" } else { "error" },
-        "config_warnings": config_warnings,
+        "database": if snapshot.db_ok { "connected" } else { "error" },
+        "config_warnings": snapshot.config_warnings,
         "readiness": {
-            "ready": ready,
-            "default_provider_auth": default_provider_auth,
-            "failing_checks": failing_checks,
+            "ready": snapshot.ready,
+            "default_provider_auth": snapshot.default_provider_auth,
+            "failing_checks": snapshot.failing_checks,
         },
     }))
 }
@@ -3411,6 +3437,7 @@ fn escape_prometheus_label_value(value: &str) -> String {
 
 pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut out = String::with_capacity(2048);
+    let snapshot = runtime_health_snapshot(&state);
 
     // Uptime
     let uptime = state.started_at.elapsed().as_secs();
@@ -3430,6 +3457,45 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
     out.push_str("# HELP openfang_agents_total Total number of registered agents.\n");
     out.push_str("# TYPE openfang_agents_total gauge\n");
     out.push_str(&format!("openfang_agents_total {}\n\n", agents.len()));
+
+    out.push_str(
+        "# HELP openfang_readiness_ready Whether the node is ready to serve traffic (1 = ready).\n",
+    );
+    out.push_str("# TYPE openfang_readiness_ready gauge\n");
+    out.push_str(&format!(
+        "openfang_readiness_ready {}\n",
+        if snapshot.ready { 1 } else { 0 }
+    ));
+    out.push_str("# HELP openfang_database_ok Whether the database health probe succeeded.\n");
+    out.push_str("# TYPE openfang_database_ok gauge\n");
+    out.push_str(&format!(
+        "openfang_database_ok {}\n",
+        if snapshot.db_ok { 1 } else { 0 }
+    ));
+    out.push_str(
+        "# HELP openfang_shutdown_requested Whether graceful shutdown has been requested.\n",
+    );
+    out.push_str("# TYPE openfang_shutdown_requested gauge\n");
+    out.push_str(&format!(
+        "openfang_shutdown_requested {}\n",
+        if snapshot.shutdown_requested { 1 } else { 0 }
+    ));
+    out.push_str("# HELP openfang_default_provider_auth_missing Whether the effective default provider is missing credentials.\n");
+    out.push_str("# TYPE openfang_default_provider_auth_missing gauge\n");
+    out.push_str(&format!(
+        "openfang_default_provider_auth_missing {}\n",
+        if snapshot.default_provider_auth == "missing" {
+            1
+        } else {
+            0
+        }
+    ));
+    out.push_str("# HELP openfang_config_warnings Number of active runtime config warnings.\n");
+    out.push_str("# TYPE openfang_config_warnings gauge\n");
+    out.push_str(&format!(
+        "openfang_config_warnings {}\n\n",
+        snapshot.config_warnings.len()
+    ));
 
     // Per-agent token and tool usage
     out.push_str("# HELP openfang_tokens_total Total tokens consumed (rolling hourly window).\n");
@@ -3452,15 +3518,14 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
     out.push('\n');
 
     // Supervisor health
-    let health = state.kernel.supervisor.health();
     out.push_str("# HELP openfang_panics_total Total supervisor panics since start.\n");
     out.push_str("# TYPE openfang_panics_total counter\n");
-    out.push_str(&format!("openfang_panics_total {}\n", health.panic_count));
+    out.push_str(&format!("openfang_panics_total {}\n", snapshot.panic_count));
     out.push_str("# HELP openfang_restarts_total Total supervisor restarts since start.\n");
     out.push_str("# TYPE openfang_restarts_total counter\n");
     out.push_str(&format!(
         "openfang_restarts_total {}\n\n",
-        health.restart_count
+        snapshot.restart_count
     ));
 
     // Version info
@@ -5287,47 +5352,150 @@ pub async fn usage_daily(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
 /// GET /api/budget — Current budget status (limits, spend, % used).
 pub async fn budget_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let status = state
-        .kernel
-        .metering
-        .budget_status(&state.kernel.config.budget);
+    let budget = state.kernel.effective_budget_config();
+    let status = state.kernel.metering.budget_status(&budget);
     Json(serde_json::to_value(&status).unwrap_or_default())
 }
 
-/// PUT /api/budget — Update global budget limits (in-memory only, not persisted to config.toml).
+/// PUT /api/budget — Update global budget limits and persist them to config.toml.
 pub async fn update_budget(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    // SAFETY: Budget config is updated in-place. Since KernelConfig is behind
-    // an Arc and we only have &self, we use ptr mutation (same pattern as OFP).
-    let config_ptr = &state.kernel.config as *const openfang_types::config::KernelConfig
-        as *mut openfang_types::config::KernelConfig;
-
-    // Apply updates
-    unsafe {
-        if let Some(v) = body["max_hourly_usd"].as_f64() {
-            (*config_ptr).budget.max_hourly_usd = v;
-        }
-        if let Some(v) = body["max_daily_usd"].as_f64() {
-            (*config_ptr).budget.max_daily_usd = v;
-        }
-        if let Some(v) = body["max_monthly_usd"].as_f64() {
-            (*config_ptr).budget.max_monthly_usd = v;
-        }
-        if let Some(v) = body["alert_threshold"].as_f64() {
-            (*config_ptr).budget.alert_threshold = v.clamp(0.0, 1.0);
-        }
-        if let Some(v) = body["default_max_llm_tokens_per_hour"].as_u64() {
-            (*config_ptr).budget.default_max_llm_tokens_per_hour = v;
-        }
+    let mut budget = state.kernel.effective_budget_config();
+    if let Some(v) = body["max_hourly_usd"].as_f64() {
+        budget.max_hourly_usd = v.max(0.0);
+    }
+    if let Some(v) = body["max_daily_usd"].as_f64() {
+        budget.max_daily_usd = v.max(0.0);
+    }
+    if let Some(v) = body["max_monthly_usd"].as_f64() {
+        budget.max_monthly_usd = v.max(0.0);
+    }
+    if let Some(v) = body["alert_threshold"].as_f64() {
+        budget.alert_threshold = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = body["default_max_llm_tokens_per_hour"].as_u64() {
+        budget.default_max_llm_tokens_per_hour = v;
     }
 
-    let status = state
-        .kernel
-        .metering
-        .budget_status(&state.kernel.config.budget);
-    Json(serde_json::to_value(&status).unwrap_or_default())
+    let config_path = state.kernel.config_path().to_path_buf();
+    let mut table: toml::value::Table = if config_path.exists() {
+        match std::fs::read_to_string(&config_path) {
+            Ok(content) => {
+                if content.trim().is_empty() {
+                    toml::value::Table::new()
+                } else {
+                    match toml::from_str(&content) {
+                        Ok(table) => table,
+                        Err(e) => {
+                            return (
+                                StatusCode::CONFLICT,
+                                Json(serde_json::json!({
+                                    "status": "error",
+                                    "error": format!("current config.toml is invalid: {e}")
+                                })),
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "error": format!("failed to read config.toml: {e}")
+                    })),
+                );
+            }
+        }
+    } else {
+        toml::value::Table::new()
+    };
+
+    let budget_section = table
+        .entry("budget".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    let toml::Value::Table(section) = budget_section else {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "status": "error",
+                "error": "current config.toml has a non-table [budget] entry"
+            })),
+        );
+    };
+    section.insert(
+        "max_hourly_usd".to_string(),
+        json_to_toml_value(&serde_json::json!(budget.max_hourly_usd)),
+    );
+    section.insert(
+        "max_daily_usd".to_string(),
+        json_to_toml_value(&serde_json::json!(budget.max_daily_usd)),
+    );
+    section.insert(
+        "max_monthly_usd".to_string(),
+        json_to_toml_value(&serde_json::json!(budget.max_monthly_usd)),
+    );
+    section.insert(
+        "alert_threshold".to_string(),
+        json_to_toml_value(&serde_json::json!(budget.alert_threshold)),
+    );
+    section.insert(
+        "default_max_llm_tokens_per_hour".to_string(),
+        json_to_toml_value(&serde_json::json!(budget.default_max_llm_tokens_per_hour)),
+    );
+
+    let toml_string = match toml::to_string_pretty(&table) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({"status": "error", "error": format!("serialize failed: {e}")}),
+                ),
+            );
+        }
+    };
+    if let Err(e) = write_validated_config_atomically(&config_path, &toml_string) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"status": "error", "error": format!("write failed: {e}")})),
+        );
+    }
+
+    let reload_status = match state.kernel.reload_config() {
+        Ok(outcome) => {
+            if outcome
+                .hot_actions_applied
+                .contains(&openfang_kernel::config_reload::HotAction::UpdateBudget)
+            {
+                "applied"
+            } else {
+                "saved_reload_pending"
+            }
+        }
+        Err(_) => "saved_reload_failed",
+    };
+
+    state.kernel.audit_log.record(
+        "system",
+        openfang_runtime::audit::AuditAction::ConfigChange,
+        "budget config updated",
+        reload_status,
+    );
+
+    let effective_budget = state.kernel.effective_budget_config();
+    let status = state.kernel.metering.budget_status(&effective_budget);
+    let mut payload = serde_json::to_value(&status).unwrap_or_default();
+    if let Some(map) = payload.as_object_mut() {
+        map.insert(
+            "update_status".to_string(),
+            serde_json::Value::String(reload_status.to_string()),
+        );
+    }
+    (StatusCode::OK, Json(payload))
 }
 
 /// GET /api/budget/agents/{id} — Per-agent budget/quota status.

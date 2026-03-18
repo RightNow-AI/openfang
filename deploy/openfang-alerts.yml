@@ -1,0 +1,58 @@
+groups:
+  - name: openfang-production
+    rules:
+      - alert: OpenFangReadinessDegraded
+        expr: openfang_readiness_ready == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: OpenFang node is not ready
+          description: >
+            The daemon has reported degraded readiness for more than 2 minutes.
+            Check /api/health/detail, deployment logs, and preflight output.
+
+      - alert: OpenFangDatabaseUnavailable
+        expr: openfang_database_ok == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: OpenFang database health probe failed
+          description: >
+            SQLite connectivity is failing. Check filesystem permissions,
+            disk health, and restore procedures before restarting repeatedly.
+
+      - alert: OpenFangDefaultProviderMissingAuth
+        expr: openfang_default_provider_auth_missing == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: OpenFang default provider is missing credentials
+          description: >
+            The effective default provider cannot authenticate. The dashboard may
+            still load, but provider-backed agent responses will fail.
+
+      - alert: OpenFangConfigWarningsPresent
+        expr: openfang_config_warnings > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: OpenFang runtime config warnings are active
+          description: >
+            Runtime config validation is reporting warnings. Review
+            /api/health/detail and the daemon boot log to remove drift before it
+            becomes a production incident.
+
+      - alert: OpenFangSupervisorPanics
+        expr: increase(openfang_panics_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: OpenFang supervisor recorded an agent panic
+          description: >
+            One or more agent tasks have panicked in the last 5 minutes. Check
+            logs with the request ID or agent ID around the panic window.

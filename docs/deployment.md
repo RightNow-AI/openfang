@@ -24,10 +24,12 @@ Default runtime paths:
 - config: `~/.openfang/config.toml`
 - env files: `~/.openfang/.env` and `~/.openfang/secrets.env`
 - data: `~/.openfang/data/openfang.db`
+- optional service env file: `/etc/openfang/env` (systemd deployments)
 
 `OPENFANG_HOME` changes that root.
 
 At runtime, OpenFang resolves credentials from the vault, `secrets.env`, `.env`, and process environment variables. If you save provider keys through the dashboard, preserve `secrets.env` as part of the deployment state.
+Operational scripts in this repository (`preflight-openfang.sh`, `backup-openfang.sh`, `restore-openfang.sh`) also support an external env file path via `OPENFANG_ENV_FILE`. If unset, they auto-detect `/etc/openfang/env` when present.
 
 ## 1. Local Source Build
 
@@ -116,6 +118,7 @@ curl -H "Authorization: Bearer $OPENFANG_API_KEY" \
 If auth is disabled and you are testing from inside the container, omit the header.
 Treat `/api/health` as liveness only. For deploy validation and orchestrator health checks, prefer `/api/health/detail` and require `status = "ok"`.
 The container image and Compose healthcheck use `/api/health/detail` when `OPENFANG_API_KEY` is available to the probe. If a deployment relies on dashboard auth only, the baked-in probe falls back to `/api/health` because it cannot reuse a login session cookie.
+Healthcheck address resolution now follows `OPENFANG_BASE_URL` first; when that is unset it derives the probe URL from `OPENFANG_LISTEN` so non-default listen ports do not flap to unhealthy.
 
 For a broader post-deploy check, run:
 
@@ -138,6 +141,8 @@ scripts/provider-canary-openfang.sh
 ```
 
 The canary now requires per-agent token usage to increase after the LLM round-trip. Spend counters are still checked for non-regression, but they may remain unchanged for free or local provider paths.
+
+If you scrape Prometheus, wire alerts from `deploy/openfang-alerts.yml` into the same environment. The readiness metrics (`openfang_readiness_ready`, `openfang_database_ok`, `openfang_default_provider_auth_missing`, `openfang_config_warnings`) are designed to match the daemon's own `/api/health/detail` interpretation, including secrets resolved from `vault.enc`, `secrets.env`, and `.env`.
 
 ## 4. Linux Server with systemd
 
@@ -178,6 +183,7 @@ Then initialize config as the service user or pre-seed `/var/lib/openfang/config
 If you enable dashboard auth in `config.toml`, set a valid Argon2id `password_hash` before first boot.
 Legacy 64-character SHA-256 hex digests still work for compatibility, but do not use them for new deployments.
 Keep `/etc/openfang/env` owner-readable only; `UMask=0077` in the unit protects files created by the daemon, not this pre-created env file.
+The systemd unit template exports `OPENFANG_ENV_FILE=/etc/openfang/env` so operator scripts can consistently find the same external env source.
 
 ### Service Management
 
@@ -206,6 +212,7 @@ Do not confuse the repository root `.env.example` with the runtime env file.
 - `.env.example` is a reference template in the repository
 - runtime credentials can come from both `~/.openfang/.env` and `~/.openfang/secrets.env`
 - when both files define the same key, `secrets.env` wins so dashboard/API writes persist across restart
+- for systemd hosts, `/etc/openfang/env` can act as the external process-env source and can be explicitly targeted with `OPENFANG_ENV_FILE=/etc/openfang/env`
 
 For container deployments, Compose may also load a project-level `.env`, but that is separate from the daemon's own `OPENFANG_HOME` runtime files.
 

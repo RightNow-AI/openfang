@@ -11,6 +11,8 @@ Create a timestamped OpenFang runtime backup under:
 
 Environment:
   OPENFANG_HOME          Runtime home to back up (default: $HOME/.openfang)
+  OPENFANG_ENV_FILE      Optional external env file to back up (for example /etc/openfang/env)
+                         If unset, backup auto-detects /etc/openfang/env when present
   OPENFANG_KEEP_BACKUPS  Number of backups to keep in backup-root (default: 5)
   OPENFANG_ALLOW_LIVE_BACKUP
                          Set to 1 only when you intentionally accept a live,
@@ -27,6 +29,16 @@ OPENFANG_HOME="${OPENFANG_HOME:-$HOME/.openfang}"
 BACKUP_ROOT="${1:-$HOME/openfang-backups}"
 KEEP_BACKUPS="${OPENFANG_KEEP_BACKUPS:-5}"
 ALLOW_LIVE_BACKUP="${OPENFANG_ALLOW_LIVE_BACKUP:-0}"
+EXTERNAL_ENV_FILE="${OPENFANG_ENV_FILE:-}"
+if [[ -z "${EXTERNAL_ENV_FILE}" && -f /etc/openfang/env ]]; then
+  EXTERNAL_ENV_FILE="/etc/openfang/env"
+fi
+
+if [[ -n "${OPENFANG_ENV_FILE:-}" && ! -f "${OPENFANG_ENV_FILE}" ]]; then
+  echo "OPENFANG_ENV_FILE was set but file does not exist: ${OPENFANG_ENV_FILE}" >&2
+  exit 1
+fi
+
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 mkdir -p "${BACKUP_ROOT}"
 chmod 700 "${BACKUP_ROOT}"
@@ -292,6 +304,14 @@ copy_if_exists() {
   fi
 }
 
+copy_external_env_file() {
+  local source="$1"
+  local destination_file="$2"
+  if [[ -n "${source}" && -f "${source}" ]]; then
+    cp -a "${source}" "${destination_file}"
+  fi
+}
+
 copy_tree_without_db() {
   local source_dir="$1"
   local target_dir="$2"
@@ -379,6 +399,7 @@ copy_if_exists "${OPENFANG_HOME}/cron_jobs.json" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/custom_models.json" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/integrations.toml" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/daemon.json" "${DEST}"
+copy_external_env_file "${EXTERNAL_ENV_FILE}" "${DEST}/external-env.env"
 
 copy_tree_without_db "${OPENFANG_HOME}/data" "${DEST}/data"
 copy_if_exists "${OPENFANG_HOME}/agents" "${DEST}"
@@ -396,6 +417,7 @@ created_at=${TIMESTAMP}
 source_home=${OPENFANG_HOME}
 hostname=$(hostname)
 backup_mode=${BACKUP_MODE}
+external_env_source=${EXTERNAL_ENV_FILE}
 EOF
 
 if [[ "${KEEP_BACKUPS}" =~ ^[0-9]+$ ]] && (( KEEP_BACKUPS > 0 )); then
