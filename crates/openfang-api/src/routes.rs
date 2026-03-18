@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use dashmap::DashMap;
+use openfang_kernel::error::KernelError;
 use openfang_kernel::triggers::{TriggerId, TriggerPattern};
 use openfang_kernel::workflow::{
     ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowStep,
@@ -40,6 +41,57 @@ pub struct AppState {
     /// Avoids blocking the `/api/providers` endpoint on TCP timeouts to
     /// unreachable local services. 60-second TTL.
     pub provider_probe_cache: openfang_runtime::provider_health::ProbeCache,
+}
+
+fn extract_status_code(s: &str) -> Option<u16> {
+    if let Some(idx) = s.find("API error (") {
+        let after = &s[idx + 11..];
+        let num: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        return num.parse().ok();
+    }
+    None
+}
+
+fn classify_http_kernel_error(err: &KernelError) -> (StatusCode, String) {
+    let inner = format!("{err}");
+
+    if inner.contains("Agent not found") {
+        return (StatusCode::NOT_FOUND, "Agent not found".to_string());
+    }
+    if inner.contains("quota") || inner.contains("Quota") {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Token or budget quota exceeded".to_string(),
+        );
+    }
+
+    let classified =
+        openfang_runtime::llm_errors::classify_error(&inner, extract_status_code(&inner));
+
+    match classified.category {
+        openfang_runtime::llm_errors::LlmErrorCategory::Auth => {
+            (StatusCode::UNAUTHORIZED, classified.sanitized_message)
+        }
+        openfang_runtime::llm_errors::LlmErrorCategory::Billing => {
+            (StatusCode::PAYMENT_REQUIRED, classified.sanitized_message)
+        }
+        openfang_runtime::llm_errors::LlmErrorCategory::RateLimit => {
+            (StatusCode::TOO_MANY_REQUESTS, classified.sanitized_message)
+        }
+        openfang_runtime::llm_errors::LlmErrorCategory::ContextOverflow => {
+            (StatusCode::CONFLICT, classified.sanitized_message)
+        }
+        openfang_runtime::llm_errors::LlmErrorCategory::ModelNotFound => {
+            (StatusCode::NOT_FOUND, classified.sanitized_message)
+        }
+        openfang_runtime::llm_errors::LlmErrorCategory::Format => {
+            (StatusCode::BAD_REQUEST, classified.sanitized_message)
+        }
+        openfang_runtime::llm_errors::LlmErrorCategory::Overloaded
+        | openfang_runtime::llm_errors::LlmErrorCategory::Timeout => {
+            (StatusCode::SERVICE_UNAVAILABLE, classified.sanitized_message)
+        }
+    }
 }
 
 /// POST /api/agents — Spawn a new agent.
@@ -409,16 +461,10 @@ pub async fn send_message(
         }
         Err(e) => {
             tracing::warn!("send_message failed for agent {id}: {e}");
-            let status = if format!("{e}").contains("Agent not found") {
-                StatusCode::NOT_FOUND
-            } else if format!("{e}").contains("quota") || format!("{e}").contains("Quota") {
-                StatusCode::TOO_MANY_REQUESTS
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
+            let (status, error) = classify_http_kernel_error(&e);
             (
                 status,
-                Json(serde_json::json!({"error": format!("Message delivery failed: {e}")})),
+                Json(serde_json::json!({"error": error})),
             )
         }
     }
@@ -11264,6 +11310,34 @@ fn remove_toml_section(content: &str, section: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_http_kernel_error, extract_status_code};
+    use axum::http::StatusCode;
+    use openfang_kernel::error::KernelError;
+    use openfang_types::error::OpenFangError;
+
+    #[test]
+    fn extract_status_code_parses_llm_api_errors() {
+        assert_eq!(
+            extract_status_code("API error (429): too many requests"),
+            Some(429)
+        );
+        assert_eq!(extract_status_code("plain error"), None);
+    }
+
+    #[test]
+    fn classify_http_kernel_error_sanitizes_auth_failures() {
+        let (status, message) = classify_http_kernel_error(&KernelError::OpenFang(
+            OpenFangError::LlmDriver(
+                "API error (401): invalid api key sk-test-secret".to_string(),
+            ),
+        ));
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(!message.contains("sk-test-secret"));
+    }
 }
 
 #[cfg(test)]
