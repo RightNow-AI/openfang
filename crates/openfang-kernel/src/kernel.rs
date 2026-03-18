@@ -457,6 +457,26 @@ fn append_daily_memory_log(workspace: &Path, response: &str) {
 
 /// Read a workspace identity file with a size cap to prevent prompt stuffing.
 /// Returns None if the file doesn't exist or is empty.
+/// Prefix a user message with a channel/sender origin tag so the LLM can
+/// distinguish messages from different channels in the shared conversation
+/// session. Returns the original message unchanged when no channel info is
+/// available (e.g. API calls without a channel bridge).
+fn tag_message_with_origin(
+    message: &str,
+    channel_type: Option<&str>,
+    sender_name: Option<&str>,
+    sender_id: Option<&str>,
+) -> String {
+    let channel = match channel_type {
+        Some(ct) => ct,
+        None => return message.to_string(),
+    };
+    let sender = sender_name
+        .or(sender_id)
+        .unwrap_or("unknown");
+    format!("[via {channel}, from {sender}] {message}")
+}
+
 fn read_identity_file(workspace: &Path, filename: &str) -> Option<String> {
     const MAX_IDENTITY_FILE_BYTES: usize = 32_768; // 32KB cap
     let path = workspace.join(filename);
@@ -1762,6 +1782,12 @@ impl OpenFangKernel {
             }
         }
 
+        // Clone channel/sender info before PromptContext consumes the originals;
+        // needed below for tagging user messages with origin metadata.
+        let channel_type_for_tag = channel_type.clone();
+        let sender_name_for_tag = sender_name.clone();
+        let sender_id_for_tag = sender_id.clone();
+
         // Build the structured system prompt via prompt_builder
         {
             let mcp_tool_count = self.mcp_tools.lock().map(|t| t.len()).unwrap_or(0);
@@ -1876,13 +1902,22 @@ impl OpenFangKernel {
 
         let memory = Arc::clone(&self.memory);
         // Build link context from user message (auto-extract URLs for the agent)
-        let message_owned = if let Some(link_ctx) =
+        let message_with_links = if let Some(link_ctx) =
             openfang_runtime::link_understanding::build_link_context(message, &self.config.links)
         {
             format!("{message}{link_ctx}")
         } else {
             message.to_string()
         };
+
+        // Tag user message with channel/sender origin for conversation isolation
+        // (see tag_message_with_origin doc for rationale)
+        let message_owned = tag_message_with_origin(
+            &message_with_links,
+            channel_type_for_tag.as_deref(),
+            sender_name_for_tag.as_deref(),
+            sender_id_for_tag.as_deref(),
+        );
         let kernel_clone = Arc::clone(self);
 
         // Acquire per-agent lock inside the spawned task to serialize concurrent
@@ -2354,6 +2389,12 @@ impl OpenFangKernel {
             }
         }
 
+        // Clone channel/sender info before PromptContext consumes the originals;
+        // needed below for tagging user messages with origin metadata.
+        let channel_type_for_tag = channel_type.clone();
+        let sender_name_for_tag = sender_name.clone();
+        let sender_id_for_tag = sender_id.clone();
+
         // Build the structured system prompt via prompt_builder
         {
             let mcp_tool_count = self.mcp_tools.lock().map(|t| t.len()).unwrap_or(0);
@@ -2545,9 +2586,20 @@ impl OpenFangKernel {
             message.to_string()
         };
 
+        // Tag user message with channel/sender origin so the LLM can distinguish
+        // messages from different channels in the shared conversation session.
+        // Without this, interleaved messages from e.g. a WhatsApp group and a
+        // private Telegram chat look identical, causing cross-channel confusion.
+        let tagged_message = tag_message_with_origin(
+            &message_with_links,
+            channel_type_for_tag.as_deref(),
+            sender_name_for_tag.as_deref(),
+            sender_id_for_tag.as_deref(),
+        );
+
         let result = run_agent_loop(
             &manifest,
-            &message_with_links,
+            &tagged_message,
             &mut session,
             &self.memory,
             driver,

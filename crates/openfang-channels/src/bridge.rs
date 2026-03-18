@@ -1841,7 +1841,14 @@ async fn dispatch_with_blocks(
             // Try re-resolution before reporting error
             if let Some(new_id) = try_reresolution(&e, &channel_key, handle, router).await {
                 let typing_task2 = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
-                let retry = handle.send_message_with_blocks(new_id, blocks).await;
+                let ch_ctx2 = ChannelContext {
+                    channel_type: Some(ct_str.to_string()),
+                    sender_id: Some(sender_user_id(message).to_string()),
+                    sender_name: Some(message.sender.display_name.clone()),
+                };
+                let retry = handle
+                    .send_message_with_blocks_and_context(new_id, blocks, ch_ctx2)
+                    .await;
                 typing_task2.abort();
                 match retry {
                     Ok(response) => {
