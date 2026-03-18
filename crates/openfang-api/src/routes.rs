@@ -3556,7 +3556,10 @@ pub async fn clawhub_search(
         );
     }
 
-    let page_size: u32 = params.get("pageSize").and_then(|v| v.parse().ok()).unwrap_or(20);
+    let page_size: u32 = params
+        .get("pageSize")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
     let page: u32 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
 
     // Check cache (120s TTL)
@@ -3571,7 +3574,7 @@ pub async fn clawhub_search(
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
     let skills_dir = state.kernel.config.home_dir.join("skills");
-    match client.search(&keyword, page_size,page).await {
+    match client.search(&keyword, page_size, page).await {
         Ok(results) => {
             let skills: Vec<serde_json::Value> = results
                 .data
@@ -3614,7 +3617,9 @@ pub async fn clawhub_search(
             };
             (
                 status,
-                Json(serde_json::json!({"data": {"skills": [], "total": 0}, "next_cursor": null, "error": msg})),
+                Json(
+                    serde_json::json!({"data": {"skills": [], "total": 0}, "next_cursor": null, "error": msg}),
+                ),
             )
         }
     }
@@ -3631,8 +3636,14 @@ pub async fn clawhub_browse(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let category = params.get("category").map(|s| s.as_str()).unwrap_or("");
-    let page_size: u32 = params.get("pageSize").and_then(|v| v.parse().ok()).unwrap_or(24);
-    let sort_by = params.get("sortBy").map(|s| s.as_str()).unwrap_or("trending");
+    let page_size: u32 = params
+        .get("pageSize")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24);
+    let sort_by = params
+        .get("sortBy")
+        .map(|s| s.as_str())
+        .unwrap_or("trending");
     let order = params.get("order").map(|s| s.as_str()).unwrap_or("desc");
     let cursor = params.get("cursor").map(|s| s.as_str());
     let page: u32 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
@@ -3649,7 +3660,10 @@ pub async fn clawhub_browse(
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
     let skills_dir = state.kernel.config.home_dir.join("skills");
-    match client.browse(category, page_size, sort_by, order, cursor,page).await {
+    match client
+        .browse(category, page_size, sort_by, order, cursor, page)
+        .await
+    {
         Ok(results) => {
             let skills: Vec<serde_json::Value> = results
                 .data
@@ -3684,7 +3698,9 @@ pub async fn clawhub_browse(
             };
             (
                 status,
-                Json(serde_json::json!({"data": {"skills": [], "total": 0}, "next_cursor": null, "error": msg})),
+                Json(
+                    serde_json::json!({"data": {"skills": [], "total": 0}, "next_cursor": null, "error": msg}),
+                ),
             )
         }
     }
@@ -4849,16 +4865,19 @@ pub async fn update_mcp_servers(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     // Deserialize the single MCP server config
-    let new_server: openfang_types::config::McpServerConfigEntry =
-        match serde_json::from_value(body.clone()) {
-            Ok(s) => s,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": format!("Invalid MCP server configuration: {e}")})),
-                );
-            }
-        };
+    let new_server: openfang_types::config::McpServerConfigEntry = match serde_json::from_value(
+        body.clone(),
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    serde_json::json!({"error": format!("Invalid MCP server configuration: {e}")}),
+                ),
+            );
+        }
+    };
 
     // Validate server name
     if new_server.name.trim().is_empty() {
@@ -5032,8 +5051,7 @@ fn update_mcp_servers_in_config(
     servers: &[openfang_types::config::McpServerConfigEntry],
 ) -> Result<(), String> {
     // Read existing config
-    let contents = std::fs::read_to_string(config_path)
-        .unwrap_or_else(|_| String::new());
+    let contents = std::fs::read_to_string(config_path).unwrap_or_else(|_| String::new());
 
     let mut doc: toml::Value = if contents.trim().is_empty() {
         toml::Value::Table(toml::map::Map::new())
@@ -5081,7 +5099,8 @@ fn update_mcp_servers_in_config(
                 server_tbl.insert(
                     "env".to_string(),
                     toml::Value::Array(
-                        s.env.iter()
+                        s.env
+                            .iter()
                             .map(|e| toml::Value::String(e.clone()))
                             .collect(),
                     ),
@@ -5098,8 +5117,11 @@ fn update_mcp_servers_in_config(
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {e}"))?;
     }
 
-    std::fs::write(config_path, toml::to_string_pretty(&doc).map_err(|e| format!("Failed to serialize config: {e}"))?)
-        .map_err(|e| format!("Failed to write config.toml: {e}"))?;
+    std::fs::write(
+        config_path,
+        toml::to_string_pretty(&doc).map_err(|e| format!("Failed to serialize config: {e}"))?,
+    )
+    .map_err(|e| format!("Failed to write config.toml: {e}"))?;
 
     Ok(())
 }

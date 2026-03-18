@@ -89,10 +89,7 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
         let should_kill = match &entry.manifest.workspace {
             None => {
                 // No workspace configured - kill the agent
-                tracing::warn!(
-                    "Agent {} has no workspace configured",
-                    entry.id
-                );
+                tracing::warn!("Agent {} has no workspace configured", entry.id);
                 true
             }
             Some(workspace_path) => {

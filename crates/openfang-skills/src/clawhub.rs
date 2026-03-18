@@ -143,8 +143,6 @@ pub struct ClawHubBrowseResponse {
     pub next_cursor: Option<String>,
 }
 
-
-
 // -- Search: GET /api/v1/search?q=...&limit=N ------------------------------
 
 /// A skill entry from the search endpoint (`GET /api/v1/search`).
@@ -444,7 +442,6 @@ impl ClawHubClient {
 
         let response = self.get_with_retry(&url, "ClawHub search").await?;
 
-
         let results: ClawHubSearchResponse = response
             .json()
             .await
@@ -479,14 +476,12 @@ impl ClawHubClient {
             url.push_str(&format!("&cursor={}", urlencoded(c)));
         }
 
-
         let response = self.get_with_retry(&url, "ClawHub browse").await?;
 
         let raw = response
             .text()
             .await
             .map_err(|e| SkillError::Network(format!("Failed to read ClawHub browse body: {e}")))?;
-
 
         let results: ClawHubBrowseResponse = serde_json::from_str(&raw)
             .map_err(|e| SkillError::Network(format!("Failed to parse ClawHub browse: {e}")))?;

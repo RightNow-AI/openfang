@@ -1267,7 +1267,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "skill_name": { "type": "string", "description": "The name of the skill" },
                     "res_name": { "type": "string", "description": "The name of the resource to load" }
-                },  
+                },
                 "required": ["skill_name", "res_name"]
             }),
         },
@@ -1364,8 +1364,13 @@ async fn tool_file_list(
 
     // Handle skills directory: global skills
     let resolved = if raw_path.contains("skills") {
-        let global_skills_dir = openfang_types::config::openfang_home_dir().join("skills").canonicalize().map_err(|e| format!("Failed to canonicalize global skills path: {e}"))?;
-        let path = PathBuf::from(raw_path).canonicalize().map_err(|e| format!("Failed to canonicalize path: {e}"))?;
+        let global_skills_dir = openfang_types::config::openfang_home_dir()
+            .join("skills")
+            .canonicalize()
+            .map_err(|e| format!("Failed to canonicalize global skills path: {e}"))?;
+        let path = PathBuf::from(raw_path)
+            .canonicalize()
+            .map_err(|e| format!("Failed to canonicalize path: {e}"))?;
         let workspace_root = if path.starts_with(&global_skills_dir) {
             Some(global_skills_dir.as_path())
         } else {
