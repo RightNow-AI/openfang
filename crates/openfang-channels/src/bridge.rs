@@ -697,7 +697,7 @@ impl BridgeManager {
         // Fetch debounce config for this channel type
         let ct_str = channel_type_str(&adapter.channel_type()).to_string();
         let overrides = handle.channel_overrides(&ct_str).await;
-        let debounce_ms = overrides.as_ref().map(|o| o.debounce_ms).unwrap_or(0);
+        let debounce_ms = overrides.as_ref().map(|o| o.debounce_ms).unwrap_or(5_000);
         let debounce_max_ms = overrides
             .as_ref()
             .map(|o| o.debounce_max_ms)
