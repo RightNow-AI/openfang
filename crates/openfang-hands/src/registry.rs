@@ -26,6 +26,13 @@ pub struct PersistedHandStateEntry {
     pub skill_content: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct HandStateLoadReport {
+    pub entries: Vec<PersistedHandStateEntry>,
+    pub recovered_from_backup: bool,
+    pub warnings: Vec<String>,
+}
+
 // ─── Settings availability types ────────────────────────────────────────────
 
 /// Availability status of a single setting option.
@@ -120,6 +127,10 @@ impl HandRegistry {
 
     /// Load persisted hand state entries that should be restored on boot.
     pub fn load_state(path: &Path) -> Vec<PersistedHandStateEntry> {
+        Self::load_state_report(path).entries
+    }
+
+    pub fn load_state_report(path: &Path) -> HandStateLoadReport {
         for candidate in [path.to_path_buf(), backup_path(path)] {
             let data = match std::fs::read_to_string(&candidate) {
                 Ok(d) => d,
@@ -130,14 +141,31 @@ impl HandRegistry {
                     if candidate != path {
                         warn!(path = %candidate.display(), "Recovered hand state from backup file");
                     }
-                    return entries;
+                    return HandStateLoadReport {
+                        entries,
+                        recovered_from_backup: candidate != path,
+                        warnings: Vec::new(),
+                    };
                 }
                 Err(e) => {
                     warn!(path = %candidate.display(), "Failed to parse hand state file: {e}");
                 }
             }
         }
-        Vec::new()
+        let backup = backup_path(path);
+        let had_persisted_state = path.exists() || backup.exists();
+        let mut warnings = Vec::new();
+        if had_persisted_state {
+            warnings.push(format!(
+                "hand state restore failed for {} (primary and backup unreadable)",
+                path.display()
+            ));
+        }
+        HandStateLoadReport {
+            entries: Vec::new(),
+            recovered_from_backup: false,
+            warnings,
+        }
     }
 
     /// Load all bundled hand definitions. Returns count of definitions loaded.
@@ -1052,11 +1080,12 @@ metrics = []
         std::fs::copy(&state_path, &backup).unwrap();
         std::fs::write(&state_path, "{bad json").unwrap();
 
-        let loaded = HandRegistry::load_state(&state_path);
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].hand_id, "backup-test");
+        let report = HandRegistry::load_state_report(&state_path);
+        assert!(report.recovered_from_backup);
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].hand_id, "backup-test");
         assert_eq!(
-            loaded[0].skill_content.as_deref(),
+            report.entries[0].skill_content.as_deref(),
             Some("Backup skill body")
         );
     }
