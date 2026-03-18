@@ -10,6 +10,7 @@
 use axum::Router;
 use openfang_api::middleware;
 use openfang_api::routes::{self, AppState};
+use openfang_api::server;
 use openfang_api::ws;
 use openfang_kernel::OpenFangKernel;
 use openfang_memory::MemorySubstrate;
@@ -471,6 +472,85 @@ async fn test_health_detail_degrades_when_cron_restore_fails() {
             .as_str()
             .unwrap_or_default()
             .contains("cron restore failed")));
+}
+
+#[tokio::test]
+async fn test_health_detail_degrades_when_hand_restore_fails() {
+    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
+    std::fs::write(tmp.path().join("hand_state.json"), "{bad json").unwrap();
+
+    let config = KernelConfig {
+        home_dir: tmp.path().to_path_buf(),
+        data_dir: tmp.path().join("data"),
+        default_model: DefaultModelConfig {
+            provider: "ollama".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: "OLLAMA_API_KEY".to_string(),
+            base_url: None,
+        },
+        ..KernelConfig::default()
+    };
+
+    let server = start_test_server_with_config(config, tmp).await;
+    server.state.kernel.start_background_agents();
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "degraded");
+    assert!(body["readiness"]["failing_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "hand_restore"));
+    assert!(body["restore_warnings"]["hand"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .unwrap_or_default()
+            .contains("hand state restore failed")));
+}
+
+#[tokio::test]
+async fn test_health_detail_degrades_when_default_provider_is_unknown() {
+    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
+    let config = KernelConfig {
+        home_dir: tmp.path().to_path_buf(),
+        data_dir: tmp.path().join("data"),
+        default_model: DefaultModelConfig {
+            provider: "missing-provider".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: "MISSING_PROVIDER_API_KEY".to_string(),
+            base_url: None,
+        },
+        ..KernelConfig::default()
+    };
+
+    let server = start_test_server_with_config(config, tmp).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["readiness"]["ready"], false);
+    assert_eq!(body["readiness"]["default_provider_auth"], "unknown");
+    assert!(body["readiness"]["failing_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "default_provider_auth"));
 }
 
 #[tokio::test]
@@ -1394,4 +1474,90 @@ async fn test_session_login_sets_secure_cookie_for_https_proxy() {
         .and_then(|v| v.to_str().ok())
         .unwrap();
     assert!(cookie.contains("Secure"));
+}
+
+#[tokio::test]
+async fn test_build_router_auth_and_metrics_wiring() {
+    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
+    let config = KernelConfig {
+        home_dir: tmp.path().to_path_buf(),
+        data_dir: tmp.path().join("data"),
+        auth: openfang_types::config::AuthConfig {
+            enabled: true,
+            username: "admin".to_string(),
+            password_hash: openfang_api::session_auth::hash_password("secret123").unwrap(),
+            session_ttl_hours: 24,
+        },
+        default_model: DefaultModelConfig {
+            provider: "ollama".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: "OLLAMA_API_KEY".to_string(),
+            base_url: None,
+        },
+        ..KernelConfig::default()
+    };
+    let kernel = Arc::new(OpenFangKernel::boot_with_config(config).unwrap());
+    kernel.set_self_handle();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind test server");
+    let addr = listener.local_addr().unwrap();
+    let (app, state) = server::build_router(kernel, addr).await;
+
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let server = TestServer {
+        base_url: format!("http://{}", addr),
+        state,
+        _tmp: tmp,
+    };
+    let client = reqwest::Client::new();
+
+    let unauthenticated = client
+        .get(format!("{}/api/metrics", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), 401);
+
+    let login = client
+        .post(format!("{}/api/auth/login", server.base_url))
+        .json(&serde_json::json!({
+            "username": "admin",
+            "password": "secret123",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200);
+    let cookie = login
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap()
+        .to_string();
+
+    let auth_check = client
+        .get(format!("{}/api/auth/check", server.base_url))
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(auth_check.status(), 200);
+
+    let metrics = client
+        .get(format!("{}/api/metrics", server.base_url))
+        .header(reqwest::header::COOKIE, cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(metrics.status(), 200);
 }

@@ -201,7 +201,7 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
                         .unwrap_or_else(|| "unknown".to_string());
                     let auth = cat
                         .get_provider(provider)
-                        .map(|p| format!("{:?}", p.auth_status).to_lowercase())
+                        .map(|p| p.auth_status.to_string())
                         .unwrap_or_else(|| "unknown".to_string());
                     (tier, auth)
                 })
@@ -3332,6 +3332,10 @@ struct RuntimeHealthSnapshot {
     ready: bool,
 }
 
+fn default_provider_auth_is_ready(status: &str) -> bool {
+    matches!(status, "configured" | "not_required")
+}
+
 fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
     let health = state.kernel.supervisor.health();
 
@@ -3355,7 +3359,7 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
         .and_then(|catalog| {
             catalog
                 .get_provider(&effective_default_model.provider)
-                .map(|provider| format!("{:?}", provider.auth_status).to_lowercase())
+                .map(|provider| provider.auth_status.to_string())
         })
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -3381,7 +3385,7 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
     if !restore_warnings.hand_warnings.is_empty() {
         failing_checks.push("hand_restore".to_string());
     }
-    if default_provider_auth == "missing" {
+    if !default_provider_auth_is_ready(&default_provider_auth) {
         failing_checks.push("default_provider_auth".to_string());
     }
 
@@ -3503,10 +3507,10 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
     out.push_str("# TYPE openfang_default_provider_auth_missing gauge\n");
     out.push_str(&format!(
         "openfang_default_provider_auth_missing {}\n",
-        if snapshot.default_provider_auth == "missing" {
-            1
-        } else {
+        if default_provider_auth_is_ready(&snapshot.default_provider_auth) {
             0
+        } else {
+            1
         }
     ));
     out.push_str("# HELP openfang_config_warnings Number of active runtime config warnings.\n");

@@ -40,6 +40,7 @@ argon2 = { workspace = true }
 rand = { workspace = true }
 socket2 = { workspace = true }
 reqwest = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

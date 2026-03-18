@@ -175,6 +175,18 @@ fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
         })
 }
 
+fn extract_query_token(query: Option<&str>) -> Option<String> {
+    query.and_then(|value| {
+        url::form_urlencoded::parse(value.as_bytes()).find_map(|(key, token)| {
+            if key == "token" {
+                Some(token.into_owned())
+            } else {
+                None
+            }
+        })
+    })
+}
+
 /// Apply the non-public auth rules to an arbitrary request shape.
 pub fn authorize_request_parts(
     auth_state: &AuthState,
@@ -218,10 +230,10 @@ pub fn authorize_request_parts(
     let query_token = if api_key_trimmed.is_empty() || !query_token_allowed(path, method) {
         None
     } else {
-        query.and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
+        extract_query_token(query)
     };
 
-    let query_auth = query_token.map(|token| {
+    let query_auth = query_token.as_deref().map(|token| {
         use subtle::ConstantTimeEq;
         if token.len() != api_key_trimmed.len() {
             return false;
@@ -268,8 +280,7 @@ fn auth_error_response(error: AuthFailure) -> Response<Body> {
         ),
         AuthFailure::MissingCredentials => (
             StatusCode::UNAUTHORIZED,
-            serde_json::json!({"error": "Missing Authorization: Bearer <api_key> header"})
-                .to_string(),
+            serde_json::json!({"error": "Missing authentication credentials"}).to_string(),
             Some("Bearer"),
         ),
     };
@@ -515,6 +526,26 @@ mod tests {
             .layer(axum::middleware::from_fn_with_state(auth_state, auth));
         let request = Request::builder()
             .uri("/api/agents/123/ws?token=secret")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_query_token_is_url_decoded_for_stream_endpoint() {
+        let auth_state = AuthState {
+            api_key: "abc+123=".to_string(),
+            auth_enabled: false,
+            session_secret: "secret".to_string(),
+        };
+        let app = Router::new()
+            .route("/api/logs/stream", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(auth_state, auth));
+        let request = Request::builder()
+            .uri("/api/logs/stream?token=abc%2B123%3D")
             .body(Body::empty())
             .unwrap();
 

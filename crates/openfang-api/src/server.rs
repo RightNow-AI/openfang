@@ -1072,7 +1072,10 @@ fn validate_auth_exposure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
     use openfang_types::config::KernelConfig;
+    use tower::ServiceExt;
 
     fn test_kernel() -> OpenFangKernel {
         let tmp = tempfile::tempdir().unwrap();
@@ -1229,5 +1232,69 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         assert!(!is_daemon_responding(&addr.to_string()));
+    }
+
+    #[tokio::test]
+    async fn build_router_wires_auth_and_metrics_routes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            auth: openfang_types::config::AuthConfig {
+                enabled: true,
+                username: "admin".to_string(),
+                password_hash: crate::session_auth::hash_password("secret123").unwrap(),
+                session_ttl_hours: 24,
+            },
+            ..KernelConfig::default()
+        };
+        let kernel = Arc::new(OpenFangKernel::boot_with_config(config).unwrap());
+        kernel.set_self_handle();
+
+        let (app, _state) = build_router(kernel, "127.0.0.1:4200".parse().unwrap()).await;
+
+        let unauthenticated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let login = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"username":"admin","password":"secret123"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login.status(), StatusCode::OK);
+        let cookie = login
+            .headers()
+            .get(axum::http::header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap()
+            .to_string();
+
+        let metrics = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/metrics")
+                    .header(axum::http::header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(metrics.status(), StatusCode::OK);
     }
 }
