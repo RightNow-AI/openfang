@@ -15,6 +15,76 @@ use openfang_types::model_catalog::{
     ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use tracing::warn;
+use uuid::Uuid;
+
+fn backup_path(path: &Path) -> PathBuf {
+    match path.extension() {
+        Some(ext) => path.with_extension(format!("{}.bak", ext.to_string_lossy())),
+        None => path.with_extension("bak"),
+    }
+}
+
+fn temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("custom-models");
+    path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()))
+}
+
+fn replace_file_atomically(temp_path: &Path, target_path: &Path) -> Result<(), String> {
+    match std::fs::rename(temp_path, target_path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            #[cfg(windows)]
+            {
+                if target_path.exists() {
+                    std::fs::remove_file(target_path).map_err(|remove_err| {
+                        format!(
+                            "Failed to remove existing {} after rename error {err}: {remove_err}",
+                            target_path.display()
+                        )
+                    })?;
+                    return std::fs::rename(temp_path, target_path).map_err(|retry_err| {
+                        format!(
+                            "Failed to replace {} after removing destination: {retry_err}",
+                            target_path.display()
+                        )
+                    });
+                }
+            }
+
+            Err(format!(
+                "Failed to replace {} atomically: {err}",
+                target_path.display()
+            ))
+        }
+    }
+}
+
+fn write_text_file_atomically(path: &Path, content: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create parent dir for {}: {e}", path.display()))?;
+    }
+
+    let tmp_path = temp_path(path);
+    std::fs::write(&tmp_path, content)
+        .map_err(|e| format!("Failed to write temp file {}: {e}", tmp_path.display()))?;
+
+    if path.exists() {
+        let _ = std::fs::copy(path, backup_path(path));
+    }
+
+    if let Err(err) = replace_file_atomically(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    Ok(())
+}
 
 /// The model catalog — registry of all known models and providers.
 pub struct ModelCatalog {
@@ -314,17 +384,25 @@ impl ModelCatalog {
     ///
     /// Merges them into the catalog. Skips models that already exist.
     pub fn load_custom_models(&mut self, path: &std::path::Path) {
-        if !path.exists() {
-            return;
-        }
-        let Ok(data) = std::fs::read_to_string(path) else {
-            return;
-        };
-        let Ok(entries) = serde_json::from_str::<Vec<ModelCatalogEntry>>(&data) else {
-            return;
-        };
-        for entry in entries {
-            self.add_custom_model(entry);
+        for candidate in [path.to_path_buf(), backup_path(path)] {
+            let data = match std::fs::read_to_string(&candidate) {
+                Ok(data) => data,
+                Err(_) => continue,
+            };
+            match serde_json::from_str::<Vec<ModelCatalogEntry>>(&data) {
+                Ok(entries) => {
+                    if candidate != path {
+                        warn!(path = %candidate.display(), "Recovered custom models from backup file");
+                    }
+                    for entry in entries {
+                        self.add_custom_model(entry);
+                    }
+                    return;
+                }
+                Err(e) => {
+                    warn!(path = %candidate.display(), "Failed to parse custom models file: {e}");
+                }
+            }
         }
     }
 
@@ -337,9 +415,7 @@ impl ModelCatalog {
             .collect();
         let json = serde_json::to_string_pretty(&custom)
             .map_err(|e| format!("Failed to serialize custom models: {e}"))?;
-        std::fs::write(path, json)
-            .map_err(|e| format!("Failed to write custom models file: {e}"))?;
-        Ok(())
+        write_text_file_atomically(path, &json)
     }
 }
 

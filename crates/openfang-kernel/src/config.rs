@@ -15,98 +15,99 @@ const MAX_INCLUDE_DEPTH: u32 = 10;
 ///
 /// If the config contains an `include` field, included files are loaded
 /// and deep-merged first, then the root config overrides them.
-pub fn load_config(path: Option<&Path>) -> KernelConfig {
+pub fn try_load_config(path: Option<&Path>) -> Result<KernelConfig, String> {
     let config_path = path
         .map(|p| p.to_path_buf())
         .unwrap_or_else(default_config_path);
 
-    if config_path.exists() {
-        match std::fs::read_to_string(&config_path) {
-            Ok(contents) => match toml::from_str::<toml::Value>(&contents) {
-                Ok(mut root_value) => {
-                    // Process includes before deserializing
-                    let config_dir = config_path
-                        .parent()
-                        .unwrap_or_else(|| Path::new("."))
-                        .to_path_buf();
-                    let mut visited = HashSet::new();
-                    if let Ok(canonical) = std::fs::canonicalize(&config_path) {
-                        visited.insert(canonical);
-                    } else {
-                        visited.insert(config_path.clone());
-                    }
-
-                    if let Err(e) =
-                        resolve_config_includes(&mut root_value, &config_dir, &mut visited, 0)
-                    {
-                        tracing::warn!(
-                            error = %e,
-                            "Config include resolution failed, using root config only"
-                        );
-                    }
-
-                    // Remove the `include` field before deserializing to avoid confusion
-                    if let toml::Value::Table(ref mut tbl) = root_value {
-                        tbl.remove("include");
-                    }
-
-                    // Migrate misplaced api_key/api_listen from [api] section to root level.
-                    // The old config schema incorrectly grouped these under [api], so many
-                    // users have them in the wrong place. Move them up if not already at root.
-                    if let toml::Value::Table(ref mut tbl) = root_value {
-                        if let Some(toml::Value::Table(api_section)) = tbl.get("api").cloned() {
-                            for key in &["api_key", "api_listen", "log_level"] {
-                                if !tbl.contains_key(*key) {
-                                    if let Some(val) = api_section.get(*key) {
-                                        tracing::info!(
-                                            key,
-                                            "Migrating misplaced config field from [api] to root level"
-                                        );
-                                        tbl.insert(key.to_string(), val.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    match root_value.try_into::<KernelConfig>() {
-                        Ok(config) => {
-                            info!(path = %config_path.display(), "Loaded configuration");
-                            return config;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                path = %config_path.display(),
-                                "Failed to deserialize merged config, using defaults"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        path = %config_path.display(),
-                        "Failed to parse config, using defaults"
-                    );
-                }
-            },
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    path = %config_path.display(),
-                    "Failed to read config file, using defaults"
-                );
-            }
-        }
-    } else {
+    if !config_path.exists() {
         info!(
             path = %config_path.display(),
             "Config file not found, using defaults"
         );
+        return Ok(KernelConfig::default());
     }
 
-    KernelConfig::default()
+    let contents = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config file {}: {e}", config_path.display()))?;
+    let mut root_value = toml::from_str::<toml::Value>(&contents)
+        .map_err(|e| format!("Failed to parse config file {}: {e}", config_path.display()))?;
+
+    let config_dir = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let mut visited = HashSet::new();
+    if let Ok(canonical) = std::fs::canonicalize(&config_path) {
+        visited.insert(canonical);
+    } else {
+        visited.insert(config_path.clone());
+    }
+
+    resolve_config_includes(&mut root_value, &config_dir, &mut visited, 0).map_err(|e| {
+        format!(
+            "Failed to resolve config includes for {}: {e}",
+            config_path.display()
+        )
+    })?;
+
+    // Remove the `include` field before deserializing to avoid confusion.
+    if let toml::Value::Table(ref mut tbl) = root_value {
+        tbl.remove("include");
+    }
+
+    // Migrate misplaced api_key/api_listen from [api] section to root level.
+    // The old config schema incorrectly grouped these under [api], so many
+    // users have them in the wrong place. Move them up if not already at root.
+    if let toml::Value::Table(ref mut tbl) = root_value {
+        if let Some(toml::Value::Table(api_section)) = tbl.get("api").cloned() {
+            for key in &["api_key", "api_listen", "log_level"] {
+                if !tbl.contains_key(*key) {
+                    if let Some(val) = api_section.get(*key) {
+                        tracing::info!(
+                            key,
+                            "Migrating misplaced config field from [api] to root level"
+                        );
+                        tbl.insert(key.to_string(), val.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let config = root_value.try_into::<KernelConfig>().map_err(|e| {
+        format!(
+            "Failed to deserialize merged config {}: {e}",
+            config_path.display()
+        )
+    })?;
+
+    info!(path = %config_path.display(), "Loaded configuration");
+    Ok(config)
+}
+
+pub fn load_config(path: Option<&Path>) -> KernelConfig {
+    match try_load_config(path) {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to load config, using defaults");
+            KernelConfig::default()
+        }
+    }
+}
+
+/// Collect the root config file plus any recursively included config files.
+///
+/// Uses the same path-safety rules as [`try_load_config`] so the watcher can
+/// observe the real effective config dependency set.
+pub fn collect_config_dependency_paths(path: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut active = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut files = Vec::new();
+    collect_config_dependency_paths_inner(path, &mut active, &mut seen, &mut files, 0)?;
+    files.sort();
+    files.dedup();
+    Ok(files)
 }
 
 /// Resolve config includes by deep-merging included files into the root value.
@@ -190,14 +191,22 @@ fn resolve_config_includes(
 
         info!(include = %include_path_str, "Loading config include");
 
-        let contents = std::fs::read_to_string(&canonical)
-            .map_err(|e| format!("Failed to read config include '{}': {e}", include_path_str))?;
-        let mut include_value: toml::Value = toml::from_str(&contents)
-            .map_err(|e| format!("Failed to parse config include '{}': {e}", include_path_str))?;
+        let include_result: Result<toml::Value, String> = (|| {
+            let contents = std::fs::read_to_string(&canonical).map_err(|e| {
+                format!("Failed to read config include '{}': {e}", include_path_str)
+            })?;
+            let mut include_value: toml::Value = toml::from_str(&contents).map_err(|e| {
+                format!("Failed to parse config include '{}': {e}", include_path_str)
+            })?;
 
-        // Recursively resolve includes in the included file
-        let include_dir = canonical.parent().unwrap_or(config_dir).to_path_buf();
-        resolve_config_includes(&mut include_value, &include_dir, visited, depth + 1)?;
+            // Recursively resolve includes in the included file
+            let include_dir = canonical.parent().unwrap_or(config_dir).to_path_buf();
+            resolve_config_includes(&mut include_value, &include_dir, visited, depth + 1)?;
+
+            Ok(include_value)
+        })();
+        visited.remove(&canonical);
+        let mut include_value = include_result?;
 
         // Remove include field from the included file
         if let toml::Value::Table(ref mut tbl) = include_value {
@@ -220,6 +229,97 @@ fn resolve_config_includes(
     deep_merge_toml(&mut merged_base, &root_without_include);
     *root_value = merged_base;
 
+    Ok(())
+}
+
+fn collect_config_dependency_paths_inner(
+    config_path: &Path,
+    active: &mut HashSet<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+    files: &mut Vec<PathBuf>,
+    depth: u32,
+) -> Result<(), String> {
+    if depth > MAX_INCLUDE_DEPTH {
+        return Err(format!(
+            "Config include depth exceeded maximum of {MAX_INCLUDE_DEPTH}"
+        ));
+    }
+
+    let canonical = std::fs::canonicalize(config_path).map_err(|e| {
+        format!(
+            "Failed to resolve config file {}: {e}",
+            config_path.display()
+        )
+    })?;
+    if !active.insert(canonical.clone()) {
+        return Err(format!(
+            "Circular config include detected: {}",
+            config_path.display()
+        ));
+    }
+    if !seen.insert(canonical.clone()) {
+        active.remove(&canonical);
+        return Ok(());
+    }
+
+    files.push(canonical.clone());
+
+    let contents = std::fs::read_to_string(&canonical)
+        .map_err(|e| format!("Failed to read config file {}: {e}", canonical.display()))?;
+    let root_value = toml::from_str::<toml::Value>(&contents)
+        .map_err(|e| format!("Failed to parse config file {}: {e}", canonical.display()))?;
+
+    let includes = match root_value {
+        toml::Value::Table(tbl) => match tbl.get("include") {
+            Some(toml::Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+
+    let config_dir = canonical
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let canonical_dir = std::fs::canonicalize(&config_dir)
+        .map_err(|e| format!("Config dir cannot be canonicalized: {e}"))?;
+
+    for include_path_str in includes {
+        let include_path = Path::new(&include_path_str);
+        if include_path.is_absolute() {
+            return Err(format!(
+                "Config include rejects absolute path: {include_path_str}"
+            ));
+        }
+        for component in include_path.components() {
+            if let std::path::Component::ParentDir = component {
+                return Err(format!(
+                    "Config include rejects path traversal: {include_path_str}"
+                ));
+            }
+        }
+
+        let resolved = config_dir.join(include_path);
+        let include_canonical = std::fs::canonicalize(&resolved).map_err(|e| {
+            format!(
+                "Config include '{}' cannot be resolved: {e}",
+                include_path_str
+            )
+        })?;
+        if !include_canonical.starts_with(&canonical_dir) {
+            return Err(format!(
+                "Config include '{}' escapes config directory",
+                include_path_str
+            ));
+        }
+
+        collect_config_dependency_paths_inner(&include_canonical, active, seen, files, depth + 1)?;
+    }
+
+    active.remove(&canonical);
     Ok(())
 }
 
@@ -453,5 +553,105 @@ mod tests {
 
         let config = load_config(Some(&root));
         assert_eq!(config.log_level, "trace");
+    }
+
+    #[test]
+    fn test_try_load_config_rejects_invalid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("config.toml");
+        std::fs::write(&root, "log_level = [").unwrap();
+
+        let err = try_load_config(Some(&root)).unwrap_err();
+
+        assert!(err.contains("Failed to parse config file"));
+    }
+
+    #[test]
+    fn test_try_load_config_rejects_bad_include() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("config.toml");
+        std::fs::write(
+            &root,
+            "include = [\"missing.toml\"]\nlog_level = \"info\"\n",
+        )
+        .unwrap();
+
+        let err = try_load_config(Some(&root)).unwrap_err();
+
+        assert!(err.contains("Failed to resolve config includes"));
+    }
+
+    #[test]
+    fn test_collect_config_dependency_paths_includes_nested_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("config.toml");
+        let shared = dir.path().join("shared.toml");
+        let providers = dir.path().join("providers.toml");
+
+        std::fs::write(&shared, "log_level = \"debug\"\n").unwrap();
+        std::fs::write(
+            &providers,
+            "include = [\"shared.toml\"]\napi_listen = \"127.0.0.1:4200\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &root,
+            "include = [\"providers.toml\"]\nlog_level = \"info\"\n",
+        )
+        .unwrap();
+
+        let files = collect_config_dependency_paths(&root).unwrap();
+
+        assert_eq!(files.len(), 3);
+        assert!(files.contains(&root.canonicalize().unwrap()));
+        assert!(files.contains(&providers.canonicalize().unwrap()));
+        assert!(files.contains(&shared.canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn test_try_load_config_allows_shared_include_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("config.toml");
+        let a = dir.path().join("a.toml");
+        let b = dir.path().join("b.toml");
+        let shared = dir.path().join("shared.toml");
+
+        std::fs::write(&shared, "api_listen = \"127.0.0.1:4242\"\n").unwrap();
+        std::fs::write(&a, "include = [\"shared.toml\"]\nlog_level = \"debug\"\n").unwrap();
+        std::fs::write(&b, "include = [\"shared.toml\"]\n").unwrap();
+        std::fs::write(&root, "include = [\"a.toml\", \"b.toml\"]\n").unwrap();
+
+        let config = try_load_config(Some(&root)).unwrap();
+        assert_eq!(config.api_listen, "127.0.0.1:4242");
+        assert_eq!(config.log_level, "debug");
+    }
+
+    #[test]
+    fn test_collect_config_dependency_paths_allows_shared_include_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("config.toml");
+        let a = dir.path().join("a.toml");
+        let b = dir.path().join("b.toml");
+        let shared = dir.path().join("shared.toml");
+
+        std::fs::write(&shared, "log_level = \"debug\"\n").unwrap();
+        std::fs::write(
+            &a,
+            "include = [\"shared.toml\"]\napi_listen = \"127.0.0.1:4200\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &b,
+            "include = [\"shared.toml\"]\napi_listen = \"127.0.0.1:4200\"\n",
+        )
+        .unwrap();
+        std::fs::write(&root, "include = [\"a.toml\", \"b.toml\"]\n").unwrap();
+
+        let files = collect_config_dependency_paths(&root).unwrap();
+        assert_eq!(files.len(), 4);
+        assert!(files.contains(&root.canonicalize().unwrap()));
+        assert!(files.contains(&a.canonicalize().unwrap()));
+        assert!(files.contains(&b.canonicalize().unwrap()));
+        assert!(files.contains(&shared.canonicalize().unwrap()));
     }
 }

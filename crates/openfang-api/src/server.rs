@@ -734,50 +734,12 @@ pub async fn run_daemon(
     let addr: SocketAddr = listen_addr.parse()?;
     validate_auth_exposure(&kernel, addr)?;
 
-    let kernel = Arc::new(kernel);
-    kernel.set_self_handle();
-    kernel.start_background_agents();
-
-    // Config file hot-reload watcher (polls every 30 seconds)
-    {
-        let k = kernel.clone();
-        let config_path = kernel.config.home_dir.join("config.toml");
-        tokio::spawn(async move {
-            let mut last_modified = std::fs::metadata(&config_path)
-                .and_then(|m| m.modified())
-                .ok();
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                let current = std::fs::metadata(&config_path)
-                    .and_then(|m| m.modified())
-                    .ok();
-                if current != last_modified && current.is_some() {
-                    last_modified = current;
-                    tracing::info!("Config file changed, reloading...");
-                    match k.reload_config() {
-                        Ok(plan) => {
-                            if plan.has_changes() {
-                                tracing::info!("Config hot-reload applied: {:?}", plan.hot_actions);
-                            } else {
-                                tracing::debug!("Config hot-reload: no actionable changes");
-                            }
-                        }
-                        Err(e) => tracing::warn!("Config hot-reload failed: {e}"),
-                    }
-                }
-            }
-        });
-    }
-
-    let (app, state) = build_router(kernel.clone(), addr).await;
-
-    // Write daemon info file
+    // Check daemon info before we bind so we can reject a genuinely running daemon,
+    // but do not write a fresh file until the listener is successfully created.
     if let Some(info_path) = daemon_info_path {
-        // Check if another daemon is already running with this PID file
         if info_path.exists() {
             if let Ok(existing) = std::fs::read_to_string(info_path) {
                 if let Ok(info) = serde_json::from_str::<DaemonInfo>(&existing) {
-                    // PID alive AND the health endpoint responds → truly running
                     if is_process_alive(info.pid) && is_daemon_responding(&info.listen_addr) {
                         return Err(format!(
                             "Another daemon (PID {}) is already running at {}",
@@ -787,28 +749,10 @@ pub async fn run_daemon(
                     }
                 }
             }
-            // Stale PID file (process dead or different process reused PID), remove it
             info!("Removing stale daemon info file");
             let _ = std::fs::remove_file(info_path);
         }
-
-        let daemon_info = DaemonInfo {
-            pid: std::process::id(),
-            listen_addr: addr.to_string(),
-            started_at: chrono::Utc::now().to_rfc3339(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            platform: std::env::consts::OS.to_string(),
-        };
-        if let Ok(json) = serde_json::to_string_pretty(&daemon_info) {
-            let _ = std::fs::write(info_path, json);
-            // SECURITY: Restrict daemon info file permissions (contains PID and port).
-            restrict_permissions(info_path);
-        }
     }
-
-    info!("OpenFang API server listening on http://{addr}");
-    info!("WebChat UI available at http://{addr}/",);
-    info!("WebSocket endpoint: ws://{addr}/api/agents/{{id}}/ws",);
 
     // Use SO_REUSEADDR to allow binding immediately after reboot (avoids TIME_WAIT).
     let socket = socket2::Socket::new(
@@ -825,6 +769,61 @@ pub async fn run_daemon(
     socket.bind(&addr.into())?;
     socket.listen(1024)?;
     let listener = tokio::net::TcpListener::from_std(std::net::TcpListener::from(socket))?;
+
+    let kernel = Arc::new(kernel);
+    kernel.set_self_handle();
+    kernel.start_background_agents();
+
+    // Config file hot-reload watcher (polls every 30 seconds)
+    {
+        let k = kernel.clone();
+        let config_path = kernel.config_path().to_path_buf();
+        tokio::spawn(async move {
+            let mut last_snapshot = snapshot_config_dependencies(&config_path);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let current_snapshot = snapshot_config_dependencies(&config_path);
+                if current_snapshot != last_snapshot {
+                    last_snapshot = current_snapshot;
+                    tracing::info!("Config file changed, reloading...");
+                    match k.reload_config() {
+                        Ok(outcome) => {
+                            if outcome.plan.has_changes() {
+                                tracing::info!(
+                                    detected = ?outcome.plan.hot_actions,
+                                    applied = ?outcome.hot_actions_applied,
+                                    "Config hot-reload evaluated"
+                                );
+                            } else {
+                                tracing::debug!("Config hot-reload: no actionable changes");
+                            }
+                        }
+                        Err(e) => tracing::warn!("Config hot-reload failed: {e}"),
+                    }
+                }
+            }
+        });
+    }
+
+    let (app, state) = build_router(kernel.clone(), addr).await;
+
+    if let Some(info_path) = daemon_info_path {
+        let daemon_info = DaemonInfo {
+            pid: std::process::id(),
+            listen_addr: addr.to_string(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            platform: std::env::consts::OS.to_string(),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&daemon_info) {
+            let _ = std::fs::write(info_path, json);
+            restrict_permissions(info_path);
+        }
+    }
+
+    info!("OpenFang API server listening on http://{addr}");
+    info!("WebChat UI available at http://{addr}/",);
+    info!("WebSocket endpoint: ws://{addr}/api/agents/{{id}}/ws",);
 
     // Run server with graceful shutdown.
     // SECURITY: `into_make_service_with_connect_info` injects the peer
@@ -965,14 +964,52 @@ fn is_daemon_responding(addr: &str) -> bool {
     }
 }
 
+fn snapshot_config_dependencies(
+    config_path: &Path,
+) -> Vec<(std::path::PathBuf, Option<std::time::SystemTime>)> {
+    let mut paths = openfang_kernel::config::collect_config_dependency_paths(config_path)
+        .unwrap_or_else(|e| {
+            tracing::debug!(
+                error = %e,
+                path = %config_path.display(),
+                "Falling back to root config watcher snapshot"
+            );
+            vec![config_path.to_path_buf()]
+        });
+    paths.sort();
+    paths.dedup();
+    paths
+        .into_iter()
+        .map(|path| {
+            let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            (path, modified)
+        })
+        .collect()
+}
+
 fn validate_auth_exposure(
     kernel: &OpenFangKernel,
     addr: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let api_key = kernel.config.api_key.trim();
     let api_key_enabled = !api_key.is_empty();
-    let session_auth_enabled = kernel.config.auth.enabled;
-    if !api_key_enabled && !session_auth_enabled && !addr.ip().is_loopback() {
+    let dashboard_auth_enabled = kernel.config.auth.enabled;
+    let password_hash = kernel.config.auth.password_hash.trim();
+    let dashboard_auth_ready = dashboard_auth_enabled
+        && crate::session_auth::is_supported_password_hash_format(password_hash);
+    if dashboard_auth_enabled && password_hash.is_empty() {
+        return Err(
+            "Dashboard auth is enabled but auth.password_hash is empty. Generate a password hash with `openfang security hash-password` or disable [auth].enabled before starting the daemon."
+                .into(),
+        );
+    }
+    if dashboard_auth_enabled && !dashboard_auth_ready {
+        return Err(
+            "Dashboard auth is enabled but auth.password_hash is not a supported hash format. Use `openfang security hash-password` for Argon2id or provide a 64-character legacy SHA-256 hex digest."
+                .into(),
+        );
+    }
+    if !api_key_enabled && !dashboard_auth_ready && !addr.ip().is_loopback() {
         return Err(format!(
             "Refusing to expose the API on {addr} without authentication. Set OPENFANG_API_KEY or bind to 127.0.0.1."
         )
@@ -1031,5 +1068,85 @@ mod tests {
         let err = validate_auth_exposure(&kernel, "0.0.0.0:4200".parse().unwrap()).unwrap_err();
 
         assert!(err.to_string().contains("placeholder API key"));
+    }
+
+    #[test]
+    fn boot_rejects_dashboard_auth_without_password_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            auth: openfang_types::config::AuthConfig {
+                enabled: true,
+                password_hash: String::new(),
+                ..Default::default()
+            },
+            ..KernelConfig::default()
+        };
+        let err = OpenFangKernel::boot_with_config(config)
+            .err()
+            .expect("boot should reject missing dashboard auth password hash");
+
+        assert!(err.to_string().contains("auth.password_hash is empty"));
+    }
+
+    #[test]
+    fn boot_rejects_invalid_dashboard_auth_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            auth: openfang_types::config::AuthConfig {
+                enabled: true,
+                password_hash: "not-a-real-hash".to_string(),
+                ..Default::default()
+            },
+            ..KernelConfig::default()
+        };
+        let err = OpenFangKernel::boot_with_config(config)
+            .err()
+            .expect("boot should reject invalid dashboard auth hash");
+
+        let err_text = err.to_string();
+        assert!(err_text.contains("auth.password_hash"));
+        assert!(err_text.contains("supported"));
+    }
+
+    #[tokio::test]
+    async fn run_daemon_does_not_write_pid_file_when_bind_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon_info_path = tmp.path().join("daemon.json");
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = occupied.local_addr().unwrap();
+
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).unwrap();
+
+        let result = run_daemon(kernel, &addr.to_string(), Some(&daemon_info_path)).await;
+        assert!(result.is_err());
+        assert!(
+            !daemon_info_path.exists(),
+            "daemon.json should not be created when the listener fails to bind"
+        );
+    }
+
+    #[test]
+    fn snapshot_config_dependencies_tracks_include_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("config.toml");
+        let include = dir.path().join("providers.toml");
+
+        std::fs::write(&include, "api_listen = \"127.0.0.1:4200\"\n").unwrap();
+        std::fs::write(&root, "include = [\"providers.toml\"]\n").unwrap();
+
+        let snapshot = snapshot_config_dependencies(&root);
+        let paths: Vec<_> = snapshot.into_iter().map(|(path, _)| path).collect();
+
+        assert!(paths.contains(&root.canonicalize().unwrap()));
+        assert!(paths.contains(&include.canonicalize().unwrap()));
     }
 }

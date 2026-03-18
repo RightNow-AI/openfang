@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 #[cfg(not(test))]
 use sha2::{Digest as _, Sha256};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 use zeroize::Zeroizing;
 
 /// Service name for OS keyring storage.
@@ -32,6 +33,67 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 /// Magic bytes for vault file format versioning.
 const VAULT_MAGIC: &[u8; 4] = b"OFV1";
+
+fn backup_path(path: &Path) -> PathBuf {
+    match path.extension() {
+        Some(ext) => path.with_extension(format!("{}.bak", ext.to_string_lossy())),
+        None => path.with_extension("bak"),
+    }
+}
+
+fn temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("vault");
+    path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()))
+}
+
+#[cfg(unix)]
+fn restrict_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path) {}
+
+fn replace_file_atomically(path: &Path, tmp_path: &Path) -> std::io::Result<()> {
+    match std::fs::rename(tmp_path, path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            #[cfg(windows)]
+            {
+                if path.exists() {
+                    std::fs::remove_file(path)?;
+                    return std::fs::rename(tmp_path, path);
+                }
+            }
+
+            Err(err)
+        }
+    }
+}
+
+fn write_secret_file_atomically(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let tmp_path = temp_path(path);
+    std::fs::write(&tmp_path, content)?;
+
+    if path.exists() {
+        let _ = std::fs::copy(path, backup_path(path));
+    }
+
+    if let Err(err) = replace_file_atomically(path, &tmp_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+    restrict_permissions(path);
+    Ok(())
+}
 
 /// On-disk vault format (encrypted).
 #[derive(Serialize, Deserialize)]
@@ -141,7 +203,7 @@ impl CredentialVault {
         }
 
         let master_key = self.resolve_master_key()?;
-        self.load(&master_key)?;
+        self.load_with_recovery(&master_key)?;
         self.unlocked = true;
         self.cached_key = Some(master_key);
         debug!("Vault unlocked with {} entries", self.entries.len());
@@ -219,7 +281,7 @@ impl CredentialVault {
                 "Vault not initialized. Run `openfang vault init`.".to_string(),
             ));
         }
-        self.load(&master_key)?;
+        self.load_with_recovery(&master_key)?;
         self.unlocked = true;
         self.cached_key = Some(master_key);
         debug!(
@@ -260,6 +322,23 @@ impl CredentialVault {
         }
 
         Err(ExtensionError::VaultLocked)
+    }
+
+    fn load_with_recovery(&mut self, master_key: &[u8; 32]) -> ExtensionResult<()> {
+        let primary_path = self.path.clone();
+        match self.load_from_path(&primary_path, master_key) {
+            Ok(()) => Ok(()),
+            Err(primary_err) => {
+                let backup = backup_path(&self.path);
+                if !backup.exists() {
+                    return Err(primary_err);
+                }
+                warn!(path = %primary_path.display(), error = %primary_err, "Primary vault file could not be loaded; attempting backup recovery");
+                self.load_from_path(&backup, master_key)?;
+                warn!(path = %backup.display(), "Recovered vault contents from backup file");
+                Ok(())
+            }
+        }
     }
 
     /// Save encrypted vault to disk.
@@ -308,21 +387,17 @@ impl CredentialVault {
         let content = serde_json::to_string_pretty(&vault_file)
             .map_err(|e| ExtensionError::Vault(format!("Vault file serialization failed: {e}")))?;
 
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
         // Prepend OFV1 magic bytes for format detection
         let mut output = Vec::with_capacity(VAULT_MAGIC.len() + content.len());
         output.extend_from_slice(VAULT_MAGIC);
         output.extend_from_slice(content.as_bytes());
-        std::fs::write(&self.path, output)?;
+        write_secret_file_atomically(&self.path, &output)?;
         Ok(())
     }
 
     /// Load and decrypt vault from disk.
-    fn load(&mut self, master_key: &[u8; 32]) -> ExtensionResult<()> {
-        let raw = std::fs::read(&self.path)?;
+    fn load_from_path(&mut self, path: &Path, master_key: &[u8; 32]) -> ExtensionResult<()> {
+        let raw = std::fs::read(path)?;
 
         // Strip OFV1 magic header if present; legacy JSON files start with '{'
         let content = if raw.starts_with(VAULT_MAGIC) {

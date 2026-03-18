@@ -317,8 +317,8 @@ pub fn with_message_text_block(
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_attachments, upload_path, with_message_text_block, AttachmentRef, UploadMeta,
-        UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
+        escape_prometheus_label_value, json_to_toml_value, resolve_attachments, upload_path,
+        with_message_text_block, AttachmentRef, UploadMeta, UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
     };
     use openfang_types::message::ContentBlock;
     use std::time::{Duration, SystemTime};
@@ -368,6 +368,42 @@ mod tests {
         assert!(blocks.is_empty());
         assert!(!path.exists());
         assert!(UPLOAD_REGISTRY.get(&file_id).is_none());
+    }
+
+    #[test]
+    fn prometheus_label_values_escape_special_characters() {
+        assert_eq!(
+            escape_prometheus_label_value("alpha\"beta\\gamma\ndelta"),
+            "alpha\\\"beta\\\\gamma\\ndelta"
+        );
+    }
+
+    #[test]
+    fn json_to_toml_value_preserves_nested_structures() {
+        let value = serde_json::json!({
+            "providers": ["groq", "openai"],
+            "browser": { "headless": true },
+        });
+
+        let converted = json_to_toml_value(&value);
+        let table = converted.as_table().unwrap();
+        assert_eq!(
+            table["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>(),
+            vec!["groq", "openai"]
+        );
+        assert_eq!(
+            table["browser"]
+                .as_table()
+                .unwrap()
+                .get("headless")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 }
 
@@ -763,13 +799,15 @@ pub async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
     let uptime = state.started_at.elapsed().as_secs();
     let agent_count = agents.len();
+    let effective_default_model = state.kernel.effective_default_model_config();
 
     Json(serde_json::json!({
         "status": "running",
         "version": env!("CARGO_PKG_VERSION"),
         "agent_count": agent_count,
-        "default_provider": state.kernel.config.default_model.provider,
-        "default_model": state.kernel.config.default_model.model,
+        "shutdown_requested": state.kernel.supervisor.is_shutting_down(),
+        "default_provider": effective_default_model.provider,
+        "default_model": effective_default_model.model,
         "uptime_seconds": uptime,
         "api_listen": state.kernel.config.api_listen,
         "home_dir": state.kernel.config.home_dir.display().to_string(),
@@ -789,8 +827,9 @@ pub async fn shutdown(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "shutdown requested via API",
         "ok",
     );
-    state.kernel.shutdown();
-    // Signal the HTTP server to initiate graceful shutdown so the process exits.
+    // Enter shutdown mode first so background loops stop accepting new work,
+    // then let the HTTP server drain and perform the final kernel teardown.
+    state.kernel.supervisor.shutdown();
     state.shutdown_notify.notify_one();
     Json(serde_json::json!({"status": "shutting_down"}))
 }
@@ -2547,9 +2586,9 @@ pub async fn configure_channel(
         }
     };
 
-    let home = openfang_kernel::config::openfang_home();
+    let home = state.kernel.config.home_dir.clone();
     let secrets_path = home.join("secrets.env");
-    let config_path = home.join("config.toml");
+    let config_path = state.kernel.config_path().to_path_buf();
     let mut config_fields: HashMap<String, (String, FieldType)> = HashMap::new();
 
     for field_def in meta.fields {
@@ -2645,9 +2684,9 @@ pub async fn remove_channel(
         }
     };
 
-    let home = openfang_kernel::config::openfang_home();
+    let home = state.kernel.config.home_dir.clone();
     let secrets_path = home.join("secrets.env");
-    let config_path = home.join("config.toml");
+    let config_path = state.kernel.config_path().to_path_buf();
 
     // Remove all secret env vars for this channel
     for field_def in meta.fields {
@@ -3295,17 +3334,52 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
         .is_ok();
 
     let config_warnings = state.kernel.config.validate();
-    let status = if db_ok { "ok" } else { "degraded" };
+    let effective_default_model = state.kernel.effective_default_model_config();
+    let default_provider_auth = state
+        .kernel
+        .model_catalog
+        .read()
+        .ok()
+        .and_then(|catalog| {
+            catalog
+                .get_provider(&effective_default_model.provider)
+                .map(|provider| format!("{:?}", provider.auth_status).to_lowercase())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut failing_checks = Vec::new();
+    if !db_ok {
+        failing_checks.push("database".to_string());
+    }
+    if health.is_shutting_down {
+        failing_checks.push("shutdown_requested".to_string());
+    }
+    if health.panic_count > 0 {
+        failing_checks.push("supervisor_panics".to_string());
+    }
+    if !config_warnings.is_empty() {
+        failing_checks.push("config_warnings".to_string());
+    }
+    if default_provider_auth == "missing" {
+        failing_checks.push("default_provider_auth".to_string());
+    }
+    let ready = failing_checks.is_empty();
+    let status = if ready { "ok" } else { "degraded" };
 
     Json(serde_json::json!({
         "status": status,
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": state.started_at.elapsed().as_secs(),
+        "shutdown_requested": health.is_shutting_down,
         "panic_count": health.panic_count,
         "restart_count": health.restart_count,
         "agent_count": state.kernel.registry.count(),
         "database": if db_ok { "connected" } else { "error" },
         "config_warnings": config_warnings,
+        "readiness": {
+            "ready": ready,
+            "default_provider_auth": default_provider_auth,
+            "failing_checks": failing_checks,
+        },
     }))
 }
 
@@ -3322,6 +3396,19 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
 /// - `openfang_tool_calls_total` — total tool calls (per agent)
 /// - `openfang_panics_total` — supervisor panic count
 /// - `openfang_restarts_total` — supervisor restart count
+fn escape_prometheus_label_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '"' => escaped.push_str("\\\""),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut out = String::with_capacity(2048);
 
@@ -3350,9 +3437,9 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
     out.push_str("# HELP openfang_tool_calls_total Total tool calls (rolling hourly window).\n");
     out.push_str("# TYPE openfang_tool_calls_total gauge\n");
     for agent in &agents {
-        let name = &agent.name;
-        let provider = &agent.manifest.model.provider;
-        let model = &agent.manifest.model.model;
+        let name = escape_prometheus_label_value(&agent.name);
+        let provider = escape_prometheus_label_value(&agent.manifest.model.provider);
+        let model = escape_prometheus_label_value(&agent.manifest.model.model);
         if let Some((tokens, tools)) = state.kernel.scheduler.get_usage(agent.id) {
             out.push_str(&format!(
                 "openfang_tokens_total{{agent=\"{name}\",provider=\"{provider}\",model=\"{model}\"}} {tokens}\n"
@@ -3379,10 +3466,8 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
     // Version info
     out.push_str("# HELP openfang_info OpenFang version and build info.\n");
     out.push_str("# TYPE openfang_info gauge\n");
-    out.push_str(&format!(
-        "openfang_info{{version=\"{}\"}} 1\n",
-        env!("CARGO_PKG_VERSION")
-    ));
+    let version = escape_prometheus_label_value(env!("CARGO_PKG_VERSION"));
+    out.push_str(&format!("openfang_info{{version=\"{version}\"}} 1\n",));
 
     (
         StatusCode::OK,
@@ -7297,7 +7382,7 @@ pub async fn set_provider_key(
         };
         if let Some(model_id) = default_model {
             // Update config.toml to persist the switch
-            let config_path = state.kernel.config.home_dir.join("config.toml");
+            let config_path = state.kernel.config_path().to_path_buf();
             let update_toml = format!(
                 "\n[default_model]\nprovider = \"{}\"\nmodel = \"{}\"\napi_key_env = \"{}\"\n",
                 name, model_id, env_var
@@ -7305,10 +7390,12 @@ pub async fn set_provider_key(
             backup_config(&config_path);
             if let Ok(existing) = std::fs::read_to_string(&config_path) {
                 let cleaned = remove_toml_section(&existing, "default_model");
-                let _ =
-                    std::fs::write(&config_path, format!("{}\n{}", cleaned.trim(), update_toml));
+                let _ = write_validated_config_atomically(
+                    &config_path,
+                    &format!("{}\n{}", cleaned.trim(), update_toml),
+                );
             } else {
-                let _ = std::fs::write(&config_path, update_toml);
+                let _ = write_validated_config_atomically(&config_path, &update_toml);
             }
 
             // Hot-update the in-memory default model override so resolve_driver()
@@ -7567,9 +7654,10 @@ pub async fn set_provider_url(
             .unwrap_or_else(|e| e.into_inner());
         catalog.set_provider_url(&name, &base_url);
     }
+    state.kernel.set_effective_provider_url(&name, &base_url);
 
     // Persist to config.toml [provider_urls] section
-    let config_path = state.kernel.config.home_dir.join("config.toml");
+    let config_path = state.kernel.config_path().to_path_buf();
     if let Err(e) = upsert_provider_url(&config_path, &name, &base_url) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -7638,7 +7726,7 @@ fn upsert_provider_url(
         std::fs::create_dir_all(parent)?;
     }
 
-    std::fs::write(config_path, toml::to_string_pretty(&doc)?)?;
+    write_validated_config_atomically(config_path, &toml::to_string_pretty(&doc)?)?;
     Ok(())
 }
 
@@ -7727,6 +7815,104 @@ pub async fn create_skill(
 
 // ── Helper functions for secrets.env management ────────────────────────
 
+fn replace_file_atomically(
+    temp_path: &std::path::Path,
+    target_path: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    match std::fs::rename(temp_path, target_path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            #[cfg(windows)]
+            {
+                if target_path.exists() {
+                    std::fs::remove_file(target_path)?;
+                    return std::fs::rename(temp_path, target_path);
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+fn write_text_file_atomically(path: &std::path::Path, content: &str) -> Result<(), std::io::Error> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("openfang");
+    let temp_path = path.with_file_name(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    if let Err(err) = std::fs::write(&temp_path, content) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    if let Err(err) = replace_file_atomically(&temp_path, path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    Ok(())
+}
+
+fn write_validated_config_atomically(
+    config_path: &std::path::Path,
+    content: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file_name = config_path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("config.toml");
+    let temp_path =
+        config_path.with_file_name(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    if let Err(err) = std::fs::write(&temp_path, content) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(Box::new(err));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    if let Err(err) = openfang_kernel::config::try_load_config(Some(&temp_path)) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err).into());
+    }
+
+    if let Err(err) = replace_file_atomically(&temp_path, config_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(Box::new(err));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    Ok(())
+}
+
 /// Write or update a key in the secrets.env file.
 /// File format: one `KEY=value` per line. Existing keys are overwritten.
 fn write_secret_env(path: &std::path::Path, key: &str, value: &str) -> Result<(), std::io::Error> {
@@ -7745,21 +7931,7 @@ fn write_secret_env(path: &std::path::Path, key: &str, value: &str) -> Result<()
     // Add new line
     lines.push(format!("{key}={value}"));
 
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    std::fs::write(path, lines.join("\n") + "\n")?;
-
-    // SECURITY: Restrict file permissions on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-
-    Ok(())
+    write_text_file_atomically(path, &(lines.join("\n") + "\n"))
 }
 
 /// Remove a key from the secrets.env file.
@@ -7774,9 +7946,7 @@ fn remove_secret_env(path: &std::path::Path, key: &str) -> Result<(), std::io::E
         .map(|l| l.to_string())
         .collect();
 
-    std::fs::write(path, lines.join("\n") + "\n")?;
-
-    Ok(())
+    write_text_file_atomically(path, &(lines.join("\n") + "\n"))
 }
 
 // ── Config.toml channel management helpers ──────────────────────────
@@ -7842,12 +8012,7 @@ fn upsert_channel_config(
     }
     channels_table.insert(channel_name.to_string(), toml::Value::Table(ch_table));
 
-    // Ensure parent directory exists
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    std::fs::write(config_path, toml::to_string_pretty(&doc)?)?;
+    write_validated_config_atomically(config_path, &toml::to_string_pretty(&doc)?)?;
     Ok(())
 }
 
@@ -7875,7 +8040,7 @@ fn remove_channel_config(
         channels.remove(channel_name);
     }
 
-    std::fs::write(config_path, toml::to_string_pretty(&doc)?)?;
+    write_validated_config_atomically(config_path, &toml::to_string_pretty(&doc)?)?;
     Ok(())
 }
 
@@ -9735,11 +9900,27 @@ pub async fn config_reload(State(state): State<Arc<AppState>>) -> impl IntoRespo
         "pending",
     );
     match state.kernel.reload_config() {
-        Ok(plan) => {
-            let status = if plan.restart_required {
+        Ok(outcome) => {
+            let hot_apply_performed = outcome.hot_apply_performed();
+            let applied_actions = outcome.hot_actions_applied;
+            let plan = outcome.plan;
+            let hot_actions_applied: Vec<String> = applied_actions
+                .iter()
+                .map(|action| format!("{action:?}"))
+                .collect();
+            let hot_actions_pending: Vec<String> = plan
+                .hot_actions
+                .iter()
+                .filter(|action| !applied_actions.contains(action))
+                .map(|action| format!("{action:?}"))
+                .collect();
+
+            let status = if plan.restart_required || !hot_actions_pending.is_empty() {
                 "partial"
-            } else if plan.has_changes() {
+            } else if !hot_actions_applied.is_empty() {
                 "applied"
+            } else if plan.has_changes() {
+                "detected"
             } else {
                 "no_changes"
             };
@@ -9750,7 +9931,10 @@ pub async fn config_reload(State(state): State<Arc<AppState>>) -> impl IntoRespo
                     "status": status,
                     "restart_required": plan.restart_required,
                     "restart_reasons": plan.restart_reasons,
-                    "hot_actions_applied": plan.hot_actions.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>(),
+                    "hot_actions_detected": plan.hot_actions.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>(),
+                    "hot_apply_performed": hot_apply_performed,
+                    "hot_actions_applied": hot_actions_applied,
+                    "hot_actions_pending_follow_up": hot_actions_pending,
                     "noop_changes": plan.noop_changes,
                 })),
             )
@@ -9894,12 +10078,29 @@ pub async fn config_set(
         }
     };
 
-    let config_path = state.kernel.config.home_dir.join("config.toml");
+    let config_path = state.kernel.config_path().to_path_buf();
 
     // Read existing config as a TOML table, or start fresh
     let mut table: toml::value::Table = if config_path.exists() {
         match std::fs::read_to_string(&config_path) {
-            Ok(content) => toml::from_str(&content).unwrap_or_default(),
+            Ok(content) => {
+                if content.trim().is_empty() {
+                    toml::value::Table::new()
+                } else {
+                    match toml::from_str(&content) {
+                        Ok(table) => table,
+                        Err(e) => {
+                            return (
+                                StatusCode::CONFLICT,
+                                Json(serde_json::json!({
+                                    "status": "error",
+                                    "error": format!("current config.toml is invalid: {e}")
+                                })),
+                            );
+                        }
+                    }
+                }
+            }
             Err(_) => toml::value::Table::new(),
         }
     } else {
@@ -9958,7 +10159,7 @@ pub async fn config_set(
             );
         }
     };
-    if let Err(e) = std::fs::write(&config_path, &toml_string) {
+    if let Err(e) = write_validated_config_atomically(&config_path, &toml_string) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"status": "error", "error": format!("write failed: {e}")})),
@@ -9967,8 +10168,10 @@ pub async fn config_set(
 
     // Trigger reload
     let reload_status = match state.kernel.reload_config() {
-        Ok(plan) => {
-            if plan.restart_required {
+        Ok(outcome) => {
+            if outcome.plan.restart_required
+                || outcome.hot_actions_applied.len() < outcome.plan.hot_actions.len()
+            {
                 "applied_partial"
             } else {
                 "applied"
@@ -10006,7 +10209,17 @@ fn json_to_toml_value(value: &serde_json::Value) -> toml::Value {
             }
         }
         serde_json::Value::Bool(b) => toml::Value::Boolean(*b),
-        _ => toml::Value::String(value.to_string()),
+        serde_json::Value::Array(items) => {
+            toml::Value::Array(items.iter().map(json_to_toml_value).collect())
+        }
+        serde_json::Value::Object(map) => {
+            let mut table = toml::map::Map::new();
+            for (key, value) in map {
+                table.insert(key.clone(), json_to_toml_value(value));
+            }
+            toml::Value::Table(table)
+        }
+        serde_json::Value::Null => toml::Value::String("null".to_string()),
     }
 }
 

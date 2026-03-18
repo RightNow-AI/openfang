@@ -47,6 +47,38 @@ pub enum HotAction {
     UpdateDefaultModel,
 }
 
+impl HotAction {
+    /// Whether this action is currently auto-applied by the running kernel.
+    ///
+    /// Other actions may still be detected as "hot-reloadable" by the planner,
+    /// but today they require subsystem-specific follow-up or a restart before
+    /// operators should consider them live.
+    pub fn is_auto_applied(&self) -> bool {
+        matches!(
+            self,
+            Self::UpdateApprovalPolicy
+                | Self::UpdateCronConfig
+                | Self::ReloadProviderUrls
+                | Self::UpdateDefaultModel
+        )
+    }
+}
+
+/// Result of attempting a config reload against the live kernel.
+#[derive(Debug, Clone)]
+pub struct ReloadOutcome {
+    /// The diff between the effective runtime config and the newly loaded config.
+    pub plan: ReloadPlan,
+    /// Hot actions that were actually executed against the running process.
+    pub hot_actions_applied: Vec<HotAction>,
+}
+
+impl ReloadOutcome {
+    pub fn hot_apply_performed(&self) -> bool {
+        !self.hot_actions_applied.is_empty()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ReloadPlan — the output of diffing two configs
 // ---------------------------------------------------------------------------
@@ -112,6 +144,14 @@ fn field_changed<T: serde::Serialize>(old: &T, new: &T) -> bool {
     old_json != new_json
 }
 
+fn is_supported_password_hash_format(stored_hash: &str) -> bool {
+    let stored_hash = stored_hash.trim();
+    if stored_hash.starts_with("$argon2") {
+        return argon2::password_hash::PasswordHash::new(stored_hash).is_ok();
+    }
+    stored_hash.len() == 64 && stored_hash.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Diff two configurations and produce a reload plan.
 ///
 /// The plan categorizes every detected change into one of three buckets:
@@ -141,6 +181,11 @@ pub fn build_reload_plan(old: &KernelConfig, new: &KernelConfig) -> ReloadPlan {
     if old.api_key != new.api_key {
         plan.restart_required = true;
         plan.restart_reasons.push("api_key changed".to_string());
+    }
+
+    if field_changed(&old.auth, &new.auth) {
+        plan.restart_required = true;
+        plan.restart_reasons.push("auth config changed".to_string());
     }
 
     if old.network_enabled != new.network_enabled {
@@ -290,6 +335,16 @@ pub fn validate_config_for_reload(config: &KernelConfig) -> Result<(), Vec<Strin
         errors.push(format!("approval policy: {e}"));
     }
 
+    if config.auth.enabled && config.auth.password_hash.trim().is_empty() {
+        errors.push("auth.enabled is true but auth.password_hash is empty".to_string());
+    } else if config.auth.enabled && !is_supported_password_hash_format(&config.auth.password_hash)
+    {
+        errors.push(
+            "auth.enabled is true but auth.password_hash is not a supported Argon2id PHC string or 64-character legacy SHA-256 hex digest"
+                .to_string(),
+        );
+    }
+
     // Network config: if network is enabled, shared_secret must be set
     if config.network_enabled && config.network.shared_secret.is_empty() {
         errors.push("network_enabled is true but network.shared_secret is empty".to_string());
@@ -369,6 +424,20 @@ mod tests {
         let plan = build_reload_plan(&a, &b);
         assert!(plan.restart_required);
         assert!(plan.restart_reasons.iter().any(|r| r.contains("api_key")));
+    }
+
+    #[test]
+    fn test_auth_requires_restart() {
+        let a = default_cfg();
+        let mut b = default_cfg();
+        b.auth.enabled = true;
+        b.auth.password_hash = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$dGVzdA".to_string();
+        let plan = build_reload_plan(&a, &b);
+        assert!(plan.restart_required);
+        assert!(plan
+            .restart_reasons
+            .iter()
+            .any(|r| r.contains("auth config")));
     }
 
     #[test]
@@ -626,6 +695,28 @@ mod tests {
         config.network.shared_secret = String::new();
         let err = validate_config_for_reload(&config).unwrap_err();
         assert!(err.iter().any(|e| e.contains("shared_secret")));
+    }
+
+    #[test]
+    fn test_validate_dashboard_auth_requires_password_hash() {
+        let mut config = default_cfg();
+        config.auth.enabled = true;
+        config.auth.password_hash.clear();
+        let err = validate_config_for_reload(&config).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|e| e.contains("auth.password_hash is empty")));
+    }
+
+    #[test]
+    fn test_validate_dashboard_auth_rejects_invalid_password_hash_format() {
+        let mut config = default_cfg();
+        config.auth.enabled = true;
+        config.auth.password_hash = "not-a-real-hash".to_string();
+        let err = validate_config_for_reload(&config).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|e| e.contains("not a supported Argon2id PHC string")));
     }
 
     // -----------------------------------------------------------------------

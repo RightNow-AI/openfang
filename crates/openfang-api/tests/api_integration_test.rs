@@ -23,6 +23,32 @@ use tower_http::trace::TraceLayer;
 // Test infrastructure
 // ---------------------------------------------------------------------------
 
+struct EnvVarGuard {
+    key: String,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn remove(key: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::remove_var(key);
+        Self {
+            key: key.to_string(),
+            previous,
+        }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(ref value) = self.previous {
+            std::env::set_var(&self.key, value);
+        } else {
+            std::env::remove_var(&self.key);
+        }
+    }
+}
+
 struct TestServer {
     base_url: String,
     state: Arc<AppState>,
@@ -216,6 +242,69 @@ async fn test_health_endpoint() {
     // Detailed fields should NOT appear in public health endpoint
     assert!(body["database"].is_null());
     assert!(body["agent_count"].is_null());
+}
+
+#[tokio::test]
+async fn test_health_detail_degrades_when_default_provider_auth_is_missing() {
+    let _groq_guard = EnvVarGuard::remove("GROQ_API_KEY");
+    let server =
+        start_test_server_with_provider("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY").await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["readiness"]["ready"], false);
+    assert_eq!(body["readiness"]["default_provider_auth"], "missing");
+    assert!(body["readiness"]["failing_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "default_provider_auth"));
+}
+
+#[tokio::test]
+async fn test_health_detail_uses_effective_default_model_override() {
+    let _groq_guard = EnvVarGuard::remove("GROQ_API_KEY");
+    let server = start_test_server().await;
+    {
+        let mut override_guard = server
+            .state
+            .kernel
+            .default_model_override
+            .write()
+            .unwrap();
+        *override_guard = Some(DefaultModelConfig {
+            provider: "groq".to_string(),
+            model: "llama-3.3-70b-versatile".to_string(),
+            api_key_env: "GROQ_API_KEY".to_string(),
+            base_url: None,
+        });
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["readiness"]["ready"], false);
+    assert_eq!(body["readiness"]["default_provider_auth"], "missing");
+    assert!(body["readiness"]["failing_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "default_provider_auth"));
 }
 
 #[tokio::test]
@@ -1053,6 +1142,21 @@ async fn test_session_login_rejects_invalid_password() {
         .unwrap();
 
     assert_eq!(login.status(), 401);
+}
+
+#[tokio::test]
+async fn test_session_auth_rejects_empty_api_key_header_when_no_api_key_is_configured() {
+    let server = start_test_server_with_session_auth("admin", "secret123").await;
+    let client = reqwest::Client::new();
+
+    let protected = client
+        .get(format!("{}/api/triggers", server.base_url))
+        .header("x-api-key", "")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(protected.status(), 401);
 }
 
 #[tokio::test]

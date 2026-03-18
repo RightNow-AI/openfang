@@ -1365,6 +1365,12 @@ pub fn is_placeholder_api_key(value: &str) -> bool {
     )
 }
 
+fn looks_like_supported_password_hash(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("$argon2")
+        || (trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 /// SECURITY: Custom Debug impl redacts sensitive fields (api_key).
 impl std::fmt::Debug for KernelConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2990,6 +2996,19 @@ impl KernelConfig {
             .map(|addr| !addr.ip().is_loopback())
             .unwrap_or(false);
 
+        if self.auth.enabled && self.auth.password_hash.trim().is_empty() {
+            warnings.push(
+                "auth.enabled is true but auth.password_hash is empty; dashboard login will be unusable until a password hash is configured"
+                    .to_string(),
+            );
+        } else if self.auth.enabled && !looks_like_supported_password_hash(&self.auth.password_hash)
+        {
+            warnings.push(
+                "auth.enabled is true but auth.password_hash is not a supported Argon2id or legacy SHA-256 hash; dashboard login will fail until it is corrected"
+                    .to_string(),
+            );
+        }
+
         if !self.api_key.trim().is_empty() && is_placeholder_api_key(&self.api_key) {
             warnings.push(
                 "api_key is set to a placeholder/example value; replace it before relying on API auth"
@@ -3618,6 +3637,48 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("0.0.0.0:4200")),
             "expected public listen warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_warns_when_dashboard_auth_has_no_password_hash() {
+        let config = KernelConfig {
+            auth: AuthConfig {
+                enabled: true,
+                password_hash: String::new(),
+                ..AuthConfig::default()
+            },
+            ..KernelConfig::default()
+        };
+
+        let warnings = config.validate();
+
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("auth.password_hash is empty")),
+            "expected missing dashboard auth hash warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_warns_when_dashboard_auth_hash_format_is_invalid() {
+        let config = KernelConfig {
+            auth: AuthConfig {
+                enabled: true,
+                password_hash: "not-a-real-hash".to_string(),
+                ..AuthConfig::default()
+            },
+            ..KernelConfig::default()
+        };
+
+        let warnings = config.validate();
+
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("not a supported Argon2id or legacy SHA-256")),
+            "expected invalid dashboard auth hash warning, got {warnings:?}"
         );
     }
 

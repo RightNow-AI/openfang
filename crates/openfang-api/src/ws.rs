@@ -153,37 +153,36 @@ pub async fn agent_ws(
     headers: axum::http::HeaderMap,
     uri: axum::http::Uri,
 ) -> impl IntoResponse {
-    // SECURITY: Authenticate WebSocket upgrades (bypasses middleware).
-    // Trim whitespace so empty/whitespace-only api_key disables auth.
-    let api_key_raw = &state.kernel.config.api_key;
-    let api_key = api_key_raw.trim();
-    if !api_key.is_empty() {
-        // SECURITY: Use constant-time comparison to prevent timing attacks on API key
-        let ct_eq = |token: &str, key: &str| -> bool {
-            use subtle::ConstantTimeEq;
-            if token.len() != key.len() {
-                return false;
+    let auth_state = crate::middleware::AuthState {
+        api_key: state.kernel.config.api_key.trim().to_string(),
+        auth_enabled: state.kernel.config.auth.enabled,
+        session_secret: if !state.kernel.config.api_key.trim().is_empty() {
+            state.kernel.config.api_key.trim().to_string()
+        } else if state.kernel.config.auth.enabled {
+            state.kernel.config.auth.password_hash.clone()
+        } else {
+            String::new()
+        },
+    };
+
+    if let Err(error) = crate::middleware::authorize_request_parts(
+        &auth_state,
+        &axum::http::Method::GET,
+        uri.path(),
+        &headers,
+        uri.query(),
+        addr.ip().is_loopback(),
+    ) {
+        warn!(ip = %addr.ip(), ?error, path = %uri.path(), "WebSocket upgrade rejected");
+        return match error {
+            crate::middleware::AuthFailure::LoopbackOnly => {
+                axum::http::StatusCode::FORBIDDEN.into_response()
             }
-            token.as_bytes().ct_eq(key.as_bytes()).into()
+            crate::middleware::AuthFailure::MissingCredentials
+            | crate::middleware::AuthFailure::InvalidCredentials => {
+                axum::http::StatusCode::UNAUTHORIZED.into_response()
+            }
         };
-
-        let header_auth = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .map(|token| ct_eq(token, api_key))
-            .unwrap_or(false);
-
-        let query_auth = uri
-            .query()
-            .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
-            .map(|token| ct_eq(token, api_key))
-            .unwrap_or(false);
-
-        if !header_auth && !query_auth {
-            warn!("WebSocket upgrade rejected: invalid auth");
-            return axum::http::StatusCode::UNAUTHORIZED.into_response();
-        }
     }
 
     // SECURITY: Enforce per-IP WebSocket connection limit

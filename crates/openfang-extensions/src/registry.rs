@@ -12,6 +12,68 @@ use openfang_types::config::{McpServerConfigEntry, McpTransportEntry};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
+use uuid::Uuid;
+
+fn backup_path(path: &Path) -> PathBuf {
+    match path.extension() {
+        Some(ext) => path.with_extension(format!("{}.bak", ext.to_string_lossy())),
+        None => path.with_extension("bak"),
+    }
+}
+
+fn temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("integrations");
+    path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()))
+}
+
+#[cfg(unix)]
+fn restrict_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path) {}
+
+fn replace_file_atomically(path: &Path, tmp_path: &Path) -> std::io::Result<()> {
+    match std::fs::rename(tmp_path, path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            #[cfg(windows)]
+            {
+                if path.exists() {
+                    std::fs::remove_file(path)?;
+                    return std::fs::rename(tmp_path, path);
+                }
+            }
+
+            Err(err)
+        }
+    }
+}
+
+fn write_text_file_atomically(path: &Path, content: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let tmp_path = temp_path(path);
+    std::fs::write(&tmp_path, content)?;
+
+    if path.exists() {
+        let _ = std::fs::copy(path, backup_path(path));
+    }
+
+    if let Err(err) = replace_file_atomically(path, &tmp_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+    restrict_permissions(path);
+    Ok(())
+}
 
 /// The integration registry — holds all known templates and install state.
 pub struct IntegrationRegistry {
@@ -53,18 +115,37 @@ impl IntegrationRegistry {
 
     /// Load installed state from integrations.toml.
     pub fn load_installed(&mut self) -> ExtensionResult<usize> {
-        if !self.integrations_path.exists() {
+        if !self.integrations_path.exists() && !backup_path(&self.integrations_path).exists() {
             return Ok(0);
         }
-        let content = std::fs::read_to_string(&self.integrations_path)?;
-        let file: IntegrationsFile =
-            toml::from_str(&content).map_err(|e| ExtensionError::TomlParse(e.to_string()))?;
-        let count = file.installed.len();
-        for entry in file.installed {
-            self.installed.insert(entry.id.clone(), entry);
+        for candidate in [
+            self.integrations_path.clone(),
+            backup_path(&self.integrations_path),
+        ] {
+            let content = match std::fs::read_to_string(&candidate) {
+                Ok(content) => content,
+                Err(_) => continue,
+            };
+            match toml::from_str::<IntegrationsFile>(&content) {
+                Ok(file) => {
+                    if candidate != self.integrations_path {
+                        warn!(path = %candidate.display(), "Recovered installed integrations from backup file");
+                    }
+                    let count = file.installed.len();
+                    for entry in file.installed {
+                        self.installed.insert(entry.id.clone(), entry);
+                    }
+                    info!("Loaded {count} installed integration(s)");
+                    return Ok(count);
+                }
+                Err(e) => {
+                    warn!(path = %candidate.display(), "Failed to parse installed integrations file: {e}");
+                }
+            }
         }
-        info!("Loaded {count} installed integration(s)");
-        Ok(count)
+        Err(ExtensionError::TomlParse(
+            "Failed to load installed integrations from primary or backup file".to_string(),
+        ))
     }
 
     /// Save installed state to integrations.toml.
@@ -74,11 +155,7 @@ impl IntegrationRegistry {
         };
         let content =
             toml::to_string_pretty(&file).map_err(|e| ExtensionError::TomlParse(e.to_string()))?;
-        if let Some(parent) = self.integrations_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&self.integrations_path, content)?;
-        Ok(())
+        write_text_file_atomically(&self.integrations_path, &content).map_err(ExtensionError::Io)
     }
 
     /// Get a template by ID.

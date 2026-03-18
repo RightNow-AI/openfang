@@ -6,22 +6,43 @@
 //! - In-memory rate limiting (per IP)
 
 use axum::body::Body;
-use axum::http::{Request, Response, StatusCode};
+use axum::http::{HeaderMap, Method, Request, Response, StatusCode};
 use axum::middleware::Next;
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, Instrument};
 
 /// Request ID header name (standard).
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
 
+/// Request-scoped correlation ID stored in request extensions.
+#[derive(Clone, Debug)]
+pub struct RequestId(pub String);
+
 /// Middleware: inject a unique request ID and log the request/response.
-pub async fn request_logging(request: Request<Body>, next: Next) -> Response<Body> {
-    let request_id = uuid::Uuid::new_v4().to_string();
+pub async fn request_logging(mut request: Request<Body>, next: Next) -> Response<Body> {
+    let request_id = request
+        .headers()
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let method = request.method().clone();
     let uri = request.uri().path().to_string();
     let start = Instant::now();
+    let span = tracing::info_span!(
+        "http_request",
+        request_id = %request_id,
+        method = %method,
+        path = %uri
+    );
 
-    let mut response = next.run(request).await;
+    request
+        .extensions_mut()
+        .insert(RequestId(request_id.clone()));
+
+    let mut response = next.run(request).instrument(span).await;
 
     let elapsed = start.elapsed();
     let status = response.status().as_u16();
@@ -51,12 +72,147 @@ pub struct AuthState {
     pub session_secret: String,
 }
 
+/// Structured auth failure so HTTP middleware and WebSocket upgrades can
+/// enforce the same rules without re-implementing the logic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthFailure {
+    LoopbackOnly,
+    MissingCredentials,
+    InvalidCredentials,
+}
+
 fn request_is_loopback(request: &Request<Body>) -> bool {
     request
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|ci| ci.0.ip().is_loopback())
         .unwrap_or(false)
+}
+
+fn query_token_allowed(path: &str, method: &axum::http::Method) -> bool {
+    *method == axum::http::Method::GET
+        && (path == "/api/logs/stream"
+            || path == "/api/comms/events/stream"
+            || (path.starts_with("/api/agents/") && path.ends_with("/ws")))
+}
+
+fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|c| {
+                c.trim()
+                    .strip_prefix("openfang_session=")
+                    .map(|v| v.to_string())
+            })
+        })
+}
+
+/// Apply the non-public auth rules to an arbitrary request shape.
+pub fn authorize_request_parts(
+    auth_state: &AuthState,
+    method: &Method,
+    path: &str,
+    headers: &HeaderMap,
+    query: Option<&str>,
+    is_loopback: bool,
+) -> Result<(), AuthFailure> {
+    // If no API key is configured and session auth is disabled, stay in
+    // localhost-only mode: unauthenticated requests from loopback are allowed,
+    // but remote requests to protected endpoints are rejected.
+    let api_key_trimmed = auth_state.api_key.trim();
+    if api_key_trimmed.is_empty() && !auth_state.auth_enabled {
+        if is_loopback {
+            return Ok(());
+        }
+
+        return Err(AuthFailure::LoopbackOnly);
+    }
+
+    let bearer_token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    let api_token = bearer_token.or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()));
+
+    let header_auth = if api_key_trimmed.is_empty() {
+        None
+    } else {
+        api_token.map(|token| {
+            use subtle::ConstantTimeEq;
+            if token.len() != api_key_trimmed.len() {
+                return false;
+            }
+            token.as_bytes().ct_eq(api_key_trimmed.as_bytes()).into()
+        })
+    };
+
+    let query_token = if api_key_trimmed.is_empty() || !query_token_allowed(path, method) {
+        None
+    } else {
+        query.and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
+    };
+
+    let query_auth = query_token.map(|token| {
+        use subtle::ConstantTimeEq;
+        if token.len() != api_key_trimmed.len() {
+            return false;
+        }
+        token.as_bytes().ct_eq(api_key_trimmed.as_bytes()).into()
+    });
+
+    if header_auth == Some(true) || query_auth == Some(true) {
+        return Ok(());
+    }
+
+    if auth_state.auth_enabled {
+        if let Some(token) = extract_session_cookie(headers) {
+            if crate::session_auth::verify_session_token(&token, &auth_state.session_secret)
+                .is_some()
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    let credential_provided = header_auth.is_some() || query_auth.is_some();
+    if credential_provided {
+        Err(AuthFailure::InvalidCredentials)
+    } else {
+        Err(AuthFailure::MissingCredentials)
+    }
+}
+
+fn auth_error_response(error: AuthFailure) -> Response<Body> {
+    let (status, body, www_authenticate) = match error {
+        AuthFailure::LoopbackOnly => (
+            StatusCode::FORBIDDEN,
+            serde_json::json!({
+                "error": "Protected endpoints are localhost-only when API auth is disabled"
+            })
+            .to_string(),
+            None,
+        ),
+        AuthFailure::InvalidCredentials => (
+            StatusCode::UNAUTHORIZED,
+            serde_json::json!({"error": "Invalid API key"}).to_string(),
+            Some("Bearer"),
+        ),
+        AuthFailure::MissingCredentials => (
+            StatusCode::UNAUTHORIZED,
+            serde_json::json!({"error": "Missing Authorization: Bearer <api_key> header"})
+                .to_string(),
+            Some("Bearer"),
+        ),
+    };
+
+    let mut builder = Response::builder().status(status);
+    if let Some(value) = www_authenticate {
+        builder = builder.header("www-authenticate", value);
+    }
+    builder.body(Body::from(body)).unwrap_or_default()
 }
 
 /// Bearer token authentication middleware.
@@ -104,112 +260,17 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    // If no API key is configured and session auth is disabled, stay in
-    // localhost-only mode: unauthenticated requests from loopback are allowed,
-    // but remote requests to protected endpoints are rejected.
-    let api_key_trimmed = auth_state.api_key.trim().to_string();
-    if api_key_trimmed.is_empty() && !auth_state.auth_enabled {
-        if request_is_loopback(&request) {
-            return next.run(request).await;
-        }
-
-        return Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .body(Body::from(
-                serde_json::json!({
-                    "error": "Protected endpoints are localhost-only when API auth is disabled"
-                })
-                .to_string(),
-            ))
-            .unwrap_or_default();
+    match authorize_request_parts(
+        &auth_state,
+        &method,
+        path,
+        request.headers(),
+        request.uri().query(),
+        request_is_loopback(&request),
+    ) {
+        Ok(()) => next.run(request).await,
+        Err(error) => auth_error_response(error),
     }
-    let api_key = api_key_trimmed.as_str();
-
-    // Check Authorization: Bearer <token> header, then fallback to X-API-Key
-    let bearer_token = request
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-
-    let api_token = bearer_token.or_else(|| {
-        request
-            .headers()
-            .get("x-api-key")
-            .and_then(|v| v.to_str().ok())
-    });
-
-    // SECURITY: Use constant-time comparison to prevent timing attacks.
-    let header_auth = api_token.map(|token| {
-        use subtle::ConstantTimeEq;
-        if token.len() != api_key.len() {
-            return false;
-        }
-        token.as_bytes().ct_eq(api_key.as_bytes()).into()
-    });
-
-    // Also check ?token= query parameter (for EventSource/SSE clients that
-    // cannot set custom headers, same approach as WebSocket auth).
-    let query_token = request
-        .uri()
-        .query()
-        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")));
-
-    // SECURITY: Use constant-time comparison to prevent timing attacks.
-    let query_auth = query_token.map(|token| {
-        use subtle::ConstantTimeEq;
-        if token.len() != api_key.len() {
-            return false;
-        }
-        token.as_bytes().ct_eq(api_key.as_bytes()).into()
-    });
-
-    // Accept if either auth method matches
-    if header_auth == Some(true) || query_auth == Some(true) {
-        return next.run(request).await;
-    }
-
-    // Check session cookie (dashboard login sessions)
-    if auth_state.auth_enabled {
-        if let Some(token) = extract_session_cookie(&request) {
-            if crate::session_auth::verify_session_token(&token, &auth_state.session_secret)
-                .is_some()
-            {
-                return next.run(request).await;
-            }
-        }
-    }
-
-    // Determine error message: was a credential provided but wrong, or missing entirely?
-    let credential_provided = header_auth.is_some() || query_auth.is_some();
-    let error_msg = if credential_provided {
-        "Invalid API key"
-    } else {
-        "Missing Authorization: Bearer <api_key> header"
-    };
-
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header("www-authenticate", "Bearer")
-        .body(Body::from(
-            serde_json::json!({"error": error_msg}).to_string(),
-        ))
-        .unwrap_or_default()
-}
-
-/// Extract the `openfang_session` cookie value from a request.
-fn extract_session_cookie(request: &Request<Body>) -> Option<String> {
-    request
-        .headers()
-        .get("cookie")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookies| {
-            cookies.split(';').find_map(|c| {
-                c.trim()
-                    .strip_prefix("openfang_session=")
-                    .map(|v| v.to_string())
-            })
-        })
 }
 
 /// Security headers middleware — applied to ALL API responses.
@@ -279,5 +340,153 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_query_token_rejected_for_regular_endpoint() {
+        let auth_state = AuthState {
+            api_key: "secret".to_string(),
+            auth_enabled: false,
+            session_secret: "secret".to_string(),
+        };
+        let app = Router::new()
+            .route("/api/status", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(auth_state, auth));
+        let request = Request::builder()
+            .uri("/api/status?token=secret")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_query_token_allowed_for_stream_endpoint() {
+        let auth_state = AuthState {
+            api_key: "secret".to_string(),
+            auth_enabled: false,
+            session_secret: "secret".to_string(),
+        };
+        let app = Router::new()
+            .route("/api/logs/stream", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(auth_state, auth));
+        let request = Request::builder()
+            .uri("/api/logs/stream?token=secret")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_query_token_allowed_for_agent_websocket_endpoint() {
+        let auth_state = AuthState {
+            api_key: "secret".to_string(),
+            auth_enabled: false,
+            session_secret: "secret".to_string(),
+        };
+        let app = Router::new()
+            .route("/api/agents/{id}/ws", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(auth_state, auth));
+        let request = Request::builder()
+            .uri("/api/agents/123/ws?token=secret")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_authorize_request_parts_accepts_session_cookie_for_websocket() {
+        let auth_state = AuthState {
+            api_key: "api-secret".to_string(),
+            auth_enabled: true,
+            session_secret: "api-secret".to_string(),
+        };
+        let token = crate::session_auth::create_session_token("admin", "api-secret", 1);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "cookie",
+            format!("openfang_session={token}").parse().unwrap(),
+        );
+
+        let result = authorize_request_parts(
+            &auth_state,
+            &Method::GET,
+            "/api/agents/123/ws",
+            &headers,
+            None,
+            false,
+        );
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn test_authorize_request_parts_rejects_dashboard_only_websocket_without_cookie() {
+        let auth_state = AuthState {
+            api_key: String::new(),
+            auth_enabled: true,
+            session_secret: "session-secret".to_string(),
+        };
+
+        let result = authorize_request_parts(
+            &auth_state,
+            &Method::GET,
+            "/api/agents/123/ws",
+            &HeaderMap::new(),
+            None,
+            false,
+        );
+
+        assert_eq!(result, Err(AuthFailure::MissingCredentials));
+    }
+
+    #[test]
+    fn test_authorize_request_parts_rejects_empty_bearer_when_only_dashboard_auth_enabled() {
+        let auth_state = AuthState {
+            api_key: String::new(),
+            auth_enabled: true,
+            session_secret: "session-secret".to_string(),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer ".parse().unwrap());
+
+        let result = authorize_request_parts(
+            &auth_state,
+            &Method::GET,
+            "/api/status",
+            &headers,
+            None,
+            false,
+        );
+
+        assert_eq!(result, Err(AuthFailure::MissingCredentials));
+    }
+
+    #[test]
+    fn test_authorize_request_parts_rejects_empty_query_token_when_only_dashboard_auth_enabled() {
+        let auth_state = AuthState {
+            api_key: String::new(),
+            auth_enabled: true,
+            session_secret: "session-secret".to_string(),
+        };
+
+        let result = authorize_request_parts(
+            &auth_state,
+            &Method::GET,
+            "/api/agents/123/ws",
+            &HeaderMap::new(),
+            Some("token="),
+            false,
+        );
+
+        assert_eq!(result, Err(AuthFailure::MissingCredentials));
     }
 }

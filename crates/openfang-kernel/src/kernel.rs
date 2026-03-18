@@ -3,7 +3,7 @@
 use crate::auth::AuthManager;
 use crate::background::{self, BackgroundExecutor};
 use crate::capabilities::CapabilityManager;
-use crate::config::load_config;
+use crate::config::try_load_config;
 use crate::error::{KernelError, KernelResult};
 use crate::event_bus::EventBus;
 use crate::metering::MeteringEngine;
@@ -61,6 +61,8 @@ impl LlmDriver for StubDriver {
 pub struct OpenFangKernel {
     /// Kernel configuration.
     pub config: KernelConfig,
+    /// Effective config file path used for boot, reload, and runtime edits.
+    config_path: PathBuf,
     /// Agent registry.
     pub registry: AgentRegistry,
     /// Capability manager.
@@ -160,6 +162,8 @@ pub struct OpenFangKernel {
     /// Hot-reloadable default model override (set via config hot-reload, read at agent spawn).
     pub default_model_override:
         std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
+    /// Effective provider URL overrides after runtime writes and hot-reload.
+    pub effective_provider_urls: std::sync::RwLock<std::collections::HashMap<String, String>>,
     /// Per-agent message locks — serializes LLM calls for the same agent to prevent
     /// session corruption when multiple messages arrive concurrently (e.g. rapid voice
     /// messages via Telegram). Different agents can still run in parallel.
@@ -508,30 +512,21 @@ fn gethostname() -> Option<String> {
 }
 
 impl OpenFangKernel {
-    fn agent_message_lock(&self, agent_id: AgentId) -> Arc<tokio::sync::Mutex<()>> {
-        self.agent_msg_locks
-            .entry(agent_id)
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
+    fn normalize_config_path(config_path: Option<&Path>, home_dir: &Path) -> PathBuf {
+        let path = config_path
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home_dir.join("config.toml"));
+        std::fs::canonicalize(&path).unwrap_or(path)
     }
 
-    /// Boot the kernel with configuration from the given path.
-    pub fn boot(config_path: Option<&Path>) -> KernelResult<Self> {
-        let config = load_config(config_path);
-        Self::boot_with_config(config)
-    }
-
-    /// Boot the kernel with an explicit configuration.
-    pub fn boot_with_config(mut config: KernelConfig) -> KernelResult<Self> {
-        use openfang_types::config::KernelMode;
-
+    fn apply_runtime_config_overrides(config: &mut KernelConfig) {
         // Env var overrides — useful for Docker where config.toml is baked in.
         if let Ok(listen) = std::env::var("OPENFANG_LISTEN") {
             config.api_listen = listen;
         }
 
         // OPENFANG_API_KEY: env var sets the API authentication key when
-        // config.toml doesn't already have one.  Config file takes precedence.
+        // config.toml doesn't already have one. Config file takes precedence.
         if config.api_key.trim().is_empty() {
             if let Ok(key) = std::env::var("OPENFANG_API_KEY") {
                 let key = key.trim().to_string();
@@ -542,8 +537,51 @@ impl OpenFangKernel {
             }
         }
 
-        // Clamp configuration bounds to prevent zero-value or unbounded misconfigs
+        // Clamp configuration bounds to prevent zero-value or unbounded misconfigs.
         config.clamp_bounds();
+    }
+
+    fn agent_message_lock(&self, agent_id: AgentId) -> Arc<tokio::sync::Mutex<()>> {
+        self.agent_msg_locks
+            .entry(agent_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    /// Boot the kernel with configuration from the given path.
+    pub fn boot(config_path: Option<&Path>) -> KernelResult<Self> {
+        let config = try_load_config(config_path)
+            .map_err(|e| KernelError::BootFailed(format!("Config load failed: {e}")))?;
+        let config_path = Self::normalize_config_path(config_path, &config.home_dir);
+        Self::boot_with_config_path(config, config_path)
+    }
+
+    /// Boot the kernel with an explicit configuration.
+    pub fn boot_with_config(config: KernelConfig) -> KernelResult<Self> {
+        Self::boot_with_config_source(config, None)
+    }
+
+    /// Boot the kernel with an explicit configuration and preserve the
+    /// originating config path for runtime reload/edit operations.
+    pub fn boot_with_config_source(
+        config: KernelConfig,
+        config_path: Option<&Path>,
+    ) -> KernelResult<Self> {
+        let config_path = Self::normalize_config_path(config_path, &config.home_dir);
+        Self::boot_with_config_path(config, config_path)
+    }
+
+    fn boot_with_config_path(mut config: KernelConfig, config_path: PathBuf) -> KernelResult<Self> {
+        use openfang_types::config::KernelMode;
+
+        Self::apply_runtime_config_overrides(&mut config);
+
+        if let Err(errors) = crate::config_reload::validate_config_for_reload(&config) {
+            return Err(KernelError::BootFailed(format!(
+                "Config validation failed: {}",
+                errors.join("; ")
+            )));
+        }
 
         match config.mode {
             KernelMode::Stable => {
@@ -1010,9 +1048,11 @@ impl OpenFangKernel {
         let initial_bindings = config.bindings.clone();
         let initial_broadcast = config.broadcast.clone();
         let auto_reply_engine = crate::auto_reply::AutoReplyEngine::new(config.auto_reply.clone());
+        let initial_provider_urls = config.provider_urls.clone();
 
         let kernel = Self {
             config,
+            config_path,
             registry: AgentRegistry::new(),
             capabilities: CapabilityManager::new(),
             event_bus: EventBus::new(),
@@ -1061,6 +1101,7 @@ impl OpenFangKernel {
             telegram_local_api_stop: Arc::new(AtomicBool::new(false)),
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
+            effective_provider_urls: std::sync::RwLock::new(initial_provider_urls),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
         };
@@ -1252,6 +1293,10 @@ impl OpenFangKernel {
 
         info!("OpenFang kernel booted successfully");
         Ok(kernel)
+    }
+
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
     }
 
     /// Spawn a new agent from a manifest, optionally linking to a parent agent.
@@ -1607,6 +1652,16 @@ impl OpenFangKernel {
                     "agent loop failed",
                     format!("error: {e}"),
                 );
+
+                if entry.manifest.autonomous.is_some() {
+                    if let Err(state_err) = self.registry.set_state(agent_id, AgentState::Crashed) {
+                        warn!(
+                            agent_id = %agent_id,
+                            error = %state_err,
+                            "Failed to mark autonomous agent as crashed after loop failure"
+                        );
+                    }
+                }
 
                 // Record the failure in supervisor for health reporting
                 self.supervisor.record_panic();
@@ -3577,34 +3632,42 @@ impl OpenFangKernel {
 
     /// Reload configuration: read the config file, diff against current, and
     /// apply hot-reloadable actions. Returns the reload plan for API response.
-    pub fn reload_config(&self) -> Result<crate::config_reload::ReloadPlan, String> {
+    pub fn reload_config(&self) -> Result<crate::config_reload::ReloadOutcome, String> {
         use crate::config_reload::{
-            build_reload_plan, should_apply_hot, validate_config_for_reload,
+            build_reload_plan, should_apply_hot, validate_config_for_reload, ReloadOutcome,
         };
 
         // Read and parse config file (using load_config to process $include directives)
-        let config_path = self.config.home_dir.join("config.toml");
-        let new_config = if config_path.exists() {
-            crate::config::load_config(Some(&config_path))
+        let config_path = self.config_path();
+        let mut new_config = if config_path.exists() {
+            crate::config::try_load_config(Some(config_path))
+                .map_err(|e| format!("Config load failed: {e}"))?
         } else {
             return Err("Config file not found".to_string());
         };
+        Self::apply_runtime_config_overrides(&mut new_config);
 
         // Validate new config
         if let Err(errors) = validate_config_for_reload(&new_config) {
             return Err(format!("Validation failed: {}", errors.join("; ")));
         }
 
-        // Build the reload plan
-        let plan = build_reload_plan(&self.config, &new_config);
+        // Diff against the effective runtime state rather than the immutable
+        // boot config, otherwise repeated reloads report already-applied changes.
+        let plan = build_reload_plan(&self.effective_reload_config(), &new_config);
         plan.log_summary();
 
         // Apply hot actions if the reload mode allows it
-        if should_apply_hot(self.config.reload.mode, &plan) {
-            self.apply_hot_actions(&plan, &new_config);
-        }
+        let hot_actions_applied = if should_apply_hot(self.config.reload.mode, &plan) {
+            self.apply_hot_actions(&plan, &new_config)
+        } else {
+            Vec::new()
+        };
 
-        Ok(plan)
+        Ok(ReloadOutcome {
+            plan,
+            hot_actions_applied,
+        })
     }
 
     /// Apply hot-reload actions to the running kernel.
@@ -3612,15 +3675,17 @@ impl OpenFangKernel {
         &self,
         plan: &crate::config_reload::ReloadPlan,
         new_config: &openfang_types::config::KernelConfig,
-    ) {
+    ) -> Vec<crate::config_reload::HotAction> {
         use crate::config_reload::HotAction;
 
+        let mut applied = Vec::new();
         for action in &plan.hot_actions {
             match action {
                 HotAction::UpdateApprovalPolicy => {
                     info!("Hot-reload: updating approval policy");
                     self.approval_manager
                         .update_policy(new_config.approval.clone());
+                    applied.push(action.clone());
                 }
                 HotAction::UpdateCronConfig => {
                     info!(
@@ -3629,6 +3694,7 @@ impl OpenFangKernel {
                     );
                     self.cron_scheduler
                         .set_max_total_jobs(new_config.max_cron_jobs);
+                    applied.push(action.clone());
                 }
                 HotAction::ReloadProviderUrls => {
                     info!("Hot-reload: applying provider URL overrides");
@@ -3637,6 +3703,12 @@ impl OpenFangKernel {
                         .write()
                         .unwrap_or_else(|e| e.into_inner());
                     catalog.apply_url_overrides(&new_config.provider_urls);
+                    let mut urls = self
+                        .effective_provider_urls
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner());
+                    *urls = new_config.provider_urls.clone();
+                    applied.push(action.clone());
                 }
                 HotAction::UpdateDefaultModel => {
                     info!(
@@ -3648,6 +3720,7 @@ impl OpenFangKernel {
                         .write()
                         .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
                     *guard = Some(new_config.default_model.clone());
+                    applied.push(action.clone());
                 }
                 _ => {
                     // Other hot actions (channels, web, browser, extensions, etc.)
@@ -3660,6 +3733,37 @@ impl OpenFangKernel {
                 }
             }
         }
+
+        applied
+    }
+
+    pub fn effective_default_model_config(&self) -> openfang_types::config::DefaultModelConfig {
+        self.default_model_override
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_else(|| self.config.default_model.clone())
+    }
+
+    pub fn set_effective_provider_url(&self, provider: &str, base_url: &str) {
+        let mut urls = self
+            .effective_provider_urls
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        urls.insert(provider.to_string(), base_url.to_string());
+    }
+
+    fn effective_reload_config(&self) -> openfang_types::config::KernelConfig {
+        let mut config = self.config.clone();
+        config.approval = self.approval_manager.policy();
+        config.max_cron_jobs = self.cron_scheduler.max_total_jobs();
+        config.provider_urls = self
+            .effective_provider_urls
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        config.default_model = self.effective_default_model_config();
+        config
     }
 
     /// Publish an event to the bus and evaluate triggers.
@@ -4147,6 +4251,17 @@ impl OpenFangKernel {
                     }
 
                     let due = kernel.cron_scheduler.due_jobs();
+                    let persist_cron_state = |stage: &str| {
+                        if let Err(e) = kernel.cron_scheduler.persist() {
+                            tracing::warn!(stage = stage, "Cron persist failed: {e}");
+                        }
+                    };
+                    if !due.is_empty() {
+                        // Persist the pre-advanced next_run timestamps before dispatch so a
+                        // crash between scheduling and execution does not immediately replay
+                        // the same due batch on the next boot.
+                        persist_cron_state("after_due_scan");
+                    }
                     for job in due {
                         let job_id = job.id;
                         let agent_id = job.agent_id;
@@ -4251,6 +4366,7 @@ impl OpenFangKernel {
                                                 format!("workflow not found: {workflow_id}");
                                             tracing::warn!(job = %job_name, %err_msg);
                                             kernel.cron_scheduler.record_failure(job_id, &err_msg);
+                                            persist_cron_state("after_job_failure");
                                             continue;
                                         }
                                     }
@@ -4293,6 +4409,7 @@ impl OpenFangKernel {
                                 }
                             }
                         }
+                        persist_cron_state("after_job_execution");
                     }
 
                     // Persist every ~5 minutes (20 ticks * 15s)
@@ -4479,7 +4596,7 @@ impl OpenFangKernel {
                         }
                     }
 
-                    if status.state != AgentState::Crashed {
+                    if !status.unresponsive {
                         recovery_tracker.reset(status.agent_id);
                     }
 
@@ -4494,46 +4611,76 @@ impl OpenFangKernel {
                         );
                         kernel.event_bus.publish(event).await;
 
-                        if status.state == AgentState::Crashed {
-                            match recovery_action(&recovery_tracker, status.agent_id, &config) {
-                                RecoveryAction::Attempt { attempt } => {
+                        match recovery_action(&recovery_tracker, status.agent_id, &config) {
+                            RecoveryAction::Attempt { attempt } => {
+                                let cancelled = match kernel.stop_agent_run(status.agent_id) {
+                                    Ok(cancelled) => cancelled,
+                                    Err(e) => {
+                                        warn!(
+                                            agent_id = %status.agent_id,
+                                            error = %e,
+                                            "Heartbeat recovery could not abort the running task"
+                                        );
+                                        false
+                                    }
+                                };
+
+                                if status.state == AgentState::Crashed {
                                     warn!(
                                         agent_id = %status.agent_id,
                                         attempt,
                                         max_attempts = config.max_recovery_attempts,
                                         "Heartbeat attempting crashed agent recovery"
                                     );
-                                    if let Err(e) =
-                                        kernel.registry.set_state(status.agent_id, AgentState::Running)
+                                    if let Err(e) = kernel
+                                        .registry
+                                        .set_state(status.agent_id, AgentState::Running)
                                     {
                                         warn!(agent_id = %status.agent_id, error = %e, "Heartbeat recovery state transition failed");
                                     }
-                                }
-                                RecoveryAction::Terminate { attempts } => {
+                                } else {
                                     warn!(
                                         agent_id = %status.agent_id,
-                                        attempts,
-                                        "Heartbeat exhausted recovery attempts; terminating agent"
+                                        attempt,
+                                        max_attempts = config.max_recovery_attempts,
+                                        cancelled,
+                                        "Heartbeat attempting recovery for an unresponsive autonomous agent"
                                     );
-                                    if let Err(e) =
-                                        kernel.registry.set_state(status.agent_id, AgentState::Terminated)
-                                    {
-                                        warn!(agent_id = %status.agent_id, error = %e, "Heartbeat termination state transition failed");
-                                    } else {
-                                        let event = Event::new(
-                                            status.agent_id,
-                                            EventTarget::System,
-                                            EventPayload::Lifecycle(LifecycleEvent::Terminated {
-                                                agent_id: status.agent_id,
-                                                reason: "heartbeat recovery exhausted".to_string(),
-                                            }),
+                                    if !cancelled {
+                                        warn!(
+                                            agent_id = %status.agent_id,
+                                            "Heartbeat found no cancellable task while recovering an unresponsive agent"
                                         );
-                                        kernel.event_bus.publish(event).await;
                                     }
-                                    recovery_tracker.reset(status.agent_id);
                                 }
-                                RecoveryAction::Cooldown | RecoveryAction::None => {}
                             }
+                            RecoveryAction::Terminate { attempts } => {
+                                warn!(
+                                    agent_id = %status.agent_id,
+                                    attempts,
+                                    "Heartbeat exhausted recovery attempts; terminating agent"
+                                );
+                                let _ = kernel.stop_agent_run(status.agent_id);
+                                kernel.background.stop_agent(status.agent_id);
+                                if let Err(e) = kernel
+                                    .registry
+                                    .set_state(status.agent_id, AgentState::Terminated)
+                                {
+                                    warn!(agent_id = %status.agent_id, error = %e, "Heartbeat termination state transition failed");
+                                } else {
+                                    let event = Event::new(
+                                        status.agent_id,
+                                        EventTarget::System,
+                                        EventPayload::Lifecycle(LifecycleEvent::Terminated {
+                                            agent_id: status.agent_id,
+                                            reason: "heartbeat recovery exhausted".to_string(),
+                                        }),
+                                    );
+                                    kernel.event_bus.publish(event).await;
+                                }
+                                recovery_tracker.reset(status.agent_id);
+                            }
+                            RecoveryAction::Cooldown | RecoveryAction::None => {}
                         }
                     }
                 }
@@ -4658,19 +4805,6 @@ impl OpenFangKernel {
         );
     }
 
-    /// Resolve the LLM driver for an agent.
-    ///
-    /// Always creates a fresh driver using current environment variables so that
-    /// API keys saved via the dashboard (`set_provider_key`) take effect immediately
-    /// without requiring a daemon restart. Uses the hot-reloaded default model
-    /// override when available.
-    /// If fallback models are configured, wraps the primary in a `FallbackDriver`.
-    /// Look up a provider's base URL, checking runtime catalog first, then boot-time config.
-    ///
-    /// Custom providers added at runtime via the dashboard (`set_provider_url`) are
-    /// stored in the model catalog but NOT in `self.config.provider_urls` (which is
-    /// the boot-time snapshot). This helper checks both sources so that custom
-    /// providers work immediately without a daemon restart.
     /// Resolve a credential by env var name using the vault → dotenv → env var chain.
     pub fn resolve_credential(&self, key: &str) -> Option<String> {
         self.credential_resolver
@@ -4702,12 +4836,27 @@ impl OpenFangKernel {
         }
     }
 
+    /// Look up a provider's base URL, checking runtime overrides first, then
+    /// boot-time config, then the model catalog's dynamic providers.
+    ///
+    /// Custom providers added at runtime via the dashboard (`set_provider_url`)
+    /// may exist only in runtime state, so this helper checks all sources.
     fn lookup_provider_url(&self, provider: &str) -> Option<String> {
-        // 1. Boot-time config (from config.toml [provider_urls])
+        // 1. Effective runtime overrides (persisted config + hot/runtime changes)
+        if let Some(url) = self
+            .effective_provider_urls
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(provider)
+            .cloned()
+        {
+            return Some(url);
+        }
+        // 2. Boot-time config (from config.toml [provider_urls])
         if let Some(url) = self.config.provider_urls.get(provider) {
             return Some(url.clone());
         }
-        // 2. Model catalog (updated at runtime by set_provider_url / apply_url_overrides)
+        // 3. Model catalog (updated at runtime by set_provider_url / apply_url_overrides)
         if let Ok(catalog) = self.model_catalog.read() {
             if let Some(p) = catalog.get_provider(provider) {
                 if !p.base_url.is_empty() {
@@ -4718,6 +4867,13 @@ impl OpenFangKernel {
         None
     }
 
+    /// Resolve the LLM driver for an agent.
+    ///
+    /// Always creates a fresh driver using current environment variables so that
+    /// API keys saved via the dashboard (`set_provider_key`) take effect immediately
+    /// without requiring a daemon restart. Uses the hot-reloaded default model
+    /// override when available.
+    /// If fallback models are configured, wraps the primary in a `FallbackDriver`.
     fn resolve_driver(&self, manifest: &AgentManifest) -> KernelResult<Arc<dyn LlmDriver>> {
         let agent_provider = &manifest.model.provider;
 
@@ -6524,7 +6680,70 @@ mod tests {
     use openfang_types::config::{DefaultModelConfig, KernelConfig};
     use openfang_types::event::{EventPayload, LifecycleEvent};
     use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn write_reload_test_config_at(
+        config_path: &Path,
+        home_dir: &Path,
+        data_dir: &Path,
+        model: &str,
+    ) {
+        let home = serde_json::to_string(home_dir.to_string_lossy().as_ref()).unwrap();
+        let data = serde_json::to_string(data_dir.to_string_lossy().as_ref()).unwrap();
+        let model = serde_json::to_string(model).unwrap();
+        let contents = format!(
+            "home_dir = {home}\n\
+             data_dir = {data}\n\
+             api_listen = \"127.0.0.1:4200\"\n\
+             [default_model]\n\
+             provider = \"groq\"\n\
+             model = {model}\n\
+             api_key_env = \"GROQ_API_KEY\"\n"
+        );
+        std::fs::write(config_path, contents).unwrap();
+    }
+
+    fn write_reload_test_config(home_dir: &Path, data_dir: &Path, model: &str) {
+        write_reload_test_config_at(&home_dir.join("config.toml"), home_dir, data_dir, model);
+    }
 
     #[test]
     fn test_manifest_to_capabilities() {
@@ -6774,5 +6993,228 @@ mod tests {
 
         assert_eq!(published_id, agent_id);
         assert_eq!(published_name, agent_name);
+    }
+
+    #[test]
+    fn test_reload_config_round_trips_hot_default_model_changes() {
+        let _lock = env_lock();
+        let _listen_guard = EnvVarGuard::remove("OPENFANG_LISTEN");
+        let _api_key_guard = EnvVarGuard::remove("OPENFANG_API_KEY");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().to_path_buf();
+        let data_dir = home_dir.join("data");
+        write_reload_test_config(&home_dir, &data_dir, "alpha");
+
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: data_dir.clone(),
+            default_model: DefaultModelConfig {
+                provider: "groq".to_string(),
+                model: "alpha".to_string(),
+                api_key_env: "GROQ_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        })
+        .unwrap();
+
+        write_reload_test_config(&home_dir, &data_dir, "beta");
+        let outcome = kernel.reload_config().unwrap();
+        let plan = outcome.plan;
+        assert!(plan
+            .hot_actions
+            .contains(&crate::config_reload::HotAction::UpdateDefaultModel));
+        assert_eq!(kernel.config.default_model.model, "alpha");
+        assert_eq!(kernel.effective_default_model_config().model, "beta");
+
+        write_reload_test_config(&home_dir, &data_dir, "alpha");
+        let outcome = kernel.reload_config().unwrap();
+        let plan = outcome.plan;
+        assert!(plan
+            .hot_actions
+            .contains(&crate::config_reload::HotAction::UpdateDefaultModel));
+        assert_eq!(kernel.config.default_model.model, "alpha");
+        assert_eq!(kernel.effective_default_model_config().model, "alpha");
+    }
+
+    #[test]
+    fn test_reload_config_respects_runtime_env_overrides() {
+        let _lock = env_lock();
+        let _listen_guard = EnvVarGuard::set("OPENFANG_LISTEN", "127.0.0.1:43111");
+        let _api_key_guard = EnvVarGuard::set("OPENFANG_API_KEY", "env-reload-secret");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().to_path_buf();
+        let data_dir = home_dir.join("data");
+        write_reload_test_config(&home_dir, &data_dir, "alpha");
+
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: data_dir.clone(),
+            default_model: DefaultModelConfig {
+                provider: "groq".to_string(),
+                model: "alpha".to_string(),
+                api_key_env: "GROQ_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        })
+        .unwrap();
+
+        let outcome = kernel.reload_config().unwrap();
+        let plan = outcome.plan;
+        assert!(
+            !plan.has_changes(),
+            "env-backed deployments should not report spurious reload changes: {plan:?}"
+        );
+        assert_eq!(kernel.config.api_listen, "127.0.0.1:43111");
+        assert_eq!(kernel.config.api_key, "env-reload-secret");
+    }
+
+    #[test]
+    fn test_boot_rejects_network_without_shared_secret() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            network_enabled: true,
+            ..KernelConfig::default()
+        })
+        .err()
+        .expect("boot should reject missing network shared_secret");
+
+        assert!(err.to_string().contains("network.shared_secret is empty"));
+    }
+
+    #[test]
+    fn test_boot_rejects_invalid_dashboard_auth_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            auth: openfang_types::config::AuthConfig {
+                enabled: true,
+                username: "admin".to_string(),
+                password_hash: "not-a-real-hash".to_string(),
+                session_ttl_hours: 24,
+            },
+            ..KernelConfig::default()
+        })
+        .err()
+        .expect("boot should reject invalid dashboard auth hash");
+
+        assert!(err
+            .to_string()
+            .contains("auth.password_hash is not a supported"));
+    }
+
+    #[test]
+    fn test_reload_config_round_trips_provider_url_changes_without_unsafe_config_mutation() {
+        let _lock = env_lock();
+        let _listen_guard = EnvVarGuard::remove("OPENFANG_LISTEN");
+        let _api_key_guard = EnvVarGuard::remove("OPENFANG_API_KEY");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().to_path_buf();
+        let data_dir = home_dir.join("data");
+        let home = serde_json::to_string(home_dir.to_string_lossy().as_ref()).unwrap();
+        let data = serde_json::to_string(data_dir.to_string_lossy().as_ref()).unwrap();
+
+        std::fs::write(
+            home_dir.join("config.toml"),
+            format!(
+                "home_dir = {home}\n\
+                 data_dir = {data}\n\
+                 api_listen = \"127.0.0.1:4200\"\n\
+                 [default_model]\n\
+                 provider = \"groq\"\n\
+                 model = \"alpha\"\n\
+                 api_key_env = \"GROQ_API_KEY\"\n\
+                 [provider_urls]\n\
+                 ollama = \"http://127.0.0.1:11434/v1\"\n"
+            ),
+        )
+        .unwrap();
+
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: data_dir.clone(),
+            default_model: DefaultModelConfig {
+                provider: "groq".to_string(),
+                model: "alpha".to_string(),
+                api_key_env: "GROQ_API_KEY".to_string(),
+                base_url: None,
+            },
+            provider_urls: [(
+                "ollama".to_string(),
+                "http://127.0.0.1:11434/v1".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..KernelConfig::default()
+        })
+        .unwrap();
+
+        std::fs::write(
+            home_dir.join("config.toml"),
+            format!(
+                "home_dir = {home}\n\
+                 data_dir = {data}\n\
+                 api_listen = \"127.0.0.1:4200\"\n\
+                 [default_model]\n\
+                 provider = \"groq\"\n\
+                 model = \"alpha\"\n\
+                 api_key_env = \"GROQ_API_KEY\"\n\
+                 [provider_urls]\n\
+                 ollama = \"http://127.0.0.1:22434/v1\"\n"
+            ),
+        )
+        .unwrap();
+
+        let outcome = kernel.reload_config().unwrap();
+        assert!(outcome
+            .hot_actions_applied
+            .contains(&crate::config_reload::HotAction::ReloadProviderUrls));
+
+        let repeat = kernel.reload_config().unwrap();
+        assert!(
+            !repeat.plan.has_changes(),
+            "applied provider URL overrides should become the new runtime baseline: {:?}",
+            repeat.plan
+        );
+        assert_eq!(
+            kernel.lookup_provider_url("ollama").as_deref(),
+            Some("http://127.0.0.1:22434/v1")
+        );
+    }
+
+    #[test]
+    fn test_reload_config_uses_explicit_boot_config_path() {
+        let _lock = env_lock();
+        let _listen_guard = EnvVarGuard::remove("OPENFANG_LISTEN");
+        let _api_key_guard = EnvVarGuard::remove("OPENFANG_API_KEY");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("runtime-home");
+        let data_dir = home_dir.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("custom.toml");
+
+        write_reload_test_config_at(&config_path, &home_dir, &data_dir, "alpha");
+        let kernel = OpenFangKernel::boot(Some(&config_path)).unwrap();
+        let expected_config_path = std::fs::canonicalize(&config_path).unwrap();
+        assert_eq!(kernel.config_path(), expected_config_path.as_path());
+
+        write_reload_test_config_at(&config_path, &home_dir, &data_dir, "beta");
+        let outcome = kernel.reload_config().unwrap();
+        assert!(outcome
+            .plan
+            .hot_actions
+            .contains(&crate::config_reload::HotAction::UpdateDefaultModel));
+        assert_eq!(kernel.effective_default_model_config().model, "beta");
     }
 }

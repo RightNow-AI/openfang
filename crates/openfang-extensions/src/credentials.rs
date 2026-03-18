@@ -2,7 +2,7 @@
 //!
 //! Resolution order:
 //! 1. Encrypted vault (`~/.openfang/vault.enc`)
-//! 2. Dotenv file (`~/.openfang/.env`)
+//! 2. Runtime env files (`~/.openfang/secrets.env` overrides `~/.openfang/.env`)
 //! 3. Process environment variable
 //! 4. Interactive prompt (CLI only, when `interactive` is true)
 
@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 pub struct CredentialResolver {
     /// Reference to the credential vault.
     vault: Option<CredentialVault>,
-    /// Dotenv entries (loaded from `~/.openfang/.env`).
+    /// Runtime env entries loaded from `.env` and sibling `secrets.env`.
     dotenv: HashMap<String, String>,
     /// Whether to prompt interactively as a last resort.
     interactive: bool,
@@ -25,9 +25,13 @@ pub struct CredentialResolver {
 
 impl CredentialResolver {
     /// Create a resolver with optional vault and dotenv path.
+    ///
+    /// When the provided path is `.../.env`, the resolver also loads the sibling
+    /// `secrets.env` file. Values in `secrets.env` take precedence over `.env`
+    /// so dashboard/API writes remain effective after daemon restart.
     pub fn new(vault: Option<CredentialVault>, dotenv_path: Option<&Path>) -> Self {
         let dotenv = if let Some(path) = dotenv_path {
-            load_dotenv(path).unwrap_or_default()
+            load_runtime_env_files(path).unwrap_or_default()
         } else {
             HashMap::new()
         };
@@ -56,9 +60,9 @@ impl CredentialResolver {
             }
         }
 
-        // 2. Dotenv file
+        // 2. Runtime env files
         if let Some(val) = self.dotenv.get(key) {
-            debug!("Credential '{}' resolved from .env", key);
+            debug!("Credential '{}' resolved from runtime env file", key);
             return Some(Zeroizing::new(val.clone()));
         }
 
@@ -139,7 +143,30 @@ impl CredentialResolver {
     }
 }
 
-/// Load a dotenv file into a HashMap.
+/// Load runtime env files into a HashMap.
+///
+/// If `path` points at `.env`, also loads sibling `secrets.env` on top so
+/// dashboard/API-managed secrets override stale `.env` values.
+fn load_runtime_env_files(path: &Path) -> Result<HashMap<String, String>, std::io::Error> {
+    let mut map = HashMap::new();
+
+    extend_env_map(&mut map, &load_dotenv(path)?);
+
+    if path.file_name().and_then(|name| name.to_str()) == Some(".env") {
+        let secrets_path = path.with_file_name("secrets.env");
+        extend_env_map(&mut map, &load_dotenv(&secrets_path)?);
+    }
+
+    Ok(map)
+}
+
+fn extend_env_map(target: &mut HashMap<String, String>, overlay: &HashMap<String, String>) {
+    for (key, value) in overlay {
+        target.insert(key.clone(), value.clone());
+    }
+}
+
+/// Load a single dotenv file into a HashMap.
 fn load_dotenv(path: &Path) -> Result<HashMap<String, String>, std::io::Error> {
     if !path.exists() {
         return Ok(HashMap::new());
@@ -214,6 +241,37 @@ SINGLE_QUOTED='single'
     fn load_dotenv_nonexistent() {
         let map = load_dotenv(Path::new("/nonexistent/.env")).unwrap();
         assert!(map.is_empty());
+    }
+
+    #[test]
+    fn load_runtime_env_files_merges_sibling_secrets_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join(".env");
+        let secrets_path = dir.path().join("secrets.env");
+
+        std::fs::write(&env_path, "SHARED_KEY=from_env\nENV_ONLY=env_value\n").unwrap();
+        std::fs::write(
+            &secrets_path,
+            "SHARED_KEY=from_secrets\nSECRET_ONLY=secret_value\n",
+        )
+        .unwrap();
+
+        let map = load_runtime_env_files(&env_path).unwrap();
+        assert_eq!(map.get("SHARED_KEY").unwrap(), "from_secrets");
+        assert_eq!(map.get("ENV_ONLY").unwrap(), "env_value");
+        assert_eq!(map.get("SECRET_ONLY").unwrap(), "secret_value");
+    }
+
+    #[test]
+    fn load_runtime_env_files_supports_secrets_without_dotenv() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join(".env");
+        let secrets_path = dir.path().join("secrets.env");
+
+        std::fs::write(&secrets_path, "ONLY_IN_SECRETS=secret_value\n").unwrap();
+
+        let map = load_runtime_env_files(&env_path).unwrap();
+        assert_eq!(map.get("ONLY_IN_SECRETS").unwrap(), "secret_value");
     }
 
     #[test]

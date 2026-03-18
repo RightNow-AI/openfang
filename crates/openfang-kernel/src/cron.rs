@@ -98,6 +98,11 @@ impl CronScheduler {
         self.max_total_jobs.store(new_max, Ordering::Relaxed);
     }
 
+    /// Read the current max total jobs limit.
+    pub fn max_total_jobs(&self) -> usize {
+        self.max_total_jobs.load(Ordering::Relaxed)
+    }
+
     // -- Persistence --------------------------------------------------------
 
     /// Load persisted jobs from disk.
@@ -894,23 +899,21 @@ mod tests {
 
     #[test]
     fn test_compute_next_run_after_skips_current_second() {
-        // A "every 4 hours" cron: next_run should be >= 4 hours from now,
-        // not in the same minute (the bug from #55).
+        // A "every 4 hours" cron fired exactly on a boundary should advance
+        // to the NEXT boundary, not immediately reschedule the same instant.
         let schedule = CronSchedule::Cron {
             expr: "0 */4 * * *".into(),
             tz: None,
         };
-        let now = Utc::now();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-01T04:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let next = compute_next_run_after(&schedule, now);
-        // Must be strictly after `now` and at least ~1 hour away
-        // (the closest 4-hourly boundary is at least minutes away).
-        assert!(next > now, "next_run should be strictly after now");
-        let diff = next - now;
-        assert!(
-            diff.num_minutes() >= 1,
-            "Expected next_run at least 1 min away, got {} seconds",
-            diff.num_seconds()
-        );
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-01-01T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert_eq!(next, expected);
     }
 
     #[test]

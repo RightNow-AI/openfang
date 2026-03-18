@@ -63,6 +63,23 @@ fn legacy_sha256_hash(password: &str) -> String {
     hex::encode(Sha256::digest(password.as_bytes()))
 }
 
+fn is_legacy_sha256_hash_format(stored_hash: &str) -> bool {
+    stored_hash.len() == 64 && stored_hash.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Return true when the stored password hash uses a supported format.
+///
+/// Supported formats:
+/// - Argon2 PHC strings (recommended)
+/// - legacy SHA-256 hex digests kept for backward compatibility
+pub fn is_supported_password_hash_format(stored_hash: &str) -> bool {
+    let stored_hash = stored_hash.trim();
+    if stored_hash.starts_with("$argon2") {
+        return PasswordHash::new(stored_hash).is_ok();
+    }
+    is_legacy_sha256_hash_format(stored_hash)
+}
+
 /// Hash a password for config storage using Argon2id (PHC string format).
 ///
 /// Legacy SHA-256 hex hashes are still accepted by [`verify_password`] so
@@ -79,6 +96,7 @@ pub fn hash_password(password: &str) -> Result<String, String> {
 ///
 /// Supports both Argon2 PHC strings (preferred) and legacy SHA-256 hex hashes.
 pub fn verify_password(password: &str, stored_hash: &str) -> bool {
+    let stored_hash = stored_hash.trim();
     if stored_hash.starts_with("$argon2") {
         let parsed = match PasswordHash::new(stored_hash) {
             Ok(parsed) => parsed,
@@ -87,6 +105,10 @@ pub fn verify_password(password: &str, stored_hash: &str) -> bool {
         return Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
             .is_ok();
+    }
+
+    if !is_legacy_sha256_hash_format(stored_hash) {
+        return false;
     }
 
     let computed = legacy_sha256_hash(password);
@@ -114,6 +136,24 @@ mod tests {
         let hash = legacy_sha256_hash("secret123");
         assert!(verify_password("secret123", &hash));
         assert!(!verify_password("wrong", &hash));
+    }
+
+    #[test]
+    fn test_supported_password_hash_format_argon2() {
+        let hash = hash_password("secret123").unwrap();
+        assert!(is_supported_password_hash_format(&hash));
+    }
+
+    #[test]
+    fn test_supported_password_hash_format_legacy_sha256() {
+        let hash = legacy_sha256_hash("secret123");
+        assert!(is_supported_password_hash_format(&hash));
+    }
+
+    #[test]
+    fn test_supported_password_hash_format_rejects_invalid_value() {
+        assert!(!is_supported_password_hash_format("not-a-real-hash"));
+        assert!(!verify_password("secret123", "not-a-real-hash"));
     }
 
     #[test]
