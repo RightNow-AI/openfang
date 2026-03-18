@@ -29,6 +29,7 @@ Then move to the detailed references for your area.
 | `deploy/openfang-alerts.yml` | Starter Prometheus alert rules for readiness and stability signals |
 | [Release Runbook](release-runbook.md) | Step-by-step release publishing and post-release verification |
 | [Troubleshooting](troubleshooting.md) | Symptom-based fault isolation |
+| [Health Check Guide](health-check-guide.md) | Quick health diagnostics and automated checks |
 | [Telegram @Mention Troubleshooting](telegram-mention-troubleshooting.md) | Telegram group @mention issues and UTF-16 bug fixes |
 | [CLI Reference](cli-reference.md) | Command surface and examples |
 | [API Reference](api-reference.md) | HTTP routes, payloads, and responses |

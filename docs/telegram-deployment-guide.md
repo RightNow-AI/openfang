@@ -98,6 +98,33 @@ export NVIDIA_INTEGRATE_API_KEY="你的nvidia_api_key"
 source ~/.zshrc
 ```
 
+**重要提示**：如果使用启动脚本，确保环境变量在脚本执行前已设置。避免使用空变量替换：
+
+```bash
+# ❌ 错误：如果变量未设置，会导出空字符串
+export TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}"
+
+# ✅ 正确：先 source 环境文件
+source .env.telegram
+./target/release/openfang start
+
+# 或者直接在脚本中设置
+export TELEGRAM_BOT_TOKEN="实际的token值"
+```
+
+**验证环境变量已加载**：
+
+```bash
+# 启动后检查进程环境
+ps eww -p $(pgrep openfang) | tr ' ' '\n' | grep TELEGRAM_BOT_TOKEN
+
+# 应该看到实际的 token 值，而不是空字符串
+# ✅ TELEGRAM_BOT_TOKEN=8698293972:AAFT...
+# ❌ TELEGRAM_BOT_TOKEN=
+```
+
+如果看到空值，参考 [Health Check Guide](health-check-guide.md) 和 [Troubleshooting](troubleshooting.md#17-telegram-bot-connected-but-not-receiving-messages)。
+
 #### 2. 更新配置文件
 
 编辑 `~/.openfang/config.toml`，找到 `[channels.telegram]` 部分，替换为：

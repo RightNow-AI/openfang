@@ -325,6 +325,96 @@ Then run a live daemon and hit the endpoint directly.
 | Runtime request handling | `crates/openfang-runtime/` |
 | Channel ingress | `crates/openfang-channels/` |
 
-## 17. Escalation Rule
+## 17. Telegram Bot Connected but Not Receiving Messages
+
+### Symptoms
+
+- Logs show `Telegram bot @username connected`
+- Bot appears online in Telegram
+- Sending messages to the bot gets no response
+- Dashboard shows agent as ready but no activity
+
+### Diagnosis Steps
+
+```bash
+# 1. Check if process has environment variables
+ps eww -p $(pgrep openfang) | tr ' ' '\n' | grep TELEGRAM
+
+# 2. Verify environment variables are not empty
+# Should show actual token values, not empty strings
+# TELEGRAM_BOT_TOKEN=  ← BAD (empty)
+# TELEGRAM_BOT_TOKEN=123456:ABC... ← GOOD
+```
+
+### Common Cause
+
+**Environment variables not loaded at startup**. The startup script may use variable substitution like:
+
+```bash
+export TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}"
+```
+
+If `TELEGRAM_BOT_TOKEN` is not set in the parent shell, this exports an **empty string**, not an error. OpenFang starts successfully but cannot authenticate with Telegram API.
+
+### Fix
+
+**Option 1: Source environment file before starting**
+
+```bash
+# Stop current daemon
+kill $(pgrep openfang)
+sleep 2
+
+# Start with environment loaded
+source .env.telegram && ./target/release/openfang start
+```
+
+**Option 2: Export variables in shell profile**
+
+Add to `~/.zshrc` or `~/.bashrc`:
+
+```bash
+export TELEGRAM_BOT_TOKEN="your_token_here"
+export TELEGRAM_API_HASH="your_hash_here"
+```
+
+Then restart shell and daemon.
+
+**Option 3: Use systemd environment file**
+
+For production deployments, use systemd `EnvironmentFile=`:
+
+```ini
+[Service]
+EnvironmentFile=/path/to/.env.telegram
+ExecStart=/path/to/openfang start
+```
+
+### Verification
+
+After restart, confirm environment variables are loaded:
+
+```bash
+# Check process environment
+ps eww -p $(pgrep openfang) | tr ' ' '\n' | grep TELEGRAM_BOT_TOKEN
+
+# Should show: TELEGRAM_BOT_TOKEN=8698293972:AAFT...
+# NOT: TELEGRAM_BOT_TOKEN=
+```
+
+Check logs for successful connection:
+
+```bash
+tail -f /tmp/openfang.log | grep -i telegram
+# Should see: "Telegram bot @username connected"
+# Should see: "Telegram polling loop started"
+```
+
+### Related Issues
+
+- Local Bot API not starting: Check `TELEGRAM_API_HASH` is also loaded
+- Port 8081 not listening: Verify `use_local_api = true` and `auto_start_local_api = true` in config
+
+## 18. Escalation Rule
 
 If a problem crosses OpenFang and `projects/shipinbot/`, treat it as a contract issue, not a one-sided bug. Check both sides before changing schema, batch files, or runtime assumptions.
