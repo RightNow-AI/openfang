@@ -62,7 +62,15 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 
 # HTTP client (for LLM drivers)
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "gzip", "deflate", "brotli"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "multipart",
+    "rustls-tls",
+    "gzip",
+    "deflate",
+    "brotli",
+] }
 
 # Async trait
 async-trait = "0.1"
@@ -77,7 +85,10 @@ bytes = "1"
 futures = "0.3"
 
 # WebSocket client (for Discord/Slack gateway)
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = [
+    "connect",
+    "rustls-tls-native-roots",
+] }
 url = "2"
 
 # WASM sandbox
@@ -86,7 +97,12 @@ wasmtime = "41"
 # HTTP server (for API daemon)
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "compression-br"] }
+tower-http = { version = "0.6", features = [
+    "cors",
+    "trace",
+    "compression-gzip",
+    "compression-br",
+] }
 
 # Home directory resolution
 dirs = "6"
@@ -111,6 +127,7 @@ subtle = "2"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 zeroize = { version = "1", features = ["derive"] }
+encoding_rs = "0.8"
 
 # Rate limiting
 governor = "0.8"
@@ -136,7 +153,13 @@ socket2 = "0.5"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Email (SMTP + IMAP)
-lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "hostname",
+    "smtp-transport",
+    "tokio1",
+    "tokio1-rustls-tls",
+] }
 imap = "2"
 native-tls = "0.2"
 mailparse = "0.16"
