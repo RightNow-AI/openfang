@@ -1,5 +1,5 @@
 import { api } from '../../lib/api-server';
-import SchedulerClient from './SchedulerClient';
+import SchedulerPageV2 from './SchedulerPageV2';
 
 export default async function SchedulerPage() {
   let items = [];
@@ -9,5 +9,5 @@ export default async function SchedulerPage() {
   } catch {
     // handled by client error state
   }
-  return <SchedulerClient initialItems={items} />;
+  return <SchedulerPageV2 initialItems={items} />;
 }

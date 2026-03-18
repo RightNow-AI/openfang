@@ -8,6 +8,7 @@ pub mod auth;
 pub mod channel_bridge;
 pub mod command_center;
 pub mod local_inference;
+pub mod modes;
 pub mod middleware;
 pub mod openai_compat;
 pub mod openapi;

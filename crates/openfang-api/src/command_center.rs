@@ -16,7 +16,7 @@ use std::{collections::HashMap, sync::Arc};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post, put},
+    routing::{get, post},
     Json, Router,
 };
 use chrono::Utc;
@@ -45,11 +45,11 @@ pub type CommandCenterState = Arc<RwLock<CommandCenterStore>>;
 pub fn router(state: CommandCenterState) -> Router {
     Router::new()
         .route("/clients",                   post(create_client))
-        .route("/clients/:id",               get(get_client).put(update_client))
+        .route("/clients/{id}",               get(get_client).put(update_client))
         .route("/wizard/generate-plan",      post(generate_plan))
         .route("/tasks",                     get(list_tasks))
-        .route("/tasks/:id/approve",         post(approve_task))
-        .route("/tasks/:id/run",             post(run_task))
+        .route("/tasks/{id}/approve",         post(approve_task))
+        .route("/tasks/{id}/run",             post(run_task))
         .route("/approvals",                 get(list_approvals))
         .route("/results",                   get(list_results))
         .with_state(state)

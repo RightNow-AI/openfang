@@ -130,7 +130,7 @@ export default function TodayPage() {
           <div>
             <div className="info-card">
               <h4>No plan yet</h4>
-              <p>Click <strong>Rebuild plan</strong> to generate today's plan using your connected agents and inbox.</p>
+              <p>Click <strong>Rebuild plan</strong> to generate today&apos;s plan using your connected agents and inbox.</p>
             </div>
           </div>
         )}

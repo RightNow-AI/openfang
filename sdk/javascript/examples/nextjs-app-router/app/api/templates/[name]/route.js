@@ -21,14 +21,14 @@
  * Response: daemon response or 400 validation error.
  */
 import { NextResponse } from 'next/server';
-import { api } from '../../../../../lib/api-server';
+import { api } from '../../../../lib/api-server';
 import {
   extractSkillsFromToml,
   normalizeSkillBinding,
   deriveSuggestedSkills,
   validateSkillBindings,
-} from '../../../../../lib/agent-skills';
-import { guardDevToken } from '../../../../../lib/dev-token-guard';
+} from '../../../../lib/agent-skills';
+import { guardDevToken } from '../../../../lib/dev-token-guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

@@ -315,7 +315,7 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
               borderRadius: 'var(--radius-sm)', padding: '7px 11px',
               color: 'var(--text-dim)', fontStyle: 'italic',
             }}>
-              "{entry.example}"
+              {`"${entry.example}"`}
             </div>
           )}
         </div>
@@ -540,7 +540,7 @@ export default function AgentCatalogClient({ initialEntries }) {
           <div data-cy="catalog-empty" className="empty-state">No agents in catalog. Add agent.toml files to the agents/ directory.</div>
         )}
         {filtered.length === 0 && filter && (
-          <div data-cy="catalog-filter-empty" className="empty-state">No agents match "{filter}".</div>
+          <div data-cy="catalog-filter-empty" className="empty-state">{`No agents match "${filter}".`}</div>
         )}
         <div data-cy="catalog-grid" className="grid grid-auto" style={{ gap: 16 }}>
           {filtered.map(entry => (
@@ -609,7 +609,7 @@ export default function AgentCatalogClient({ initialEntries }) {
                   color: 'var(--text-dim)',
                   fontStyle: 'italic',
                 }}>
-                  "{entry.example}"
+                  {`"${entry.example}"`}
                 </div>
               )}
 

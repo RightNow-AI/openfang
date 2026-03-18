@@ -327,7 +327,7 @@ function ProviderPanel({ current, allProviders, onSaved }) {
           style={fieldInput}
         />
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-          Used when an agent doesn't specify a model explicitly.
+          Used when an agent doesn&apos;t specify a model explicitly.
         </div>
       </div>
 

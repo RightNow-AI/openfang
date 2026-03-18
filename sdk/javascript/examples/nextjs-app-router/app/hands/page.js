@@ -1,5 +1,5 @@
 import { api } from '../../lib/api-server';
-import HandsClient from './HandsClient';
+import HandsPageV2 from './HandsPageV2';
 
 export default async function HandsPage() {
   let hands = [];
@@ -9,6 +9,6 @@ export default async function HandsPage() {
   } catch {
     // handled by client error state
   }
-  return <HandsClient initialHands={hands} />;
+  return <HandsPageV2 initialHands={hands} />;
 }
 

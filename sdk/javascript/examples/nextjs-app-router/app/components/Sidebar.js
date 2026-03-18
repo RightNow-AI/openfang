@@ -29,15 +29,6 @@ const NAV = [
     ],
   },
   {
-    label: 'Monitor',
-    items: [
-      { href: '/dashboard', label: 'Dashboard', icon: I(<><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7M17 14v7"/></>) },
-      { href: '/overview',  label: 'Overview',  icon: I(<><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></>) },
-      { href: '/analytics', label: 'Analytics', icon: I(<path d="M18 20V10M12 20V4M6 20v-6"/>) },
-      { href: '/logs',      label: 'Logs',      icon: I(<><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></>) },
-    ],
-  },
-  {
     label: 'Brand',
     items: [
       { href: '/brand', label: 'Brand Center', icon: I(<><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></>) },
@@ -47,6 +38,9 @@ const NAV = [
     label: 'Work',
     items: [
       { href: '/command-center/new', label: 'Command Center', icon: I(<><path d="M9 12l2 2 4-4"/><path d="M21 12c0 4.97-4.03 9-9 9S3 16.97 3 12 7.03 3 12 3s9 4.03 9 9z"/></>) },
+      { href: '/agency/new',         label: 'Agency Mode',    icon: I(<><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></>) },
+      { href: '/growth/new',         label: 'Growth Mode',    icon: I(<><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></>) },
+      { href: '/school/new',         label: 'School Mode',    icon: I(<><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></>) },
     ],
   },
   {
@@ -55,6 +49,15 @@ const NAV = [
       { href: '/sessions',  label: 'Sessions',  icon: I(<><path d="m12 2-10 5 10 5 10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></>) },
       { href: '/approvals', label: 'Approvals', icon: I(<><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></>) },
       { href: '/comms',     label: 'Comms',     icon: I(<path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/>) },
+    ],
+  },
+  {
+    label: 'Monitor',
+    items: [
+      { href: '/dashboard', label: 'Dashboard', icon: I(<><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7M17 14v7"/></>) },
+      { href: '/overview',  label: 'Overview',  icon: I(<><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></>) },
+      { href: '/analytics', label: 'Analytics', icon: I(<path d="M18 20V10M12 20V4M6 20v-6"/>) },
+      { href: '/logs',      label: 'Logs',      icon: I(<><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></>) },
     ],
   },
   {
@@ -122,6 +125,12 @@ export default function Sidebar() {
   const [theme, setTheme] = useState('system');
   const pathname = usePathname();
 
+  function applyTheme(mode) {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const dark = mode === 'dark' || (mode === 'system' && prefersDark);
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  }
+
   // Persist sidebar state
   useEffect(() => {
     const saved = localStorage.getItem('openfang-sidebar');
@@ -134,12 +143,6 @@ export default function Sidebar() {
 
   // Close mobile menu on navigation
   useEffect(() => { setMobileOpen(false); }, [pathname]);
-
-  function applyTheme(mode) {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const dark = mode === 'dark' || (mode === 'system' && prefersDark);
-    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-  }
 
   function cycleTheme() {
     const modes = ['system', 'light', 'dark'];

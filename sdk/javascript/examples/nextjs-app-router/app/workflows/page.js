@@ -1,5 +1,5 @@
 import { api } from '../../lib/api-server';
-import WorkflowsClient from './WorkflowsClient';
+import WorkflowsPageV2 from './WorkflowsPageV2';
 
 export default async function WorkflowsPage() {
   let workflows = [];
@@ -9,5 +9,5 @@ export default async function WorkflowsPage() {
   } catch {
     // handled by client error state
   }
-  return <WorkflowsClient initialWorkflows={workflows} />;
+  return <WorkflowsPageV2 initialWorkflows={workflows} />;
 }

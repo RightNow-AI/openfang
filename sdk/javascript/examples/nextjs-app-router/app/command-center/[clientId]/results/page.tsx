@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getResults } from "../../../lib/command-center-api";
-import type { RunResult } from "../../../lib/command-center-types";
-import ResultsFeed from "../components/ResultsFeed";
+import { getResults } from "../../../../lib/command-center-api";
+import type { RunResult } from "../../../../lib/command-center-types";
+import ResultsFeed from "../../components/ResultsFeed";
 
 type Props = {
   params: Promise<{ clientId: string }>;

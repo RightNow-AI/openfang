@@ -1016,11 +1016,15 @@ pub async fn build_router(
     let command_center_state = std::sync::Arc::new(tokio::sync::RwLock::new(
         crate::command_center::CommandCenterStore::default(),
     ));
+    let modes_state = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::modes::ModesStore::default(),
+    ));
 
     let app = axum::Router::new()
         .route("/{*path}", axum::routing::any(outer_catch_all))
         .route("/", axum::routing::options(|| async { axum::http::StatusCode::NO_CONTENT }))
         .merge(crate::command_center::router(command_center_state))
+        .merge(crate::modes::router(modes_state))
         .merge(app)
         .layer(cors2);
 

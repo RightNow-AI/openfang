@@ -336,7 +336,7 @@ function OnboardingProviderStep({ onNext, onBack }) {
       )}
       <p style={{ color: 'var(--text-dim)', marginBottom: 20, fontSize: 15, lineHeight: 1.75 }}>
         Pick an AI provider, paste your key, and hit <strong style={{ color: 'var(--text)' }}>Save &amp; Test</strong>.
-        Don't have a key yet? Click <strong>Get a key ↗</strong> next to the field — it only takes a minute.
+        Don&apos;t have a key yet? Click <strong>Get a key ↗</strong> next to the field — it only takes a minute.
       </p>
 
       {/* Provider selector */}
@@ -461,7 +461,7 @@ function OnboardingProviderStep({ onNext, onBack }) {
           marginTop: 12, padding: '10px 14px', borderRadius: 'var(--radius-sm)',
           background: 'var(--surface2)', border: '1px solid var(--border)', fontSize: 13, lineHeight: 1.6,
         }}>
-          <strong>💡 Still not working?</strong> Try a different provider — they're all free to start:
+          <strong>💡 Still not working?</strong> Try a different provider — they&apos;re all free to start:
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
             {ONBOARDING_PROVIDERS.filter(p => !p.local && p.id !== selectedId).slice(0, 3).map(p => (
               <button
@@ -769,7 +769,7 @@ export default function OnboardingPage() {
               <strong>What is an API key?</strong><br />
               Think of it like a special password that lets this app talk to an AI service on the internet.
               You create it once on a website, copy it, and paste it into this app — then you are done.
-              It's completely free to get started.
+              It&apos;s completely free to get started.
             </Callout>
 
             <NavBtns onBack={prev} onNext={next} nextLabel="I'm ready →" />
@@ -814,7 +814,7 @@ export default function OnboardingPage() {
             {daemonStatus === 'ok' && llmStatus === 'ok' && (
               <Callout type="success" icon="🎉">
                 <strong>Everything is working perfectly!</strong><br />
-                Your AI assistant is ready. Let's send your very first message.
+                Your AI assistant is ready. Let&apos;s send your very first message.
               </Callout>
             )}
 

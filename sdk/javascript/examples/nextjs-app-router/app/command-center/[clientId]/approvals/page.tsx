@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getApprovals, approveTask } from "../../../lib/command-center-api";
-import type { ApprovalItem } from "../../../lib/command-center-types";
-import ApprovalQueue from "../components/ApprovalQueue";
+import { getApprovals, approveTask } from "../../../../lib/command-center-api";
+import type { ApprovalItem } from "../../../../lib/command-center-types";
+import ApprovalQueue from "../../components/ApprovalQueue";
 
 type Props = {
   params: Promise<{ clientId: string }>;

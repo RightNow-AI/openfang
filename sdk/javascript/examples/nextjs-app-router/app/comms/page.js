@@ -1,5 +1,5 @@
 import { api } from '../../lib/api-server';
-import CommsClient from './CommsClient';
+import CommsPageV2 from './CommsPageV2';
 
 export default async function CommsPage() {
   let topology = { nodes: [], edges: [] };
@@ -14,5 +14,5 @@ export default async function CommsPage() {
   } catch {
     // handled by client error state
   }
-  return <CommsClient initialTopology={topology} initialEvents={events} />;
+  return <CommsPageV2 initialTopology={topology} initialEvents={events} />;
 }

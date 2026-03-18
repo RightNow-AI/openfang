@@ -1,6 +1,6 @@
 import { api } from '../../lib/api-server';
 import { normalizeSkillCard } from '../../lib/skills';
-import SkillsClient from './SkillsClient';
+import SkillsPageV2 from './SkillsPageV2';
 
 export default async function SkillsPage() {
   let skills = [];
@@ -11,6 +11,6 @@ export default async function SkillsPage() {
   } catch {
     // error shown by client
   }
-  return <SkillsClient initialSkills={skills} />;
+  return <SkillsPageV2 initialSkills={skills} />;
 }
 

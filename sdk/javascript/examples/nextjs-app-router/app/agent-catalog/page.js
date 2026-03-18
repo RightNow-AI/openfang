@@ -1,5 +1,5 @@
 import { api } from '../../lib/api-server';
-import AgentCatalogClient from './AgentCatalogClient';
+import AgentCatalogPageV2 from './AgentCatalogPageV2';
 
 function normalizeEntry(raw) {
   return {
@@ -28,5 +28,5 @@ export default async function AgentCatalogPage() {
   } catch {
     // handled by client error state
   }
-  return <AgentCatalogClient initialEntries={entries} />;
+  return <AgentCatalogPageV2 initialEntries={entries} />;
 }
