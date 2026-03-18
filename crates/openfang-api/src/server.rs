@@ -403,7 +403,11 @@ pub async fn build_router(
         // MCP server endpoints
         .route(
             "/api/mcp/servers",
-            axum::routing::get(routes::list_mcp_servers),
+            axum::routing::get(routes::list_mcp_servers).put(routes::update_mcp_servers),
+        )
+        .route(
+            "/api/mcp/servers",
+            axum::routing::delete(routes::delete_mcp_server),
         )
         // Audit endpoints
         .route(

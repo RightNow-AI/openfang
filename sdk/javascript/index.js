@@ -419,14 +419,61 @@ class McpResource {
     this._c = client;
   }
 
+  /**
+   * List all configured MCP servers.
+   * @returns {Promise<{configured: Array, connected: Array, total_configured: number, total_connected: number}>}
+   */
   async list() {
     return this._c._request("GET", "/api/mcp/servers");
   }
 
+  /**
+   * Add or update a single MCP server configuration.
+   * If a server with the same name exists, it will be updated; otherwise, it will be added.
+   * @param {{name: string, transport: object, timeout_secs?: number, env?: Array<string>}} server
+   * @returns {Promise<{status: string, message: string, name: string, action: string}>}
+   * @example
+   *   await client.mcp.add({
+   *     name: "github",
+   *     transport: {
+   *       type: "stdio",
+   *       command: "npx",
+   *       args: ["-y", "@modelcontextprotocol/server-github"]
+   *     },
+   *     timeout_secs: 60,
+   *     env: ["GITHUB_PERSONAL_ACCESS_TOKEN"]
+   *   });
+   */
+  async add(server) {
+    return this._c._request("PUT", "/api/mcp/servers", server);
+  }
+
+  /**
+   * Remove an MCP server configuration.
+   * @param {string} name - MCP server name
+   * @returns {Promise<{status: string, message: string, name: string}>}
+   * @example
+   *   await client.mcp.remove("github");
+   */
+  async remove(name) {
+    return this._c._request("DELETE", "/api/mcp/servers/" + name);
+  }
+
+  /**
+   * Get MCP servers available to a specific agent.
+   * @param {string} id - Agent ID
+   * @returns {Promise<object>}
+   */
   async list_available(id) {
     return this._c._request("GET", "/api/agents/" + id + "/mcp_servers");
   }
 
+  /**
+   * Set which MCP servers an agent can use.
+   * @param {string} id - Agent ID
+   * @param {Array<string>} mcp_servers - Array of MCP server names (empty array = all servers)
+   * @returns {Promise<object>}
+   */
   async setAvailable(id, mcp_servers = []) {
     return this._c._request("PUT", "/api/agents/" + id + "/mcp_servers", {
       mcp_servers,
