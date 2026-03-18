@@ -28,6 +28,7 @@ impl OpenAIDriver {
             base_url,
             client: reqwest::Client::builder()
                 .user_agent(crate::USER_AGENT)
+                .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_default(),
             extra_headers: Vec::new(),

@@ -415,6 +415,71 @@ tail -f /tmp/openfang.log | grep -i telegram
 - Local Bot API not starting: Check `TELEGRAM_API_HASH` is also loaded
 - Port 8081 not listening: Verify `use_local_api = true` and `auto_start_local_api = true` in config
 
-## 18. Escalation Rule
+## 18. Telegram Bot Shows "正在输入" but No Response
+
+### Symptoms
+
+- User sends message to Telegram bot
+- Bot immediately shows emoji reactions (⏳ → 🤔)
+- Bot shows "typing..." status
+- Long delay (minutes) with no response
+- Eventually returns: "The AI service is temporarily overloaded, please try again shortly."
+
+### Root Cause
+
+**HTTP client timeout issue** (60% fixed):
+- OpenAI driver (used by NVIDIA API) had no timeout configured
+- Requests would wait indefinitely for server response
+- NVIDIA API returns 504 Gateway Timeout after internal limit
+- User sees typing indicator but backend is blocked waiting
+
+### Fix Applied
+
+Modified `crates/openfang-runtime/src/drivers/openai.rs:30`:
+
+```rust
+// Added 120-second timeout
+client: reqwest::Client::builder()
+    .user_agent(crate::USER_AGENT)
+    .timeout(std::time::Duration::from_secs(120))
+    .build()
+    .unwrap_or_default(),
+```
+
+### Why 120 Seconds
+
+- Large models (397B parameters) need longer inference time
+- Matches tool execution timeout (`TOOL_TIMEOUT_SECS = 120`)
+- Prevents indefinite blocking while allowing completion
+- Retry mechanism kicks in after timeout
+
+### Remaining Issues (40%)
+
+1. **NVIDIA API server-side timeout**: Even with client timeout, NVIDIA may return 504 before 120s
+2. **Long conversation history**: 20+ messages increase token usage and inference time
+3. **User experience**: No progress updates during long waits
+
+### Detailed Documentation
+
+See [telegram-response-timeout-issue.md](telegram-response-timeout-issue.md) for:
+- Complete code flow analysis
+- Retry mechanism details
+- Future optimization plans
+- Diagnostic commands
+
+### Quick Diagnosis
+
+```bash
+# Monitor timeout errors
+tail -f /tmp/openfang.log | grep -E "504|timeout|overload|LLM error"
+
+# Test agent response time
+AGENT_ID=$(curl -s http://127.0.0.1:4200/api/agents | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+time curl -s -X POST "http://127.0.0.1:4200/api/agents/$AGENT_ID/message" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"test"}'
+```
+
+## 19. Escalation Rule
 
 If a problem crosses OpenFang and `projects/shipinbot/`, treat it as a contract issue, not a one-sided bug. Check both sides before changing schema, batch files, or runtime assumptions.
