@@ -1398,7 +1398,11 @@ fn detect_best_provider() -> (&'static str, &'static str, &'static str) {
         ui::success(&format!(
             "Detected Ollama running locally (defaulting to installed model: {model})"
         ));
-        return ("ollama", "OLLAMA_API_KEY", Box::leak(model.into_boxed_str()));
+        return (
+            "ollama",
+            "OLLAMA_API_KEY",
+            Box::leak(model.into_boxed_str()),
+        );
     }
     ui::hint("No LLM provider API keys found");
     ui::hint("Groq offers a free tier: https://console.groq.com");
@@ -1524,12 +1528,21 @@ fn cmd_start(config: Option<PathBuf>, yolo: bool) {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let mut kernel_config = openfang_kernel::config::load_config(config.as_deref());
+        let mut kernel_config = match openfang_kernel::config::try_load_config(config.as_deref()) {
+            Ok(config) => config,
+            Err(error) => {
+                boot_kernel_error(&openfang_kernel::error::KernelError::BootFailed(format!(
+                    "Config load failed: {error}"
+                )));
+                std::process::exit(1);
+            }
+        };
         if yolo {
             kernel_config.approval.auto_approve = true;
             kernel_config.approval.apply_shorthands();
         }
-        let kernel = match OpenFangKernel::boot_with_config(kernel_config) {
+        let kernel = match OpenFangKernel::boot_with_config_source(kernel_config, config.as_deref())
+        {
             Ok(k) => k,
             Err(e) => {
                 boot_kernel_error(&e);
