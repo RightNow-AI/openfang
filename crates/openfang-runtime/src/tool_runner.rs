@@ -1472,7 +1472,7 @@ async fn tool_shell_exec(
     let use_direct_exec = exec_policy
         .map(|p| p.mode == openfang_types::config::ExecSecurityMode::Allowlist)
         .unwrap_or(true); // Default to safe mode
-
+    let mut used_git_sh = false;
     let mut cmd = if use_direct_exec {
         // SAFE PATH: Split command into argv using POSIX shell lexer rules,
         // then execute the binary directly — no shell interpreter involved.
@@ -1482,29 +1482,27 @@ async fn tool_shell_exec(
         if argv.is_empty() {
             return Err("Empty command after parsing".to_string());
         }
-        let mut c = tokio::process::Command::new(&argv[0]);
-        if argv.len() > 1 {
-            c.args(&argv[1..]);
+
+        // fix: Command not found on Windows
+        if cfg!(windows) && !argv[0].eq_ignore_ascii_case("cmd") {
+            let mut c = tokio::process::Command::new("cmd");
+            c.arg("/C").args(&argv);
+            c
+        } else {
+            let mut c = tokio::process::Command::new(&argv[0]);
+            if argv.len() > 1 {
+                c.args(&argv[1..]);
+            }
+            c
         }
-        c
     } else {
         // UNSAFE PATH: Full mode — user explicitly opted in to shell interpretation.
         // Shell resolution: prefer sh (Git Bash/MSYS2) on Windows.
-        #[cfg(windows)]
-        let git_sh: Option<&str> = {
-            const SH_PATHS: &[&str] = &[
-                "C:\\Program Files\\Git\\usr\\bin\\sh.exe",
-                "C:\\Program Files (x86)\\Git\\usr\\bin\\sh.exe",
-            ];
-            SH_PATHS
-                .iter()
-                .copied()
-                .find(|p| std::path::Path::new(p).exists())
-        };
         let (shell, shell_arg) = if cfg!(windows) {
             #[cfg(windows)]
             {
-                if let Some(sh) = git_sh {
+                if let Some(sh) = get_git_sh_path().await {
+                    used_git_sh = true;
                     (sh, "-c")
                 } else {
                     ("cmd", "/C")
@@ -1533,7 +1531,17 @@ async fn tool_shell_exec(
 
     // Ensure UTF-8 output on Windows
     #[cfg(windows)]
-    cmd.env("PYTHONIOENCODING", "utf-8");
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.env("PYTHONIOENCODING", "utf-8");
+        // Fix: Command not found on Windows when using git sh
+        if used_git_sh {
+            let path = std::env::var("PATH").unwrap_or_default();
+            let path = format!("{}:{}", "/mingw64/bin:/mingw32/bin:/usr/bin", path);
+            cmd.env("PATH", path);
+        }
+    }
 
     // Prevent child from inheriting stdin (avoids blocking on Windows)
     cmd.stdin(std::process::Stdio::null());
@@ -1543,8 +1551,8 @@ async fn tool_shell_exec(
 
     match result {
         Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = bytes_to_utf8_string(&output.stdout);
+            let stderr = bytes_to_utf8_string(&output.stderr);
             let exit_code = output.status.code().unwrap_or(-1);
 
             // Truncate very long outputs to prevent memory issues
@@ -3258,6 +3266,68 @@ async fn tool_canvas_present(
     });
 
     serde_json::to_string_pretty(&response).map_err(|e| format!("Serialize error: {e}"))
+}
+
+#[cfg(windows)]
+async fn get_git_sh_path() -> Option<&'static str> {
+    use tokio::process::Command;
+
+    let output = Command::new("where.exe").arg("git").output().await.ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = bytes_to_utf8_string(&output.stdout);
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let path = std::path::PathBuf::from(line);
+
+        if let Some(parent) = path.parent() {
+            let parent_str = parent.to_string_lossy();
+
+            let sh_path = if parent_str.ends_with("cmd")
+                || parent_str.ends_with("mingw64")
+                || parent_str.ends_with("mingw32")
+            {
+                let parent_dir = parent.parent()?;
+                parent_dir.join("usr").join("bin").join("sh.exe")
+            } else {
+                continue;
+            };
+
+            if sh_path.exists() {
+                let sh_path_str = sh_path.to_string_lossy().replace('\\', "/");
+                return Some(Box::leak(sh_path_str.into_boxed_str()));
+            }
+        }
+    }
+
+    None
+}
+
+/// Auto-detect encoding and convert to UTF-8
+pub fn bytes_to_utf8_string(bytes: &[u8]) -> String {
+    // try UTF-8 first
+    if let Ok(s) = String::from_utf8(bytes.to_vec()) {
+        return s;
+    }
+    // windows only: use GBK if UTF-8 fails
+    #[cfg(windows)]
+    {
+        let (cow, _, had_errors) = encoding_rs::GBK.decode(bytes);
+        if !had_errors {
+            return cow.to_string();
+        }
+    }
+
+    // fallback to lossy UTF-8
+    String::from_utf8_lossy(bytes).to_string()
 }
 
 #[cfg(test)]
