@@ -1268,9 +1268,24 @@ pub async fn start_channel_bridge_with_config(
                     tokio::spawn(async move {
                         if let Some(msg_id) = info.message_id {
                             let text = if info.percentage < 100.0 {
-                                format!("⬇️ 下载中... {:.0}%", info.percentage)
+                                let filled =
+                                    (info.percentage / 10.0).floor().clamp(0.0, 10.0) as usize;
+                                let empty = 10usize.saturating_sub(filled);
+                                let bar = format!("{}{}", "▓".repeat(filled), "░".repeat(empty));
+                                let downloaded_mb = info.downloaded_bytes / 1024 / 1024;
+                                let total_mb = info.total_bytes / 1024 / 1024;
+                                format!(
+                                    "📥 正在下载...\n{} {:.0}% · {}MB / {}MB",
+                                    bar, info.percentage, downloaded_mb, total_mb
+                                )
                             } else {
-                                "✅ 下载完成".to_string()
+                                let size_bytes = if info.total_bytes > 0 {
+                                    info.total_bytes
+                                } else {
+                                    info.downloaded_bytes
+                                };
+                                let total_mb = size_bytes / 1024 / 1024;
+                                format!("✅ 下载完成 · {}MB", total_mb)
                             };
 
                             let mut metadata = serde_json::Map::new();

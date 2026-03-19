@@ -18,8 +18,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::{mpsc, watch};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{mpsc, watch, Mutex};
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
@@ -48,6 +48,22 @@ const TELEGRAM_BOT_COMMANDS: &[(&str, &str)] = &[
 /// If Local Bot API crashes on extremely large files, this can be reduced,
 /// but 2GB should be safe for typical video processing workflows.
 const LOCAL_API_SAFE_GETFILE_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+/// Local file copy threshold above which we emit a live progress bar.
+const LOCAL_COPY_PROGRESS_THRESHOLD: u64 = 5 * 1024 * 1024;
+/// Copy Telegram Local Bot API files in chunks so large copies don't become a
+/// single opaque operation and can surface progress updates.
+const LOCAL_COPY_CHUNK_SIZE: usize = 1024 * 1024;
+/// Emit progress updates at least this often, even if percentage barely moves.
+const PROGRESS_REPORT_INTERVAL: Duration = Duration::from_secs(2);
+/// Emit progress updates when another 5% bucket is crossed.
+const PROGRESS_REPORT_PERCENT_BUCKET: u64 = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DownloadNotificationTarget {
+    chat_id: i64,
+    reply_to_message_id: i64,
+    thread_id: Option<i64>,
+}
 
 fn build_get_updates_query(offset: Option<i64>) -> Vec<(&'static str, String)> {
     let mut query = vec![
@@ -65,6 +81,127 @@ fn build_get_updates_query(offset: Option<i64>) -> Vec<(&'static str, String)> {
 
 fn file_size_mb(file_size: u64) -> u64 {
     file_size / 1024 / 1024
+}
+
+fn progress_percentage(downloaded: u64, total: u64) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        (downloaded as f64 / total as f64) * 100.0
+    }
+}
+
+fn progress_bucket(downloaded: u64, total: u64) -> u64 {
+    if total == 0 {
+        0
+    } else {
+        ((downloaded.saturating_mul(100)) / total) / PROGRESS_REPORT_PERCENT_BUCKET
+    }
+}
+
+fn emit_progress_update(
+    progress_callback: Option<&ProgressCallback>,
+    file_id: &str,
+    file_name: &str,
+    total_bytes: u64,
+    downloaded_bytes: u64,
+    chat_id: i64,
+    message_id: Option<i64>,
+) {
+    if let Some(callback) = progress_callback {
+        callback(ProgressInfo {
+            file_id: file_id.to_string(),
+            file_name: file_name.to_string(),
+            total_bytes,
+            downloaded_bytes,
+            percentage: progress_percentage(downloaded_bytes, total_bytes),
+            chat_id,
+            message_id,
+        });
+    }
+}
+
+fn telegram_message(update: &serde_json::Value) -> Option<&serde_json::Value> {
+    update
+        .get("message")
+        .or_else(|| update.get("edited_message"))
+}
+
+fn telegram_sender_id(message: &serde_json::Value) -> Option<i64> {
+    message
+        .get("from")
+        .and_then(|from| from.get("id"))
+        .and_then(|id| id.as_i64())
+        .or_else(|| {
+            message
+                .get("sender_chat")
+                .and_then(|chat| chat.get("id"))
+                .and_then(|id| id.as_i64())
+        })
+}
+
+fn extract_download_notification_target(
+    update: &serde_json::Value,
+    allowed_users: &[String],
+) -> Option<DownloadNotificationTarget> {
+    let message = telegram_message(update)?;
+    let sender_id = telegram_sender_id(message)?;
+    if !allowed_users.is_empty()
+        && !allowed_users
+            .iter()
+            .any(|user| user == &sender_id.to_string())
+    {
+        return None;
+    }
+
+    Some(DownloadNotificationTarget {
+        chat_id: message.get("chat")?.get("id")?.as_i64()?,
+        reply_to_message_id: message.get("message_id")?.as_i64()?,
+        thread_id: message.get("message_thread_id").and_then(|id| id.as_i64()),
+    })
+}
+
+fn message_will_attempt_download(
+    message: &serde_json::Value,
+    max_download_size: u64,
+    use_local_api: bool,
+) -> bool {
+    if let Some(photos) = message.get("photo").and_then(|value| value.as_array()) {
+        let file_size = photos
+            .last()
+            .and_then(|photo| photo.get("file_size"))
+            .and_then(|size| size.as_u64())
+            .unwrap_or(0);
+        return file_size <= max_download_size;
+    }
+
+    if let Some(video) = message.get("video") {
+        let file_size = video
+            .get("file_size")
+            .and_then(|size| size.as_u64())
+            .unwrap_or(0);
+        return file_size <= max_download_size && !should_skip_get_file(file_size, use_local_api);
+    }
+
+    if let Some(document) = message.get("document") {
+        let file_size = document
+            .get("file_size")
+            .and_then(|size| size.as_u64())
+            .unwrap_or(0);
+        return file_size <= max_download_size && !should_skip_get_file(file_size, use_local_api);
+    }
+
+    false
+}
+
+fn update_will_attempt_download(
+    update: &serde_json::Value,
+    max_download_size: u64,
+    use_local_api: bool,
+) -> bool {
+    telegram_message(update)
+        .map(|message| message_will_attempt_download(message, max_download_size, use_local_api))
+        .unwrap_or(false)
 }
 
 fn should_skip_get_file(file_size: u64, use_local_api: bool) -> bool {
@@ -171,6 +308,8 @@ pub struct TelegramAdapter {
     progress_callback: Option<ProgressCallback>,
     /// Whether using Local Bot API Server (supports files >20MB).
     use_local_api: bool,
+    /// Background media-group workers that should be cancelled on shutdown.
+    background_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 impl TelegramAdapter {
@@ -204,6 +343,7 @@ impl TelegramAdapter {
             max_download_size: 2 * 1024 * 1024 * 1024, // 2GB default
             progress_callback: None,
             use_local_api: false,
+            background_tasks: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -750,6 +890,7 @@ impl ChannelAdapter for TelegramAdapter {
         let max_download_size = self.max_download_size;
         let progress_callback = self.progress_callback.clone();
         let use_local_api = self.use_local_api;
+        let background_tasks = self.background_tasks.clone();
 
         tokio::spawn(async move {
             let mut offset: Option<i64> = None;
@@ -778,35 +919,61 @@ impl ChannelAdapter for TelegramAdapter {
 
                 for group_id in completed_groups {
                     if let Some((updates, _)) = media_groups.remove(&group_id) {
-                        // Merge media group into a single message
-                        if let Some(merged_msg) = merge_media_group_updates(
-                            &updates,
-                            &allowed_users,
-                            token.as_str(),
-                            &client,
-                            &api_base_url,
-                            bot_username.read().await.as_deref(),
-                            download_enabled,
-                            &download_dir,
-                            max_download_size,
-                            progress_callback.as_ref(),
-                            use_local_api,
-                        )
-                        .await
-                        {
-                            debug!(
-                                "Telegram media group ({} items) from {}: {:?}",
-                                updates.len(),
-                                merged_msg.sender.display_name,
-                                merged_msg.content
-                            );
-                            if tx.send(merged_msg).await.is_err() {
-                                warn!(
-                                    "Telegram bridge consumer dropped while sending merged media group; stopping polling loop"
+                        // Spawn download + merge in background so polling loop is not blocked
+                        let token_clone = token.clone();
+                        let client_clone = client.clone();
+                        let api_base_url_clone = api_base_url.clone();
+                        let allowed_users_clone = allowed_users.clone();
+                        let bot_username_clone = bot_username.read().await.clone();
+                        let download_dir_clone = download_dir.clone();
+                        let progress_callback_clone = progress_callback.clone();
+                        let tx_clone = tx.clone();
+                        let notify_target = if download_enabled
+                            && updates.iter().any(|update| {
+                                update_will_attempt_download(
+                                    update,
+                                    max_download_size,
+                                    use_local_api,
+                                )
+                            }) {
+                            updates.first().and_then(|update| {
+                                extract_download_notification_target(update, &allowed_users_clone)
+                            })
+                        } else {
+                            None
+                        };
+
+                        let handle = tokio::spawn(async move {
+                            // Merge media group into a single message (may download files)
+                            if let Some(merged_msg) = merge_media_group_updates(
+                                &updates,
+                                &allowed_users_clone,
+                                token_clone.as_str(),
+                                &client_clone,
+                                &api_base_url_clone,
+                                bot_username_clone.as_deref(),
+                                download_enabled,
+                                &download_dir_clone,
+                                max_download_size,
+                                progress_callback_clone.as_ref(),
+                                use_local_api,
+                                notify_target,
+                            )
+                            .await
+                            {
+                                debug!(
+                                    "Telegram media group ({} items) from {}: {:?}",
+                                    updates.len(),
+                                    merged_msg.sender.display_name,
+                                    merged_msg.content
                                 );
-                                return;
+                                let _ = tx_clone.send(merged_msg).await;
                             }
-                        }
+                        });
+
+                        let mut tasks = background_tasks.lock().await;
+                        tasks.retain(|task| !task.is_finished());
+                        tasks.push(handle);
                     }
                 }
 
@@ -932,6 +1099,30 @@ impl ChannelAdapter for TelegramAdapter {
 
                     // Not a media group — process immediately
                     let bot_uname = bot_username.read().await.clone();
+                    let notify_target = if download_enabled
+                        && update_will_attempt_download(update, max_download_size, use_local_api)
+                    {
+                        extract_download_notification_target(update, &allowed_users)
+                    } else {
+                        None
+                    };
+                    let notify_msg_id = if download_enabled && progress_callback.is_some() {
+                        match notify_target {
+                            Some(target) => {
+                                telegram_send_notification_raw(
+                                    &client,
+                                    &api_base_url,
+                                    token.as_str(),
+                                    target,
+                                    "收到媒体，正在处理...",
+                                )
+                                .await
+                            }
+                            None => None,
+                        }
+                    } else {
+                        None
+                    };
                     let msg = match parse_telegram_update(
                         update,
                         &allowed_users,
@@ -944,6 +1135,7 @@ impl ChannelAdapter for TelegramAdapter {
                         max_download_size,
                         progress_callback.as_ref(),
                         use_local_api,
+                        notify_msg_id,
                     )
                     .await
                     {
@@ -1021,6 +1213,10 @@ impl ChannelAdapter for TelegramAdapter {
 
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
+        let mut tasks = self.background_tasks.lock().await;
+        for handle in tasks.drain(..) {
+            handle.abort();
+        }
         Ok(())
     }
 }
@@ -1040,10 +1236,18 @@ async fn merge_media_group_updates(
     max_download_size: u64,
     progress_callback: Option<&ProgressCallback>,
     use_local_api: bool,
+    notify_target: Option<DownloadNotificationTarget>,
 ) -> Option<ChannelMessage> {
     if updates.is_empty() {
         return None;
     }
+
+    let first_message = updates[0]
+        .get("message")
+        .or_else(|| updates[0].get("edited_message"))?;
+    let chat_id = first_message.get("chat")?.get("id")?.as_i64()?;
+    let message_id = first_message.get("message_id")?.as_i64()?;
+    let media_group_id = first_message.get("media_group_id")?.as_str()?.to_string();
 
     // Use the first update as the base message
     let first_msg = parse_telegram_update(
@@ -1053,13 +1257,32 @@ async fn merge_media_group_updates(
         client,
         api_base_url,
         bot_username,
-        download_enabled,
+        false,
         download_dir,
         max_download_size,
-        progress_callback,
+        None,
         use_local_api,
+        None,
     )
     .await?;
+
+    let notify_msg_id = if download_enabled && progress_callback.is_some() {
+        match notify_target {
+            Some(target) => {
+                telegram_send_notification_raw(
+                    client,
+                    api_base_url,
+                    token,
+                    target,
+                    "收到媒体，正在处理...",
+                )
+                .await
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
 
     // Collect all media items with structured metadata
     let mut media_items = Vec::new();
@@ -1094,7 +1317,7 @@ async fn merge_media_group_updates(
             let file_size = video.get("file_size").and_then(|v| v.as_u64()).unwrap_or(0);
             let duration = video.get("duration").and_then(|v| v.as_u64()).unwrap_or(0);
             let chat_id = message.get("chat")?.get("id")?.as_i64()?;
-            let message_id = message.get("message_id")?.as_i64()?;
+            let _ = message.get("message_id")?.as_i64()?;
 
             if should_skip_get_file(file_size, use_local_api) {
                 info!(
@@ -1144,7 +1367,7 @@ async fn merge_media_group_updates(
                             download_dir,
                             progress_callback,
                             chat_id,
-                            Some(message_id),
+                            notify_msg_id,
                         )
                         .await
                         {
@@ -1254,7 +1477,7 @@ async fn merge_media_group_updates(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let chat_id = message.get("chat")?.get("id")?.as_i64()?;
-            let message_id = message.get("message_id")?.as_i64()?;
+            let _ = message.get("message_id")?.as_i64()?;
 
             // Check if this is a video document
             let is_video = mime_type.starts_with("video/");
@@ -1312,7 +1535,7 @@ async fn merge_media_group_updates(
                             download_dir,
                             progress_callback,
                             chat_id,
-                            Some(message_id),
+                            notify_msg_id,
                         )
                         .await
                         {
@@ -1415,7 +1638,7 @@ async fn merge_media_group_updates(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             let chat_id = message.get("chat")?.get("id")?.as_i64()?;
-            let message_id = message.get("message_id")?.as_i64()?;
+            let _ = message.get("message_id")?.as_i64()?;
             match telegram_get_file_info(
                 token,
                 client,
@@ -1434,7 +1657,7 @@ async fn merge_media_group_updates(
                             download_dir,
                             progress_callback,
                             chat_id,
-                            Some(message_id),
+                            notify_msg_id,
                         )
                         .await
                         {
@@ -1520,25 +1743,6 @@ async fn merge_media_group_updates(
     }
 
     // Build TelegramMediaBatch structure
-    let chat_id = updates[0]
-        .get("message")
-        .or_else(|| updates[0].get("edited_message"))?
-        .get("chat")?
-        .get("id")?
-        .as_i64()?;
-
-    let message_id = updates[0]
-        .get("message")
-        .or_else(|| updates[0].get("edited_message"))?
-        .get("message_id")?
-        .as_i64()?;
-
-    let media_group_id = updates[0]
-        .get("message")
-        .or_else(|| updates[0].get("edited_message"))?
-        .get("media_group_id")?
-        .as_str()?
-        .to_string();
     let batch_key = TelegramMediaBatch::stable_batch_key(chat_id, &media_group_id);
 
     let batch = TelegramMediaBatch {
@@ -1553,6 +1757,24 @@ async fn merge_media_group_updates(
         },
         items: media_items,
     };
+
+    if let Some(notify_msg_id) = notify_msg_id {
+        let downloaded_any = batch
+            .items
+            .iter()
+            .any(|item| item.status == MediaItemStatus::Ready);
+        if !downloaded_any {
+            let _ = telegram_edit_notification_raw(
+                client,
+                api_base_url,
+                token,
+                chat_id,
+                notify_msg_id,
+                &media_group_notification_complete_text(&batch),
+            )
+            .await;
+        }
+    }
 
     // Generate short summary text
     let summary_text = batch.summary();
@@ -1569,6 +1791,72 @@ async fn merge_media_group_updates(
         metadata,
         ..first_msg
     })
+}
+
+fn media_group_notification_complete_text(batch: &TelegramMediaBatch) -> String {
+    format!("✅ 媒体已接收\n{}", batch.summary())
+}
+
+/// Send a Telegram message directly (without TelegramAdapter) and return the sent message_id.
+/// Used to send immediate notifications before long-running downloads.
+async fn telegram_send_notification_raw(
+    client: &reqwest::Client,
+    api_base_url: &str,
+    token: &str,
+    target: DownloadNotificationTarget,
+    text: &str,
+) -> Option<i64> {
+    let url = format!("{}/bot{}/sendMessage", api_base_url, token);
+    let mut body = serde_json::json!({
+        "chat_id": target.chat_id,
+        "text": text,
+    });
+    body["reply_to_message_id"] = serde_json::json!(target.reply_to_message_id);
+    if let Some(thread_id) = target.thread_id {
+        body["message_thread_id"] = serde_json::json!(thread_id);
+    }
+    let resp = client.post(&url).json(&body).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let json: serde_json::Value = resp.json().await.ok()?;
+    json.get("result")?.get("message_id")?.as_i64()
+}
+
+async fn telegram_edit_notification_raw(
+    client: &reqwest::Client,
+    api_base_url: &str,
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    text: &str,
+) -> bool {
+    let url = format!("{}/bot{}/editMessageText", api_base_url, token);
+    let body = serde_json::json!({
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": sanitize_telegram_html(text),
+        "parse_mode": "HTML",
+    });
+    match client.post(&url).json(&body).send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
+}
+
+async fn edit_download_notification_if_present(
+    client: &reqwest::Client,
+    api_base_url: &str,
+    token: &str,
+    chat_id: i64,
+    notify_msg_id: Option<i64>,
+    text: &str,
+) {
+    if let Some(message_id) = notify_msg_id {
+        let _ =
+            telegram_edit_notification_raw(client, api_base_url, token, chat_id, message_id, text)
+                .await;
+    }
 }
 
 /// File information returned by Telegram getFile API.
@@ -1748,7 +2036,7 @@ async fn download_file(
     progress_callback: Option<&ProgressCallback>,
     chat_id: i64,
     message_id: Option<i64>,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     // Create download directory if it doesn't exist
     tokio::fs::create_dir_all(dest_dir).await?;
 
@@ -1766,21 +2054,77 @@ async fn download_file(
     if let Some(local_path) = file_info.local_path.as_deref() {
         let source = Path::new(local_path);
 
-        // Copy file from Local Bot API storage to destination
-        tokio::fs::copy(source, &dest_path).await?;
+        let actual_size = tokio::fs::metadata(source)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(file_info.file_size);
+        let report_live_progress = actual_size > LOCAL_COPY_PROGRESS_THRESHOLD;
 
-        // Report completion
-        if let Some(callback) = progress_callback {
-            callback(ProgressInfo {
-                file_id: file_info.file_id.clone(),
-                file_name: filename.clone(),
-                total_bytes: file_info.file_size,
-                downloaded_bytes: file_info.file_size,
-                percentage: 100.0,
+        if report_live_progress {
+            emit_progress_update(
+                progress_callback,
+                &file_info.file_id,
+                &filename,
+                actual_size,
+                0,
                 chat_id,
                 message_id,
-            });
+            );
         }
+
+        let mut source_file = File::open(source).await?;
+        let mut dest_file = File::create(&dest_path).await?;
+        let mut buffer = vec![0u8; LOCAL_COPY_CHUNK_SIZE];
+        let mut copied = 0u64;
+        let mut last_report = tokio::time::Instant::now();
+        let mut last_bucket = 0u64;
+
+        loop {
+            let read = source_file.read(&mut buffer).await?;
+            if read == 0 {
+                break;
+            }
+
+            dest_file.write_all(&buffer[..read]).await?;
+            copied += read as u64;
+
+            if report_live_progress {
+                let now = tokio::time::Instant::now();
+                let bucket = progress_bucket(copied, actual_size);
+                if now.duration_since(last_report) >= PROGRESS_REPORT_INTERVAL
+                    || bucket > last_bucket
+                    || copied >= actual_size
+                {
+                    emit_progress_update(
+                        progress_callback,
+                        &file_info.file_id,
+                        &filename,
+                        actual_size,
+                        copied.min(actual_size),
+                        chat_id,
+                        message_id,
+                    );
+                    last_report = now;
+                    last_bucket = bucket;
+                }
+            }
+
+            tokio::task::yield_now().await;
+        }
+
+        dest_file.flush().await?;
+
+        let total_bytes = actual_size.max(copied);
+
+        emit_progress_update(
+            progress_callback,
+            &file_info.file_id,
+            &filename,
+            total_bytes,
+            total_bytes,
+            chat_id,
+            message_id,
+        );
 
         return Ok(dest_path);
     }
@@ -1796,34 +2140,31 @@ async fn download_file(
     let mut downloaded: u64 = 0;
     let total = file_info.file_size;
     let mut last_report = tokio::time::Instant::now();
+    let mut last_bucket = 0u64;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
 
-        // Report progress (throttle to every 2 seconds or 5% change)
+        // Report progress (throttle to every 2 seconds or 5% bucket change)
         let now = tokio::time::Instant::now();
-        if let Some(callback) = progress_callback {
-            if now.duration_since(last_report) >= Duration::from_secs(2) || downloaded == total {
-                let percentage = if total > 0 {
-                    (downloaded as f64 / total as f64) * 100.0
-                } else {
-                    0.0
-                };
-
-                callback(ProgressInfo {
-                    file_id: file_info.file_id.clone(),
-                    file_name: filename.clone(),
-                    total_bytes: total,
-                    downloaded_bytes: downloaded,
-                    percentage,
-                    chat_id,
-                    message_id,
-                });
-
-                last_report = now;
-            }
+        let bucket = progress_bucket(downloaded, total);
+        if now.duration_since(last_report) >= PROGRESS_REPORT_INTERVAL
+            || bucket > last_bucket
+            || downloaded == total
+        {
+            emit_progress_update(
+                progress_callback,
+                &file_info.file_id,
+                &filename,
+                total,
+                downloaded,
+                chat_id,
+                message_id,
+            );
+            last_report = now;
+            last_bucket = bucket;
         }
     }
 
@@ -1865,6 +2206,7 @@ async fn parse_telegram_update(
     max_download_size: u64,
     progress_callback: Option<&ProgressCallback>,
     use_local_api: bool,
+    notify_msg_id: Option<i64>,
 ) -> Option<ChannelMessage> {
     const OFFICIAL_API_LIMIT: u64 = 20 * 1024 * 1024;
 
@@ -1992,7 +2334,7 @@ async fn parse_telegram_update(
                         download_dir,
                         progress_callback,
                         chat_id,
-                        Some(message_id),
+                        notify_msg_id,
                     )
                     .await
                     {
@@ -2001,7 +2343,18 @@ async fn parse_telegram_update(
                             caption,
                         },
                         Err(e) => {
-                            warn!("Failed to download photo {}: {}", file_id, e);
+                            let err_text = e.to_string();
+                            drop(e);
+                            warn!("Failed to download photo {}: {}", file_id, err_text);
+                            edit_download_notification_if_present(
+                                client,
+                                api_base_url,
+                                token,
+                                chat_id,
+                                notify_msg_id,
+                                "⚠️ 图片下载失败，已回退到远程地址",
+                            )
+                            .await;
                             ChannelContent::Image {
                                 url: file_info.download_url,
                                 caption,
@@ -2015,13 +2368,24 @@ async fn parse_telegram_update(
                     }
                 }
             }
-            None => ChannelContent::Text(format!(
-                "[收到图片{}]",
-                caption
-                    .as_deref()
-                    .map(|c| format!(": {c}"))
-                    .unwrap_or_default()
-            )),
+            None => {
+                edit_download_notification_if_present(
+                    client,
+                    api_base_url,
+                    token,
+                    chat_id,
+                    notify_msg_id,
+                    "⚠️ 图片下载失败，未能获取文件地址",
+                )
+                .await;
+                ChannelContent::Text(format!(
+                    "[收到图片{}]",
+                    caption
+                        .as_deref()
+                        .map(|c| format!(": {c}"))
+                        .unwrap_or_default()
+                ))
+            }
         }
     } else if message.get("video").is_some() {
         let file_id = message["video"]["file_id"].as_str().unwrap_or("");
@@ -2090,7 +2454,7 @@ async fn parse_telegram_update(
                             download_dir,
                             progress_callback,
                             chat_id,
-                            Some(message_id),
+                            notify_msg_id,
                         )
                         .await
                         {
@@ -2104,7 +2468,18 @@ async fn parse_telegram_update(
                                 ChannelContent::Text(prepend_caption(caption, body))
                             }
                             Err(e) => {
-                                warn!("Failed to download video {}: {}", file_id, e);
+                                let err_text = e.to_string();
+                                drop(e);
+                                warn!("Failed to download video {}: {}", file_id, err_text);
+                                edit_download_notification_if_present(
+                                    client,
+                                    api_base_url,
+                                    token,
+                                    chat_id,
+                                    notify_msg_id,
+                                    "⚠️ 视频下载失败，已回退到远程地址",
+                                )
+                                .await;
                                 let download_url = file_info.download_url;
                                 telegram_media_batch = Some(build_single_message_batch(
                                     chat_id,
@@ -2123,7 +2498,7 @@ async fn parse_telegram_update(
                                             api_base_url,
                                             use_local_api,
                                             Some(download_url.clone()),
-                                            Some(format!("bridge download failed: {e}")),
+                                            Some(format!("bridge download failed: {err_text}")),
                                         )),
                                     },
                                 ));
@@ -2179,6 +2554,15 @@ async fn parse_telegram_update(
                     }
                 }
                 None => {
+                    edit_download_notification_if_present(
+                        client,
+                        api_base_url,
+                        token,
+                        chat_id,
+                        notify_msg_id,
+                        "⚠️ 视频下载失败，未能获取文件地址",
+                    )
+                    .await;
                     let reason = if !use_local_api && file_size > OFFICIAL_API_LIMIT {
                         "video exceeds official Bot API 20MB limit; configure Local Bot API"
                             .to_string()
@@ -2287,7 +2671,7 @@ async fn parse_telegram_update(
                             download_dir,
                             progress_callback,
                             chat_id,
-                            Some(message_id),
+                            notify_msg_id,
                         )
                         .await
                         {
@@ -2299,7 +2683,18 @@ async fn parse_telegram_update(
                                 }
                             }
                             Err(e) => {
-                                warn!("Failed to download file {}: {}", file_id, e);
+                                let err_text = e.to_string();
+                                drop(e);
+                                warn!("Failed to download file {}: {}", file_id, err_text);
+                                edit_download_notification_if_present(
+                                    client,
+                                    api_base_url,
+                                    token,
+                                    chat_id,
+                                    notify_msg_id,
+                                    "⚠️ 文件下载失败，已回退到远程地址",
+                                )
+                                .await;
                                 if is_video_document {
                                     telegram_media_batch = Some(build_single_message_batch(
                                         chat_id,
@@ -2318,7 +2713,7 @@ async fn parse_telegram_update(
                                                 api_base_url,
                                                 use_local_api,
                                                 Some(file_info.download_url.clone()),
-                                                Some(format!("bridge download failed: {e}")),
+                                                Some(format!("bridge download failed: {err_text}")),
                                             )),
                                         },
                                     ));
@@ -2376,6 +2771,15 @@ async fn parse_telegram_update(
                     }
                 }
                 None => {
+                    edit_download_notification_if_present(
+                        client,
+                        api_base_url,
+                        token,
+                        chat_id,
+                        notify_msg_id,
+                        "⚠️ 文件下载失败，未能获取文件地址",
+                    )
+                    .await;
                     if is_video_document {
                         let reason = if !use_local_api && file_size > OFFICIAL_API_LIMIT {
                             "video document exceeds official Bot API 20MB limit; configure Local Bot API"
@@ -2747,6 +3151,7 @@ mod tests {
             2 * 1024 * 1024 * 1024, // 2GB max
             None,                   // no progress callback
             use_local_api,
+            None, // no notify_msg_id in tests
         )
         .await
     }
@@ -3242,6 +3647,7 @@ mod tests {
             2 * 1024 * 1024 * 1024,
             None,
             false,
+            None,
         )
         .await
         .unwrap();
@@ -3359,6 +3765,7 @@ mod tests {
             2 * 1024 * 1024 * 1024,
             None,
             false,
+            None,
         )
         .await
         .unwrap();
@@ -4083,6 +4490,127 @@ mod tests {
         (format!("http://{addr}"), get_file_calls, handle)
     }
 
+    async fn start_telegram_file_download_counter_server(
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        use axum::extract::Json;
+        use axum::routing::{get, post};
+        use axum::Router;
+
+        let file_downloads = Arc::new(AtomicUsize::new(0));
+        let app_downloads = file_downloads.clone();
+
+        let app = Router::new()
+            .route(
+                "/botfake:token/getFile",
+                post(|Json(payload): Json<serde_json::Value>| async move {
+                    let file_id = payload["file_id"].as_str().unwrap_or("unknown");
+                    axum::Json(serde_json::json!({
+                        "ok": true,
+                        "result": {
+                            "file_id": file_id,
+                            "file_path": format!("files/{file_id}.mp4"),
+                            "file_size": 1024
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/file/botfake:token/{*path}",
+                get(move || {
+                    let downloads = app_downloads.clone();
+                    async move {
+                        downloads.fetch_add(1, Ordering::SeqCst);
+                        axum::body::Bytes::from_static(b"test-media")
+                    }
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        (format!("http://{addr}"), file_downloads, handle)
+    }
+
+    async fn start_telegram_send_message_capture_server() -> (
+        String,
+        Arc<tokio::sync::Mutex<Vec<serde_json::Value>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::extract::Json;
+        use axum::routing::post;
+        use axum::Router;
+
+        let payloads = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let app_payloads = payloads.clone();
+
+        let app = Router::new().route(
+            "/botfake:token/sendMessage",
+            post(move |Json(payload): Json<serde_json::Value>| {
+                let payloads = app_payloads.clone();
+                async move {
+                    payloads.lock().await.push(payload);
+                    axum::Json(serde_json::json!({
+                        "ok": true,
+                        "result": {
+                            "message_id": 999
+                        }
+                    }))
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        (format!("http://{addr}"), payloads, handle)
+    }
+
+    async fn start_telegram_notification_counter_server(
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        use axum::extract::Json;
+        use axum::routing::post;
+        use axum::Router;
+
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let app_notifications = notifications.clone();
+
+        let app = Router::new().route(
+            "/botfake:token/sendMessage",
+            post(move |Json(_payload): Json<serde_json::Value>| {
+                let notifications = app_notifications.clone();
+                async move {
+                    notifications.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(serde_json::json!({
+                        "ok": true,
+                        "result": {
+                            "message_id": 999
+                        }
+                    }))
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        (format!("http://{addr}"), notifications, handle)
+    }
+
     async fn start_get_me_test_server<F>(
         handler: F,
     ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>)
@@ -4393,6 +4921,142 @@ mod tests {
         assert!(info.local_path.is_none());
     }
 
+    #[tokio::test]
+    async fn test_download_file_local_path_reports_incremental_progress() {
+        let temp_root =
+            std::env::temp_dir().join(format!("openfang-telegram-test-{}", uuid::Uuid::new_v4()));
+        let source_path = temp_root.join("source.mp4");
+        let dest_dir = temp_root.join("downloads");
+        std::fs::create_dir_all(&temp_root).unwrap();
+
+        let file_size = LOCAL_COPY_PROGRESS_THRESHOLD as usize + (LOCAL_COPY_CHUNK_SIZE * 2);
+        std::fs::write(&source_path, vec![7u8; file_size]).unwrap();
+
+        let updates = Arc::new(std::sync::Mutex::new(Vec::<ProgressInfo>::new()));
+        let updates_clone = updates.clone();
+        let callback: ProgressCallback = Arc::new(move |info| {
+            updates_clone.lock().unwrap().push(info);
+        });
+
+        let file_info = FileInfo {
+            file_id: "local-progress".to_string(),
+            file_size: file_size as u64,
+            file_path: source_path.to_string_lossy().to_string(),
+            download_url: format!("file://{}", source_path.display()),
+            local_path: Some(source_path.to_string_lossy().to_string()),
+        };
+
+        let client = test_client();
+        let downloaded = download_file(
+            &client,
+            &file_info,
+            &dest_dir,
+            Some(&callback),
+            123,
+            Some(456),
+        )
+        .await
+        .unwrap();
+
+        assert!(downloaded.exists());
+
+        let progress = updates.lock().unwrap();
+        assert!(
+            progress.len() >= 3,
+            "expected 0%, mid-copy, and 100% updates"
+        );
+        assert_eq!(progress.first().unwrap().downloaded_bytes, 0);
+        assert_eq!(progress.last().unwrap().downloaded_bytes, file_size as u64);
+        assert_eq!(progress.last().unwrap().total_bytes, file_size as u64);
+        assert!(progress
+            .iter()
+            .any(|info| info.downloaded_bytes > 0 && info.downloaded_bytes < file_size as u64));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn test_extract_download_notification_target_filters_users_and_keeps_thread() {
+        let update = serde_json::json!({
+            "update_id": 900,
+            "message": {
+                "message_id": 55,
+                "message_thread_id": 42,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": -200, "type": "supergroup" },
+                "date": 1700000200,
+                "video": {
+                    "file_id": "video_threaded",
+                    "file_size": 1024
+                }
+            }
+        });
+
+        let target = extract_download_notification_target(&update, &[]).unwrap();
+        assert_eq!(
+            target,
+            DownloadNotificationTarget {
+                chat_id: -200,
+                reply_to_message_id: 55,
+                thread_id: Some(42),
+            }
+        );
+        assert!(extract_download_notification_target(&update, &["999".to_string()]).is_none());
+    }
+
+    #[test]
+    fn test_update_will_attempt_download_respects_limits() {
+        let update = serde_json::json!({
+            "update_id": 901,
+            "message": {
+                "message_id": 56,
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000201,
+                "video": {
+                    "file_id": "video_large",
+                    "file_size": LOCAL_API_SAFE_GETFILE_LIMIT + 1
+                }
+            }
+        });
+
+        assert!(!update_will_attempt_download(
+            &update,
+            3 * 1024 * 1024 * 1024,
+            true,
+        ));
+        assert!(!update_will_attempt_download(&update, 1024, false));
+    }
+
+    #[tokio::test]
+    async fn test_telegram_send_notification_raw_includes_reply_and_thread() {
+        let (api_base_url, payloads, server_handle) =
+            start_telegram_send_message_capture_server().await;
+
+        let sent_message_id = telegram_send_notification_raw(
+            &test_client(),
+            &api_base_url,
+            "fake:token",
+            DownloadNotificationTarget {
+                chat_id: -200,
+                reply_to_message_id: 77,
+                thread_id: Some(42),
+            },
+            "收到媒体，正在处理...",
+        )
+        .await;
+
+        server_handle.abort();
+
+        assert_eq!(sent_message_id, Some(999));
+        let payloads = payloads.lock().await;
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0]["chat_id"].as_i64(), Some(-200));
+        assert_eq!(payloads[0]["reply_to_message_id"].as_i64(), Some(77));
+        assert_eq!(payloads[0]["message_thread_id"].as_i64(), Some(42));
+        assert_eq!(payloads[0]["text"].as_str(), Some("收到媒体，正在处理..."));
+    }
+
     #[test]
     fn test_check_mention_entities_handles_utf16_offsets() {
         let message = serde_json::json!({
@@ -4482,6 +5146,7 @@ mod tests {
             2 * 1024 * 1024 * 1024,
             None,
             false,
+            None,
         )
         .await
         .unwrap();
@@ -4525,6 +5190,109 @@ mod tests {
             batch.items[2].kind,
             crate::telegram_media_batch::MediaItemKind::Image
         );
+    }
+
+    #[tokio::test]
+    async fn test_merge_media_group_downloads_single_item_only_once() {
+        let (api_base_url, file_downloads, server_handle) =
+            start_telegram_file_download_counter_server().await;
+        let temp_dir =
+            std::env::temp_dir().join(format!("openfang-telegram-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let update = serde_json::json!({
+            "update_id": 850,
+            "message": {
+                "message_id": 205,
+                "media_group_id": "single-video-group",
+                "from": { "id": 123, "first_name": "Alice" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000100,
+                "video": {
+                    "file_id": "video_single",
+                    "file_unique_id": "vs",
+                    "duration": 8,
+                    "file_size": 1024
+                }
+            }
+        });
+
+        let client = test_client();
+        let merged = merge_media_group_updates(
+            &[update],
+            &[],
+            "fake:token",
+            &client,
+            &api_base_url,
+            None,
+            true,
+            &temp_dir,
+            2 * 1024 * 1024 * 1024,
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        server_handle.abort();
+
+        assert_eq!(file_downloads.load(Ordering::SeqCst), 1);
+        let batch_value = merged.metadata.get("telegram_media_batch").unwrap();
+        let batch: crate::telegram_media_batch::TelegramMediaBatch =
+            serde_json::from_value(batch_value.clone()).unwrap();
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(
+            batch.items[0].status,
+            crate::telegram_media_batch::MediaItemStatus::Ready
+        );
+        assert!(batch.items[0].local_path.is_some());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_merge_media_group_does_not_notify_unlisted_user() {
+        let (api_base_url, notifications, server_handle) =
+            start_telegram_notification_counter_server().await;
+
+        let update = serde_json::json!({
+            "update_id": 860,
+            "message": {
+                "message_id": 206,
+                "media_group_id": "filtered-group",
+                "from": { "id": 999, "first_name": "Mallory" },
+                "chat": { "id": 123, "type": "private" },
+                "date": 1700000200,
+                "photo": [
+                    { "file_id": "photo_filtered_small", "file_unique_id": "pf0", "width": 90, "height": 90 },
+                    { "file_id": "photo_filtered", "file_unique_id": "pf1", "width": 800, "height": 600 }
+                ]
+            }
+        });
+
+        let client = test_client();
+        let temp_dir = std::env::temp_dir();
+        let merged = merge_media_group_updates(
+            &[update],
+            &[String::from("123")],
+            "fake:token",
+            &client,
+            &api_base_url,
+            None,
+            true,
+            &temp_dir,
+            2 * 1024 * 1024 * 1024,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        server_handle.abort();
+
+        assert!(merged.is_none());
+        assert_eq!(notifications.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -4575,6 +5343,7 @@ mod tests {
             2 * 1024 * 1024 * 1024,
             None,
             false,
+            None,
         )
         .await
         .unwrap();
@@ -4636,6 +5405,7 @@ mod tests {
             2 * 1024 * 1024 * 1024,
             None,
             true,
+            None,
         )
         .await
         .unwrap();
