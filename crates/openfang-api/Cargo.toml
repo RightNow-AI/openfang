@@ -39,6 +39,7 @@ hmac = { workspace = true }
 hex = { workspace = true }
 socket2 = { workspace = true }
 reqwest = { workspace = true }
+zip = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
