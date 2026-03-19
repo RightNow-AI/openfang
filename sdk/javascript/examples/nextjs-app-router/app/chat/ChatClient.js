@@ -14,6 +14,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import Composer from '../components/Composer';
+import PromptHelperDock from './helpers/PromptHelperDock';
 import RunTimeline from '../components/RunTimeline';
 import RunOutput from '../components/RunOutput';
 import AgentTrace from '../components/AgentTrace';
@@ -42,6 +43,7 @@ export default function ChatClient({ agentId = null, agentName = null }) {
   const [running, setRunning] = useState(false);
   const [showTrace, setShowTrace] = useState(false);
   const [error, setError] = useState('');
+  const [helperOpen, setHelperOpen] = useState(false);
   const [sessionId] = useState(() =>
     typeof crypto !== 'undefined' ? crypto.randomUUID() : String(Date.now()),
   );
@@ -225,6 +227,14 @@ export default function ChatClient({ agentId = null, agentName = null }) {
         <div className="flex items-center gap-2">
           <button
             className="btn btn-ghost btn-sm"
+            data-cy="open-prompt-helpers"
+            onClick={() => setHelperOpen(true)}
+            style={{ fontSize: 11 }}
+          >
+            ✨ Prompt helpers
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
             onClick={() => setShowTrace((v) => !v)}
             style={{ fontSize: 11 }}
           >
@@ -252,9 +262,28 @@ export default function ChatClient({ agentId = null, agentName = null }) {
       >
         {turns.length === 0 && (
           <div data-cy="chat-empty-state" className="empty-state" style={{ marginTop: 60 }}>
-            {isDirect
-              ? `Say something to ${agentName ?? 'this agent'}.`
-              : 'Send a message. alive will route it to the right specialist.'}
+            <div>
+              {isDirect
+                ? `Say something to ${agentName ?? 'this agent'}.`
+                : 'Send a message. alive will route it to the right specialist.'}
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <button
+                data-cy="empty-state-prompt-helper"
+                onClick={() => setHelperOpen(true)}
+                style={{
+                  background: 'transparent',
+                  border: '1px dashed var(--accent, #7c3aed)',
+                  color: 'var(--accent, #7c3aed)',
+                  borderRadius: 8,
+                  padding: '6px 14px',
+                  fontSize: 12,
+                  cursor: 'pointer',
+                }}
+              >
+                ✨ Or use a prompt helper — we build it for you
+              </button>
+            </div>
           </div>
         )}
 
@@ -357,6 +386,16 @@ export default function ChatClient({ agentId = null, agentName = null }) {
       <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
         <Composer onSubmit={handleSubmit} disabled={running} />
       </div>
+
+      {/* ── Prompt Helper Dock ── */}
+      <PromptHelperDock
+        open={helperOpen}
+        onClose={() => setHelperOpen(false)}
+        onUseTemplate={async (prompt) => {
+          setHelperOpen(false);
+          await handleSubmit(prompt);
+        }}
+      />
     </div>
   );
 }

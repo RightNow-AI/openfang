@@ -3845,7 +3845,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-agency-import"
-version = "0.3.35"
+version = "0.4.5"
 dependencies = [
  "openfang-types",
  "serde",
@@ -4106,7 +4106,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-orchestrator"
-version = "0.3.35"
+version = "0.4.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -8921,6 +8921,10 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 [[package]]
 name = "xtask"
 version = "0.4.5"
+dependencies = [
+ "openfang-api",
+ "serde_json",
+]
 
 [[package]]
 name = "yoke"

@@ -238,8 +238,8 @@ export default function OverviewPage() {
             ) : (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
                 {providers.map(p => (
-                  <span key={p.name} className={providerBadgeClass(p)} title={p.display_name + ' — ' + (p.auth_status || p.health || '')}>
-                    {p.display_name || p.name} · {providerBadgeLabel(p)}
+                  <span key={p.id} className={providerBadgeClass(p)} title={p.display_name + ' — ' + (p.auth_status || p.health || '')}>
+                    {p.display_name || p.id} · {providerBadgeLabel(p)}
                   </span>
                 ))}
               </div>

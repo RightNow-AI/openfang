@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiClient } from '../../lib/api-client';
 import { track } from '../../lib/telemetry';
+import IntegrationDetailDrawer from './IntegrationDetailDrawer';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Static config
@@ -1024,6 +1025,7 @@ export default function IntegrationsPageV2({ initialIntegrations = [] }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showWizard, setShowWizard] = useState(false);
+  const [drawerIntegrationId, setDrawerIntegrationId] = useState(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -1093,10 +1095,11 @@ export default function IntegrationsPageV2({ initialIntegrations = [] }) {
         <RecommendedIntegrationsTab
           allIntegrations={integrations}
           onOpenWizard={() => setShowWizard(true)}
+          onOpenDetail={id => setDrawerIntegrationId(id)}
         />
       )}
       {tab === 'connected' && (
-        <ConnectedIntegrationsTab integrations={integrations} loading={loading} />
+        <ConnectedIntegrationsTab integrations={integrations} loading={loading} onOpenDetail={id => setDrawerIntegrationId(id)} />
       )}
       {tab === 'available' && (
         <AvailableIntegrationsTab
@@ -1122,6 +1125,14 @@ export default function IntegrationsPageV2({ initialIntegrations = [] }) {
           onConnected={refresh}
         />
       )}
+      <IntegrationDetailDrawer
+        open={!!drawerIntegrationId}
+        integrationId={drawerIntegrationId}
+        onClose={() => setDrawerIntegrationId(null)}
+        onConnect={async (id) => { await apiClient.post(`/api/integrations/${id}/connect`, {}); await refresh(); }}
+        onDisconnect={async (id) => { await apiClient.post(`/api/integrations/${id}/disconnect`, {}); await refresh(); }}
+        onTest={async (id) => apiClient.post(`/api/integrations/${id}/test`, {})}
+      />
     </div>
   );
 }

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiClient } from '../../lib/api-client';
 import { track } from '../../lib/telemetry';
+import AgentTemplateDetailDrawer from './AgentTemplateDetailDrawer';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Static config
@@ -1101,6 +1102,7 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
   const [error, setError] = useState('');
   const [showWizard, setShowWizard] = useState(false);
   const [packSpawnStatus, setPackSpawnStatus] = useState({});
+  const [drawerTemplateId, setDrawerTemplateId] = useState(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -1185,10 +1187,10 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
 
       {/* Tab content */}
       {tab === 'recommended' && (
-        <RecommendedAgentsTab entries={entries} onOpenWizard={() => setShowWizard(true)} />
+        <RecommendedAgentsTab entries={entries} onOpenWizard={() => setShowWizard(true)} onOpenDetail={id => setDrawerTemplateId(id)} />
       )}
       {tab === 'my' && (
-        <MyAgentsTab entries={entries} loading={loading} onOpenWizard={() => setShowWizard(true)} />
+        <MyAgentsTab entries={entries} loading={loading} onOpenWizard={() => setShowWizard(true)} onOpenDetail={id => setDrawerTemplateId(id)} />
       )}
       {tab === 'templates' && (
         <TemplatesAgentsTab onSpawn={handlePackSpawn} spawnStatus={packSpawnStatus} />
@@ -1210,6 +1212,15 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
           onSpawned={refresh}
         />
       )}
+      <AgentTemplateDetailDrawer
+        open={!!drawerTemplateId}
+        templateId={drawerTemplateId}
+        onClose={() => setDrawerTemplateId(null)}
+        onSpawn={async (id) => {
+          await apiClient.post('/api/agents/spawn', { template_id: id });
+          await refresh();
+        }}
+      />
     </div>
   );
 }

@@ -2,6 +2,7 @@
 import { useState, useCallback } from 'react';
 import { apiClient } from '../../lib/api-client';
 import { track } from '../../lib/telemetry';
+import HandDetailDrawer from './HandDetailDrawer';
 
 // ─── Starter bundles ──────────────────────────────────────────────────────────
 
@@ -312,7 +313,7 @@ function HandStarterBundleCard({ bundle, configuringId, onSetup }) {
   );
 }
 
-function HandCardSimple({ hand, configuringId, onSetup }) {
+function HandCardSimple({ hand, configuringId, onSetup, onOpenDetail }) {
   return (
     <div data-cy="hand-card-simple" style={{ border: '1px solid var(--border,#333)', borderRadius: 8, padding: '12px 16px', display: 'flex', gap: 12, alignItems: 'center' }}>
       <span style={{ fontSize: 24, flexShrink: 0 }}>{hand.icon}</span>
@@ -323,6 +324,15 @@ function HandCardSimple({ hand, configuringId, onSetup }) {
           <CatBadge cat={hand.category} />
         </div>
       </div>
+      {onOpenDetail && (
+        <button
+          data-cy="hand-details-btn"
+          onClick={() => onOpenDetail(hand.id)}
+          style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-dim,#888)', cursor: 'pointer', fontSize: 11, flexShrink: 0, marginRight: 4 }}
+        >
+          Details
+        </button>
+      )}
       {hand.status === 'needs_setup' && (
         <button
           data-cy="hand-setup-btn"
@@ -339,7 +349,7 @@ function HandCardSimple({ hand, configuringId, onSetup }) {
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
 
-function RecommendedHandsTab({ hands, configuringId, onOpenWizard, onSetupBundle }) {
+function RecommendedHandsTab({ hands, configuringId, onOpenWizard, onSetupBundle, onOpenDetail }) {
   const ready = hands.filter(h => h.status === 'ready');
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
@@ -364,7 +374,7 @@ function RecommendedHandsTab({ hands, configuringId, onOpenWizard, onSetupBundle
         <div>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Your hands that are ready</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {ready.map(h => <HandCardSimple key={h.id} hand={h} configuringId={configuringId} onSetup={() => {}} />)}
+            {ready.map(h => <HandCardSimple key={h.id} hand={h} configuringId={configuringId} onSetup={() => {}} onOpenDetail={onOpenDetail} />)}
           </div>
         </div>
       )}
@@ -372,7 +382,7 @@ function RecommendedHandsTab({ hands, configuringId, onOpenWizard, onSetupBundle
   );
 }
 
-function MyHandsTab({ hands, configuringId, onSetup, onOpenWizard }) {
+function MyHandsTab({ hands, configuringId, onSetup, onOpenWizard, onOpenDetail }) {
   if (hands.length === 0) {
     return (
       <div data-cy="hands-empty" style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border,#333)', borderRadius: 10 }}>
@@ -387,7 +397,7 @@ function MyHandsTab({ hands, configuringId, onSetup, onOpenWizard }) {
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {hands.map(h => <HandCardSimple key={h.id} hand={h} configuringId={configuringId} onSetup={() => onSetup(h.id)} />)}
+      {hands.map(h => <HandCardSimple key={h.id} hand={h} configuringId={configuringId} onSetup={() => onSetup(h.id)} onOpenDetail={onOpenDetail} />)}
     </div>
   );
 }
@@ -463,6 +473,7 @@ export default function HandsPageV2({ initialHands }) {
   const [error,         setError]         = useState('');
   const [configuringId, setConfiguringId] = useState(null);
   const [wizardOpen,    setWizardOpen]    = useState(false);
+  const [drawerHandId,  setDrawerHandId]  = useState(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -518,6 +529,12 @@ export default function HandsPageV2({ initialHands }) {
 
   return (
     <div data-cy="hands-page">
+      <HandDetailDrawer
+        open={!!drawerHandId}
+        handId={drawerHandId}
+        onClose={() => setDrawerHandId(null)}
+        onConfigure={setupHand}
+      />
       <HandSetupWizard
         open={wizardOpen}
         availableHands={hands}
@@ -565,8 +582,8 @@ export default function HandsPageV2({ initialHands }) {
       </div>
 
       <div className="page-body">
-        {activeTab === 'recommended' && <RecommendedHandsTab hands={hands} configuringId={configuringId} onOpenWizard={() => setWizardOpen(true)} onSetupBundle={setupBundle} />}
-        {activeTab === 'my'          && <MyHandsTab hands={hands} configuringId={configuringId} onSetup={setupHand} onOpenWizard={() => setWizardOpen(true)} />}
+        {activeTab === 'recommended' && <RecommendedHandsTab hands={hands} configuringId={configuringId} onOpenWizard={() => setWizardOpen(true)} onSetupBundle={setupBundle} onOpenDetail={id => setDrawerHandId(id)} />}
+        {activeTab === 'my'          && <MyHandsTab hands={hands} configuringId={configuringId} onSetup={setupHand} onOpenWizard={() => setWizardOpen(true)} onOpenDetail={id => setDrawerHandId(id)} />}
         {activeTab === 'templates'   && <HandTemplatesTab configuringId={configuringId} onSetupBundle={setupBundle} />}
         {activeTab === 'advanced'    && <AdvancedHandsTab hands={hands} loading={loading} onOpenWizard={() => setWizardOpen(true)} />}
       </div>

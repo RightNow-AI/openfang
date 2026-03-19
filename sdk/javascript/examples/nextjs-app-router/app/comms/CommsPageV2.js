@@ -2,6 +2,7 @@
 import { useState, useCallback } from 'react';
 import { apiClient } from '../../lib/api-client';
 import { track } from '../../lib/telemetry';
+import CommsDraftDrawer from './CommsDraftDrawer';
 
 // ─── Starters ─────────────────────────────────────────────────────────────────
 
@@ -418,6 +419,7 @@ export default function CommsPageV2({ initialTopology, initialEvents }) {
   const [actingById,   setActingById]   = useState({});
   const [creatingId,   setCreatingId]   = useState(null);
   const [wizardOpen,   setWizardOpen]   = useState(false);
+  const [drawerDraftId, setDrawerDraftId] = useState(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -536,9 +538,17 @@ export default function CommsPageV2({ initialTopology, initialEvents }) {
       <div className="page-body">
         {activeTab === 'recommended' && <RecommendedCommsTab starters={COMMS_STARTERS} creatingId={creatingId} onUseTemplate={useTemplate} onOpenWizard={() => setWizardOpen(true)} />}
         {activeTab === 'inbox'       && <InboxCommsTab  threads={threads} loading={loading} onOpenWizard={() => setWizardOpen(true)} />}
-        {activeTab === 'drafts'      && <DraftsCommsTab drafts={drafts}   actingById={actingById} onApprove={approveDraft} onSend={sendDraft} loading={loading} onOpenWizard={() => setWizardOpen(true)} />}
+        {activeTab === 'drafts'      && <DraftsCommsTab drafts={drafts}   actingById={actingById} onApprove={approveDraft} onSend={sendDraft} loading={loading} onOpenWizard={() => setWizardOpen(true)} onOpenDetail={id => setDrawerDraftId(id)} />}
         {activeTab === 'advanced'    && <AdvancedCommsTab topology={topology} events={events} loading={loading} error={error} onRefresh={refresh} />}
       </div>
+      <CommsDraftDrawer
+        open={!!drawerDraftId}
+        draftId={drawerDraftId}
+        onClose={() => setDrawerDraftId(null)}
+        onApprove={approveDraft}
+        onRequestChanges={async (id, note) => { await apiClient.post(`/api/comms/drafts/${id}/request-changes`, { note }); await refresh(); }}
+        onSend={sendDraft}
+      />
     </div>
   );
 }

@@ -35,12 +35,20 @@ const NAV = [
     ],
   },
   {
+    label: 'Create',
+    items: [
+      { href: '/creative-studio', label: 'Creative Studio', icon: I(<><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></>) },
+    ],
+  },
+  {
     label: 'Work',
     items: [
       { href: '/command-center/new', label: 'Command Center', icon: I(<><path d="M9 12l2 2 4-4"/><path d="M21 12c0 4.97-4.03 9-9 9S3 16.97 3 12 7.03 3 12 3s9 4.03 9 9z"/></>) },
       { href: '/agency/new',         label: 'Agency Mode',    icon: I(<><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></>) },
       { href: '/growth/new',         label: 'Growth Mode',    icon: I(<><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></>) },
       { href: '/school/new',         label: 'School Mode',    icon: I(<><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></>) },
+      { href: '/finance',            label: 'Finance',        icon: I(<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>) },
+      { href: '/investments',        label: 'Investments',    icon: I(<><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></>) },
     ],
   },
   {

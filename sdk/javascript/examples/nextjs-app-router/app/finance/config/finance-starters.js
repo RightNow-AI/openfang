@@ -1,0 +1,108 @@
+/** @type {import('../lib/finance-types').FinanceStarterTemplate[]} */
+export const FINANCE_STARTERS = [
+  {
+    id: 'cash_flow_watch',
+    title: 'Cash Flow Watch',
+    description: 'Track money in, money out, runway, and upcoming pressure points.',
+    bestFor: 'Small business owners who need clarity fast',
+    tracks: ['Cash in', 'Cash out', 'Runway', 'Large bills'],
+    needsApproval: true,
+    category: 'general',
+    templatePayload: {
+      focus: 'cash_flow',
+      approval_rules: ['before_large_expense', 'before_vendor_payment'],
+      enabled_trackers: ['revenue', 'expenses'],
+    },
+  },
+  {
+    id: 'monthly_budget_review',
+    title: 'Monthly Budget Review',
+    description: 'Compare plan vs actual and catch category overspend early.',
+    bestFor: 'Agencies, schools, and service businesses',
+    tracks: ['Budget vs actual', 'Overspend', 'Adjustments'],
+    needsApproval: true,
+    category: 'general',
+    templatePayload: {
+      focus: 'budget_review',
+      approval_rules: ['before_large_expense', 'before_subscription_change'],
+      enabled_trackers: ['revenue', 'expenses', 'margin'],
+    },
+  },
+  {
+    id: 'invoice_followup',
+    title: 'Invoice Follow-Up',
+    description: 'Track overdue invoices and prepare follow-up drafts for approval.',
+    bestFor: 'Businesses that bill clients',
+    tracks: ['Overdue invoices', 'Reminder drafts', 'Collections'],
+    needsApproval: true,
+    category: 'agency',
+    templatePayload: {
+      focus: 'invoice_followup',
+      approval_rules: ['before_invoice_send'],
+      enabled_trackers: ['revenue', 'invoices'],
+    },
+  },
+  {
+    id: 'ad_spend_control',
+    title: 'Ad Spend Control',
+    description: 'Watch spend, stop drift, and require approval before budget increases.',
+    bestFor: 'Growth teams',
+    tracks: ['Ad spend', 'Budget drift', 'Spend approvals'],
+    needsApproval: true,
+    category: 'growth',
+    templatePayload: {
+      focus: 'ad_spend',
+      approval_rules: ['before_ad_spend_change'],
+      enabled_trackers: ['expenses', 'ad_spend', 'margin'],
+    },
+  },
+  {
+    id: 'school_revenue_tracker',
+    title: 'School Revenue Tracker',
+    description: 'Track enrollments, refunds, renewals, and program margin.',
+    bestFor: 'Courses and cohorts',
+    tracks: ['Enrollments', 'Payment status', 'Refunds', 'Renewals'],
+    needsApproval: true,
+    category: 'school',
+    templatePayload: {
+      focus: 'school_revenue',
+      approval_rules: ['before_refund'],
+      enabled_trackers: ['revenue', 'expenses', 'margin'],
+    },
+  },
+  {
+    id: 'offer_profit_tracker',
+    title: 'Offer Profit Tracker',
+    description: 'See which services, programs, or products make the most money.',
+    bestFor: 'Agencies, creators, and schools',
+    tracks: ['Revenue by offer', 'Cost by offer', 'Margin by offer'],
+    needsApproval: false,
+    category: 'general',
+    templatePayload: {
+      focus: 'offer_profit',
+      approval_rules: [],
+      enabled_trackers: ['revenue', 'expenses', 'margin'],
+    },
+  },
+  {
+    id: 'server_api_cost_watch',
+    title: 'Server and API Cost Watch',
+    description: 'Track infra costs, API usage costs, and require approval before budget jumps.',
+    bestFor: 'AI-heavy businesses',
+    tracks: ['Server costs', 'API costs', 'Budget spikes'],
+    needsApproval: true,
+    category: 'general',
+    templatePayload: {
+      focus: 'infra_costs',
+      approval_rules: ['before_server_budget_change', 'before_api_budget_change'],
+      enabled_trackers: ['expenses', 'server_costs', 'api_costs', 'margin'],
+    },
+  },
+];
+
+export const STARTER_CATEGORY_LABELS = {
+  agency: 'Agency',
+  growth: 'Growth',
+  school: 'School',
+  general: 'General',
+};
