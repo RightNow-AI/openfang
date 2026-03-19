@@ -23,10 +23,11 @@ Default runtime paths:
 
 - config: `~/.openfang/config.toml`
 - env files: `~/.openfang/.env` and `~/.openfang/secrets.env`
-- data: `~/.openfang/data/openfang.db`
+- default sqlite state: `~/.openfang/data/openfang.db`
 - optional service env file: `/etc/openfang/env` (systemd deployments)
 
 `OPENFANG_HOME` changes that root.
+`data_dir` changes the default data root, and `[memory].sqlite_path` can move the runtime database to another path under `OPENFANG_HOME`.
 
 At runtime, OpenFang resolves credentials from the vault, `secrets.env`, `.env`, and process environment variables. If you save provider keys through the dashboard, preserve `secrets.env` as part of the deployment state.
 Operational scripts in this repository (`preflight-openfang.sh`, `backup-openfang.sh`, `restore-openfang.sh`) also support an external env file path via `OPENFANG_ENV_FILE`. If unset, they only auto-detect `/etc/openfang/env` when it matches the current `OPENFANG_HOME` (or the default systemd home `/var/lib/openfang`).

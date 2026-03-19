@@ -124,7 +124,12 @@ if [[ -n "${OPENFANG_ENV_FILE:-}" && ! -f "${OPENFANG_ENV_FILE}" ]]; then
   exit 1
 fi
 
-for cmd in python3 curl; do
+required_commands=(python3)
+if ! truthy "${OFFLINE_MODE}"; then
+  required_commands+=(curl)
+fi
+
+for cmd in "${required_commands[@]}"; do
   if ! command -v "${cmd}" >/dev/null 2>&1; then
     echo "missing required command: ${cmd}" >&2
     exit 1
@@ -316,6 +321,17 @@ def base_url_for(listen_addr):
     return f"http://{normalized}:{port}"
 
 
+def resolve_config_path(path_value, base_dir):
+    if path_value in (None, ""):
+        return None
+    if not isinstance(path_value, str):
+        path_value = str(path_value)
+    path = Path(os.path.expanduser(path_value))
+    if not path.is_absolute():
+        path = base_dir / path
+    return path
+
+
 config_path = Path(sys.argv[1])
 openfang_home = Path(sys.argv[2])
 mode = sys.argv[3]
@@ -324,6 +340,13 @@ external_env_path = Path(external_env_arg) if external_env_arg else None
 
 cfg = load_config_with_includes(config_path)
 env = effective_env(openfang_home, external_env_path)
+data_dir = resolve_config_path(cfg.get("data_dir"), openfang_home) or (openfang_home / "data")
+memory_cfg = cfg.get("memory") or {}
+if not isinstance(memory_cfg, dict):
+    memory_cfg = {}
+sqlite_path = resolve_config_path(memory_cfg.get("sqlite_path"), openfang_home) or (
+    data_dir / "openfang.db"
+)
 
 auth_cfg = cfg.get("auth") or {}
 if not isinstance(auth_cfg, dict):
@@ -350,12 +373,17 @@ if mode == "effective_api_key":
     print(effective_api_key)
     raise SystemExit(0)
 
+if mode == "sqlite_path":
+    print(sqlite_path)
+    raise SystemExit(0)
+
 if mode != "validate":
     raise SystemExit(f"unknown inspect mode: {mode}")
 
 print("\n== Config Baseline ==")
 print(f"ok  api_listen={api_listen}")
 print(f"ok  effective_base_url={base_url_for(api_listen)}")
+print(f"ok  sqlite_path={sqlite_path}")
 if external_env_path is not None and external_env_path.exists():
     print("ok  config_resolution=config.toml + includes + runtime env + external env + process env precedence")
 else:
@@ -411,6 +439,7 @@ PY
 
 BASE_URL="${BASE_URL_OVERRIDE:-$(runtime_inspect base_url)}"
 API_KEY="${OPENFANG_API_KEY:-$(runtime_inspect effective_api_key)}"
+SQLITE_PATH="$(runtime_inspect sqlite_path)"
 preflight_failures=0
 protected_failures=0
 
@@ -551,7 +580,7 @@ check_json_state_file "${OPENFANG_HOME}/hand_state.json"
 check_json_state_file "${OPENFANG_HOME}/cron_jobs.json"
 check_json_state_file "${OPENFANG_HOME}/custom_models.json"
 check_toml_state_file "${OPENFANG_HOME}/integrations.toml"
-check_sqlite_quick_check "${OPENFANG_HOME}/data/openfang.db"
+check_sqlite_quick_check "${SQLITE_PATH}"
 
 echo
 echo "== Backup Tooling =="

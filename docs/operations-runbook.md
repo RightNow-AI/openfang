@@ -6,7 +6,7 @@ This is the maintainer runbook for day-2 operation of the OpenFang daemon in thi
 
 - default API bind: `127.0.0.1:4200`
 - runtime home: `~/.openfang` unless `OPENFANG_HOME` overrides it
-- main persisted state includes: `config.toml`, `.env`, `secrets.env`, `vault.enc`, `custom_models.json`, `integrations.toml`, `data/`, `agents/`, `skills/`, `workspaces/`, `workflows/`, `hand_state.json`, `cron_jobs.json`
+- main persisted state includes: `config.toml`, `.env`, `secrets.env`, `vault.enc`, `custom_models.json`, `integrations.toml`, the configured runtime sqlite file (default `data/openfang.db`), `agents/`, `skills/`, `workspaces/`, `workflows/`, `hand_state.json`, `cron_jobs.json`
 - systemd deployments often also use `/etc/openfang/env` as an external env source; scripts honor `OPENFANG_ENV_FILE` explicitly and only auto-detect `/etc/openfang/env` when it matches the current `OPENFANG_HOME`
 - `daemon.json` is a discovery file for the CLI, not a restore asset
 - if the API is bound off-loopback, auth must be enabled with `OPENFANG_API_KEY` or dashboard auth
@@ -291,7 +291,7 @@ Check these first when the daemon behaves unexpectedly:
 | `~/.openfang/config.toml` | config parse or schema mismatch |
 | `~/.openfang/.env` | missing provider or channel secrets |
 | `/etc/openfang/env` | systemd env drift (API/auth/provider keys, OPENFANG_HOME) |
-| `~/.openfang/data/` | persistence and permission failures |
+| configured `data_dir` / `[memory].sqlite_path` under `OPENFANG_HOME` | persistence and permission failures |
 | `crates/openfang-api/src/server.rs` | route and startup wiring |
 | `crates/openfang-kernel/src/kernel.rs` | boot, reload, and background execution |
 | `crates/openfang-kernel/src/config_reload.rs` | reload semantics |

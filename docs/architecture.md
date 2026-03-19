@@ -108,7 +108,7 @@ Important persisted assets:
 - `.env`
 - `vault.enc`
 - `daemon.json`
-- `data/openfang.db`
+- the runtime sqlite database at `[memory].sqlite_path` or `data/openfang.db` by default
 - `agents/`
 - `skills/`
 - `workspaces/`

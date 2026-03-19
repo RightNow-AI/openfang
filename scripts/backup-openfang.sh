@@ -29,6 +29,7 @@ OPENFANG_HOME="${OPENFANG_HOME:-$HOME/.openfang}"
 BACKUP_ROOT="${1:-$HOME/openfang-backups}"
 KEEP_BACKUPS="${OPENFANG_KEEP_BACKUPS:-5}"
 ALLOW_LIVE_BACKUP="${OPENFANG_ALLOW_LIVE_BACKUP:-0}"
+CONFIG_PATH="${OPENFANG_HOME}/config.toml"
 
 normalize_path() {
   local path="${1:-}"
@@ -150,7 +151,7 @@ print(f"http://{host}:{port}/api/health")
 PY
 }
 
-config_health_url() {
+config_runtime_probe() {
   local config_path="$1"
   local external_env_file="${2:-}"
 
@@ -284,25 +285,74 @@ else:
     except ValueError:
         pass
 
-print(f"http://{host}:{port}/api/health")
+api_key = str(
+    effective_env.get(
+        "OPENFANG_API_KEY",
+        cfg.get("api_key", ""),
+    )
+).strip()
+if not api_key and isinstance(cfg.get("api"), dict):
+    api_key = str(cfg["api"].get("api_key", "")).strip()
+
+print(f"http://{host}:{port}\t{api_key}")
+PY
+}
+
+daemon_home_matches() {
+  local base_url="$1"
+  local expected_home="$2"
+  local api_key="${3:-}"
+  local status_json
+  local curl_args=(-fsS --max-time 2)
+
+  if [[ -n "${api_key}" ]]; then
+    curl_args+=(-H "Authorization: Bearer ${api_key}")
+  fi
+
+  status_json="$(curl "${curl_args[@]}" "${base_url}/api/status" 2>/dev/null)" || return 1
+
+  OPENFANG_STATUS_JSON="${status_json}" python3 - "${expected_home}" <<'PY'
+import json
+import os
+import sys
+
+expected_home = os.path.realpath(os.path.expanduser(sys.argv[1]))
+payload = json.loads(os.environ["OPENFANG_STATUS_JSON"])
+actual_home = str(payload.get("home_dir", "")).strip()
+if not actual_home:
+    raise SystemExit(1)
+
+actual_home = os.path.realpath(os.path.expanduser(actual_home))
+raise SystemExit(0 if actual_home == expected_home else 1)
 PY
 }
 
 daemon_seems_running() {
   local endpoint=""
+  local config_base_url=""
+  local config_api_key=""
+
+  if [[ -f "${OPENFANG_HOME}/config.toml" ]] && command -v curl >/dev/null 2>&1; then
+    IFS=$'\t' read -r config_base_url config_api_key < <(
+      config_runtime_probe "${OPENFANG_HOME}/config.toml" "${EXTERNAL_ENV_FILE}" || true
+    )
+  fi
 
   if [[ -f "${OPENFANG_HOME}/daemon.json" ]] && command -v curl >/dev/null 2>&1; then
     endpoint="$(daemon_health_url "${OPENFANG_HOME}/daemon.json" || true)"
-    if [[ -n "${endpoint}" ]] && curl -fsS --max-time 2 "${endpoint}" >/dev/null 2>&1; then
-      return 0
+    if [[ -n "${endpoint}" ]]; then
+      local daemon_base_url="${endpoint%/api/health}"
+      if daemon_home_matches "${daemon_base_url}" "${OPENFANG_HOME}" "${config_api_key}"; then
+        return 0
+      fi
+      if curl -fsS --max-time 2 "${endpoint}" >/dev/null 2>&1; then
+        return 0
+      fi
     fi
   fi
 
-  if [[ -f "${OPENFANG_HOME}/config.toml" ]] && command -v curl >/dev/null 2>&1; then
-    endpoint="$(config_health_url "${OPENFANG_HOME}/config.toml" "${EXTERNAL_ENV_FILE}" || true)"
-    if [[ -n "${endpoint}" ]] && curl -fsS --max-time 2 "${endpoint}" >/dev/null 2>&1; then
+  if [[ -n "${config_base_url}" ]] && daemon_home_matches "${config_base_url}" "${OPENFANG_HOME}" "${config_api_key}"; then
       return 0
-    fi
   fi
 
   return 1
@@ -385,6 +435,143 @@ for dependency in collect_paths(Path(sys.argv[1])):
     sys.stdout.buffer.write(str(dependency).encode("utf-8"))
     sys.stdout.buffer.write(b"\0")
 PY
+}
+
+config_requires_python_for_sqlite_metadata() {
+  local config_path="$1"
+  [[ -f "${config_path}" ]] || return 1
+
+  if grep -Eq '^[[:space:]]*include[[:space:]]*=' "${config_path}"; then
+    return 0
+  fi
+  if grep -Eq '^[[:space:]]*data_dir[[:space:]]*=' "${config_path}"; then
+    return 0
+  fi
+  if grep -Eq '^[[:space:]]*sqlite_path[[:space:]]*=' "${config_path}"; then
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_runtime_sqlite_metadata() {
+  local config_path="$1"
+  local openfang_home="$2"
+
+  if [[ ! -f "${config_path}" ]]; then
+    printf '%s\t%s\n' "${openfang_home}/data/openfang.db" "data/openfang.db"
+    return 0
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    if config_requires_python_for_sqlite_metadata "${config_path}"; then
+      echo "python3 is required to resolve runtime sqlite_path from ${config_path} when config includes, data_dir, or memory.sqlite_path are used." >&2
+      exit 1
+    fi
+    printf '%s\t%s\n' "${openfang_home}/data/openfang.db" "data/openfang.db"
+    return 0
+  fi
+
+  python3 - "${config_path}" "${openfang_home}" <<'PY'
+import os
+import sys
+from pathlib import Path
+import tomllib
+
+MAX_INCLUDE_DEPTH = 10
+
+
+def deep_merge(base, overlay):
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def load_config_with_includes(config_path, visited=None, depth=0):
+    if depth > MAX_INCLUDE_DEPTH:
+        raise SystemExit(f"config include depth exceeded {MAX_INCLUDE_DEPTH}")
+
+    if visited is None:
+        visited = set()
+
+    canonical_path = config_path.resolve(strict=True)
+    if canonical_path in visited:
+        raise SystemExit(f"circular config include detected: {config_path}")
+    visited.add(canonical_path)
+
+    config_dir = canonical_path.parent
+    root = tomllib.loads(canonical_path.read_text(encoding="utf-8"))
+    includes = root.get("include") or []
+    merged = {}
+
+    if not isinstance(includes, list):
+        raise SystemExit("config include must be an array")
+
+    for include in includes:
+        if not isinstance(include, str):
+            continue
+        include_path = Path(include)
+        if include_path.is_absolute():
+            raise SystemExit(f"config include rejects absolute path: {include}")
+        if ".." in include_path.parts:
+            raise SystemExit(f"config include rejects path traversal: {include}")
+        resolved = (config_dir / include_path).resolve(strict=True)
+        try:
+            resolved.relative_to(config_dir)
+        except ValueError as exc:
+            raise SystemExit(f"config include escapes config directory: {include}") from exc
+        deep_merge(merged, load_config_with_includes(resolved, visited, depth + 1))
+
+    root.pop("include", None)
+    api_section = root.get("api")
+    if isinstance(api_section, dict):
+        for key in ("api_key", "api_listen", "log_level"):
+            if key not in root and key in api_section:
+                root[key] = api_section[key]
+
+    deep_merge(merged, root)
+    visited.remove(canonical_path)
+    return merged
+
+
+def resolve_path(value, home_dir):
+    if not value:
+        return None
+    path = Path(os.path.expanduser(str(value)))
+    if not path.is_absolute():
+        path = home_dir / path
+    return path.resolve(strict=False)
+
+
+config_path = Path(sys.argv[1])
+home_dir = Path(sys.argv[2]).resolve(strict=False)
+cfg = load_config_with_includes(config_path)
+data_dir = resolve_path(cfg.get("data_dir"), home_dir) or (home_dir / "data")
+memory_cfg = cfg.get("memory") or {}
+if not isinstance(memory_cfg, dict):
+    memory_cfg = {}
+sqlite_path = resolve_path(memory_cfg.get("sqlite_path"), home_dir) or (data_dir / "openfang.db")
+
+rel_path = ""
+try:
+    rel_path = str(sqlite_path.relative_to(home_dir))
+except ValueError:
+    rel_path = ""
+
+print(f"{sqlite_path}\t{rel_path}")
+PY
+}
+
+remove_copied_sqlite_artifacts() {
+  local rel_path="$1"
+  [[ -n "${rel_path}" ]] || return 0
+  rm -f \
+    "${DEST}/${rel_path}" \
+    "${DEST}/${rel_path}-wal" \
+    "${DEST}/${rel_path}-shm"
 }
 
 copy_if_exists() {
@@ -487,21 +674,33 @@ copy_if_exists "${OPENFANG_HOME}/.env" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/secrets.env" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/vault.enc" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/hand_state.json" "${DEST}"
+copy_if_exists "${OPENFANG_HOME}/hand_state.json.bak" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/cron_jobs.json" "${DEST}"
+copy_if_exists "${OPENFANG_HOME}/cron_jobs.json.bak" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/custom_models.json" "${DEST}"
+copy_if_exists "${OPENFANG_HOME}/custom_models.json.bak" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/integrations.toml" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/daemon.json" "${DEST}"
 copy_external_env_file "${EXTERNAL_ENV_FILE}" "${DEST}/external-env.env"
+
+IFS=$'\t' read -r SQLITE_PATH SQLITE_REL_PATH < <(
+  resolve_runtime_sqlite_metadata "${CONFIG_PATH}" "${OPENFANG_HOME}"
+)
+if [[ -z "${SQLITE_REL_PATH}" ]]; then
+  echo "Resolved sqlite_path is outside OPENFANG_HOME and cannot be backed up safely: ${SQLITE_PATH}" >&2
+  echo "Move memory.sqlite_path under ${OPENFANG_HOME} or handle the external database path explicitly before treating this backup as production-safe." >&2
+  exit 1
+fi
 
 copy_tree_without_db "${OPENFANG_HOME}/data" "${DEST}/data"
 copy_if_exists "${OPENFANG_HOME}/agents" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/skills" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/workspaces" "${DEST}"
 copy_if_exists "${OPENFANG_HOME}/workflows" "${DEST}"
+remove_copied_sqlite_artifacts "${SQLITE_REL_PATH}"
 
-DB_PATH="${OPENFANG_HOME}/data/openfang.db"
-if [[ -f "${DB_PATH}" ]]; then
-  backup_sqlite "${DB_PATH}" "${DEST}/data/openfang.db"
+if [[ -f "${SQLITE_PATH}" ]]; then
+  backup_sqlite "${SQLITE_PATH}" "${DEST}/${SQLITE_REL_PATH}"
 fi
 
 cat > "${DEST}/BACKUP.txt" <<EOF
@@ -510,6 +709,8 @@ source_home=${OPENFANG_HOME}
 hostname=$(hostname)
 backup_mode=${BACKUP_MODE}
 external_env_source=${EXTERNAL_ENV_FILE}
+sqlite_source=${SQLITE_PATH}
+sqlite_rel_path=${SQLITE_REL_PATH}
 EOF
 
 if [[ "${KEEP_BACKUPS}" =~ ^[0-9]+$ ]] && (( KEEP_BACKUPS > 0 )); then

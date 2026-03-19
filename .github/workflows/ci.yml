@@ -35,7 +35,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
-      - run: cargo build --workspace --lib
+      - run: cargo build --workspace --lib --locked
 
   test:
     name: Test / ${{ matrix.os }}
@@ -61,7 +61,7 @@ jobs:
             librsvg2-dev \
             patchelf
       # Tests that need a display (Tauri) are skipped in headless CI via cfg
-      - run: cargo test --workspace
+      - run: cargo test --workspace --locked
 
   clippy:
     name: Clippy
@@ -81,7 +81,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   fmt:
     name: Format
@@ -102,7 +102,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
-      - run: cargo audit
+      - run: cargo audit --locked
 
   # ── Secrets scanning (prevent accidental credential commits) ──────────────
   secrets:
@@ -151,7 +151,7 @@ jobs:
         with:
           key: daemon-smoke
       - name: Build release daemon
-        run: cargo build --release -p openfang-cli
+        run: cargo build --release -p openfang-cli --locked
       - name: Boot daemon and run smoke checks
         env:
           OPENFANG_HOME: ${{ runner.temp }}/openfang-home
@@ -265,14 +265,98 @@ jobs:
             exit 1
           fi
           grep -q 'sentinel = true' "$OPENFANG_HOME/config.toml"
+      - name: Backup ignores unrelated reachable API endpoint
+        run: |
+          export OPENFANG_HOME="$RUNNER_TEMP/openfang-home-unrelated-daemon"
+          mkdir -p "$OPENFANG_HOME"
+          cat > "$OPENFANG_HOME/config.toml" <<'EOF'
+          api_listen = "127.0.0.1:43211"
+          EOF
+          python3 - <<'PY' &
+          import json
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == "/api/health":
+                      body = json.dumps({"status": "ok"}).encode()
+                  elif self.path == "/api/status":
+                      body = json.dumps({"status": "running", "home_dir": "/tmp/other-openfang-home"}).encode()
+                  else:
+                      self.send_response(404)
+                      self.end_headers()
+                      return
+                  self.send_response(200)
+                  self.send_header("Content-Type", "application/json")
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+
+              def log_message(self, format, *args):
+                  return
+
+          HTTPServer(("127.0.0.1", 43211), Handler).serve_forever()
+          PY
+          server_pid=$!
+          trap 'kill "$server_pid" >/dev/null 2>&1 || true' EXIT
+          sleep 1
+          bash scripts/backup-openfang.sh "$RUNNER_TEMP/backups-unrelated-daemon"
+          find "$RUNNER_TEMP/backups-unrelated-daemon" -maxdepth 1 -type d -name 'openfang-*' | grep -q .
+      - name: Backup rejects custom sqlite metadata without python3
+        run: |
+          export OPENFANG_HOME="$RUNNER_TEMP/openfang-home-no-python"
+          mkdir -p "$OPENFANG_HOME/runtime-data/state"
+          cat > "$OPENFANG_HOME/config.toml" <<'EOF'
+          api_listen = "127.0.0.1:4200"
+          data_dir = "runtime-data"
+
+          [memory]
+          sqlite_path = "runtime-data/state/runtime.db"
+          EOF
+          python3 - <<'PY'
+          import os
+          import sqlite3
+
+          db_path = os.path.join(
+              os.environ["OPENFANG_HOME"],
+              "runtime-data",
+              "state",
+              "runtime.db",
+          )
+          conn = sqlite3.connect(db_path)
+          conn.execute("CREATE TABLE demo (id INTEGER PRIMARY KEY, value TEXT)")
+          conn.execute("INSERT INTO demo (value) VALUES ('ok')")
+          conn.commit()
+          conn.close()
+          PY
+          tool_bin="$RUNNER_TEMP/no-python-bin"
+          rm -rf "$tool_bin"
+          mkdir -p "$tool_bin"
+          for cmd in awk basename bash cat chmod cp cut date dirname find grep head hostname mkdir pwd rm sort sqlite3 tail tr; do
+            ln -s "$(command -v "$cmd")" "$tool_bin/$cmd"
+          done
+          backup_log="$RUNNER_TEMP/backup-no-python.log"
+          if env PATH="$tool_bin" bash scripts/backup-openfang.sh "$RUNNER_TEMP/backups-no-python" >"$backup_log" 2>&1; then
+            echo "backup-openfang.sh unexpectedly succeeded without python3"
+            cat "$backup_log"
+            exit 1
+          fi
+          grep -q 'python3 is required to resolve runtime sqlite_path' "$backup_log"
       - name: Backup and restore roundtrip
         run: |
           export OPENFANG_HOME="$RUNNER_TEMP/openfang-home"
           export OPENFANG_SKIP_SAFETY_BACKUP=1
           export OPENFANG_ENV_FILE="$RUNNER_TEMP/openfang-system-env/env"
-          mkdir -p "$OPENFANG_HOME/data" "$OPENFANG_HOME/agents" "$OPENFANG_HOME/config.d"
+          mkdir -p "$OPENFANG_HOME/runtime-data/state" "$OPENFANG_HOME/agents" "$OPENFANG_HOME/config.d"
           mkdir -p "$(dirname "$OPENFANG_ENV_FILE")"
-          printf 'include = ["config.d/providers.toml"]\napi_listen = "127.0.0.1:4200"\n' > "$OPENFANG_HOME/config.toml"
+          cat > "$OPENFANG_HOME/config.toml" <<'EOF'
+          include = ["config.d/providers.toml"]
+          api_listen = "127.0.0.1:4200"
+          data_dir = "runtime-data"
+
+          [memory]
+          sqlite_path = "runtime-data/state/runtime.db"
+          EOF
           printf 'log_level = "debug"\n' > "$OPENFANG_HOME/config.d/providers.toml"
           printf 'GROQ_API_KEY=test-key\n' > "$OPENFANG_HOME/.env"
           printf 'OPENFANG_API_KEY=backup-restore-secret\n' > "$OPENFANG_HOME/secrets.env"
@@ -283,7 +367,12 @@ jobs:
           python3 - <<'PY'
           import os
           import sqlite3
-          db_path = os.path.join(os.environ["OPENFANG_HOME"], "data", "openfang.db")
+          db_path = os.path.join(
+              os.environ["OPENFANG_HOME"],
+              "runtime-data",
+              "state",
+              "runtime.db",
+          )
           conn = sqlite3.connect(db_path)
           conn.execute("CREATE TABLE demo (id INTEGER PRIMARY KEY, value TEXT)")
           conn.execute("INSERT INTO demo (value) VALUES ('ok')")
@@ -301,10 +390,13 @@ jobs:
           test -f "$OPENFANG_HOME/config.d/providers.toml"
           test ! -e "$OPENFANG_HOME/stale/legacy.toml"
           test -f "$OPENFANG_HOME/secrets.env"
-          test -f "$OPENFANG_HOME/data/openfang.db"
+          test -f "$OPENFANG_HOME/runtime-data/state/runtime.db"
+          test ! -e "$OPENFANG_HOME/data/openfang.db"
           test -f "$OPENFANG_HOME/custom_models.json"
           test -f "$OPENFANG_HOME/integrations.toml"
           grep -q 'include = \["config.d/providers.toml"\]' "$OPENFANG_HOME/config.toml"
+          grep -q 'data_dir = "runtime-data"' "$OPENFANG_HOME/config.toml"
+          grep -q 'sqlite_path = "runtime-data/state/runtime.db"' "$OPENFANG_HOME/config.toml"
           grep -q 'log_level = "debug"' "$OPENFANG_HOME/config.d/providers.toml"
           grep -q 'OPENFANG_API_KEY=backup-restore-secret' "$OPENFANG_HOME/secrets.env"
           grep -q 'GROQ_API_KEY=test-key' "$OPENFANG_HOME/.env"
@@ -317,7 +409,12 @@ jobs:
           import os
           import stat
           import sqlite3
-          db_path = os.path.join(os.environ["OPENFANG_HOME"], "data", "openfang.db")
+          db_path = os.path.join(
+              os.environ["OPENFANG_HOME"],
+              "runtime-data",
+              "state",
+              "runtime.db",
+          )
           conn = sqlite3.connect(db_path)
           row = conn.execute("SELECT value FROM demo ORDER BY id").fetchone()
           conn.close()
@@ -334,3 +431,51 @@ jobs:
           assert include_mode & 0o077 == 0, oct(include_mode)
           PY
           bash scripts/preflight-openfang.sh --offline
+      - name: Backup and restore roundtrip with custom sqlite_path
+        run: |
+          export OPENFANG_HOME="$RUNNER_TEMP/openfang-home-custom-sqlite"
+          export OPENFANG_SKIP_SAFETY_BACKUP=1
+          export OPENFANG_ENV_FILE="$RUNNER_TEMP/openfang-system-env-custom-sqlite/env"
+          mkdir -p "$OPENFANG_HOME/state" "$OPENFANG_HOME/config.d" "$(dirname "$OPENFANG_ENV_FILE")"
+          cat > "$OPENFANG_HOME/config.toml" <<'EOF'
+          include = ["config.d/runtime.toml"]
+          api_listen = "127.0.0.1:4200"
+
+          [memory]
+          sqlite_path = "state/custom.db"
+          EOF
+          printf 'log_level = "debug"\n' > "$OPENFANG_HOME/config.d/runtime.toml"
+          printf 'OPENFANG_API_KEY=custom-sqlite-secret\n' > "$OPENFANG_HOME/secrets.env"
+          printf 'EXTERNAL_ONLY=from-external\n' > "$OPENFANG_ENV_FILE"
+          python3 - <<'PY'
+          import os
+          import sqlite3
+          home = os.environ["OPENFANG_HOME"]
+          db_path = os.path.join(home, "state", "custom.db")
+          conn = sqlite3.connect(db_path)
+          conn.execute("CREATE TABLE demo (id INTEGER PRIMARY KEY, value TEXT)")
+          conn.execute("INSERT INTO demo (value) VALUES ('custom')")
+          conn.commit()
+          conn.close()
+          PY
+          bash scripts/backup-openfang.sh "$RUNNER_TEMP/backups-custom-sqlite"
+          backup_dir="$(find "$RUNNER_TEMP/backups-custom-sqlite" -maxdepth 1 -type d -name 'openfang-*' | head -n 1)"
+          rm -rf "$OPENFANG_HOME/state"
+          mkdir -p "$OPENFANG_HOME/state"
+          printf 'stale\n' > "$OPENFANG_HOME/state/marker.txt"
+          bash scripts/restore-openfang.sh "$backup_dir" --yes
+          bash scripts/preflight-openfang.sh --offline | tee "$RUNNER_TEMP/preflight-custom-sqlite.log"
+          python3 - <<'PY'
+          import os
+          import sqlite3
+          home = os.environ["OPENFANG_HOME"]
+          db_path = os.path.join(home, "state", "custom.db")
+          assert os.path.exists(db_path), db_path
+          conn = sqlite3.connect(db_path)
+          row = conn.execute("SELECT value FROM demo").fetchone()
+          conn.close()
+          assert row == ("custom",), row
+          config_text = open(os.path.join(home, "config.toml"), encoding="utf-8").read()
+          assert 'sqlite_path = "state/custom.db"' in config_text
+          PY
+          grep -q 'sqlite_path=.*/state/custom.db' "$RUNNER_TEMP/preflight-custom-sqlite.log"

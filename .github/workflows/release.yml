@@ -33,11 +33,22 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Install trufflehog
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
       - name: Run workspace quality gates
         run: |
-          cargo build --workspace --lib
-          cargo test --workspace
-          cargo clippy --workspace --all-targets -- -D warnings
+          cargo build --workspace --lib --locked
+          cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo audit --locked
+          trufflehog filesystem . \
+            --no-update \
+            --fail \
+            --only-verified \
+            --exclude-paths=<(echo -e "target/\n.git/\nCargo.lock")
           OPENFANG_API_KEY=release-preflight-placeholder docker compose config
 
   # ── Tauri Desktop App (Windows + macOS + Linux) ───────────────────────────

@@ -245,7 +245,6 @@ backup_contains_runtime_state() {
     "${backup_dir}/cron_jobs.json" \
     "${backup_dir}/custom_models.json" \
     "${backup_dir}/integrations.toml" \
-    "${backup_dir}/data/openfang.db" \
     "${backup_dir}/agents" \
     "${backup_dir}/skills" \
     "${backup_dir}/workspaces" \
@@ -255,7 +254,57 @@ backup_contains_runtime_state() {
     fi
   done
 
+  if [[ -n "${BACKUP_SQLITE_REL_PATH:-}" && -e "${backup_dir}/${BACKUP_SQLITE_REL_PATH}" ]]; then
+    return 0
+  fi
+
+  if [[ -z "${BACKUP_SQLITE_REL_PATH:-}" && -e "${backup_dir}/data/openfang.db" ]]; then
+    return 0
+  fi
+
   return 1
+}
+
+validate_backup_json_file() {
+  local path="$1"
+  [[ -f "${path}" ]] || return 0
+  python3 - "${path}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+PY
+}
+
+validate_backup_toml_file() {
+  local path="$1"
+  [[ -f "${path}" ]] || return 0
+  python3 - "${path}" <<'PY'
+import sys
+from pathlib import Path
+import tomllib
+
+tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+PY
+}
+
+validate_backup_sqlite_file() {
+  local path="$1"
+  [[ -f "${path}" ]] || return 0
+  python3 - "${path}" <<'PY'
+import sqlite3
+import sys
+
+conn = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+try:
+    row = conn.execute("PRAGMA quick_check").fetchone()
+finally:
+    conn.close()
+
+if not row or row[0] != "ok":
+    raise SystemExit(1)
+PY
 }
 
 validate_backup_dir() {
@@ -273,9 +322,43 @@ validate_backup_dir() {
     echo "Refusing to wipe ${OPENFANG_HOME} for an empty or malformed backup." >&2
     exit 1
   fi
-}
 
-validate_backup_dir
+  if [[ -n "${BACKUP_SQLITE_SOURCE:-}" && -z "${BACKUP_SQLITE_REL_PATH:-}" ]]; then
+    echo "Backup expects an external sqlite_path (${BACKUP_SQLITE_SOURCE}) outside OPENFANG_HOME." >&2
+    echo "This restore flow only supports databases backed up under OPENFANG_HOME; refusing to continue." >&2
+    exit 1
+  fi
+
+  local sqlite_backup_path="${BACKUP_DIR}/${BACKUP_SQLITE_REL_PATH:-data/openfang.db}"
+  if [[ -n "${BACKUP_SQLITE_REL_PATH:-}" && ! -f "${sqlite_backup_path}" ]]; then
+    echo "Backup manifest expects sqlite backup ${BACKUP_SQLITE_REL_PATH}, but the file is missing." >&2
+    exit 1
+  fi
+
+  for json_path in \
+    "${BACKUP_DIR}/hand_state.json" \
+    "${BACKUP_DIR}/cron_jobs.json" \
+    "${BACKUP_DIR}/custom_models.json"; do
+    if ! validate_backup_json_file "${json_path}"; then
+      echo "Backup contains invalid JSON state file: ${json_path}" >&2
+      exit 1
+    fi
+  done
+
+  for toml_path in \
+    "${BACKUP_DIR}/config.toml" \
+    "${BACKUP_DIR}/integrations.toml"; do
+    if ! validate_backup_toml_file "${toml_path}"; then
+      echo "Backup contains invalid TOML file: ${toml_path}" >&2
+      exit 1
+    fi
+  done
+
+  if ! validate_backup_sqlite_file "${sqlite_backup_path}"; then
+    echo "Backup sqlite quick_check failed for ${sqlite_backup_path}" >&2
+    exit 1
+  fi
+}
 
 backup_manifest_value() {
   local key="$1"
@@ -288,11 +371,18 @@ backup_manifest_value() {
   printf '%s' "${value}"
 }
 
+BACKUP_SQLITE_SOURCE="$(backup_manifest_value sqlite_source)"
+BACKUP_SQLITE_REL_PATH="$(backup_manifest_value sqlite_rel_path)"
+if [[ -z "${BACKUP_SQLITE_REL_PATH}" && -f "${BACKUP_DIR}/data/openfang.db" ]]; then
+  BACKUP_SQLITE_REL_PATH="data/openfang.db"
+fi
 BACKUP_EXTERNAL_ENV_SOURCE="$(backup_manifest_value external_env_source)"
 EXTERNAL_ENV_FILE="${OPENFANG_ENV_FILE:-}"
 if [[ -z "${EXTERNAL_ENV_FILE}" ]]; then
   EXTERNAL_ENV_FILE="$(auto_detect_external_env_file "${OPENFANG_HOME}" || true)"
 fi
+
+validate_backup_dir
 
 daemon_health_url() {
   local daemon_info_path="$1"
@@ -334,7 +424,7 @@ print(f"http://{host}:{port}/api/health")
 PY
 }
 
-config_health_url() {
+config_runtime_probe() {
   local config_path="$1"
   local external_env_file="${2:-}"
   python3 - "${config_path}" "${external_env_file}" <<'PY'
@@ -468,34 +558,83 @@ else:
     except ValueError:
         pass
 
-print(f"http://{host}:{port}/api/health")
+api_key = str(
+    effective_env.get(
+        "OPENFANG_API_KEY",
+        cfg.get("api_key", ""),
+    )
+).strip()
+if not api_key and isinstance(cfg.get("api"), dict):
+    api_key = str(cfg["api"].get("api_key", "")).strip()
+
+print(f"http://{host}:{port}\t{api_key}")
 PY
 }
 
-probe_health_endpoint() {
-  local endpoint="$1"
+daemon_home_matches() {
+  local base_url="$1"
+  local expected_home="$2"
+  local api_key="${3:-}"
+  local status_json
+  local curl_args=(-fsS --max-time 2)
+
+  if [[ -n "${api_key}" ]]; then
+    curl_args+=(-H "Authorization: Bearer ${api_key}")
+  fi
+
+  status_json="$(curl "${curl_args[@]}" "${base_url}/api/status" 2>/dev/null)" || return 1
+
+  OPENFANG_STATUS_JSON="${status_json}" python3 - "${expected_home}" <<'PY'
+import json
+import os
+import sys
+
+expected_home = os.path.realpath(os.path.expanduser(sys.argv[1]))
+payload = json.loads(os.environ["OPENFANG_STATUS_JSON"])
+actual_home = str(payload.get("home_dir", "")).strip()
+if not actual_home:
+    raise SystemExit(1)
+
+actual_home = os.path.realpath(os.path.expanduser(actual_home))
+raise SystemExit(0 if actual_home == expected_home else 1)
+PY
+}
+
+probe_live_daemon() {
+  local base_url="$1"
   local source="$2"
+  local api_key="${3:-}"
 
-  [[ -n "${endpoint}" ]] || return 0
+  [[ -n "${base_url}" ]] || return 0
 
-  if curl -fsS --max-time 2 "${endpoint}" >/dev/null 2>&1; then
-    echo "OpenFang appears to still be running (${endpoint}, discovered via ${source}). Stop it before restoring." >&2
+  if daemon_home_matches "${base_url}" "${OPENFANG_HOME}" "${api_key}"; then
+    echo "OpenFang appears to still be running (${base_url}/api/status, discovered via ${source}). Stop it before restoring." >&2
     exit 1
   fi
 
   return 0
 }
 
-if [[ -f "${OPENFANG_HOME}/daemon.json" ]]; then
-  daemon_health_endpoint="$(daemon_health_url "${OPENFANG_HOME}/daemon.json" || true)"
-  probe_health_endpoint "${daemon_health_endpoint}" "daemon.json"
-  echo "warn stale daemon.json found under ${OPENFANG_HOME}; continuing because the API is not responding." >&2
+config_base_url=""
+config_api_key=""
+if [[ -f "${OPENFANG_HOME}/config.toml" ]]; then
+  IFS=$'\t' read -r config_base_url config_api_key < <(
+    config_runtime_probe "${OPENFANG_HOME}/config.toml" "${EXTERNAL_ENV_FILE}" || true
+  )
 fi
 
-if [[ -f "${OPENFANG_HOME}/config.toml" ]]; then
-  config_health_endpoint="$(config_health_url "${OPENFANG_HOME}/config.toml" "${EXTERNAL_ENV_FILE}" || true)"
-  probe_health_endpoint "${config_health_endpoint}" "config.toml"
+if [[ -f "${OPENFANG_HOME}/daemon.json" ]]; then
+  daemon_health_endpoint="$(daemon_health_url "${OPENFANG_HOME}/daemon.json" || true)"
+  daemon_base_url="${daemon_health_endpoint%/api/health}"
+  probe_live_daemon "${daemon_base_url}" "daemon.json" "${config_api_key}"
+  if [[ -n "${daemon_health_endpoint}" ]] && curl -fsS --max-time 2 "${daemon_health_endpoint}" >/dev/null 2>&1; then
+    echo "OpenFang appears to still be running (${daemon_health_endpoint}, discovered via daemon.json). Stop it before restoring." >&2
+    exit 1
+  fi
+  echo "warn stale daemon.json found under ${OPENFANG_HOME}; continuing because the recorded API is not responding." >&2
 fi
+
+probe_live_daemon "${config_base_url}" "config.toml" "${config_api_key}"
 
 if [[ "${CONFIRM}" != "true" ]]; then
   echo "Restore target: ${OPENFANG_HOME}" >&2
@@ -674,13 +813,22 @@ restore_path "${BACKUP_DIR}/.env" "${STAGING_HOME}/.env"
 restore_path "${BACKUP_DIR}/secrets.env" "${STAGING_HOME}/secrets.env"
 restore_path "${BACKUP_DIR}/vault.enc" "${STAGING_HOME}/vault.enc"
 restore_path "${BACKUP_DIR}/hand_state.json" "${STAGING_HOME}/hand_state.json"
+restore_path "${BACKUP_DIR}/hand_state.json.bak" "${STAGING_HOME}/hand_state.json.bak"
 restore_path "${BACKUP_DIR}/cron_jobs.json" "${STAGING_HOME}/cron_jobs.json"
+restore_path "${BACKUP_DIR}/cron_jobs.json.bak" "${STAGING_HOME}/cron_jobs.json.bak"
 restore_path "${BACKUP_DIR}/custom_models.json" "${STAGING_HOME}/custom_models.json"
+restore_path "${BACKUP_DIR}/custom_models.json.bak" "${STAGING_HOME}/custom_models.json.bak"
 restore_path "${BACKUP_DIR}/integrations.toml" "${STAGING_HOME}/integrations.toml"
 
 if [[ -d "${BACKUP_DIR}/data" ]]; then
   rm -rf "${STAGING_HOME}/data"
   cp -a "${BACKUP_DIR}/data" "${STAGING_HOME}/data"
+fi
+
+if [[ -n "${BACKUP_SQLITE_REL_PATH}" ]]; then
+  restore_path \
+    "${BACKUP_DIR}/${BACKUP_SQLITE_REL_PATH}" \
+    "${STAGING_HOME}/${BACKUP_SQLITE_REL_PATH}"
 fi
 
 for dir_name in agents skills workspaces workflows; do

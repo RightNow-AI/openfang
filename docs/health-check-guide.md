@@ -1,301 +1,170 @@
 # OpenFang Health Check Guide
 
-Quick reference for diagnosing OpenFang system health and common issues.
+This is the shortest safe operator path for checking whether an OpenFang node is healthy enough to stay in service.
 
-## Quick Health Check
+For the canonical day-2 runbook, deeper recovery steps, and backup/restore procedures, use [operations-runbook.md](operations-runbook.md). For deployment-specific setup, use [deployment.md](deployment.md).
 
-Run these commands to get a complete health overview:
+## 1. Fast Path
+
+Run the smallest checks first:
 
 ```bash
-# 1. Check API health
 curl -s http://127.0.0.1:4200/api/health
-
-# 2. Check process status
-ps aux | grep openfang | grep -v grep
-
-# 3. Verify environment variables (for Telegram)
-ps eww -p $(pgrep openfang) | tr ' ' '\n' | grep -E "TELEGRAM|NVIDIA"
-
-# 4. Check listening ports
-lsof -i :4200  # OpenFang API
-lsof -i :8081  # Telegram Local Bot API (if enabled)
-
-# 5. Check agents
-curl -s http://127.0.0.1:4200/api/agents | python3 -m json.tool
 ```
 
-## Expected Healthy Output
-
-### 1. API Health
-```json
-{"status":"ok","version":"0.4.7"}
-```
-
-### 2. Process Status
-```
-xiaomo  71703  0.0  0.2  ./target/release/openfang start
-xiaomo  71795  6.9  0.2  telegram-bot-api --api-id ... --http-port 8081
-```
-
-### 3. Environment Variables
-```
-TELEGRAM_BOT_TOKEN=8698293972:AAFT...
-TELEGRAM_API_HASH=e930cb0c87...
-NVIDIA_INTEGRATE_API_KEY=nvapi-...
-```
-
-**Warning Signs:**
-- Empty values: `TELEGRAM_BOT_TOKEN=` ← Environment not loaded
-- Missing variables: No output from grep ← Variables not exported
-
-### 4. Listening Ports
-```
-openfang  71703  TCP 127.0.0.1:4200 (LISTEN)
-telegram  71795  TCP *:8081 (LISTEN)
-```
-
-### 5. Agent Status
-```json
-[{
-  "id": "3d2efa2d-ac12-512c-a946-8f9451f03feb",
-  "name": "shipinfabu-hand",
-  "ready": true,
-  "auth_status": "configured",
-  "model_name": "qwen/qwen3.5-397b-a17b"
-}]
-```
-
-## Common Issues and Quick Fixes
-
-### Issue 1: Empty Environment Variables
-
-**Symptom:**
-```bash
-ps eww -p $(pgrep openfang) | grep TELEGRAM_BOT_TOKEN
-# Output: TELEGRAM_BOT_TOKEN=
-```
-
-**Fix:**
-```bash
-kill $(pgrep openfang)
-sleep 2
-source .env.telegram && ./target/release/openfang start
-```
-
-### Issue 2: Telegram Local Bot API Not Running
-
-**Symptom:**
-```bash
-lsof -i :8081
-# No output
-```
-
-**Check config:**
-```bash
-grep -A 5 "use_local_api" ~/.openfang/config.toml
-```
-
-**Should see:**
-```toml
-use_local_api = true
-auto_start_local_api = true
-telegram_api_id = "31033835"
-telegram_api_hash_env = "TELEGRAM_API_HASH"
-local_api_port = 8081
-```
-
-### Issue 3: Agent Not Ready
-
-**Symptom:**
-```json
-{"ready": false, "auth_status": "missing"}
-```
-
-**Check:**
-1. Model provider API key is set
-2. Config has correct `api_key_env` reference
-3. Environment variable exists
+If auth is enabled, follow with:
 
 ```bash
-# Check config
-grep -A 5 "default_model" ~/.openfang/config.toml
-
-# Verify env var
-env | grep NVIDIA_INTEGRATE_API_KEY
+curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/health/detail
 ```
 
-### Issue 4: Port Already in Use
+Expected:
 
-**Symptom:**
-```
-Error: Address already in use (os error 48)
-```
+- `/api/health` returns `{"status":"ok", ...}` for liveness.
+- `/api/health/detail` returns `status = "ok"` and `readiness.ready = true` when the node is ready to serve traffic.
 
-**Fix:**
-```bash
-# Find process using port 4200
-lsof -i :4200
-
-# Kill old process
-kill -9 <PID>
-
-# Restart
-./target/release/openfang start
-```
-
-## Telegram-Specific Health Checks
-
-### Check Telegram Connection
+Then run the host-side preflight:
 
 ```bash
-# View logs for Telegram status
-tail -50 /tmp/openfang.log | grep -i telegram
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
 
-**Expected output:**
-```
-INFO openfang_channels::telegram: Telegram bot @linyiagibot connected
-INFO openfang_channels::telegram: Telegram: cleared webhook, polling mode active
-INFO openfang_channels::telegram: Telegram polling loop started
-INFO openfang_channels::telegram: Telegram getUpdates returned messages count=11
-```
-
-### Check Telegram Downloads
+If you only want file-level validation without a live daemon:
 
 ```bash
-# Check download directory
-ls -lh ~/.openfang/workspaces/*/data/telegram-intake/
-
-# Check inbox manifests
-ls -lh ~/.openfang/workspaces/*/inbox/telegram/*.json
+scripts/preflight-openfang.sh --offline
 ```
 
-### Verify Telegram Bot Token
+## 2. Process Checks
+
+Use the command form that matches how the daemon is installed:
 
 ```bash
-# Test token directly with Telegram API
-curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | python3 -m json.tool
+openfang status
+openfang doctor
 ```
 
-**Expected:**
-```json
-{
-  "ok": true,
-  "result": {
-    "id": 8698293972,
-    "is_bot": true,
-    "first_name": "linyiagi",
-    "username": "linyiagibot"
-  }
-}
-```
-
-## Dashboard Health Check
-
-### Access Dashboard
-```bash
-open http://127.0.0.1:4200/
-```
-
-### Check Dashboard Data Loading
+Or, for a local source build:
 
 ```bash
-# Verify HTML loads
-curl -s http://127.0.0.1:4200/ | grep -o "<title>.*</title>"
-# Expected: <title>OpenFang Dashboard</title>
-
-# Check API endpoints
-curl -s http://127.0.0.1:4200/api/status
-curl -s http://127.0.0.1:4200/api/agents
+target/release/openfang status
+target/release/openfang doctor
 ```
 
-## Log Locations
+Do not inspect secrets with `ps eww`, `env`, or shell history dumps. If a provider or channel auth check is needed, prefer `/api/health/detail`, `/api/providers`, or the config files/runbook paths that already redact secret values.
 
-| Component | Log Location |
-|-----------|-------------|
-| OpenFang daemon | `/tmp/openfang.log` (if started with nohup) |
-| Telegram Local Bot API | Embedded in OpenFang logs |
-| Agent workspace | `~/.openfang/workspaces/<agent-name>/logs/` |
-| API requests | Embedded in OpenFang logs (INFO level) |
+## 3. Logs
 
-## Performance Metrics
+There is no universal daemon log file by default.
 
-### Check Resource Usage
+Use the platform log source that matches the deployment:
+
+### systemd
 
 ```bash
-# CPU and Memory
-ps aux | grep -E "openfang|telegram-bot-api" | grep -v grep
-
-# Disk usage
-du -sh ~/.openfang/
-du -sh ~/.openfang/workspaces/*/data/telegram-intake/
+sudo systemctl status openfang
+sudo journalctl -u openfang -n 200 --no-pager
+sudo journalctl -u openfang -f
 ```
 
-### Check API Response Times
+### Docker / Compose
 
 ```bash
-# Health endpoint (should be <5ms)
-time curl -s http://127.0.0.1:4200/api/health
-
-# Agents list (should be <50ms)
-time curl -s http://127.0.0.1:4200/api/agents
+docker compose ps
+docker compose logs --tail=200 openfang
+docker compose logs -f openfang
 ```
 
-## Automated Health Check Script
+### Local foreground run
 
-Save as `check-openfang-health.sh`:
+Check the terminal where `openfang start` is running.
+
+## 4. API Smoke
+
+Once liveness is confirmed, check the protected operational surfaces:
 
 ```bash
-#!/bin/bash
+curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/status
 
-echo "=== OpenFang Health Check ==="
-echo
+curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/metrics | head
 
-echo "1. API Health:"
-curl -s http://127.0.0.1:4200/api/health || echo "❌ API not responding"
-echo
-
-echo "2. Process Status:"
-ps aux | grep openfang | grep -v grep || echo "❌ No OpenFang process"
-echo
-
-echo "3. Environment Variables:"
-ps eww -p $(pgrep openfang) 2>/dev/null | tr ' ' '\n' | grep -E "TELEGRAM_BOT_TOKEN|TELEGRAM_API_HASH" | sed 's/=.*/=***/' || echo "❌ Cannot read process environment"
-echo
-
-echo "4. Listening Ports:"
-lsof -i :4200 | grep LISTEN && echo "✅ API port 4200 listening" || echo "❌ Port 4200 not listening"
-lsof -i :8081 | grep LISTEN && echo "✅ Telegram Bot API port 8081 listening" || echo "⚠️  Port 8081 not listening (OK if not using Local Bot API)"
-echo
-
-echo "5. Agents:"
-curl -s http://127.0.0.1:4200/api/agents | python3 -c "import sys,json; agents=json.load(sys.stdin); print(f'Total: {len(agents)}'); [print(f'  - {a[\"name\"]}: ready={a.get(\"ready\")}, auth={a.get(\"auth_status\")}') for a in agents]" || echo "❌ Cannot fetch agents"
-echo
-
-echo "6. Recent Telegram Activity:"
-tail -20 /tmp/openfang.log 2>/dev/null | grep -i telegram | tail -5 || echo "⚠️  No recent Telegram logs"
-echo
-
-echo "=== Health Check Complete ==="
+curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/audit/verify
 ```
 
-Run with:
+For a bundled smoke check:
+
 ```bash
-chmod +x check-openfang-health.sh
-./check-openfang-health.sh
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
 ```
 
-## When to Restart
+For a real provider-backed canary:
 
-Restart OpenFang if:
-- Environment variables are empty
-- API health check fails
-- Telegram bot not responding after config change
-- Port conflicts detected
-- After updating config files that require restart (see troubleshooting.md section 9)
+```bash
+OPENFANG_API_KEY="$OPENFANG_API_KEY" \
+OPENFANG_CANARY_PROVIDER=groq \
+OPENFANG_CANARY_MODEL=llama-3.3-70b-versatile \
+OPENFANG_CANARY_API_KEY_ENV=GROQ_API_KEY \
+scripts/provider-canary-openfang.sh
+```
 
-## See Also
+## 5. Restart Safely
 
-- [troubleshooting.md](troubleshooting.md) - Detailed troubleshooting guide
-- [telegram-deployment-guide.md](telegram-deployment-guide.md) - Telegram setup
-- [operations-runbook.md](operations-runbook.md) - Production operations
+Prefer graceful stop/restart paths:
+
+### systemd
+
+```bash
+sudo systemctl restart openfang
+```
+
+### Docker / Compose
+
+```bash
+docker compose restart openfang
+```
+
+### Local process
+
+```bash
+target/release/openfang stop
+target/release/openfang start
+```
+
+Avoid `kill -9` except as a last resort after graceful shutdown has failed and you have already captured enough logs for diagnosis.
+
+## 6. Before and After Recovery
+
+Before invasive changes, take a backup:
+
+```bash
+scripts/backup-openfang.sh
+```
+
+If you restore or replace runtime state, validate again:
+
+```bash
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
+```
+
+## 7. Escalation
+
+Escalate from this quick guide to the full runbook when:
+
+- `/api/health/detail` is degraded
+- preflight fails
+- audit verification fails
+- provider canary fails
+- restart does not recover the node
+
+Use these next:
+
+- [operations-runbook.md](operations-runbook.md)
+- [deployment.md](deployment.md)
+- [release-runbook.md](release-runbook.md)
+- [troubleshooting.md](troubleshooting.md)
+- [../deploy/openfang-alerts.yml](../deploy/openfang-alerts.yml)
