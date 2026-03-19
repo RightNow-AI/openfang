@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 09:16:01
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-19 17:22:19
+ * @LastEditTime       : 2026-03-19 18:24:33
  */
 //! OpenFang daemon server — boots the kernel and serves the HTTP API.
 
@@ -719,6 +719,10 @@ pub async fn build_router(
         .route("/api/auth/login", axum::routing::post(routes::auth_login))
         .route("/api/auth/logout", axum::routing::post(routes::auth_logout))
         .route("/api/auth/check", axum::routing::get(routes::auth_check))
+        .route(
+            "/api/default_model",
+            axum::routing::get(crate::unigpt::get_default_model),
+        )
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
             middleware::auth,

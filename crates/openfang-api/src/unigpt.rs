@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 14:47:41
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-19 13:40:00
+ * @LastEditTime       : 2026-03-19 18:23:23
  */
 
 use crate::routes::AppState;
@@ -184,6 +184,20 @@ pub async fn set_api_key(Json(body): Json<serde_json::Value>) -> impl IntoRespon
         Json(serde_json::json!({
             "status": "success",
             "message": "API key set successfully"
+        })),
+    )
+}
+
+pub async fn get_default_model(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let default_model = state.kernel.config.default_model.clone();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "success",
+            "default_model": {
+                "name": default_model.model,
+                "provider": default_model.provider,
+            }
         })),
     )
 }
