@@ -1563,10 +1563,12 @@ fn cmd_start_detached(config: Option<PathBuf>, yolo: bool) {
     println!("  Starting daemon (detached)...");
     ui::blank();
 
+    let log_path = openfang_home().join("daemon.log");
     match start_daemon_background(config.as_deref(), yolo) {
         Ok(url) => {
             ui::success(&format!("Daemon started at {url}"));
             ui::kv("Dashboard", &format!("{url}/"));
+            ui::kv("Logs", &log_path.display().to_string());
             ui::blank();
             ui::hint("Run `openfang status` to check, `openfang stop` to stop");
             ui::hint("Run `openfang chat` to talk to an agent");
@@ -1575,7 +1577,7 @@ fn cmd_start_detached(config: Option<PathBuf>, yolo: bool) {
         Err(e) => {
             ui::error_with_fix(
                 &format!("Could not start daemon: {e}"),
-                "Try `openfang start` (without -d) to see the full error output",
+                &format!("Check {} or run `openfang start` (without -d) to see errors", log_path.display()),
             );
             std::process::exit(1);
         }
@@ -4534,6 +4536,8 @@ pub(crate) fn test_api_key(provider: &str, env_var: &str) -> bool {
 /// Spawn `openfang start` as a detached background process.
 ///
 /// Forwards `--config` and `--yolo` flags to the child process.
+/// Redirects stdout/stderr to `~/.openfang/daemon.log` for debuggability.
+/// On Unix, calls `setsid()` so the daemon survives terminal close.
 /// Polls for daemon health for up to 10 seconds. Returns the daemon URL on success.
 pub(crate) fn start_daemon_background(
     config: Option<&std::path::Path>,
@@ -4550,6 +4554,28 @@ pub(crate) fn start_daemon_background(
         args.push("--yolo".to_string());
     }
 
+    // Open daemon log file (append mode) for stdout/stderr redirection.
+    // If the log file can't be opened, fall back to /dev/null.
+    let home = openfang_home();
+    let log_path = home.join("daemon.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path);
+    let (stdout, stderr) = match log_file {
+        Ok(f) => {
+            let f2 = f.try_clone().unwrap_or_else(|_| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .expect("Failed to open daemon log")
+            });
+            (std::process::Stdio::from(f), std::process::Stdio::from(f2))
+        }
+        Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
+    };
+
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -4558,20 +4584,41 @@ pub(crate) fn start_daemon_background(
         std::process::Command::new(&exe)
             .args(&args)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
             .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
             .spawn()
             .map_err(|e| format!("Failed to spawn daemon: {e}"))?;
     }
 
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            std::process::Command::new(&exe)
+                .args(&args)
+                .stdin(std::process::Stdio::null())
+                .stdout(stdout)
+                .stderr(stderr)
+                .pre_exec(|| {
+                    // Create a new session so the daemon is fully detached from the
+                    // terminal. Without this, closing the terminal sends SIGHUP to
+                    // the child, which could kill the daemon.
+                    libc::setsid();
+                    Ok(())
+                })
+                .spawn()
+                .map_err(|e| format!("Failed to spawn daemon: {e}"))?;
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         std::process::Command::new(&exe)
             .args(&args)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
             .spawn()
             .map_err(|e| format!("Failed to spawn daemon: {e}"))?;
     }
@@ -4584,7 +4631,10 @@ pub(crate) fn start_daemon_background(
         }
     }
 
-    Err("Daemon did not become ready within 10 seconds".to_string())
+    Err(format!(
+        "Daemon did not become ready within 10 seconds. Check {} for errors.",
+        log_path.display()
+    ))
 }
 
 // ---------------------------------------------------------------------------
