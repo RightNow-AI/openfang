@@ -322,7 +322,7 @@ pub async fn build_router(
             axum::routing::get(routes::list_workflow_runs),
         )
         // Skills endpoints
-        .route("/api/skills", axum::routing::get(routes::list_skills))
+        .route("/api/skills", axum::routing::get(uni_skill::list_skills))
         .route(
             "/api/skills/reload",
             axum::routing::post(uni_skill::reload_skills),
@@ -565,7 +565,7 @@ pub async fn build_router(
         )
         .route(
             "/api/skills/install_local",
-            axum::routing::post(crate::uni_agent::install_local_skill),
+            axum::routing::post(crate::uni_skill::install_local_skill),
         )
         // Migration endpoints
         .route(
