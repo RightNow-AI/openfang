@@ -296,6 +296,12 @@ The official Telegram Bot API limits `getFile` to 20MB. To download larger video
 - Enable `auto_start_local_api = true` so OpenFang manages `telegram-bot-api`.
 - Or point `api_url` at an existing Local Bot API Server deployment.
 
+Important deployment notes:
+
+- If you run Local Bot API as an external service (for example a Docker container), keep `auto_start_local_api = false`. Otherwise OpenFang will still try to spawn its own `telegram-bot-api` binary and may conflict with the external service.
+- When downstream tools consume `getFile.result.file_path` as a local filesystem path, the host must see the same absolute path returned by the Local Bot API Server. A common Docker pattern is to bind-mount `/var/lib/telegram-bot-api` on the host to the same path inside the container.
+- Some Local Bot API deployments may persist Telegram photos with a `.dat` suffix even when the payload is actually JPEG or PNG data. If downstream validation rejects non-image extensions, normalize the staged filename from the file header or MIME type before submit.
+
 See [telegram-large-files.md](telegram-large-files.md) for the full setup matrix, config examples, and troubleshooting.
 
 ### Interactive Setup

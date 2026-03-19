@@ -337,13 +337,13 @@ Then run a live daemon and hit the endpoint directly.
 ### Diagnosis Steps
 
 ```bash
-# 1. Check if process has environment variables
-ps eww -p $(pgrep openfang) | tr ' ' '\n' | grep TELEGRAM
+# 1. Check daemon readiness
+curl -s http://127.0.0.1:4200/api/health
+curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/health/detail
 
-# 2. Verify environment variables are not empty
-# Should show actual token values, not empty strings
-# TELEGRAM_BOT_TOKEN=  ← BAD (empty)
-# TELEGRAM_BOT_TOKEN=123456:ABC... ← GOOD
+# 2. Check runtime status
+openfang status
 ```
 
 ### Common Cause
@@ -361,12 +361,10 @@ If `TELEGRAM_BOT_TOKEN` is not set in the parent shell, this exports an **empty 
 **Option 1: Source environment file before starting**
 
 ```bash
-# Stop current daemon
-kill $(pgrep openfang)
-sleep 2
-
 # Start with environment loaded
-source .env.telegram && ./target/release/openfang start
+source .env.telegram
+target/release/openfang stop
+target/release/openfang start
 ```
 
 **Option 2: Export variables in shell profile**
@@ -392,20 +390,25 @@ ExecStart=/path/to/openfang start
 
 ### Verification
 
-After restart, confirm environment variables are loaded:
+After restart, confirm the daemon reports healthy channel/provider auth:
 
 ```bash
-# Check process environment
-ps eww -p $(pgrep openfang) | tr ' ' '\n' | grep TELEGRAM_BOT_TOKEN
-
-# Should show: TELEGRAM_BOT_TOKEN=8698293972:AAFT...
-# NOT: TELEGRAM_BOT_TOKEN=
+curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/health/detail
 ```
 
 Check logs for successful connection:
 
 ```bash
-tail -f /tmp/openfang.log | grep -i telegram
+# systemd
+sudo journalctl -u openfang -f | grep -i telegram
+
+# Docker / Compose
+docker compose logs -f openfang | grep -i telegram
+
+# local foreground run
+# inspect the terminal running `target/release/openfang start`
+
 # Should see: "Telegram bot @username connected"
 # Should see: "Telegram polling loop started"
 ```
@@ -471,7 +474,7 @@ See [telegram-response-timeout-issue.md](telegram-response-timeout-issue.md) for
 
 ```bash
 # Monitor timeout errors
-tail -f /tmp/openfang.log | grep -E "504|timeout|overload|LLM error"
+sudo journalctl -u openfang -f | grep -E "504|timeout|overload|LLM error"
 
 # Test agent response time
 AGENT_ID=$(curl -s http://127.0.0.1:4200/api/agents | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")

@@ -86,9 +86,10 @@ fn classify_http_kernel_error(err: &KernelError) -> (StatusCode, String) {
             (StatusCode::BAD_REQUEST, classified.sanitized_message)
         }
         openfang_runtime::llm_errors::LlmErrorCategory::Overloaded
-        | openfang_runtime::llm_errors::LlmErrorCategory::Timeout => {
-            (StatusCode::SERVICE_UNAVAILABLE, classified.sanitized_message)
-        }
+        | openfang_runtime::llm_errors::LlmErrorCategory::Timeout => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            classified.sanitized_message,
+        ),
     }
 }
 
@@ -369,14 +370,16 @@ pub fn with_message_text_block(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_http_kernel_error, escape_prometheus_label_value, extract_status_code,
-        json_to_toml_value, resolve_attachments, upload_path, with_message_text_block,
-        AttachmentRef, UploadMeta, UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
+        classify_http_kernel_error, derive_custom_provider_api_key_env,
+        escape_prometheus_label_value, extract_status_code, json_to_toml_value,
+        resolve_attachments, upload_path, validate_secret_env_key, validate_secret_env_value,
+        with_message_text_block, AttachmentRef, UploadMeta, UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
     };
     use axum::http::StatusCode;
     use openfang_kernel::error::KernelError;
     use openfang_types::error::OpenFangError;
     use openfang_types::message::ContentBlock;
+    use std::io::ErrorKind;
     use std::time::{Duration, SystemTime};
 
     #[test]
@@ -474,12 +477,42 @@ mod tests {
     #[test]
     fn classify_http_kernel_error_sanitizes_auth_failures() {
         let (status, message) = classify_http_kernel_error(&KernelError::OpenFang(
-            OpenFangError::LlmDriver(
-                "API error (401): invalid api key sk-test-secret".to_string(),
-            ),
+            OpenFangError::LlmDriver("API error (401): invalid api key sk-test-secret".to_string()),
         ));
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert!(!message.contains("sk-test-secret"));
+    }
+
+    #[test]
+    fn validate_secret_env_key_rejects_invalid_shell_identifiers() {
+        let err = validate_secret_env_key("1INVALID").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+
+        let err = validate_secret_env_key("BAD-KEY").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn validate_secret_env_value_rejects_line_breaks_and_nuls() {
+        for value in ["line1\nline2", "line1\rline2", "abc\0def"] {
+            let err = validate_secret_env_value(value).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        }
+
+        validate_secret_env_value("safe-secret-value").unwrap();
+    }
+
+    #[test]
+    fn derive_custom_provider_api_key_env_normalizes_hyphens_and_rejects_invalid_names() {
+        assert_eq!(
+            derive_custom_provider_api_key_env("my-provider").unwrap(),
+            "MY_PROVIDER_API_KEY"
+        );
+
+        for provider_name in ["123provider", "my.provider"] {
+            let err = derive_custom_provider_api_key_env(provider_name).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        }
     }
 }
 
@@ -564,10 +597,7 @@ pub async fn send_message(
         Err(e) => {
             tracing::warn!("send_message failed for agent {id}: {e}");
             let (status, error) = classify_http_kernel_error(&e);
-            (
-                status,
-                Json(serde_json::json!({"error": error})),
-            )
+            (status, Json(serde_json::json!({"error": error})))
         }
     }
 }
@@ -3458,7 +3488,6 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
     if !default_provider_auth_is_ready(&default_provider_auth) {
         failing_checks.push("default_provider_auth".to_string());
     }
-
     RuntimeHealthSnapshot {
         db_ok,
         shutdown_requested: health.is_shutting_down,
@@ -3595,7 +3624,6 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
         "openfang_restore_warnings {}\n\n",
         snapshot.restore_warnings.total_warning_count()
     ));
-
     // Per-agent token and tool usage
     out.push_str("# HELP openfang_tokens_total Total tokens consumed (rolling hourly window).\n");
     out.push_str("# TYPE openfang_tokens_total gauge\n");
@@ -7570,19 +7598,28 @@ pub async fn set_provider_key(
     };
 
     // Look up env var from catalog; for unknown/custom providers derive one.
-    let env_var = {
+    let env_var_result = {
         let catalog = state
             .kernel
             .model_catalog
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        catalog
-            .get_provider(&name)
-            .map(|p| p.api_key_env.clone())
-            .unwrap_or_else(|| {
-                // Custom provider — derive env var: MY_PROVIDER → MY_PROVIDER_API_KEY
-                format!("{}_API_KEY", name.to_uppercase().replace('-', "_"))
-            })
+        match catalog.get_provider(&name) {
+            Some(provider) => Ok(provider.api_key_env.clone()),
+            None => match derive_custom_provider_api_key_env(&name) {
+                Ok(env_var) => Ok(env_var),
+                Err(e) => Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!("Invalid custom provider name: {e}")
+                    })),
+                )),
+            },
+        }
+    };
+    let env_var = match env_var_result {
+        Ok(env_var) => env_var,
+        Err(response) => return response,
     };
 
     // Store in vault (best-effort — no-op if vault not initialized)
@@ -7736,19 +7773,28 @@ pub async fn delete_provider_key(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let env_var = {
+    let env_var_result = {
         let catalog = state
             .kernel
             .model_catalog
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        catalog
-            .get_provider(&name)
-            .map(|p| p.api_key_env.clone())
-            .unwrap_or_else(|| {
-                // Custom/unknown provider — derive env var from convention
-                format!("{}_API_KEY", name.to_uppercase().replace('-', "_"))
-            })
+        match catalog.get_provider(&name) {
+            Some(provider) => Ok(provider.api_key_env.clone()),
+            None => match derive_custom_provider_api_key_env(&name) {
+                Ok(env_var) => Ok(env_var),
+                Err(e) => Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!("Invalid custom provider name: {e}")
+                    })),
+                )),
+            },
+        }
+    };
+    let env_var = match env_var_result {
+        Ok(env_var) => env_var,
+        Err(response) => return response,
     };
 
     if env_var.is_empty() {
@@ -8183,6 +8229,9 @@ fn write_validated_config_atomically(
 /// Write or update a key in the secrets.env file.
 /// File format: one `KEY=value` per line. Existing keys are overwritten.
 fn write_secret_env(path: &std::path::Path, key: &str, value: &str) -> Result<(), std::io::Error> {
+    validate_secret_env_key(key)?;
+    validate_secret_env_value(value)?;
+
     let mut lines: Vec<String> = if path.exists() {
         std::fs::read_to_string(path)?
             .lines()
@@ -8203,6 +8252,8 @@ fn write_secret_env(path: &std::path::Path, key: &str, value: &str) -> Result<()
 
 /// Remove a key from the secrets.env file.
 fn remove_secret_env(path: &std::path::Path, key: &str) -> Result<(), std::io::Error> {
+    validate_secret_env_key(key)?;
+
     if !path.exists() {
         return Ok(());
     }
@@ -8214,6 +8265,52 @@ fn remove_secret_env(path: &std::path::Path, key: &str) -> Result<(), std::io::E
         .collect();
 
     write_text_file_atomically(path, &(lines.join("\n") + "\n"))
+}
+
+fn validate_secret_env_key(key: &str) -> Result<(), std::io::Error> {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(ch) if ch.is_ascii_alphabetic() || ch == '_' => {}
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "secret env key must start with an ASCII letter or underscore",
+            ));
+        }
+    }
+
+    if chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "secret env key may contain only ASCII letters, digits, and underscores",
+        ))
+    }
+}
+
+fn derive_custom_provider_api_key_env(name: &str) -> Result<String, std::io::Error> {
+    if name.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "provider name must not be empty",
+        ));
+    }
+
+    let normalized = name.replace('-', "_").to_ascii_uppercase();
+    validate_secret_env_key(&normalized)?;
+    Ok(format!("{normalized}_API_KEY"))
+}
+
+fn validate_secret_env_value(value: &str) -> Result<(), std::io::Error> {
+    if value.contains('\n') || value.contains('\r') || value.contains('\0') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "secret env value must not contain NUL, CR, or LF characters",
+        ));
+    }
+
+    Ok(())
 }
 
 // ── Config.toml channel management helpers ──────────────────────────
@@ -11030,7 +11127,7 @@ pub async fn pairing_notify(
 pub async fn list_commands(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut commands = vec![
         serde_json::json!({"cmd": "/help", "desc": "Show available commands"}),
-        serde_json::json!({"cmd": "/new", "desc": "Reset session (clear history)"}),
+        serde_json::json!({"cmd": "/new", "desc": "Start a new conversation (clear history)"}),
         serde_json::json!({"cmd": "/compact", "desc": "Trigger LLM session compaction"}),
         serde_json::json!({"cmd": "/model", "desc": "Show or switch model (/model [name])"}),
         serde_json::json!({"cmd": "/stop", "desc": "Cancel current agent run"}),

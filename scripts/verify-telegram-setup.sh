@@ -1,5 +1,5 @@
 #!/bin/bash
-# Telegram Local API 快速验证脚本
+# Telegram / Local Bot API 快速验证脚本
 
 set -e
 
@@ -23,6 +23,30 @@ check_fail() {
 
 check_warn() {
     echo -e "${YELLOW}⚠️  $1${NC}"
+}
+
+resolve_default_provider_key_env() {
+    local config_file="$1"
+    python3 - "$config_file" <<'PY'
+import sys
+from pathlib import Path
+import tomllib
+
+config_path = Path(sys.argv[1]).expanduser()
+if not config_path.exists():
+    raise SystemExit(1)
+
+cfg = tomllib.loads(config_path.read_text(encoding="utf-8"))
+default_model = cfg.get("default_model") or {}
+if not isinstance(default_model, dict):
+    raise SystemExit(1)
+
+value = str(default_model.get("api_key_env", "")).strip()
+if not value:
+    raise SystemExit(1)
+
+print(value)
+PY
 }
 
 # 1. 检查二进制文件
@@ -67,21 +91,20 @@ else
     echo "   请设置: export TELEGRAM_API_HASH='你的api_hash'"
 fi
 
-if [ -n "$NVIDIA_INTEGRATE_API_KEY" ]; then
-    check_pass "NVIDIA_INTEGRATE_API_KEY 已设置"
-    echo "   值: ${NVIDIA_INTEGRATE_API_KEY:0:10}..."
-else
-    check_fail "NVIDIA_INTEGRATE_API_KEY 未设置"
-    echo "   请设置: export NVIDIA_INTEGRATE_API_KEY='你的nvidia_api_key'"
-fi
-
-echo ""
+CONFIG_FILE="$HOME/.openfang/config.toml"
+DEFAULT_PROVIDER_KEY_ENV=""
 
 # 3. 检查配置文件
+echo ""
 echo "3. 检查配置文件..."
-CONFIG_FILE="$HOME/.openfang/config.toml"
 if [ -f "$CONFIG_FILE" ]; then
     check_pass "配置文件存在"
+
+    if DEFAULT_PROVIDER_KEY_ENV="$(resolve_default_provider_key_env "$CONFIG_FILE" 2>/dev/null)"; then
+        check_pass "default_model.api_key_env 已配置为 ${DEFAULT_PROVIDER_KEY_ENV}"
+    else
+        check_warn "未能从 default_model.api_key_env 解析默认模型密钥环境变量"
+    fi
 
     if grep -q "use_local_api = true" "$CONFIG_FILE"; then
         check_pass "use_local_api = true"
@@ -105,8 +128,23 @@ if [ -f "$CONFIG_FILE" ]; then
     else
         check_fail "telegram_api_id 未找到"
     fi
+    else
+        check_fail "配置文件不存在: $CONFIG_FILE"
+fi
+
+echo ""
+
+if [ -n "$DEFAULT_PROVIDER_KEY_ENV" ]; then
+    DEFAULT_PROVIDER_KEY_VALUE="${!DEFAULT_PROVIDER_KEY_ENV:-}"
+    if [ -n "$DEFAULT_PROVIDER_KEY_VALUE" ]; then
+        check_pass "${DEFAULT_PROVIDER_KEY_ENV} 已设置"
+        echo "   值: ${DEFAULT_PROVIDER_KEY_VALUE:0:10}..."
+    else
+        check_fail "${DEFAULT_PROVIDER_KEY_ENV} 未设置"
+        echo "   请设置: export ${DEFAULT_PROVIDER_KEY_ENV}='你的provider_api_key'"
+    fi
 else
-    check_fail "配置文件不存在: $CONFIG_FILE"
+    check_warn "跳过默认模型 provider key 检查，因为配置中未解析出 api_key_env"
 fi
 
 echo ""
@@ -184,13 +222,24 @@ echo "=== 验证完成 ==="
 echo ""
 
 # 总结
-if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_API_HASH" ] || [ -z "$NVIDIA_INTEGRATE_API_KEY" ]; then
+if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_API_HASH" ]; then
     echo -e "${RED}❌ 环境变量未完全设置，无法启动${NC}"
     echo ""
     echo "请设置环境变量："
     echo "  export TELEGRAM_BOT_TOKEN='你的bot_token'"
     echo "  export TELEGRAM_API_HASH='你的api_hash'"
-    echo "  export NVIDIA_INTEGRATE_API_KEY='你的nvidia_api_key'"
+    if [ -n "$DEFAULT_PROVIDER_KEY_ENV" ]; then
+        echo "  export ${DEFAULT_PROVIDER_KEY_ENV}='你的provider_api_key'"
+    fi
+    echo ""
+    exit 1
+fi
+
+if [ -n "$DEFAULT_PROVIDER_KEY_ENV" ] && [ -z "${!DEFAULT_PROVIDER_KEY_ENV:-}" ]; then
+    echo -e "${RED}❌ 默认模型 provider key 未设置，无法完成 Telegram 对话验证${NC}"
+    echo ""
+    echo "请设置环境变量："
+    echo "  export ${DEFAULT_PROVIDER_KEY_ENV}='你的provider_api_key'"
     echo ""
     exit 1
 fi
@@ -200,10 +249,13 @@ echo ""
 echo "下一步："
 echo "1. 启动 OpenFang："
 echo "   cd /Users/xiaomo/Desktop/openfang-upstream-fork"
-echo "   scripts/start-telegram-production.sh"
+echo "   cargo build --release -p openfang-cli"
+echo "   TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx ${DEFAULT_PROVIDER_KEY_ENV:-GROQ_API_KEY}=xxx target/release/openfang start"
 echo ""
 echo "2. 查看日志："
-echo "   tail -f ~/.openfang/logs/openfang.log"
+echo "   查看当前运行 target/release/openfang start 的终端"
+echo "   或 systemd: sudo journalctl -u openfang -f"
+echo "   或 Docker: docker compose logs -f openfang"
 echo ""
 echo "3. 测试大文件下载："
 echo "   在 Telegram 发送一个 >20MB 的视频"

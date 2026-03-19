@@ -123,6 +123,11 @@ async fn start_test_server_with_config(config: KernelConfig, tmp: tempfile::Temp
             axum::routing::get(routes::prometheus_metrics),
         )
         .route("/api/status", axum::routing::get(routes::status))
+        .route("/api/commands", axum::routing::get(routes::list_commands))
+        .route(
+            "/api/providers/{name}/key",
+            axum::routing::post(routes::set_provider_key).delete(routes::delete_provider_key),
+        )
         .route(
             "/api/agents",
             axum::routing::get(routes::list_agents).post(routes::spawn_agent),
@@ -1096,7 +1101,11 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
             axum::routing::get(routes::prometheus_metrics),
         )
         .route("/api/status", axum::routing::get(routes::status))
-        .route("/api/commands", axum::routing::get(|| async { "ok" }))
+        .route("/api/commands", axum::routing::get(routes::list_commands))
+        .route(
+            "/api/providers/{name}/key",
+            axum::routing::post(routes::set_provider_key).delete(routes::delete_provider_key),
+        )
         .route(
             "/api/agents",
             axum::routing::get(routes::list_agents).post(routes::spawn_agent),
@@ -1347,6 +1356,51 @@ async fn test_auth_rejects_wrong_token() {
     assert_eq!(resp.status(), 401);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("Invalid"));
+}
+
+#[tokio::test]
+async fn test_commands_endpoint_describes_new_session_command() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/commands", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let commands = body["commands"].as_array().expect("commands array missing");
+    let new_command = commands
+        .iter()
+        .find(|command| command["cmd"].as_str() == Some("/new"))
+        .expect("/new command missing");
+
+    assert_eq!(
+        new_command["desc"].as_str(),
+        Some("Start a new conversation (clear history)")
+    );
+}
+
+#[tokio::test]
+async fn test_custom_provider_key_rejects_invalid_provider_name() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/api/providers/my.provider/key", server.base_url))
+        .json(&serde_json::json!({"key": "secret-value"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Invalid custom provider name"));
 }
 
 #[tokio::test]

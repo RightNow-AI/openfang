@@ -1523,7 +1523,9 @@ async fn handle_command(
                     msg.push_str(&format!("  - {name}\n"));
                 }
             }
-            msg.push_str("\nCommands:\n/agents - list agents\n/agent <name> - select an agent\n/help - show this help");
+            msg.push_str(
+                "\nCommands:\n/agents - list agents\n/agent <name> - select an agent\n/new - start a new conversation\n/help - show this help",
+            );
             msg
         }
         "help" => "OpenFang Bot Commands:\n\
@@ -1531,7 +1533,7 @@ async fn handle_command(
              Session:\n\
              /agents - list running agents\n\
              /agent <name> - select which agent to talk to\n\
-             /new - reset session (clear messages)\n\
+             /new - start a new conversation (clear messages)\n\
              /compact - trigger LLM session compaction\n\
              /model [name] - show or switch agent model\n\
              /stop - cancel current agent run\n\

@@ -162,14 +162,14 @@ bridge.rs:dispatch_message() (line 634)
 
 ### 检查当前日志
 ```bash
-# 主日志（当前运行）
-tail -f /tmp/openfang.log | grep -E "Telegram|dispatch|LLM error|overload"
+# systemd
+sudo journalctl -u openfang -f | grep -E "Telegram|dispatch|LLM error|overload"
 
-# 持久化日志
-tail -f ~/.openfang/logs/openfang.log
+# Docker / Compose
+docker compose logs -f openfang | grep -E "Telegram|dispatch|LLM error|overload"
 
-# daemon 输出
-tail -f ~/.openfang/logs/daemon.out.log
+# 本地前台运行
+# 直接查看运行 `target/release/openfang start` 的终端
 ```
 
 ### 检查 agent 配置
@@ -190,7 +190,7 @@ curl -s -X POST "http://127.0.0.1:4200/api/agents/$AGENT_ID/message" \
 
 ### 监控超时错误
 ```bash
-tail -f /tmp/openfang.log | grep -E "504|timeout|overload|LLM error classified"
+sudo journalctl -u openfang -f | grep -E "504|timeout|overload|LLM error classified"
 ```
 
 ## 重试机制

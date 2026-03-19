@@ -92,11 +92,14 @@
 # 添加到 ~/.zshrc 或 ~/.bashrc
 export TELEGRAM_BOT_TOKEN="你的bot_token"
 export TELEGRAM_API_HASH="你的api_hash"
-export NVIDIA_INTEGRATE_API_KEY="你的nvidia_api_key"
+# 同时导出默认模型所需的 provider key，例如：
+export GROQ_API_KEY="你的groq_api_key"
 
 # 重新加载
 source ~/.zshrc
 ```
+
+`GROQ_API_KEY` 只是示例；请替换为你在 `[default_model].api_key_env` 里实际使用的环境变量。
 
 **重要提示**：如果使用启动脚本，确保环境变量在脚本执行前已设置。避免使用空变量替换：
 
@@ -112,18 +115,21 @@ source .env.telegram
 export TELEGRAM_BOT_TOKEN="实际的token值"
 ```
 
-**验证环境变量已加载**：
+**验证服务就绪**：
 
 ```bash
-# 启动后检查进程环境
-ps eww -p $(pgrep openfang) | tr ' ' '\n' | grep TELEGRAM_BOT_TOKEN
-
-# 应该看到实际的 token 值，而不是空字符串
-# ✅ TELEGRAM_BOT_TOKEN=8698293972:AAFT...
-# ❌ TELEGRAM_BOT_TOKEN=
+curl -s http://127.0.0.1:4200/api/health
+openfang status
 ```
 
-如果看到空值，参考 [Health Check Guide](health-check-guide.md) 和 [Troubleshooting](troubleshooting.md#17-telegram-bot-connected-but-not-receiving-messages)。
+如果启用了 API 鉴权，再补一条：
+
+```bash
+curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/health/detail
+```
+
+不要用 `ps eww`、`env` 或 shell 历史直接打印 token/hash。认证状态优先通过 `/api/health/detail`、`/api/providers` 和 [Health Check Guide](health-check-guide.md) / [Troubleshooting](troubleshooting.md#17-telegram-bot-connected-but-not-receiving-messages) 排查。
 
 #### 2. 更新配置文件
 
@@ -158,27 +164,73 @@ group_policy = "all"
 mkdir -p /tmp/openfang-telegram-downloads
 ```
 
-### 启动服务
+### 服务器部署建议：优先使用 Docker 托管 Local Bot API
 
-#### 方式 1：生产启动（推荐）
+在长期运行的 Linux 服务器上，更推荐把 `telegram-bot-api` 作为独立 Docker 容器运行，而不是让 OpenFang 自己拉起本地二进制。这样升级、回滚和故障排查都更简单。
 
-```bash
-cd /Users/xiaomo/Desktop/openfang-upstream-fork
-scripts/start-telegram-production.sh
+推荐配置：
+
+```toml
+[channels.telegram]
+default_agent = "shipinfabu-hand"
+poll_interval_secs = 1
+download_enabled = true
+download_dir = "/opt/openfang/data/telegram-intake"
+max_download_size = 2147483648
+
+use_local_api = true
+auto_start_local_api = false
+telegram_api_id = "12345678"
+telegram_api_hash_env = "TELEGRAM_API_HASH"
+local_api_port = 8081
+api_url = "http://127.0.0.1:8081"
 ```
 
-这个脚本会做四件事：
+推荐容器启动方式：
 
-1. 检查 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_API_HASH`、`NVIDIA_INTEGRATE_API_KEY`
-2. 清理旧的 `openfang start` 和 `telegram-bot-api` 进程
-3. 启动 release 二进制并写入 `~/.openfang/logs/openfang.log`
-4. 等待 `/api/health` 通过后再返回成功
+```bash
+mkdir -p /var/lib/telegram-bot-api
+
+docker run -d \
+  --name telegram-bot-api \
+  --restart unless-stopped \
+  -p 127.0.0.1:8081:8081 \
+  -e TELEGRAM_API_ID=12345678 \
+  -e TELEGRAM_API_HASH="$TELEGRAM_API_HASH" \
+  -e TELEGRAM_LOCAL=1 \
+  -v /var/lib/telegram-bot-api:/var/lib/telegram-bot-api \
+  aiogram/telegram-bot-api:latest
+```
+
+为什么这里强调把宿主机和容器都挂到 `/var/lib/telegram-bot-api`：
+
+- Local Bot API 的 `getFile` 在本地模式下会返回绝对路径，例如 `/var/lib/telegram-bot-api/<bot-token>/videos/file_9.mp4`
+- 如果容器内路径和宿主机路径不一致，例如把宿主机挂到 `/root/telegram-bot-api-data:/var/lib/telegram-bot-api`
+- 那么 OpenFang 或下游 bridge 在宿主机上读取 `/var/lib/telegram-bot-api/...` 时会报 `No such file or directory`
+
+换句话说，只要你的下游逻辑会把 `getFile.result.file_path` 当作宿主机上的本地路径使用，就必须让宿主机看到同一条绝对路径。
+
+### 启动服务
+
+#### 方式 1：本地源码启动（适合单机调试）
+
+```bash
+cargo build --release -p openfang-cli
+TELEGRAM_BOT_TOKEN=xxx \
+TELEGRAM_API_HASH=xxx \
+GROQ_API_KEY=xxx \
+target/release/openfang start
+```
+
+将 `GROQ_API_KEY` 替换为 `[default_model].api_key_env` 对应的实际环境变量。如果你用 systemd 或 Docker 部署，请按 [deployment.md](deployment.md) 和 [operations-runbook.md](operations-runbook.md) 的方式注入同样的环境变量，而不是依赖当前交互 shell。
 
 #### 方式 2：前台运行（仅用于临时调试）
 
 ```bash
-cd /Users/xiaomo/Desktop/openfang-upstream-fork
-TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx NVIDIA_INTEGRATE_API_KEY=xxx target/release/openfang start
+TELEGRAM_BOT_TOKEN=xxx \
+TELEGRAM_API_HASH=xxx \
+GROQ_API_KEY=xxx \
+target/release/openfang start
 ```
 
 不要再使用裸 `nohup target/release/openfang start`。
@@ -186,26 +238,38 @@ TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx NVIDIA_INTEGRATE_API_KEY=xxx target
 
 ### 验证部署
 
-#### 1. 检查日志
+#### 1. 检查健康与日志
 
 ```bash
-tail -f ~/.openfang/logs/openfang.log
+curl -s http://127.0.0.1:4200/api/health
+
+# systemd
+sudo journalctl -u openfang -n 100 --no-pager
+
+# Docker / Compose
+docker compose logs --tail=100 openfang
+
+# 本地前台运行
+# 直接查看运行 `target/release/openfang start` 的终端
 ```
 
-应该看到：
+至少应该看到：
 ```
-INFO Telegram Local Bot API Server started with PID 12345
-INFO Telegram Local Bot API mode enabled (supports files >20MB)
 INFO Starting Telegram channel adapter...
+INFO Telegram bot @your_bot connected
+INFO Telegram polling loop started
 ```
 
-#### 2. 检查进程
+如果 `auto_start_local_api = true`，还会额外看到 Local Bot API Server 启动相关日志。
+
+#### 2. 检查 Local Bot API 进程或容器
 
 ```bash
 ps aux | grep telegram-bot-api
+docker ps --filter name=telegram-bot-api
 ```
 
-应该看到 telegram-bot-api 进程正在运行。
+如果你使用 Docker 托管 Local Bot API，重点看容器是否在运行；如果是 OpenFang 自管二进制，重点看本机进程是否存在。
 
 #### 3. 测试大文件下载
 
@@ -287,20 +351,67 @@ grep telegram_api_id ~/.openfang/config.toml
 **检查清单：**
 1. `use_local_api = true` 是否设置？
 2. `api_url` 是否指向 `http://localhost:8081`？
-3. telegram-bot-api 进程是否正在运行？
-4. 查看详细日志：`tail -100 ~/.openfang/logs/openfang.log`
+3. `auto_start_local_api` 是否与你的部署方式一致：
+   - OpenFang 自管二进制：`true`
+   - Docker / 外部服务托管：`false`
+4. telegram-bot-api 进程或容器是否正在运行？
+5. 如果你使用 Docker，本机是否真的能访问 `getFile` 返回的绝对路径？
+
+   ```bash
+   curl -sS -H 'Content-Type: application/json' \
+     -d '{"file_id":"<FILE_ID>"}' \
+     "http://127.0.0.1:8081/bot$TELEGRAM_BOT_TOKEN/getFile"
+   ```
+
+   拿到 `file_path` 后，直接在宿主机检查：
+
+   ```bash
+   ls -l /var/lib/telegram-bot-api/...
+   ```
+
+   如果 `getFile` 返回成功，但宿主机上 `ls` 不到同一路径，说明是挂载路径不一致，不是 token 或权限问题。
+6. 查看详细日志：
+   - systemd: `journalctl -u openfang -n 100 --no-pager`
+   - Docker / Compose: `docker compose logs --tail=100 openfang`
+   - 本地前台运行：查看当前终端输出
+
+#### 问题 5：图片已下载，但提交阶段提示“article_images 类型不支持”
+
+**症状：**
+```
+article_images 类型不支持，仅支持常见图片格式
+```
+
+**原因：**
+
+- 某些 Local Bot API 部署会把 Telegram 图片落盘成 `.dat`
+- 文件内容其实是 JPEG / PNG，但下游只按扩展名校验，导致提交阶段被拒
+
+**排查方式：**
+
+1. 检查 staged 文件后缀是否是 `.dat`
+2. 检查文件头是否仍然是常见图片格式
+
+例如 JPEG 文件头通常以 `ff d8 ff` 开头。
+
+**建议修复：**
+
+- 在 bridge / staging 阶段根据文件头或 MIME type 重新归一化扩展名
+- 不要直接信任 Telegram 落盘时的 `.dat` 后缀
+
+如果你的工作流会把 Telegram 图片再提交给严格校验的媒体服务，这一步尤其重要。
 
 ### 停止服务
 
 ```bash
-# 查找进程
-ps aux | grep openfang
+# 本地源码启动
+target/release/openfang stop
 
-# 停止 OpenFang（会自动停止 telegram-bot-api）
-kill <pid>
+# systemd
+sudo systemctl stop openfang
 
-# 或使用 pkill
-pkill -f openfang
+# Docker / Compose
+docker compose stop openfang
 ```
 
 ### 与 shipinbot 集成
@@ -352,14 +463,14 @@ cp telegram-bot-api ~/.openfang/bin/
 #### 查看日志
 
 ```bash
-# 实时查看
-tail -f ~/.openfang/logs/openfang.log
+# systemd
+sudo journalctl -u openfang -f
 
-# 搜索 Telegram 相关日志
-grep -i telegram ~/.openfang/logs/openfang.log
+# Docker / Compose
+docker compose logs -f openfang
 
-# 搜索错误
-grep -i error ~/.openfang/logs/openfang.log
+# 本地前台运行
+# 直接查看当前启动终端，或自行把 stdout/stderr 重定向到文件后再 grep
 ```
 
 ## 技术细节

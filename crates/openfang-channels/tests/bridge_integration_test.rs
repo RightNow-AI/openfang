@@ -324,6 +324,7 @@ async fn test_bridge_dispatch_help_command() {
     assert_eq!(sent.len(), 1);
     assert!(sent[0].1.contains("/agents"), "Help should mention /agents");
     assert!(sent[0].1.contains("/agent"), "Help should mention /agent");
+    assert!(sent[0].1.contains("/new"), "Help should mention /new");
 
     manager.stop().await;
 }

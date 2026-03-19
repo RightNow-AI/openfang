@@ -32,6 +32,13 @@ const LONG_POLL_TIMEOUT: u64 = 30;
 
 /// Default Telegram Bot API base URL.
 const DEFAULT_API_URL: &str = "https://api.telegram.org";
+/// Telegram bot command menu shown in supported clients.
+const TELEGRAM_BOT_COMMANDS: &[(&str, &str)] = &[
+    ("new", "Start a new conversation"),
+    ("agent", "Select which agent to talk to"),
+    ("agents", "List running agents"),
+    ("help", "Show all commands"),
+];
 /// Safety cap for `getFile` when using Telegram Local Bot API.
 ///
 /// Set to 2GB to match the configured max_download_size and fully utilize
@@ -298,6 +305,45 @@ impl TelegramAdapter {
         Err(last_error
             .unwrap_or_else(|| "Unknown error".to_string())
             .into())
+    }
+
+    /// Register the bot command menu shown by Telegram clients.
+    async fn register_bot_commands(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "{}/bot{}/setMyCommands",
+            self.api_base_url,
+            self.token.as_str()
+        );
+        let commands: Vec<serde_json::Value> = TELEGRAM_BOT_COMMANDS
+            .iter()
+            .map(|(command, description)| {
+                serde_json::json!({
+                    "command": command,
+                    "description": description,
+                })
+            })
+            .collect();
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "commands": commands }))
+            .send()
+            .await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+
+        if !status.is_success() {
+            return Err(format!("Telegram setMyCommands failed ({status}): {body_text}").into());
+        }
+
+        let body: serde_json::Value = serde_json::from_str(&body_text)?;
+        if body["ok"].as_bool() != Some(true) {
+            let desc = body["description"].as_str().unwrap_or("unknown error");
+            return Err(format!("Telegram setMyCommands returned ok=false: {desc}").into());
+        }
+
+        Ok(())
     }
 
     /// Call `sendMessage` on the Telegram API.
@@ -679,6 +725,15 @@ impl ChannelAdapter for TelegramAdapter {
                 Ok(_) => info!("Telegram: cleared webhook, polling mode active"),
                 Err(e) => tracing::warn!("Telegram: deleteWebhook failed (non-fatal): {e}"),
             }
+        }
+
+        if let Err(e) = self.register_bot_commands().await {
+            warn!("Telegram: setMyCommands failed (non-fatal): {e}");
+        } else {
+            info!(
+                "Telegram: registered {} bot commands",
+                TELEGRAM_BOT_COMMANDS.len()
+            );
         }
 
         let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
@@ -4067,6 +4122,60 @@ mod tests {
         (format!("http://{addr}"), attempts, handle)
     }
 
+    async fn start_command_registration_test_server() -> (
+        String,
+        Arc<tokio::sync::Mutex<Vec<serde_json::Value>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::extract::Json;
+        use axum::routing::{get, post};
+        use axum::Router;
+
+        let command_payloads = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let app_payloads = command_payloads.clone();
+
+        let app = Router::new()
+            .route(
+                "/botfake:token/getMe",
+                get(|| async {
+                    axum::Json(serde_json::json!({
+                        "ok": true,
+                        "result": {
+                            "username": "testbot"
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/botfake:token/deleteWebhook",
+                post(|| async { axum::Json(serde_json::json!({"ok": true, "result": true})) }),
+            )
+            .route(
+                "/botfake:token/setMyCommands",
+                post(move |Json(payload): Json<serde_json::Value>| {
+                    let payloads = app_payloads.clone();
+                    async move {
+                        payloads.lock().await.push(payload);
+                        axum::Json(serde_json::json!({"ok": true, "result": true}))
+                    }
+                }),
+            )
+            .route(
+                "/botfake:token/getUpdates",
+                get(|| async { axum::Json(serde_json::json!({"ok": true, "result": []})) }),
+            );
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        (format!("http://{addr}"), command_payloads, handle)
+    }
+
     #[tokio::test]
     async fn test_validate_token_retries_transient_local_api_failure() {
         let _guard = local_api_test_guard().await;
@@ -4182,6 +4291,51 @@ mod tests {
 
         assert!(err.contains("Unauthorized"));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_start_registers_bot_commands_with_new_session_entry() {
+        let (api_base_url, command_payloads, server_handle) =
+            start_command_registration_test_server().await;
+
+        let adapter = TelegramAdapter::new(
+            "fake:token".to_string(),
+            vec![],
+            Duration::from_millis(10),
+            Some(api_base_url),
+        );
+
+        let _stream = adapter.start().await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !command_payloads.lock().await.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for setMyCommands");
+
+        adapter.stop().await.unwrap();
+        server_handle.abort();
+
+        let payloads = command_payloads.lock().await.clone();
+        assert_eq!(payloads.len(), 1);
+
+        let commands = payloads[0]["commands"]
+            .as_array()
+            .expect("commands array missing");
+        let new_command = commands
+            .iter()
+            .find(|cmd| cmd["command"].as_str() == Some("new"))
+            .expect("/new command missing from Telegram menu");
+
+        assert_eq!(
+            new_command["description"].as_str(),
+            Some("Start a new conversation")
+        );
     }
 
     #[test]

@@ -45,7 +45,7 @@ function chatPage() {
     slashCommands: [
       { cmd: '/help', desc: 'Show available commands' },
       { cmd: '/agents', desc: 'Switch to Agents page' },
-      { cmd: '/new', desc: 'Reset session (clear history)' },
+      { cmd: '/new', desc: 'Start a new conversation (clear history)' },
       { cmd: '/compact', desc: 'Trigger LLM session compaction' },
       { cmd: '/model', desc: 'Show or switch model (/model [name])' },
       { cmd: '/stop', desc: 'Cancel current agent run' },
