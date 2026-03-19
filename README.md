@@ -1,8 +1,8 @@
-<h1 align="center">OpenFang — Aldine Fork</h1>
+<h1 align="center">LegendClaw</h1>
 <h3 align="center">Agent OS + Business Mode Wizards + Next.js Dashboard</h3>
 
 <p align="center">
-  Fork of <a href="https://github.com/RightNow-AI/openfang">RightNow-AI/openfang</a> — synced to v0.4.6 with new Business Mode workflows, Command Center, and a full Next.js frontend.
+  Fork of <a href="https://github.com/RightNow-AI/LegendClaw">RightNow-AI/LegendClaw</a> — synced to v0.4.6 with new Business Mode workflows, Command Center, and a full Next.js frontend.
 </p>
 
 <p align="center">
@@ -17,12 +17,12 @@
 
 ## What's in This Fork
 
-This fork extends the upstream OpenFang Agent OS with:
+This fork extends the upstream LegendClaw Agent OS with:
 
 1. **Business Mode Wizards** — three full wizard flows (Agency, Growth, School) with per-mode task catalogs, approval queues, and results tracking
 2. **Command Center** — client onboarding wizard with task planning, approval, and execution pipeline
 3. **Next.js 15 dashboard** — primary frontend replacing the Alpine static UI, running on port 3002
-4. **Rust API routes** — `openfang-api` additions for all business modes and command center (new `modes.rs`, `command_center.rs` files)
+4. **Rust API routes** — `LegendClaw-api` additions for all business modes and command center (new `modes.rs`, `command_center.rs` files)
 5. **Sidebar reorder** — Brand, Work, and Agents sections moved above Monitor for faster access to core workflows
 6. **Error handling fix** — `mode-api.ts` properly unwraps structured `{code, message}` backend errors instead of showing `[object Object]`
 
@@ -38,10 +38,10 @@ This fork extends the upstream OpenFang Agent OS with:
 ### 1. Build and start the backend
 
 ```bash
-cargo build --release -p openfang-cli
+cargo build --release -p LegendClaw-cli
 
 # Start the daemon (needs at least one LLM API key)
-GROQ_API_KEY=your_key_here ./target/release/openfang.exe start
+GROQ_API_KEY=your_key_here ./target/release/LegendClaw.exe start
 
 # Verify it's up
 curl http://127.0.0.1:50051/api/health
@@ -57,7 +57,7 @@ npm run dev -- --port 3002
 # Open http://localhost:3002
 ```
 
-> The backend dashboard root (`GET /`) redirects to `http://localhost:3002`. Override with `OPENFANG_DASHBOARD_URL=http://...` or set `OPENFANG_LEGACY_UI=1` to restore the Alpine UI.
+> The backend dashboard root (`GET /`) redirects to `http://localhost:3002`. Override with `LegendClaw_DASHBOARD_URL=http://...` or set `LegendClaw_LEGACY_UI=1` to restore the Alpine UI.
 
 ---
 
@@ -150,7 +150,7 @@ Planner → Chat → **Brand** → **Work** (Command Center, Agency, Growth, Sch
 
 ## Changed Files
 
-### Rust (`crates/openfang-api/src/`)
+### Rust (`crates/LegendClaw-api/src/`)
 
 | File | Change |
 |------|--------|
@@ -191,34 +191,24 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ---
 
-## Upstream
+.
 
-This fork tracks [RightNow-AI/openfang](https://github.com/RightNow-AI/openfang). Currently synced to **v0.4.6**.
-
-To pull future upstream changes:
-
-```bash
-git fetch upstream
-git merge upstream/main -X theirs   # accept upstream for any core conflicts
-```
-
----
 
 ## License
 
 MIT — same as upstream.
 
 
-OpenFang is an **open-source Agent Operating System** — not a chatbot framework, not a Python wrapper around an LLM, not a "multi-agent orchestrator." It is a full operating system for autonomous agents, built from scratch in Rust.
+LegendClaw is an **open-source Agent Operating System** — not a chatbot framework, not a Python wrapper around an LLM, not a "multi-agent orchestrator." It is a full operating system for autonomous agents, built from scratch in Rust.
 
-Traditional agent frameworks wait for you to type something. OpenFang runs **autonomous agents that work for you** — on schedules, 24/7, building knowledge graphs, monitoring targets, generating leads, managing your social media, and reporting results to your dashboard.
+Traditional agent frameworks wait for you to type something. LegendClaw runs **autonomous agents that work for you** — on schedules, 24/7, building knowledge graphs, monitoring targets, generating leads, managing your social media, and reporting results to your dashboard.
 
 The entire system compiles to a **single ~32MB binary**. One install, one command, your agents are live.
 
 ```bash
-curl -fsSL https://openfang.sh/install | sh
-openfang init
-openfang start
+curl -fsSL https://LegendClaw.sh/install | sh
+LegendClaw init
+LegendClaw start
 # Dashboard live at http://localhost:50051
 ```
 
@@ -226,9 +216,9 @@ openfang start
 <summary><strong>Windows</strong></summary>
 
 ```powershell
-irm https://openfang.sh/install.ps1 | iex
-openfang init
-openfang start
+irm https://LegendClaw.sh/install.ps1 | iex
+LegendClaw init
+LegendClaw start
 ```
 
 </details>
@@ -239,7 +229,7 @@ openfang start
 
 <p align="center"><em>"Traditional agents wait for you to type. Hands work <strong>for</strong> you."</em></p>
 
-**Hands** are OpenFang's core innovation — pre-built autonomous capability packages that run independently, on schedules, without you having to prompt them. This is not a chatbot. This is an agent that wakes up at 6 AM, researches your competitors, builds a knowledge graph, scores the findings, and delivers a report to your Telegram before you've had coffee.
+**Hands** are LegendClaw's core innovation — pre-built autonomous capability packages that run independently, on schedules, without you having to prompt them. This is not a chatbot. This is an agent that wakes up at 6 AM, researches your competitors, builds a knowledge graph, scores the findings, and delivers a report to your Telegram before you've had coffee.
 
 Each Hand bundles:
 - **HAND.toml** — Manifest declaring tools, settings, requirements, and dashboard metrics
@@ -263,29 +253,29 @@ All compiled into the binary. No downloading, no pip install, no Docker pull.
 
 ```bash
 # Activate the Researcher Hand — it starts working immediately
-openfang hand activate researcher
+LegendClaw hand activate researcher
 
 # Check its progress anytime
-openfang hand status researcher
+LegendClaw hand status researcher
 
 # Activate lead generation on a daily schedule
-openfang hand activate lead
+LegendClaw hand activate lead
 
 # Pause without losing state
-openfang hand pause lead
+LegendClaw hand pause lead
 
 # See all available Hands
-openfang hand list
+LegendClaw hand list
 ```
 
 **Build your own.** Define a `HAND.toml` with tools, settings, and a system prompt. Publish to FangHub.
 
 ---
 
-## OpenFang vs The Landscape
+## LegendClaw vs The Landscape
 
 <p align="center">
-  <img src="public/assets/openfang-vs-claws.png" width="600" alt="OpenFang vs OpenClaw vs ZeroClaw" />
+  <img src="public/assets/LegendClaw-vs-claws.png" width="600" alt="LegendClaw vs OpenClaw vs ZeroClaw" />
 </p>
 
 ### Benchmarks: Measured, Not Marketed
@@ -296,7 +286,7 @@ All data from official documentation and public repositories — February 2026.
 
 ```
 ZeroClaw   ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10 ms
-OpenFang   ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  180 ms    ★
+LegendClaw   ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  180 ms    ★
 LangGraph  █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  2.5 sec
 CrewAI     ████████████████████░░░░░░░░░░░░░░░░░░░░░░  3.0 sec
 AutoGen    ██████████████████████████░░░░░░░░░░░░░░░░░  4.0 sec
@@ -307,7 +297,7 @@ OpenClaw   ███████████████████████
 
 ```
 ZeroClaw   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    5 MB
-OpenFang   ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   40 MB    ★
+LegendClaw   ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   40 MB    ★
 LangGraph  ██████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  180 MB
 CrewAI     ████████████████████░░░░░░░░░░░░░░░░░░░░░░░  200 MB
 AutoGen    █████████████████████████░░░░░░░░░░░░░░░░░░  250 MB
@@ -318,7 +308,7 @@ OpenClaw   ███████████████████████
 
 ```
 ZeroClaw   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  8.8 MB
-OpenFang   ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   32 MB    ★
+LegendClaw   ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   32 MB    ★
 CrewAI     ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  100 MB
 LangGraph  ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  150 MB
 AutoGen    ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  200 MB
@@ -328,7 +318,7 @@ OpenClaw   ███████████████████████
 #### Security Systems (higher is better)
 
 ```
-OpenFang   ████████████████████████████████████████████   16      ★
+LegendClaw   ████████████████████████████████████████████   16      ★
 ZeroClaw   ███████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░    6
 OpenClaw   ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    3
 AutoGen    █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    2
@@ -339,7 +329,7 @@ CrewAI     ███░░░░░░░░░░░░░░░░░░░░
 #### Channel Adapters (higher is better)
 
 ```
-OpenFang   ████████████████████████████████████████████   40      ★
+LegendClaw   ████████████████████████████████████████████   40      ★
 ZeroClaw   ███████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░   15
 OpenClaw   █████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   13
 CrewAI     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    0
@@ -351,7 +341,7 @@ LangGraph  ░░░░░░░░░░░░░░░░░░░░░░░
 
 ```
 ZeroClaw   ████████████████████████████████████████████   28
-OpenFang   ██████████████████████████████████████████░░   27      ★
+LegendClaw   ██████████████████████████████████████████░░   27      ★
 LangGraph  ██████████████████████░░░░░░░░░░░░░░░░░░░░░   15
 CrewAI     ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
 OpenClaw   ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
@@ -360,7 +350,7 @@ AutoGen    ███████████░░░░░░░░░░░░
 
 ### Feature-by-Feature Comparison
 
-| Feature | OpenFang | OpenClaw | ZeroClaw | CrewAI | AutoGen | LangGraph |
+| Feature | LegendClaw | OpenClaw | ZeroClaw | CrewAI | AutoGen | LangGraph |
 |---------|----------|----------|----------|--------|---------|-----------|
 | **Language** | **Rust** | TypeScript | **Rust** | Python | Python | Python |
 | **Autonomous Hands** | **7 built-in** | None | None | None | None | None |
@@ -379,7 +369,7 @@ AutoGen    ███████████░░░░░░░░░░░░
 
 ## 16 Security Systems — Defense in Depth
 
-OpenFang doesn't bolt security on after the fact. Every layer is independently testable and operates without a single point of failure.
+LegendClaw doesn't bolt security on after the fact. Every layer is independently testable and operates without a single point of failure.
 
 | # | System | What It Does |
 |---|--------|-------------|
@@ -407,19 +397,19 @@ OpenFang doesn't bolt security on after the fact. Every layer is independently t
 14 Rust crates. 137,728 lines of code. Modular kernel design.
 
 ```
-openfang-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget tracking
-openfang-runtime     Agent loop, 3 LLM drivers, 53 tools, WASM sandbox, MCP, A2A
-openfang-api         140+ REST/WS/SSE endpoints, OpenAI-compatible API, dashboard
-openfang-channels    40 messaging adapters with rate limiting, DM/group policies
-openfang-memory      SQLite persistence, vector embeddings, canonical sessions, compaction
-openfang-types       Core types, taint tracking, Ed25519 manifest signing, model catalog
-openfang-skills      60 bundled skills, SKILL.md parser, FangHub marketplace
-openfang-hands       7 autonomous Hands, HAND.toml parser, lifecycle management
-openfang-extensions  25 MCP templates, AES-256-GCM credential vault, OAuth2 PKCE
-openfang-wire        OFP P2P protocol with HMAC-SHA256 mutual authentication
-openfang-cli         CLI with daemon management, TUI dashboard, MCP server mode
-openfang-desktop     Tauri 2.0 native app (system tray, notifications, global shortcuts)
-openfang-migrate     OpenClaw, LangChain, AutoGPT migration engine
+LegendClaw-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget tracking
+LegendClaw-runtime     Agent loop, 3 LLM drivers, 53 tools, WASM sandbox, MCP, A2A
+LegendClaw-api         140+ REST/WS/SSE endpoints, OpenAI-compatible API, dashboard
+LegendClaw-channels    40 messaging adapters with rate limiting, DM/group policies
+LegendClaw-memory      SQLite persistence, vector embeddings, canonical sessions, compaction
+LegendClaw-types       Core types, taint tracking, Ed25519 manifest signing, model catalog
+LegendClaw-skills      60 bundled skills, SKILL.md parser, FangHub marketplace
+LegendClaw-hands       7 autonomous Hands, HAND.toml parser, lifecycle management
+LegendClaw-extensions  25 MCP templates, AES-256-GCM credential vault, OAuth2 PKCE
+LegendClaw-wire        OFP P2P protocol with HMAC-SHA256 mutual authentication
+LegendClaw-cli         CLI with daemon management, TUI dashboard, MCP server mode
+LegendClaw-desktop     Tauri 2.0 native app (system tray, notifications, global shortcuts)
+LegendClaw-migrate     OpenClaw, LangChain, AutoGPT migration engine
 xtask                Build automation
 ```
 
@@ -442,12 +432,12 @@ Each adapter supports per-channel model overrides, DM/group policies, rate limit
 
 ## WhatsApp Web Gateway (QR Code)
 
-Connect your personal WhatsApp account to OpenFang via QR code — just like WhatsApp Web. No Meta Business account required.
+Connect your personal WhatsApp account to LegendClaw via QR code — just like WhatsApp Web. No Meta Business account required.
 
 ### Prerequisites
 
 - **Node.js >= 18** installed ([download](https://nodejs.org/))
-- OpenFang installed and initialized
+- LegendClaw installed and initialized
 
 ### Setup
 
@@ -490,10 +480,10 @@ node packages/whatsapp-gateway/index.js
 
 The gateway listens on port `3009` by default. Override with `WHATSAPP_GATEWAY_PORT`.
 
-**5. Start OpenFang:**
+**5. Start LegendClaw:**
 
 ```bash
-openfang start
+LegendClaw start
 # Dashboard at http://localhost:4200
 ```
 
@@ -509,10 +499,10 @@ Once scanned, the status changes to `connected` and incoming messages are routed
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `WHATSAPP_WEB_GATEWAY_URL` | Gateway URL for OpenFang to connect to | _(empty = disabled)_ |
+| `WHATSAPP_WEB_GATEWAY_URL` | Gateway URL for LegendClaw to connect to | _(empty = disabled)_ |
 | `WHATSAPP_GATEWAY_PORT` | Port the gateway listens on | `3009` |
-| `OPENFANG_URL` | OpenFang API URL the gateway reports to | `http://127.0.0.1:4200` |
-| `OPENFANG_DEFAULT_AGENT` | Agent that handles incoming messages | `assistant` |
+| `LegendClaw_URL` | LegendClaw API URL the gateway reports to | `http://127.0.0.1:4200` |
+| `LegendClaw_DEFAULT_AGENT` | Agent that handles incoming messages | `assistant` |
 
 ### Gateway API Endpoints
 
@@ -525,7 +515,7 @@ Once scanned, the status changes to `connected` and incoming messages are routed
 
 ### Alternative: WhatsApp Cloud API
 
-For production workloads, use the [WhatsApp Cloud API](https://developers.facebook.com/docs/whatsapp/cloud-api) with a Meta Business account. See the [Cloud API configuration docs](https://openfang.sh/docs/channels/whatsapp).
+For production workloads, use the [WhatsApp Cloud API](https://developers.facebook.com/docs/whatsapp/cloud-api) with a Meta Business account. See the [Cloud API configuration docs](https://LegendClaw.sh/docs/channels/whatsapp).
 
 
 
@@ -547,27 +537,27 @@ Already running OpenClaw? One command:
 
 ```bash
 # Migrate everything — agents, memory, skills, configs
-openfang migrate --from openclaw
+LegendClaw migrate --from openclaw
 
 # Migrate from a specific path
-openfang migrate --from openclaw --path ~/.openclaw
+LegendClaw migrate --from openclaw --path ~/.openclaw
 
 # Dry run first to see what would change
-openfang migrate --from openclaw --dry-run
+LegendClaw migrate --from openclaw --dry-run
 ```
 
-The migration engine imports your agents, conversation history, skills, and configuration. OpenFang reads SKILL.md natively and is compatible with the ClawHub marketplace.
+The migration engine imports your agents, conversation history, skills, and configuration. LegendClaw reads SKILL.md natively and is compatible with the ClawHub marketplace.
 
 ---
 
 ## OpenAI-Compatible API
 
-Drop-in replacement. Point your existing tools at OpenFang:
+Drop-in replacement. Point your existing tools at LegendClaw:
 
 ```bash
 curl -X POST localhost:50051/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  -H "Authorization: Bearer $LegendClaw_API_KEY" \
   -d '{
     "model": "researcher",
     "messages": [{"role": "user", "content": "Analyze Q4 market trends"}],
@@ -583,37 +573,37 @@ curl -X POST localhost:50051/v1/chat/completions \
 
 ```bash
 # 1. Install (macOS/Linux)
-curl -fsSL https://openfang.sh/install | sh
+curl -fsSL https://LegendClaw.sh/install | sh
 
 # 2. Initialize — walks you through provider setup
-openfang init
+LegendClaw init
 
 # 3. Start the daemon
-openfang start
+LegendClaw start
 
-# 4. App backends should use OPENFANG_BASE_URL=http://127.0.0.1:50051
-#    and send Authorization: Bearer $OPENFANG_API_KEY when auth is enabled.
+# 4. App backends should use LegendClaw_BASE_URL=http://127.0.0.1:50051
+#    and send Authorization: Bearer $LegendClaw_API_KEY when auth is enabled.
 
 # 5. Dashboard is live at http://localhost:50051
 
 # 6. Activate a Hand — it starts working for you
-openfang hand activate researcher
+LegendClaw hand activate researcher
 
 # 7. Chat with an agent
-openfang chat researcher
+LegendClaw chat researcher
 > "What are the emerging trends in AI agent frameworks?"
 
 # 8. Spawn a pre-built agent
-openfang agent spawn coder
+LegendClaw agent spawn coder
 ```
 
 <details>
 <summary><strong>Windows (PowerShell)</strong></summary>
 
 ```powershell
-irm https://openfang.sh/install.ps1 | iex
-openfang init
-openfang start
+irm https://LegendClaw.sh/install.ps1 | iex
+LegendClaw init
+LegendClaw start
 ```
 
 </details>
@@ -640,11 +630,11 @@ cargo fmt --all -- --check
 
 ## Stability Notice
 
-OpenFang v0.3.30 is pre-1.0. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
+LegendClaw v0.3.30 is pre-1.0. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
 
 - **Breaking changes** may occur between minor versions until v1.0
 - **Some Hands** are more mature than others (Browser and Researcher are the most battle-tested)
-- **Edge cases** exist — if you find one, [open an issue](https://github.com/RightNow-AI/openfang/issues)
+- **Edge cases** exist — if you find one, [open an issue](https://github.com/RightNow-AI/LegendClaw/issues)
 - **Pin to a specific commit** for production deployments until v1.0
 
 We ship fast and fix fast. The goal is a rock-solid v1.0 by mid-2026.
@@ -665,11 +655,11 @@ MIT — use it however you want.
 
 ## Links
 
-- [Website & Documentation](https://openfang.sh)
-- [Quick Start Guide](https://openfang.sh/docs/getting-started)
-- [GitHub](https://github.com/RightNow-AI/openfang)
+- [Website & Documentation](https://LegendClaw.sh)
+- [Quick Start Guide](https://LegendClaw.sh/docs/getting-started)
+- [GitHub](https://github.com/RightNow-AI/LegendClaw)
 - [Discord](https://discord.gg/sSJqgNnq6X)
-- [Twitter / X](https://x.com/openfangg)
+- [Twitter / X](https://x.com/LegendClawg)
 
 ---
 
@@ -682,13 +672,13 @@ MIT — use it however you want.
 </p>
 
 <p align="center">
-  OpenFang is built and maintained by <a href="https://x.com/Akashi203"><strong>Jaber</strong></a>, Founder of <a href="https://www.rightnowai.co/"><strong>RightNow</strong></a>.
+  LegendClaw is built and maintained by <a href="https://x.com/Akashi203"><strong>Jaber</strong></a>, Founder of <a href="https://www.rightnowai.co/"><strong>RightNow</strong></a>.
 </p>
 
 <p align="center">
   <a href="https://www.rightnowai.co/">Website</a> &bull;
   <a href="https://x.com/Akashi203">Twitter / X</a> &bull;
-  <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
+  <a href="https://www.buymeacoffee.com/LegendClaw" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
 </p>
 
 ---
