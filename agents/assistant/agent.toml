@@ -76,6 +76,3 @@ memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]
 agent_message = ["*"]
 shell = ["python *", "cargo *", "git *", "npm *"]
-
-[autonomous]
-max_iterations = 100
