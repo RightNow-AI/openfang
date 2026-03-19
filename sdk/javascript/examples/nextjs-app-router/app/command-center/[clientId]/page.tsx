@@ -40,15 +40,15 @@ export default function CommandCenterOverviewPage({ params }: Props) {
 
       <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
         <Link href={`/command-center/${clientId}/wizard`}
-          style={{ padding: "6px 16px", border: "1px solid var(--border, #333)", borderRadius: 6, fontSize: 14 }}>
+          style={{ padding: "6px 16px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14 }}>
           Open wizard
         </Link>
         <Link href={`/command-center/${clientId}/approvals`}
-          style={{ padding: "6px 16px", border: "1px solid var(--border, #333)", borderRadius: 6, fontSize: 14 }}>
+          style={{ padding: "6px 16px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14 }}>
           Approvals
         </Link>
         <Link href={`/command-center/${clientId}/results`}
-          style={{ padding: "6px 16px", border: "1px solid var(--border, #333)", borderRadius: 6, fontSize: 14 }}>
+          style={{ padding: "6px 16px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14 }}>
           Results
         </Link>
       </div>

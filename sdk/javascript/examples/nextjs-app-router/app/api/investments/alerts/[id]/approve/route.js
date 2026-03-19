@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { api } from '../../../../../lib/api-server';
+import { api } from '../../../../../../lib/api-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

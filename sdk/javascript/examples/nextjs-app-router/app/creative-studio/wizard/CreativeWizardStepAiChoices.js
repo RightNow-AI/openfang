@@ -29,7 +29,7 @@ export default function CreativeWizardStepAiChoices({ state, onChange, needsImag
           Choose your AI tools
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>
-          Everything is set to "Auto-recommend" by default — change any group if you want more control.
+          Everything is set to &ldquo;Auto-recommend&rdquo; by default — change any group if you want more control.
           Image and video are separate lanes with separate approvals.
         </div>
       </div>

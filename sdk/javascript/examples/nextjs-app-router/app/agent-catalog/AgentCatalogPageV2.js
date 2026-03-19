@@ -114,14 +114,14 @@ function divisionColor(div) {
 function WizardStep({ step, total, title, children }) {
   return (
     <div style={{ padding: '0 0 8px 0' }}>
-      <div style={{ fontSize: 12, color: '#94A3B8', marginBottom: 6 }}>
+      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 6 }}>
         Step {step} of {total}
       </div>
       <div
         style={{
           fontSize: 18,
           fontWeight: 700,
-          color: '#F1F5F9',
+          color: 'var(--text)',
           marginBottom: 20,
         }}
       >
@@ -142,9 +142,9 @@ function ChoiceBtn({ selected, onClick, icon, label, desc }) {
         gap: 12,
         padding: '12px 16px',
         borderRadius: 10,
-        border: `2px solid ${selected ? '#6366F1' : '#1E293B'}`,
-        background: selected ? 'rgba(99,102,241,0.12)' : '#0F172A',
-        color: '#F1F5F9',
+        border: `2px solid ${selected ? 'var(--accent)' : 'var(--border)'}` ,
+        background: selected ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+        color: 'var(--text)',
         width: '100%',
         cursor: 'pointer',
         marginBottom: 8,
@@ -156,13 +156,13 @@ function ChoiceBtn({ selected, onClick, icon, label, desc }) {
       <span>
         <span style={{ fontSize: 14, fontWeight: 600, display: 'block' }}>{label}</span>
         {desc && (
-          <span style={{ fontSize: 12, color: '#94A3B8', display: 'block', marginTop: 2 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-dim)', display: 'block', marginTop: 2 }}>
             {desc}
           </span>
         )}
       </span>
       {selected && (
-        <span style={{ marginLeft: 'auto', color: '#6366F1', fontSize: 18 }}>✓</span>
+        <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 18 }}>✓</span>
       )}
     </button>
   );
@@ -236,7 +236,7 @@ function StepRecommendations({ goal, mode, style, entries, onSpawnPack, spawnSta
       {style === 'simple' && pack && (
         <div
           style={{
-            background: '#0F172A',
+            background: 'var(--bg-elevated)',
             border: `2px solid ${pack.color}40`,
             borderRadius: 12,
             padding: '16px 20px',
@@ -244,10 +244,10 @@ function StepRecommendations({ goal, mode, style, entries, onSpawnPack, spawnSta
           }}
         >
           <div style={{ fontSize: 28, marginBottom: 8 }}>{pack.icon}</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: '#F1F5F9', marginBottom: 4 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>
             {pack.title}
           </div>
-          <div style={{ fontSize: 13, color: '#94A3B8', marginBottom: 12 }}>{pack.subtitle}</div>
+          <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 12 }}>{pack.subtitle}</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
             {pack.includesAgents.map((a) => (
               <span
@@ -266,7 +266,7 @@ function StepRecommendations({ goal, mode, style, entries, onSpawnPack, spawnSta
             ))}
           </div>
           {spawnStatus[pack.id] === 'done' ? (
-            <div style={{ color: '#10B981', fontSize: 14, fontWeight: 600 }}>
+            <div style={{ color: 'var(--success)', fontSize: 14, fontWeight: 600 }}>
               ✓ Agents spawned
             </div>
           ) : (
@@ -289,7 +289,7 @@ function StepRecommendations({ goal, mode, style, entries, onSpawnPack, spawnSta
             </button>
           )}
           {spawnStatus[pack.id] === 'error' && (
-            <div style={{ color: '#F87171', fontSize: 12, marginTop: 6 }}>
+            <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 6 }}>
               Some agents failed to spawn. Continue to see what was created.
             </div>
           )}
@@ -297,7 +297,7 @@ function StepRecommendations({ goal, mode, style, entries, onSpawnPack, spawnSta
       )}
       {(style === 'recommended' || style === 'show-all') && (
         <>
-          <div style={{ fontSize: 13, color: '#94A3B8', marginBottom: 12 }}>
+          <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 12 }}>
             {filtered.length} agent{filtered.length !== 1 ? 's' : ''} found
           </div>
           <div
@@ -313,18 +313,18 @@ function StepRecommendations({ goal, mode, style, entries, onSpawnPack, spawnSta
               <div
                 key={e.catalog_id}
                 style={{
-                  background: '#0F172A',
-                  border: '1px solid #1E293B',
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border)',
                   borderRadius: 8,
                   padding: '10px 14px',
                 }}
               >
-                <div style={{ fontSize: 14, fontWeight: 600, color: '#F1F5F9' }}>{e.name}</div>
-                <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 2 }}>{e.description}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{e.name}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{e.description}</div>
               </div>
             ))}
             {filtered.length === 0 && (
-              <div style={{ color: '#64748B', fontSize: 13 }}>None in this category.</div>
+              <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>None in this category.</div>
             )}
           </div>
         </>
@@ -343,7 +343,7 @@ function StepFinish({ mode, style, onClose }) {
         }}
       >
         <div style={{ fontSize: 52, marginBottom: 12 }}>🎉</div>
-        <div style={{ fontSize: 15, color: '#CBD5E1', marginBottom: 20 }}>
+        <div style={{ fontSize: 15, color: 'var(--text-soft)', marginBottom: 20 }}>
           Your agents are being set up.
           {style === 'simple'
             ? " They'll appear in My Agents once ready."
@@ -355,7 +355,7 @@ function StepFinish({ mode, style, onClose }) {
             padding: '10px 28px',
             borderRadius: 8,
             border: 'none',
-            background: '#6366F1',
+            background: 'var(--accent)',
             color: '#fff',
             fontWeight: 700,
             cursor: 'pointer',
@@ -441,7 +441,7 @@ function AgentCatalogWizard({ entries, onClose, onSpawned }) {
     >
       <div
         style={{
-          background: '#1E293B',
+          background: 'var(--bg-card)',
           borderRadius: 16,
           width: '100%',
           maxWidth: 520,
@@ -460,7 +460,7 @@ function AgentCatalogWizard({ entries, onClose, onSpawned }) {
             right: 16,
             background: 'none',
             border: 'none',
-            color: '#64748B',
+            color: 'var(--text-dim)',
             cursor: 'pointer',
             fontSize: 20,
             padding: '2px 6px',
@@ -506,9 +506,9 @@ function AgentCatalogWizard({ entries, onClose, onSpawned }) {
                 style={{
                   padding: '8px 20px',
                   borderRadius: 8,
-                  border: '1px solid #334155',
+                  border: '1px solid var(--border-strong)',
                   background: 'transparent',
-                  color: '#94A3B8',
+                  color: 'var(--text-dim)',
                   cursor: 'pointer',
                   fontSize: 14,
                 }}
@@ -525,8 +525,8 @@ function AgentCatalogWizard({ entries, onClose, onSpawned }) {
                 padding: '8px 24px',
                 borderRadius: 8,
                 border: 'none',
-                background: canNext ? '#6366F1' : '#334155',
-                color: canNext ? '#fff' : '#64748B',
+                background: canNext ? 'var(--accent)' : 'var(--border-strong)',
+                color: canNext ? 'var(--text-inverse)' : 'var(--text-dim)',
                 fontWeight: 700,
                 cursor: canNext ? 'pointer' : 'not-allowed',
                 fontSize: 14,
@@ -550,7 +550,7 @@ function AgentStarterPackCard({ pack, onSpawn, spawnStatus }) {
   return (
     <div
       style={{
-        background: 'linear-gradient(135deg, #0F172A 0%, #1E293B 100%)',
+        background: 'var(--bg-card)',
         border: `2px solid ${pack.color}33`,
         borderRadius: 14,
         padding: '20px 22px',
@@ -571,8 +571,8 @@ function AgentStarterPackCard({ pack, onSpawn, spawnStatus }) {
           {pack.icon}
         </span>
         <div>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#F1F5F9' }}>{pack.title}</div>
-          <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 2 }}>{pack.subtitle}</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{pack.title}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{pack.subtitle}</div>
         </div>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -593,7 +593,7 @@ function AgentStarterPackCard({ pack, onSpawn, spawnStatus }) {
         ))}
       </div>
       {status === 'done' ? (
-        <div style={{ color: '#10B981', fontSize: 13, fontWeight: 600 }}>✓ Agents spawned</div>
+        <div style={{ color: 'var(--success)', fontSize: 13, fontWeight: 600 }}>✓ Agents spawned</div>
       ) : (
         <button
           onClick={() => onSpawn(pack)}
@@ -616,7 +616,7 @@ function AgentStarterPackCard({ pack, onSpawn, spawnStatus }) {
         </button>
       )}
       {status === 'error' && (
-        <div style={{ color: '#F87171', fontSize: 12 }}>Some agents failed — check My Agents.</div>
+        <div style={{ color: 'var(--danger)', fontSize: 12 }}>Some agents failed — check My Agents.</div>
       )}
     </div>
   );
@@ -627,8 +627,8 @@ function AgentCardSimple({ entry }) {
   return (
     <div
       style={{
-        background: '#0F172A',
-        border: '1px solid #1E293B',
+        background: 'var(--bg-elevated)',
+        border: '1px solid var(--border)',
         borderRadius: 10,
         padding: '14px 16px',
         display: 'flex',
@@ -648,11 +648,11 @@ function AgentCardSimple({ entry }) {
         🤖
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: '#F1F5F9' }}>{entry.name}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{entry.name}</div>
         <div
           style={{
             fontSize: 12,
-            color: '#94A3B8',
+            color: 'var(--text-dim)',
             marginTop: 3,
             overflow: 'hidden',
             textOverflow: 'ellipsis',
@@ -681,8 +681,8 @@ function AgentCardSimple({ entry }) {
                 fontSize: 10,
                 padding: '2px 8px',
                 borderRadius: 100,
-                background: '#1E293B',
-                color: '#64748B',
+                background: 'var(--bg-card)',
+                color: 'var(--text-dim)',
               }}
             >
               {t}
@@ -704,7 +704,7 @@ function RecommendedAgentsTab({ entries, onOpenWizard }) {
       {/* Hero CTA */}
       <div
         style={{
-          background: 'linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%)',
+          background: 'linear-gradient(135deg, var(--accent-dim) 0%, var(--accent) 100%)',
           borderRadius: 16,
           padding: '28px 32px',
           marginBottom: 28,
@@ -730,7 +730,7 @@ function RecommendedAgentsTab({ entries, onOpenWizard }) {
             borderRadius: 10,
             border: 'none',
             background: '#fff',
-            color: '#4F46E5',
+            color: 'var(--accent)',
             fontWeight: 800,
             cursor: 'pointer',
             fontSize: 15,
@@ -742,7 +742,7 @@ function RecommendedAgentsTab({ entries, onOpenWizard }) {
       </div>
 
       {/* Starter packs */}
-      <div style={{ fontSize: 15, fontWeight: 700, color: '#CBD5E1', marginBottom: 14 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-soft)', marginBottom: 14 }}>
         Starter packs
       </div>
       <div
@@ -768,7 +768,7 @@ function RecommendedAgentsTab({ entries, onOpenWizard }) {
 function MyAgentsTab({ entries, loading, onOpenWizard }) {
   if (loading) {
     return (
-      <div style={{ color: '#94A3B8', fontSize: 14, padding: '40px 0', textAlign: 'center' }}>
+      <div style={{ color: 'var(--text-dim)', fontSize: 14, padding: '40px 0', textAlign: 'center' }}>
         Loading agents…
       </div>
     );
@@ -782,16 +782,16 @@ function MyAgentsTab({ entries, loading, onOpenWizard }) {
         style={{
           textAlign: 'center',
           padding: '64px 32px',
-          background: '#0F172A',
+          background: 'var(--bg-elevated)',
           borderRadius: 16,
-          border: '1px dashed #1E293B',
+          border: '1px dashed var(--border)',
         }}
       >
         <div style={{ fontSize: 40, marginBottom: 12 }}>🤖</div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: '#CBD5E1', marginBottom: 8 }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-soft)', marginBottom: 8 }}>
           No agents yet
         </div>
-        <div style={{ fontSize: 14, color: '#64748B', marginBottom: 20 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-dim)', marginBottom: 20 }}>
           Use the setup wizard to get your first agents running.
         </div>
         <button
@@ -800,7 +800,7 @@ function MyAgentsTab({ entries, loading, onOpenWizard }) {
             padding: '10px 24px',
             borderRadius: 8,
             border: 'none',
-            background: '#6366F1',
+            background: 'var(--accent)',
             color: '#fff',
             fontWeight: 700,
             cursor: 'pointer',
@@ -825,7 +825,7 @@ function MyAgentsTab({ entries, loading, onOpenWizard }) {
 function TemplatesAgentsTab({ onSpawn, spawnStatus }) {
   return (
     <div>
-      <div style={{ fontSize: 13, color: '#94A3B8', marginBottom: 16 }}>
+      <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 16 }}>
         Spawn a full starter pack in one click.
       </div>
       <div
@@ -897,7 +897,7 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
 
   if (error) {
     return (
-      <div data-cy="catalog-error" style={{ color: '#F87171', padding: '16px 0' }}>
+      <div data-cy="catalog-error" style={{ color: 'var(--danger)', padding: '16px 0' }}>
         {error}
       </div>
     );
@@ -916,9 +916,9 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
             width: '100%',
             padding: '10px 14px',
             borderRadius: 8,
-            border: '1px solid #1E293B',
-            background: '#0F172A',
-            color: '#F1F5F9',
+            border: '1px solid var(--border)',
+            background: 'var(--bg-elevated)',
+            color: 'var(--text)',
             fontSize: 14,
             outline: 'none',
           }}
@@ -926,16 +926,16 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
       </div>
 
       {loading ? (
-        <div style={{ color: '#94A3B8', fontSize: 14, textAlign: 'center', padding: '40px 0' }}>
+        <div style={{ color: 'var(--text-dim)', fontSize: 14, textAlign: 'center', padding: '40px 0' }}>
           Loading…
         </div>
       ) : filtered.length === 0 ? (
         filter ? (
-          <div data-cy="catalog-filter-empty" style={{ color: '#64748B', fontSize: 14 }}>
+          <div data-cy="catalog-filter-empty" style={{ color: 'var(--text-dim)', fontSize: 14 }}>
             {`No agents match "${filter}".`}
           </div>
         ) : (
-          <div data-cy="catalog-empty" style={{ color: '#64748B', fontSize: 14 }}>
+          <div data-cy="catalog-empty" style={{ color: 'var(--text-dim)', fontSize: 14 }}>
             No agents in catalog.
           </div>
         )
@@ -949,18 +949,18 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
               key={e.catalog_id}
               data-cy="catalog-card"
               style={{
-                background: '#0F172A',
-                border: `1px solid ${expanded === e.catalog_id ? '#6366F1' : '#1E293B'}`,
+                background: 'var(--bg-elevated)',
+                border: `1px solid ${expanded === e.catalog_id ? 'var(--accent)' : 'var(--border)'}` ,
                 borderRadius: 10,
                 padding: '14px 16px',
               }}
             >
               <div
-                style={{ fontSize: 14, fontWeight: 700, color: '#F1F5F9', marginBottom: 4 }}
+                style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}
               >
                 {e.name}
               </div>
-              <div style={{ fontSize: 12, color: '#94A3B8', marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 10 }}>
                 {e.description}
               </div>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
@@ -971,9 +971,9 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
                     fontSize: 12,
                     padding: '4px 12px',
                     borderRadius: 6,
-                    border: '1px solid #334155',
+                    border: '1px solid var(--border-strong)',
                     background: 'transparent',
-                    color: '#94A3B8',
+                    color: 'var(--text-dim)',
                     cursor: 'pointer',
                   }}
                 >
@@ -987,7 +987,7 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
                     padding: '4px 12px',
                     borderRadius: 6,
                     border: 'none',
-                    background: '#6366F1',
+                    background: 'var(--accent)',
                     color: '#fff',
                     cursor: 'pointer',
                   }}
@@ -999,21 +999,21 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
               {expanded === e.catalog_id && (
                 <div
                   data-cy="agent-detail-overlay"
-                  style={{ marginTop: 12, borderTop: '1px solid #1E293B', paddingTop: 12 }}
+                  style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}
                 >
                   <div data-cy="agent-detail-panel">
                     {e.best_for && (
-                      <div style={{ fontSize: 12, color: '#94A3B8', marginBottom: 4 }}>
-                        <strong style={{ color: '#CBD5E1' }}>Best for:</strong> {e.best_for}
+                      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 4 }}>
+                        <strong style={{ color: 'var(--text-soft)' }}>Best for:</strong> {e.best_for}
                       </div>
                     )}
                     {e.example && (
-                      <div style={{ fontSize: 12, color: '#94A3B8', marginBottom: 10 }}>
-                        <strong style={{ color: '#CBD5E1' }}>Example:</strong> {e.example}
+                      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 10 }}>
+                        <strong style={{ color: 'var(--text-soft)' }}>Example:</strong> {e.example}
                       </div>
                     )}
                     {preflightWarning && (
-                      <div data-cy="preflight-warning" style={{ color: '#FBBF24', fontSize: 12, marginBottom: 6 }}>
+                      <div data-cy="preflight-warning" style={{ color: 'var(--warning)', fontSize: 12, marginBottom: 6 }}>
                         ⚠ {preflightWarning}
                         <button
                           data-cy="spawn-anyway-btn"
@@ -1023,9 +1023,9 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
                             fontSize: 11,
                             padding: '2px 8px',
                             borderRadius: 4,
-                            border: '1px solid #FBBF24',
+                            border: '1px solid var(--warning)',
                             background: 'transparent',
-                            color: '#FBBF24',
+                            color: 'var(--warning)',
                             cursor: 'pointer',
                           }}
                         >
@@ -1034,12 +1034,12 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
                       </div>
                     )}
                     {preflightError && (
-                      <div data-cy="preflight-error" style={{ color: '#F87171', fontSize: 12, marginBottom: 6 }}>
+                      <div data-cy="preflight-error" style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 6 }}>
                         {preflightError}
                       </div>
                     )}
                     {spawnError && (
-                      <div data-cy="spawn-error" style={{ color: '#F87171', fontSize: 12, marginBottom: 6 }}>
+                      <div data-cy="spawn-error" style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 6 }}>
                         {spawnError}
                       </div>
                     )}
@@ -1054,9 +1054,9 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
                           flex: 1,
                           padding: '6px 10px',
                           borderRadius: 6,
-                          border: '1px solid #1E293B',
-                          background: '#0F172A',
-                          color: '#F1F5F9',
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg-elevated)',
+                          color: 'var(--text)',
                           fontSize: 13,
                           outline: 'none',
                         }}
@@ -1069,7 +1069,7 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
                           padding: '6px 14px',
                           borderRadius: 6,
                           border: 'none',
-                          background: '#6366F1',
+                          background: 'var(--accent)',
                           color: '#fff',
                           fontWeight: 700,
                           cursor: spawning ? 'not-allowed' : 'pointer',
@@ -1144,13 +1144,13 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
   ];
 
   return (
-    <div data-cy="catalog-page" style={{ fontFamily: 'system-ui, sans-serif', color: '#F1F5F9' }}>
+    <div data-cy="catalog-page" style={{ fontFamily: 'system-ui, sans-serif', color: 'var(--text)' }}>
       {/* Header */}
       <div style={{ marginBottom: 28 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0, color: '#F1F5F9' }}>
+        <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0, color: 'var(--text)' }}>
           Agent Catalog
         </h1>
-        <p style={{ fontSize: 14, color: '#94A3B8', margin: '6px 0 0' }}>
+        <p style={{ fontSize: 14, color: 'var(--text-dim)', margin: '6px 0 0' }}>
           Browse and spawn AI agents for your workflows.
         </p>
       </div>
@@ -1160,7 +1160,7 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
         style={{
           display: 'flex',
           gap: 4,
-          borderBottom: '1px solid #1E293B',
+          borderBottom: '1px solid var(--border)',
           marginBottom: 24,
         }}
       >
@@ -1172,8 +1172,8 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
               padding: '8px 18px',
               background: 'none',
               border: 'none',
-              borderBottom: tab === t.id ? '2px solid #6366F1' : '2px solid transparent',
-              color: tab === t.id ? '#6366F1' : '#94A3B8',
+              borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
+              color: tab === t.id ? 'var(--accent)' : 'var(--text-dim)',
               fontWeight: tab === t.id ? 700 : 500,
               cursor: 'pointer',
               fontSize: 14,

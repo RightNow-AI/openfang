@@ -1,13 +1,14 @@
-import { NextRequest, NextResponse } from 'next/server';
+﻿import { NextRequest, NextResponse } from 'next/server';
 
 const BASE = process.env.OPENFANG_BASE_URL ?? 'http://127.0.0.1:50051';
-type Params = { params: { id: string } };
+type Params = { params: Promise<{ id: string }> };
 
 /** POST /api/creative-projects/[id]/tasks/launch */
 export async function POST(req: NextRequest, { params }: Params) {
+  const { id } = await params;
   const body = await req.json().catch(() => ({}));
   try {
-    const res = await fetch(`${BASE}/api/creative-projects/${params.id}/tasks/launch`, {
+    const res = await fetch(`${BASE}/api/creative-projects/${id}/tasks/launch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

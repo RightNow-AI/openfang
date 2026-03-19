@@ -1,0 +1,346 @@
+
+
+DevTools listening on ws://127.0.0.1:64792/devtools/browser/cb2c8389-bd54-4f77-8c80-da831092f042
+
+====================================================================================================
+
+  (Run Starting)
+
+  ΓöîΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÉ
+  Γöé Cypress:        13.17.0                                                                        Γöé
+  Γöé Browser:        Electron 118 (headless)                                                        Γöé
+  Γöé Node Version:   v25.2.1 (C:\Program Files\nodejs\node.exe)                                     Γöé
+  Γöé Specs:          1 found (01-route-smoke.cy.js)                                                 Γöé
+  Γöé Searched:       C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\ Γöé
+  Γöé                 e2e\01-route-smoke.cy.js                                                       Γöé
+  ΓööΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÿ
+
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+                                                                                                    
+  Running:  01-route-smoke.cy.js                                                            (1 of 1)
+
+
+  Layer 1 ΓÇö Sidebar Route Smoke
+    ΓêÜ home page loads and sidebar is present (973ms)
+    Chat
+      1) sidebar link opens /chat
+      ΓêÜ direct URL /chat loads correctly (2790ms)
+      ΓêÜ /chat does not produce blank screen (972ms)
+      2) navigation to /chat and back does not crash
+    Inbox
+      3) sidebar link opens /inbox
+      ΓêÜ direct URL /inbox loads correctly (2257ms)
+      ΓêÜ /inbox does not produce blank screen (1227ms)
+      4) navigation to /inbox and back does not crash
+    Agent Catalog
+      5) sidebar link opens /agent-catalog
+      ΓêÜ direct URL /agent-catalog loads correctly (1216ms)
+      ΓêÜ /agent-catalog does not produce blank screen (823ms)
+      6) navigation to /agent-catalog and back does not crash
+    Approvals
+      7) sidebar link opens /approvals
+      ΓêÜ direct URL /approvals loads correctly (1549ms)
+      ΓêÜ /approvals does not produce blank screen (887ms)
+      8) navigation to /approvals and back does not crash
+    Comms
+      9) sidebar link opens /comms
+      ΓêÜ direct URL /comms loads correctly (1628ms)
+      ΓêÜ /comms does not produce blank screen (914ms)
+      10) navigation to /comms and back does not crash
+    Workflows
+      11) sidebar link opens /workflows
+      ΓêÜ direct URL /workflows loads correctly (1681ms)
+      ΓêÜ /workflows does not produce blank screen (980ms)
+      12) navigation to /workflows and back does not crash
+    Scheduler
+      13) sidebar link opens /scheduler
+      ΓêÜ direct URL /scheduler loads correctly (2506ms)
+      ΓêÜ /scheduler does not produce blank screen (1116ms)
+      14) navigation to /scheduler and back does not crash
+    Hands
+      15) sidebar link opens /hands
+      ΓêÜ direct URL /hands loads correctly (2058ms)
+      ΓêÜ /hands does not produce blank screen (863ms)
+      16) navigation to /hands and back does not crash
+    Sidebar structure
+      ΓêÜ all expected nav links are present (851ms)
+      ΓêÜ sidebar remains visible after three consecutive navigations (1480ms)
+
+
+  19 passing (4m)
+  16 failing
+
+  1) Layer 1 ΓÇö Sidebar Route Smoke
+       Chat
+         sidebar link opens /chat:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/'
+      +'/chat'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:100:32)
+
+  2) Layer 1 ΓÇö Sidebar Route Smoke
+       Chat
+         navigation to /chat and back does not crash:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/chat'
+      +'/overview'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:147:32)
+
+  3) Layer 1 ΓÇö Sidebar Route Smoke
+       Inbox
+         sidebar link opens /inbox:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/'
+      +'/inbox'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:100:32)
+
+  4) Layer 1 ΓÇö Sidebar Route Smoke
+       Inbox
+         navigation to /inbox and back does not crash:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/inbox'
+      +'/overview'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:147:32)
+
+  5) Layer 1 ΓÇö Sidebar Route Smoke
+       Agent Catalog
+         sidebar link opens /agent-catalog:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/'
+      +'/agent-catalog'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:100:32)
+
+  6) Layer 1 ΓÇö Sidebar Route Smoke
+       Agent Catalog
+         navigation to /agent-catalog and back does not crash:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/agent-catalog'
+      +'/overview'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:147:32)
+
+  7) Layer 1 ΓÇö Sidebar Route Smoke
+       Approvals
+         sidebar link opens /approvals:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/'
+      +'/approvals'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:100:32)
+
+  8) Layer 1 ΓÇö Sidebar Route Smoke
+       Approvals
+         navigation to /approvals and back does not crash:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/approvals'
+      +'/overview'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:147:32)
+
+  9) Layer 1 ΓÇö Sidebar Route Smoke
+       Comms
+         sidebar link opens /comms:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/'
+      +'/comms'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:100:32)
+
+  10) Layer 1 ΓÇö Sidebar Route Smoke
+       Comms
+         navigation to /comms and back does not crash:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/comms'
+      +'/overview'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:147:32)
+
+  11) Layer 1 ΓÇö Sidebar Route Smoke
+       Workflows
+         sidebar link opens /workflows:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/'
+      +'/workflows'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:100:32)
+
+  12) Layer 1 ΓÇö Sidebar Route Smoke
+       Workflows
+         navigation to /workflows and back does not crash:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/workflows'
+      +'/overview'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:147:32)
+
+  13) Layer 1 ΓÇö Sidebar Route Smoke
+       Scheduler
+         sidebar link opens /scheduler:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/'
+      +'/scheduler'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:100:32)
+
+  14) Layer 1 ΓÇö Sidebar Route Smoke
+       Scheduler
+         navigation to /scheduler and back does not crash:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/scheduler'
+      +'/overview'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:147:32)
+
+  15) Layer 1 ΓÇö Sidebar Route Smoke
+       Hands
+         sidebar link opens /hands:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/'
+      +'/hands'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:100:32)
+
+  16) Layer 1 ΓÇö Sidebar Route Smoke
+       Hands
+         navigation to /hands and back does not crash:
+
+      Timed out retrying after 12000ms
+      + expected - actual
+
+      -'/hands'
+      +'/overview'
+      
+      at Context.eval (webpack://@openfang/nextjs-app-router-example/./cypress/e2e/01-route-smoke.cy.js:147:32)
+
+
+
+
+  (Results)
+
+  ΓöîΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÉ
+  Γöé Tests:        35                                                                               Γöé
+  Γöé Passing:      19                                                                               Γöé
+  Γöé Failing:      16                                                                               Γöé
+  Γöé Pending:      0                                                                                Γöé
+  Γöé Skipped:      0                                                                                Γöé
+  Γöé Screenshots:  16                                                                               Γöé
+  Γöé Video:        false                                                                            Γöé
+  Γöé Duration:     4 minutes, 6 seconds                                                             Γöé
+  Γöé Spec Ran:     01-route-smoke.cy.js                                                             Γöé
+  ΓööΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÿ
+
+
+  (Screenshots)
+
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Chat -- sidebar                
+     link opens chat (failed).png                                                                   
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Chat -- navigati               
+     on to chat and back does not crash (failed).png                                                
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Inbox -- sidebar               
+      link opens inbox (failed).png                                                                 
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Inbox -- navigat               
+     ion to inbox and back does not crash (failed).png                                              
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Agent Catalog --               
+      sidebar link opens agent-catalog (failed).png                                                 
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Agent Catalog --               
+      navigation to agent-catalog and back does not crash (failed).png                              
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Approvals -- sid               
+     ebar link opens approvals (failed).png                                                         
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Approvals -- nav               
+     igation to approvals and back does not crash (failed).png                                      
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Comms -- sidebar               
+      link opens comms (failed).png                                                                 
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Comms -- navigat               
+     ion to comms and back does not crash (failed).png                                              
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Workflows -- sid               
+     ebar link opens workflows (failed).png                                                         
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Workflows -- nav               
+     igation to workflows and back does not crash (failed).png                                      
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Scheduler -- sid               
+     ebar link opens scheduler (failed).png                                                         
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Scheduler -- nav               
+     igation to scheduler and back does not crash (failed).png                                      
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Hands -- sidebar               
+      link opens hands (failed).png                                                                 
+  -  C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\sc     (1280x720)
+     reenshots\01-route-smoke.cy.js\Layer 1 ΓÇö Sidebar Route Smoke -- Hands -- navigat               
+     ion to hands and back does not crash (failed).png                                              
+
+
+====================================================================================================
+
+  (Run Finished)
+
+
+       Spec                                              Tests  Passing  Failing  Pending  Skipped  
+  ΓöîΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÉ
+  Γöé ├ù  01-route-smoke.cy.js                     04:06       35       19       16        -        - Γöé
+  ΓööΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÿ
+    ├ù  1 of 1 failed (100%)                     04:06       35       19       16        -        -  
+

@@ -29,10 +29,10 @@ export default function CreativeProjectDrawer({ open, project, onClose, onSave }
       style={{ position: 'fixed', inset: 0, zIndex: 1200, background: 'rgba(0,0,0,.65)', backdropFilter: 'blur(3px)', display: 'flex', justifyContent: 'flex-end' }}
       onClick={e => e.target === e.currentTarget && onClose()}
     >
-      <div data-cy="project-drawer" style={{ width: 480, background: 'var(--bg-elevated,#111)', borderLeft: '1px solid var(--border,#333)', overflowY: 'auto', padding: '28px 28px', display: 'flex', flexDirection: 'column', gap: 0 }}>
+      <div data-cy="project-drawer" style={{ width: 480, background: 'var(--bg-elevated)', borderLeft: '1px solid var(--border)', overflowY: 'auto', padding: '28px 28px', display: 'flex', flexDirection: 'column', gap: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
           <div style={{ fontWeight: 700, fontSize: 18 }}>Edit brief</div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: 'var(--text-dim,#888)', lineHeight: 1 }}>✕</button>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: 'var(--text-dim)', lineHeight: 1 }}>✕</button>
         </div>
 
         <Field label="Project name"     value={form.name            ?? ''} onChange={v => set('name', v)} />
@@ -44,20 +44,20 @@ export default function CreativeProjectDrawer({ open, project, onClose, onSave }
         <Field label="Notes"            value={form.notes           ?? ''} onChange={v => set('notes', v)} textarea />
 
         <div style={{ marginBottom: 16 }}>
-          <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim,#888)', textTransform: 'uppercase', letterSpacing: 1, display: 'block', marginBottom: 6 }}>Platform</label>
+          <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 1, display: 'block', marginBottom: 6 }}>Platform</label>
           <select
             value={form.platform ?? ''}
             onChange={e => set('platform', e.target.value)}
-            style={{ width: '100%', padding: '9px 12px', borderRadius: 7, background: 'var(--bg-elevated,#111)', border: '1px solid var(--border,#333)', color: 'var(--text-primary,#f1f1f1)', fontSize: 13 }}
+            style={{ width: '100%', padding: '9px 12px', borderRadius: 7, background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 13 }}
           >
             <option value="">Select platform…</option>
             {PLATFORM_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
 
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 16, borderTop: '1px solid var(--border,#333)', marginTop: 8 }}>
-          <button onClick={onClose} style={{ padding: '9px 18px', borderRadius: 7, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-dim,#888)', cursor: 'pointer', fontSize: 13 }}>Cancel</button>
-          <button onClick={handleSave} disabled={saving} style={{ padding: '9px 22px', borderRadius: 7, background: 'var(--accent,#7c3aed)', color: '#fff', border: 'none', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: saving ? 0.7 : 1 }}>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 16, borderTop: '1px solid var(--border)', marginTop: 8 }}>
+          <button onClick={onClose} style={{ padding: '9px 18px', borderRadius: 7, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 13 }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving} style={{ padding: '9px 22px', borderRadius: 7, background: 'var(--accent)', color: '#fff', border: 'none', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: saving ? 0.7 : 1 }}>
             {saving ? 'Saving…' : 'Save changes'}
           </button>
         </div>
@@ -70,14 +70,14 @@ function Field({ label, value, onChange, required, textarea }) {
   const Tag = textarea ? 'textarea' : 'input';
   return (
     <div style={{ marginBottom: 16 }}>
-      <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim,#888)', textTransform: 'uppercase', letterSpacing: 1, display: 'block', marginBottom: 6 }}>
+      <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 1, display: 'block', marginBottom: 6 }}>
         {label}{required && <span style={{ color: 'var(--error,#ef4444)', marginLeft: 3 }}>*</span>}
       </label>
       <Tag
         value={value}
         onChange={e => onChange(e.target.value)}
         rows={textarea ? 3 : undefined}
-        style={{ width: '100%', padding: '9px 12px', borderRadius: 7, background: 'var(--bg-elevated,#111)', border: '1px solid var(--border,#333)', color: 'var(--text-primary,#f1f1f1)', fontSize: 13, outline: 'none', resize: textarea ? 'vertical' : undefined, boxSizing: 'border-box', fontFamily: 'inherit' }}
+        style={{ width: '100%', padding: '9px 12px', borderRadius: 7, background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 13, outline: 'none', resize: textarea ? 'vertical' : undefined, boxSizing: 'border-box', fontFamily: 'inherit' }}
       />
     </div>
   );

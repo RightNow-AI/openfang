@@ -38,7 +38,7 @@ export default function GrowthResultsPage({ params }: Props) {
             {results.map((r) => (
               <div key={r.id} onClick={() => setActive(r)}
                 style={{
-                  border: `1px solid ${active?.id === r.id ? "var(--accent, #7c3aed)" : "var(--border, #333)"}`,
+                  border: `1px solid ${active?.id === r.id ? "var(--accent)" : "var(--border)"}`,
                   borderRadius: 8, padding: "12px 16px", marginBottom: 8, cursor: "pointer",
                   background: active?.id === r.id ? "rgba(124,58,237,0.08)" : "transparent",
                 }}>
@@ -51,7 +51,7 @@ export default function GrowthResultsPage({ params }: Props) {
             ))}
           </div>
           {active && (
-            <div style={{ border: "1px solid var(--border, #333)", borderRadius: 8, padding: 20, position: "sticky", top: 24, maxHeight: "80vh", overflowY: "auto" }}>
+            <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 20, position: "sticky", top: 24, maxHeight: "80vh", overflowY: "auto" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                 <h2 style={{ fontSize: 16, fontWeight: 700 }}>{active.title}</h2>
                 <button onClick={() => setActive(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "var(--text-muted, #888)" }}>×</button>

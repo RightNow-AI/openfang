@@ -40,20 +40,20 @@ export default function IntegrationDetailDrawer({ open, integrationId, onClose, 
       style={{ position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(3px)', display: 'flex', justifyContent: 'flex-end' }}
       onClick={e => e.target === e.currentTarget && onClose()}
     >
-      <div data-cy="integration-detail-drawer" style={{ width: 460, background: 'var(--bg-elevated,#111)', borderLeft: '1px solid var(--border,#333)', overflowY: 'auto', padding: '28px 24px', display: 'flex', flexDirection: 'column', gap: 0 }}>
+      <div data-cy="integration-detail-drawer" style={{ width: 460, background: 'var(--bg-elevated)', borderLeft: '1px solid var(--border)', overflowY: 'auto', padding: '28px 24px', display: 'flex', flexDirection: 'column', gap: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 18 }}>{intg ? `${intg.icon ?? '🔌'} ${intg.name}` : 'Integration detail'}</div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: 'var(--text-dim,#888)', lineHeight: 1 }}>✕</button>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: 'var(--text-dim)', lineHeight: 1 }}>✕</button>
         </div>
 
-        {loading && <div style={{ color: 'var(--text-dim,#888)', fontSize: 14 }}>Loading…</div>}
+        {loading && <div style={{ color: 'var(--text-dim)', fontSize: 14 }}>Loading…</div>}
         {error && <div style={{ color: 'var(--error,#ef4444)', fontSize: 13, padding: '10px 14px', borderRadius: 8, background: 'rgba(239,68,68,.08)', border: '1px solid rgba(239,68,68,.2)' }}>{error}</div>}
 
         {intg && (
           <>
             <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
               <ConnStatusBadge status={intg.status} />
-              {intg.category && <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 999, background: 'rgba(255,255,255,.06)', color: 'var(--text-dim,#888)', border: '1px solid var(--border,#333)' }}>{intg.category}</span>}
+              {intg.category && <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 999, background: 'rgba(255,255,255,.06)', color: 'var(--text-dim)', border: '1px solid var(--border)' }}>{intg.category}</span>}
             </div>
 
             {intg.description && (
@@ -64,7 +64,7 @@ export default function IntegrationDetailDrawer({ open, integrationId, onClose, 
             {intg.permissions?.length > 0 && (
               <Section title="Permissions required">
                 {intg.permissions.map((p, i) => (
-                  <div key={i} style={{ fontSize: 12, color: 'var(--text-dim,#888)', marginBottom: 4 }}>· {p}</div>
+                  <div key={i} style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 4 }}>· {p}</div>
                 ))}
               </Section>
             )}
@@ -84,7 +84,7 @@ export default function IntegrationDetailDrawer({ open, integrationId, onClose, 
             {intg.used_by?.length > 0 && (
               <Section title="Used by agents">
                 {intg.used_by.map((a, i) => (
-                  <span key={i} style={{ fontSize: 12, padding: '3px 9px', borderRadius: 6, background: 'var(--surface2,#1a1a2e)', border: '1px solid var(--border,#333)', marginRight: 6, display: 'inline-block', marginBottom: 5 }}>{a}</span>
+                  <span key={i} style={{ fontSize: 12, padding: '3px 9px', borderRadius: 6, background: 'var(--surface2)', border: '1px solid var(--border)', marginRight: 6, display: 'inline-block', marginBottom: 5 }}>{a}</span>
                 ))}
               </Section>
             )}
@@ -96,19 +96,19 @@ export default function IntegrationDetailDrawer({ open, integrationId, onClose, 
               </div>
             )}
 
-            <div style={{ display: 'flex', gap: 10, marginTop: 'auto', paddingTop: 20, borderTop: '1px solid var(--border,#333)', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 10, marginTop: 'auto', paddingTop: 20, borderTop: '1px solid var(--border)', flexWrap: 'wrap' }}>
               {intg.status !== 'connected' && (
-                <button onClick={() => { onConnect?.(integrationId); onClose(); }} style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent,#7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 14 }}>Connect</button>
+                <button onClick={() => { onConnect?.(integrationId); onClose(); }} style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 14 }}>Connect</button>
               )}
               {intg.status === 'connected' && (
                 <>
-                  <button onClick={handleTest} disabled={testing} style={{ padding: '9px 16px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-primary,#f1f1f1)', cursor: 'pointer', fontSize: 13 }}>
+                  <button onClick={handleTest} disabled={testing} style={{ padding: '9px 16px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: 13 }}>
                     {testing ? 'Testing…' : 'Test connection'}
                   </button>
                   <button onClick={() => { onDisconnect?.(integrationId); onClose(); }} style={{ padding: '9px 16px', borderRadius: 8, background: 'transparent', border: '1px solid rgba(239,68,68,.4)', color: '#ef4444', cursor: 'pointer', fontSize: 13 }}>Disconnect</button>
                 </>
               )}
-              <button onClick={onClose} style={{ padding: '9px 16px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-dim,#888)', cursor: 'pointer', fontSize: 13 }}>Close</button>
+              <button onClick={onClose} style={{ padding: '9px 16px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 13 }}>Close</button>
             </div>
           </>
         )}
@@ -126,7 +126,7 @@ function ConnStatusBadge({ status }) {
 function Section({ title, children }) {
   return (
     <div style={{ marginBottom: 18 }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim,#888)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>{title}</div>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>{title}</div>
       {children}
     </div>
   );

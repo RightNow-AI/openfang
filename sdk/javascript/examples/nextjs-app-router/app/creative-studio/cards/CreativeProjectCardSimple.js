@@ -1,5 +1,4 @@
 'use client';
-import Link from 'next/link';
 
 const STATUS_BADGES = {
   draft:       { label: 'Draft',            bg: 'var(--surface2)',        color: 'var(--text-dim)' },

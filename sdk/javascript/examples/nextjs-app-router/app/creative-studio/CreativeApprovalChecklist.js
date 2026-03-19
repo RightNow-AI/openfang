@@ -13,7 +13,7 @@ export default function CreativeApprovalChecklist({ approvalTypes, approved, onA
 
   return (
     <div data-cy="approval-checklist">
-      <div style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-dim,#888)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>Approval gates</div>
+      <div style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>Approval gates</div>
       {approvalTypes.map(type => {
         const done = approved?.includes(type);
         return (
@@ -24,7 +24,7 @@ export default function CreativeApprovalChecklist({ approvalTypes, approved, onA
             >
               {done && <span style={{ color: '#fff', fontSize: 11, lineHeight: 1 }}>✓</span>}
             </div>
-            <div style={{ fontSize: 12, color: done ? 'var(--text-dim,#888)' : 'var(--text-primary,#f1f1f1)', textDecoration: done ? 'line-through' : 'none' }}>
+            <div style={{ fontSize: 12, color: done ? 'var(--text-dim)' : 'var(--text-primary)', textDecoration: done ? 'line-through' : 'none' }}>
               {APPROVAL_LABELS[type] ?? type.replace(/_/g, ' ')}
             </div>
           </div>

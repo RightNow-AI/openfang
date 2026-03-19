@@ -15,7 +15,7 @@ export default function CreativeTaskLauncher({ projectStatus, availableTasks, ru
 
   return (
     <div data-cy="task-launcher">
-      <div style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-dim,#888)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>Launch a task</div>
+      <div style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>Launch a task</div>
       {tasks.map(taskType => {
         const { label, icon } = TASK_LABELS[taskType] ?? { label: taskType, icon: '▶' };
         const isRunning = runningTask === taskType;
@@ -34,8 +34,8 @@ export default function CreativeTaskLauncher({ projectStatus, availableTasks, ru
               padding: '7px 10px',
               borderRadius: 7,
               background: isRunning ? 'rgba(124,58,237,.12)' : 'transparent',
-              border: `1px solid ${isRunning ? 'var(--accent,#7c3aed)' : 'var(--border,#333)'}`,
-              color: isRunning ? 'var(--accent,#7c3aed)' : 'var(--text-primary,#f1f1f1)',
+              border: `1px solid ${isRunning ? 'var(--accent)' : 'var(--border)'}`,
+              color: isRunning ? 'var(--accent)' : 'var(--text-primary)',
               cursor: anyRunning ? 'not-allowed' : 'pointer',
               fontSize: 12,
               marginBottom: 6,

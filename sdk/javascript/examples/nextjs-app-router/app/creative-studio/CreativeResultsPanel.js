@@ -19,7 +19,7 @@ const STATUS_COLORS = {
 export default function CreativeResultsPanel({ assets, onOpenAsset, onApproveAsset, onExportAsset, onArchiveAsset }) {
   if (!assets?.length) {
     return (
-      <div style={{ padding: '56px 0', textAlign: 'center', color: 'var(--text-dim,#888)', fontSize: 14 }}>
+      <div style={{ padding: '56px 0', textAlign: 'center', color: 'var(--text-dim)', fontSize: 14 }}>
         <div style={{ fontSize: 36, marginBottom: 10 }}>📦</div>
         <div>No results yet. Approve the plan and launch a task to generate assets.</div>
       </div>
@@ -36,7 +36,7 @@ export default function CreativeResultsPanel({ assets, onOpenAsset, onApproveAss
     <div data-cy="results-panel" style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
       {Object.entries(byType).map(([type, items]) => (
         <div key={type}>
-          <div style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-dim,#888)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>
+          <div style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>
             {TYPE_LABELS[type] ?? type}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -60,7 +60,7 @@ export default function CreativeResultsPanel({ assets, onOpenAsset, onApproveAss
 function AssetCard({ asset, onOpen, onApprove, onExport, onArchive }) {
   const c = STATUS_COLORS[asset.status] ?? '#6b7280';
   return (
-    <div data-cy="asset-card" style={{ padding: '12px 16px', borderRadius: 10, background: 'var(--surface2,#1a1a2e)', border: `1px solid ${c}44`, display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+    <div data-cy="asset-card" style={{ padding: '12px 16px', borderRadius: 10, background: 'var(--surface2)', border: `1px solid ${c}44`, display: 'flex', gap: 14, alignItems: 'flex-start' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
           <div style={{ fontWeight: 600, fontSize: 14 }}>{asset.title}</div>
@@ -74,7 +74,7 @@ function AssetCard({ asset, onOpen, onApprove, onExport, onArchive }) {
           </pre>
         )}
         {asset.url && (
-          <a href={asset.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: 'var(--accent,#7c3aed)' }}>
+          <a href={asset.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: 'var(--accent)' }}>
             View file →
           </a>
         )}
@@ -83,12 +83,12 @@ function AssetCard({ asset, onOpen, onApprove, onExport, onArchive }) {
         {asset.status === 'ready_for_review' && (
           <button onClick={onApprove} style={{ padding: '5px 10px', borderRadius: 6, background: 'var(--success,#10b981)', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Approve</button>
         )}
-        <button onClick={onOpen} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-dim,#888)', cursor: 'pointer', fontSize: 11 }}>View</button>
+        <button onClick={onOpen} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 11 }}>View</button>
         {asset.status === 'approved' && (
-          <button onClick={onExport} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-dim,#888)', cursor: 'pointer', fontSize: 11 }}>Export</button>
+          <button onClick={onExport} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 11 }}>Export</button>
         )}
         {asset.status !== 'archived' && (
-          <button onClick={onArchive} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-dim,#888)', cursor: 'pointer', fontSize: 11 }}>Archive</button>
+          <button onClick={onArchive} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 11 }}>Archive</button>
         )}
       </div>
     </div>

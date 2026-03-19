@@ -191,20 +191,20 @@ function goalToTemplateId(goal) {
 function WizardStep({ step, totalSteps = 5, title, subtitle, onBack, onNext, nextLabel, nextDisabled, children }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', letterSpacing: 1, textTransform: 'uppercase' }}>Step {step} of {totalSteps}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase' }}>Step {step} of {totalSteps}</div>
       <div>
         <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>{title}</h2>
-        {subtitle && <p style={{ fontSize: 13, color: 'var(--text-dim, #888)', margin: '6px 0 0', lineHeight: 1.6 }}>{subtitle}</p>}
+        {subtitle && <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '6px 0 0', lineHeight: 1.6 }}>{subtitle}</p>}
       </div>
       <div>{children}</div>
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 8, borderTop: '1px solid var(--border, #2a2a3e)' }}>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 8, borderTop: '1px solid var(--border)' }}>
         {onBack && (
-          <button onClick={onBack} style={{ padding: '8px 18px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 13 }}>
+          <button onClick={onBack} style={{ padding: '8px 18px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 13 }}>
             ← Back
           </button>
         )}
         {onNext && (
-          <button onClick={onNext} disabled={nextDisabled} style={{ padding: '8px 20px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: nextDisabled ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: nextDisabled ? 0.5 : 1 }}>
+          <button onClick={onNext} disabled={nextDisabled} style={{ padding: '8px 20px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: nextDisabled ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: nextDisabled ? 0.5 : 1 }}>
             {nextLabel ?? 'Next →'}
           </button>
         )}
@@ -220,14 +220,14 @@ function ChoiceButton({ selected, onClick, icon, label, sub }) {
       style={{
         display: 'block', width: '100%', textAlign: 'left',
         padding: '12px 16px', borderRadius: 8, marginBottom: 8,
-        border: `1px solid ${selected ? 'var(--accent, #7c3aed)' : 'var(--border, #333)'}`,
-        background: selected ? 'rgba(124,58,237,0.1)' : 'transparent',
+        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        background: selected ? 'var(--accent-subtle)' : 'transparent',
         cursor: 'pointer',
       }}
     >
       {icon && <span style={{ marginRight: 10, fontSize: 16 }}>{icon}</span>}
       <span style={{ fontWeight: selected ? 700 : 400, fontSize: 14 }}>{label}</span>
-      {sub && <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 3, marginLeft: icon ? 26 : 0 }}>{sub}</div>}
+      {sub && <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 3, marginLeft: icon ? 26 : 0 }}>{sub}</div>}
     </button>
   );
 }
@@ -239,14 +239,14 @@ function ToggleChoiceButton({ selected, onClick, icon, label }) {
       style={{
         display: 'flex', alignItems: 'center', gap: 10,
         padding: '10px 14px', borderRadius: 8, marginBottom: 6,
-        border: `1px solid ${selected ? 'var(--accent, #7c3aed)' : 'var(--border, #333)'}`,
-        background: selected ? 'rgba(124,58,237,0.1)' : 'transparent',
+        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        background: selected ? 'var(--accent-subtle)' : 'transparent',
         cursor: 'pointer', width: '100%',
       }}
     >
       <span style={{ fontSize: 18, width: 24, textAlign: 'center' }}>{icon}</span>
       <span style={{ fontWeight: selected ? 700 : 400, fontSize: 13 }}>{label}</span>
-      {selected && <span style={{ marginLeft: 'auto', color: 'var(--accent, #7c3aed)', fontSize: 16 }}>✓</span>}
+      {selected && <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 16 }}>✓</span>}
     </button>
   );
 }
@@ -315,8 +315,8 @@ function WfWizardStepReview({ summary, creating, onBack, onCreate }) {
 
 function ReviewRow({ label, value, children }) {
   return (
-    <div style={{ padding: '12px 14px', background: 'var(--surface2, #1a1a2e)', borderRadius: 8 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>{label}</div>
+    <div style={{ padding: '12px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>{label}</div>
       {children ?? <div style={{ fontSize: 14, fontWeight: 500 }}>{value}</div>}
     </div>
   );
@@ -379,10 +379,10 @@ function WorkflowWizard({ open, onClose, onCreate }) {
       style={{ position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
       onClick={e => { if (e.target === e.currentTarget) handleClose(); }}
     >
-      <div style={{ width: '100%', maxWidth: 540, background: 'var(--bg-elevated, #111)', border: '1px solid var(--border, #333)', borderRadius: 14, padding: '28px 32px', maxHeight: '90vh', overflowY: 'auto' }}>
+      <div style={{ width: '100%', maxWidth: 540, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 14, padding: '28px 32px', maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-dim, #888)' }}>Let&apos;s build a workflow together</div>
-          <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--text-dim, #888)', lineHeight: 1 }}>✕</button>
+          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-dim)' }}>Let&apos;s build a workflow together</div>
+          <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--text-dim)', lineHeight: 1 }}>✕</button>
         </div>
         {step === 1 && <WfWizardStepGoal    value={goal}          onSelect={setGoal}    onNext={() => setStep(2)} />}
         {step === 2 && <WfWizardStepTrigger value={trigger}       onSelect={setTrigger} onBack={() => setStep(1)} onNext={() => setStep(3)} />}
@@ -406,7 +406,7 @@ function ApprovalBadge({ required }) {
 }
 
 function CategoryBadge({ category }) {
-  const colors = { agency: '#7c3aed', growth: '#059669', school: '#2563eb', general: '#6b7280' };
+  const colors = { agency: 'var(--accent)', growth: '#059669', school: '#2563eb', general: '#6b7280' };
   const color = colors[category] ?? colors.general;
   return (
     <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: `${color}20`, color, border: `1px solid ${color}44`, textTransform: 'capitalize' }}>
@@ -417,18 +417,18 @@ function CategoryBadge({ category }) {
 
 function WorkflowStarterCard({ template, creating, onUse }) {
   return (
-    <div data-cy="workflow-starter-card" style={{ border: '1px solid var(--border, #333)', borderRadius: 10, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div data-cy="workflow-starter-card" style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15 }}>{template.title}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 2 }}>{template.bestFor}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{template.bestFor}</div>
         </div>
         <ApprovalBadge required={template.needsApproval} />
       </div>
       <div style={{ fontSize: 13, color: 'var(--text-secondary, #ccc)', lineHeight: 1.5 }}>{template.description}</div>
       <div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', marginBottom: 5 }}>Starts when: <span style={{ color: 'var(--text-secondary)' }}>{template.startsWhen}</span></div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', marginBottom: 8 }}>What happens next:</div>
+        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 5 }}>Starts when: <span style={{ color: 'var(--text-secondary)' }}>{template.startsWhen}</span></div>
+        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 8 }}>What happens next:</div>
         <ol style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 3 }}>
           {template.whatHappensNext.map((step, i) => (
             <li key={i} style={{ fontSize: 12, color: 'var(--text-secondary, #ccc)' }}>{step}</li>
@@ -440,7 +440,7 @@ function WorkflowStarterCard({ template, creating, onUse }) {
           data-cy="use-workflow-template-btn"
           onClick={onUse}
           disabled={creating}
-          style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: creating ? 'wait' : 'pointer', fontWeight: 600, fontSize: 13 }}
+          style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: creating ? 'wait' : 'pointer', fontWeight: 600, fontSize: 13 }}
         >
           {creating ? 'Adding…' : 'Use this workflow'}
         </button>
@@ -454,23 +454,23 @@ function WorkflowCardSimple({ workflow, running, onRun, onOpenDetail }) {
   const statusColors = { on: '#22c55e', off: '#6b7280', ready: '#3b82f6', draft: '#6b7280' };
   const color = statusColors[workflow.status] ?? '#6b7280';
   return (
-    <div data-cy="workflow-card-simple" style={{ border: '1px solid var(--border, #333)', borderRadius: 8, padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'center' }}>
+    <div data-cy="workflow-card-simple" style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'center' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 14 }}>{workflow.name}</div>
-        {workflow.description && <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 2 }}>{workflow.description}</div>}
+        {workflow.description && <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{workflow.description}</div>}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: `${color}20`, color, border: `1px solid ${color}44` }}>{workflow.status}</span>
           {workflow.trigger_label && workflow.trigger_label !== '—' && (
-            <span style={{ fontSize: 11, color: 'var(--text-dim, #888)' }}>Starts when: {workflow.trigger_label}</span>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Starts when: {workflow.trigger_label}</span>
           )}
           <ApprovalBadge required={workflow.approval_required} />
         </div>
       </div>
       <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-        <button onClick={onRun} disabled={running} style={{ padding: '5px 12px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: running ? 'wait' : 'pointer', fontWeight: 600, fontSize: 12 }}>
+        <button onClick={onRun} disabled={running} style={{ padding: '5px 12px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: running ? 'wait' : 'pointer', fontWeight: 600, fontSize: 12 }}>
           {running ? '…' : '▶ Run'}
         </button>
-        <button onClick={onOpenDetail} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 12 }}>
+        <button onClick={onOpenDetail} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 12 }}>
           Open
         </button>
       </div>
@@ -499,7 +499,7 @@ function WorkflowCardDetailed({ workflow, running, onRun, onOpenDetail }) {
         <CategoryBadge category={workflow.category} />
       </div>
       {(workflow.last_run_label || workflow.next_run_label) && (
-        <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', marginBottom: 10 }}>
+        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10 }}>
           {workflow.last_run_label && <span>Last run: {workflow.last_run_label}</span>}
           {workflow.last_run_label && workflow.next_run_label && <span> · </span>}
           {workflow.next_run_label && <span>Next run: {workflow.next_run_label}</span>}
@@ -524,14 +524,14 @@ function RecommendedWorkflowsTab({ starters, workflows, creatingTemplateId, runn
       <div style={{ padding: '20px 24px', background: 'rgba(124,58,237,0.07)', border: '1px solid rgba(124,58,237,0.28)', borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15 }}>Not sure where to start?</div>
-          <div style={{ fontSize: 13, color: 'var(--text-dim, #888)', marginTop: 3 }}>
+          <div style={{ fontSize: 13, color: 'var(--text-dim)', marginTop: 3 }}>
             {"Answer a few questions and we'll build the right workflow for you."}
           </div>
         </div>
         <button
           data-cy="open-wizard-from-rec"
           onClick={onOpenWizard}
-          style={{ padding: '8px 18px', borderRadius: 8, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
+          style={{ padding: '8px 18px', borderRadius: 8, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
         >
           Set up a workflow for me
         </button>
@@ -574,17 +574,17 @@ function MyWorkflowsTab({ workflows, view, runningById, runResultById, onRun, on
 
   if (workflows.length === 0) {
     return (
-      <div data-cy="workflows-empty" style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border, #333)', borderRadius: 10 }}>
+      <div data-cy="workflows-empty" style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 10 }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>▶</div>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>No workflows yet</div>
-        <div style={{ fontSize: 13, color: 'var(--text-dim, #888)', marginBottom: 24, maxWidth: 360, margin: '0 auto 24px' }}>
+        <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 24, maxWidth: 360, margin: '0 auto 24px' }}>
           Workflows help OpenFang repeat the same process without missing steps.<br />Start with a template or use the guided setup.
         </div>
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
           <button
             data-cy="empty-open-wizard"
             onClick={onOpenWizard}
-            style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
+            style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
           >
             Set up a workflow for me
           </button>
@@ -612,7 +612,7 @@ function MyWorkflowsTab({ workflows, view, runningById, runResultById, onRun, on
 function WorkflowTemplatesTab({ starters, creatingTemplateId, onUseTemplate }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ fontSize: 13, color: 'var(--text-dim, #888)' }}>
+      <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>
         {"Pick a starter template and we'll add it to your workflow list. You can edit it after."}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
@@ -635,7 +635,7 @@ function AdvancedWorkflowsTab({ workflows, runningById, runResultById, onRun, lo
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <button onClick={onOpenWizard} style={{ padding: '6px 14px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+        <button onClick={onOpenWizard} style={{ padding: '6px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
           + New workflow (guided)
         </button>
       </div>
@@ -789,7 +789,7 @@ export default function WorkflowsPageV2({ initialWorkflows }) {
       <div className="page-header">
         <div>
           <h1 style={{ margin: 0 }}>Workflows</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-dim, #888)', margin: '4px 0 0' }}>
+          <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '4px 0 0' }}>
             Workflows help OpenFang repeat the same process without missing steps.
           </p>
         </div>
@@ -797,7 +797,7 @@ export default function WorkflowsPageV2({ initialWorkflows }) {
           <button
             data-cy="open-wizard-btn"
             onClick={() => setWizardOpen(true)}
-            style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
+            style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
           >
             Set up a workflow for me
           </button>
@@ -818,7 +818,7 @@ export default function WorkflowsPageV2({ initialWorkflows }) {
       )}
 
       {/* Tab bar + view toggle */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border, #333)', marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', marginBottom: 20 }}>
         <div style={{ display: 'flex' }}>
           {TABS.map(tab => (
             <button
@@ -827,8 +827,8 @@ export default function WorkflowsPageV2({ initialWorkflows }) {
               onClick={() => setActiveTab(tab.key)}
               style={{
                 padding: '10px 16px', background: 'transparent', border: 'none',
-                borderBottom: `2px solid ${activeTab === tab.key ? 'var(--accent, #7c3aed)' : 'transparent'}`,
-                color: activeTab === tab.key ? 'var(--text-primary, #fff)' : 'var(--text-dim, #888)',
+                borderBottom: `2px solid ${activeTab === tab.key ? 'var(--accent)' : 'transparent'}`,
+                color: activeTab === tab.key ? 'var(--text-primary)' : 'var(--text-dim)',
                 cursor: 'pointer', fontSize: 14, fontWeight: activeTab === tab.key ? 700 : 400,
               }}
             >
@@ -845,9 +845,9 @@ export default function WorkflowsPageV2({ initialWorkflows }) {
                 onClick={() => setActiveView(v)}
                 style={{
                   padding: '4px 10px', borderRadius: 6,
-                  background: activeView === v ? 'var(--accent, #7c3aed)' : 'transparent',
-                  border: `1px solid ${activeView === v ? 'var(--accent, #7c3aed)' : 'var(--border, #333)'}`,
-                  color: activeView === v ? '#fff' : 'var(--text-dim, #888)',
+                  background: activeView === v ? 'var(--accent)' : 'transparent',
+                  border: `1px solid ${activeView === v ? 'var(--accent)' : 'var(--border)'}`,
+                  color: activeView === v ? '#fff' : 'var(--text-dim)',
                   cursor: 'pointer', fontSize: 12, textTransform: 'capitalize',
                 }}
               >

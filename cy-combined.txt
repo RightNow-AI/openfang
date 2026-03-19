@@ -1,0 +1,169 @@
+
+
+DevTools listening on ws://127.0.0.1:57332/devtools/browser/5e3fe5f6-9c4a-4344-acbb-c58fc60a87cb
+
+====================================================================================================
+
+  (Run Starting)
+
+  ΓöîΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÉ
+  Γöé Cypress:        13.17.0                                                                        Γöé
+  Γöé Browser:        Electron 118 (headless)                                                        Γöé
+  Γöé Node Version:   v25.2.1 (C:\Program Files\nodejs\node.exe)                                     Γöé
+  Γöé Specs:          2 found (01-route-smoke.cy.js, 07-new-pages.cy.js)                             Γöé
+  Γöé Searched:       C:\Users\chapm\dev\openfang\sdk\javascript\examples\nextjs-app-router\cypress\ Γöé
+  Γöé                 e2e\01-route-smoke.cy.js, C:\Users\chapm\dev\openfang\sdk\javascript\examples\ Γöé
+  Γöé                 nextjs-app-router\cypress\e2e\07-new-pages.cy.js                               Γöé
+  ΓööΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÿ
+
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+                                                                                                    
+  Running:  01-route-smoke.cy.js                                                            (1 of 2)
+
+
+  Layer 1 ΓÇö Sidebar Route Smoke
+    ΓêÜ home page loads and sidebar is present (1095ms)
+    Chat
+      ΓêÜ sidebar link opens /chat (1893ms)
+      ΓêÜ direct URL /chat loads correctly (738ms)
+      ΓêÜ /chat does not produce blank screen (716ms)
+      ΓêÜ navigation to /chat and back does not crash (2422ms)
+    Inbox
+      ΓêÜ sidebar link opens /inbox (1839ms)
+      ΓêÜ direct URL /inbox loads correctly (687ms)
+      ΓêÜ /inbox does not produce blank screen (692ms)
+      ΓêÜ navigation to /inbox and back does not crash (2531ms)
+    Agent Catalog
+      ΓêÜ sidebar link opens /agent-catalog (1769ms)
+      ΓêÜ direct URL /agent-catalog loads correctly (780ms)
+      ΓêÜ /agent-catalog does not produce blank screen (694ms)
+      ΓêÜ navigation to /agent-catalog and back does not crash (2480ms)
+    Approvals
+      ΓêÜ sidebar link opens /approvals (1711ms)
+      ΓêÜ direct URL /approvals loads correctly (760ms)
+      ΓêÜ /approvals does not produce blank screen (657ms)
+      ΓêÜ navigation to /approvals and back does not crash (2451ms)
+    Comms
+      ΓêÜ sidebar link opens /comms (1669ms)
+      ΓêÜ direct URL /comms loads correctly (731ms)
+      ΓêÜ /comms does not produce blank screen (823ms)
+      ΓêÜ navigation to /comms and back does not crash (2510ms)
+    Workflows
+      ΓêÜ sidebar link opens /workflows (1820ms)
+      ΓêÜ direct URL /workflows loads correctly (812ms)
+      ΓêÜ /workflows does not produce blank screen (680ms)
+      ΓêÜ navigation to /workflows and back does not crash (2598ms)
+    Scheduler
+      ΓêÜ sidebar link opens /scheduler (1746ms)
+      ΓêÜ direct URL /scheduler loads correctly (704ms)
+      ΓêÜ /scheduler does not produce blank screen (663ms)
+      ΓêÜ navigation to /scheduler and back does not crash (2671ms)
+    Hands
+      ΓêÜ sidebar link opens /hands (1769ms)
+      ΓêÜ direct URL /hands loads correctly (864ms)
+      ΓêÜ /hands does not produce blank screen (765ms)
+      ΓêÜ navigation to /hands and back does not crash (2764ms)
+    Sidebar structure
+      ΓêÜ all expected nav links are present (807ms)
+      ΓêÜ sidebar remains visible after three consecutive navigations (3839ms)
+
+
+  35 passing (56s)
+
+
+  (Results)
+
+  ΓöîΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÉ
+  Γöé Tests:        35                                                                               Γöé
+  Γöé Passing:      35                                                                               Γöé
+  Γöé Failing:      0                                                                                Γöé
+  Γöé Pending:      0                                                                                Γöé
+  Γöé Skipped:      0                                                                                Γöé
+  Γöé Screenshots:  0                                                                                Γöé
+  Γöé Video:        false                                                                            Γöé
+  Γöé Duration:     56 seconds                                                                       Γöé
+  Γöé Spec Ran:     01-route-smoke.cy.js                                                             Γöé
+  ΓööΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÿ
+
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+                                                                                                    
+  Running:  07-new-pages.cy.js                                                              (2 of 2)
+
+
+  Layer 7 ΓÇö New Pages Smoke
+    ΓêÜ overview is the default landing page (root redirects) (858ms)
+    Overview
+      ΓêÜ sidebar link opens /overview (1650ms)
+      ΓêÜ direct URL /overview loads correctly (693ms)
+      ΓêÜ /overview does not produce blank screen (1086ms)
+    Today
+      ΓêÜ sidebar link opens /today (2894ms)
+      ΓêÜ direct URL /today loads correctly (864ms)
+      ΓêÜ /today does not produce blank screen (712ms)
+    Analytics
+      ΓêÜ sidebar link opens /analytics (2143ms)
+      ΓêÜ direct URL /analytics loads correctly (972ms)
+      ΓêÜ /analytics does not produce blank screen (827ms)
+    Logs
+      ΓêÜ sidebar link opens /logs (2210ms)
+      ΓêÜ direct URL /logs loads correctly (1017ms)
+      ΓêÜ /logs does not produce blank screen (823ms)
+    Runtime
+      ΓêÜ sidebar link opens /runtime (2563ms)
+      ΓêÜ direct URL /runtime loads correctly (822ms)
+      ΓêÜ /runtime does not produce blank screen (753ms)
+    Sessions
+      ΓêÜ sidebar link opens /sessions (2190ms)
+      ΓêÜ direct URL /sessions loads correctly (959ms)
+      ΓêÜ /sessions does not produce blank screen (740ms)
+    Settings
+      ΓêÜ sidebar link opens /settings (2099ms)
+      ΓêÜ direct URL /settings loads correctly (856ms)
+      ΓêÜ /settings does not produce blank screen (795ms)
+    Skills
+      ΓêÜ sidebar link opens /skills (2637ms)
+      ΓêÜ direct URL /skills loads correctly (836ms)
+      ΓêÜ /skills does not produce blank screen (763ms)
+    Channels
+      ΓêÜ sidebar link opens /channels (3021ms)
+      ΓêÜ direct URL /channels loads correctly (1105ms)
+      ΓêÜ /channels does not produce blank screen (896ms)
+    Onboarding
+      ΓêÜ sidebar link opens /onboarding (2577ms)
+      ΓêÜ direct URL /onboarding loads correctly (1109ms)
+      ΓêÜ /onboarding does not produce blank screen (777ms)
+
+
+  31 passing (47s)
+
+
+  (Results)
+
+  ΓöîΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÉ
+  Γöé Tests:        31                                                                               Γöé
+  Γöé Passing:      31                                                                               Γöé
+  Γöé Failing:      0                                                                                Γöé
+  Γöé Pending:      0                                                                                Γöé
+  Γöé Skipped:      0                                                                                Γöé
+  Γöé Screenshots:  0                                                                                Γöé
+  Γöé Video:        false                                                                            Γöé
+  Γöé Duration:     47 seconds                                                                       Γöé
+  Γöé Spec Ran:     07-new-pages.cy.js                                                               Γöé
+  ΓööΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÿ
+
+
+====================================================================================================
+
+  (Run Finished)
+
+
+       Spec                                              Tests  Passing  Failing  Pending  Skipped  
+  ΓöîΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÉ
+  Γöé ΓêÜ  01-route-smoke.cy.js                     00:56       35       35        -        -        - Γöé
+  Γö£ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöñ
+  Γöé ΓêÜ  07-new-pages.cy.js                       00:47       31       31        -        -        - Γöé
+  ΓööΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÿ
+    ΓêÜ  All specs passed!                        01:43       66       66        -        -        -  
+

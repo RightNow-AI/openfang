@@ -5,7 +5,7 @@ import { apiClient } from '../../lib/api-client';
 import { track } from '../../lib/telemetry';
 import { validateSpawnName, AGENT_NAME_MAX_LENGTH } from '../../lib/spawn-validation';
 import { deriveSuggestedSkills } from '../../lib/agent-skills';
-import { extractTomlField, extractTomlMultiline, patchTomlName } from '../../lib/toml-helpers';
+import { extractTomlMultiline, patchTomlName } from '../../lib/toml-helpers';
 import BoundSkillsSection from './BoundSkillsSection';
 import SpawnSuccessBanner from './SpawnSuccessBanner';
 

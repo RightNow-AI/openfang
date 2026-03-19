@@ -17,7 +17,7 @@ const STEPS = [
 
 const INPUT: React.CSSProperties = {
   width: "100%", padding: "10px 12px", borderRadius: 6,
-  border: "1px solid var(--border, #333)", background: "var(--input-bg, #1a1a1a)",
+  border: "1px solid var(--border)", background: "var(--input-bg)",
   color: "inherit", fontSize: 14, boxSizing: "border-box", marginBottom: 12,
 };
 const LABEL: React.CSSProperties = {
@@ -25,7 +25,7 @@ const LABEL: React.CSSProperties = {
   color: "var(--text-muted, #aaa)",
 };
 const CARD: React.CSSProperties = {
-  border: "1px solid var(--border, #333)", borderRadius: 8, padding: "12px 16px", marginBottom: 8, cursor: "pointer",
+  border: "1px solid var(--border)", borderRadius: 8, padding: "12px 16px", marginBottom: 8, cursor: "pointer",
 };
 
 type CampaignMeta = {
@@ -106,8 +106,8 @@ export default function GrowthWizard() {
             style={{
               flex: 1, padding: "6px 0", textAlign: "center", fontSize: 12, borderRadius: 6,
               cursor: i < stepIndex ? "pointer" : "default",
-              background: i === stepIndex ? "var(--accent, #7c3aed)" : i < stepIndex ? "var(--border, #333)" : "transparent",
-              border: "1px solid var(--border, #333)",
+              background: i === stepIndex ? "var(--accent)" : i < stepIndex ? "var(--border)" : "transparent",
+              border: "1px solid var(--border)",
               color: i === stepIndex ? "#fff" : "var(--text-muted, #888)",
               fontWeight: i === stepIndex ? 600 : 400,
             }}
@@ -185,7 +185,7 @@ export default function GrowthWizard() {
             const on = selectedTaskIds.includes(t.id);
             return (
               <div key={t.id} onClick={() => toggleTask(t.id)}
-                style={{ ...CARD, background: on ? "rgba(124,58,237,0.1)" : "transparent", borderColor: on ? "var(--accent, #7c3aed)" : "var(--border, #333)" }}>
+                style={{ ...CARD, background: on ? "var(--accent-subtle)" : "transparent", borderColor: on ? "var(--accent)" : "var(--border)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>{t.title}</div>
@@ -205,18 +205,18 @@ export default function GrowthWizard() {
       {/* ── Step 5: Review ── */}
       {step === "review" && (
         <div>
-          <div style={{ border: "1px solid var(--border, #333)", borderRadius: 8, padding: 16, marginBottom: 16 }}>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 16, marginBottom: 16 }}>
             <div style={{ fontSize: 13, color: "var(--text-muted, #888)", marginBottom: 4 }}>Campaign</div>
             <div style={{ fontWeight: 700, fontSize: 18 }}>{title || "—"}</div>
             <div style={{ fontSize: 14, marginTop: 4 }}>{goal || "—"}</div>
             {meta.channel && <div style={{ fontSize: 13, color: "var(--text-muted, #888)", marginTop: 4 }}>Channel: {meta.channel}</div>}
           </div>
-          <div style={{ border: "1px solid var(--border, #333)", borderRadius: 8, padding: 16, marginBottom: 16 }}>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 16, marginBottom: 16 }}>
             <div style={{ fontSize: 13, color: "var(--text-muted, #888)", marginBottom: 8 }}>Selected tasks ({selectedTaskIds.length})</div>
             {selectedTaskIds.map((id) => {
               const t = GROWTH_TASK_CATALOG.find((c) => c.id === id);
               return t ? (
-                <div key={id} style={{ fontSize: 14, padding: "4px 0", borderBottom: "1px solid var(--border, #333)" }}>
+                <div key={id} style={{ fontSize: 14, padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
                   {t.title}
                   {t.approval_required && <span style={{ fontSize: 11, marginLeft: 8, color: "#eab308" }}>needs approval</span>}
                 </div>
@@ -230,17 +230,17 @@ export default function GrowthWizard() {
       {/* Nav */}
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 32 }}>
         <button onClick={() => setStepIndex((i) => i - 1)} disabled={stepIndex === 0}
-          style={{ padding: "8px 20px", borderRadius: 6, border: "1px solid var(--border, #333)", background: "transparent", color: "inherit", cursor: stepIndex === 0 ? "not-allowed" : "pointer", opacity: stepIndex === 0 ? 0.4 : 1 }}>
+          style={{ padding: "8px 20px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "inherit", cursor: stepIndex === 0 ? "not-allowed" : "pointer", opacity: stepIndex === 0 ? 0.4 : 1 }}>
           Back
         </button>
         {stepIndex < STEPS.length - 1 ? (
           <button onClick={() => setStepIndex((i) => i + 1)} disabled={!stepValid}
-            style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent, #7c3aed)", color: "#fff", cursor: stepValid ? "pointer" : "not-allowed", opacity: stepValid ? 1 : 0.5 }}>
+            style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", cursor: stepValid ? "pointer" : "not-allowed", opacity: stepValid ? 1 : 0.5 }}>
             Next
           </button>
         ) : (
           <button onClick={handleLaunch} disabled={busy}
-            style={{ padding: "8px 24px", borderRadius: 6, border: "none", background: "var(--accent, #7c3aed)", color: "#fff", cursor: "pointer", fontWeight: 600 }}>
+            style={{ padding: "8px 24px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", cursor: "pointer", fontWeight: 600 }}>
             {busy ? "Launching…" : "Launch Growth Campaign"}
           </button>
         )}

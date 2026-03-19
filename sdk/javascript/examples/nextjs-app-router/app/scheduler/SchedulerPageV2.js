@@ -112,7 +112,7 @@ function fmtDate(iso) {
 
 function statusBadgeColor(s) {
   if (s === 'completed')       return '#22c55e';
-  if (s === 'running')         return '#7c3aed';
+  if (s === 'running')         return 'var(--accent)';
   if (s === 'failed' || s === 'cancelled') return '#ef4444';
   if (s === 'waiting_approval') return '#f59e0b';
   return '#6b7280';
@@ -148,20 +148,20 @@ function approvalLabel(v) {
 function WizardStep({ step, totalSteps = 5, title, subtitle, onBack, onNext, nextLabel, nextDisabled, children }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', letterSpacing: 1, textTransform: 'uppercase' }}>Step {step} of {totalSteps}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase' }}>Step {step} of {totalSteps}</div>
       <div>
         <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>{title}</h2>
-        {subtitle && <p style={{ fontSize: 13, color: 'var(--text-dim, #888)', margin: '6px 0 0', lineHeight: 1.6 }}>{subtitle}</p>}
+        {subtitle && <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '6px 0 0', lineHeight: 1.6 }}>{subtitle}</p>}
       </div>
       <div>{children}</div>
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 8, borderTop: '1px solid var(--border, #2a2a3e)' }}>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 8, borderTop: '1px solid var(--border)' }}>
         {onBack && (
-          <button onClick={onBack} style={{ padding: '8px 18px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 13 }}>
+          <button onClick={onBack} style={{ padding: '8px 18px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 13 }}>
             ← Back
           </button>
         )}
         {onNext && (
-          <button onClick={onNext} disabled={nextDisabled} style={{ padding: '8px 20px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: nextDisabled ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: nextDisabled ? 0.5 : 1 }}>
+          <button onClick={onNext} disabled={nextDisabled} style={{ padding: '8px 20px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: nextDisabled ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: nextDisabled ? 0.5 : 1 }}>
             {nextLabel ?? 'Next →'}
           </button>
         )}
@@ -177,8 +177,8 @@ function ChoiceButton({ selected, onClick, icon, label }) {
       style={{
         display: 'block', width: '100%', textAlign: 'left',
         padding: '12px 16px', borderRadius: 8, marginBottom: 8,
-        border: `1px solid ${selected ? 'var(--accent, #7c3aed)' : 'var(--border, #333)'}`,
-        background: selected ? 'rgba(124,58,237,0.1)' : 'transparent',
+        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        background: selected ? 'var(--accent-subtle)' : 'transparent',
         cursor: 'pointer',
       }}
     >
@@ -189,7 +189,7 @@ function ChoiceButton({ selected, onClick, icon, label }) {
 }
 
 function Label({ children }) {
-  return <label style={{ fontSize: 12, color: 'var(--text-dim, #888)', display: 'block', marginBottom: 4 }}>{children}</label>;
+  return <label style={{ fontSize: 12, color: 'var(--text-dim)', display: 'block', marginBottom: 4 }}>{children}</label>;
 }
 
 function TextInput({ label, value, onChange, placeholder, type = 'text' }) {
@@ -201,7 +201,7 @@ function TextInput({ label, value, onChange, placeholder, type = 'text' }) {
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder={placeholder}
-        style={{ width: '100%', padding: '8px 12px', borderRadius: 6, background: 'var(--input-bg, #1a1a2e)', border: '1px solid var(--border, #333)', color: 'var(--text-primary, #fff)', fontSize: 13 }}
+        style={{ width: '100%', padding: '8px 12px', borderRadius: 6, background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 13 }}
       />
     </div>
   );
@@ -209,8 +209,8 @@ function TextInput({ label, value, onChange, placeholder, type = 'text' }) {
 
 function ReviewRow({ label, value }) {
   return (
-    <div style={{ padding: '12px 14px', background: 'var(--surface2, #1a1a2e)', borderRadius: 8 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>{label}</div>
+    <div style={{ padding: '12px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 14, fontWeight: 500 }}>{value || '—'}</div>
     </div>
   );
@@ -241,8 +241,8 @@ function SchWizardStepTiming({ value, onChange, onBack, onNext }) {
               onClick={() => onChange({ frequency: f.value })}
               style={{
                 padding: '10px 12px', borderRadius: 8,
-                border: `1px solid ${value.frequency === f.value ? 'var(--accent, #7c3aed)' : 'var(--border, #333)'}`,
-                background: value.frequency === f.value ? 'rgba(124,58,237,0.1)' : 'transparent',
+                border: `1px solid ${value.frequency === f.value ? 'var(--accent)' : 'var(--border)'}`,
+                background: value.frequency === f.value ? 'var(--accent-subtle)' : 'transparent',
                 cursor: 'pointer', textAlign: 'left',
               }}
             >
@@ -284,14 +284,14 @@ function SchWizardStepApproval({ value, onToggle, onBack, onNext }) {
             style={{
               display: 'flex', alignItems: 'center', gap: 10,
               padding: '10px 14px', borderRadius: 8, marginBottom: 6,
-              border: `1px solid ${selected ? 'var(--accent, #7c3aed)' : 'var(--border, #333)'}`,
-              background: selected ? 'rgba(124,58,237,0.1)' : 'transparent',
+              border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+              background: selected ? 'var(--accent-subtle)' : 'transparent',
               cursor: 'pointer', width: '100%',
             }}
           >
             <span style={{ fontSize: 18, width: 24, textAlign: 'center' }}>{a.icon}</span>
             <span style={{ fontWeight: selected ? 700 : 400, fontSize: 13 }}>{a.label}</span>
-            {selected && <span style={{ marginLeft: 'auto', color: 'var(--accent, #7c3aed)', fontSize: 16 }}>✓</span>}
+            {selected && <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 16 }}>✓</span>}
           </button>
         );
       })}
@@ -378,10 +378,10 @@ function SchedulerWizard({ open, onClose, onCreate }) {
       style={{ position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
       onClick={e => { if (e.target === e.currentTarget) handleClose(); }}
     >
-      <div style={{ width: '100%', maxWidth: 560, background: 'var(--bg-elevated, #111)', border: '1px solid var(--border, #333)', borderRadius: 14, padding: '28px 32px', maxHeight: '90vh', overflowY: 'auto' }}>
+      <div style={{ width: '100%', maxWidth: 560, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 14, padding: '28px 32px', maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-dim, #888)' }}>Let&apos;s choose when this should happen</div>
-          <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--text-dim, #888)', lineHeight: 1 }}>✕</button>
+          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-dim)' }}>Let&apos;s choose when this should happen</div>
+          <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--text-dim)', lineHeight: 1 }}>✕</button>
         </div>
         {step === 1 && <SchWizardStepAction   value={action}        onSelect={setAction}  onNext={() => setStep(2)} />}
         {step === 2 && <SchWizardStepTiming   value={timing}        onChange={patchTiming}  onBack={() => setStep(1)} onNext={() => setStep(3)} />}
@@ -405,7 +405,7 @@ function ApprovalBadge({ required }) {
 }
 
 function CategoryBadge({ category }) {
-  const colors = { agency: '#7c3aed', growth: '#059669', school: '#2563eb', general: '#6b7280' };
+  const colors = { agency: 'var(--accent)', growth: '#059669', school: '#2563eb', general: '#6b7280' };
   const c = colors[category] ?? colors.general;
   return (
     <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: `${c}20`, color: c, border: `1px solid ${c}44`, textTransform: 'capitalize' }}>
@@ -416,20 +416,20 @@ function CategoryBadge({ category }) {
 
 function ScheduleStarterCard({ template, creating, onUse }) {
   return (
-    <div data-cy="schedule-starter-card" style={{ border: '1px solid var(--border, #333)', borderRadius: 10, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div data-cy="schedule-starter-card" style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15 }}>{template.title}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 2 }}>{template.bestFor}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{template.bestFor}</div>
         </div>
         <ApprovalBadge required={template.needsApproval} />
       </div>
       <div style={{ fontSize: 13, color: 'var(--text-secondary, #ccc)', lineHeight: 1.5 }}>{template.description}</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <div style={{ fontSize: 12, color: 'var(--text-dim, #888)' }}>
+        <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
           How often: <span style={{ color: 'var(--text-secondary)' }}>{template.runsWhen}</span>
         </div>
-        <div style={{ fontSize: 12, color: 'var(--text-dim, #888)' }}>
+        <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
           What it runs: <span style={{ color: 'var(--text-secondary)' }}>{template.whatItRuns}</span>
         </div>
       </div>
@@ -438,7 +438,7 @@ function ScheduleStarterCard({ template, creating, onUse }) {
           data-cy="use-schedule-template-btn"
           onClick={onUse}
           disabled={creating}
-          style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: creating ? 'wait' : 'pointer', fontWeight: 600, fontSize: 13 }}
+          style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: creating ? 'wait' : 'pointer', fontWeight: 600, fontSize: 13 }}
         >
           {creating ? 'Adding…' : 'Use this schedule'}
         </button>
@@ -451,12 +451,12 @@ function ScheduleStarterCard({ template, creating, onUse }) {
 function ScheduleCardSimple({ schedule, acting, onCancel, onRetry, onOpenDetail }) {
   const color = statusBadgeColor(schedule.status);
   return (
-    <div data-cy="schedule-card-simple" style={{ border: '1px solid var(--border, #333)', borderRadius: 8, padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'center' }}>
+    <div data-cy="schedule-card-simple" style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'center' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 14 }}>{schedule.name}</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 5, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: `${color}20`, color, border: `1px solid ${color}44` }}>{schedule.status}</span>
-          {schedule.next_run_label && <span style={{ fontSize: 11, color: 'var(--text-dim, #888)' }}>Next run: {schedule.next_run_label}</span>}
+          {schedule.next_run_label && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Next run: {schedule.next_run_label}</span>}
           <ApprovalBadge required={schedule.approval_required} />
         </div>
       </div>
@@ -476,12 +476,12 @@ function ScheduleCardSimple({ schedule, acting, onCancel, onRetry, onOpenDetail 
             data-cy="schedule-retry-btn"
             onClick={onRetry}
             disabled={acting === 'retry'}
-            style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 12 }}
+            style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 12 }}
           >
             {acting === 'retry' ? '…' : 'Retry'}
           </button>
         )}
-        <button onClick={onOpenDetail} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 12 }}>
+        <button onClick={onOpenDetail} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 12 }}>
           Open
         </button>
       </div>
@@ -502,7 +502,7 @@ function ScheduleCalendarView({ schedules }) {
 
   if (schedules.length === 0) {
     return (
-      <div style={{ padding: '32px 24px', textAlign: 'center', border: '1px dashed var(--border, #333)', borderRadius: 10, color: 'var(--text-dim, #888)', fontSize: 13 }}>
+      <div style={{ padding: '32px 24px', textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 10, color: 'var(--text-dim)', fontSize: 13 }}>
         No scheduled work to show in calendar view.
       </div>
     );
@@ -510,16 +510,16 @@ function ScheduleCalendarView({ schedules }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ fontSize: 13, color: 'var(--text-dim, #888)' }}>Showing {schedules.length} scheduled item{schedules.length !== 1 ? 's' : ''}</div>
+      <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>Showing {schedules.length} scheduled item{schedules.length !== 1 ? 's' : ''}</div>
       {sortedKeys.map(key => (
         <div key={key}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-dim, #888)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8, padding: '6px 0', borderBottom: '1px solid var(--border, #333)' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8, padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
             {key}
           </div>
           {groups[key].map(s => {
             const color = statusBadgeColor(s.status);
             return (
-              <div key={s.id} style={{ display: 'flex', gap: 12, padding: '10px 14px', borderRadius: 8, background: 'var(--surface2, #1a1a2e)', marginBottom: 6, alignItems: 'center' }}>
+              <div key={s.id} style={{ display: 'flex', gap: 12, padding: '10px 14px', borderRadius: 8, background: 'var(--surface2)', marginBottom: 6, alignItems: 'center' }}>
                 <div style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>{s.name}</div>
@@ -544,14 +544,14 @@ function RecommendedSchedulesTab({ starters, schedules, creatingTemplateId, acti
       <div style={{ padding: '20px 24px', background: 'rgba(124,58,237,0.07)', border: '1px solid rgba(124,58,237,0.28)', borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15 }}>Not sure when things should run?</div>
-          <div style={{ fontSize: 13, color: 'var(--text-dim, #888)', marginTop: 3 }}>
+          <div style={{ fontSize: 13, color: 'var(--text-dim)', marginTop: 3 }}>
             {"Tell us what needs to happen and we'll build the schedule for you."}
           </div>
         </div>
         <button
           data-cy="open-wizard-from-rec"
           onClick={onOpenWizard}
-          style={{ padding: '8px 18px', borderRadius: 8, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
+          style={{ padding: '8px 18px', borderRadius: 8, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
         >
           Set up a schedule for me
         </button>
@@ -597,17 +597,17 @@ function RecommendedSchedulesTab({ starters, schedules, creatingTemplateId, acti
 function MySchedulesTab({ schedules, actingById, onCancel, onRetry, onOpenDetail, onOpenWizard }) {
   if (schedules.length === 0) {
     return (
-      <div data-cy="scheduler-empty" style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border, #333)', borderRadius: 10 }}>
+      <div data-cy="scheduler-empty" style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 10 }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>⏰</div>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>No schedules yet</div>
-        <div style={{ fontSize: 13, color: 'var(--text-dim, #888)', marginBottom: 24, maxWidth: 360, margin: '0 auto 24px' }}>
+        <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 24, maxWidth: 360, margin: '0 auto 24px' }}>
           The scheduler decides when work should happen.<br />Start with a template or use the guided setup.
         </div>
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
           <button
             data-cy="empty-open-wizard"
             onClick={onOpenWizard}
-            style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
+            style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
           >
             Set up a schedule for me
           </button>
@@ -635,7 +635,7 @@ function MySchedulesTab({ schedules, actingById, onCancel, onRetry, onOpenDetail
 function ScheduleTemplatesTab({ starters, creatingTemplateId, onUseTemplate }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ fontSize: 13, color: 'var(--text-dim, #888)' }}>
+      <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>
         {"Pick a starter schedule and we'll add it to your list. You can edit it after."}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
@@ -656,7 +656,7 @@ function AdvancedSchedulerTab({ schedules, actingById, onCancel, onRetry, loadin
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <button onClick={onOpenWizard} style={{ padding: '6px 14px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+        <button onClick={onOpenWizard} style={{ padding: '6px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
           + New schedule (guided)
         </button>
       </div>
@@ -825,7 +825,7 @@ export default function SchedulerPageV2({ initialItems }) {
       <div className="page-header">
         <div>
           <h1 style={{ margin: 0 }}>Scheduler</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-dim, #888)', margin: '4px 0 0' }}>
+          <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '4px 0 0' }}>
             The scheduler decides when work should happen.
           </p>
         </div>
@@ -833,7 +833,7 @@ export default function SchedulerPageV2({ initialItems }) {
           <button
             data-cy="open-wizard-btn"
             onClick={() => setWizardOpen(true)}
-            style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
+            style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
           >
             Set up a schedule for me
           </button>
@@ -854,7 +854,7 @@ export default function SchedulerPageV2({ initialItems }) {
       )}
 
       {/* Tab bar + view toggle */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border, #333)', marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', marginBottom: 20 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap' }}>
           {TABS.map(tab => (
             <button
@@ -863,8 +863,8 @@ export default function SchedulerPageV2({ initialItems }) {
               onClick={() => setActiveTab(tab.key)}
               style={{
                 padding: '10px 14px', background: 'transparent', border: 'none',
-                borderBottom: `2px solid ${activeTab === tab.key ? 'var(--accent, #7c3aed)' : 'transparent'}`,
-                color: activeTab === tab.key ? 'var(--text-primary, #fff)' : 'var(--text-dim, #888)',
+                borderBottom: `2px solid ${activeTab === tab.key ? 'var(--accent)' : 'transparent'}`,
+                color: activeTab === tab.key ? 'var(--text-primary)' : 'var(--text-dim)',
                 cursor: 'pointer', fontSize: 13, fontWeight: activeTab === tab.key ? 700 : 400,
               }}
             >
@@ -881,9 +881,9 @@ export default function SchedulerPageV2({ initialItems }) {
                 onClick={() => setActiveView(v)}
                 style={{
                   padding: '4px 10px', borderRadius: 6,
-                  background: activeView === v ? 'var(--accent, #7c3aed)' : 'transparent',
-                  border: `1px solid ${activeView === v ? 'var(--accent, #7c3aed)' : 'var(--border, #333)'}`,
-                  color: activeView === v ? '#fff' : 'var(--text-dim, #888)',
+                  background: activeView === v ? 'var(--accent)' : 'transparent',
+                  border: `1px solid ${activeView === v ? 'var(--accent)' : 'var(--border)'}`,
+                  color: activeView === v ? '#fff' : 'var(--text-dim)',
                   cursor: 'pointer', fontSize: 12, textTransform: 'capitalize',
                 }}
               >

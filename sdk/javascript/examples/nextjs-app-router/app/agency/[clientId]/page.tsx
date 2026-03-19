@@ -55,8 +55,8 @@ export default function AgencyOverviewPage({ params }: Props) {
             <span style={{ color: "var(--text-muted, #888)" }}>Progress</span>
             <span>{done}/{total} tasks done</span>
           </div>
-          <div style={{ height: 6, background: "var(--border, #333)", borderRadius: 999 }}>
-            <div style={{ height: "100%", background: "var(--accent, #7c3aed)", borderRadius: 999, width: `${(done / total) * 100}%`, transition: "width 0.3s" }} />
+          <div style={{ height: 6, background: "var(--border)", borderRadius: 999 }}>
+            <div style={{ height: "100%", background: "var(--accent)", borderRadius: 999, width: `${(done / total) * 100}%`, transition: "width 0.3s" }} />
           </div>
         </div>
       )}
@@ -64,11 +64,11 @@ export default function AgencyOverviewPage({ params }: Props) {
       {/* Action nav */}
       <div style={{ display: "flex", gap: 10, marginBottom: 28, flexWrap: "wrap" }}>
         <Link href={`/agency/${clientId}/approvals`}
-          style={{ padding: "6px 16px", border: "1px solid var(--border, #333)", borderRadius: 6, fontSize: 14 }}>
+          style={{ padding: "6px 16px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14 }}>
           Approvals
         </Link>
         <Link href={`/agency/${clientId}/results`}
-          style={{ padding: "6px 16px", border: "1px solid var(--border, #333)", borderRadius: 6, fontSize: 14 }}>
+          style={{ padding: "6px 16px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14 }}>
           Results
         </Link>
       </div>
@@ -80,7 +80,7 @@ export default function AgencyOverviewPage({ params }: Props) {
         <div>
           <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Tasks</h2>
           {tasks.map((t) => (
-            <div key={t.id} style={{ border: "1px solid var(--border, #333)", borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
+            <div key={t.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>{t.title}</div>

@@ -13,7 +13,7 @@ const QUICK_ACTION_LABELS = {
 function StructuredBlock({ title, content, items, color, highlight }) {
   return (
     <div style={{ padding: '8px 12px', borderRadius: 8, background: highlight ? 'rgba(124,58,237,.12)' : 'rgba(255,255,255,.04)', border: `1px solid ${highlight ? 'rgba(124,58,237,.3)' : 'rgba(255,255,255,.06)'}` }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: color ?? 'var(--text-dim,#888)', letterSpacing: 0.5, marginBottom: 4, textTransform: 'uppercase' }}>{title}</div>
+      <div style={{ fontSize: 10, fontWeight: 700, color: color ?? 'var(--text-dim)', letterSpacing: 0.5, marginBottom: 4, textTransform: 'uppercase' }}>{title}</div>
       {content && <div style={{ fontSize: 13, lineHeight: 1.55 }}>{content}</div>}
       {items && (
         <ul style={{ margin: 0, padding: '0 0 0 16px', listStyle: 'disc' }}>
@@ -39,16 +39,16 @@ export default function CreativeDirectorMessageCard({ message, onUseNextAction }
         maxWidth: '82%',
         padding: '12px 16px',
         borderRadius: isUser ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
-        background: isUser ? 'var(--accent,#7c3aed)' : isSystem ? 'rgba(239,68,68,.1)' : 'var(--surface2,#1a1a2e)',
-        border: isUser ? 'none' : `1px solid ${isSystem ? 'rgba(239,68,68,.3)' : 'var(--border,#333)'}`,
-        color: isUser ? '#fff' : 'var(--text-primary,#f1f1f1)',
+        background: isUser ? 'var(--accent)' : isSystem ? 'rgba(239,68,68,.1)' : 'var(--surface2)',
+        border: isUser ? 'none' : `1px solid ${isSystem ? 'rgba(239,68,68,.3)' : 'var(--border)'}`,
+        color: isUser ? '#fff' : 'var(--text-primary)',
         display: 'flex',
         flexDirection: 'column',
         gap: 6,
       }}
     >
       {!isUser && !isSystem && (
-        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent,#7c3aed)', letterSpacing: 1, textTransform: 'uppercase' }}>Creative Director</div>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', letterSpacing: 1, textTransform: 'uppercase' }}>Creative Director</div>
       )}
       <div style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{message.text}</div>
 
@@ -70,14 +70,14 @@ export default function CreativeDirectorMessageCard({ message, onUseNextAction }
           <button
             data-cy="director-next-action"
             onClick={() => onUseNextAction(s.next_action)}
-            style={{ padding: '6px 14px', borderRadius: 6, background: 'var(--accent,#7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}
+            style={{ padding: '6px 14px', borderRadius: 6, background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}
           >
             → {QUICK_ACTION_LABELS[s.next_action] ?? s.next_action}
           </button>
         </div>
       )}
 
-      <div style={{ fontSize: 10, color: isUser ? 'rgba(255,255,255,.5)' : 'var(--text-dim,#888)', textAlign: isUser ? 'right' : 'left' }}>
+      <div style={{ fontSize: 10, color: isUser ? 'rgba(255,255,255,.5)' : 'var(--text-dim)', textAlign: isUser ? 'right' : 'left' }}>
         {message.created_at ? new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
       </div>
     </div>

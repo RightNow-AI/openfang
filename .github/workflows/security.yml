@@ -1,0 +1,265 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run full security sweep weekly (Monday 02:00 UTC)
+    - cron: '0 2 * * 1'
+
+permissions:
+  contents: read
+  security-events: write   # for uploading SARIF results
+
+jobs:
+  # ── 1. Rust dependency audit ───────────────────────────────────────────────
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        # Fail on any vulnerability in the dependency tree.
+        # To temporarily ignore a specific advisory, add it to
+        # .cargo/audit.toml under [advisories] deny/ignore.
+        run: cargo audit
+
+  # ── 2. JS dependency audit ────────────────────────────────────────────────
+  npm-audit:
+    name: NPM Audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/javascript/examples/nextjs-app-router
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/javascript/examples/nextjs-app-router/package-lock.json
+
+      - run: npm ci
+
+      - name: Run npm audit
+        # --audit-level=high treats only High/Critical as failures.
+        # Lower this to 'moderate' once the dependency tree is clean.
+        run: npm audit --audit-level=high
+
+  # ── 3. Secret scanning ────────────────────────────────────────────────────
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history needed for effective secret scanning
+          fetch-depth: 0
+
+      - name: TruffleHog scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
+
+  # ── 4. Rust lint and type-check ───────────────────────────────────────────
+  rust-lint:
+    name: Rust Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ── 5. Next.js lint and type-check ────────────────────────────────────────
+  nextjs-lint:
+    name: Next.js Lint + TypeCheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/javascript/examples/nextjs-app-router
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/javascript/examples/nextjs-app-router/package-lock.json
+
+      - run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npx next lint
+
+  # ── 6. Security-focused test suite ───────────────────────────────────────
+  security-tests:
+    name: Security Test Suite
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/javascript/examples/nextjs-app-router
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/javascript/examples/nextjs-app-router/package-lock.json
+
+      - run: npm ci
+
+      - name: Run security tests
+        # This suite covers:
+        #   - Auth failure (unauthenticated requests → 401)
+        #   - AuthZ failure (wrong-user requests → 403)
+        #   - Approval bypass attempts → rejected
+        #   - SSRF blocking (private IPs, metadata endpoints)
+        #   - Path traversal blocking
+        #   - Malformed / oversized input → 400 not 500
+        #   - Rate limit enforcement
+        run: npm run test:security --if-present
+
+  # ── 7. Auth matrix route coverage ────────────────────────────────────────
+  route-coverage:
+    name: Auth Matrix Coverage
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/javascript/examples/nextjs-app-router
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/javascript/examples/nextjs-app-router/package-lock.json
+
+      - run: npm ci
+
+      - name: Verify all routes appear in auth-matrix.md
+        # Reads docs/auth-matrix.md and verifies every registered Next.js route
+        # and Rust API route appears in the matrix. Fails if any route is undocumented.
+        run: npm run test:routes --if-present
+
+  # ── 8. Verify no server secrets in client bundle ─────────────────────────
+  client-bundle-secrets:
+    name: Client Bundle Secret Leak Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/javascript/examples/nextjs-app-router
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/javascript/examples/nextjs-app-router/package-lock.json
+
+      - run: npm ci
+
+      - name: Build Next.js
+        run: npx next build
+        env:
+          NEXT_PUBLIC_OPENFANG_BASE_URL: http://127.0.0.1:50051
+
+      - name: Grep client bundle for server-only secret patterns
+        # Fail if the client bundle references known server-secret variable names.
+        # Extend the grep patterns as new secret names are introduced.
+        run: |
+          set -euo pipefail
+          PATTERNS=(
+            "OPENFANG_API_KEY"
+            "GROQ_API_KEY"
+            "OPENAI_API_KEY"
+            "ANTHROPIC_API_KEY"
+            "DATABASE_URL"
+            "SECRET_KEY"
+            "PRIVATE_KEY"
+            "WEBHOOK_SECRET"
+          )
+          for p in "${PATTERNS[@]}"; do
+            if grep -r --include="*.js" "$p" .next/static 2>/dev/null | grep -v "NEXT_PUBLIC_"; then
+              echo "ERROR: Found server secret pattern '$p' in client bundle"
+              exit 1
+            fi
+          done
+          echo "Client bundle secret check passed."
+
+  # ── 9. Security headers verification ─────────────────────────────────────
+  security-headers:
+    name: Security Headers
+    runs-on: ubuntu-latest
+    # Only run when daemon binary + frontend are both available.
+    # Skips if the test script is not present (--if-present).
+    defaults:
+      run:
+        working-directory: sdk/javascript/examples/nextjs-app-router
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/javascript/examples/nextjs-app-router/package-lock.json
+
+      - run: npm ci
+
+      - name: Check security headers are configured
+        # Validates that next.config.mjs defines all required security headers:
+        # Strict-Transport-Security, X-Frame-Options, X-Content-Type-Options,
+        # Content-Security-Policy, Referrer-Policy, Permissions-Policy
+        run: npm run test:security-headers --if-present
+
+  # ── 10. SBOM generation ───────────────────────────────────────────────────
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    # Only generate SBOM on main branch pushes (not PRs)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install syft
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM (SPDX)
+        run: |
+          syft . -o spdx-json > sbom.spdx.json
+          echo "SBOM generated: $(wc -c < sbom.spdx.json) bytes"
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.spdx.json
+          retention-days: 90
+
+      - name: Scan SBOM with Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          grype sbom:sbom.spdx.json --fail-on high

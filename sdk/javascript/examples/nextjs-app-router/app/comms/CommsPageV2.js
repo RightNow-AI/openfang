@@ -64,15 +64,15 @@ function fmtDate(iso) {
 function WizardStep({ step, total = 5, title, subtitle, onBack, onNext, nextLabel, nextDisabled, children }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', letterSpacing: 1, textTransform: 'uppercase' }}>Step {step} of {total}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase' }}>Step {step} of {total}</div>
       <div>
         <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>{title}</h2>
-        {subtitle && <p style={{ fontSize: 13, color: 'var(--text-dim, #888)', margin: '6px 0 0', lineHeight: 1.6 }}>{subtitle}</p>}
+        {subtitle && <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '6px 0 0', lineHeight: 1.6 }}>{subtitle}</p>}
       </div>
       <div>{children}</div>
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 8, borderTop: '1px solid var(--border, #2a2a3e)' }}>
-        {onBack && <button onClick={onBack} style={{ padding: '8px 18px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 13 }}>← Back</button>}
-        {onNext && <button onClick={onNext} disabled={nextDisabled} style={{ padding: '8px 20px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: nextDisabled ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: nextDisabled ? 0.5 : 1 }}>{nextLabel ?? 'Next →'}</button>}
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+        {onBack && <button onClick={onBack} style={{ padding: '8px 18px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 13 }}>← Back</button>}
+        {onNext && <button onClick={onNext} disabled={nextDisabled} style={{ padding: '8px 20px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: nextDisabled ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: nextDisabled ? 0.5 : 1 }}>{nextLabel ?? 'Next →'}</button>}
       </div>
     </div>
   );
@@ -80,7 +80,7 @@ function WizardStep({ step, total = 5, title, subtitle, onBack, onNext, nextLabe
 
 function ChoiceBtn({ selected, onClick, icon, label }) {
   return (
-    <button onClick={onClick} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '11px 16px', borderRadius: 8, marginBottom: 8, border: `1px solid ${selected ? 'var(--accent, #7c3aed)' : 'var(--border, #333)'}`, background: selected ? 'rgba(124,58,237,0.10)' : 'transparent', cursor: 'pointer' }}>
+    <button onClick={onClick} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '11px 16px', borderRadius: 8, marginBottom: 8, border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`, background: selected ? 'var(--accent-subtle)' : 'transparent', cursor: 'pointer' }}>
       {icon && <span style={{ marginRight: 10 }}>{icon}</span>}
       <span style={{ fontWeight: selected ? 700 : 400, fontSize: 14 }}>{label}</span>
     </button>
@@ -90,8 +90,8 @@ function ChoiceBtn({ selected, onClick, icon, label }) {
 function TxtInput({ label, value, onChange, placeholder, type = 'text' }) {
   return (
     <div style={{ marginBottom: 12 }}>
-      <label style={{ fontSize: 12, color: 'var(--text-dim, #888)', display: 'block', marginBottom: 4 }}>{label}</label>
-      <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{ width: '100%', padding: '8px 12px', borderRadius: 6, background: 'var(--input-bg, #1a1a2e)', border: '1px solid var(--border, #333)', color: 'var(--text-primary, #fff)', fontSize: 13 }} />
+      <label style={{ fontSize: 12, color: 'var(--text-dim)', display: 'block', marginBottom: 4 }}>{label}</label>
+      <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{ width: '100%', padding: '8px 12px', borderRadius: 6, background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 13 }} />
     </div>
   );
 }
@@ -139,8 +139,8 @@ function StepReview({ state, creating, onBack, onCreate }) {
     <WizardStep step={5} title="Review and create" onBack={onBack} onNext={onCreate} nextLabel={creating ? 'Creating…' : 'Create draft'} nextDisabled={creating}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {[['What to send', goalLabel], ['To', state.audienceName || '—'], ['Channel', channelLabel], ['Needs approval', state.approvalRequired ? 'Yes' : 'No']].map(([l, v]) => (
-          <div key={l} style={{ padding: '10px 14px', background: 'var(--surface2, #1a1a2e)', borderRadius: 8 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>{l}</div>
+          <div key={l} style={{ padding: '10px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>{l}</div>
             <div style={{ fontSize: 14, fontWeight: 500 }}>{v}</div>
           </div>
         ))}
@@ -177,10 +177,10 @@ function CommsWizard({ open, onClose, onCreateDraft }) {
 
   return (
     <div data-cy="comms-wizard" style={{ position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }} onClick={e => { if (e.target === e.currentTarget) handleClose(); }}>
-      <div style={{ width: '100%', maxWidth: 520, background: 'var(--bg-elevated, #111)', border: '1px solid var(--border, #333)', borderRadius: 14, padding: '28px 32px', maxHeight: '90vh', overflowY: 'auto' }}>
+      <div style={{ width: '100%', maxWidth: 520, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 14, padding: '28px 32px', maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 24 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-dim, #888)' }}>Create a draft message</div>
-          <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--text-dim, #888)' }}>✕</button>
+          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-dim)' }}>Create a draft message</div>
+          <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--text-dim)' }}>✕</button>
         </div>
         {step === 1 && <StepGoal    value={goal}    onSelect={setGoal}  onNext={() => setStep(2)} />}
         {step === 2 && <StepAudience name={audienceName} email={audienceEmail} onChange={(k, v) => k === 'name' ? setAudienceName(v) : setAudienceEmail(v)} onBack={() => setStep(1)} onNext={() => setStep(3)} />}
@@ -201,24 +201,24 @@ function Badge({ color, children }) {
 function statusColor(s) {
   if (s === 'sent' || s === 'ready')     return '#22c55e';
   if (s === 'waiting_approval')          return '#f59e0b';
-  if (s === 'new')                       return '#7c3aed';
+  if (s === 'new')                       return 'var(--accent)';
   if (s === 'archived')                  return '#6b7280';
   return '#6b7280';
 }
 
 function CommsStarterCard({ template, creating, onUse }) {
   return (
-    <div data-cy="comms-starter-card" style={{ border: '1px solid var(--border, #333)', borderRadius: 10, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div data-cy="comms-starter-card" style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div>
         <div style={{ fontWeight: 700, fontSize: 15 }}>{template.title}</div>
-        <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 2 }}>{template.bestFor}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{template.bestFor}</div>
       </div>
       <div style={{ fontSize: 13, color: 'var(--text-secondary, #ccc)', lineHeight: 1.5 }}>{template.description}</div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Badge color="#7c3aed">{template.channel}</Badge>
+        <Badge color="var(--accent)">{template.channel}</Badge>
         {template.approvalRequired && <Badge color="#f59e0b">⏸ Needs approval</Badge>}
       </div>
-      <button data-cy="use-comms-template-btn" onClick={onUse} disabled={creating} style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: creating ? 'wait' : 'pointer', fontWeight: 600, fontSize: 13 }}>
+      <button data-cy="use-comms-template-btn" onClick={onUse} disabled={creating} style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: creating ? 'wait' : 'pointer', fontWeight: 600, fontSize: 13 }}>
         {creating ? 'Creating…' : 'Use this template'}
       </button>
     </div>
@@ -228,10 +228,10 @@ function CommsStarterCard({ template, creating, onUse }) {
 function ThreadCardSimple({ thread, onOpen }) {
   const color = statusColor(thread.status);
   return (
-    <div data-cy="thread-card" style={{ border: '1px solid var(--border, #333)', borderRadius: 8, padding: '12px 16px', display: 'flex', gap: 12, alignItems: 'center', cursor: 'pointer' }} onClick={onOpen}>
+    <div data-cy="thread-card" style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 16px', display: 'flex', gap: 12, alignItems: 'center', cursor: 'pointer' }} onClick={onOpen}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 14 }}>{thread.subject}</div>
-        <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 2 }}>{thread.preview}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{thread.preview}</div>
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
         <Badge color={color}>{thread.status.replace('_', ' ')}</Badge>
@@ -244,15 +244,15 @@ function ThreadCardSimple({ thread, onOpen }) {
 function DraftCard({ draft, acting, onApprove, onSend, onOpen }) {
   const color = statusColor(draft.approval_status === 'approved' ? 'ready' : draft.status);
   return (
-    <div data-cy="draft-card" style={{ border: '1px solid var(--border, #333)', borderRadius: 8, padding: '12px 16px', display: 'flex', gap: 12, alignItems: 'center' }}>
+    <div data-cy="draft-card" style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 16px', display: 'flex', gap: 12, alignItems: 'center' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 14 }}>{draft.subject}</div>
-        <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 2 }}>{draft.channel} · {draft.recipients?.join(', ') || '—'}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{draft.channel} · {draft.recipients?.join(', ') || '—'}</div>
       </div>
       <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-        {draft.send_ready && <button data-cy="draft-send-btn" onClick={onSend} disabled={acting === 'send'} style={{ padding: '5px 10px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>{acting === 'send' ? '…' : 'Send'}</button>}
+        {draft.send_ready && <button data-cy="draft-send-btn" onClick={onSend} disabled={acting === 'send'} style={{ padding: '5px 10px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>{acting === 'send' ? '…' : 'Send'}</button>}
         {draft.approval_required && draft.approval_status === 'pending' && <button data-cy="draft-approve-btn" onClick={onApprove} disabled={acting === 'approve'} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid #22c55e', color: '#22c55e', cursor: 'pointer', fontSize: 12 }}>{acting === 'approve' ? '…' : 'Approve'}</button>}
-        <button onClick={onOpen} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 12 }}>Open</button>
+        <button onClick={onOpen} style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 12 }}>Open</button>
       </div>
     </div>
   );
@@ -266,9 +266,9 @@ function RecommendedCommsTab({ starters, creatingId, onUseTemplate, onOpenWizard
       <div style={{ padding: '18px 22px', background: 'rgba(124,58,237,0.07)', border: '1px solid rgba(124,58,237,0.28)', borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15 }}>Need a custom message?</div>
-          <div style={{ fontSize: 13, color: 'var(--text-dim, #888)', marginTop: 3 }}>{"Tell us who it's for and what to say — we'll write the draft."}</div>
+          <div style={{ fontSize: 13, color: 'var(--text-dim)', marginTop: 3 }}>{"Tell us who it's for and what to say — we'll write the draft."}</div>
         </div>
-        <button data-cy="open-comms-wizard-from-rec" onClick={onOpenWizard} style={{ padding: '8px 18px', borderRadius: 8, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+        <button data-cy="open-comms-wizard-from-rec" onClick={onOpenWizard} style={{ padding: '8px 18px', borderRadius: 8, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
           Create a draft for me
         </button>
       </div>
@@ -285,11 +285,11 @@ function RecommendedCommsTab({ starters, creatingId, onUseTemplate, onOpenWizard
 function InboxCommsTab({ threads, loading, onOpenWizard }) {
   if (threads.length === 0 && !loading) {
     return (
-      <div data-cy="comms-inbox-empty" style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border, #333)', borderRadius: 10 }}>
+      <div data-cy="comms-inbox-empty" style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 10 }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>📭</div>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>Inbox is empty</div>
-        <div style={{ fontSize: 13, color: 'var(--text-dim, #888)', marginBottom: 24 }}>No threads yet. Start by creating a draft.</div>
-        <button onClick={onOpenWizard} style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>Create a draft for me</button>
+        <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 24 }}>No threads yet. Start by creating a draft.</div>
+        <button onClick={onOpenWizard} style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>Create a draft for me</button>
       </div>
     );
   }
@@ -303,11 +303,11 @@ function InboxCommsTab({ threads, loading, onOpenWizard }) {
 function DraftsCommsTab({ drafts, actingById, onApprove, onSend, loading, onOpenWizard }) {
   if (drafts.length === 0 && !loading) {
     return (
-      <div data-cy="comms-drafts-empty" style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border, #333)', borderRadius: 10 }}>
+      <div data-cy="comms-drafts-empty" style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 10 }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>📝</div>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>No drafts yet</div>
-        <div style={{ fontSize: 13, color: 'var(--text-dim, #888)', marginBottom: 24 }}>Drafts waiting for review or send will appear here.</div>
-        <button onClick={onOpenWizard} style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>Create a draft for me</button>
+        <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 24 }}>Drafts waiting for review or send will appear here.</div>
+        <button onClick={onOpenWizard} style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>Create a draft for me</button>
       </div>
     );
   }
@@ -508,10 +508,10 @@ export default function CommsPageV2({ initialTopology, initialEvents }) {
       <div className="page-header">
         <div>
           <h1 style={{ margin: 0 }}>Comms</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-dim, #888)', margin: '4px 0 0' }}>Drafts, messages, and approvals in one place.</p>
+          <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '4px 0 0' }}>Drafts, messages, and approvals in one place.</p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <button data-cy="open-comms-wizard-btn" onClick={() => setWizardOpen(true)} style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+          <button data-cy="open-comms-wizard-btn" onClick={() => setWizardOpen(true)} style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
             Create a draft for me
           </button>
           <button className="btn btn-ghost btn-sm" onClick={refresh} disabled={loading} style={{ fontSize: 13 }}>
@@ -527,9 +527,9 @@ export default function CommsPageV2({ initialTopology, initialEvents }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', borderBottom: '1px solid var(--border, #333)', marginBottom: 20 }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 20 }}>
         {TABS.map(t => (
-          <button key={t.key} data-cy={`comms-tab-v2-${t.key}`} onClick={() => setActiveTab(t.key)} style={{ padding: '10px 14px', background: 'transparent', border: 'none', borderBottom: `2px solid ${activeTab === t.key ? 'var(--accent, #7c3aed)' : 'transparent'}`, color: activeTab === t.key ? 'var(--text-primary, #fff)' : 'var(--text-dim, #888)', cursor: 'pointer', fontSize: 13, fontWeight: activeTab === t.key ? 700 : 400 }}>
+          <button key={t.key} data-cy={`comms-tab-v2-${t.key}`} onClick={() => setActiveTab(t.key)} style={{ padding: '10px 14px', background: 'transparent', border: 'none', borderBottom: `2px solid ${activeTab === t.key ? 'var(--accent)' : 'transparent'}`, color: activeTab === t.key ? 'var(--text-primary)' : 'var(--text-dim)', cursor: 'pointer', fontSize: 13, fontWeight: activeTab === t.key ? 700 : 400 }}>
             {t.label}
           </button>
         ))}

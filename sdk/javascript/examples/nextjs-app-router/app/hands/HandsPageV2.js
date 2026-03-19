@@ -113,7 +113,7 @@ function normalizeHand(raw, i) {
 }
 
 function catColor(c) {
-  if (c === 'agency') return '#7c3aed';
+  if (c === 'agency') return 'var(--accent)';
   if (c === 'growth')  return '#059669';
   if (c === 'school')  return '#2563eb';
   return '#6b7280';
@@ -124,15 +124,15 @@ function catColor(c) {
 function WizardStep({ step, total = 5, title, subtitle, onBack, onNext, nextLabel, nextDisabled, children }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-dim,#888)', letterSpacing: 1, textTransform: 'uppercase' }}>Step {step} of {total}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase' }}>Step {step} of {total}</div>
       <div>
         <h2 style={{ fontSize: 19, fontWeight: 700, margin: 0 }}>{title}</h2>
-        {subtitle && <p style={{ fontSize: 13, color: 'var(--text-dim,#888)', margin: '5px 0 0', lineHeight: 1.6 }}>{subtitle}</p>}
+        {subtitle && <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '5px 0 0', lineHeight: 1.6 }}>{subtitle}</p>}
       </div>
       <div>{children}</div>
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 8, borderTop: '1px solid var(--border,#2a2a3e)' }}>
-        {onBack && <button onClick={onBack} style={{ padding: '8px 18px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-secondary,#ccc)', cursor: 'pointer', fontSize: 13 }}>← Back</button>}
-        {onNext && <button onClick={onNext} disabled={nextDisabled} style={{ padding: '8px 20px', borderRadius: 6, background: 'var(--accent,#7c3aed)', color: '#fff', border: 'none', cursor: nextDisabled ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: nextDisabled ? 0.5 : 1 }}>{nextLabel ?? 'Next →'}</button>}
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+        {onBack && <button onClick={onBack} style={{ padding: '8px 18px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary,#ccc)', cursor: 'pointer', fontSize: 13 }}>← Back</button>}
+        {onNext && <button onClick={onNext} disabled={nextDisabled} style={{ padding: '8px 20px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: nextDisabled ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: nextDisabled ? 0.5 : 1 }}>{nextLabel ?? 'Next →'}</button>}
       </div>
     </div>
   );
@@ -140,7 +140,7 @@ function WizardStep({ step, total = 5, title, subtitle, onBack, onNext, nextLabe
 
 function ChoiceBtn({ selected, onClick, icon, label }) {
   return (
-    <button onClick={onClick} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '11px 14px', borderRadius: 8, marginBottom: 7, border: `1px solid ${selected ? 'var(--accent,#7c3aed)' : 'var(--border,#333)'}`, background: selected ? 'rgba(124,58,237,0.1)' : 'transparent', cursor: 'pointer' }}>
+    <button onClick={onClick} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '11px 14px', borderRadius: 8, marginBottom: 7, border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`, background: selected ? 'var(--accent-subtle)' : 'transparent', cursor: 'pointer' }}>
       {icon && <span style={{ marginRight: 10 }}>{icon}</span>}
       <span style={{ fontWeight: selected ? 700 : 400, fontSize: 14 }}>{label}</span>
     </button>
@@ -149,10 +149,10 @@ function ChoiceBtn({ selected, onClick, icon, label }) {
 
 function ToggleBtn({ selected, onClick, icon, label }) {
   return (
-    <button onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 8, marginBottom: 6, border: `1px solid ${selected ? 'var(--accent,#7c3aed)' : 'var(--border,#333)'}`, background: selected ? 'rgba(124,58,237,0.1)' : 'transparent', cursor: 'pointer', width: '100%' }}>
+    <button onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 8, marginBottom: 6, border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`, background: selected ? 'var(--accent-subtle)' : 'transparent', cursor: 'pointer', width: '100%' }}>
       {icon && <span style={{ fontSize: 18, width: 24, textAlign: 'center' }}>{icon}</span>}
       <span style={{ fontWeight: selected ? 700 : 400, fontSize: 13 }}>{label}</span>
-      {selected && <span style={{ marginLeft: 'auto', color: 'var(--accent,#7c3aed)' }}>✓</span>}
+      {selected && <span style={{ marginLeft: 'auto', color: 'var(--accent)' }}>✓</span>}
     </button>
   );
 }
@@ -197,11 +197,11 @@ function StepRecommendations({ goal, mode, tools, bundles, hands, configuringId,
         return (
           <div key={b.id} style={{ border: `1px solid ${color}44`, borderRadius: 10, padding: '14px 16px', marginBottom: 8 }}>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{b.title}</div>
-            <div style={{ fontSize: 12, color: 'var(--text-dim,#888)', marginBottom: 8 }}>{b.description}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 8 }}>{b.description}</div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
               {b.includesHands.map(h => <span key={h} style={{ fontSize: 11, padding: '2px 7px', borderRadius: 999, background: `${color}18`, color, border: `1px solid ${color}33` }}>{h}</span>)}
             </div>
-            <button onClick={() => onConfigureBundle(b)} disabled={configuringId === b.id} style={{ padding: '6px 14px', borderRadius: 6, background: 'var(--accent,#7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
+            <button onClick={() => onConfigureBundle(b)} disabled={configuringId === b.id} style={{ padding: '6px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
               {configuringId === b.id ? 'Setting up…' : 'Set up this bundle'}
             </button>
           </div>
@@ -258,10 +258,10 @@ function HandSetupWizard({ open, availableHands, onClose, onConfigureBundle, onC
       style={{ position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
       onClick={e => { if (e.target === e.currentTarget) handleClose(); }}
     >
-      <div style={{ width: '100%', maxWidth: 540, background: 'var(--bg-elevated,#111)', border: '1px solid var(--border,#333)', borderRadius: 14, padding: '28px 32px', maxHeight: '90vh', overflowY: 'auto' }}>
+      <div style={{ width: '100%', maxWidth: 540, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 14, padding: '28px 32px', maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-dim,#888)' }}>Set up hands for me</div>
-          <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--text-dim,#888)' }}>✕</button>
+          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-dim)' }}>Set up hands for me</div>
+          <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--text-dim)' }}>✕</button>
         </div>
         {step === 1 && <StepGoal value={goal} onSelect={setGoal} onNext={() => setStep(2)} />}
         {step === 2 && <StepMode value={mode} onSelect={setMode} onBack={() => setStep(1)} onNext={() => setStep(3)} />}
@@ -292,20 +292,20 @@ function HandStarterBundleCard({ bundle, configuringId, onSetup }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15 }}>{bundle.title}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-dim,#888)', marginTop: 2 }}>{bundle.bestFor}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{bundle.bestFor}</div>
         </div>
         <CatBadge cat={bundle.category} />
       </div>
       <div style={{ fontSize: 13, color: 'var(--text-secondary,#ccc)', lineHeight: 1.5 }}>{bundle.description}</div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {bundle.includesHands.map(h => <span key={h} style={{ fontSize: 11, padding: '2px 7px', borderRadius: 999, background: 'rgba(255,255,255,.06)', border: '1px solid var(--border,#333)' }}>{h}</span>)}
+        {bundle.includesHands.map(h => <span key={h} style={{ fontSize: 11, padding: '2px 7px', borderRadius: 999, background: 'rgba(255,255,255,.06)', border: '1px solid var(--border)' }}>{h}</span>)}
       </div>
-      <div style={{ fontSize: 12, color: 'var(--text-dim,#888)' }}>Needs: {bundle.requires.join(', ')}</div>
+      <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Needs: {bundle.requires.join(', ')}</div>
       <button
         data-cy="use-hand-bundle-btn"
         onClick={onSetup}
         disabled={configuringId === bundle.id}
-        style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent,#7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13, alignSelf: 'flex-start' }}
+        style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13, alignSelf: 'flex-start' }}
       >
         {configuringId === bundle.id ? 'Setting up…' : 'Set up this bundle'}
       </button>
@@ -315,7 +315,7 @@ function HandStarterBundleCard({ bundle, configuringId, onSetup }) {
 
 function HandCardSimple({ hand, configuringId, onSetup, onOpenDetail }) {
   return (
-    <div data-cy="hand-card-simple" style={{ border: '1px solid var(--border,#333)', borderRadius: 8, padding: '12px 16px', display: 'flex', gap: 12, alignItems: 'center' }}>
+    <div data-cy="hand-card-simple" style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 16px', display: 'flex', gap: 12, alignItems: 'center' }}>
       <span style={{ fontSize: 24, flexShrink: 0 }}>{hand.icon}</span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 14 }}>{hand.name}</div>
@@ -328,7 +328,7 @@ function HandCardSimple({ hand, configuringId, onSetup, onOpenDetail }) {
         <button
           data-cy="hand-details-btn"
           onClick={() => onOpenDetail(hand.id)}
-          style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-dim,#888)', cursor: 'pointer', fontSize: 11, flexShrink: 0, marginRight: 4 }}
+          style={{ padding: '5px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 11, flexShrink: 0, marginRight: 4 }}
         >
           Details
         </button>
@@ -338,7 +338,7 @@ function HandCardSimple({ hand, configuringId, onSetup, onOpenDetail }) {
           data-cy="hand-setup-btn"
           onClick={onSetup}
           disabled={configuringId === hand.id}
-          style={{ padding: '6px 12px', borderRadius: 6, background: 'transparent', border: '1px solid var(--accent,#7c3aed)', color: 'var(--accent,#7c3aed)', cursor: 'pointer', fontWeight: 600, fontSize: 12, flexShrink: 0 }}
+          style={{ padding: '6px 12px', borderRadius: 6, background: 'transparent', border: '1px solid var(--accent)', color: 'var(--accent)', cursor: 'pointer', fontWeight: 600, fontSize: 12, flexShrink: 0 }}
         >
           {configuringId === hand.id ? '…' : 'Set up'}
         </button>
@@ -356,9 +356,9 @@ function RecommendedHandsTab({ hands, configuringId, onOpenWizard, onSetupBundle
       <div style={{ padding: '20px 24px', background: 'rgba(124,58,237,.07)', border: '1px solid rgba(124,58,237,.28)', borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15 }}>Not sure where to start?</div>
-          <div style={{ fontSize: 13, color: 'var(--text-dim,#888)', marginTop: 3 }}>{"Tell us your goal and we'll choose the right hands for you."}</div>
+          <div style={{ fontSize: 13, color: 'var(--text-dim)', marginTop: 3 }}>{"Tell us your goal and we'll choose the right hands for you."}</div>
         </div>
-        <button data-cy="open-wizard-from-rec" onClick={onOpenWizard} style={{ padding: '8px 18px', borderRadius: 8, background: 'var(--accent,#7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+        <button data-cy="open-wizard-from-rec" onClick={onOpenWizard} style={{ padding: '8px 18px', borderRadius: 8, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
           Set up for me
         </button>
       </div>
@@ -385,11 +385,11 @@ function RecommendedHandsTab({ hands, configuringId, onOpenWizard, onSetupBundle
 function MyHandsTab({ hands, configuringId, onSetup, onOpenWizard, onOpenDetail }) {
   if (hands.length === 0) {
     return (
-      <div data-cy="hands-empty" style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border,#333)', borderRadius: 10 }}>
+      <div data-cy="hands-empty" style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 10 }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>🤝</div>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>No hands configured yet</div>
-        <div style={{ fontSize: 13, color: 'var(--text-dim,#888)', maxWidth: 360, margin: '0 auto 24px', lineHeight: 1.6 }}>Hands are ready-made operator bundles that combine an agent role, skills, tools, and settings.</div>
-        <button data-cy="empty-open-wizard" onClick={onOpenWizard} style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent,#7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>
+        <div style={{ fontSize: 13, color: 'var(--text-dim)', maxWidth: 360, margin: '0 auto 24px', lineHeight: 1.6 }}>Hands are ready-made operator bundles that combine an agent role, skills, tools, and settings.</div>
+        <button data-cy="empty-open-wizard" onClick={onOpenWizard} style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>
           Set up for me
         </button>
       </div>
@@ -405,7 +405,7 @@ function MyHandsTab({ hands, configuringId, onSetup, onOpenWizard, onOpenDetail 
 function HandTemplatesTab({ configuringId, onSetupBundle }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ fontSize: 13, color: 'var(--text-dim,#888)' }}>{"Pick a bundle and we'll configure the hands for you. You can customise after."}</div>
+      <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>{"Pick a bundle and we'll configure the hands for you. You can customise after."}</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
         {HAND_STARTERS.map(b => (
           <HandStarterBundleCard key={b.id} bundle={b} configuringId={configuringId} onSetup={() => onSetupBundle(b)} />
@@ -419,7 +419,7 @@ function AdvancedHandsTab({ hands, loading, onOpenWizard }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <button onClick={onOpenWizard} style={{ padding: '6px 14px', borderRadius: 6, background: 'var(--accent,#7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+        <button onClick={onOpenWizard} style={{ padding: '6px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
           + Set up hands (guided)
         </button>
       </div>
@@ -547,14 +547,14 @@ export default function HandsPageV2({ initialHands }) {
       <div className="page-header">
         <div>
           <h1 style={{ margin: 0 }}>Hands</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-dim,#888)', margin: '4px 0 0' }}>
+          <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '4px 0 0' }}>
             Ready-made operator bundles — agent role, skills, tools, and settings in one.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           {ready.length > 0 && <span className="badge badge-success">{ready.length} ready</span>}
           {needsSetup.length > 0 && <span className="badge badge-muted">{needsSetup.length} needs setup</span>}
-          <button data-cy="open-wizard-btn" onClick={() => setWizardOpen(true)} style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent,#7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+          <button data-cy="open-wizard-btn" onClick={() => setWizardOpen(true)} style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
             Set up for me
           </button>
           <button className="btn btn-ghost btn-sm" onClick={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
@@ -568,13 +568,13 @@ export default function HandsPageV2({ initialHands }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', borderBottom: '1px solid var(--border,#333)', marginBottom: 20 }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 20 }}>
         {TABS.map(tab => (
           <button
             key={tab.key}
             data-cy={`hands-tab-${tab.key}`}
             onClick={() => setActiveTab(tab.key)}
-            style={{ padding: '10px 14px', background: 'transparent', border: 'none', borderBottom: `2px solid ${activeTab === tab.key ? 'var(--accent,#7c3aed)' : 'transparent'}`, color: activeTab === tab.key ? 'var(--text-primary,#fff)' : 'var(--text-dim,#888)', cursor: 'pointer', fontSize: 13, fontWeight: activeTab === tab.key ? 700 : 400 }}
+            style={{ padding: '10px 14px', background: 'transparent', border: 'none', borderBottom: `2px solid ${activeTab === tab.key ? 'var(--accent)' : 'transparent'}`, color: activeTab === tab.key ? 'var(--text-primary)' : 'var(--text-dim)', cursor: 'pointer', fontSize: 13, fontWeight: activeTab === tab.key ? 700 : 400 }}
           >
             {tab.label}
           </button>

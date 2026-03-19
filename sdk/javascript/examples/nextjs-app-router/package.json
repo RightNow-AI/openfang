@@ -2,12 +2,18 @@
   "name": "@openfang/nextjs-app-router-example",
   "private": true,
   "version": "0.1.0",
+  "main": "electron/main.cjs",
+  "engines": {
+    "node": ">=24.14.0 <26"
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "dev": "node --no-webstorage ./node_modules/next/dist/bin/next dev",
     "build": "node --no-webstorage ./node_modules/next/dist/bin/next build",
+    "build:web": "node --no-webstorage ./node_modules/next/dist/bin/next build",
+    "build:static": "cross-env NEXT_EXPORT=1 node --no-webstorage ./node_modules/next/dist/bin/next build",
     "start": "node --no-webstorage ./node_modules/next/dist/bin/next start",
     "cy:open": "cypress open",
     "cy:run": "cypress run --e2e",
@@ -17,26 +23,82 @@
     "heartbeat:dry-run": "node ../../../../scripts/heartbeat.js --dry-run",
     "generate:types": "openapi-typescript http://localhost:50051/api-doc/openapi.json -o src/types/api.ts",
     "generate:types:file": "openapi-typescript ../../../../openapi.json -o src/types/api.ts",
-    "check:drift": "npm run generate:types:file && git diff --exit-code src/types/api.ts"
+    "check:drift": "npm run generate:types:file && git diff --exit-code src/types/api.ts",
+    "assets:generate": "npx capacitor-assets generate",
+    "cap:sync": "npx cap sync",
+    "cap:copy": "npx cap copy",
+    "cap:open:ios": "npx cap open ios",
+    "cap:open:android": "npx cap open android",
+    "desktop:pack": "electron-builder --dir",
+    "desktop:dist": "electron-builder",
+    "desktop:dist:mac": "electron-builder --mac",
+    "desktop:dist:win": "electron-builder --win",
+    "desktop:dist:linux": "electron-builder --linux"
   },
   "dependencies": {
+    "@capacitor/core": "8.2.0",
     "@openfang/sdk": "file:../..",
     "next": "15.3.1",
     "react": "19.1.0",
     "react-dom": "19.1.0"
   },
   "devDependencies": {
+    "@capacitor/android": "8.2.0",
+    "@capacitor/assets": "3.0.5",
+    "@capacitor/cli": "8.2.0",
+    "@capacitor/ios": "8.2.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/react": "19.2.14",
     "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.4.27",
+    "cross-env": "^7.0.3",
     "cypress": "^13.17.0",
+    "electron": "41.0.3",
+    "electron-builder": "26.8.1",
     "eslint": "9.39.4",
     "eslint-config-next": "16.1.6",
     "jsdom": "^29.0.0",
     "openapi-typescript": "^7",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^3.4.19",
     "typescript": "5.9.3",
     "vitest": "^4.1.0"
+  },
+  "build": {
+    "appId": "com.openfang.app",
+    "productName": "OpenFang",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist-desktop"
+    },
+    "files": [
+      "electron/**/*",
+      "out/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "extraMetadata": {
+      "main": "electron/main.cjs"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "build/icon.ico"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon": "build/icons"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

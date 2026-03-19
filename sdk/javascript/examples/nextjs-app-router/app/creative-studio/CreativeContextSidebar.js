@@ -8,8 +8,8 @@ function getMissingFields(project) {
 function ContextRow({ label, value }) {
   return (
     <div style={{ marginBottom: 10 }}>
-      <div style={{ fontSize: 10, color: 'var(--text-dim,#888)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>{label}</div>
-      <div style={{ fontSize: 12, color: value ? 'var(--text-primary,#f1f1f1)' : 'var(--text-dim,#888)', fontStyle: value ? 'normal' : 'italic', lineHeight: 1.4 }}>{value || 'Not set'}</div>
+      <div style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 12, color: value ? 'var(--text-primary)' : 'var(--text-dim)', fontStyle: value ? 'normal' : 'italic', lineHeight: 1.4 }}>{value || 'Not set'}</div>
     </div>
   );
 }
@@ -20,9 +20,9 @@ export default function CreativeContextSidebar({ project, plan, onEditBrief, onO
   return (
     <div
       data-cy="context-sidebar"
-      style={{ width: 210, borderRight: '1px solid var(--border,#333)', padding: '20px 14px', overflowY: 'auto', flexShrink: 0, fontSize: 13 }}
+      style={{ width: 210, borderRight: '1px solid var(--border)', padding: '20px 14px', overflowY: 'auto', flexShrink: 0, fontSize: 13 }}
     >
-      <div style={{ fontWeight: 700, marginBottom: 12, color: 'var(--text-dim,#888)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>Project brief</div>
+      <div style={{ fontWeight: 700, marginBottom: 12, color: 'var(--text-dim)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>Project brief</div>
 
       <ContextRow label="Type"     value={project?.project_type?.replace(/_/g, ' + ')} />
       <ContextRow label="Goal"     value={project?.goal?.replace(/_/g, ' ')} />
@@ -39,14 +39,14 @@ export default function CreativeContextSidebar({ project, plan, onEditBrief, onO
 
       <button
         onClick={onEditBrief}
-        style={{ marginTop: 12, width: '100%', padding: '6px', borderRadius: 7, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-dim,#888)', cursor: 'pointer', fontSize: 12 }}
+        style={{ marginTop: 12, width: '100%', padding: '6px', borderRadius: 7, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 12 }}
       >
         Edit brief
       </button>
 
       {plan && (
-        <div style={{ marginTop: 20, borderTop: '1px solid var(--border,#333)', paddingTop: 14 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8, color: 'var(--text-dim,#888)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>Plan</div>
+        <div style={{ marginTop: 20, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8, color: 'var(--text-dim)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>Plan</div>
           <div style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--text-secondary,#bbb)' }}>{plan.thesis}</div>
           {plan.approval_points?.length > 0 && (
             <div style={{ marginTop: 8 }}>
@@ -61,15 +61,15 @@ export default function CreativeContextSidebar({ project, plan, onEditBrief, onO
       )}
 
       {project?.selected_ai && Object.values(project.selected_ai).some(Boolean) && (
-        <div style={{ marginTop: 20, borderTop: '1px solid var(--border,#333)', paddingTop: 14 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8, color: 'var(--text-dim,#888)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>AI choices</div>
+        <div style={{ marginTop: 20, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8, color: 'var(--text-dim)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>AI choices</div>
           {Object.entries(project.selected_ai).filter(([, v]) => v).map(([k, v]) => (
             <div key={k} style={{ fontSize: 11, marginBottom: 5 }}>
-              <span style={{ color: 'var(--text-dim,#888)' }}>{k.replace('_model', '')}</span>{' '}
-              <span style={{ color: 'var(--text-primary,#f1f1f1)' }}>{v}</span>
+              <span style={{ color: 'var(--text-dim)' }}>{k.replace('_model', '')}</span>{' '}
+              <span style={{ color: 'var(--text-primary)' }}>{v}</span>
             </div>
           ))}
-          <button onClick={onOpenAiChoices} style={{ marginTop: 6, fontSize: 11, padding: '4px 8px', borderRadius: 5, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-dim,#888)', cursor: 'pointer' }}>Change</button>
+          <button onClick={onOpenAiChoices} style={{ marginTop: 6, fontSize: 11, padding: '4px 8px', borderRadius: 5, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)', cursor: 'pointer' }}>Change</button>
         </div>
       )}
     </div>

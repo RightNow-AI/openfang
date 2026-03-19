@@ -99,7 +99,7 @@ function StarterPackCard({ pack, installedCount, installing, onInstall }) {
     <div
       data-cy="starter-pack-card"
       style={{
-        border: '1px solid var(--border, #333)',
+        border: '1px solid var(--border)',
         borderRadius: 10,
         padding: '18px 20px',
         display: 'flex',
@@ -110,7 +110,7 @@ function StarterPackCard({ pack, installedCount, installing, onInstall }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15 }}>{pack.title}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 3 }}>{pack.bestFor}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 3 }}>{pack.bestFor}</div>
         </div>
         {installedCount > 0 && (
           <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: '#22c55e20', color: '#22c55e' }}>
@@ -122,10 +122,10 @@ function StarterPackCard({ pack, installedCount, installing, onInstall }) {
         {pack.description}
       </div>
       <div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', marginBottom: 5 }}>Includes:</div>
+        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 5 }}>Includes:</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
           {pack.includes.map(inc => (
-            <span key={inc} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: 'var(--surface2, #1a1a2e)', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)' }}>
+            <span key={inc} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)' }}>
               {inc}
             </span>
           ))}
@@ -138,9 +138,9 @@ function StarterPackCard({ pack, installedCount, installing, onInstall }) {
         style={{
           padding: '8px 16px',
           borderRadius: 6,
-          background: allDone ? 'transparent' : 'var(--accent, #7c3aed)',
-          color: allDone ? 'var(--text-dim, #888)' : '#fff',
-          border: allDone ? '1px solid var(--border, #333)' : 'none',
+          background: allDone ? 'transparent' : 'var(--accent)',
+          color: allDone ? 'var(--text-dim)' : '#fff',
+          border: allDone ? '1px solid var(--border)' : 'none',
           cursor: (installing || allDone) ? 'not-allowed' : 'pointer',
           fontWeight: 600,
           fontSize: 13,
@@ -157,11 +157,11 @@ function StarterPackCard({ pack, installedCount, installing, onInstall }) {
 function RecommendedSkillCard({ skill, installing, installed, onInstall }) {
   const isAdded = installed || skill.installed || skill.bundled;
   return (
-    <div style={{ border: '1px solid var(--border, #333)', borderRadius: 8, padding: '12px 14px', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+    <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 14 }}>{skill.name}</div>
         {skill.description && (
-          <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 2 }}>{skill.description}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{skill.description}</div>
         )}
       </div>
       <button
@@ -170,9 +170,9 @@ function RecommendedSkillCard({ skill, installing, installed, onInstall }) {
         style={{
           padding: '5px 12px',
           borderRadius: 6,
-          background: isAdded ? 'transparent' : 'var(--accent, #7c3aed)',
-          color: isAdded ? 'var(--text-dim, #888)' : '#fff',
-          border: isAdded ? '1px solid var(--border, #333)' : 'none',
+          background: isAdded ? 'transparent' : 'var(--accent)',
+          color: isAdded ? 'var(--text-dim)' : '#fff',
+          border: isAdded ? '1px solid var(--border)' : 'none',
           cursor: (installing || isAdded || !skill.installable) ? 'not-allowed' : 'pointer',
           fontWeight: 600,
           fontSize: 12,
@@ -192,15 +192,15 @@ function InstalledSkillCardSimple({ skill, pending, onToggleEnabled, onOpenDetai
   return (
     <div
       data-cy="installed-skill-card"
-      style={{ border: '1px solid var(--border, #333)', borderRadius: 8, padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'center' }}
+      style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'center' }}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 14 }}>{skill.name}</div>
-        <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 2 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
           {skill.description || 'No description available'}
         </div>
         {skill.used_by_count > 0 && (
-          <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', marginTop: 3 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
             Used by {skill.used_by_count} agent{skill.used_by_count !== 1 ? 's' : ''}
           </div>
         )}
@@ -213,8 +213,8 @@ function InstalledSkillCardSimple({ skill, pending, onToggleEnabled, onOpenDetai
             padding: '4px 12px',
             borderRadius: 999,
             background: skill.enabled ? '#22c55e20' : 'transparent',
-            border: `1px solid ${skill.enabled ? '#22c55e' : 'var(--border, #333)'}`,
-            color: skill.enabled ? '#22c55e' : 'var(--text-dim, #888)',
+            border: `1px solid ${skill.enabled ? '#22c55e' : 'var(--border)'}`,
+            color: skill.enabled ? '#22c55e' : 'var(--text-dim)',
             cursor: pending ? 'wait' : 'pointer',
             fontSize: 12,
             fontWeight: 600,
@@ -224,7 +224,7 @@ function InstalledSkillCardSimple({ skill, pending, onToggleEnabled, onOpenDetai
         </button>
         <button
           onClick={onOpenDetail}
-          style={{ padding: '4px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 12 }}
+          style={{ padding: '4px 10px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 12 }}
         >
           Details
         </button>
@@ -350,17 +350,17 @@ const TOOLS = [
 function WizardStep({ step, totalSteps = 5, title, subtitle, onBack, backLabel, onNext, nextLabel, nextDisabled, children }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-dim, #888)' }}>Step {step} of {totalSteps}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>Step {step} of {totalSteps}</div>
       <div>
         <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>{title}</h2>
-        {subtitle && <p style={{ fontSize: 13, color: 'var(--text-dim, #888)', margin: '6px 0 0', lineHeight: 1.5 }}>{subtitle}</p>}
+        {subtitle && <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '6px 0 0', lineHeight: 1.5 }}>{subtitle}</p>}
       </div>
       <div>{children}</div>
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
         {onBack && (
           <button
             onClick={onBack}
-            style={{ padding: '8px 18px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontWeight: 500, fontSize: 13 }}
+            style={{ padding: '8px 18px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontWeight: 500, fontSize: 13 }}
           >
             {backLabel ?? '← Back'}
           </button>
@@ -369,7 +369,7 @@ function WizardStep({ step, totalSteps = 5, title, subtitle, onBack, backLabel, 
           <button
             onClick={onNext}
             disabled={nextDisabled}
-            style={{ padding: '8px 18px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: nextDisabled ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: 13, opacity: nextDisabled ? 0.5 : 1 }}
+            style={{ padding: '8px 18px', borderRadius: 6, background: 'var(--accent)', color: '#fff', border: 'none', cursor: nextDisabled ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: 13, opacity: nextDisabled ? 0.5 : 1 }}
           >
             {nextLabel ?? 'Next →'}
           </button>
@@ -389,8 +389,8 @@ function ChoiceButton({ selected, onClick, children }) {
         textAlign: 'left',
         padding: '12px 16px',
         borderRadius: 8,
-        border: `1px solid ${selected ? 'var(--accent, #7c3aed)' : 'var(--border, #333)'}`,
-        background: selected ? 'rgba(124,58,237,0.1)' : 'transparent',
+        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        background: selected ? 'var(--accent-subtle)' : 'transparent',
         cursor: 'pointer',
         marginBottom: 8,
       }}
@@ -421,7 +421,7 @@ function WizardStepWorkStyle({ value, onSelect, onBack, onNext }) {
       {WORK_STYLES.map(ws => (
         <ChoiceButton key={ws.value} selected={value === ws.value} onClick={() => onSelect(ws.value)}>
           <div style={{ fontWeight: value === ws.value ? 700 : 400, fontSize: 14 }}>{ws.label}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 2 }}>{ws.sub}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{ws.sub}</div>
         </ChoiceButton>
       ))}
     </WizardStep>
@@ -441,8 +441,8 @@ function WizardStepTools({ value, onToggle, onBack, onNext }) {
               style={{
                 padding: '12px 14px',
                 borderRadius: 8,
-                border: `1px solid ${sel ? 'var(--accent, #7c3aed)' : 'var(--border, #333)'}`,
-                background: sel ? 'rgba(124,58,237,0.1)' : 'transparent',
+                border: `1px solid ${sel ? 'var(--accent)' : 'var(--border)'}`,
+                background: sel ? 'var(--accent-subtle)' : 'transparent',
                 cursor: 'pointer',
                 textAlign: 'left',
               }}
@@ -479,7 +479,7 @@ function WizardStepRecommendations({ packs, skills, installingByName, installedN
       )}
       {skills.length > 0 && (
         <>
-          <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginBottom: 8, marginTop: 4 }}>Individual helpers</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 8, marginTop: 4 }}>Individual helpers</div>
           {skills.map(skill => (
             <div key={skill.name} style={{ marginBottom: 6 }}>
               <RecommendedSkillCard
@@ -493,7 +493,7 @@ function WizardStepRecommendations({ packs, skills, installingByName, installedN
         </>
       )}
       {packs.length === 0 && skills.length === 0 && (
-        <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim, #888)', fontSize: 13 }}>
+        <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim)', fontSize: 13 }}>
           Browse the registry after setup to find more helpers.
         </div>
       )}
@@ -512,7 +512,7 @@ function WizardStepFinish({ installedNames, onClose }) {
     <WizardStep step={5} title="You're ready! 🎉" subtitle="Your helpers are installed. Here's what to do next.">
       {installedNames.length > 0 && (
         <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginBottom: 8 }}>Installed this session:</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 8 }}>Installed this session:</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {installedNames.map(n => (
               <span key={n} style={{ fontSize: 12, padding: '3px 10px', borderRadius: 999, background: '#22c55e20', color: '#22c55e', border: '1px solid #22c55e44' }}>
@@ -527,14 +527,14 @@ function WizardStepFinish({ installedNames, onClose }) {
           <a
             key={opt.href}
             href={opt.href}
-            style={{ display: 'block', padding: '10px 16px', borderRadius: 8, border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', textDecoration: 'none', fontSize: 14, fontWeight: 500 }}
+            style={{ display: 'block', padding: '10px 16px', borderRadius: 8, border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', textDecoration: 'none', fontSize: 14, fontWeight: 500 }}
           >
             {opt.label} →
           </a>
         ))}
         <button
           onClick={onClose}
-          style={{ padding: '10px 16px', borderRadius: 8, border: '1px solid var(--border, #333)', background: 'transparent', color: 'var(--text-dim, #888)', cursor: 'pointer', fontSize: 14 }}
+          style={{ padding: '10px 16px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 14 }}
         >
           Review installed skills
         </button>
@@ -607,11 +607,11 @@ function GuidedSetupWizard({ open, installedSkillNames, registryResults, onClose
     >
       <div
         data-cy="guided-wizard"
-        style={{ width: '100%', maxWidth: 560, background: 'var(--bg-elevated, #111)', border: '1px solid var(--border, #333)', borderRadius: 12, padding: 32, maxHeight: '90vh', overflowY: 'auto' }}
+        style={{ width: '100%', maxWidth: 560, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 12, padding: 32, maxHeight: '90vh', overflowY: 'auto' }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
           <div style={{ fontSize: 13, fontWeight: 600 }}>Let&apos;s choose the right helpers</div>
-          <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: 'var(--text-dim, #888)' }}>✕</button>
+          <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: 'var(--text-dim)' }}>✕</button>
         </div>
 
         {step === 1 && <WizardStepGoal value={goal} onSelect={setGoal} onNext={() => setStep(2)} />}
@@ -661,14 +661,14 @@ function RecommendedTab({ registryResults, skills, installingByName, onInstallPa
       >
         <div>
           <div style={{ fontWeight: 700, fontSize: 15 }}>Not sure where to start?</div>
-          <div style={{ fontSize: 13, color: 'var(--text-dim, #888)', marginTop: 3 }}>
+          <div style={{ fontSize: 13, color: 'var(--text-dim)', marginTop: 3 }}>
             {"Answer a few questions and we'll pick the right helpers for you."}
           </div>
         </div>
         <button
           data-cy="open-wizard-from-rec"
           onClick={onOpenWizard}
-          style={{ padding: '8px 18px', borderRadius: 8, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
+          style={{ padding: '8px 18px', borderRadius: 8, background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
         >
           Set up skills for me
         </button>
@@ -718,24 +718,24 @@ function InstalledTab({ skills, view, togglePending, onToggleEnabled, onOpenDeta
     return (
       <div
         data-cy="skills-empty"
-        style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border, #333)', borderRadius: 10 }}
+        style={{ padding: '48px 24px', textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 10 }}
       >
         <div style={{ fontSize: 36, marginBottom: 12 }}>🧰</div>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>No skills installed yet</div>
-        <div style={{ fontSize: 13, color: 'var(--text-dim, #888)', marginBottom: 24, maxWidth: 360, margin: '0 auto 24px' }}>
+        <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 24, maxWidth: 360, margin: '0 auto 24px' }}>
           Skills are small helpers you add to make OpenFang do more.<br />Start the easy way, or browse what&apos;s available.
         </div>
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
           <button
             data-cy="empty-open-wizard"
             onClick={onOpenWizard}
-            style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
+            style={{ padding: '9px 20px', borderRadius: 8, background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
           >
             Start guided setup
           </button>
           <button
             onClick={onSwitchToBrowse}
-            style={{ padding: '9px 20px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 14 }}
+            style={{ padding: '9px 20px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', cursor: 'pointer', fontSize: 14 }}
           >
             Browse all skills
           </button>
@@ -782,12 +782,12 @@ function BrowseTab({ results, loading, error, query, onChangeQuery, onSearch, on
           value={query}
           onChange={e => onChangeQuery(e.target.value)}
           placeholder="Search for a skill…"
-          style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--input-bg, #1a1a2e)', border: '1px solid var(--border, #333)', color: 'var(--text-primary, #fff)', fontSize: 13 }}
+          style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 13 }}
         />
         <button
           type="submit"
           disabled={loading || !query.trim()}
-          style={{ padding: '8px 16px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: loading ? 'wait' : 'pointer', fontWeight: 600, fontSize: 13 }}
+          style={{ padding: '8px 16px', borderRadius: 6, background: 'var(--accent)', color: '#fff', border: 'none', cursor: loading ? 'wait' : 'pointer', fontWeight: 600, fontSize: 13 }}
         >
           {loading ? 'Searching…' : 'Search'}
         </button>
@@ -795,7 +795,7 @@ function BrowseTab({ results, loading, error, query, onChangeQuery, onSearch, on
           type="button"
           onClick={onBrowse}
           disabled={loading}
-          style={{ padding: '8px 16px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border, #333)', color: 'var(--text-secondary, #ccc)', cursor: loading ? 'wait' : 'pointer', fontSize: 13 }}
+          style={{ padding: '8px 16px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary, #ccc)', cursor: loading ? 'wait' : 'pointer', fontSize: 13 }}
         >
           Browse all
         </button>
@@ -804,13 +804,13 @@ function BrowseTab({ results, loading, error, query, onChangeQuery, onSearch, on
       {error && <div className="error-state" style={{ fontSize: 12 }}>⚠ {error}</div>}
 
       {loading && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', color: 'var(--text-dim, #888)', fontSize: 13 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', color: 'var(--text-dim)', fontSize: 13 }}>
           <div className="spinner" style={{ width: 14, height: 14 }} /> Loading…
         </div>
       )}
 
       {!loading && results.length === 0 && (
-        <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim, #888)', fontSize: 13,border: '1px dashed var(--border, #333)', borderRadius: 8 }}>
+        <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim)', fontSize: 13,border: '1px dashed var(--border)', borderRadius: 8 }}>
           No results yet. Try searching or click Browse all.
         </div>
       )}
@@ -963,7 +963,7 @@ export default function SkillsPageV2({ initialSkills }) {
       <div className="page-header">
         <div>
           <h1 style={{ margin: 0 }}>Skills</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-dim, #888)', margin: '4px 0 0' }}>
+          <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '4px 0 0' }}>
             Skills are small helpers you add to make OpenFang do more.
           </p>
         </div>
@@ -971,7 +971,7 @@ export default function SkillsPageV2({ initialSkills }) {
           <button
             data-cy="open-wizard-btn"
             onClick={openWizard}
-            style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent, #7c3aed)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
+            style={{ padding: '7px 14px', borderRadius: 6, background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
           >
             Set up skills for me
           </button>
@@ -996,7 +996,7 @@ export default function SkillsPageV2({ initialSkills }) {
       )}
 
       {/* Tab bar + view toggle */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border, #333)', marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', marginBottom: 20 }}>
         <div style={{ display: 'flex' }}>
           {TABS.map(tab => (
             <button
@@ -1010,8 +1010,8 @@ export default function SkillsPageV2({ initialSkills }) {
                 padding: '10px 16px',
                 background: 'transparent',
                 border: 'none',
-                borderBottom: `2px solid ${activeTab === tab.key ? 'var(--accent, #7c3aed)' : 'transparent'}`,
-                color: activeTab === tab.key ? 'var(--text-primary, #fff)' : 'var(--text-dim, #888)',
+                borderBottom: `2px solid ${activeTab === tab.key ? 'var(--accent)' : 'transparent'}`,
+                color: activeTab === tab.key ? 'var(--text-primary)' : 'var(--text-dim)',
                 cursor: 'pointer',
                 fontSize: 14,
                 fontWeight: activeTab === tab.key ? 700 : 400,
@@ -1031,9 +1031,9 @@ export default function SkillsPageV2({ initialSkills }) {
                 style={{
                   padding: '4px 10px',
                   borderRadius: 6,
-                  background: activeView === v ? 'var(--accent, #7c3aed)' : 'transparent',
-                  border: `1px solid ${activeView === v ? 'var(--accent, #7c3aed)' : 'var(--border, #333)'}`,
-                  color: activeView === v ? '#fff' : 'var(--text-dim, #888)',
+                  background: activeView === v ? 'var(--accent)' : 'transparent',
+                  border: `1px solid ${activeView === v ? 'var(--accent)' : 'var(--border)'}`,
+                  color: activeView === v ? '#fff' : 'var(--text-dim)',
                   cursor: 'pointer',
                   fontSize: 12,
                   textTransform: 'capitalize',

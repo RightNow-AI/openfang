@@ -64,7 +64,7 @@ export default function VideoAdStudio({ project, onUpdate }: Props) {
                 width: 28, height: 28, borderRadius: "50%", margin: "0 auto 4px",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 fontSize: 12, fontWeight: 700,
-                background: done ? "#22c55e" : current ? "var(--accent, #7c3aed)" : "var(--border, #333)",
+                background: done ? "#22c55e" : current ? "var(--accent)" : "var(--border)",
                 color: done || current ? "#fff" : "var(--text-muted, #888)",
                 border: current ? "2px solid #a78bfa" : "2px solid transparent",
               }}>
@@ -79,7 +79,7 @@ export default function VideoAdStudio({ project, onUpdate }: Props) {
       </div>
 
       {/* Active step */}
-      <div style={{ border: "1px solid var(--accent, #7c3aed)", borderRadius: 10, padding: 20, marginBottom: 20 }}>
+      <div style={{ border: "1px solid var(--accent)", borderRadius: 10, padding: 20, marginBottom: 20 }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
           <div>
             <div style={{ fontSize: 12, color: "var(--text-muted, #888)", marginBottom: 4 }}>
@@ -103,8 +103,8 @@ export default function VideoAdStudio({ project, onUpdate }: Props) {
           placeholder={`Add notes or output for the ${STEP_LABELS[project.step]} step…`}
           style={{
             width: "100%", minHeight: 100, padding: "10px 12px",
-            borderRadius: 6, border: "1px solid var(--border, #333)",
-            background: "var(--input-bg, #1a1a1a)", color: "inherit",
+            borderRadius: 6, border: "1px solid var(--border)",
+            background: "var(--input-bg)", color: "inherit",
             fontSize: 14, resize: "vertical", boxSizing: "border-box", marginBottom: 14,
           }}
         />
@@ -115,7 +115,7 @@ export default function VideoAdStudio({ project, onUpdate }: Props) {
             disabled={currentIdx >= STEP_ORDER.length - 1}
             style={{
               padding: "8px 20px", borderRadius: 6, border: "none",
-              background: currentIdx >= STEP_ORDER.length - 1 ? "var(--border, #333)" : "var(--accent, #7c3aed)",
+              background: currentIdx >= STEP_ORDER.length - 1 ? "var(--border)" : "var(--accent)",
               color: "#fff", cursor: currentIdx >= STEP_ORDER.length - 1 ? "not-allowed" : "pointer",
               fontWeight: 600,
             }}
@@ -127,7 +127,7 @@ export default function VideoAdStudio({ project, onUpdate }: Props) {
 
       {/* Performance (visible after measure step) */}
       {currentIdx >= STEP_ORDER.indexOf("measure") && project.performance && (
-        <div style={{ border: "1px solid var(--border, #333)", borderRadius: 8, padding: 16 }}>
+        <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 16 }}>
           <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Performance</h4>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 12 }}>
             {[
@@ -137,7 +137,7 @@ export default function VideoAdStudio({ project, onUpdate }: Props) {
               ["ROAS",       project.performance.roas       ? `${project.performance.roas.toFixed(1)}x`        : "—"],
               ["Watch Time", project.performance.watch_time_pct ? `${(project.performance.watch_time_pct * 100).toFixed(1)}%` : "—"],
             ].map(([label, value]) => (
-              <div key={label as string} style={{ textAlign: "center", padding: 10, border: "1px solid var(--border, #333)", borderRadius: 8 }}>
+              <div key={label as string} style={{ textAlign: "center", padding: 10, border: "1px solid var(--border)", borderRadius: 8 }}>
                 <div style={{ fontSize: 18, fontWeight: 700 }}>{value ?? "—"}</div>
                 <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginTop: 2 }}>{label}</div>
               </div>

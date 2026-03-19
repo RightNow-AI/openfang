@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { api } from '../../../lib/api-server';
 import CreativeProjectPage from '../CreativeProjectPage';
 
@@ -31,9 +32,9 @@ export default async function CreativeProjectRoute({ params }) {
 
   if (!project) {
     return (
-      <div style={{ padding: '64px 24px', textAlign: 'center', color: 'var(--text-dim,#888)' }}>
+      <div style={{ padding: '64px 24px', textAlign: 'center', color: 'var(--text-dim)' }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>404</div>
-        <div>Project not found. <a href="/creative-studio" style={{ color: 'var(--accent,#7c3aed)' }}>← Back to Creative Studio</a></div>
+        <div>Project not found. <Link href="/creative-studio" style={{ color: 'var(--accent)' }}>← Back to Creative Studio</Link></div>
       </div>
     );
   }

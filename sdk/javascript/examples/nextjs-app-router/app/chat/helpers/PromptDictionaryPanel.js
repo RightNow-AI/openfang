@@ -18,7 +18,7 @@ export default function PromptDictionaryPanel() {
     <div
       data-cy="prompt-dictionary"
       style={{
-        borderTop: '1px solid var(--border, #333)',
+        borderTop: '1px solid var(--border)',
         marginTop: 8,
       }}
     >
@@ -33,7 +33,7 @@ export default function PromptDictionaryPanel() {
           padding: '10px 0',
           background: 'transparent',
           border: 'none',
-          color: 'var(--text-dim, #888)',
+          color: 'var(--text-dim)',
           cursor: 'pointer',
           fontSize: 12,
           fontWeight: 600,
@@ -56,9 +56,9 @@ export default function PromptDictionaryPanel() {
               width: '100%',
               padding: '7px 10px',
               borderRadius: 7,
-              border: '1px solid var(--border, #333)',
-              background: 'var(--bg-elevated, #111)',
-              color: 'var(--text-primary, #fff)',
+              border: '1px solid var(--border)',
+              background: 'var(--bg-elevated)',
+              color: 'var(--text-primary)',
               fontSize: 12,
               marginBottom: 10,
               boxSizing: 'border-box',
@@ -75,7 +75,7 @@ export default function PromptDictionaryPanel() {
                     fontSize: 11,
                     fontWeight: 700,
                     fontFamily: 'monospace',
-                    color: 'var(--accent, #7c3aed)',
+                    color: 'var(--accent)',
                     minWidth: 110,
                     paddingTop: 1,
                   }}
@@ -88,7 +88,7 @@ export default function PromptDictionaryPanel() {
               </div>
             ))}
             {filtered.length === 0 && (
-              <div style={{ fontSize: 12, color: 'var(--text-dim, #888)' }}>No matching terms.</div>
+              <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>No matching terms.</div>
             )}
           </div>
         </div>

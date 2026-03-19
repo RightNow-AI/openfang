@@ -57,13 +57,13 @@ export default function SchoolApprovalsPage() {
             Pending ({pending.length})
           </h2>
           {pending.length === 0 ? (
-            <div style={{ padding: 16, border: "1px dashed var(--border, #333)", borderRadius: 8, color: "var(--text-muted, #888)", fontSize: 14, marginBottom: 24 }}>
+            <div style={{ padding: 16, border: "1px dashed var(--border)", borderRadius: 8, color: "var(--text-muted, #888)", fontSize: 14, marginBottom: 24 }}>
               No pending approvals.
             </div>
           ) : (
             <div style={{ marginBottom: 28 }}>
               {pending.map((a) => (
-                <div key={a.id} style={{ padding: "14px 16px", border: "1px solid var(--border, #333)", borderRadius: 8, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                <div key={a.id} style={{ padding: "14px 16px", border: "1px solid var(--border)", borderRadius: 8, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                   <div>
                     <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>
                       {APPROVAL_LABELS[a.approval_type] ?? a.approval_type}
@@ -74,7 +74,7 @@ export default function SchoolApprovalsPage() {
                   <button
                     onClick={() => approve(a.id)}
                     disabled={approving === a.id}
-                    style={{ padding: "6px 14px", borderRadius: 6, background: "var(--accent, #7c3aed)", color: "#fff", border: "none", cursor: approving === a.id ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                    style={{ padding: "6px 14px", borderRadius: 6, background: "var(--accent)", color: "#fff", border: "none", cursor: approving === a.id ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
                   >
                     {approving === a.id ? "Approving…" : "Approve"}
                   </button>
@@ -87,13 +87,13 @@ export default function SchoolApprovalsPage() {
             Resolved ({resolved.length})
           </h2>
           {resolved.length === 0 ? (
-            <div style={{ padding: 16, border: "1px dashed var(--border, #333)", borderRadius: 8, color: "var(--text-muted, #888)", fontSize: 14 }}>
+            <div style={{ padding: 16, border: "1px dashed var(--border)", borderRadius: 8, color: "var(--text-muted, #888)", fontSize: 14 }}>
               No resolved approvals yet.
             </div>
           ) : (
             <div>
               {resolved.map((a) => (
-                <div key={a.id} style={{ padding: "12px 16px", border: "1px solid var(--border, #333)", borderRadius: 8, marginBottom: 6, opacity: 0.65 }}>
+                <div key={a.id} style={{ padding: "12px 16px", border: "1px solid var(--border)", borderRadius: 8, marginBottom: 6, opacity: 0.65 }}>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{APPROVAL_LABELS[a.approval_type] ?? a.approval_type}</div>
                   <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginTop: 2 }}>
                     {a.status} · {a.created_at ? new Date(a.created_at).toLocaleString() : "–"}

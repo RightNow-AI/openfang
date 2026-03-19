@@ -27,7 +27,7 @@ export default function TaskBoard({ tasks, onApproveTask, onRunTask }: Props) {
           key={task.id}
           style={{
             padding: "16px 18px",
-            border: "1px solid var(--border, #333)",
+            border: "1px solid var(--border)",
             borderRadius: 8,
             display: "flex",
             justifyContent: "space-between",

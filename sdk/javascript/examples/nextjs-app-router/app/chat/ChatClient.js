@@ -273,8 +273,8 @@ export default function ChatClient({ agentId = null, agentName = null }) {
                 onClick={() => setHelperOpen(true)}
                 style={{
                   background: 'transparent',
-                  border: '1px dashed var(--accent, #7c3aed)',
-                  color: 'var(--accent, #7c3aed)',
+                  border: '1px dashed var(--accent)',
+                  color: 'var(--accent)',
                   borderRadius: 8,
                   padding: '6px 14px',
                   fontSize: 12,

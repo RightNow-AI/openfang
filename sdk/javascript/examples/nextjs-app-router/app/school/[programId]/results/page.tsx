@@ -40,7 +40,7 @@ export default function SchoolResultsPage() {
       {loading ? (
         <div style={{ color: "var(--text-muted, #888)", fontSize: 14 }}>Loading…</div>
       ) : results.length === 0 ? (
-        <div style={{ padding: 24, border: "1px dashed var(--border, #333)", borderRadius: 8, textAlign: "center", color: "var(--text-muted, #888)", fontSize: 14 }}>
+        <div style={{ padding: 24, border: "1px dashed var(--border)", borderRadius: 8, textAlign: "center", color: "var(--text-muted, #888)", fontSize: 14 }}>
           No results yet. Run tasks to generate outputs.
         </div>
       ) : (
@@ -51,7 +51,7 @@ export default function SchoolResultsPage() {
               <button
                 key={r.id}
                 onClick={() => setSelected(r)}
-                style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 12px", borderRadius: 8, border: `1px solid ${selected?.id === r.id ? "var(--accent, #7c3aed)" : "var(--border, #333)"}`, background: selected?.id === r.id ? "rgba(124,58,237,0.1)" : "transparent", cursor: "pointer", marginBottom: 6 }}
+                style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 12px", borderRadius: 8, border: `1px solid ${selected?.id === r.id ? "var(--accent)" : "var(--border)"}`, background: selected?.id === r.id ? "var(--accent-subtle)" : "transparent", cursor: "pointer", marginBottom: 6 }}
               >
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{r.title}</div>
                 <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginTop: 2 }}>
@@ -63,7 +63,7 @@ export default function SchoolResultsPage() {
 
           {/* Detail */}
           {selected && (
-            <div style={{ border: "1px solid var(--border, #333)", borderRadius: 10, padding: 20 }}>
+            <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 20 }}>
               <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 12 }}>
                 {selected.title}
               </h2>

@@ -133,10 +133,10 @@ function categoryColor(c) {
 function WizardStep({ step, total, title, children }) {
   return (
     <div>
-      <div style={{ fontSize: 12, color: '#94A3B8', marginBottom: 6 }}>
+      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 6 }}>
         Step {step} of {total}
       </div>
-      <div style={{ fontSize: 18, fontWeight: 700, color: '#F1F5F9', marginBottom: 20 }}>
+      <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)', marginBottom: 20 }}>
         {title}
       </div>
       {children}
@@ -154,9 +154,9 @@ function ChoiceBtn({ selected, onClick, icon, label, desc }) {
         gap: 12,
         padding: '12px 16px',
         borderRadius: 10,
-        border: `2px solid ${selected ? '#6366F1' : '#1E293B'}`,
-        background: selected ? 'rgba(99,102,241,0.12)' : '#0F172A',
-        color: '#F1F5F9',
+        border: `2px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        background: selected ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+        color: 'var(--text)',
         width: '100%',
         cursor: 'pointer',
         marginBottom: 8,
@@ -168,12 +168,12 @@ function ChoiceBtn({ selected, onClick, icon, label, desc }) {
       <span>
         <span style={{ fontSize: 14, fontWeight: 600, display: 'block' }}>{label}</span>
         {desc && (
-          <span style={{ fontSize: 12, color: '#94A3B8', display: 'block', marginTop: 2 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-dim)', display: 'block', marginTop: 2 }}>
             {desc}
           </span>
         )}
       </span>
-      {selected && <span style={{ marginLeft: 'auto', color: '#6366F1', fontSize: 18 }}>✓</span>}
+      {selected && <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 18 }}>✓</span>}
     </button>
   );
 }
@@ -190,9 +190,9 @@ function ToggleBtn({ selected, onClick, icon, label }) {
         gap: 6,
         padding: '12px 16px',
         borderRadius: 10,
-        border: `2px solid ${selected ? '#6366F1' : '#1E293B'}`,
-        background: selected ? 'rgba(99,102,241,0.12)' : '#0F172A',
-        color: selected ? '#818CF8' : '#94A3B8',
+        border: `2px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        background: selected ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+        color: selected ? 'var(--accent)' : 'var(--text-dim)',
         cursor: 'pointer',
         fontSize: 12,
         fontWeight: selected ? 700 : 400,
@@ -264,7 +264,7 @@ function StepPickTools({ selected, onChange }) {
           />
         ))}
       </div>
-      <div style={{ fontSize: 12, color: '#64748B', marginTop: 14 }}>
+      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 14 }}>
         Select all that apply. You can add more later.
       </div>
     </WizardStep>
@@ -279,7 +279,7 @@ function StepRecommendations({ goal, mode, tools, allIntegrations, onConnect, co
   return (
     <WizardStep step={4} total={5} title="Here's what we recommend connecting">
       {relevant.length === 0 && fallback.length === 0 && (
-        <div style={{ color: '#64748B', fontSize: 14 }}>
+        <div style={{ color: 'var(--text-dim)', fontSize: 14 }}>
           No specific integrations found. Connect them in the Available tab after setup.
         </div>
       )}
@@ -296,21 +296,21 @@ function StepRecommendations({ goal, mode, tools, allIntegrations, onConnect, co
               alignItems: 'center',
               gap: 12,
               padding: '12px 16px',
-              background: '#0F172A',
-              border: '1px solid #1E293B',
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border)',
               borderRadius: 10,
               marginBottom: 8,
             }}
           >
             <span style={{ fontSize: 22 }}>{tool.icon}</span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: '#F1F5F9' }}>{tool.label}</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{tool.label}</div>
               {live && (
-                <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 2 }}>{live.description}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{live.description}</div>
               )}
             </div>
             {isConnected ? (
-              <span style={{ color: '#10B981', fontSize: 13, fontWeight: 600 }}>✓ Connected</span>
+              <span style={{ color: 'var(--success)', fontSize: 13, fontWeight: 600 }}>✓ Connected</span>
             ) : (
               <button
                 onClick={() => onConnect(intId)}
@@ -319,8 +319,8 @@ function StepRecommendations({ goal, mode, tools, allIntegrations, onConnect, co
                   padding: '6px 14px',
                   borderRadius: 6,
                   border: 'none',
-                  background: '#6366F1',
-                  color: '#fff',
+                  background: 'var(--accent)',
+                  color: 'var(--text-inverse)',
                   fontWeight: 700,
                   cursor: cs === 'loading' ? 'not-allowed' : 'pointer',
                   fontSize: 12,
@@ -342,7 +342,7 @@ function StepFinish({ onClose }) {
     <WizardStep step={5} total={5} title="You're all connected">
       <div style={{ textAlign: 'center', padding: '20px 0 4px' }}>
         <div style={{ fontSize: 52, marginBottom: 12 }}>🔗</div>
-        <div style={{ fontSize: 15, color: '#CBD5E1', marginBottom: 20 }}>
+        <div style={{ fontSize: 15, color: 'var(--text-soft)', marginBottom: 20 }}>
           Your integrations are being activated. Head to the Connected tab to see them.
         </div>
         <button
@@ -351,8 +351,8 @@ function StepFinish({ onClose }) {
             padding: '10px 28px',
             borderRadius: 8,
             border: 'none',
-            background: '#6366F1',
-            color: '#fff',
+            background: 'var(--accent)',
+            color: 'var(--text-inverse)',
             fontWeight: 700,
             cursor: 'pointer',
             fontSize: 15,
@@ -417,7 +417,7 @@ function IntegrationsWizard({ allIntegrations, onClose, onConnected }) {
     >
       <div
         style={{
-          background: '#1E293B',
+          background: 'var(--bg-card)',
           borderRadius: 16,
           width: '100%',
           maxWidth: 520,
@@ -436,7 +436,7 @@ function IntegrationsWizard({ allIntegrations, onClose, onConnected }) {
             right: 16,
             background: 'none',
             border: 'none',
-            color: '#64748B',
+            color: 'var(--text-dim)',
             cursor: 'pointer',
             fontSize: 20,
             padding: '2px 6px',
@@ -475,9 +475,9 @@ function IntegrationsWizard({ allIntegrations, onClose, onConnected }) {
                 style={{
                   padding: '8px 20px',
                   borderRadius: 8,
-                  border: '1px solid #334155',
+                  border: '1px solid var(--border-strong)',
                   background: 'transparent',
-                  color: '#94A3B8',
+                  color: 'var(--text-dim)',
                   cursor: 'pointer',
                   fontSize: 14,
                 }}
@@ -494,8 +494,8 @@ function IntegrationsWizard({ allIntegrations, onClose, onConnected }) {
                 padding: '8px 24px',
                 borderRadius: 8,
                 border: 'none',
-                background: canNext ? '#6366F1' : '#334155',
-                color: canNext ? '#fff' : '#64748B',
+                background: canNext ? 'var(--accent)' : 'var(--border-strong)',
+                color: canNext ? 'var(--text-inverse)' : 'var(--text-dim)',
                 fontWeight: 700,
                 cursor: canNext ? 'pointer' : 'not-allowed',
                 fontSize: 14,
@@ -527,7 +527,7 @@ function IntegrationBundleCard({ bundle, onConnect, connectStatus }) {
   return (
     <div
       style={{
-        background: 'linear-gradient(135deg, #0F172A 0%, #1E293B 100%)',
+        background: 'var(--bg-card)',
         border: `2px solid ${bundle.color}33`,
         borderRadius: 14,
         padding: '20px 22px',
@@ -548,8 +548,8 @@ function IntegrationBundleCard({ bundle, onConnect, connectStatus }) {
           {bundle.icon}
         </span>
         <div>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#F1F5F9' }}>{bundle.title}</div>
-          <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 2 }}>{bundle.subtitle}</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{bundle.title}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{bundle.subtitle}</div>
         </div>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -570,7 +570,7 @@ function IntegrationBundleCard({ bundle, onConnect, connectStatus }) {
         ))}
       </div>
       {allConnected ? (
-        <div style={{ color: '#10B981', fontSize: 13, fontWeight: 600 }}>✓ All connected</div>
+        <div style={{ color: 'var(--success)', fontSize: 13, fontWeight: 600 }}>✓ All connected</div>
       ) : (
         <button
           onClick={handleConnectBundle}
@@ -581,7 +581,7 @@ function IntegrationBundleCard({ bundle, onConnect, connectStatus }) {
             borderRadius: 8,
             border: 'none',
             background: bundle.color,
-            color: '#fff',
+            color: 'var(--text-inverse)',
             fontWeight: 700,
             cursor: anyLoading ? 'not-allowed' : 'pointer',
             fontSize: 13,
@@ -604,8 +604,8 @@ function IntegrationCard({ integration, onConnect, connectStatus }) {
   return (
     <div
       style={{
-        background: '#0F172A',
-        border: `1px solid ${isConnected ? '#10B98133' : '#1E293B'}`,
+        background: 'var(--bg-elevated)',
+        border: `1px solid ${isConnected ? 'rgba(31,143,85,0.2)' : 'var(--border)'}`,
         borderRadius: 10,
         padding: '14px 16px',
         display: 'flex',
@@ -625,11 +625,11 @@ function IntegrationCard({ integration, onConnect, connectStatus }) {
         {TOOL_OPTIONS.find((t) => t.id === integration.category)?.icon || '🔌'}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: '#F1F5F9' }}>{integration.name}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{integration.name}</div>
         <div
           style={{
             fontSize: 12,
-            color: '#94A3B8',
+            color: 'var(--text-dim)',
             marginTop: 2,
             overflow: 'hidden',
             textOverflow: 'ellipsis',
@@ -657,8 +657,8 @@ function IntegrationCard({ integration, onConnect, connectStatus }) {
             padding: '6px 14px',
             borderRadius: 6,
             border: 'none',
-            background: '#6366F1',
-            color: '#fff',
+            background: 'var(--accent)',
+            color: 'var(--text-inverse)',
             fontWeight: 700,
             cursor: cs === 'loading' ? 'not-allowed' : 'pointer',
             fontSize: 12,
@@ -707,7 +707,7 @@ function RecommendedIntegrationsTab({ allIntegrations, onOpenWizard }) {
         }}
       >
         <div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: '#fff', marginBottom: 6 }}>
+          <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-inverse)', marginBottom: 6 }}>
             Connect your tools
           </div>
           <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.8)' }}>
@@ -732,7 +732,7 @@ function RecommendedIntegrationsTab({ allIntegrations, onOpenWizard }) {
         </button>
       </div>
 
-      <div style={{ fontSize: 15, fontWeight: 700, color: '#CBD5E1', marginBottom: 14 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-soft)', marginBottom: 14 }}>
         Starter bundles
       </div>
       <div
@@ -760,7 +760,7 @@ function ConnectedIntegrationsTab({ integrations, loading }) {
 
   if (loading) {
     return (
-      <div style={{ color: '#94A3B8', fontSize: 14, padding: '40px 0', textAlign: 'center' }}>
+      <div style={{ color: 'var(--text-dim)', fontSize: 14, padding: '40px 0', textAlign: 'center' }}>
         Loading…
       </div>
     );
@@ -772,16 +772,16 @@ function ConnectedIntegrationsTab({ integrations, loading }) {
         style={{
           textAlign: 'center',
           padding: '64px 32px',
-          background: '#0F172A',
+          background: 'var(--bg-elevated)',
           borderRadius: 16,
-          border: '1px dashed #1E293B',
+          border: '1px dashed var(--border)',
         }}
       >
         <div style={{ fontSize: 40, marginBottom: 12 }}>🔌</div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: '#CBD5E1', marginBottom: 8 }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-soft)', marginBottom: 8 }}>
           Nothing connected yet
         </div>
-        <div style={{ fontSize: 14, color: '#64748B' }}>
+        <div style={{ fontSize: 14, color: 'var(--text-dim)' }}>
           Use the Recommended tab to connect your first tools.
         </div>
       </div>
@@ -821,7 +821,7 @@ function AvailableIntegrationsTab({ integrations, loading, onRefresh }) {
 
   if (loading) {
     return (
-      <div style={{ color: '#94A3B8', fontSize: 14, padding: '40px 0', textAlign: 'center' }}>
+      <div style={{ color: 'var(--text-dim)', fontSize: 14, padding: '40px 0', textAlign: 'center' }}>
         Loading…
       </div>
     );
@@ -834,13 +834,13 @@ function AvailableIntegrationsTab({ integrations, loading, onRefresh }) {
         style={{
           textAlign: 'center',
           padding: '64px 32px',
-          background: '#0F172A',
+          background: 'var(--bg-elevated)',
           borderRadius: 16,
-          border: '1px dashed #1E293B',
+          border: '1px dashed var(--border)',
         }}
       >
         <div style={{ fontSize: 40, marginBottom: 12 }}>{allConnected ? '🎉' : '🔌'}</div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: '#CBD5E1', marginBottom: 8 }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-soft)', marginBottom: 8 }}>
           {allConnected ? 'All integrations connected!' : 'No integrations available'}
         </div>
       </div>
@@ -878,7 +878,7 @@ function AdvancedIntegrationsTab({ integrations, loading, error, onRefresh }) {
 
   if (error) {
     return (
-      <div style={{ color: '#F87171', padding: '16px 0' }}>
+      <div style={{ color: 'var(--danger)', padding: '16px 0' }}>
         {error}
       </div>
     );
@@ -894,16 +894,16 @@ function AdvancedIntegrationsTab({ integrations, loading, error, onRefresh }) {
           marginBottom: 16,
         }}
       >
-        <div style={{ fontSize: 13, color: '#94A3B8' }}>
+        <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>
           {integrations.length} integration{integrations.length !== 1 ? 's' : ''}
         </div>
         <button
           onClick={onRefresh}
           style={{
             background: 'none',
-            border: '1px solid #1E293B',
+            border: '1px solid var(--border)',
             borderRadius: 6,
-            color: '#64748B',
+            color: 'var(--text-dim)',
             cursor: 'pointer',
             padding: '4px 12px',
             fontSize: 12,
@@ -914,17 +914,17 @@ function AdvancedIntegrationsTab({ integrations, loading, error, onRefresh }) {
       </div>
 
       {loading ? (
-        <div style={{ color: '#94A3B8', fontSize: 14, textAlign: 'center', padding: '40px 0' }}>
+        <div style={{ color: 'var(--text-dim)', fontSize: 14, textAlign: 'center', padding: '40px 0' }}>
           Loading…
         </div>
       ) : integrations.length === 0 ? (
-        <div style={{ color: '#64748B', fontSize: 14 }}>No integrations configured.</div>
+        <div style={{ color: 'var(--text-dim)', fontSize: 14 }}>No integrations configured.</div>
       ) : (
         <div
           style={{
             overflowX: 'auto',
             borderRadius: 10,
-            border: '1px solid #1E293B',
+            border: '1px solid var(--border)',
           }}
         >
           <table
@@ -932,11 +932,11 @@ function AdvancedIntegrationsTab({ integrations, loading, error, onRefresh }) {
               width: '100%',
               borderCollapse: 'collapse',
               fontSize: 13,
-              color: '#CBD5E1',
+              color: 'var(--text-soft)',
             }}
           >
             <thead>
-              <tr style={{ background: '#0F172A', borderBottom: '1px solid #1E293B' }}>
+              <tr style={{ background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border)' }}>
                 <th style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 600 }}>Name</th>
                 <th style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 600 }}>Category</th>
                 <th style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 600 }}>Status</th>
@@ -950,11 +950,11 @@ function AdvancedIntegrationsTab({ integrations, loading, error, onRefresh }) {
                 return (
                   <tr
                     key={i.id}
-                    style={{ borderBottom: '1px solid #1E293B' }}
+                    style={{ borderBottom: '1px solid var(--border)' }}
                   >
                     <td style={{ padding: '10px 14px' }}>
-                      <div style={{ fontWeight: 600, color: '#F1F5F9' }}>{i.name}</div>
-                      <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>{i.description}</div>
+                      <div style={{ fontWeight: 600, color: 'var(--text)' }}>{i.name}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>{i.description}</div>
                     </td>
                     <td style={{ padding: '10px 14px' }}>
                       <span
@@ -987,8 +987,8 @@ function AdvancedIntegrationsTab({ integrations, loading, error, onRefresh }) {
                             padding: '4px 12px',
                             borderRadius: 5,
                             border: 'none',
-                            background: '#6366F1',
-                            color: '#fff',
+                            background: 'var(--accent)',
+                            color: 'var(--text-inverse)',
                             fontWeight: 600,
                             cursor: cs === 'loading' ? 'not-allowed' : 'pointer',
                             fontSize: 11,
@@ -999,7 +999,7 @@ function AdvancedIntegrationsTab({ integrations, loading, error, onRefresh }) {
                         </button>
                       )}
                       {cs === 'error' && (
-                        <span style={{ color: '#F87171', fontSize: 11, marginLeft: 6 }}>
+                        <span style={{ color: 'var(--danger)', fontSize: 11, marginLeft: 6 }}>
                           Failed
                         </span>
                       )}
@@ -1049,13 +1049,13 @@ export default function IntegrationsPageV2({ initialIntegrations = [] }) {
   ];
 
   return (
-    <div data-cy="integrations-page" style={{ fontFamily: 'system-ui, sans-serif', color: '#F1F5F9' }}>
+    <div data-cy="integrations-page" style={{ fontFamily: 'system-ui, sans-serif', color: 'var(--text)' }}>
       {/* Header */}
       <div style={{ marginBottom: 28 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0, color: '#F1F5F9' }}>
+        <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0, color: 'var(--text)' }}>
           Integrations
         </h1>
-        <p style={{ fontSize: 14, color: '#94A3B8', margin: '6px 0 0' }}>
+        <p style={{ fontSize: 14, color: 'var(--text-dim)', margin: '6px 0 0' }}>
           Connect external tools and services to your agents.
         </p>
       </div>
@@ -1065,7 +1065,7 @@ export default function IntegrationsPageV2({ initialIntegrations = [] }) {
         style={{
           display: 'flex',
           gap: 4,
-          borderBottom: '1px solid #1E293B',
+          borderBottom: '1px solid var(--border)',
           marginBottom: 24,
         }}
       >
@@ -1077,8 +1077,8 @@ export default function IntegrationsPageV2({ initialIntegrations = [] }) {
               padding: '8px 18px',
               background: 'none',
               border: 'none',
-              borderBottom: tab === t.id ? '2px solid #059669' : '2px solid transparent',
-              color: tab === t.id ? '#059669' : '#94A3B8',
+              borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
+              color: tab === t.id ? 'var(--accent)' : 'var(--text-dim)',
               fontWeight: tab === t.id ? 700 : 500,
               cursor: 'pointer',
               fontSize: 14,

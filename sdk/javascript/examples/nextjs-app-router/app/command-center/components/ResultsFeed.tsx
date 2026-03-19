@@ -15,7 +15,7 @@ export default function ResultsFeed({ results }: Props) {
           key={result.id}
           style={{
             padding: "18px 20px",
-            border: "1px solid var(--border, #333)",
+            border: "1px solid var(--border)",
             borderRadius: 8,
           }}
         >
@@ -46,7 +46,7 @@ export default function ResultsFeed({ results }: Props) {
                   padding: "4px 12px",
                   background: "transparent",
                   color: "var(--text-muted, #888)",
-                  border: "1px solid var(--border, #333)",
+                  border: "1px solid var(--border)",
                   borderRadius: 5,
                   fontSize: 12,
                   cursor: "pointer",
@@ -61,7 +61,7 @@ export default function ResultsFeed({ results }: Props) {
               whiteSpace: "pre-wrap",
               wordBreak: "break-word",
               fontSize: 13,
-              background: "var(--surface2, #1a1a1a)",
+              background: "var(--surface2)",
               padding: "12px 14px",
               borderRadius: 6,
               margin: 0,

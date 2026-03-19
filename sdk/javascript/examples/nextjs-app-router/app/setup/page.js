@@ -16,7 +16,7 @@ export default function SetupPage() {
     <div data-cy="setup-page" style={{ maxWidth: 820, margin: '0 auto', padding: '48px 24px' }}>
       <div style={{ marginBottom: 40, textAlign: 'center' }}>
         <h1 style={{ fontSize: 28, fontWeight: 800, margin: '0 0 10px' }}>Welcome. Let&apos;s get you set up.</h1>
-        <p style={{ fontSize: 15, color: 'var(--text-dim, #888)', margin: 0, lineHeight: 1.6 }}>
+        <p style={{ fontSize: 15, color: 'var(--text-dim)', margin: 0, lineHeight: 1.6 }}>
           Pick where you want to start. You can come back to the others any time.
         </p>
       </div>
@@ -31,7 +31,7 @@ export default function SetupPage() {
             <div
               data-cy={`setup-card-${card.href.replace('/', '')}`}
               style={{
-                border: '1px solid var(--border, #333)',
+                border: '1px solid var(--border)',
                 borderRadius: 12,
                 padding: '20px 22px',
                 background: 'var(--surface, #111)',
@@ -42,13 +42,13 @@ export default function SetupPage() {
                 gap: 10,
                 height: '100%',
               }}
-              onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent, #7c3aed)'}
-              onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border, #333)'}
+              onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent)'}
+              onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border)'}
             >
               <div style={{ fontSize: 28 }}>{card.icon}</div>
               <div style={{ fontWeight: 700, fontSize: 15 }}>{card.title}</div>
-              <div style={{ fontSize: 13, color: 'var(--text-dim, #888)', lineHeight: 1.55 }}>{card.description}</div>
-              <div style={{ marginTop: 'auto', paddingTop: 8, fontSize: 13, color: 'var(--accent, #7c3aed)', fontWeight: 600 }}>
+              <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.55 }}>{card.description}</div>
+              <div style={{ marginTop: 'auto', paddingTop: 8, fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>
                 Get started →
               </div>
             </div>
@@ -58,8 +58,8 @@ export default function SetupPage() {
 
       <div style={{ marginTop: 48, padding: '18px 22px', background: 'rgba(124,58,237,0.07)', border: '1px solid rgba(124,58,237,0.28)', borderRadius: 10, textAlign: 'center' }}>
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>Already set up?</div>
-        <div style={{ fontSize: 13, color: 'var(--text-dim, #888)', marginBottom: 14 }}>Go to the dashboard to see what&apos;s running.</div>
-        <Link href="/dashboard" style={{ padding: '8px 20px', borderRadius: 8, background: 'var(--accent, #7c3aed)', color: '#fff', textDecoration: 'none', fontWeight: 600, fontSize: 13 }}>
+        <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 14 }}>Go to the dashboard to see what&apos;s running.</div>
+        <Link href="/dashboard" style={{ padding: '8px 20px', borderRadius: 8, background: 'var(--accent)', color: '#fff', textDecoration: 'none', fontWeight: 600, fontSize: 13 }}>
           Open dashboard
         </Link>
       </div>

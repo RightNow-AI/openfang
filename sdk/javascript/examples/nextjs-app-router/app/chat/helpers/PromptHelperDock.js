@@ -22,21 +22,21 @@ function QuickCard({ card, onSelect }) {
         gap: 10,
         padding: '10px 12px',
         borderRadius: 10,
-        border: '1px solid var(--border, #333)',
-        background: 'var(--bg-elevated, #111)',
-        color: 'var(--text-primary, #fff)',
+        border: '1px solid var(--border)',
+        background: 'var(--bg-elevated)',
+        color: 'var(--text-primary)',
         cursor: 'pointer',
         textAlign: 'left',
         transition: 'border-color 0.15s, background 0.15s',
         width: '100%',
       }}
       onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = 'var(--accent, #7c3aed)';
+        e.currentTarget.style.borderColor = 'var(--accent)';
         e.currentTarget.style.background = 'var(--surface3, #2a2a3e)';
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = 'var(--border, #333)';
-        e.currentTarget.style.background = 'var(--bg-elevated, #111)';
+        e.currentTarget.style.borderColor = 'var(--border)';
+        e.currentTarget.style.background = 'var(--bg-elevated)';
       }}
     >
       <span style={{ fontSize: 22, flexShrink: 0 }}>{card.icon}</span>
@@ -52,17 +52,17 @@ function TemplateCard({ template, onSelect }) {
       style={{
         padding: '12px 14px',
         borderRadius: 10,
-        border: '1px solid var(--border, #333)',
-        background: 'var(--bg-elevated, #111)',
+        border: '1px solid var(--border)',
+        background: 'var(--bg-elevated)',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
         <span style={{ fontSize: 20, flexShrink: 0 }}>{template.icon}</span>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary, #fff)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
             {template.title}
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-dim, #888)', marginTop: 2 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
             {template.description}
           </div>
         </div>
@@ -78,13 +78,13 @@ function TemplateCard({ template, onSelect }) {
               template.difficulty === 'beginner'
                 ? 'rgba(16,185,129,0.15)'
                 : template.difficulty === 'intermediate'
-                ? 'rgba(124,58,237,0.15)'
+                ? 'var(--accent-subtle)'
                 : 'rgba(248,113,113,0.15)',
             color:
               template.difficulty === 'beginner'
                 ? 'var(--success, #10b981)'
                 : template.difficulty === 'intermediate'
-                ? 'var(--accent, #7c3aed)'
+                ? 'var(--accent)'
                 : 'var(--error, #f87171)',
           }}
         >
@@ -99,7 +99,7 @@ function TemplateCard({ template, onSelect }) {
             padding: '5px 12px',
             borderRadius: 7,
             border: 'none',
-            background: 'var(--accent, #7c3aed)',
+            background: 'var(--accent)',
             color: '#fff',
             cursor: 'pointer',
           }}
@@ -209,8 +209,8 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
           width: 420,
           maxWidth: '100vw',
           zIndex: 200,
-          background: 'var(--surface2, #1a1a2e)',
-          borderLeft: '1px solid var(--border, #333)',
+          background: 'var(--surface2)',
+          borderLeft: '1px solid var(--border)',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
@@ -223,15 +223,15 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
             alignItems: 'center',
             justifyContent: 'space-between',
             padding: '14px 16px',
-            borderBottom: '1px solid var(--border, #333)',
+            borderBottom: '1px solid var(--border)',
             flexShrink: 0,
           }}
         >
           <div>
-            <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary, #fff)' }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>
               ✨ Prompt helpers
             </span>
-            <div style={{ fontSize: 12, color: 'var(--text-dim, #888)', marginTop: 2 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
               We build it. You just answer a few questions.
             </div>
           </div>
@@ -242,7 +242,7 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
             style={{
               background: 'transparent',
               border: 'none',
-              color: 'var(--text-dim, #888)',
+              color: 'var(--text-dim)',
               fontSize: 20,
               cursor: 'pointer',
               lineHeight: 1,
@@ -277,9 +277,9 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
                     width: '100%',
                     padding: '9px 12px',
                     borderRadius: 9,
-                    border: '1px solid var(--border, #333)',
-                    background: 'var(--bg-elevated, #111)',
-                    color: 'var(--text-primary, #fff)',
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg-elevated)',
+                    color: 'var(--text-primary)',
                     fontSize: 13,
                     boxSizing: 'border-box',
                     outline: 'none',
@@ -294,7 +294,7 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
                     style={{
                       fontSize: 11,
                       fontWeight: 700,
-                      color: 'var(--text-dim, #888)',
+                      color: 'var(--text-dim)',
                       letterSpacing: '0.08em',
                       textTransform: 'uppercase',
                       marginBottom: 8,
@@ -317,7 +317,7 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
                     style={{
                       fontSize: 11,
                       fontWeight: 700,
-                      color: 'var(--text-dim, #888)',
+                      color: 'var(--text-dim)',
                       letterSpacing: '0.08em',
                       textTransform: 'uppercase',
                       marginBottom: 8,
@@ -345,7 +345,7 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
                   style={{
                     fontSize: 11,
                     fontWeight: 700,
-                    color: 'var(--text-dim, #888)',
+                    color: 'var(--text-dim)',
                     letterSpacing: '0.08em',
                     textTransform: 'uppercase',
                     marginBottom: 8,
@@ -361,9 +361,9 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
                     width: '100%',
                     padding: '9px 12px',
                     borderRadius: 9,
-                    border: '1px solid var(--border, #333)',
-                    background: 'var(--bg-elevated, #111)',
-                    color: 'var(--text-primary, #fff)',
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg-elevated)',
+                    color: 'var(--text-primary)',
                     fontSize: 13,
                     cursor: 'pointer',
                     outline: 'none',
@@ -391,7 +391,7 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
                     style={{
                       fontSize: 11,
                       fontWeight: 700,
-                      color: 'var(--text-dim, #888)',
+                      color: 'var(--text-dim)',
                       letterSpacing: '0.08em',
                       textTransform: 'uppercase',
                       marginBottom: 8,
@@ -405,7 +405,7 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
                     style={{
                       padding: '24px 0',
                       textAlign: 'center',
-                      color: 'var(--text-dim, #888)',
+                      color: 'var(--text-dim)',
                       fontSize: 13,
                     }}
                   >
@@ -420,7 +420,7 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
                         marginTop: 8,
                         background: 'transparent',
                         border: 'none',
-                        color: 'var(--accent, #7c3aed)',
+                        color: 'var(--accent)',
                         fontSize: 13,
                         cursor: 'pointer',
                         textDecoration: 'underline',
@@ -445,7 +445,7 @@ export default function PromptHelperDock({ open, onClose, onUseTemplate }) {
                       style={{
                         fontSize: 11,
                         fontWeight: 700,
-                        color: 'var(--text-dim, #888)',
+                        color: 'var(--text-dim)',
                         letterSpacing: '0.08em',
                         textTransform: 'uppercase',
                         marginBottom: 4,

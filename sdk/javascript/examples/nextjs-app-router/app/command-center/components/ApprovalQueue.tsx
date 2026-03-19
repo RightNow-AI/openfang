@@ -16,7 +16,7 @@ export default function ApprovalQueue({ approvals, onApprove }: Props) {
           key={item.id}
           style={{
             padding: "16px 18px",
-            border: `1px solid ${item.status === "pending" ? "var(--warning, #f59e0b)" : "var(--border, #333)"}`,
+            border: `1px solid ${item.status === "pending" ? "var(--warning, #f59e0b)" : "var(--border)"}`,
             borderRadius: 8,
           }}
         >

@@ -53,7 +53,7 @@ export default function AgencyApprovalsPage({ params }: Props) {
       </div>
 
       {pending.length === 0 && (
-        <div style={{ padding: "24px", textAlign: "center", color: "var(--text-muted, #888)", fontSize: 14, border: "1px dashed var(--border, #333)", borderRadius: 8, marginBottom: 24 }}>
+        <div style={{ padding: "24px", textAlign: "center", color: "var(--text-muted, #888)", fontSize: 14, border: "1px dashed var(--border)", borderRadius: 8, marginBottom: 24 }}>
           No pending approvals 🎉
         </div>
       )}
@@ -75,7 +75,7 @@ export default function AgencyApprovalsPage({ params }: Props) {
             </div>
             <button
               onClick={() => handleApprove(a.task_id)}
-              style={{ padding: "6px 16px", border: "none", background: "var(--accent, #7c3aed)", color: "#fff", borderRadius: 6, cursor: "pointer", fontWeight: 600, whiteSpace: "nowrap" }}
+              style={{ padding: "6px 16px", border: "none", background: "var(--accent)", color: "#fff", borderRadius: 6, cursor: "pointer", fontWeight: 600, whiteSpace: "nowrap" }}
             >
               Approve
             </button>
@@ -87,7 +87,7 @@ export default function AgencyApprovalsPage({ params }: Props) {
         <div style={{ marginTop: 24 }}>
           <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--text-muted, #888)", marginBottom: 10 }}>Resolved</h2>
           {resolved.map((a) => (
-            <div key={a.id} style={{ border: "1px solid var(--border, #333)", borderRadius: 8, padding: "10px 16px", marginBottom: 8, opacity: 0.6 }}>
+            <div key={a.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 16px", marginBottom: 8, opacity: 0.6 }}>
               <div style={{ fontSize: 14 }}>{a.preview_summary}</div>
               <div style={{ fontSize: 12, color: "#22c55e", marginTop: 2 }}>✓ {a.status}</div>
             </div>

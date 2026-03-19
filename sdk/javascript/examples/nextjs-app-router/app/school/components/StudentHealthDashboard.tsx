@@ -22,9 +22,9 @@ function RiskBadge({ score }: { score: number }) {
   );
 }
 
-function ProgressBar({ pct, color = "var(--accent, #7c3aed)" }: { pct: number; color?: string }) {
+function ProgressBar({ pct, color = "var(--accent)" }: { pct: number; color?: string }) {
   return (
-    <div style={{ height: 5, background: "var(--border, #333)", borderRadius: 999, overflow: "hidden" }}>
+    <div style={{ height: 5, background: "var(--border)", borderRadius: 999, overflow: "hidden" }}>
       <div style={{ height: "100%", background: color, borderRadius: 999, width: `${Math.min(100, pct)}%`, transition: "width 0.3s" }} />
     </div>
   );
@@ -33,7 +33,7 @@ function ProgressBar({ pct, color = "var(--accent, #7c3aed)" }: { pct: number; c
 export default function StudentHealthDashboard({ students }: Props) {
   if (students.length === 0) {
     return (
-      <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted, #888)", fontSize: 14, border: "1px dashed var(--border, #333)", borderRadius: 8 }}>
+      <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted, #888)", fontSize: 14, border: "1px dashed var(--border)", borderRadius: 8 }}>
         No student health records yet.
       </div>
     );
@@ -55,7 +55,7 @@ export default function StudentHealthDashboard({ students }: Props) {
           { label: "Upsell Ready",    value: upsellReady,                    color: "#a78bfa" },
           { label: "Avg Completion",  value: `${avgCompletion.toFixed(0)}%`, color: "inherit" },
         ].map(({ label, value, color }) => (
-          <div key={label} style={{ border: "1px solid var(--border, #333)", borderRadius: 8, padding: "12px 14px", textAlign: "center" }}>
+          <div key={label} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "12px 14px", textAlign: "center" }}>
             <div style={{ fontSize: 22, fontWeight: 700, color }}>{value}</div>
             <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginTop: 2 }}>{label}</div>
           </div>
@@ -68,7 +68,7 @@ export default function StudentHealthDashboard({ students }: Props) {
           .slice()
           .sort((a, b) => b.risk_score - a.risk_score)
           .map((s) => (
-            <div key={s.student_id} style={{ border: "1px solid var(--border, #333)", borderRadius: 8, padding: "14px 16px", marginBottom: 10 }}>
+            <div key={s.student_id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "14px 16px", marginBottom: 10 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 15 }}>{s.student_id}</div>

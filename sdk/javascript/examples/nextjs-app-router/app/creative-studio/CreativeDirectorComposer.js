@@ -21,9 +21,9 @@ export default function CreativeDirectorComposer({ disabled, sending, onSend }) 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <div
-        style={{ display: 'flex', gap: 8, alignItems: 'flex-end', border: '1px solid var(--border,#333)', borderRadius: 10, padding: '10px 12px', background: 'var(--bg-elevated,#111)', transition: 'border-color .15s' }}
-        onFocusCapture={e => e.currentTarget.style.borderColor = 'var(--accent,#7c3aed)'}
-        onBlurCapture={e => e.currentTarget.style.borderColor = 'var(--border,#333)'}
+        style={{ display: 'flex', gap: 8, alignItems: 'flex-end', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', background: 'var(--bg-elevated)', transition: 'border-color .15s' }}
+        onFocusCapture={e => e.currentTarget.style.borderColor = 'var(--accent)'}
+        onBlurCapture={e => e.currentTarget.style.borderColor = 'var(--border)'}
       >
         <textarea
           ref={textareaRef}
@@ -33,18 +33,18 @@ export default function CreativeDirectorComposer({ disabled, sending, onSend }) 
           disabled={disabled}
           placeholder="Tell the director about your brief, or ask for direction…"
           rows={3}
-          style={{ flex: 1, resize: 'none', background: 'transparent', border: 'none', outline: 'none', color: 'var(--text-primary,#f1f1f1)', fontSize: 14, lineHeight: 1.5, fontFamily: 'inherit' }}
+          style={{ flex: 1, resize: 'none', background: 'transparent', border: 'none', outline: 'none', color: 'var(--text-primary)', fontSize: 14, lineHeight: 1.5, fontFamily: 'inherit' }}
         />
         <button
           data-cy="director-send-btn"
           onClick={handleSend}
           disabled={!canSend}
-          style={{ padding: '8px 18px', borderRadius: 7, background: canSend ? 'var(--accent,#7c3aed)' : 'var(--border,#333)', color: '#fff', border: 'none', cursor: canSend ? 'pointer' : 'not-allowed', fontWeight: 700, fontSize: 13, flexShrink: 0, alignSelf: 'flex-end', transition: 'background .15s' }}
+          style={{ padding: '8px 18px', borderRadius: 7, background: canSend ? 'var(--accent)' : 'var(--border)', color: '#fff', border: 'none', cursor: canSend ? 'pointer' : 'not-allowed', fontWeight: 700, fontSize: 13, flexShrink: 0, alignSelf: 'flex-end', transition: 'background .15s' }}
         >
           {sending ? '…' : 'Send'}
         </button>
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-dim,#888)' }}>⌘↵ to send</div>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>⌘↵ to send</div>
     </div>
   );
 }

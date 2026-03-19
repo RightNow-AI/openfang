@@ -21,8 +21,8 @@ export default function CreativeDirectorQuickActions({ disabled, onRunAction }) 
             padding: '5px 12px',
             borderRadius: 20,
             background: 'transparent',
-            border: '1px solid var(--border,#333)',
-            color: disabled ? 'var(--text-dim,#888)' : 'var(--text-primary,#f1f1f1)',
+            border: '1px solid var(--border)',
+            color: disabled ? 'var(--text-dim)' : 'var(--text-primary)',
             cursor: disabled ? 'not-allowed' : 'pointer',
             fontSize: 12,
             fontWeight: 500,
@@ -32,8 +32,8 @@ export default function CreativeDirectorQuickActions({ disabled, onRunAction }) 
             opacity: disabled ? 0.5 : 1,
             transition: 'border-color .15s, background .15s',
           }}
-          onMouseEnter={e => { if (!disabled) { e.currentTarget.style.borderColor = 'var(--accent,#7c3aed)'; e.currentTarget.style.background = 'rgba(124,58,237,.08)'; }}}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border,#333)'; e.currentTarget.style.background = 'transparent'; }}
+          onMouseEnter={e => { if (!disabled) { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.background = 'rgba(124,58,237,.08)'; }}}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'transparent'; }}
         >
           <span>{a.icon}</span> {a.label}
         </button>

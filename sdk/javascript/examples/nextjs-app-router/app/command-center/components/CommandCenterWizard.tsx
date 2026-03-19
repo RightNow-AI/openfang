@@ -50,8 +50,8 @@ const INPUT_STYLE: React.CSSProperties = {
   width: "100%",
   padding: "10px 12px",
   borderRadius: 6,
-  border: "1px solid var(--border, #333)",
-  background: "var(--input-bg, #1a1a1a)",
+  border: "1px solid var(--border)",
+  background: "var(--input-bg)",
   color: "inherit",
   fontSize: 14,
   boxSizing: "border-box",
@@ -185,7 +185,7 @@ export default function CommandCenterWizard({ initialClientId }: Props) {
                   fontWeight: 700,
                   background: done ? "var(--accent, #7c6af7)" : current ? "var(--accent, #7c6af7)" : "var(--surface2, #222)",
                   color: done || current ? "#fff" : "var(--text-muted, #888)",
-                  border: current ? "2px solid var(--accent, #7c6af7)" : done ? "none" : "1px solid var(--border, #333)",
+                  border: current ? "2px solid var(--accent, #7c6af7)" : done ? "none" : "1px solid var(--border)",
                   cursor: done ? "pointer" : "default",
                 }}
                 onClick={() => done && setStepIndex(i)}
@@ -199,7 +199,7 @@ export default function CommandCenterWizard({ initialClientId }: Props) {
               <div style={{
                 flex: 1,
                 height: 2,
-                background: done ? "var(--accent, #7c6af7)" : "var(--border, #333)",
+                background: done ? "var(--accent, #7c6af7)" : "var(--border)",
                 margin: "0 4px",
                 marginBottom: 20,
               }} />
@@ -346,7 +346,7 @@ export default function CommandCenterWizard({ initialClientId }: Props) {
                     alignItems: "flex-start",
                     gap: 12,
                     padding: "14px 16px",
-                    border: `1px solid ${selected ? "var(--accent, #7c6af7)" : "var(--border, #333)"}`,
+                    border: `1px solid ${selected ? "var(--accent, #7c6af7)" : "var(--border)"}`,
                     borderRadius: 8,
                     cursor: "pointer",
                     background: selected ? "var(--accent-bg, rgba(124,106,247,0.08))" : "transparent",
@@ -391,7 +391,7 @@ export default function CommandCenterWizard({ initialClientId }: Props) {
                 key={task.id}
                 style={{
                   padding: "14px 16px",
-                  border: "1px solid var(--border, #333)",
+                  border: "1px solid var(--border)",
                   borderRadius: 8,
                 }}
               >
@@ -435,7 +435,7 @@ export default function CommandCenterWizard({ initialClientId }: Props) {
           onClick={back}
           style={{
             padding: "8px 18px",
-            border: "1px solid var(--border, #333)",
+            border: "1px solid var(--border)",
             borderRadius: 6,
             background: "transparent",
             color: "inherit",

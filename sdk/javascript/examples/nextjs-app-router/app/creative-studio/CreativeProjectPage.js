@@ -1,4 +1,5 @@
 'use client';
+import Link from 'next/link';
 import { useState, useCallback } from 'react';
 import CreativeDirectorPanel from './CreativeDirectorPanel';
 import CreativeVisualBoard from './CreativeVisualBoard';
@@ -140,23 +141,23 @@ export default function CreativeProjectPage({ initialProject, initialMessages = 
   return (
     <div data-cy="creative-project-page" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       {/* Header */}
-      <div style={{ padding: '14px 24px', borderBottom: '1px solid var(--border,#333)', display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0, flexWrap: 'wrap' }}>
-        <a href="/creative-studio" style={{ color: 'var(--text-dim,#888)', textDecoration: 'none', fontSize: 13, flexShrink: 0 }}>← Creative Studio</a>
+      <div style={{ padding: '14px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0, flexWrap: 'wrap' }}>
+        <Link href="/creative-studio" style={{ color: 'var(--text-dim)', textDecoration: 'none', fontSize: 13, flexShrink: 0 }}>← Creative Studio</Link>
         <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontWeight: 700, fontSize: 16, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name || 'Untitled project'}</span>
           <StatusChip status={project.status} />
         </div>
-        <button onClick={() => setDrawerOpen(true)} style={{ padding: '6px 14px', borderRadius: 7, background: 'transparent', border: '1px solid var(--border,#333)', color: 'var(--text-dim,#888)', cursor: 'pointer', fontSize: 13, flexShrink: 0 }}>Edit brief</button>
+        <button onClick={() => setDrawerOpen(true)} style={{ padding: '6px 14px', borderRadius: 7, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 13, flexShrink: 0 }}>Edit brief</button>
       </div>
 
       {/* Tab bar */}
-      <div style={{ display: 'flex', borderBottom: '1px solid var(--border,#333)', padding: '0 24px', flexShrink: 0, overflowX: 'auto' }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', padding: '0 24px', flexShrink: 0, overflowX: 'auto' }}>
         {TABS.map(t => (
           <button
             key={t.id}
             data-cy={`project-tab-${t.id}`}
             onClick={() => setActiveTab(t.id)}
-            style={{ padding: '10px 14px', background: 'transparent', border: 'none', borderBottom: `2px solid ${activeTab === t.id ? 'var(--accent,#7c3aed)' : 'transparent'}`, color: activeTab === t.id ? 'var(--text-primary,#fff)' : 'var(--text-dim,#888)', cursor: 'pointer', fontSize: 13, fontWeight: activeTab === t.id ? 700 : 400, whiteSpace: 'nowrap' }}
+            style={{ padding: '10px 14px', background: 'transparent', border: 'none', borderBottom: `2px solid ${activeTab === t.id ? 'var(--accent)' : 'transparent'}`, color: activeTab === t.id ? 'var(--text-primary)' : 'var(--text-dim)', cursor: 'pointer', fontSize: 13, fontWeight: activeTab === t.id ? 700 : 400, whiteSpace: 'nowrap' }}
           >
             {t.label}
           </button>
@@ -213,13 +214,13 @@ export default function CreativeProjectPage({ initialProject, initialMessages = 
             />
           )}
           {activeTab === 'generations' && (
-            <div style={{ padding: '48px 0', textAlign: 'center', color: 'var(--text-dim,#888)', fontSize: 14 }}>
+            <div style={{ padding: '48px 0', textAlign: 'center', color: 'var(--text-dim)', fontSize: 14 }}>
               <div style={{ fontSize: 32, marginBottom: 10 }}>🖼</div>
               No generations yet. Approve the plan and launch a generation task.
             </div>
           )}
           {activeTab === 'approvals' && (
-            <div style={{ padding: '48px 0', textAlign: 'center', color: 'var(--text-dim,#888)', fontSize: 14 }}>
+            <div style={{ padding: '48px 0', textAlign: 'center', color: 'var(--text-dim)', fontSize: 14 }}>
               <div style={{ fontSize: 32, marginBottom: 10 }}>✅</div>
               No approvals pending.
             </div>
@@ -227,7 +228,7 @@ export default function CreativeProjectPage({ initialProject, initialMessages = 
         </div>
 
         {/* Right rail */}
-        <div style={{ width: 220, borderLeft: '1px solid var(--border,#333)', padding: '20px 14px', overflowY: 'auto', flexShrink: 0 }}>
+        <div style={{ width: 220, borderLeft: '1px solid var(--border)', padding: '20px 14px', overflowY: 'auto', flexShrink: 0 }}>
           <CreativeApprovalChecklist
             approvalTypes={approvalTypes}
             approved={[]}

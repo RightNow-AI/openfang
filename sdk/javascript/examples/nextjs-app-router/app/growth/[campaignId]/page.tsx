@@ -52,7 +52,7 @@ export default function GrowthOverviewPage({ params }: Props) {
             <span style={{ color: "var(--text-muted, #888)" }}>Progress</span>
             <span>{done}/{total} tasks done</span>
           </div>
-          <div style={{ height: 6, background: "var(--border, #333)", borderRadius: 999 }}>
+          <div style={{ height: 6, background: "var(--border)", borderRadius: 999 }}>
             <div style={{ height: "100%", background: "#22c55e", borderRadius: 999, width: `${(done / total) * 100}%`, transition: "width 0.3s" }} />
           </div>
         </div>
@@ -61,16 +61,16 @@ export default function GrowthOverviewPage({ params }: Props) {
       <div style={{ display: "flex", gap: 10, marginBottom: 28, flexWrap: "wrap" }}>
         {hasVideo && (
           <Link href={`/growth/${campaignId}/studio`}
-            style={{ padding: "6px 16px", border: "1px solid var(--accent, #7c3aed)", borderRadius: 6, fontSize: 14, color: "var(--accent, #a78bfa)", fontWeight: 600 }}>
+            style={{ padding: "6px 16px", border: "1px solid var(--accent)", borderRadius: 6, fontSize: 14, color: "var(--accent, #a78bfa)", fontWeight: 600 }}>
             🎬 Video Ad Studio
           </Link>
         )}
         <Link href={`/growth/${campaignId}/approvals`}
-          style={{ padding: "6px 16px", border: "1px solid var(--border, #333)", borderRadius: 6, fontSize: 14 }}>
+          style={{ padding: "6px 16px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14 }}>
           Approvals
         </Link>
         <Link href={`/growth/${campaignId}/results`}
-          style={{ padding: "6px 16px", border: "1px solid var(--border, #333)", borderRadius: 6, fontSize: 14 }}>
+          style={{ padding: "6px 16px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14 }}>
           Results
         </Link>
       </div>
@@ -81,7 +81,7 @@ export default function GrowthOverviewPage({ params }: Props) {
         <div>
           <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Tasks</h2>
           {tasks.map((t) => (
-            <div key={t.id} style={{ border: "1px solid var(--border, #333)", borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
+            <div key={t.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>{t.title}</div>

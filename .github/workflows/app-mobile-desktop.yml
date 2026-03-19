@@ -1,0 +1,257 @@
+name: app-mobile-desktop
+
+# Builds the Next.js app for web, then fans out to:
+#   Mobile lane  — Android (ubuntu) + iOS (macos)  via Capacitor 8
+#   Desktop lane — Windows / macOS / Linux          via Electron + electron-builder
+#
+# All jobs run from sdk/javascript/examples/nextjs-app-router.
+# Node is pinned to 24 LTS (satisfies Capacitor >=22 and Next.js >=20.9 requirements).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "24"
+  WORKING_DIR: sdk/javascript/examples/nextjs-app-router
+
+jobs:
+  # ── Gate: lint + test + static web build ─────────────────────────────────
+  verify-web:
+    name: Verify web build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ env.WORKING_DIR }}/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint || true   # non-blocking until lint baseline is clean
+
+      - name: Unit tests
+        run: npm run test
+
+      # Static export is what Capacitor and Electron both consume.
+      - name: Static web build (NEXT_EXPORT=1)
+        run: npm run build:static
+
+      - name: Upload static bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-out
+          path: ${{ env.WORKING_DIR }}/out
+          retention-days: 1
+
+  # ── Mobile lane: Android ──────────────────────────────────────────────────
+  android:
+    name: Android release build
+    runs-on: ubuntu-latest
+    needs: verify-web
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ env.WORKING_DIR }}/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Download static bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-out
+          path: ${{ env.WORKING_DIR }}/out
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Sync Capacitor Android
+        run: npx cap sync android
+
+      - name: Gradle release build
+        working-directory: ${{ env.WORKING_DIR }}/android
+        run: ./gradlew assembleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: ${{ env.WORKING_DIR }}/android/app/build/outputs/apk/release/*.apk
+
+  # ── Mobile lane: iOS (requires macOS + Xcode) ─────────────────────────────
+  ios:
+    name: iOS archive
+    runs-on: macos-latest
+    needs: verify-web
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ env.WORKING_DIR }}/package-lock.json
+
+      - name: Download static bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-out
+          path: ${{ env.WORKING_DIR }}/out
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Sync Capacitor iOS
+        run: npx cap sync ios
+
+      - name: Xcode archive
+        run: |
+          xcodebuild \
+            -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/OpenFang.xcarchive" \
+            archive CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+
+      - name: Upload iOS archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcarchive
+          path: ${{ runner.temp }}/OpenFang.xcarchive
+
+  # ── Desktop lane: macOS (dmg + zip) ──────────────────────────────────────
+  desktop-mac:
+    name: Desktop macOS
+    runs-on: macos-latest
+    needs: verify-web
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ env.WORKING_DIR }}/package-lock.json
+
+      - name: Download static bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-out
+          path: ${{ env.WORKING_DIR }}/out
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Package macOS
+        run: npm run desktop:dist:mac
+        env:
+          # Set these repo secrets for signed releases:
+          # CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-mac
+          path: ${{ env.WORKING_DIR }}/dist-desktop/*
+
+  # ── Desktop lane: Windows (NSIS installer) ───────────────────────────────
+  desktop-win:
+    name: Desktop Windows
+    runs-on: windows-latest
+    needs: verify-web
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ env.WORKING_DIR }}/package-lock.json
+
+      - name: Download static bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-out
+          path: ${{ env.WORKING_DIR }}/out
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Package Windows
+        run: npm run desktop:dist:win
+        env:
+          # Set CSC_LINK + CSC_KEY_PASSWORD for signed .exe
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-win
+          path: ${{ env.WORKING_DIR }}/dist-desktop/*
+
+  # ── Desktop lane: Linux (AppImage + deb) ─────────────────────────────────
+  desktop-linux:
+    name: Desktop Linux
+    runs-on: ubuntu-latest
+    needs: verify-web
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ env.WORKING_DIR }}/package-lock.json
+
+      - name: Download static bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-out
+          path: ${{ env.WORKING_DIR }}/out
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Package Linux
+        run: npm run desktop:dist:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: ${{ env.WORKING_DIR }}/dist-desktop/*

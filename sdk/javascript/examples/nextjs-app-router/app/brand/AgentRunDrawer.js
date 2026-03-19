@@ -8,12 +8,6 @@ const TASK_LABELS = {
   draft_outreach_email_sequence: 'Draft Outreach Emails',
 };
 
-const STATUS_MESSAGES = {
-  running: 'Agent is working…',
-  completed: 'Output ready for review.',
-  failed: 'Run failed.',
-};
-
 // ── Spinner animation ─────────────────────────────────────────────────────
 
 function Spinner({ size = 24, color = 'var(--accent)' }) {

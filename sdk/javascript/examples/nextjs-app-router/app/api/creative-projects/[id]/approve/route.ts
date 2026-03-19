@@ -1,16 +1,17 @@
-import { NextRequest, NextResponse } from 'next/server';
+﻿import { NextRequest, NextResponse } from 'next/server';
 
 const BASE = process.env.OPENFANG_BASE_URL ?? 'http://127.0.0.1:50051';
 
-type Params = { params: { id: string } };
+type Params = { params: Promise<{ id: string }> };
 
 /** POST /api/creative-projects/[id]/approve
  *  Approves the plan (or a specific asset when asset_id is in body)
  */
 export async function POST(req: NextRequest, { params }: Params) {
+  const { id } = await params;
   const body = await req.json().catch(() => ({}));
   try {
-    const res = await fetch(`${BASE}/api/creative-projects/${params.id}/approve`, {
+    const res = await fetch(`${BASE}/api/creative-projects/${id}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
