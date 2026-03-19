@@ -3,6 +3,7 @@
 use openfang_memory::usage::{ModelUsage, UsageRecord, UsageStore, UsageSummary};
 use openfang_types::agent::{AgentId, ResourceQuota};
 use openfang_types::error::{OpenFangError, OpenFangResult};
+use openfang_types::model_catalog::ModelTier;
 use std::sync::Arc;
 
 /// The metering engine tracks usage cost and enforces quota limits.
@@ -192,15 +193,27 @@ impl MeteringEngine {
 
     /// Estimate cost using the model catalog as the pricing source.
     ///
-    /// Falls back to the default rate ($1/$3 per million) if the model is not
-    /// found in the catalog.
+    /// Falls back to heuristic pricing for unknown models, and for custom
+    /// user-added models that have placeholder `0/0` pricing in the catalog.
+    /// This preserves zero-cost behavior for known local/free models while
+    /// still producing metering data for custom OpenAI-compatible endpoints.
     pub fn estimate_cost_with_catalog(
         catalog: &openfang_runtime::model_catalog::ModelCatalog,
         model: &str,
         input_tokens: u64,
         output_tokens: u64,
     ) -> f64 {
-        let (input_per_m, output_per_m) = catalog.pricing(model).unwrap_or((1.0, 3.0));
+        if let Some(entry) = catalog.find_model(model) {
+            let has_explicit_pricing =
+                entry.input_cost_per_m > 0.0 || entry.output_cost_per_m > 0.0;
+            if has_explicit_pricing || entry.tier != ModelTier::Custom {
+                let input_cost = (input_tokens as f64 / 1_000_000.0) * entry.input_cost_per_m;
+                let output_cost = (output_tokens as f64 / 1_000_000.0) * entry.output_cost_per_m;
+                return input_cost + output_cost;
+            }
+        }
+
+        let (input_per_m, output_per_m) = estimate_cost_rates(&model.to_lowercase());
         let input_cost = (input_tokens as f64 / 1_000_000.0) * input_per_m;
         let output_cost = (output_tokens as f64 / 1_000_000.0) * output_per_m;
         input_cost + output_cost
@@ -781,6 +794,47 @@ mod tests {
             1_000_000,
         );
         assert!((cost - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_estimate_cost_with_catalog_custom_zero_pricing_uses_heuristic_fallback() {
+        let mut catalog = openfang_runtime::model_catalog::ModelCatalog::new();
+        assert!(
+            catalog.add_custom_model(openfang_types::model_catalog::ModelCatalogEntry {
+                id: "qwen/qwen3.5-397b-a17b".to_string(),
+                display_name: "Custom Qwen".to_string(),
+                provider: "custom-integrate-api-nvidia-com".to_string(),
+                tier: ModelTier::Custom,
+                context_window: 200_000,
+                max_output_tokens: 32_768,
+                input_cost_per_m: 0.0,
+                output_cost_per_m: 0.0,
+                supports_tools: true,
+                supports_vision: false,
+                supports_streaming: true,
+                aliases: vec![],
+            })
+        );
+
+        let cost = MeteringEngine::estimate_cost_with_catalog(
+            &catalog,
+            "qwen/qwen3.5-397b-a17b",
+            1_000_000,
+            1_000_000,
+        );
+        assert!((cost - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_estimate_cost_with_catalog_known_zero_pricing_model_stays_zero() {
+        let catalog = openfang_runtime::model_catalog::ModelCatalog::new();
+        let cost = MeteringEngine::estimate_cost_with_catalog(
+            &catalog,
+            "qwen-code/qwen3-coder",
+            1_000_000,
+            1_000_000,
+        );
+        assert_eq!(cost, 0.0);
     }
 
     #[test]
