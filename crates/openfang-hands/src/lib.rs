@@ -453,6 +453,8 @@ mod tests {
         assert_eq!(HandCategory::Content.to_string(), "Content");
         assert_eq!(HandCategory::Security.to_string(), "Security");
         assert_eq!(HandCategory::Data.to_string(), "Data");
+        assert_eq!(HandCategory::Finance.to_string(), "Finance");
+        assert_eq!(HandCategory::Other.to_string(), "Other");
     }
 
     #[test]
@@ -512,6 +514,48 @@ metrics = []
         assert_eq!(def.category, HandCategory::Content);
         assert_eq!(def.requires.len(), 1);
         assert_eq!(def.agent.name, "test-hand");
+    }
+
+    #[test]
+    fn hand_definition_finance_category_parses() {
+        let toml_str = r#"
+id = "finance-test"
+name = "Finance Hand"
+description = "A finance hand"
+category = "finance"
+tools = []
+
+[agent]
+name = "finance-hand"
+description = "Finance"
+system_prompt = "You are a finance hand."
+
+[dashboard]
+metrics = []
+"#;
+        let def: HandDefinition = toml::from_str(toml_str).unwrap();
+        assert_eq!(def.category, HandCategory::Finance);
+    }
+
+    #[test]
+    fn hand_definition_unknown_category_falls_back_to_other() {
+        let toml_str = r#"
+id = "other-test"
+name = "Other Hand"
+description = "An uncategorized hand"
+category = "experimental"
+tools = []
+
+[agent]
+name = "other-hand"
+description = "Other"
+system_prompt = "You are an uncategorized hand."
+
+[dashboard]
+metrics = []
+"#;
+        let def: HandDefinition = toml::from_str(toml_str).unwrap();
+        assert_eq!(def.category, HandCategory::Other);
     }
 
     #[test]
