@@ -493,9 +493,10 @@ If a problem crosses OpenFang and `projects/shipinbot/`, treat it as a contract 
 
 ### How do I update OpenFang?
 
-Re-run the install script to get the latest release:
+Install the release you want from this fork (recommended source of truth):
 ```bash
-curl -fsSL https://openfang.sh/install | sh
+# Replace <release-tag> with the version you want, for example v0.4.9
+curl -fsSL https://raw.githubusercontent.com/tytsxai/openfang-upstream-fork/v<release-tag>/scripts/install.sh | sh
 ```
 Or build from source:
 ```bash
@@ -509,8 +510,9 @@ cargo build --release -p openfang-cli
 docker run -d --name openfang \
   -e GROQ_API_KEY=your_key_here \
   -p 4200:4200 \
-  ghcr.io/rightnow-ai/openfang:latest
+  ghcr.io/tytsxai/openfang-upstream-fork:latest
 ```
+If the GHCR image is not publicly available yet, run `docker compose up --build` from the repository root.
 
 ### How do I protect the dashboard with a password?
 
@@ -579,12 +581,11 @@ Not yet — each channel type currently supports one bot. Multi-bot routing is t
 
 ### Claude Code integration shows errors
 
-Add to `~/.openfang/config.toml`:
-```toml
-[claude_code]
-skip_permissions = true
+OpenFang already launches the Claude Code provider with `--dangerously-skip-permissions` enabled for non-interactive daemon use. If Claude Code still errors, accept permissions once in your shell:
+```bash
+claude --dangerously-skip-permissions
 ```
-Then restart the daemon.
+Then restart the daemon. No extra top-level `config.toml` section is required for this.
 
 ### Trader hand shell permissions
 
