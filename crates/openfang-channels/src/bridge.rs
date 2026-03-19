@@ -1150,7 +1150,17 @@ async fn write_telegram_batch_to_inbox(
     let json = serde_json::to_string_pretty(batch)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    fs::write(&manifest_path, json).await?;
+    // Atomic write: write to temp file then rename to avoid partial reads
+    let tmp_suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp_path = inbox_dir.join(format!("{}.{}.tmp", batch.batch_key, tmp_suffix));
+    fs::write(&tmp_path, json).await?;
+    if let Err(err) = fs::rename(&tmp_path, &manifest_path).await {
+        let _ = fs::remove_file(&tmp_path).await;
+        return Err(err);
+    }
     Ok(manifest_path)
 }
 
@@ -2367,6 +2377,14 @@ mod tests {
             .join("telegram")
             .join("group_100_abc.json");
         assert!(manifest.exists());
+        let dir_entries: Vec<_> = std::fs::read_dir(workspace.join("inbox").join("telegram"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            dir_entries.iter().all(|name| !name.ends_with(".tmp")),
+            "unexpected temp files left behind: {dir_entries:?}"
+        );
 
         let _ = tokio::fs::remove_dir_all(&workspace).await;
     }
