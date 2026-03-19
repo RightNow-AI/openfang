@@ -48,6 +48,9 @@ pub enum HandCategory {
     Development,
     Communication,
     Data,
+    Finance,
+    #[serde(other)]
+    Other,
 }
 
 impl std::fmt::Display for HandCategory {
@@ -59,6 +62,8 @@ impl std::fmt::Display for HandCategory {
             Self::Development => write!(f, "Development"),
             Self::Communication => write!(f, "Communication"),
             Self::Data => write!(f, "Data"),
+            Self::Finance => write!(f, "Finance"),
+            Self::Other => write!(f, "Other"),
         }
     }
 }

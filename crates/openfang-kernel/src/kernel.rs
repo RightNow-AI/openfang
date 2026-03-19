@@ -1815,6 +1815,7 @@ impl OpenFangKernel {
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
     ) -> KernelResult<(
         tokio::sync::mpsc::Receiver<StreamEvent>,
         tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
