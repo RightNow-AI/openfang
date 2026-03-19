@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-13 15:59:53
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-13 16:00:42
+ * @LastEditTime       : 2026-03-19 14:09:20
  */
 //! HTTP/WebSocket API server for the OpenFang Agent OS daemon.
 //!
@@ -21,6 +21,7 @@ pub mod stream_chunker;
 pub mod stream_dedup;
 pub mod types;
 pub mod uni_agent;
+pub mod uni_util;
 pub mod unigpt;
 pub mod webchat;
 pub mod ws;
