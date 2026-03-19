@@ -130,7 +130,7 @@ html-escape = "0.2"
 regex-lite = "0.1"
 
 # Socket options (SO_REUSEADDR)
-socket2 = "0.5"
+socket2 = "0.6"
 
 # Zip archive extraction
 zip = { version = "2", default-features = false, features = ["deflate"] }
