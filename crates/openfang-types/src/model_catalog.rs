@@ -49,6 +49,8 @@ pub const KIMI_CODING_BASE_URL: &str = "https://api.kimi.com/coding";
 pub const QIANFAN_BASE_URL: &str = "https://qianfan.baidubce.com/v2";
 pub const VOLCENGINE_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/v3";
 pub const VOLCENGINE_CODING_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/coding/v3";
+/// DashScope Coding Plan International — accessed via ALIBABA_CODING_API_KEY.
+pub const ALIBABA_CODING_BASE_URL: &str = "https://coding-intl.dashscope.aliyuncs.com/v1";
 
 // ── Chutes.ai ────────────────────────────────────────────────────
 pub const CHUTES_BASE_URL: &str = "https://llm.chutes.ai/v1";
