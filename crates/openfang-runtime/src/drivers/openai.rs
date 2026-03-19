@@ -99,8 +99,7 @@ impl OpenAIDriver {
         if self.azure_mode {
             builder = builder.header("api-key", self.api_key.as_str());
         } else {
-            builder =
-                builder.header("authorization", format!("Bearer {}", self.api_key.as_str()));
+            builder = builder.header("authorization", format!("Bearer {}", self.api_key.as_str()));
         }
         builder
     }
