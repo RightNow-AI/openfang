@@ -907,7 +907,8 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("ernie", "ernie-4.5-8k"),
         ("kimi", "kimi-k2"),
         ("moonshot", "moonshot-v1-128k"),
-        ("minimax", "MiniMax-M2.5"),
+        ("minimax", "MiniMax-M2.7"),
+        ("minimax-m2.7", "MiniMax-M2.7"),
         ("minimax-m2.5", "MiniMax-M2.5"),
         ("minimax-m2.5-highspeed", "MiniMax-M2.5-highspeed"),
         ("minimax-highspeed", "MiniMax-M2.5-highspeed"),
@@ -3026,8 +3027,22 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
-        // MiniMax (6)
+        // MiniMax (7)
         // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "MiniMax-M2.7".into(),
+            display_name: "MiniMax M2.7".into(),
+            provider: "minimax".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_048_576,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 1.10,
+            output_cost_per_m: 4.40,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["minimax-m2.7".into()],
+        },
         ModelCatalogEntry {
             id: "minimax-text-01".into(),
             display_name: "MiniMax Text 01".into(),
@@ -3040,7 +3055,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec!["minimax".into()],
+            aliases: vec![],
         },
         ModelCatalogEntry {
             id: "MiniMax-M2.5".into(),
@@ -4067,14 +4082,21 @@ mod tests {
         assert!(catalog.find_model("codegeex").is_some());
         assert!(catalog.find_model("ernie").is_some());
         assert!(catalog.find_model("minimax").is_some());
+        // MiniMax M2.7 — new flagship model
+        let m27 = catalog.find_model("MiniMax-M2.7").unwrap();
+        assert_eq!(m27.provider, "minimax");
+        assert_eq!(m27.tier, ModelTier::Frontier);
+        assert!(m27.supports_vision);
+        assert!(m27.supports_tools);
+        assert!(catalog.find_model("minimax-m2.7").is_some());
+        // Default "minimax" alias now points to M2.7
+        let default = catalog.find_model("minimax").unwrap();
+        assert_eq!(default.id, "MiniMax-M2.7");
         // MiniMax M2.5 — by exact ID, alias, and case-insensitive
         let m25 = catalog.find_model("MiniMax-M2.5").unwrap();
         assert_eq!(m25.provider, "minimax");
         assert_eq!(m25.tier, ModelTier::Frontier);
         assert!(catalog.find_model("minimax-m2.5").is_some());
-        // Default "minimax" alias now points to M2.5
-        let default = catalog.find_model("minimax").unwrap();
-        assert_eq!(default.id, "MiniMax-M2.5");
         // MiniMax M2.5 Highspeed — by exact ID and aliases
         let hs = catalog.find_model("MiniMax-M2.5-highspeed").unwrap();
         assert_eq!(hs.provider, "minimax");
