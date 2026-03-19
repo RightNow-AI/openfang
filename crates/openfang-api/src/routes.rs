@@ -358,21 +358,24 @@ pub async fn send_message(
         );
     }
 
-    // Resolve file attachments into image content blocks
-    if !req.attachments.is_empty() {
+    // Resolve file attachments into image content blocks.
+    // Pass them as content_blocks so the LLM receives them in the current turn
+    // (not as a separate session message which the LLM may not process).
+    let content_blocks = if !req.attachments.is_empty() {
         let image_blocks = resolve_attachments(&req.attachments);
-        if !image_blocks.is_empty() {
-            inject_attachments_into_session(&state.kernel, agent_id, image_blocks);
-        }
-    }
+        if image_blocks.is_empty() { None } else { Some(image_blocks) }
+    } else {
+        None
+    };
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(
+        .send_message_with_handle_and_blocks(
             agent_id,
             &req.message,
             Some(kernel_handle),
+            content_blocks,
             req.sender_id,
             req.sender_name,
         )
@@ -1418,6 +1421,7 @@ pub async fn send_message_stream(
         Some(kernel_handle),
         req.sender_id,
         req.sender_name,
+        None, // SSE streaming doesn't support image attachments yet
     ) {
         Ok(pair) => pair,
         Err(e) => {

@@ -439,6 +439,7 @@ async fn handle_text_message(
 
             // Resolve file attachments into image content blocks
             let mut has_images = false;
+            let mut ws_content_blocks: Option<Vec<openfang_types::message::ContentBlock>> = None;
             if let Some(attachments) = parsed["attachments"].as_array() {
                 let refs: Vec<crate::types::AttachmentRef> = attachments
                     .iter()
@@ -448,11 +449,7 @@ async fn handle_text_message(
                     let image_blocks = crate::routes::resolve_attachments(&refs);
                     if !image_blocks.is_empty() {
                         has_images = true;
-                        crate::routes::inject_attachments_into_session(
-                            &state.kernel,
-                            agent_id,
-                            image_blocks,
-                        );
+                        ws_content_blocks = Some(image_blocks);
                     }
                 }
             }
@@ -508,6 +505,7 @@ async fn handle_text_message(
                 Some(kernel_handle),
                 None,
                 None,
+                ws_content_blocks,
             ) {
                 Ok((mut rx, handle)) => {
                     // Forward stream events to WebSocket with debouncing.

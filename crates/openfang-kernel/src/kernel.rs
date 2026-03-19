@@ -1605,6 +1605,7 @@ impl OpenFangKernel {
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
     ) -> KernelResult<(
         tokio::sync::mpsc::Receiver<StreamEvent>,
         tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
@@ -1960,7 +1961,7 @@ impl OpenFangKernel {
                 Some(&kernel_clone.hooks),
                 ctx_window,
                 Some(&kernel_clone.process_manager),
-                None, // content_blocks (streaming path uses text only for now)
+                content_blocks,
             )
             .await;
 

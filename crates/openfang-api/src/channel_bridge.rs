@@ -1025,7 +1025,8 @@ fn read_token(env_var_or_token: &str, adapter_name: &str) -> Option<String> {
         || env_var_or_token.starts_with("xoxb-")
         || env_var_or_token.starts_with("xapp-")
         || env_var_or_token.starts_with("sk-")
-        || env_var_or_token.starts_with("Bearer ");
+        || env_var_or_token.starts_with("Bearer ")
+        || env_var_or_token.len() > 80; // Long random strings are tokens, not env var names
 
     if looks_like_token {
         warn!(
