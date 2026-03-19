@@ -1047,13 +1047,18 @@ fn parse_trigger_pattern(s: &str) -> Option<openfang_kernel::triggers::TriggerPa
 /// Otherwise treat it as an env var name and look it up.
 fn read_token(env_var_or_token: &str, adapter_name: &str) -> Option<String> {
     // Heuristic: actual tokens contain `:` (Telegram, Discord) or start with
-    // known prefixes. Env var names are uppercase ASCII identifiers.
+    // known prefixes. Env var names are uppercase ASCII identifiers, so avoid
+    // treating long env-var-shaped names as literal secrets.
+    let looks_like_env_name = !env_var_or_token.is_empty()
+        && env_var_or_token
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_');
     let looks_like_token = env_var_or_token.contains(':')
         || env_var_or_token.starts_with("xoxb-")
         || env_var_or_token.starts_with("xapp-")
         || env_var_or_token.starts_with("sk-")
         || env_var_or_token.starts_with("Bearer ")
-        || env_var_or_token.len() > 80; // Long random strings are tokens, not env var names
+        || (env_var_or_token.len() > 80 && !looks_like_env_name);
 
     if looks_like_token {
         warn!(
@@ -2088,5 +2093,23 @@ mod tests {
 
         assert!(err.contains("Config load failed"));
         assert!(state.channels_config.read().await.telegram.is_some());
+    }
+
+    #[test]
+    fn test_read_token_uses_long_non_env_shaped_values_directly() {
+        let token = format!("tok_{}", "a".repeat(96));
+        assert_eq!(super::read_token(&token, "Test"), Some(token));
+    }
+
+    #[test]
+    fn test_read_token_still_resolves_long_env_var_names() {
+        let env_name =
+            "OPENFANG_CHANNEL_BRIDGE_LONG_ENV_NAME_FOR_TESTING_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789";
+        std::env::set_var(env_name, "resolved-secret");
+
+        let resolved = super::read_token(env_name, "Test");
+        std::env::remove_var(env_name);
+
+        assert_eq!(resolved, Some("resolved-secret".to_string()));
     }
 }
