@@ -1824,7 +1824,7 @@ impl OpenFangKernel {
             agent_id,
             message,
             kernel_handle,
-            None,
+            content_blocks,
             sender_id,
             sender_name,
         )
@@ -6870,11 +6870,12 @@ impl openfang_wire::peer::PeerHandle for OpenFangKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use openfang_types::config::{DefaultModelConfig, KernelConfig};
     use openfang_types::event::{EventPayload, LifecycleEvent};
     use std::collections::HashMap;
     use std::path::Path;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Duration;
 
     struct EnvVarGuard {
@@ -7186,6 +7187,112 @@ mod tests {
 
         assert_eq!(published_id, agent_id);
         assert_eq!(published_name, agent_name);
+    }
+
+    #[tokio::test]
+    async fn test_send_message_streaming_forwards_content_blocks() {
+        struct RecordingStreamingDriver {
+            saw_image_block: Arc<Mutex<bool>>,
+        }
+
+        #[async_trait]
+        impl LlmDriver for RecordingStreamingDriver {
+            async fn complete(
+                &self,
+                request: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                let saw_image_block = request.messages.iter().rev().any(|message| {
+                    message.role == openfang_types::message::Role::User
+                        && matches!(
+                            &message.content,
+                            openfang_types::message::MessageContent::Blocks(blocks)
+                                if blocks.iter().any(|block| matches!(
+                                    block,
+                                    openfang_types::message::ContentBlock::Image { .. }
+                                ))
+                        )
+                });
+                *self
+                    .saw_image_block
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = saw_image_block;
+
+                Ok(CompletionResponse {
+                    content: vec![openfang_types::message::ContentBlock::Text {
+                        text: if saw_image_block {
+                            "saw multimodal input".to_string()
+                        } else {
+                            "missing multimodal input".to_string()
+                        },
+                        provider_metadata: None,
+                    }],
+                    stop_reason: openfang_types::message::StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: openfang_types::message::TokenUsage::default(),
+                })
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "test-driver".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "TEST_DRIVER_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        })
+        .expect("Kernel should boot");
+
+        let saw_image_block = Arc::new(Mutex::new(false));
+        kernel.default_driver = Arc::new(RecordingStreamingDriver {
+            saw_image_block: Arc::clone(&saw_image_block),
+        });
+
+        let mut manifest =
+            test_manifest("streaming-multimodal", "test streaming multimodal", vec![]);
+        manifest.model.provider = "test-driver".to_string();
+        manifest.model.model = "test-model".to_string();
+
+        let kernel = Arc::new(kernel);
+        let agent_id = kernel.spawn_agent(manifest).expect("Agent should spawn");
+
+        let blocks = vec![
+            openfang_types::message::ContentBlock::Text {
+                text: "Describe this image".to_string(),
+                provider_metadata: None,
+            },
+            openfang_types::message::ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: "ZmFrZQ==".to_string(),
+            },
+        ];
+
+        let (_rx, handle) = kernel
+            .send_message_streaming(
+                agent_id,
+                "Describe this image",
+                None,
+                None,
+                None,
+                Some(blocks),
+            )
+            .await
+            .expect("Streaming should start");
+
+        let result = handle
+            .await
+            .expect("streaming task should join")
+            .expect("agent loop should succeed");
+
+        assert_eq!(result.response, "saw multimodal input");
+        assert!(
+            *saw_image_block.lock().unwrap_or_else(|e| e.into_inner()),
+            "streaming path should forward content blocks to the LLM driver"
+        );
     }
 
     #[test]
