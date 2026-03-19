@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 09:16:01
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-13 16:52:56
+ * @LastEditTime       : 2026-03-19 12:05:59
  */
 //! OpenFang daemon server — boots the kernel and serves the HTTP API.
 
@@ -45,6 +45,7 @@ pub struct DaemonInfo {
 pub async fn build_router(
     kernel: Arc<OpenFangKernel>,
     listen_addr: SocketAddr,
+    webchat_enabled: bool,
 ) -> (Router<()>, Arc<AppState>) {
     // Start channel bridges (Telegram, etc.)
     let bridge = channel_bridge::start_channel_bridge(kernel.clone()).await;
@@ -98,12 +99,17 @@ pub async fn build_router(
     };
     let gcra_limiter = rate_limiter::create_rate_limiter();
 
-    let app = Router::new()
-        .route("/", axum::routing::get(webchat::webchat_page))
-        .route("/logo.png", axum::routing::get(webchat::logo_png))
-        .route("/favicon.ico", axum::routing::get(webchat::favicon_ico))
-        .route("/manifest.json", axum::routing::get(webchat::manifest_json))
-        .route("/sw.js", axum::routing::get(webchat::sw_js))
+    let app = if webchat_enabled {
+        Router::new()
+            .route("/", axum::routing::get(webchat::webchat_page))
+            .route("/logo.png", axum::routing::get(webchat::logo_png))
+            .route("/favicon.ico", axum::routing::get(webchat::favicon_ico))
+            .route("/manifest.json", axum::routing::get(webchat::manifest_json))
+            .route("/sw.js", axum::routing::get(webchat::sw_js))
+    } else {
+        Router::new()
+    };
+    let app = app
         .route(
             "/api/metrics",
             axum::routing::get(routes::prometheus_metrics),
@@ -767,7 +773,7 @@ pub async fn run_daemon(
         });
     }
 
-    let (app, state) = build_router(kernel.clone(), addr).await;
+    let (app, state) = build_router(kernel.clone(), addr, true).await;
 
     // Write daemon info file
     if let Some(info_path) = daemon_info_path {

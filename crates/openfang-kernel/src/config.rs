@@ -258,7 +258,7 @@ pub fn openfang_home() -> PathBuf {
     }
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join(".openfang")
+        .join(".uniclaw")
 }
 
 #[cfg(test)]

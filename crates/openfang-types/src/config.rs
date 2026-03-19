@@ -1443,7 +1443,7 @@ pub fn openfang_home_dir() -> PathBuf {
     }
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join(".openfang")
+        .join(".uniclaw")
 }
 
 /// Default LLM model configuration.

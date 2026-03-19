@@ -43,7 +43,7 @@ fn is_first_run() -> bool {
         std::path::PathBuf::from(h)
     } else {
         match dirs::home_dir() {
-            Some(h) => h.join(".openfang"),
+            Some(h) => h.join(".uniclaw"),
             None => return true,
         }
     };

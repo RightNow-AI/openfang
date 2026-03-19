@@ -76,7 +76,7 @@ impl WorkspaceContext {
     pub fn detect(root: &Path) -> Self {
         let project_type = detect_project_type(root);
         let is_git_repo = root.join(".git").exists();
-        let has_openfang_dir = root.join(".openfang").exists();
+        let has_openfang_dir = root.join(".uniclaw").exists();
 
         let mut cache = HashMap::new();
         for &name in CONTEXT_FILES {
@@ -234,9 +234,7 @@ fn default_version() -> u32 {
 impl WorkspaceState {
     /// Load state from the workspace's `.openfang/workspace-state.json`.
     pub fn load(workspace_root: &Path) -> Self {
-        let path = workspace_root
-            .join(".openfang")
-            .join("workspace-state.json");
+        let path = workspace_root.join(".uniclaw").join("workspace-state.json");
         match std::fs::read_to_string(&path) {
             Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
             Err(_) => Self::default(),
@@ -245,7 +243,7 @@ impl WorkspaceState {
 
     /// Save state to the workspace's `.openfang/workspace-state.json`.
     pub fn save(&self, workspace_root: &Path) -> Result<(), String> {
-        let dir = workspace_root.join(".openfang");
+        let dir = workspace_root.join(".uniclaw");
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("Failed to create .openfang dir: {e}"))?;
         let path = dir.join("workspace-state.json");

@@ -804,7 +804,7 @@ fn config_log_level() -> String {
     } else {
         dirs::home_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join(".openfang")
+            .join(".uniclaw")
             .join("config.toml")
     };
     if let Ok(content) = std::fs::read_to_string(config_path) {
@@ -839,7 +839,7 @@ fn cli_openfang_home() -> std::path::PathBuf {
     }
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join(".openfang")
+        .join(".uniclaw")
 }
 
 /// Redirect tracing to a log file so it doesn't corrupt the ratatui TUI.
@@ -4931,7 +4931,7 @@ pub(crate) fn openfang_home() -> PathBuf {
             eprintln!("Error: Could not determine home directory");
             std::process::exit(1);
         })
-        .join(".openfang")
+        .join(".uniclaw")
 }
 
 fn prompt_input(prompt: &str) -> String {

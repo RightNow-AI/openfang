@@ -11,7 +11,7 @@ fn dotenv_openfang_home() -> Option<PathBuf> {
     if let Ok(home) = std::env::var("OPENFANG_HOME") {
         return Some(PathBuf::from(home));
     }
-    dirs::home_dir().map(|h| h.join(".openfang"))
+    dirs::home_dir().map(|h| h.join(".uniclaw"))
 }
 
 /// Return the path to `~/.openfang/.env`.

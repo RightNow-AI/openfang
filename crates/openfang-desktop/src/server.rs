@@ -118,7 +118,7 @@ async fn run_embedded_server(
     listen_addr: SocketAddr,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    let (app, state) = build_router(kernel, listen_addr).await;
+    let (app, state) = build_router(kernel, listen_addr, true).await;
 
     // Convert std TcpListener → tokio TcpListener
     std_listener
@@ -163,7 +163,7 @@ fn load_dotenv_files() {
         if user_home.is_empty() {
             return;
         }
-        std::path::PathBuf::from(user_home).join(".openfang")
+        std::path::PathBuf::from(user_home).join(".uniclaw")
     };
 
     for filename in &[".env", "secrets.env"] {

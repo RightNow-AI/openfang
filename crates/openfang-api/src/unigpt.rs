@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 14:47:41
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-11 17:15:04
+ * @LastEditTime       : 2026-03-19 13:40:00
  */
 
 use crate::routes::AppState;
@@ -138,10 +138,8 @@ pub async fn update_models(
     // Step 2: Remove models that are in catalog but not in request
     let mut removed_count = 0;
     for (model_id, _) in current_unigpt_models {
-        if !request_model_ids.contains(&model_id) {
-            if catalog.remove_custom_model(&model_id) {
-                removed_count += 1;
-            }
+        if !request_model_ids.contains(&model_id) && catalog.remove_custom_model(&model_id) {
+            removed_count += 1;
         }
     }
 

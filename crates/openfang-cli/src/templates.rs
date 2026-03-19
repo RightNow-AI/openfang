@@ -39,9 +39,9 @@ pub fn discover_template_dirs() -> Vec<PathBuf> {
     let of_home = if let Ok(h) = std::env::var("OPENFANG_HOME") {
         PathBuf::from(h)
     } else if let Some(home) = dirs::home_dir() {
-        home.join(".openfang")
+        home.join(".uniclaw")
     } else {
-        std::env::temp_dir().join(".openfang")
+        std::env::temp_dir().join(".uniclaw")
     };
     {
         let agents = of_home.join("agents");

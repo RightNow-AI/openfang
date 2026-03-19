@@ -960,7 +960,7 @@ fn handle_migration_key(
                     } else {
                         dirs::home_dir()
                             .unwrap_or_else(|| PathBuf::from("."))
-                            .join(".openfang")
+                            .join(".uniclaw")
                     };
                     let tx = migrate_tx.clone();
                     std::thread::spawn(move || {
@@ -1084,7 +1084,7 @@ fn save_config(state: &mut State) {
         PathBuf::from(h)
     } else {
         match dirs::home_dir() {
-            Some(h) => h.join(".openfang"),
+            Some(h) => h.join(".uniclaw"),
             None => {
                 state.save_error = "Could not determine home directory".to_string();
                 return;
