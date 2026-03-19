@@ -3945,7 +3945,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 41);
+        assert_eq!(catalog.list_providers().len(), 42); // 41 + alibaba_coding
     }
 
     #[test]
