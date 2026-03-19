@@ -16,10 +16,30 @@ git submodule update --init --recursive
 cargo build --release -p openfang-cli
 ```
 
+If you are actively iterating on code and want the fastest rebuild/restart loop,
+use the debug binary instead:
+
+```bash
+cargo build -p openfang-cli
+```
+
+On a maintainer machine, `target/debug/openfang` is usually the fastest way to
+run the latest local code. Rebuilding a Docker image still recompiles the code,
+so it is typically slower than the local debug daemon path on macOS.
+
 ## 3. Initialize the Runtime Home
 
 ```bash
 target/release/openfang init
+cp openfang.toml.example ~/.openfang/config.toml
+```
+
+If you only built the debug binary, `target/debug/openfang init` is equivalent.
+
+Debug-binary equivalent:
+
+```bash
+target/debug/openfang init
 cp openfang.toml.example ~/.openfang/config.toml
 ```
 
@@ -50,12 +70,25 @@ You can also place it in `~/.openfang/.env`.
 target/release/openfang start
 ```
 
+For the fastest local development loop, start the debug daemon instead:
+
+```bash
+target/debug/openfang start
+```
+
 ## 6. Verify the Daemon
 
 ```bash
 curl -s http://127.0.0.1:4200/api/health
 target/release/openfang status
 target/release/openfang doctor
+```
+
+Debug-binary equivalent:
+
+```bash
+target/debug/openfang status
+target/debug/openfang doctor
 ```
 
 ## 7. Spawn a Template Agent
@@ -65,6 +98,13 @@ This repository currently includes 30 agent templates under `agents/`.
 ```bash
 target/release/openfang agent spawn agents/hello-world/agent.toml
 target/release/openfang agent list
+```
+
+Debug-binary equivalent:
+
+```bash
+target/debug/openfang agent spawn agents/hello-world/agent.toml
+target/debug/openfang agent list
 ```
 
 ## 8. Send a Test Message
@@ -100,3 +140,16 @@ After first boot, continue here:
 5. [operations-runbook.md](operations-runbook.md)
 
 If you are working on Telegram media flows or shipinbot integration, continue with the Telegram docs and `projects/shipinbot/docs/`.
+
+## Iteration Loop
+
+For repeated local edits on the same machine, the shortest restart loop is:
+
+```bash
+target/debug/openfang stop
+cargo build -p openfang-cli
+target/debug/openfang start
+```
+
+Use `target/release/openfang` when you need release-like behavior, installation,
+or final verification before shipping.

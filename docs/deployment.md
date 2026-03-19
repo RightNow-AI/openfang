@@ -6,7 +6,7 @@ This guide documents the deployment paths that are actually supported by the ass
 
 | Mode | Use it for | Source of truth |
 |------|------------|-----------------|
-| Local source build | Development and debugging | `cargo`, `openfang-cli`, local config |
+| Local source build | Development, debugging, and the fastest local iteration loop | `cargo`, `openfang-cli`, local config |
 | CLI install scripts | Host installs when release artifacts exist | `scripts/install.sh`, `scripts/install.ps1` |
 | Docker / Compose | Local services and containerized hosts | `Dockerfile`, `docker-compose.yml` |
 | Linux systemd | Server deployment | `deploy/openfang.service` |
@@ -52,6 +52,34 @@ cargo run -p openfang-cli -- health
 
 Use this mode when you are changing code, routes, config fields, or runtime wiring.
 
+### Fastest Local Iteration
+
+On a developer Mac, the fastest way to run the latest local code is usually a
+debug CLI binary plus the normal daemon process:
+
+```bash
+cargo build -p openfang-cli
+target/debug/openfang start
+```
+
+For repeated edits, restart with:
+
+```bash
+target/debug/openfang stop
+cargo build -p openfang-cli
+target/debug/openfang start
+```
+
+Why this is usually faster than Docker for local work:
+
+- `docker build` or `docker compose up --build` still recompiles the Rust code
+- the local debug binary skips the slowest release-optimization and image-build steps
+- the daemon still uses the same runtime home, API, and local filesystem layout as production-style host installs
+
+Prefer the debug daemon when the goal is "run the newest local code as quickly
+as possible". Switch back to `target/release/openfang` for final validation,
+install packaging, or release-like smoke tests.
+
 ## 2. CLI Install Scripts
 
 The repository includes install scripts:
@@ -75,6 +103,11 @@ The current Compose file is intended to be built locally:
 ```bash
 docker compose up --build
 ```
+
+This is useful for containerized hosts or isolation, but it is not the fastest
+iteration path for the newest local code on a maintainer Mac. If the goal is
+"edit code, rebuild, restart, test" on the same machine, prefer the local debug
+CLI + daemon flow above.
 
 ### Important Container Networking Note
 

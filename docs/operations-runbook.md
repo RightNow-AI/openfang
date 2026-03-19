@@ -19,11 +19,12 @@ Use the command form that matches how the daemon is installed on that host:
 
 | Environment | Start / Stop / Status / Doctor |
 | --- | --- |
+| source checkout, debug binary built locally | `target/debug/openfang ...` |
 | source checkout, release binary built locally | `target/release/openfang ...` |
 | source checkout, no built binary | `cargo run -p openfang-cli -- ...` |
 | installed host / package / release artifact | `openfang ...` |
 
-The examples below use `openfang ...` for the installed-path form and `target/release/openfang ...` for the local release-binary form. On a source checkout without an installed binary, swap in `cargo run -p openfang-cli -- ...`.
+The examples below use `openfang ...` for the installed-path form and `target/release/openfang ...` for the local release-binary form. For the fastest local iteration loop, you can substitute `target/debug/openfang ...`. On a source checkout without a built binary, swap in `cargo run -p openfang-cli -- ...`.
 
 ### Local source process
 
@@ -38,6 +39,28 @@ Stop:
 ```bash
 target/release/openfang stop
 ```
+
+### Local debug process
+
+For repeated edit/build/restart cycles on the same machine:
+
+```bash
+target/debug/openfang start
+target/debug/openfang stop
+target/debug/openfang status
+target/debug/openfang doctor
+```
+
+Recommended maintainer loop:
+
+```bash
+target/debug/openfang stop
+cargo build -p openfang-cli
+target/debug/openfang start
+```
+
+Use the debug daemon when iteration speed matters more than release parity. Use
+the release binary for final validation, packaging, or install verification.
 
 ### Docker / Compose
 
