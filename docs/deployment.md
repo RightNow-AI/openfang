@@ -179,6 +179,7 @@ The canary now requires per-agent token usage to increase after the LLM round-tr
 For automation and cutovers, prefer `OPENFANG_STRICT_PRODUCTION=1` so smoke/preflight fail closed when protected operational checks cannot authenticate.
 
 If you scrape Prometheus, wire alerts from `deploy/openfang-alerts.yml` into the same environment. The readiness metrics (`openfang_readiness_ready`, `openfang_database_ok`, `openfang_default_provider_auth_missing`, `openfang_config_warnings`, `openfang_restore_warnings`) are designed to match the daemon's own `/api/health/detail` interpretation, including secrets resolved from `vault.enc`, `secrets.env`, and `.env`.
+Use `deploy/prometheus-scrape.yml` as the starter scrape job when you want a working Prometheus example that already includes Bearer auth for `/api/metrics`.
 The sample alert rules now include both `absent(openfang_info)` and `up{job="openfang"} == 0`; update the `job` matcher if your Prometheus scrape config uses a different label.
 
 ## 4. Linux Server with systemd
@@ -201,7 +202,7 @@ sudo install -d /etc/openfang
 sudo install -d /usr/local/lib/openfang
 sudo install -m 0644 deploy/openfang.service /etc/systemd/system/openfang.service
 sudo install -m 0755 scripts/preflight-openfang.sh /usr/local/lib/openfang/preflight-openfang.sh
-sudo install -m 0600 -o root -g openfang /dev/null /etc/openfang/env
+sudo install -m 0640 -o root -g openfang /dev/null /etc/openfang/env
 ```
 
 Create `/etc/openfang/env` with at least:
@@ -221,7 +222,7 @@ openssl rand -hex 32
 Then initialize config as the service user or pre-seed `/var/lib/openfang/config.toml`.
 If you enable dashboard auth in `config.toml`, set a valid Argon2id `password_hash` before first boot.
 Legacy 64-character SHA-256 hex digests still work for compatibility, but do not use them for new deployments.
-Keep `/etc/openfang/env` owner-readable only; `UMask=0077` in the unit protects files created by the daemon, not this pre-created env file.
+Keep `/etc/openfang/env` readable by the `openfang` service user as well as root. `0640 root:openfang` is the supported baseline so `ExecStartPre` preflight and host-side backup/preflight/restore scripts can read the same external env source.
 The systemd unit template exports `OPENFANG_ENV_FILE=/etc/openfang/env` so operator scripts can consistently find the same external env source.
 The unit also performs a minimal pre-start gate: it requires a readable `config.toml`, writable runtime directories, and, when `/usr/local/lib/openfang/preflight-openfang.sh` is installed, it runs `preflight-openfang.sh --offline` before starting the daemon.
 

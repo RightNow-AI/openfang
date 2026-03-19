@@ -1,0 +1,33 @@
+# Prometheus scrape configuration for OpenFang
+#
+# Add this job to your prometheus.yml under scrape_configs, or drop this file
+# into a scrape_config_files directory.
+#
+# Required: OPENFANG_API_KEY must be set. The /api/metrics endpoint requires
+# Bearer auth when an API key is configured. Without it Prometheus receives 401
+# and the OpenFangMetricsAbsent alert in openfang-alerts.yml will fire.
+#
+# Setup:
+#   1. Replace <YOUR_API_KEY> with your OPENFANG_API_KEY value.
+#   2. Replace <HOST> with the hostname/IP running OpenFang (default: 127.0.0.1).
+#   3. If OpenFang is behind a reverse proxy exposing metrics publicly, ensure
+#      the proxy forwards the Authorization header.
+#   4. Load in prometheus.yml:
+#        scrape_config_files:
+#          - /etc/prometheus/scrape_configs/openfang.yml
+
+scrape_configs:
+  - job_name: openfang
+    # Must match the job label used in openfang-alerts.yml (job="openfang").
+    metrics_path: /api/metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials: <YOUR_API_KEY>
+    static_configs:
+      - targets:
+          - <HOST>:4200
+        labels:
+          env: production
+    scrape_interval: 15s
+    scrape_timeout: 5s

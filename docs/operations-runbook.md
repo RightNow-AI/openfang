@@ -133,7 +133,7 @@ target/release/openfang doctor
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
 
-`scripts/preflight-openfang.sh` resolves `config.toml` includes plus runtime `.env` / `secrets.env` / external env file / process env overrides. It honors `OPENFANG_ENV_FILE`; if unset and `/etc/openfang/env` exists, that file is auto-detected only when it matches the current `OPENFANG_HOME`. When both runtime files define the same key, `secrets.env` wins so API/dashboard-managed secrets survive restart. When preflight can resolve an API key, it now treats failures on protected operational endpoints as blocking instead of advisory, and it requires `/api/health/detail` to report `status = "ok"` rather than merely returning HTTP 200.
+`scripts/preflight-openfang.sh` resolves `config.toml` includes plus runtime `.env` / `secrets.env` / external env file / process env overrides. It honors `OPENFANG_ENV_FILE`; if unset and `/etc/openfang/env` exists, that file is auto-detected only when it matches the current `OPENFANG_HOME`. When both runtime files define the same key, `secrets.env` wins so API/dashboard-managed secrets survive restart. Keep `/etc/openfang/env` readable by the `openfang` service user (for example `0640 root:openfang`), otherwise the unit's `ExecStartPre` preflight and host-side operator scripts will fail before the daemon starts. When preflight can resolve an API key, it now treats failures on protected operational endpoints as blocking instead of advisory, and it requires `/api/health/detail` to report `status = "ok"` rather than merely returning HTTP 200.
 For production hosts, keep a machine API key available even when dashboard auth is enabled, otherwise protected-path checks remain advisory instead of fully enforceable.
 Use `OPENFANG_STRICT_PRODUCTION=1` in deployment automation so missing machine auth becomes a hard failure instead of a warning.
 It is strict by default: if `/api/health` is unreachable, preflight fails. Use `--offline` (or `OPENFANG_PREFLIGHT_OFFLINE=1`) only when you intentionally want file-only checks without a live daemon.
@@ -162,7 +162,9 @@ Prometheus and alerting:
 - `/api/metrics` is the scrape surface for production monitoring
 - the metrics set now includes `openfang_readiness_ready`, `openfang_database_ok`, `openfang_shutdown_requested`, `openfang_default_provider_auth_missing`, `openfang_config_warnings`, and `openfang_restore_warnings`
 - readiness-related warnings are resolved against the active credential chain (vault, `secrets.env`, `.env`, process env), so vault-backed or runtime-file-backed secrets do not create false degraded alerts
+- sample scrape config lives in `deploy/prometheus-scrape.yml`
 - sample Prometheus alert rules live in `deploy/openfang-alerts.yml`
+- set `OPENFANG_LOG_FORMAT=json` when you want machine-parseable daemon logs in journald or container stderr; otherwise the daemon keeps the normal human-readable text format
 
 Fast triage order:
 

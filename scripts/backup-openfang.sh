@@ -31,6 +31,32 @@ KEEP_BACKUPS="${OPENFANG_KEEP_BACKUPS:-5}"
 ALLOW_LIVE_BACKUP="${OPENFANG_ALLOW_LIVE_BACKUP:-0}"
 CONFIG_PATH="${OPENFANG_HOME}/config.toml"
 
+ensure_readable_file() {
+  local path="$1"
+  local description="$2"
+  [[ -z "${path}" || ! -e "${path}" ]] && return 0
+  if [[ -r "${path}" ]]; then
+    return 0
+  fi
+  echo "${description} is not readable by the current user." >&2
+  echo "Run the backup as a user that can read ${path}, or fix the file mode/group first (for example 0640 with group openfang for /etc/openfang/env)." >&2
+  exit 1
+}
+
+file_mode() {
+  local path="$1"
+  local mode
+  if mode="$(stat -c '%a' "${path}" 2>/dev/null)"; then
+    printf '%s\n' "${mode}"
+    return 0
+  fi
+  if mode="$(stat -f '%Lp' "${path}" 2>/dev/null)"; then
+    printf '%s\n' "${mode}"
+    return 0
+  fi
+  return 1
+}
+
 normalize_path() {
   local path="${1:-}"
   if [[ -z "${path}" ]]; then
@@ -96,6 +122,10 @@ fi
 if [[ -n "${OPENFANG_ENV_FILE:-}" && ! -f "${OPENFANG_ENV_FILE}" ]]; then
   echo "OPENFANG_ENV_FILE was set but file does not exist: ${OPENFANG_ENV_FILE}" >&2
   exit 1
+fi
+
+if [[ -n "${EXTERNAL_ENV_FILE}" ]]; then
+  ensure_readable_file "${EXTERNAL_ENV_FILE}" "External env file ${EXTERNAL_ENV_FILE}"
 fi
 
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
@@ -703,12 +733,18 @@ if [[ -f "${SQLITE_PATH}" ]]; then
   backup_sqlite "${SQLITE_PATH}" "${DEST}/${SQLITE_REL_PATH}"
 fi
 
+EXTERNAL_ENV_MODE=""
+if [[ -n "${EXTERNAL_ENV_FILE}" && -f "${EXTERNAL_ENV_FILE}" ]]; then
+  EXTERNAL_ENV_MODE="$(file_mode "${EXTERNAL_ENV_FILE}" || true)"
+fi
+
 cat > "${DEST}/BACKUP.txt" <<EOF
 created_at=${TIMESTAMP}
 source_home=${OPENFANG_HOME}
 hostname=$(hostname)
 backup_mode=${BACKUP_MODE}
 external_env_source=${EXTERNAL_ENV_FILE}
+external_env_mode=${EXTERNAL_ENV_MODE}
 sqlite_source=${SQLITE_PATH}
 sqlite_rel_path=${SQLITE_REL_PATH}
 EOF

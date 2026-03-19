@@ -26,6 +26,7 @@ Then move to the detailed references for your area.
 | [Configuration](configuration.md) | Config layout, precedence, secrets, hot reload boundaries |
 | [Operations Runbook](operations-runbook.md) | Health checks, backup, restore, upgrade, rollback |
 | `scripts/preflight-openfang.sh` | Runtime and deployment preflight for production cutovers |
+| `deploy/prometheus-scrape.yml` | Starter Prometheus scrape job with Bearer auth for `/api/metrics` |
 | `deploy/openfang-alerts.yml` | Starter Prometheus alert rules for readiness and stability signals |
 | [Release Runbook](release-runbook.md) | Step-by-step release publishing and post-release verification |
 | [Troubleshooting](troubleshooting.md) | Symptom-based fault isolation |

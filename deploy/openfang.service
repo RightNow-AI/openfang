@@ -21,6 +21,7 @@ TimeoutStopSec=30
 UMask=0077
 
 # Environment
+Environment=RUST_LOG=openfang=info,warn
 EnvironmentFile=-/etc/openfang/env
 WorkingDirectory=/var/lib/openfang
 StateDirectory=openfang

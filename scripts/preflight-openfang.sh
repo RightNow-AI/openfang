@@ -57,6 +57,18 @@ BASE_URL_OVERRIDE="${BASE_URL_CLI_ARG:-${OPENFANG_BASE_URL:-}}"
 CONFIG_PATH="${OPENFANG_HOME}/config.toml"
 STRICT_PRODUCTION="${OPENFANG_STRICT_PRODUCTION:-0}"
 
+ensure_readable_file() {
+  local path="$1"
+  local description="$2"
+  [[ -z "${path}" || ! -e "${path}" ]] && return 0
+  if [[ -r "${path}" ]]; then
+    return 0
+  fi
+  echo "${description} is not readable by the current user." >&2
+  echo "For systemd deployments, keep /etc/openfang/env readable by the openfang service user (for example mode 0640 with group openfang), or run the script as a user that can read ${path}." >&2
+  exit 1
+}
+
 normalize_path() {
   local path="${1:-}"
   if [[ -z "${path}" ]]; then
@@ -122,6 +134,10 @@ fi
 if [[ -n "${OPENFANG_ENV_FILE:-}" && ! -f "${OPENFANG_ENV_FILE}" ]]; then
   echo "OPENFANG_ENV_FILE was set but file does not exist: ${OPENFANG_ENV_FILE}" >&2
   exit 1
+fi
+
+if [[ -n "${EXTERNAL_ENV_FILE}" ]]; then
+  ensure_readable_file "${EXTERNAL_ENV_FILE}" "External env file ${EXTERNAL_ENV_FILE}"
 fi
 
 required_commands=(python3)

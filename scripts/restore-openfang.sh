@@ -73,6 +73,18 @@ normalize_path() {
   printf '%s\n' "${path}"
 }
 
+ensure_readable_file() {
+  local path="$1"
+  local description="$2"
+  [[ -z "${path}" || ! -e "${path}" ]] && return 0
+  if [[ -r "${path}" ]]; then
+    return 0
+  fi
+  echo "${description} is not readable by the current user." >&2
+  echo "Run the restore as a user that can read ${path}, or fix the file mode/group first (for example 0640 with group openfang for /etc/openfang/env)." >&2
+  exit 1
+}
+
 env_file_var() {
   local env_file="$1"
   local wanted="$2"
@@ -206,6 +218,20 @@ stat_gid() {
   fi
   if gid="$(stat -f '%g' "${path}" 2>/dev/null)"; then
     printf '%s\n' "${gid}"
+    return 0
+  fi
+  return 1
+}
+
+stat_mode() {
+  local path="$1"
+  local mode
+  if mode="$(stat -c '%a' "${path}" 2>/dev/null)"; then
+    printf '%s\n' "${mode}"
+    return 0
+  fi
+  if mode="$(stat -f '%Lp' "${path}" 2>/dev/null)"; then
+    printf '%s\n' "${mode}"
     return 0
   fi
   return 1
@@ -377,9 +403,14 @@ if [[ -z "${BACKUP_SQLITE_REL_PATH}" && -f "${BACKUP_DIR}/data/openfang.db" ]]; 
   BACKUP_SQLITE_REL_PATH="data/openfang.db"
 fi
 BACKUP_EXTERNAL_ENV_SOURCE="$(backup_manifest_value external_env_source)"
+BACKUP_EXTERNAL_ENV_MODE="$(backup_manifest_value external_env_mode)"
 EXTERNAL_ENV_FILE="${OPENFANG_ENV_FILE:-}"
 if [[ -z "${EXTERNAL_ENV_FILE}" ]]; then
   EXTERNAL_ENV_FILE="$(auto_detect_external_env_file "${OPENFANG_HOME}" || true)"
+fi
+
+if [[ -n "${EXTERNAL_ENV_FILE}" ]]; then
+  ensure_readable_file "${EXTERNAL_ENV_FILE}" "External env file ${EXTERNAL_ENV_FILE}"
 fi
 
 validate_backup_dir
@@ -714,6 +745,13 @@ restore_external_env_file() {
     return 1
   fi
 
+  local existing_mode="" existing_uid="" existing_gid=""
+  if [[ -e "${target_env_file}" ]]; then
+    existing_mode="$(stat_mode "${target_env_file}" || true)"
+    existing_uid="$(stat_uid "${target_env_file}" || true)"
+    existing_gid="$(stat_gid "${target_env_file}" || true)"
+  fi
+
   if ! mkdir -p "$(dirname "${target_env_file}")" 2>/dev/null; then
     echo "error could not create directory for external env file ${target_env_file}." >&2
     return 1
@@ -734,7 +772,38 @@ restore_external_env_file() {
     echo "error could not promote restored external env file to ${target_env_file}; check permissions or set OPENFANG_ENV_FILE explicitly." >&2
     return 1
   fi
-  echo "ok  restored external env file ${target_env_file}"
+
+  if [[ "$(id -u)" == "0" ]]; then
+    if [[ -n "${existing_uid}" ]]; then
+      chown "${existing_uid}" "${target_env_file}" 2>/dev/null || true
+    elif [[ "${target_env_file}" == "/etc/openfang/env" ]]; then
+      chown root "${target_env_file}" 2>/dev/null || true
+    fi
+
+    if [[ -n "${existing_gid}" ]]; then
+      chgrp "${existing_gid}" "${target_env_file}" 2>/dev/null || true
+    elif [[ "${target_env_file}" == "/etc/openfang/env" ]] && id -g openfang >/dev/null 2>&1; then
+      chgrp openfang "${target_env_file}" 2>/dev/null || true
+    fi
+  fi
+
+  local final_mode
+  if [[ "${target_env_file}" == "/etc/openfang/env" ]]; then
+    final_mode="640"
+  elif [[ -n "${BACKUP_EXTERNAL_ENV_MODE:-}" ]]; then
+    final_mode="${BACKUP_EXTERNAL_ENV_MODE}"
+  elif [[ -n "${existing_mode}" ]]; then
+    final_mode="${existing_mode}"
+  else
+    final_mode="600"
+  fi
+
+  if ! chmod "${final_mode}" "${target_env_file}" 2>/dev/null; then
+    echo "error could not set mode ${final_mode} on ${target_env_file}" >&2
+    return 1
+  fi
+
+  echo "ok  restored external env file ${target_env_file} (mode ${final_mode})"
 }
 
 harden_permissions() {

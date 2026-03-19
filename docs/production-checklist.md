@@ -173,6 +173,8 @@ OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_PREFLIGHT_OFFLINE=1 scripts/preflig
 OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_STRICT_PRODUCTION=1 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
 
+Keep `/etc/openfang/env` readable by the `openfang` service user as well as root. `0640 root:openfang` is the supported baseline so `ExecStartPre` preflight and host-side operator scripts can read the same file.
+
 Pass criteria:
 - backup succeeds while the daemon is stopped, or live backup is explicitly opted into
 - offline preflight validates config resolution, state-file integrity, writable runtime paths, and SQLite quick-check
