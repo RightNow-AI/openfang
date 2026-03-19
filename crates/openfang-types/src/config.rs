@@ -1138,7 +1138,7 @@ pub struct AuthConfig {
     pub enabled: bool,
     /// Admin username.
     pub username: String,
-    /// SHA256 hash of the password (hex-encoded).
+    /// Argon2id password hash (PHC string format).
     /// Generate with: openfang auth hash-password
     pub password_hash: String,
     /// Session token lifetime in hours (default: 168 = 7 days).
