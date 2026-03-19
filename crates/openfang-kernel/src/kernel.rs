@@ -3603,12 +3603,20 @@ impl OpenFangKernel {
         if !saved_triggers.is_empty() {
             let restored = self.triggers.restore_triggers(agent_id, saved_triggers);
             if restored > 0 {
-                info!(
-                    old_agent = %old_agent_id.unwrap(),
-                    new_agent = %agent_id,
-                    restored,
-                    "Reassigned triggers after hand reactivation"
-                );
+                if let Some(old_id) = old_agent_id {
+                    info!(
+                        old_agent = %old_id,
+                        new_agent = %agent_id,
+                        restored,
+                        "Reassigned triggers after hand reactivation"
+                    );
+                } else {
+                    info!(
+                        new_agent = %agent_id,
+                        restored,
+                        "Restored triggers after hand reactivation"
+                    );
+                }
             }
         }
 

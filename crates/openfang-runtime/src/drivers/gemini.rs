@@ -536,7 +536,7 @@ impl LlmDriver for GeminiDriver {
 
             if status == 429 || status == 503 {
                 if attempt < max_retries {
-                    let retry_ms = (attempt + 1) as u64 * 2000;
+                    let retry_ms = crate::retry::provider_rate_limit_delay_ms(attempt as u32);
                     warn!(status, retry_ms, "Rate limited/overloaded, retrying");
                     tokio::time::sleep(std::time::Duration::from_millis(retry_ms)).await;
                     continue;
@@ -622,7 +622,7 @@ impl LlmDriver for GeminiDriver {
 
             if status == 429 || status == 503 {
                 if attempt < max_retries {
-                    let retry_ms = (attempt + 1) as u64 * 2000;
+                    let retry_ms = crate::retry::provider_rate_limit_delay_ms(attempt as u32);
                     warn!(
                         status,
                         retry_ms, "Rate limited/overloaded (stream), retrying"

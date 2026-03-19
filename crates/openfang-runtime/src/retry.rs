@@ -217,6 +217,20 @@ pub fn llm_retry_config() -> RetryConfig {
     }
 }
 
+/// Backoff window used for provider-originated 429/503 retry loops.
+///
+/// This is intentionally wider than the generic LLM retry helper so multiple
+/// agents do not immediately retry in lockstep after a shared provider throttle.
+pub fn provider_rate_limit_delay_ms(attempt: u32) -> u64 {
+    let config = RetryConfig {
+        max_attempts: 4,
+        min_delay_ms: 1_000,
+        max_delay_ms: 30_000,
+        jitter: 1.0,
+    };
+    compute_backoff(&config, attempt)
+}
+
 /// Retry config for network operations (webhooks, fetches).
 ///
 /// 3 attempts, 500ms initial delay, up to 30s, 10% jitter.
@@ -491,6 +505,17 @@ mod tests {
         assert_eq!(config.min_delay_ms, 1_000);
         assert_eq!(config.max_delay_ms, 60_000);
         assert!((config.jitter - 0.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_provider_rate_limit_delay_is_bounded() {
+        let delay0 = provider_rate_limit_delay_ms(0);
+        let delay1 = provider_rate_limit_delay_ms(1);
+        let delay10 = provider_rate_limit_delay_ms(10);
+
+        assert!((1_000..=2_000).contains(&delay0));
+        assert!((2_000..=4_000).contains(&delay1));
+        assert_eq!(delay10, 30_000);
     }
 
     #[test]
