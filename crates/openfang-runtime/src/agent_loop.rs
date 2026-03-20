@@ -73,6 +73,7 @@ fn phantom_action_detected(text: &str) -> bool {
 }
 
 /// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
+#[allow(unused)]
 const TOOL_ERROR_GUIDANCE: &str =
     "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. If your next steps depend on a failed tool, either retry with a materially different approach or explain the failure to the user and stop. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
 
@@ -81,10 +82,11 @@ fn append_tool_error_guidance(tool_result_blocks: &mut Vec<ContentBlock>) {
         .iter()
         .any(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }));
     if has_tool_error {
-        tool_result_blocks.push(ContentBlock::Text {
-            text: TOOL_ERROR_GUIDANCE.to_string(),
-            provider_metadata: None,
-        });
+        // TODO 关闭工具错误引导
+        // tool_result_blocks.push(ContentBlock::Text {
+        //     text: TOOL_ERROR_GUIDANCE.to_string(),
+        //     provider_metadata: None,
+        // });
     }
 }
 
