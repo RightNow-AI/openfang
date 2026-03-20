@@ -5,15 +5,19 @@ use dashmap::DashMap;
 use openfang_types::approval::{
     ApprovalDecision, ApprovalPolicy, ApprovalRequest, ApprovalResponse, RiskLevel,
 };
+use std::collections::VecDeque;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Max pending requests per agent.
 const MAX_PENDING_PER_AGENT: usize = 5;
+/// Max recent approval records to retain for history and UI visibility.
+const MAX_RECENT_APPROVALS: usize = 100;
 
 /// Manages approval requests with oneshot channels for blocking resolution.
 pub struct ApprovalManager {
     pending: DashMap<Uuid, PendingRequest>,
+    recent: std::sync::Mutex<VecDeque<ApprovalRecord>>,
     policy: std::sync::RwLock<ApprovalPolicy>,
 }
 
@@ -22,10 +26,19 @@ struct PendingRequest {
     sender: tokio::sync::oneshot::Sender<ApprovalDecision>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ApprovalRecord {
+    pub request: ApprovalRequest,
+    pub decision: ApprovalDecision,
+    pub decided_at: chrono::DateTime<Utc>,
+    pub decided_by: Option<String>,
+}
+
 impl ApprovalManager {
     pub fn new(policy: ApprovalPolicy) -> Self {
         Self {
             pending: DashMap::new(),
+            recent: std::sync::Mutex::new(VecDeque::new()),
             policy: std::sync::RwLock::new(policy),
         }
     }
@@ -51,6 +64,7 @@ impl ApprovalManager {
 
         let timeout = std::time::Duration::from_secs(req.timeout_secs);
         let id = req.id;
+        let req_for_timeout = req.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.insert(
@@ -69,7 +83,12 @@ impl ApprovalManager {
                 decision
             }
             _ => {
-                self.pending.remove(&id);
+                let request = self
+                    .pending
+                    .remove(&id)
+                    .map(|(_, pending)| pending.request)
+                    .unwrap_or(req_for_timeout);
+                self.push_recent(request, ApprovalDecision::TimedOut, None, Utc::now());
                 warn!(request_id = %id, "Approval request timed out");
                 ApprovalDecision::TimedOut
             }
@@ -91,6 +110,12 @@ impl ApprovalManager {
                     decided_at: Utc::now(),
                     decided_by,
                 };
+                self.push_recent(
+                    pending.request.clone(),
+                    decision,
+                    response.decided_by.clone(),
+                    response.decided_at,
+                );
                 // Send decision to waiting agent (ignore error if receiver dropped)
                 let _ = pending.sender.send(decision);
                 info!(request_id = %request_id, ?decision, "Approval request resolved");
@@ -106,6 +131,12 @@ impl ApprovalManager {
             .iter()
             .map(|r| r.value().request.clone())
             .collect()
+    }
+
+    /// List recent non-pending approvals, newest first.
+    pub fn list_recent(&self, limit: usize) -> Vec<ApprovalRecord> {
+        let recent = self.recent.lock().unwrap_or_else(|e| e.into_inner());
+        recent.iter().take(limit).cloned().collect()
     }
 
     /// Number of pending requests.
@@ -133,6 +164,25 @@ impl ApprovalManager {
             "file_write" | "file_delete" => RiskLevel::High,
             "web_fetch" | "browser_navigate" => RiskLevel::Medium,
             _ => RiskLevel::Low,
+        }
+    }
+
+    fn push_recent(
+        &self,
+        request: ApprovalRequest,
+        decision: ApprovalDecision,
+        decided_by: Option<String>,
+        decided_at: chrono::DateTime<Utc>,
+    ) {
+        let mut recent = self.recent.lock().unwrap_or_else(|e| e.into_inner());
+        recent.push_front(ApprovalRecord {
+            request,
+            decision,
+            decided_at,
+            decided_by,
+        });
+        while recent.len() > MAX_RECENT_APPROVALS {
+            recent.pop_back();
         }
     }
 }
@@ -243,6 +293,7 @@ mod tests {
     fn test_list_pending_empty() {
         let mgr = default_manager();
         assert!(mgr.list_pending().is_empty());
+        assert!(mgr.list_recent(10).is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -293,6 +344,10 @@ mod tests {
         assert_eq!(decision, ApprovalDecision::TimedOut);
         // After timeout, pending map should be cleaned up
         assert_eq!(mgr.pending_count(), 0);
+        let recent = mgr.list_recent(10);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].decision, ApprovalDecision::TimedOut);
+        assert_eq!(recent[0].request.tool_name, "shell_exec");
     }
 
     // -----------------------------------------------------------------------
@@ -322,6 +377,10 @@ mod tests {
 
         let decision = mgr.request_approval(req).await;
         assert_eq!(decision, ApprovalDecision::Approved);
+        let recent = mgr.list_recent(10);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].decision, ApprovalDecision::Approved);
+        assert_eq!(recent[0].decided_by.as_deref(), Some("admin"));
     }
 
     // -----------------------------------------------------------------------
@@ -343,6 +402,9 @@ mod tests {
 
         let decision = mgr.request_approval(req).await;
         assert_eq!(decision, ApprovalDecision::Denied);
+        let recent = mgr.list_recent(10);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].decision, ApprovalDecision::Denied);
     }
 
     // -----------------------------------------------------------------------

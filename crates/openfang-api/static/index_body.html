@@ -111,6 +111,7 @@
             <a class="nav-item" :class="{ active: page === 'approvals' }" @click="navigate('approvals')" :aria-current="page === 'approvals' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg></span>
               <span class="nav-label">Approvals</span>
+              <span class="badge badge-warn" x-show="$store.app.pendingApprovalCount > 0" x-text="$store.app.pendingApprovalCount"></span>
             </a>
             <a class="nav-item" :class="{ active: page === 'comms' }" @click="navigate('comms')" :aria-current="page === 'comms' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg></span>
@@ -1276,7 +1277,7 @@
 
     <!-- Page: Approvals -->
     <template x-if="page === 'approvals'">
-      <div x-data="approvalsPage" x-init="loadData()">
+      <div x-data="approvalsPage()" x-init="init()">
         <div class="page-header">
           <h2>Execution Approvals</h2>
           <div class="flex items-center gap-2">
@@ -1298,6 +1299,7 @@
                 <button class="filter-pill" :class="{ active: filterStatus === 'pending' }" @click="filterStatus = 'pending'">Pending</button>
                 <button class="filter-pill" :class="{ active: filterStatus === 'approved' }" @click="filterStatus = 'approved'">Approved</button>
                 <button class="filter-pill" :class="{ active: filterStatus === 'rejected' }" @click="filterStatus = 'rejected'">Rejected</button>
+                <button class="filter-pill" :class="{ active: filterStatus === 'expired' }" @click="filterStatus = 'expired'">Expired</button>
               </div>
               <div x-show="filtered.length === 0" class="empty-state">
                 <h4>No approvals</h4>
@@ -3366,7 +3368,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <span class="text-xs text-dim ml-2" x-text="customModelStatus"></span>
             </div>
             <div class="text-xs text-dim mb-2" x-text="filteredModels.length + ' of ' + models.length + ' models'"></div>
-            <div x-show="!filteredModels.length && !settingsLoading" style="text-align:center;padding:32px 16px">
+            <div x-show="!filteredModels.length && !loading" style="text-align:center;padding:32px 16px">
               <div style="font-size:32px;margin-bottom:8px;opacity:0.5">&#x1F916;</div>
               <h3 style="margin:0 0 4px;font-size:14px" x-text="models.length ? 'No models match your search' : 'No models available'"></h3>
               <p class="text-xs text-dim" x-text="models.length ? 'Try a different search term or clear filters.' : 'Configure an LLM provider to see available models.'"></p>
@@ -3400,7 +3402,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <input placeholder="Search tools..." x-model="toolSearch">
             </div>
             <div class="text-xs text-dim mb-2" x-text="filteredTools.length + ' of ' + tools.length + ' tools'"></div>
-            <div x-show="!filteredTools.length && !settingsLoading" style="text-align:center;padding:32px 16px">
+            <div x-show="!filteredTools.length && !loading" style="text-align:center;padding:32px 16px">
               <div style="font-size:32px;margin-bottom:8px;opacity:0.5">&#x1F527;</div>
               <h3 style="margin:0 0 4px;font-size:14px" x-text="tools.length ? 'No tools match your search' : 'No tools available'"></h3>
               <p class="text-xs text-dim" x-text="tools.length ? 'Try a different search term.' : 'Tools will appear once agents are configured.'"></p>
@@ -3449,7 +3451,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <div class="card mb-4">
                     <div class="card-header" style="text-transform:capitalize" x-text="section.replace(/_/g, ' ')"></div>
                     <div class="detail-grid" style="margin-top:12px">
-                      <template x-for="field in fields" :key="section + '.' + field.name">
+                      <template x-for="field in (fields.fields || [])" :key="section + '.' + field.name">
                         <div class="detail-row" style="align-items:center">
                           <span class="detail-label" x-text="field.label || field.name"></span>
                           <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
