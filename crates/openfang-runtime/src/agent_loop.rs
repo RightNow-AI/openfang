@@ -747,7 +747,10 @@ pub async fn run_agent_loop(
                     )
                     .await
                     {
-                        Ok(result) => result,
+                        Ok(result) => {
+                            loop_guard.reset_calls_status(&tool_call.name, &tool_call.input);
+                            result
+                        }
                         Err(_) => {
                             warn!(tool = %tool_call.name, "Tool execution timed out after {}s", TOOL_TIMEOUT_SECS);
                             openfang_types::tool::ToolResult {
@@ -1752,7 +1755,10 @@ pub async fn run_agent_loop_streaming(
                     )
                     .await
                     {
-                        Ok(result) => result,
+                        Ok(result) => {
+                            loop_guard.reset_calls_status(&tool_call.name, &tool_call.input);
+                            result
+                        }
                         Err(_) => {
                             warn!(tool = %tool_call.name, "Tool execution timed out after {}s (streaming)", TOOL_TIMEOUT_SECS);
                             openfang_types::tool::ToolResult {

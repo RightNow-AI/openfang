@@ -243,6 +243,13 @@ impl LoopGuard {
         LoopGuardVerdict::Allow
     }
 
+    /// The call status must be reset when calls are not consecutive and the current result differs from the last one.
+    pub fn reset_calls_status(&mut self, tool_name: &str, params: &serde_json::Value) {
+        let hash = Self::compute_hash(tool_name, params);
+        let count = self.call_counts.entry(hash.clone()).or_insert(0);
+        *count = 0;
+    }
+
     /// Record the outcome of a tool call. Call this AFTER tool execution.
     ///
     /// Hashes `(tool_name | params_json | result_truncated)` and tracks how
