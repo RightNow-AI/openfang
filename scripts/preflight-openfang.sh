@@ -207,12 +207,18 @@ def parse_env_file(path):
     return values
 
 
-def effective_env(home_dir, external_env_path):
+def runtime_helper_env(home_dir):
     env = {}
 
     # Runtime env files: secrets.env overrides .env
     for env_path in (home_dir / ".env", home_dir / "secrets.env"):
         env.update(parse_env_file(env_path))
+
+    return env
+
+
+def runtime_override_env(external_env_path):
+    env = {}
 
     # Optional external env file (for example systemd EnvironmentFile path)
     if external_env_path is not None:
@@ -355,7 +361,8 @@ external_env_arg = sys.argv[4].strip() if len(sys.argv) > 4 else ""
 external_env_path = Path(external_env_arg) if external_env_arg else None
 
 cfg = load_config_with_includes(config_path)
-env = effective_env(openfang_home, external_env_path)
+helper_env = runtime_helper_env(openfang_home)
+runtime_env = runtime_override_env(external_env_path)
 data_dir = resolve_config_path(cfg.get("data_dir"), openfang_home) or (openfang_home / "data")
 memory_cfg = cfg.get("memory") or {}
 if not isinstance(memory_cfg, dict):
@@ -371,15 +378,20 @@ network_cfg = cfg.get("network") or {}
 if not isinstance(network_cfg, dict):
     network_cfg = {}
 
-api_listen = str(env.get("OPENFANG_LISTEN", cfg.get("api_listen", "127.0.0.1:4200"))).strip()
+api_listen = str(
+    runtime_env.get("OPENFANG_LISTEN", cfg.get("api_listen", "127.0.0.1:4200"))
+).strip()
 config_api_key = str(cfg.get("api_key", "")).strip()
-runtime_api_key = str(env.get("OPENFANG_API_KEY", "")).strip()
+runtime_api_key = str(runtime_env.get("OPENFANG_API_KEY", "")).strip()
 effective_api_key = runtime_api_key or config_api_key
 auth_enabled = bool(auth_cfg.get("enabled", False))
 password_hash = str(auth_cfg.get("password_hash", "")).strip()
 network_enabled = bool(cfg.get("network_enabled", False))
 network_shared_secret = str(network_cfg.get("shared_secret", "")).strip()
 max_cron_jobs = int(cfg.get("max_cron_jobs", 500) or 0)
+ignored_helper_override_keys = sorted(
+    key for key in ("OPENFANG_LISTEN", "OPENFANG_API_KEY") if key in helper_env
+)
 
 if mode == "base_url":
     print(base_url_for(api_listen))
@@ -401,9 +413,14 @@ print(f"ok  api_listen={api_listen}")
 print(f"ok  effective_base_url={base_url_for(api_listen)}")
 print(f"ok  sqlite_path={sqlite_path}")
 if external_env_path is not None and external_env_path.exists():
-    print("ok  config_resolution=config.toml + includes + runtime env + external env + process env precedence")
+    print("ok  config_resolution=config.toml + includes; runtime overrides from external env + process env")
 else:
-    print("ok  config_resolution=config.toml + includes + runtime env + process env precedence")
+    print("ok  config_resolution=config.toml + includes; runtime overrides from process env")
+
+for key in ignored_helper_override_keys:
+    print(
+        f"warn {key} is set in runtime helper files (.env/secrets.env) but the daemon ignores it there; move it to the real process environment or OPENFANG_ENV_FILE"
+    )
 
 if is_public_bind(api_listen) and not effective_api_key and not (auth_enabled and password_hash):
     raise SystemExit(

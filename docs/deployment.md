@@ -31,6 +31,7 @@ Default runtime paths:
 
 At runtime, OpenFang resolves credentials from the vault, `secrets.env`, `.env`, and process environment variables. If you save provider keys through the dashboard, preserve `secrets.env` as part of the deployment state.
 Operational scripts in this repository (`preflight-openfang.sh`, `backup-openfang.sh`, `restore-openfang.sh`) also support an external env file path via `OPENFANG_ENV_FILE`. If unset, they only auto-detect `/etc/openfang/env` when it matches the current `OPENFANG_HOME` (or the default systemd home `/var/lib/openfang`).
+Do not put `OPENFANG_LISTEN` or `OPENFANG_API_KEY` into `~/.openfang/.env` or `~/.openfang/secrets.env`; the daemon only honors those two overrides from the actual process environment (or an external env file that the supervisor exports into the process).
 
 ## 1. Local Source Build
 
@@ -151,7 +152,7 @@ curl -H "Authorization: Bearer $OPENFANG_API_KEY" \
 
 If auth is disabled and you are testing from inside the container, omit the header.
 Treat `/api/health` as liveness only. For deploy validation and orchestrator health checks, prefer `/api/health/detail` and require `status = "ok"`.
-The container image and Compose healthcheck use `/api/health/detail` when `OPENFANG_API_KEY` is available to the probe. If a deployment relies on dashboard auth only, the baked-in probe falls back to `/api/health` because it cannot reuse a login session cookie.
+The container image and Compose healthcheck now resolves auth the same way the daemon does: `OPENFANG_API_KEY` from the real process environment wins, otherwise `api_key` from `config.toml` is used. If a deployment relies on dashboard auth only, the baked-in probe still falls back to `/api/health` because it cannot reuse a login session cookie.
 For production automation, keep a machine API key available for readiness probes, Prometheus scrapes, and operator scripts; dashboard auth alone is not enough for full protected-path validation.
 Healthcheck address resolution now follows `OPENFANG_BASE_URL` first; when that is unset it derives the probe URL from `OPENFANG_LISTEN` so non-default listen ports do not flap to unhealthy.
 

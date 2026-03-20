@@ -307,12 +307,7 @@ pub async fn auth(
 ) -> Response<Body> {
     // SECURITY: Capture method early for method-aware public endpoint checks.
     let method = request.method().clone();
-
-    // Shutdown is loopback-only (CLI on same machine) — skip token auth
     let path = request.uri().path();
-    if path == "/api/shutdown" && request_is_effective_loopback(&request) {
-        return next.run(request).await;
-    }
 
     // Public endpoints that don't require auth.
     // Keep this list intentionally small: the dashboard shell, liveness probe,
@@ -472,6 +467,32 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_requires_auth_when_api_key_is_configured() {
+        let auth_state = AuthState {
+            api_key: "secret".to_string(),
+            auth_enabled: false,
+            session_secret: "secret".to_string(),
+        };
+        let app = Router::new()
+            .route("/api/shutdown", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(auth_state, auth));
+        let mut request = Request::builder()
+            .uri("/api/shutdown")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                4242,
+            ))));
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

@@ -111,7 +111,7 @@ curl -H "Authorization: Bearer $OPENFANG_API_KEY" \
 
 For anonymous liveness checks, use `/api/health` instead.
 
-If `/api/health/detail` returns HTTP 200 but `status = "degraded"`, treat the node as not ready for production traffic yet. Common causes now include config warnings, restore warnings, missing default-provider auth, shutdown-in-progress, or recorded supervisor panics.
+If `/api/health/detail` returns HTTP `503`, or returns `status = "degraded"`, treat the node as not ready for production traffic yet. Common causes now include config warnings, restore warnings, missing default-provider auth, shutdown-in-progress, or explicit embedding configuration drift.
 
 If `readiness.failing_checks` includes `embedding`, check the `embedding` block in the same payload. This means you explicitly configured `memory.embedding_provider`, but the daemon could not activate that embedding driver. Typical causes are:
 

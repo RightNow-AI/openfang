@@ -120,7 +120,7 @@ curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
 Interpretation:
 
 - `/api/health` answers "is the process alive enough for a liveness probe?"
-- `/api/health/detail` answers "is the node ready to serve traffic?" and now degrades when boot-time config warnings, restore warnings, missing default-provider auth, explicit embedding-provider failures, shutdown-in-progress, or supervisor panics are present
+- `/api/health/detail` answers "is the node ready to serve traffic?" and now returns HTTP `503` when boot-time config warnings, restore warnings, missing default-provider auth, explicit embedding-provider failures, or shutdown-in-progress make the node not ready
 
 Common smoke checks:
 
@@ -133,7 +133,7 @@ target/release/openfang doctor
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
 
-`scripts/preflight-openfang.sh` resolves `config.toml` includes plus runtime `.env` / `secrets.env` / external env file / process env overrides. It honors `OPENFANG_ENV_FILE`; if unset and `/etc/openfang/env` exists, that file is auto-detected only when it matches the current `OPENFANG_HOME`. When both runtime files define the same key, `secrets.env` wins so API/dashboard-managed secrets survive restart. Keep `/etc/openfang/env` readable by the `openfang` service user (for example `0640 root:openfang`), otherwise the unit's `ExecStartPre` preflight and host-side operator scripts will fail before the daemon starts. When preflight can resolve an API key, it now treats failures on protected operational endpoints as blocking instead of advisory, and it requires `/api/health/detail` to report `status = "ok"` rather than merely returning HTTP 200.
+`scripts/preflight-openfang.sh` resolves `config.toml` includes plus runtime helper files (`.env` / `secrets.env`) for provider/channel credentials, and it resolves daemon runtime overrides (`OPENFANG_LISTEN`, `OPENFANG_API_KEY`) from the same sources the daemon actually uses: the real process environment plus `OPENFANG_ENV_FILE` when present. It honors `OPENFANG_ENV_FILE`; if unset and `/etc/openfang/env` exists, that file is auto-detected only when it matches the current `OPENFANG_HOME`. When both runtime files define the same provider key, `secrets.env` wins so API/dashboard-managed secrets survive restart. Keep `/etc/openfang/env` readable by the `openfang` service user (for example `0640 root:openfang`), otherwise the unit's `ExecStartPre` preflight and host-side operator scripts will fail before the daemon starts. If `.env` or `secrets.env` contains `OPENFANG_LISTEN` or `OPENFANG_API_KEY`, preflight now warns because the daemon ignores those override keys there. When preflight can resolve an API key, it now treats failures on protected operational endpoints as blocking instead of advisory, and it requires `/api/health/detail` to report `status = "ok"` rather than merely returning HTTP 200.
 For production hosts, keep a machine API key available even when dashboard auth is enabled, otherwise protected-path checks remain advisory instead of fully enforceable.
 Use `OPENFANG_STRICT_PRODUCTION=1` in deployment automation so missing machine auth becomes a hard failure instead of a warning.
 It is strict by default: if `/api/health` is unreachable, preflight fails. Use `--offline` (or `OPENFANG_PREFLIGHT_OFFLINE=1`) only when you intentionally want file-only checks without a live daemon.

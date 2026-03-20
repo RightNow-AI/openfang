@@ -833,7 +833,7 @@ pub async fn run_daemon(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal(api_shutdown))
+    .with_graceful_shutdown(shutdown_signal(kernel.clone(), api_shutdown))
     .await?;
 
     // Clean up daemon info file
@@ -875,7 +875,7 @@ pub fn read_daemon_info(home_dir: &Path) -> Option<DaemonInfo> {
 ///
 /// On Unix: listens for SIGINT, SIGTERM, and API notify.
 /// On Windows: listens for Ctrl+C and API notify.
-async fn shutdown_signal(api_shutdown: Arc<tokio::sync::Notify>) {
+async fn shutdown_signal(kernel: Arc<OpenFangKernel>, api_shutdown: Arc<tokio::sync::Notify>) {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -884,12 +884,15 @@ async fn shutdown_signal(api_shutdown: Arc<tokio::sync::Notify>) {
 
         tokio::select! {
             _ = sigint.recv() => {
+                kernel.supervisor.shutdown();
                 info!("Received SIGINT (Ctrl+C), shutting down...");
             }
             _ = sigterm.recv() => {
+                kernel.supervisor.shutdown();
                 info!("Received SIGTERM, shutting down...");
             }
             _ = api_shutdown.notified() => {
+                kernel.supervisor.shutdown();
                 info!("Shutdown requested via API, shutting down...");
             }
         }
@@ -899,9 +902,11 @@ async fn shutdown_signal(api_shutdown: Arc<tokio::sync::Notify>) {
     {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
+                kernel.supervisor.shutdown();
                 info!("Ctrl+C received, shutting down...");
             }
             _ = api_shutdown.notified() => {
+                kernel.supervisor.shutdown();
                 info!("Shutdown requested via API, shutting down...");
             }
         }

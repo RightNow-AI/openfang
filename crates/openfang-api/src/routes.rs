@@ -1623,11 +1623,8 @@ pub async fn send_message_stream(
         Ok(pair) => pair,
         Err(e) => {
             tracing::warn!("Streaming message failed for agent {id}: {e}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Streaming message failed"})),
-            )
-                .into_response();
+            let (status, error) = classify_http_kernel_error(&e);
+            return (status, Json(serde_json::json!({"error": error}))).into_response();
         }
     };
 
@@ -3491,9 +3488,6 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
     if health.is_shutting_down {
         failing_checks.push("shutdown_requested".to_string());
     }
-    if health.panic_count > 0 {
-        failing_checks.push("supervisor_panics".to_string());
-    }
     if !config_warnings.is_empty() {
         failing_checks.push("config_warnings".to_string());
     }
@@ -3530,39 +3524,47 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
 pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let snapshot = runtime_health_snapshot(&state);
     let status = if snapshot.ready { "ok" } else { "degraded" };
+    let http_status = if snapshot.ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
 
-    Json(serde_json::json!({
-        "status": status,
-        "version": env!("CARGO_PKG_VERSION"),
-        "uptime_seconds": state.started_at.elapsed().as_secs(),
-        "shutdown_requested": snapshot.shutdown_requested,
-        "panic_count": snapshot.panic_count,
-        "restart_count": snapshot.restart_count,
-        "agent_count": state.kernel.registry.count(),
-        "database": if snapshot.db_ok { "connected" } else { "error" },
-        "config_warnings": snapshot.config_warnings,
-        "restore_warnings": {
-            "persisted_agent_rows": snapshot.restore_warnings.persisted_agent_rows,
-            "restored_agent_rows": snapshot.restore_warnings.restored_agent_rows,
-            "agent": snapshot.restore_warnings.agent_warnings,
-            "cron": snapshot.restore_warnings.cron_warnings,
-            "hand": snapshot.restore_warnings.hand_warnings,
-        },
-        "readiness": {
-            "ready": snapshot.ready,
-            "default_provider_auth": snapshot.default_provider_auth,
-            "failing_checks": snapshot.failing_checks,
-        },
-        "embedding": {
-            "mode": snapshot.embedding.mode,
-            "provider": snapshot.embedding.provider,
-            "model": snapshot.embedding.model,
-            "api_key_env": snapshot.embedding.api_key_env,
-            "api_key_configured": snapshot.embedding.api_key_configured,
-            "driver_active": snapshot.embedding.driver_active,
-            "warning": snapshot.embedding.warning,
-        },
-    }))
+    (
+        http_status,
+        Json(serde_json::json!({
+            "status": status,
+            "version": env!("CARGO_PKG_VERSION"),
+            "uptime_seconds": state.started_at.elapsed().as_secs(),
+            "shutdown_requested": snapshot.shutdown_requested,
+            "panic_count": snapshot.panic_count,
+            "restart_count": snapshot.restart_count,
+            "agent_count": state.kernel.registry.count(),
+            "database": if snapshot.db_ok { "connected" } else { "error" },
+            "config_warnings": snapshot.config_warnings,
+            "restore_warnings": {
+                "persisted_agent_rows": snapshot.restore_warnings.persisted_agent_rows,
+                "restored_agent_rows": snapshot.restore_warnings.restored_agent_rows,
+                "agent": snapshot.restore_warnings.agent_warnings,
+                "cron": snapshot.restore_warnings.cron_warnings,
+                "hand": snapshot.restore_warnings.hand_warnings,
+            },
+            "readiness": {
+                "ready": snapshot.ready,
+                "default_provider_auth": snapshot.default_provider_auth,
+                "failing_checks": snapshot.failing_checks,
+            },
+            "embedding": {
+                "mode": snapshot.embedding.mode,
+                "provider": snapshot.embedding.provider,
+                "model": snapshot.embedding.model,
+                "api_key_env": snapshot.embedding.api_key_env,
+                "api_key_configured": snapshot.embedding.api_key_configured,
+                "driver_active": snapshot.embedding.driver_active,
+                "warning": snapshot.embedding.warning,
+            },
+        })),
+    )
 }
 
 // ---------------------------------------------------------------------------

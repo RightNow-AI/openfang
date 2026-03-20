@@ -78,7 +78,7 @@ Treat the API port as sensitive even when using auth. Expose it through a contro
 Health semantics:
 
 - `GET /api/health` is a minimal liveness probe and intentionally redacts operational detail.
-- `GET /api/health/detail` is the readiness-oriented probe. It now returns `status = "degraded"` when the node is shutting down, the supervisor has recorded panics, boot-time config warnings or restore warnings are present, the default provider auth is still missing, or an explicitly configured embedding provider is not actually usable.
+- `GET /api/health/detail` is the readiness-oriented probe. It now returns HTTP `503` with `status = "degraded"` when the node is shutting down, boot-time config warnings or restore warnings are present, the default provider auth is still missing, or an explicitly configured embedding provider is not actually usable.
 
 ---
 
@@ -668,7 +668,7 @@ The `status` field is `"ok"` when all systems are healthy, or `"degraded"` when 
 Detailed health diagnostics (`uptime`, supervisor counters, DB connectivity, config warnings, restore warnings).
 Requires authentication.
 
-**Response** `200 OK`:
+**Response** `200 OK` when ready, `503 Service Unavailable` when degraded:
 
 ```json
 {
@@ -705,7 +705,7 @@ Requires authentication.
 }
 ```
 
-`config_warnings` is evaluated against the daemon's active credential chain, not only raw process env vars. Secrets resolved from `vault.enc`, `secrets.env`, or `.env` therefore no longer cause false degraded readiness warnings. `restore_warnings` surfaces boot-time fallback or skipped persisted state; any non-empty restore warning set makes readiness degrade until an operator reviews the node.
+`config_warnings` is evaluated against the daemon's active credential chain, not only raw process env vars. Secrets resolved from `vault.enc`, `secrets.env`, or `.env` therefore no longer cause false degraded readiness warnings. `restore_warnings` surfaces boot-time fallback or skipped persisted state; any non-empty restore warning set makes readiness degrade until an operator reviews the node. `panic_count` remains visible for operator triage, but it no longer flips readiness by itself once the node has recovered.
 
 `embedding` reports whether semantic recall is using an explicit provider, auto-detected provider, or plain text-search fallback. Auto-detection may now reuse the current `default_model` provider when it is OpenAI-compatible (including custom providers behind a `base_url`), so custom provider setups no longer have to rely on `OPENAI_API_KEY` just to activate semantic recall. Known non-embedding provider families (`anthropic`/`gemini`/`google`/copilot variants) are excluded from this auto-reuse path. If `memory.embedding_provider` is explicitly configured but its key is missing or the embedding driver could not be created, readiness now degrades and `readiness.failing_checks` includes `embedding`.
 
@@ -763,7 +763,7 @@ Build and version information.
 
 ### POST /api/shutdown
 
-Initiate graceful shutdown. The daemon enters shutdown mode immediately, stops accepting new work, then lets the HTTP server exit sequence perform final kernel teardown and agent-state persistence.
+Initiate graceful shutdown. This is a protected operational endpoint; when auth is enabled it requires the same Bearer token or dashboard session as other protected routes. The daemon enters shutdown mode immediately, stops accepting new work, then lets the HTTP server exit sequence perform final kernel teardown and agent-state persistence.
 
 **Response** `200 OK`:
 

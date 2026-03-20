@@ -246,6 +246,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ops-scripts
       - name: Syntax check operational scripts
         run: |
           bash -n scripts/backup-openfang.sh
@@ -354,6 +358,11 @@ jobs:
           api_listen = "127.0.0.1:4200"
           data_dir = "runtime-data"
 
+          [default_model]
+          provider = "groq"
+          model = "llama-3.3-70b-versatile"
+          api_key_env = "GROQ_API_KEY"
+
           [memory]
           sqlite_path = "runtime-data/state/runtime.db"
           EOF
@@ -431,6 +440,55 @@ jobs:
           assert include_mode & 0o077 == 0, oct(include_mode)
           PY
           bash scripts/preflight-openfang.sh --offline
+      - name: Restored runtime boots and reports ready
+        env:
+          OPENFANG_HOME: ${{ runner.temp }}/openfang-home
+          OPENFANG_LISTEN: 127.0.0.1:43220
+          OPENFANG_API_KEY: backup-restore-secret
+          OPENFANG_BASE_URL: http://127.0.0.1:43220
+        run: |
+          cargo build -p openfang-cli --locked
+          trap 'if [[ -n "${daemon_pid:-}" ]]; then kill "${daemon_pid}" >/dev/null 2>&1 || true; wait "${daemon_pid}" || true; fi' EXIT
+          target/debug/openfang start >"$RUNNER_TEMP/restored-openfang.log" 2>&1 &
+          daemon_pid=$!
+
+          for _ in $(seq 1 30); do
+            if curl -fsS \
+              -H "Authorization: Bearer ${OPENFANG_API_KEY}" \
+              "${OPENFANG_BASE_URL}/api/health/detail" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          detail_json="$(curl -fsS \
+            -H "Authorization: Bearer ${OPENFANG_API_KEY}" \
+            "${OPENFANG_BASE_URL}/api/health/detail")"
+          status_json="$(curl -fsS \
+            -H "Authorization: Bearer ${OPENFANG_API_KEY}" \
+            "${OPENFANG_BASE_URL}/api/status")"
+          metrics_body="$(curl -fsS \
+            -H "Authorization: Bearer ${OPENFANG_API_KEY}" \
+            "${OPENFANG_BASE_URL}/api/metrics")"
+
+          DETAIL_JSON="$detail_json" STATUS_JSON="$status_json" python3 - <<'PY'
+          import json
+          import os
+
+          detail = json.loads(os.environ["DETAIL_JSON"])
+          status = json.loads(os.environ["STATUS_JSON"])
+          assert detail["status"] == "ok", detail
+          assert detail["readiness"]["ready"] is True, detail
+          assert status["status"] == "running", status
+          assert os.path.realpath(status["home_dir"]) == os.path.realpath(os.environ["OPENFANG_HOME"]), status
+          PY
+          printf '%s' "$metrics_body" | grep -q 'openfang_readiness_ready 1'
+
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${OPENFANG_API_KEY}" \
+            "${OPENFANG_BASE_URL}/api/shutdown" >/dev/null
+          wait "${daemon_pid}"
+          daemon_pid=""
       - name: Backup and restore roundtrip with custom sqlite_path
         run: |
           export OPENFANG_HOME="$RUNNER_TEMP/openfang-home-custom-sqlite"

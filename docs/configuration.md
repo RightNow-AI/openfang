@@ -30,6 +30,12 @@ Important precedence behavior verified in the current code:
 5. provider credentials are resolved through vault -> runtime env files -> process environment
 6. within runtime env files, `~/.openfang/secrets.env` overrides `~/.openfang/.env` when both define the same key
 
+Important boundary:
+
+- `OPENFANG_LISTEN` and `OPENFANG_API_KEY` are real process-environment overrides. The daemon does not read those two keys from `~/.openfang/.env` or `~/.openfang/secrets.env`.
+- Put deploy-time runtime overrides in the actual service/container environment, or in an external env source such as `/etc/openfang/env` that your supervisor exports into the process.
+- Use `~/.openfang/.env` and `~/.openfang/secrets.env` for provider/channel credentials like `GROQ_API_KEY`, not for daemon bind/auth overrides.
+
 ## 3. Runtime Home Layout
 
 By default the runtime home is `~/.openfang`.

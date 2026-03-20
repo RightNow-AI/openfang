@@ -5220,7 +5220,22 @@ impl OpenFangKernel {
             .unwrap_or(&self.config.default_model);
         let default_provider = &effective_default.provider;
 
-        let has_custom_key = manifest.model.api_key_env.is_some();
+        let resolved_provider_env = self.config.resolve_api_key_env(agent_provider);
+        let default_provider_env = if agent_provider == default_provider {
+            if !effective_default.api_key_env.is_empty() {
+                effective_default.api_key_env.as_str()
+            } else {
+                resolved_provider_env.as_str()
+            }
+        } else {
+            resolved_provider_env.as_str()
+        };
+        let has_custom_key = manifest
+            .model
+            .api_key_env
+            .as_deref()
+            .map(|env| env != default_provider_env)
+            .unwrap_or(false);
         let has_custom_url = manifest.model.base_url.is_some();
 
         // Always create a fresh driver by resolving credentials from the
@@ -5261,31 +5276,44 @@ impl OpenFangKernel {
                 self.lookup_provider_url(agent_provider)
             };
 
-            let driver_config = DriverConfig {
-                provider: agent_provider.clone(),
-                api_key: api_key.clone(),
-                base_url: base_url.clone(),
-                skip_permissions: true,
-            };
+            if agent_provider == default_provider
+                && !has_custom_key
+                && !has_custom_url
+                && api_key.is_none()
+            {
+                debug!(
+                    provider = %agent_provider,
+                    "No fresh credential resolved for default provider, falling back to boot-time default driver"
+                );
+                Arc::clone(&self.default_driver)
+            } else {
+                let driver_config = DriverConfig {
+                    provider: agent_provider.clone(),
+                    api_key: api_key.clone(),
+                    base_url: base_url.clone(),
+                    skip_permissions: true,
+                };
 
-            match drivers::create_driver(&driver_config) {
-                Ok(d) => d,
-                Err(e) => {
-                    // If fresh driver creation fails (e.g. key not yet set for this
-                    // provider), fall back to the boot-time default driver. This
-                    // keeps existing agents working while the user is still
-                    // configuring providers via the dashboard.
-                    if agent_provider == default_provider && !has_custom_key && !has_custom_url {
-                        debug!(
-                            provider = %agent_provider,
-                            error = %e,
-                            "Fresh driver creation failed, falling back to boot-time default"
-                        );
-                        Arc::clone(&self.default_driver)
-                    } else {
-                        return Err(KernelError::BootFailed(format!(
-                            "Agent LLM driver init failed: {e}"
-                        )));
+                match drivers::create_driver(&driver_config) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        // If fresh driver creation fails (e.g. key not yet set for this
+                        // provider), fall back to the boot-time default driver. This
+                        // keeps existing agents working while the user is still
+                        // configuring providers via the dashboard.
+                        if agent_provider == default_provider && !has_custom_key && !has_custom_url
+                        {
+                            debug!(
+                                provider = %agent_provider,
+                                error = %e,
+                                "Fresh driver creation failed, falling back to boot-time default"
+                            );
+                            Arc::clone(&self.default_driver)
+                        } else {
+                            return Err(KernelError::BootFailed(format!(
+                                "Agent LLM driver init failed: {e}"
+                            )));
+                        }
                     }
                 }
             }
@@ -7602,6 +7630,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_message_streaming_forwards_content_blocks() {
+        let _driver_guard = EnvVarGuard::remove("TEST_DRIVER_API_KEY");
         struct RecordingStreamingDriver {
             saw_image_block: Arc<Mutex<bool>>,
         }
@@ -7651,7 +7680,7 @@ mod tests {
             default_model: DefaultModelConfig {
                 provider: "test-driver".to_string(),
                 model: "test-model".to_string(),
-                api_key_env: "TEST_DRIVER_API_KEY".to_string(),
+                api_key_env: String::new(),
                 base_url: None,
             },
             ..KernelConfig::default()

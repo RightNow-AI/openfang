@@ -274,7 +274,7 @@ async fn test_health_detail_degrades_when_default_provider_auth_is_missing() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 503);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "degraded");
     assert_eq!(body["readiness"]["ready"], false);
@@ -315,7 +315,7 @@ async fn test_health_detail_degrades_when_explicit_embedding_provider_is_unusabl
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 503);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "degraded");
     assert_eq!(body["readiness"]["ready"], false);
@@ -359,7 +359,7 @@ async fn test_health_detail_uses_effective_default_model_override() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 503);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "degraded");
     assert_eq!(body["readiness"]["ready"], false);
@@ -469,7 +469,7 @@ async fn test_health_detail_degrades_when_agent_restore_fails() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 503);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "degraded");
     assert_eq!(body["readiness"]["ready"], false);
@@ -515,7 +515,7 @@ async fn test_health_detail_degrades_when_cron_restore_fails() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 503);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "degraded");
     assert!(body["readiness"]["failing_checks"]
@@ -559,7 +559,7 @@ async fn test_health_detail_degrades_when_hand_restore_fails() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 503);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "degraded");
     assert!(body["readiness"]["failing_checks"]
@@ -600,7 +600,7 @@ async fn test_health_detail_degrades_when_default_provider_is_unknown() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 503);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "degraded");
     assert_eq!(body["readiness"]["ready"], false);
@@ -610,6 +610,30 @@ async fn test_health_detail_degrades_when_default_provider_is_unknown() {
         .unwrap()
         .iter()
         .any(|value| value == "default_provider_auth"));
+}
+
+#[tokio::test]
+async fn test_health_detail_keeps_ready_after_recorded_panic() {
+    let server = start_test_server().await;
+    server.state.kernel.supervisor.record_panic();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["readiness"]["ready"], true);
+    assert_eq!(body["panic_count"], 1);
+    assert!(body["readiness"]["failing_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|value| value != "supervisor_panics"));
 }
 
 #[tokio::test]
