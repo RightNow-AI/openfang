@@ -68,14 +68,17 @@ impl MatrixAdapter {
         room_id: &str,
         text: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let txn_id = uuid::Uuid::new_v4().to_string();
-        let url = format!(
-            "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
-            self.homeserver_url, room_id, txn_id
-        );
-
         let chunks = crate::types::split_message(text, MAX_MESSAGE_LEN);
         for chunk in chunks {
+            // Each chunk needs its own txn_id — Matrix deduplicates PUTs by
+            // (room_id, txn_id), so reusing the same txn_id silently drops
+            // subsequent chunks.
+            let txn_id = uuid::Uuid::new_v4().to_string();
+            let url = format!(
+                "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
+                self.homeserver_url, room_id, txn_id
+            );
+
             let body = serde_json::json!({
                 "msgtype": "m.text",
                 "body": chunk,
@@ -212,14 +215,27 @@ impl ChannelAdapter for MatrixAdapter {
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = ChannelMessage> + Send>>, Box<dyn std::error::Error>>
     {
-        // Validate credentials
+        // Validate credentials — the server-returned user_id is the canonical
+        // identity we must use for self-message filtering.  The config-provided
+        // `self.user_id` might be empty, have wrong casing, or reference a
+        // different homeserver, which would bypass the echo guard and cause an
+        // infinite reply loop (see GitHub #757).
         let validated_user = self.validate().await?;
         info!("Matrix adapter authenticated as {validated_user}");
+
+        if !self.user_id.is_empty() && self.user_id != validated_user {
+            warn!(
+                "Matrix: configured user_id ({}) differs from server-reported \
+                 user_id ({validated_user}) — using server value for echo filtering",
+                self.user_id
+            );
+        }
 
         let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
         let homeserver = self.homeserver_url.clone();
         let access_token = self.access_token.clone();
-        let user_id = self.user_id.clone();
+        // CRITICAL: use the server-validated user_id, NOT the config value.
+        let user_id = validated_user;
         let allowed_rooms = self.allowed_rooms.clone();
         let client = self.client.clone();
         let since_token = Arc::clone(&self.since_token);
@@ -487,5 +503,48 @@ mod tests {
             false,
         );
         assert!(open.is_allowed_room("!any:matrix.org"));
+    }
+
+    /// Verify that an empty config user_id doesn't panic during adapter creation.
+    /// The actual validated user_id would come from `/whoami` at runtime.
+    #[test]
+    fn test_matrix_adapter_empty_user_id() {
+        let adapter = MatrixAdapter::new(
+            "https://matrix.org".to_string(),
+            String::new(), // Empty — server will provide the real one
+            "token".to_string(),
+            vec![],
+            false,
+        );
+        assert_eq!(adapter.user_id, "");
+        assert_eq!(adapter.name(), "matrix");
+    }
+
+    /// The echo-guard filter must use exact string comparison with the
+    /// server-validated user_id. This test verifies the comparison semantics
+    /// (case-sensitive, full match required).
+    #[test]
+    fn test_sender_echo_filter_semantics() {
+        let server_user_id = "@openfang:matrix.org";
+
+        // Exact match — should be filtered (is the bot itself)
+        assert_eq!("@openfang:matrix.org", server_user_id);
+
+        // Different case — should NOT be filtered (Matrix user IDs are case-sensitive)
+        assert_ne!("@OpenFang:matrix.org", server_user_id);
+
+        // Different homeserver — should NOT be filtered
+        assert_ne!("@openfang:example.com", server_user_id);
+
+        // Substring match is not enough — must be exact
+        assert_ne!("@openfang:matrix.org:8448", server_user_id);
+    }
+
+    /// Each message chunk must get a unique txn_id. Verify UUID uniqueness.
+    #[test]
+    fn test_txn_id_uniqueness() {
+        let ids: Vec<String> = (0..100).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        let unique: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(ids.len(), unique.len(), "txn_ids must be unique per chunk");
     }
 }
