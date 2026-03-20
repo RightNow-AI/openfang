@@ -1549,7 +1549,7 @@ async fn tool_shell_exec(
 
             // Truncate very long outputs to prevent memory issues
             let max_output = 100_000;
-            let stdout_str = if stdout.len() > max_output {
+            let mut stdout_str = if stdout.len() > max_output {
                 format!(
                     "{}...\n[truncated, {} total bytes]",
                     crate::str_utils::safe_truncate_str(&stdout, max_output),
@@ -1567,6 +1567,10 @@ async fn tool_shell_exec(
             } else {
                 stderr.to_string()
             };
+
+            if exit_code == 0 && stdout_str.is_empty() {
+                stdout_str = "Command executed successfully".to_string();
+            }
 
             Ok(format!(
                 "Exit code: {exit_code}\n\nSTDOUT:\n{stdout_str}\nSTDERR:\n{stderr_str}"
