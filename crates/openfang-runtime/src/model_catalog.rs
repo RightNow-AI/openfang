@@ -3034,12 +3034,12 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             display_name: "MiniMax M2.7".into(),
             provider: "minimax".into(),
             tier: ModelTier::Frontier,
-            context_window: 1_048_576,
-            max_output_tokens: 16_384,
-            input_cost_per_m: 1.10,
-            output_cost_per_m: 4.40,
+            context_window: 204_800,
+            max_output_tokens: 131_072,
+            input_cost_per_m: 0.30,
+            output_cost_per_m: 1.20,
             supports_tools: true,
-            supports_vision: true,
+            supports_vision: false,
             supports_streaming: true,
             aliases: vec!["minimax-m2.7".into()],
         },
@@ -4086,7 +4086,7 @@ mod tests {
         let m27 = catalog.find_model("MiniMax-M2.7").unwrap();
         assert_eq!(m27.provider, "minimax");
         assert_eq!(m27.tier, ModelTier::Frontier);
-        assert!(m27.supports_vision);
+        assert!(!m27.supports_vision);
         assert!(m27.supports_tools);
         assert!(catalog.find_model("minimax-m2.7").is_some());
         // Default "minimax" alias now points to M2.7

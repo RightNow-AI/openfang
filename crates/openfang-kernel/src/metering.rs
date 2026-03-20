@@ -394,7 +394,7 @@ fn estimate_cost_rates(model: &str) -> (f64, f64) {
     // ── MiniMax ──────────────────────────────────────────────────
     if model.contains("minimax") || model.contains("abab") {
         if model.contains("m2.7") {
-            return (1.10, 4.40);
+            return (0.30, 1.20);
         }
         if model.contains("highspeed") {
             return (0.80, 3.20);
