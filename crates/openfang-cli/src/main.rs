@@ -143,6 +143,9 @@ enum Commands {
     /// Show or edit configuration (show, edit, get, set, keys) [*].
     #[command(subcommand)]
     Config(ConfigCommands),
+    /// Dashboard authentication helpers (hash-password, status) [*].
+    #[command(subcommand)]
+    Auth(AuthCommands),
     /// Quick chat with the default agent.
     Chat {
         /// Optional agent name or ID to chat with.
@@ -473,6 +476,21 @@ enum ConfigCommands {
     TestKey {
         /// Provider name.
         provider: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthCommands {
+    /// Generate a SHA256 password hash for `[auth].password_hash`.
+    HashPassword {
+        /// Password to hash. If omitted, prompts on stdin.
+        password: Option<String>,
+    },
+    /// Show dashboard auth status from config.toml.
+    Status {
+        /// Output as JSON for scripting.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -992,6 +1010,10 @@ fn main() {
             ConfigCommands::SetKey { provider } => cmd_config_set_key(&provider),
             ConfigCommands::DeleteKey { provider } => cmd_config_delete_key(&provider),
             ConfigCommands::TestKey { provider } => cmd_config_test_key(&provider),
+        },
+        Some(Commands::Auth(sub)) => match sub {
+            AuthCommands::HashPassword { password } => cmd_auth_hash_password(password),
+            AuthCommands::Status { json } => cmd_auth_status(cli.config, json),
         },
         Some(Commands::Chat { agent }) => cmd_quick_chat(cli.config, agent),
         Some(Commands::Status { json }) => cmd_status(cli.config, json),
@@ -2115,18 +2137,14 @@ fn cmd_doctor(json: bool, repair: bool) {
                             ui::check_ok(".env file (permissions fixed to 0600)");
                         }
                         repaired = true;
-                    } else {
-                        if !json {
-                            ui::check_warn(&format!(
-                                ".env file has loose permissions ({:o}), should be 0600",
-                                mode
-                            ));
-                        }
+                    } else if !json {
+                        ui::check_warn(&format!(
+                            ".env file has loose permissions ({:o}), should be 0600",
+                            mode
+                        ));
                     }
-                } else {
-                    if !json {
-                        ui::check_ok(".env file");
-                    }
+                } else if !json {
+                    ui::check_ok(".env file");
                 }
             }
             #[cfg(not(unix))]
@@ -3985,7 +4003,9 @@ fn cmd_channel_setup(channel: Option<&str>) {
             println!("     (e.g., register @openfang-bot:matrix.org)");
             println!("  2. Obtain an access token:");
             println!("     curl -X POST https://matrix.org/_matrix/client/r0/login \\");
-            println!("       -d '{{\"type\":\"m.login.password\",\"user\":\"openfang-bot\",\"password\":\"...\"}}'");
+            println!(
+                "       -d '{{\"type\":\"m.login.password\",\"user\":\"openfang-bot\",\"password\":\"...\"}}'"
+            );
             println!("     Copy the access_token from the response.");
             println!("  3. Invite the bot to rooms you want it to monitor.");
             ui::blank();
@@ -4579,6 +4599,96 @@ fn cmd_config_edit() {
     }
 }
 
+fn resolve_config_path(config: Option<PathBuf>) -> PathBuf {
+    config.unwrap_or_else(|| openfang_home().join("config.toml"))
+}
+
+fn cmd_auth_hash_password(password: Option<String>) {
+    let password = password.unwrap_or_else(|| prompt_input("Password: "));
+    if password.trim().is_empty() {
+        ui::error("Password cannot be empty");
+        std::process::exit(1);
+    }
+    println!("{}", openfang_api::session_auth::hash_password(&password));
+}
+
+fn cmd_auth_status(config: Option<PathBuf>, json: bool) {
+    let config_path = resolve_config_path(config);
+
+    if !config_path.exists() {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "enabled": false,
+                    "username": serde_json::Value::Null,
+                    "password_hash_set": false,
+                    "config_path": config_path.display().to_string(),
+                    "config_exists": false,
+                })
+            );
+        } else {
+            println!("Dashboard auth: disabled");
+            println!("Config file not found: {}", config_path.display());
+        }
+        return;
+    }
+
+    let content = std::fs::read_to_string(&config_path).unwrap_or_else(|e| {
+        ui::error(&format!("Failed to read config: {e}"));
+        std::process::exit(1);
+    });
+
+    let config: openfang_types::config::KernelConfig =
+        toml::from_str(&content).unwrap_or_else(|e| {
+            ui::error_with_fix(
+                &format!("Config parse error: {e}"),
+                "Fix your config.toml syntax, or run `openfang config edit`",
+            );
+            std::process::exit(1);
+        });
+
+    let enabled = config.auth.enabled;
+    let username = if config.auth.username.trim().is_empty() {
+        None
+    } else {
+        Some(config.auth.username.clone())
+    };
+    let password_hash_set = !config.auth.password_hash.trim().is_empty();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "enabled": enabled,
+                "username": username,
+                "password_hash_set": password_hash_set,
+                "config_path": config_path.display().to_string(),
+                "config_exists": true,
+            })
+        );
+        return;
+    }
+
+    println!(
+        "Dashboard auth: {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
+    println!(
+        "Username: {}",
+        username.unwrap_or_else(|| "<not set>".to_string())
+    );
+    println!(
+        "Password hash: {}",
+        if password_hash_set {
+            "configured"
+        } else {
+            "missing"
+        }
+    );
+    println!("Config: {}", config_path.display());
+}
+
 fn cmd_config_get(key: &str) {
     let home = openfang_home();
     let config_path = home.join("config.toml");
@@ -4985,11 +5095,7 @@ fn cmd_integration_add(name: &str, key: Option<&str>) {
     let vault_path = home.join("vault.enc");
     let vault = if vault_path.exists() {
         let mut v = openfang_extensions::vault::CredentialVault::new(vault_path);
-        if v.unlock().is_ok() {
-            Some(v)
-        } else {
-            None
-        }
+        if v.unlock().is_ok() { Some(v) } else { None }
     } else {
         None
     };
@@ -6685,6 +6791,7 @@ fn remove_self_binary(exe_path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     // --- Doctor command unit tests ---
 
@@ -6806,6 +6913,37 @@ args = ["-y", "@modelcontextprotocol/server-github"]
             HookEvent::AgentLoopEnd,
         ];
         assert_eq!(events.len(), 4);
+    }
+
+    #[test]
+    fn test_auth_hash_password_subcommand_parses() {
+        let cli = Cli::try_parse_from(["openfang", "auth", "hash-password", "secret123"]).unwrap();
+        match cli.command {
+            Some(Commands::Auth(AuthCommands::HashPassword { password })) => {
+                assert_eq!(password.as_deref(), Some("secret123"));
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn test_auth_status_subcommand_parses() {
+        let cli = Cli::try_parse_from(["openfang", "auth", "status", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Auth(AuthCommands::Status { json })) => {
+                assert!(json);
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn test_auth_hash_password_matches_session_auth() {
+        let hash = openfang_api::session_auth::hash_password("secret123");
+        assert_eq!(
+            hash,
+            "fcf730b6d95236ecd3c9fc2d92d7b6b2bb061514961aec041d6c7a7192f592e4".to_string()
+        );
     }
 
     // --- Uninstall command unit tests ---
