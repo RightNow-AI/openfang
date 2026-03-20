@@ -628,7 +628,7 @@ pub async fn run_agent_loop(
 
                 // Execute each tool call with loop guard, timeout, and truncation
                 let mut tool_result_blocks = Vec::new();
-                for tool_call in &response.tool_calls {
+                for tool_call in deduplicate_tool_calls(&response) {
                     // Loop guard check
                     let verdict = loop_guard.check(&tool_call.name, &tool_call.input);
                     match &verdict {
@@ -1767,7 +1767,7 @@ pub async fn run_agent_loop_streaming(
 
                 // Execute each tool call with loop guard, timeout, and truncation
                 let mut tool_result_blocks = Vec::new();
-                for tool_call in &response.tool_calls {
+                for tool_call in deduplicate_tool_calls(&response) {
                     // Loop guard check
                     let verdict = loop_guard.check(&tool_call.name, &tool_call.input);
                     match &verdict {
@@ -2870,6 +2870,20 @@ fn try_parse_bare_json_tool_call(
     }
 
     parse_json_tool_call_object(&text[..end], tool_names)
+}
+
+/// Deduplicate tool calls from the response.
+/// Returns a reference to the deduplicated tool calls.
+pub fn deduplicate_tool_calls(response: &crate::llm_driver::CompletionResponse) -> Vec<&ToolCall> {
+    let mut hash_set = std::collections::HashSet::new();
+    let mut deduplicated = Vec::new();
+    for tool_call in &response.tool_calls {
+        let hash = LoopGuard::compute_hash(&tool_call.name, &tool_call.input);
+        if hash_set.insert(hash) {
+            deduplicated.push(tool_call);
+        }
+    }
+    deduplicated
 }
 
 #[cfg(test)]
