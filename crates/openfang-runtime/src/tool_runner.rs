@@ -12,11 +12,12 @@ use openfang_types::tool::{ToolDefinition, ToolResult};
 use openfang_types::tool_compat::normalize_tool_name;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tracing::{debug, warn};
 
 /// Maximum inter-agent call depth to prevent infinite recursion (A->B->C->...).
 const MAX_AGENT_CALL_DEPTH: u32 = 5;
+static GIT_SH_PATH: OnceLock<String> = OnceLock::new();
 
 /// Check if a shell command should be blocked by taint tracking.
 ///
@@ -1532,10 +1533,14 @@ async fn tool_shell_exec(
     // Ensure UTF-8 output on Windows
     #[cfg(windows)]
     {
+        //There is no need to explicitly import this module when running under the Tokio runtime.
+        #[allow(unused_imports)]
+        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.env("PYTHONIOENCODING", "utf-8");
         // Fix: Command not found on Windows when using git sh
+        // only apply if using git sh to avoid breaking cmd.exe
         if used_git_sh {
             let path = std::env::var("PATH").unwrap_or_default();
             let path = format!("{}:{}", "/mingw64/bin:/mingw32/bin:/usr/bin", path);
@@ -3270,9 +3275,15 @@ async fn tool_canvas_present(
 
 #[cfg(windows)]
 async fn get_git_sh_path() -> Option<&'static str> {
-    use tokio::process::Command;
+    if let Some(path) = GIT_SH_PATH.get() {
+        return Some(path);
+    }
 
-    let output = Command::new("where.exe").arg("git").output().await.ok()?;
+    let output = tokio::process::Command::new("where.exe")
+        .arg("git")
+        .output()
+        .await
+        .ok()?;
 
     if !output.status.success() {
         return None;
@@ -3302,8 +3313,15 @@ async fn get_git_sh_path() -> Option<&'static str> {
             };
 
             if sh_path.exists() {
-                let sh_path_str = sh_path.to_string_lossy().replace('\\', "/");
-                return Some(Box::leak(sh_path_str.into_boxed_str()));
+                let sh_path_str = sh_path.to_string_lossy().to_string();
+                if let Err(err) = GIT_SH_PATH.set(sh_path_str) {
+                    warn!("Failed to set GIT_SH_PATH: {:?}", err);
+                    continue;
+                }
+
+                if let Some(path) = GIT_SH_PATH.get() {
+                    return Some(path);
+                }
             }
         }
     }
