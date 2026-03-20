@@ -11923,6 +11923,45 @@ fn remove_toml_section(content: &str, section: &str) -> String {
     result
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{classify_http_kernel_error, extract_status_code};
+    use axum::http::StatusCode;
+    use openfang_kernel::error::KernelError;
+    use openfang_types::error::OpenFangError;
+
+    #[test]
+    fn extract_status_code_parses_llm_api_errors() {
+        assert_eq!(
+            extract_status_code("API error (429): too many requests"),
+            Some(429)
+        );
+        assert_eq!(extract_status_code("plain error"), None);
+    }
+
+    #[test]
+    fn classify_http_kernel_error_sanitizes_auth_failures() {
+        let (status, message) = classify_http_kernel_error(&KernelError::OpenFang(
+            OpenFangError::LlmDriver(
+                "API error (401): invalid api key sk-test-secret".to_string(),
+            ),
+        ));
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(!message.contains("sk-test-secret"));
+    }
+}
+
+#[cfg(test)]
+mod channel_config_tests {
+    use super::*;
+
+    #[test]
+    fn test_is_channel_configured_wecom_none() {
+        let config = openfang_types::config::ChannelsConfig::default();
+        assert!(!is_channel_configured(&config, "wecom"));
+    }
+}
+
 fn request_uses_https(headers: &axum::http::HeaderMap) -> bool {
     if let Some(value) = headers
         .get("x-forwarded-proto")

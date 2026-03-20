@@ -35,7 +35,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
-      - run: cargo build --workspace --lib --locked
+      - run: cargo build --workspace --lib
 
   test:
     name: Test / ${{ matrix.os }}
