@@ -1455,6 +1455,8 @@ async fn tool_shell_exec(
     workspace_root: Option<&Path>,
     exec_policy: Option<&openfang_types::config::ExecPolicy>,
 ) -> Result<String, String> {
+    use tokio::io::AsyncReadExt;
+
     let command = input["command"]
         .as_str()
         .ok_or("Missing 'command' parameter")?;
@@ -1536,17 +1538,56 @@ async fn tool_shell_exec(
     #[cfg(windows)]
     cmd.env("PYTHONIOENCODING", "utf-8");
 
+    #[cfg(unix)]
+    {
+        cmd.process_group(0);
+    }
+
     // Prevent child from inheriting stdin (avoids blocking on Windows)
     cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
 
-    let result =
-        tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to execute command: {e}"))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
 
-    match result {
-        Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let exit_code = output.status.code().unwrap_or(-1);
+    let stdout_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        if let Some(mut out) = stdout {
+            let _ = out.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        if let Some(mut err) = stderr {
+            let _ = err.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+
+    let wait_result = crate::subprocess_sandbox::wait_or_kill(
+        &mut child,
+        std::time::Duration::from_secs(timeout_secs),
+        crate::subprocess_sandbox::DEFAULT_GRACE_MS,
+    )
+    .await;
+    if wait_result.is_err() {
+        // Best-effort reap after timeout/kill to avoid leaving a zombie child.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
+    }
+    let stdout_bytes = stdout_task.await.unwrap_or_default();
+    let stderr_bytes = stderr_task.await.unwrap_or_default();
+
+    match wait_result {
+        Ok(status) => {
+            let stdout = String::from_utf8_lossy(&stdout_bytes);
+            let stderr = String::from_utf8_lossy(&stderr_bytes);
+            let exit_code = status.code().unwrap_or(-1);
 
             // Truncate very long outputs to prevent memory issues
             let max_output = 100_000;
@@ -1573,8 +1614,10 @@ async fn tool_shell_exec(
                 "Exit code: {exit_code}\n\nSTDOUT:\n{stdout_str}\nSTDERR:\n{stderr_str}"
             ))
         }
-        Ok(Err(e)) => Err(format!("Failed to execute command: {e}")),
-        Err(_) => Err(format!("Command timed out after {timeout_secs}s")),
+        Err(err) if err.starts_with("Process timed out after ") => {
+            Err(format!("Command timed out after {timeout_secs}s"))
+        }
+        Err(err) => Err(format!("Failed to execute command: {err}")),
     }
 }
 
@@ -3648,6 +3691,86 @@ mod tests {
                 || result.content.contains("No such file"),
             "Unexpected error: {}",
             result.content
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_shell_exec_timeout_kills_process_group() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let script_pid_path = tmp.path().join("script.pid");
+        let child_pid_path = tmp.path().join("child.pid");
+        let script_path = tmp.path().join("sleep-worker.sh");
+        std::fs::write(
+            &script_path,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$$\" > \"{}\"\nsleep 30 &\nprintf '%s' \"$!\" > \"{}\"\nwait\n",
+                script_pid_path.display(),
+                child_pid_path.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms).unwrap();
+
+        let exec_policy = openfang_types::config::ExecPolicy {
+            mode: openfang_types::config::ExecSecurityMode::Full,
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let result = execute_tool(
+            "test-id",
+            "shell_exec",
+            &serde_json::json!({"command": script_path.to_string_lossy().to_string()}),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(tmp.path()),
+            None, // media_engine
+            Some(&exec_policy),
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
+
+        assert!(result.is_error);
+        assert!(result.content.contains("Command timed out after 1s"));
+
+        let script_pid = std::fs::read_to_string(&script_pid_path)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        let child_pid = std::fs::read_to_string(&child_pid_path)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let script_check = std::process::Command::new("kill")
+            .args(["-0", &script_pid.to_string()])
+            .output()
+            .unwrap();
+        let child_check = std::process::Command::new("kill")
+            .args(["-0", &child_pid.to_string()])
+            .output()
+            .unwrap();
+        assert!(
+            !script_check.status.success(),
+            "timed out shell_exec should not leave script process alive"
+        );
+        assert!(
+            !child_check.status.success(),
+            "timed out shell_exec should not leave child process alive"
         );
     }
 
