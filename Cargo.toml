@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.9"
+version = "0.5.1"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
@@ -133,7 +133,7 @@ regex-lite = "0.1"
 socket2 = "0.5"
 
 # Zip archive extraction
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
 # Email (SMTP + IMAP)
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }

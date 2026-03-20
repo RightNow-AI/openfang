@@ -7,6 +7,22 @@ function approvalsPage() {
     filterStatus: 'all',
     loading: true,
     loadError: '',
+    refreshTimer: null,
+
+    init() {
+      var self = this;
+      this.loadData();
+      this.refreshTimer = setInterval(function() {
+        self.loadData();
+      }, 5000);
+    },
+
+    destroy() {
+      if (this.refreshTimer) {
+        clearInterval(this.refreshTimer);
+        this.refreshTimer = null;
+      }
+    },
 
     get filtered() {
       var f = this.filterStatus;

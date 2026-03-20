@@ -31,7 +31,7 @@ base64 = { workspace = true }
 hex = { workspace = true }
 html-escape = { workspace = true }
 regex-lite = "0.1"
-roxmltree = "0.20"
+roxmltree = "0.21"
 
 lettre = { workspace = true }
 imap = { workspace = true }

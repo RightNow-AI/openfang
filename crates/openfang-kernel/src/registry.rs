@@ -177,6 +177,27 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Update an agent's model, provider, and connection hints together.
+    pub fn update_model_provider_config(
+        &self,
+        id: AgentId,
+        new_model: String,
+        new_provider: String,
+        api_key_env: Option<String>,
+        base_url: Option<String>,
+    ) -> OpenFangResult<()> {
+        let mut entry = self
+            .agents
+            .get_mut(&id)
+            .ok_or_else(|| OpenFangError::AgentNotFound(id.to_string()))?;
+        entry.manifest.model.model = new_model;
+        entry.manifest.model.provider = new_provider;
+        entry.manifest.model.api_key_env = api_key_env;
+        entry.manifest.model.base_url = base_url;
+        entry.last_active = chrono::Utc::now();
+        Ok(())
+    }
+
     /// Update an agent's fallback model chain.
     pub fn update_fallback_models(
         &self,

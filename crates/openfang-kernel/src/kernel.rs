@@ -1311,6 +1311,30 @@ impl OpenFangKernel {
             }
         }
 
+        // Normalize catalog-backed model labels/aliases into canonical IDs and
+        // fill provider/auth hints when the manifest did not fully specify them.
+        if let Ok(catalog) = self.model_catalog.read() {
+            if let Some(entry) = catalog.find_model(&manifest.model.model) {
+                let provider_is_default =
+                    manifest.model.provider.is_empty() || manifest.model.provider == "default";
+                if provider_is_default || manifest.model.provider == entry.provider {
+                    manifest.model.provider = entry.provider.clone();
+                    manifest.model.model = strip_provider_prefix(&entry.id, &entry.provider);
+                    if manifest.model.api_key_env.is_none() {
+                        manifest.model.api_key_env =
+                            Some(self.config.resolve_api_key_env(&entry.provider));
+                    }
+                }
+            }
+        }
+        if manifest.model.api_key_env.is_none()
+            && !manifest.model.provider.is_empty()
+            && manifest.model.provider != "default"
+        {
+            manifest.model.api_key_env =
+                Some(self.config.resolve_api_key_env(&manifest.model.provider));
+        }
+
         // Normalize: strip provider prefix from model name if present
         let normalized = strip_provider_prefix(&manifest.model.model, &manifest.model.provider);
         if normalized != manifest.model.model {
@@ -2832,6 +2856,11 @@ impl OpenFangKernel {
         model: &str,
         explicit_provider: Option<&str>,
     ) -> KernelResult<()> {
+        let catalog_entry = self
+            .model_catalog
+            .read()
+            .ok()
+            .and_then(|catalog| catalog.find_model(model).cloned());
         let provider = if let Some(ep) = explicit_provider {
             // User explicitly set the provider — use it as-is
             Some(ep.to_string())
@@ -2850,25 +2879,35 @@ impl OpenFangKernel {
                 None
             } else {
                 // No custom base_url: safe to auto-detect from catalog / model name
-                let resolved_provider = self.model_catalog.read().ok().and_then(|catalog| {
-                    catalog
-                        .find_model(model)
-                        .map(|entry| entry.provider.clone())
-                });
+                let resolved_provider = catalog_entry.as_ref().map(|entry| entry.provider.clone());
                 resolved_provider.or_else(|| infer_provider_from_model(model))
             }
         };
 
         // Strip the provider prefix from the model name (e.g. "openrouter/deepseek/deepseek-chat" → "deepseek/deepseek-chat")
-        let normalized_model = if let Some(ref prov) = provider {
-            strip_provider_prefix(model, prov)
-        } else {
-            model.to_string()
-        };
+        let normalized_model =
+            if let (Some(entry), Some(prov)) = (catalog_entry.as_ref(), provider.as_ref()) {
+                if entry.provider == *prov {
+                    strip_provider_prefix(&entry.id, prov)
+                } else {
+                    strip_provider_prefix(model, prov)
+                }
+            } else if let Some(ref prov) = provider {
+                strip_provider_prefix(model, prov)
+            } else {
+                model.to_string()
+            };
 
         if let Some(provider) = provider {
+            let api_key_env = Some(self.config.resolve_api_key_env(&provider));
             self.registry
-                .update_model_and_provider(agent_id, normalized_model.clone(), provider.clone())
+                .update_model_provider_config(
+                    agent_id,
+                    normalized_model.clone(),
+                    provider.clone(),
+                    api_key_env,
+                    None,
+                )
                 .map_err(KernelError::OpenFang)?;
             info!(agent_id = %agent_id, model = %normalized_model, provider = %provider, "Agent model+provider updated");
         } else {
@@ -4579,6 +4618,9 @@ impl OpenFangKernel {
         if let Err(e) = resolver.remove_from_vault(key) {
             debug!("Vault remove skipped for {key}: {e}");
         }
+        // Also clear from the in-memory dotenv cache so the resolver
+        // doesn't return a stale value from the boot-time snapshot (#736).
+        resolver.clear_dotenv_cache(key);
     }
 
     fn lookup_provider_url(&self, provider: &str) -> Option<String> {

@@ -66,26 +66,6 @@ function renderMarkdown(text) {
   return escapeHtml(text);
 }
 
-// Render LaTeX math in the chat message container using KaTeX auto-render.
-// Call this after new messages are inserted into the DOM.
-function renderLatex(el) {
-  if (typeof renderMathInElement !== 'function') return;
-  var target = el || document.getElementById('messages');
-  if (!target) return;
-  try {
-    renderMathInElement(target, {
-      delimiters: [
-        { left: '$$', right: '$$', display: true },
-        { left: '\\[', right: '\\]', display: true },
-        { left: '$', right: '$', display: false },
-        { left: '\\(', right: '\\)', display: false }
-      ],
-      throwOnError: false,
-      trust: false
-    });
-  } catch(e) { /* KaTeX render error — ignore gracefully */ }
-}
-
 function copyCode(btn) {
   var code = btn.nextElementSibling;
   if (code) {
@@ -154,6 +134,8 @@ document.addEventListener('alpine:init', function() {
     lastError: '',
     version: '0.1.0',
     agentCount: 0,
+    pendingApprovalCount: 0,
+    lastPendingApprovalSignature: '',
     pendingAgent: null,
     focusMode: localStorage.getItem('openfang-focus') === 'true',
     showOnboarding: false,
@@ -171,6 +153,23 @@ document.addEventListener('alpine:init', function() {
         var agents = await OpenFangAPI.get('/api/agents');
         this.agents = Array.isArray(agents) ? agents : [];
         this.agentCount = this.agents.length;
+      } catch(e) { /* silent */ }
+    },
+
+    async refreshApprovals() {
+      try {
+        var data = await OpenFangAPI.get('/api/approvals');
+        var approvals = Array.isArray(data) ? data : (data.approvals || []);
+        var pending = approvals.filter(function(a) { return a.status === 'pending'; });
+        var signature = pending
+          .map(function(a) { return a.id; })
+          .sort()
+          .join(',');
+        if (pending.length > 0 && signature !== this.lastPendingApprovalSignature && typeof OpenFangToast !== 'undefined') {
+          OpenFangToast.warn('An agent is waiting for approval. Open Approvals to review.');
+        }
+        this.pendingApprovalCount = pending.length;
+        this.lastPendingApprovalSignature = signature;
       } catch(e) { /* silent */ }
     },
 
@@ -370,9 +369,13 @@ function app() {
 
       // Initial data load
       this.pollStatus();
+      Alpine.store('app').refreshApprovals();
       Alpine.store('app').checkOnboarding();
       Alpine.store('app').checkAuth();
-      setInterval(function() { self.pollStatus(); }, 5000);
+      setInterval(function() {
+        self.pollStatus();
+        Alpine.store('app').refreshApprovals();
+      }, 5000);
     },
 
     navigate(p) {
