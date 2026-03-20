@@ -363,7 +363,11 @@ pub async fn send_message(
     // (not as a separate session message which the LLM may not process).
     let content_blocks = if !req.attachments.is_empty() {
         let image_blocks = resolve_attachments(&req.attachments);
-        if image_blocks.is_empty() { None } else { Some(image_blocks) }
+        if image_blocks.is_empty() {
+            None
+        } else {
+            Some(image_blocks)
+        }
     } else {
         None
     };
@@ -3874,7 +3878,6 @@ pub async fn clawhub_install(
                 .iter()
                 .map(|(from, to)| serde_json::json!({"from": from, "to": to}))
                 .collect();
-
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -7590,7 +7593,12 @@ pub async fn get_agent_mcp_servers(
 
     let assigned: Vec<_> = all_servers
         .iter()
-        .filter(|s| s["name"].as_str().map(|n| assigned_names.contains(n)).unwrap_or(false))
+        .filter(|s| {
+            s["name"]
+                .as_str()
+                .map(|n| assigned_names.contains(n))
+                .unwrap_or(false)
+        })
         .cloned()
         .collect();
     let available = all_servers;

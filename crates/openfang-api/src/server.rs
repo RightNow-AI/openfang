@@ -358,7 +358,7 @@ pub async fn build_router(
         )
         .route(
             "/api/clawhub/install",
-            axum::routing::post(routes::clawhub_install),
+            axum::routing::post(uni_skill::clawhub_install),
         )
         // Hands endpoints
         .route("/api/hands", axum::routing::get(routes::list_hands))
