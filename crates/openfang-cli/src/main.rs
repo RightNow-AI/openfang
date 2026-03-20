@@ -4605,6 +4605,15 @@ pub(crate) fn test_api_key(provider: &str, env_var: &str) -> bool {
             .get("https://openrouter.ai/api/v1/models")
             .bearer_auth(&key)
             .send(),
+        "volcengine" | "doubao" => {
+            let base = openfang_types::model_catalog::VOLCENGINE_BASE_URL.trim_end_matches('/');
+            client.get(format!("{base}/models")).bearer_auth(&key).send()
+        }
+        "volcengine_coding" => {
+            let base = openfang_types::model_catalog::VOLCENGINE_CODING_BASE_URL
+                .trim_end_matches('/');
+            client.get(format!("{base}/models")).bearer_auth(&key).send()
+        }
         _ => return true, // unknown provider — skip test
     };
 
