@@ -368,7 +368,7 @@ pub fn with_message_text_block(
 }
 
 #[cfg(test)]
-mod tests {
+mod http_error_tests {
     use super::{
         classify_http_kernel_error, derive_custom_provider_api_key_env,
         escape_prometheus_label_value, extract_status_code, json_to_toml_value,
