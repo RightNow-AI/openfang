@@ -132,6 +132,7 @@ export class ProviderResource {
   deleteKey(name: string): Promise<unknown>;
   test(name: string): Promise<unknown>;
   setUrl(name: string, url: string): Promise<unknown>;
+  patchProvider(query: Record<string, unknown>): Promise<unknown>;
 }
 
 export class MemoryResource {

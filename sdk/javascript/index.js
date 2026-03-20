@@ -722,6 +722,10 @@ class ProviderResource {
       base_url: url,
     });
   }
+
+  async patchProvider(query) {
+    return this._c._request("POST", "/unigpt/provider", query);
+  }
 }
 
 // ── Memory Resource ─────────────────────────────────────────────
