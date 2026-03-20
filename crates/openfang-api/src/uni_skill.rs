@@ -621,3 +621,80 @@ fn which_check(name: &str) -> Option<std::path::PathBuf> {
         _ => None,
     }
 }
+
+/// POST /api/clawhub/install — Install a skill from ClawHub.
+///
+/// Runs the full security pipeline: SHA256 verification, format detection,
+/// manifest security scan, prompt injection scan, and binary dependency check.
+pub async fn clawhub_install(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<crate::types::ClawHubInstallRequest>,
+) -> impl IntoResponse {
+    let skills_dir = state.kernel.config.home_dir.join("skills");
+    let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
+    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+
+    // Check if already installed
+    if client.is_installed(&req.slug, &skills_dir) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!("Skill '{}' is already installed", req.slug),
+                "status": "already_installed",
+            })),
+        );
+    }
+
+    match client.install(&req.slug, &skills_dir).await {
+        Ok(result) => {
+            let warnings: Vec<serde_json::Value> = result
+                .warnings
+                .iter()
+                .map(|w| {
+                    serde_json::json!({
+                        "severity": format!("{:?}", w.severity),
+                        "message": w.message,
+                    })
+                })
+                .collect();
+
+            let translations: Vec<serde_json::Value> = result
+                .tool_translations
+                .iter()
+                .map(|(from, to)| serde_json::json!({"from": from, "to": to}))
+                .collect();
+            // 更新skills列表
+            state.kernel.reload_skills();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "installed",
+                    "name": result.skill_name,
+                    "version": result.version,
+                    "slug": result.slug,
+                    "is_prompt_only": result.is_prompt_only,
+                    "warnings": warnings,
+                    "tool_translations": translations,
+                })),
+            )
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            let status = if matches!(e, openfang_skills::SkillError::SecurityBlocked(_)) {
+                StatusCode::FORBIDDEN
+            } else if is_clawhub_rate_limit(&e) {
+                StatusCode::TOO_MANY_REQUESTS
+            } else if matches!(e, openfang_skills::SkillError::Network(_)) {
+                StatusCode::BAD_GATEWAY
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            tracing::warn!("ClawHub install failed: {msg}");
+            (status, Json(serde_json::json!({"error": msg})))
+        }
+    }
+}
+/// Check whether a SkillError represents a ClawHub rate-limit (429).
+fn is_clawhub_rate_limit(err: &openfang_skills::SkillError) -> bool {
+    matches!(err, openfang_skills::SkillError::RateLimited(_))
+}

@@ -3878,7 +3878,6 @@ pub async fn clawhub_install(
                 .iter()
                 .map(|(from, to)| serde_json::json!({"from": from, "to": to}))
                 .collect();
-
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
