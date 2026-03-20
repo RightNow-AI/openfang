@@ -3,9 +3,9 @@
 * @Email              : 307253927@qq.com
 * @Date               : 2026-03-19 17:02:07
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-19 17:30:33
+ * @LastEditTime       : 2026-03-20 16:21:34
 */
-use axum::{extract::State, http::HeaderMap, response::IntoResponse, Json};
+use axum::{extract::State, response::IntoResponse, Json};
 
 use openfang_skills::openclaw_compat;
 use openfang_skills::verify::SkillVerifier;
@@ -179,7 +179,6 @@ pub async fn list_skills(State(state): State<Arc<AppState>>) -> impl IntoRespons
 /// format detection + security pipeline as ClawHub install runs.
 pub async fn install_local_skill(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
     use openfang_skills::openclaw_compat;
@@ -209,29 +208,33 @@ pub async fn install_local_skill(
         hex::encode(hasher.finalize())
     };
 
-    let skill_name_hint = headers
-        .get("X-Skill-Name")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("local-skill")
-        .to_string();
-
-    let skills_dir = state.kernel.config.home_dir.join("skills");
+    let skills_root = state.kernel.config.home_dir.join("skills");
 
     // Detect content type: zip (PK magic) or SKILL.md (starts with ---)
     let content_str = String::from_utf8_lossy(&body);
     let is_skillmd = content_str.trim_start().starts_with("---");
 
-    // Determine skill name from zip contents or header hint
-    let slug = if !is_skillmd && body.len() >= 4 && body[0] == 0x50 && body[1] == 0x4b {
-        // Peek into zip to find skill name from skill.toml or SKILL.md frontmatter
-        extract_skill_name_from_zip(&body).unwrap_or_else(|| sanitize_name(&skill_name_hint))
+    let slug = match if is_skillmd {
+        get_skill_md_name(&content_str)
+    } else if body.len() >= 4 && body[0] == 0x50 && body[1] == 0x4b {
+        extract_skill_name_from_zip(&body).map(|s| s.trim().to_string())
     } else {
-        sanitize_name(&skill_name_hint)
+        None
+    }
+    .and_then(|s| if s.is_empty() { None } else { Some(s) })
+    {
+        Some(slug) => slug,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "skill zip or skill md不正确！"})),
+            )
+        }
     };
 
-    // For zip files, extract directly into skills_dir (zip already contains the root folder).
+    // For zip files, extract directly into skills_root (zip already contains the root folder).
     // For non-zip, create skill_dir as before.
-    let skill_dir = skills_dir.join(&slug);
+    let skill_dir = skills_root.join(&slug);
 
     // Extract content
     if is_skillmd {
@@ -255,22 +258,14 @@ pub async fn install_local_skill(
                 Json(serde_json::json!({"error": format!("Failed to write SKILL.md: {e}")})),
             );
         }
-    } else if body.len() >= 4 && body[0] == 0x50 && body[1] == 0x4b {
-        // Zip archive — extract directly into skills_dir root so the zip's
-        // internal folder becomes the skill directory (avoids double nesting).
-        let zip_root = detect_zip_root_folder(&body);
-
-        // If the zip contains a root folder, clean up the old install
-        if let Some(ref root_name) = zip_root {
-            let existing = skills_dir.join(root_name);
-            if existing.exists() {
-                if let Err(e) = std::fs::remove_dir_all(&existing) {
-                    tracing::warn!("Failed to remove old skill dir: {e}");
-                }
+    } else if !slug.is_empty() {
+        if skill_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&skill_dir) {
+                tracing::warn!("Failed to remove old skill dir: {e}");
             }
         }
 
-        if let Err(e) = std::fs::create_dir_all(&skills_dir) {
+        if let Err(e) = std::fs::create_dir_all(&skill_dir) {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(
@@ -305,8 +300,8 @@ pub async fn install_local_skill(
                     {
                         continue;
                     }
-                    // Extract into skills_dir directly (not skill_dir)
-                    let out_path = skills_dir.join(enclosed_name);
+                    // Extract into skill_dir
+                    let out_path = skill_dir.join(enclosed_name);
                     if file.is_dir() {
                         if let Err(e) = std::fs::create_dir_all(&out_path) {
                             return (
@@ -349,7 +344,6 @@ pub async fn install_local_skill(
                     }
                 }
                 tracing::info!(slug = %slug, entries = archive.len(), "Extracted local skill zip into skills root");
-
                 // Zip extracted successfully — reload and return immediately
                 state.kernel.reload_skills();
                 return (
@@ -380,23 +374,6 @@ pub async fn install_local_skill(
                     );
                 }
             }
-        }
-    } else {
-        // Fallback: treat as package.json
-        if let Err(e) = std::fs::create_dir_all(&skill_dir) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::json!({"error": format!("Failed to create skill directory: {e}")}),
-                ),
-            );
-        }
-        if let Err(e) = std::fs::write(skill_dir.join("package.json"), &*body) {
-            let _ = std::fs::remove_dir_all(&skill_dir);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to write package.json: {e}")})),
-            );
         }
     }
 
@@ -534,6 +511,7 @@ pub async fn install_local_skill(
 }
 
 /// Detect the root folder name inside a zip archive (first path component of the first entry).
+#[allow(unused)]
 fn detect_zip_root_folder(bytes: &[u8]) -> Option<String> {
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor).ok()?;
@@ -572,20 +550,25 @@ fn extract_skill_name_from_zip(bytes: &[u8]) -> Option<String> {
         let mut content = String::new();
         std::io::Read::read_to_string(&mut file, &mut content).ok()?;
         // Simple frontmatter name extraction: look for "name: xxx"
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("name:") {
-                let name = trimmed.trim_start_matches("name:").trim().trim_matches('"');
-                if !name.is_empty() {
-                    return Some(sanitize_name(name));
-                }
-            }
-            if trimmed == "---" && !content.starts_with("---") {
-                break; // End of frontmatter
-            }
-        }
+        return get_skill_md_name(&content);
     }
 
+    None
+}
+
+fn get_skill_md_name(skill_md: &str) -> Option<String> {
+    for line in skill_md.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("name:") {
+            let name = trimmed.trim_start_matches("name:").trim().trim_matches('"');
+            if !name.is_empty() {
+                return Some(sanitize_name(name));
+            }
+        }
+        if trimmed == "---" && !skill_md.starts_with("---") {
+            break; // End of frontmatter
+        }
+    }
     None
 }
 
@@ -630,12 +613,12 @@ pub async fn clawhub_install(
     State(state): State<Arc<AppState>>,
     Json(req): Json<crate::types::ClawHubInstallRequest>,
 ) -> impl IntoResponse {
-    let skills_dir = state.kernel.config.home_dir.join("skills");
+    let skills_root = state.kernel.config.home_dir.join("skills");
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
     // Check if already installed
-    if client.is_installed(&req.slug, &skills_dir) {
+    if client.is_installed(&req.slug, &skills_root) {
         return (
             StatusCode::CONFLICT,
             Json(serde_json::json!({
@@ -645,7 +628,7 @@ pub async fn clawhub_install(
         );
     }
 
-    match client.install(&req.slug, &skills_dir).await {
+    match client.install(&req.slug, &skills_root).await {
         Ok(result) => {
             let warnings: Vec<serde_json::Value> = result
                 .warnings
@@ -697,4 +680,14 @@ pub async fn clawhub_install(
 /// Check whether a SkillError represents a ClawHub rate-limit (429).
 fn is_clawhub_rate_limit(err: &openfang_skills::SkillError) -> bool {
     matches!(err, openfang_skills::SkillError::RateLimited(_))
+}
+
+mod tests {
+    #[test]
+    fn test_zip() {
+        let skill_path = "D:\\Downloads\\medical-qa-1.0.2.zip";
+        let bytes = std::fs::read(skill_path).unwrap_or_default();
+        let name = crate::uni_skill::extract_skill_name_from_zip(&bytes);
+        println!("extract_skill_name_from_zip: {:?}", name);
+    }
 }
