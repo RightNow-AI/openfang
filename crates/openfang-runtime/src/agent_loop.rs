@@ -258,8 +258,9 @@ pub async fn run_agent_loop(
     // Add the user message to session history.
     // When content blocks are provided (e.g. text + image from a channel),
     // use multimodal message format so the LLM receives the image for vision.
-    if let Some(blocks) = user_content_blocks {
-        session.messages.push(Message::user_with_blocks(blocks));
+    if let Some(_blocks) = user_content_blocks {
+        // TODO 先不添加用户提示，不让大模型继续
+        // session.messages.push(Message::user_with_blocks(blocks));
     } else {
         session.messages.push(Message::user(user_message));
     }
@@ -478,7 +479,8 @@ pub async fn run_agent_loop(
                             messages = crate::session_repair::validate_and_repair(&messages);
                         }
                         messages.push(Message::assistant("[no response]".to_string()));
-                        messages.push(Message::user("Please provide your response.".to_string()));
+                        // TODO 先不添加用户提示，不让大模型继续
+                        // messages.push(Message::user("Please provide your response.".to_string()));
                         continue;
                     }
                 }
@@ -511,11 +513,12 @@ pub async fn run_agent_loop(
                 {
                     warn!(agent = %manifest.name, "Phantom action detected — re-prompting for real tool use");
                     messages.push(Message::assistant(text));
-                    messages.push(Message::user(
-                        "[System: You claimed to perform an action but did not call any tools. \
-                         You must use the appropriate tool (e.g., channel_send, web_fetch, file_write) \
-                         to actually perform the action. Do not claim completion without executing tools.]"
-                    ));
+                    // TODO 先不添加用户提示，不让大模型继续
+                    // messages.push(Message::user(
+                    //     "[System: You claimed to perform an action but did not call any tools. \
+                    //      You must use the appropriate tool (e.g., channel_send, web_fetch, file_write) \
+                    //      to actually perform the action. Do not claim completion without executing tools.]"
+                    // ));
                     continue;
                 } else {
                     text
@@ -899,8 +902,9 @@ pub async fn run_agent_loop(
                 let text = response.text();
                 session.messages.push(Message::assistant(&text));
                 messages.push(Message::assistant(&text));
-                session.messages.push(Message::user("Please continue."));
-                messages.push(Message::user("Please continue."));
+                // TODO 先不添加用户提示，不让大模型继续
+                // session.messages.push(Message::user("Please continue."));
+                // messages.push(Message::user("Please continue."));
                 warn!(iteration, "Max tokens hit, continuing");
             }
         }
@@ -1270,8 +1274,9 @@ pub async fn run_agent_loop_streaming(
     // Add the user message to session history.
     // When content blocks are provided (e.g. text + image from a channel),
     // use multimodal message format so the LLM receives the image for vision.
-    if let Some(blocks) = user_content_blocks {
-        session.messages.push(Message::user_with_blocks(blocks));
+    if let Some(_blocks) = user_content_blocks {
+        // TODO 先不添加用户提示，不让大模型继续
+        // session.messages.push(Message::user_with_blocks(blocks));
     } else {
         session.messages.push(Message::user(user_message));
     }
@@ -1511,7 +1516,8 @@ pub async fn run_agent_loop_streaming(
                             messages = crate::session_repair::validate_and_repair(&messages);
                         }
                         messages.push(Message::assistant("[no response]".to_string()));
-                        messages.push(Message::user("Please provide your response.".to_string()));
+                        // TODO 先不添加用户提示，不让大模型继续
+                        // messages.push(Message::user("Please provide your response.".to_string()));
                         continue;
                     }
                 }
@@ -1917,8 +1923,9 @@ pub async fn run_agent_loop_streaming(
                 let text = response.text();
                 session.messages.push(Message::assistant(&text));
                 messages.push(Message::assistant(&text));
-                session.messages.push(Message::user("Please continue."));
-                messages.push(Message::user("Please continue."));
+                // TODO 先不添加用户提示，不让大模型继续
+                // session.messages.push(Message::user("Please continue."));
+                // messages.push(Message::user("Please continue."));
                 warn!(iteration, "Max tokens hit (streaming), continuing");
             }
         }
