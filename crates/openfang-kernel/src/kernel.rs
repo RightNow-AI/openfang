@@ -203,6 +203,27 @@ pub struct DeliveryTracker {
     receipts: dashmap::DashMap<AgentId, Vec<openfang_channels::types::DeliveryReceipt>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct EmbeddingHealthStatus {
+    pub mode: String,
+    pub provider: Option<String>,
+    pub model: String,
+    pub api_key_env: Option<String>,
+    pub api_key_configured: bool,
+    pub driver_active: bool,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct EmbeddingPlan {
+    mode: &'static str,
+    provider: String,
+    model: String,
+    api_key_env: Option<String>,
+    api_key: Option<String>,
+    base_url: Option<String>,
+}
+
 impl Default for DeliveryTracker {
     fn default() -> Self {
         Self::new()
@@ -936,66 +957,60 @@ impl OpenFangKernel {
             Arc<dyn openfang_runtime::embedding::EmbeddingDriver + Send + Sync>,
         > = {
             use openfang_runtime::embedding::create_embedding_driver;
-            let configured_model = &config.memory.embedding_model;
-            if let Some(ref provider) = config.memory.embedding_provider {
-                // Explicit config takes priority — use the configured embedding model.
-                // If the user left embedding_model at the default ("all-MiniLM-L6-v2"),
-                // pick a sensible default for the chosen provider so we don't send a
-                // local model name to a cloud API.
-                let model = if configured_model == "all-MiniLM-L6-v2" {
-                    default_embedding_model_for_provider(provider)
-                } else {
-                    configured_model.as_str()
-                };
-                let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
-                let custom_url = config
-                    .provider_urls
-                    .get(provider.as_str())
-                    .map(|s| s.as_str());
-                match create_embedding_driver(provider, model, api_key_env, custom_url) {
-                    Ok(d) => {
-                        info!(provider = %provider, model = %model, "Embedding driver configured from memory config");
-                        Some(Arc::from(d))
+
+            let embedding_plan = build_embedding_plan(&config, |env| {
+                credential_resolver
+                    .resolve(env)
+                    .map(|z: zeroize::Zeroizing<String>| z.to_string())
+            });
+
+            match create_embedding_driver(
+                &embedding_plan.provider,
+                &embedding_plan.model,
+                embedding_plan.api_key.clone(),
+                embedding_plan.base_url.as_deref(),
+            ) {
+                Ok(d) => {
+                    match embedding_plan.mode {
+                        "explicit" => info!(
+                            provider = %embedding_plan.provider,
+                            model = %embedding_plan.model,
+                            "Embedding driver configured from memory config"
+                        ),
+                        "auto_default_provider" => info!(
+                            provider = %embedding_plan.provider,
+                            model = %embedding_plan.model,
+                            "Embedding driver auto-detected from default model provider"
+                        ),
+                        "auto_openai" => info!(
+                            model = %embedding_plan.model,
+                            "Embedding driver auto-detected: OpenAI"
+                        ),
+                        _ => info!(
+                            model = %embedding_plan.model,
+                            "Embedding driver auto-detected: Ollama (local)"
+                        ),
                     }
-                    Err(e) => {
-                        warn!(provider = %provider, error = %e, "Embedding driver init failed — falling back to text search");
-                        None
-                    }
+                    Some(Arc::from(d))
                 }
-            } else if std::env::var("OPENAI_API_KEY").is_ok() {
-                let model = if configured_model == "all-MiniLM-L6-v2" {
-                    default_embedding_model_for_provider("openai")
-                } else {
-                    configured_model.as_str()
-                };
-                let openai_url = config.provider_urls.get("openai").map(|s| s.as_str());
-                match create_embedding_driver("openai", model, "OPENAI_API_KEY", openai_url) {
-                    Ok(d) => {
-                        info!(model = %model, "Embedding driver auto-detected: OpenAI");
-                        Some(Arc::from(d))
+                Err(e) => {
+                    match embedding_plan.mode {
+                        "explicit" => warn!(
+                            provider = %embedding_plan.provider,
+                            error = %e,
+                            "Embedding driver init failed — falling back to text search"
+                        ),
+                        "auto_default_provider" => warn!(
+                            provider = %embedding_plan.provider,
+                            error = %e,
+                            "Default provider embedding auto-detect failed — falling back to text search"
+                        ),
+                        "auto_openai" => warn!(error = %e, "OpenAI embedding auto-detect failed"),
+                        _ => debug!(
+                            "No embedding driver available (Ollama probe failed: {e}) — using text search fallback"
+                        ),
                     }
-                    Err(e) => {
-                        warn!(error = %e, "OpenAI embedding auto-detect failed");
-                        None
-                    }
-                }
-            } else {
-                // Try Ollama (local, no key needed)
-                let model = if configured_model == "all-MiniLM-L6-v2" {
-                    default_embedding_model_for_provider("ollama")
-                } else {
-                    configured_model.as_str()
-                };
-                let ollama_url = config.provider_urls.get("ollama").map(|s| s.as_str());
-                match create_embedding_driver("ollama", model, "", ollama_url) {
-                    Ok(d) => {
-                        info!(model = %model, "Embedding driver auto-detected: Ollama (local)");
-                        Some(Arc::from(d))
-                    }
-                    Err(e) => {
-                        debug!("No embedding driver available (Ollama probe failed: {e}) — using text search fallback");
-                        None
-                    }
+                    None
                 }
             }
         };
@@ -5004,6 +5019,89 @@ impl OpenFangKernel {
         self.restore_health_status()
     }
 
+    pub fn runtime_embedding_health(&self) -> EmbeddingHealthStatus {
+        let driver_active = self.embedding_driver.is_some();
+        let embedding_plan = build_embedding_plan(&self.config, |env| {
+            self.resolve_credential(env).map(|value| value.to_string())
+        });
+        let explicit_provider = self.config.memory.embedding_provider.clone();
+
+        if let Some(provider) = explicit_provider {
+            let key_required = embedding_provider_requires_key(&provider);
+            let current_key_configured = embedding_plan
+                .api_key
+                .as_deref()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(!key_required);
+            let api_key_configured = if key_required {
+                driver_active || current_key_configured
+            } else {
+                true
+            };
+            let warning = if !driver_active {
+                if key_required && !current_key_configured {
+                    Some(format!(
+                        "memory.embedding_provider={} but {} is not set; semantic recall will degrade to text search",
+                        provider,
+                        embedding_plan
+                            .api_key_env
+                            .as_deref()
+                            .unwrap_or("embedding_api_key_env")
+                    ))
+                } else {
+                    Some(format!(
+                        "memory.embedding_provider={} is configured but the embedding driver is unavailable; semantic recall is using text search fallback",
+                        provider
+                    ))
+                }
+            } else {
+                None
+            };
+            return EmbeddingHealthStatus {
+                mode: "explicit".to_string(),
+                provider: Some(provider),
+                model: embedding_plan.model,
+                api_key_env: embedding_plan.api_key_env,
+                api_key_configured,
+                driver_active,
+                warning,
+            };
+        }
+
+        if driver_active {
+            return EmbeddingHealthStatus {
+                mode: embedding_plan.mode.to_string(),
+                provider: Some(embedding_plan.provider),
+                model: embedding_plan.model,
+                api_key_env: embedding_plan.api_key_env,
+                api_key_configured: embedding_plan
+                    .api_key
+                    .as_deref()
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(true),
+                driver_active: true,
+                warning: None,
+            };
+        }
+
+        EmbeddingHealthStatus {
+            mode: "text_search_fallback".to_string(),
+            provider: None,
+            model: embedding_plan.model,
+            api_key_env: embedding_plan.api_key_env,
+            api_key_configured: embedding_plan
+                .api_key
+                .as_deref()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false),
+            driver_active: false,
+            warning: Some(
+                "No embedding driver is active; semantic recall is using text search fallback."
+                    .to_string(),
+            ),
+        }
+    }
+
     /// Store a credential in the vault (best-effort — falls through silently if no vault).
     pub fn store_credential(&self, key: &str, value: &str) {
         let mut resolver = self
@@ -5968,6 +6066,121 @@ fn default_embedding_model_for_provider(provider: &str) -> &'static str {
     }
 }
 
+fn embedding_provider_requires_key(provider: &str) -> bool {
+    !matches!(provider, "ollama" | "vllm" | "lmstudio")
+}
+
+fn supports_auto_embedding_inference(provider: &str, _base_url: Option<&str>) -> bool {
+    !matches!(
+        provider,
+        "anthropic" | "gemini" | "google" | "claude-code" | "copilot" | "github-copilot"
+    )
+}
+
+fn normalize_embedding_model<'a>(provider: &str, configured_model: &'a str) -> &'a str {
+    if configured_model == "all-MiniLM-L6-v2" {
+        default_embedding_model_for_provider(provider)
+    } else {
+        configured_model
+    }
+}
+
+fn embedding_base_url(config: &KernelConfig, provider: &str) -> Option<String> {
+    if config.default_model.provider == provider {
+        config
+            .default_model
+            .base_url
+            .clone()
+            .or_else(|| config.provider_urls.get(provider).cloned())
+    } else {
+        config.provider_urls.get(provider).cloned()
+    }
+}
+
+fn build_embedding_plan<F>(config: &KernelConfig, mut resolve_credential: F) -> EmbeddingPlan
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let configured_model = config.memory.embedding_model.as_str();
+
+    if let Some(provider) = config.memory.embedding_provider.as_deref() {
+        let api_key_env = if embedding_provider_requires_key(provider) {
+            Some(
+                config
+                    .memory
+                    .embedding_api_key_env
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| config.resolve_api_key_env(provider)),
+            )
+        } else {
+            None
+        };
+        let api_key = api_key_env
+            .as_deref()
+            .and_then(&mut resolve_credential)
+            .filter(|value| !value.trim().is_empty());
+        return EmbeddingPlan {
+            mode: "explicit",
+            provider: provider.to_string(),
+            model: normalize_embedding_model(provider, configured_model).to_string(),
+            api_key_env,
+            api_key,
+            base_url: embedding_base_url(config, provider),
+        };
+    }
+
+    let default_provider = config.default_model.provider.as_str();
+    let default_base_url = embedding_base_url(config, default_provider);
+    if supports_auto_embedding_inference(default_provider, default_base_url.as_deref()) {
+        let api_key_env = if embedding_provider_requires_key(default_provider) {
+            Some(if config.default_model.api_key_env.trim().is_empty() {
+                config.resolve_api_key_env(default_provider)
+            } else {
+                config.default_model.api_key_env.clone()
+            })
+        } else {
+            None
+        };
+        let api_key = api_key_env
+            .as_deref()
+            .and_then(&mut resolve_credential)
+            .filter(|value| !value.trim().is_empty());
+        if api_key.is_some() || !embedding_provider_requires_key(default_provider) {
+            return EmbeddingPlan {
+                mode: "auto_default_provider",
+                provider: default_provider.to_string(),
+                model: normalize_embedding_model(default_provider, configured_model).to_string(),
+                api_key_env,
+                api_key,
+                base_url: default_base_url,
+            };
+        }
+    }
+
+    if let Some(openai_api_key) =
+        resolve_credential("OPENAI_API_KEY").filter(|v| !v.trim().is_empty())
+    {
+        return EmbeddingPlan {
+            mode: "auto_openai",
+            provider: "openai".to_string(),
+            model: normalize_embedding_model("openai", configured_model).to_string(),
+            api_key_env: Some("OPENAI_API_KEY".to_string()),
+            api_key: Some(openai_api_key),
+            base_url: embedding_base_url(config, "openai"),
+        };
+    }
+
+    EmbeddingPlan {
+        mode: "auto_ollama",
+        provider: "ollama".to_string(),
+        model: normalize_embedding_model("ollama", configured_model).to_string(),
+        api_key_env: None,
+        api_key: None,
+        base_url: embedding_base_url(config, "ollama"),
+    }
+}
+
 /// Infer provider from a model name when catalog lookup fails.
 ///
 /// Uses well-known model name prefixes to map to the correct provider.
@@ -6920,6 +7133,154 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn test_build_embedding_plan_uses_provider_convention_for_explicit_provider() {
+        let plan = build_embedding_plan(
+            &KernelConfig {
+                memory: openfang_types::config::MemoryConfig {
+                    embedding_provider: Some("nyd".to_string()),
+                    ..Default::default()
+                },
+                provider_urls: [(
+                    "nyd".to_string(),
+                    "https://integrate.api.nvidia.com/v1".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+                ..KernelConfig::default()
+            },
+            |env| match env {
+                "NYD_API_KEY" => Some("nvapi-test".to_string()),
+                _ => None,
+            },
+        );
+
+        assert_eq!(plan.mode, "explicit");
+        assert_eq!(plan.provider, "nyd");
+        assert_eq!(plan.api_key_env.as_deref(), Some("NYD_API_KEY"));
+        assert_eq!(plan.api_key.as_deref(), Some("nvapi-test"));
+        assert_eq!(
+            plan.base_url.as_deref(),
+            Some("https://integrate.api.nvidia.com/v1")
+        );
+    }
+
+    #[test]
+    fn test_build_embedding_plan_inherits_default_custom_provider() {
+        let plan = build_embedding_plan(
+            &KernelConfig {
+                default_model: DefaultModelConfig {
+                    provider: "nyd".to_string(),
+                    model: "qwen/qwen3.5-397b-a17b".to_string(),
+                    api_key_env: "NYD_API_KEY".to_string(),
+                    base_url: Some("https://integrate.api.nvidia.com/v1".to_string()),
+                },
+                ..KernelConfig::default()
+            },
+            |env| match env {
+                "NYD_API_KEY" => Some("nvapi-test".to_string()),
+                _ => None,
+            },
+        );
+
+        assert_eq!(plan.mode, "auto_default_provider");
+        assert_eq!(plan.provider, "nyd");
+        assert_eq!(plan.api_key_env.as_deref(), Some("NYD_API_KEY"));
+        assert_eq!(plan.api_key.as_deref(), Some("nvapi-test"));
+        assert_eq!(
+            plan.base_url.as_deref(),
+            Some("https://integrate.api.nvidia.com/v1")
+        );
+    }
+
+    #[test]
+    fn test_build_embedding_plan_skips_known_non_embedding_providers_even_with_base_url() {
+        let plan = build_embedding_plan(
+            &KernelConfig {
+                default_model: DefaultModelConfig {
+                    provider: "anthropic".to_string(),
+                    model: "claude-3-5-sonnet".to_string(),
+                    api_key_env: "ANTHROPIC_API_KEY".to_string(),
+                    base_url: Some("https://api.anthropic.com".to_string()),
+                },
+                ..KernelConfig::default()
+            },
+            |env| match env {
+                "ANTHROPIC_API_KEY" => Some("test-anthropic-key".to_string()),
+                _ => None,
+            },
+        );
+
+        assert_eq!(plan.mode, "auto_ollama");
+        assert_eq!(plan.provider, "ollama");
+    }
+
+    #[test]
+    fn test_runtime_embedding_health_uses_default_custom_provider() {
+        let _lock = env_lock();
+        let _nyd_guard = EnvVarGuard::set("NYD_API_KEY", "nvapi-test");
+        let _openai_guard = EnvVarGuard::remove("OPENAI_API_KEY");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "nyd".to_string(),
+                model: "qwen/qwen3.5-397b-a17b".to_string(),
+                api_key_env: "NYD_API_KEY".to_string(),
+                base_url: Some("https://integrate.api.nvidia.com/v1".to_string()),
+            },
+            ..KernelConfig::default()
+        })
+        .expect("Kernel should boot");
+
+        let health = kernel.runtime_embedding_health();
+        assert_eq!(health.mode, "auto_default_provider");
+        assert_eq!(health.provider.as_deref(), Some("nyd"));
+        assert_eq!(health.api_key_env.as_deref(), Some("NYD_API_KEY"));
+        assert!(health.api_key_configured);
+        assert!(health.driver_active);
+    }
+
+    #[test]
+    fn test_runtime_embedding_health_keeps_explicit_provider_ready_after_key_removed_post_boot() {
+        let _lock = env_lock();
+        let _openai_guard = EnvVarGuard::remove("OPENAI_API_KEY");
+        let _embedding_guard = EnvVarGuard::set("OPENFANG_TEST_EMBEDDING_KEY", "embed-test");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "OLLAMA_API_KEY".to_string(),
+                base_url: None,
+            },
+            memory: openfang_types::config::MemoryConfig {
+                embedding_provider: Some("openai".to_string()),
+                embedding_api_key_env: Some("OPENFANG_TEST_EMBEDDING_KEY".to_string()),
+                ..Default::default()
+            },
+            ..KernelConfig::default()
+        })
+        .expect("Kernel should boot");
+
+        let _removed_guard = EnvVarGuard::remove("OPENFANG_TEST_EMBEDDING_KEY");
+        let health = kernel.runtime_embedding_health();
+        assert_eq!(health.mode, "explicit");
+        assert_eq!(health.provider.as_deref(), Some("openai"));
+        assert_eq!(
+            health.api_key_env.as_deref(),
+            Some("OPENFANG_TEST_EMBEDDING_KEY")
+        );
+        assert!(health.api_key_configured);
+        assert!(health.driver_active);
+        assert!(health.warning.is_none());
     }
 
     fn write_reload_test_config_at(

@@ -113,6 +113,14 @@ For anonymous liveness checks, use `/api/health` instead.
 
 If `/api/health/detail` returns HTTP 200 but `status = "degraded"`, treat the node as not ready for production traffic yet. Common causes now include config warnings, restore warnings, missing default-provider auth, shutdown-in-progress, or recorded supervisor panics.
 
+If `readiness.failing_checks` includes `embedding`, check the `embedding` block in the same payload. This means you explicitly configured `memory.embedding_provider`, but the daemon could not activate that embedding driver. Typical causes are:
+
+- the configured embedding API key env var exists but is empty
+- the key was only set in one environment source but not in the daemon's active credential chain
+- the embedding provider URL is unreachable or invalid
+
+When this happens, OpenFang now reports the problem at boot and falls back to text search instead of silently waiting for the first memory recall to fail.
+
 ## 6. Channel Config Is Ignored
 
 ### Symptom
@@ -539,6 +547,13 @@ embedding_provider = "openai"     # or "ollama", "gemini"
 embedding_model = "text-embedding-3-small"
 embedding_api_key_env = "OPENAI_API_KEY"
 ```
+
+Important:
+
+- `embedding_api_key_env` must resolve to a non-empty secret in the daemon's active credential chain (`vault.enc` -> `secrets.env` -> `.env` -> process env).
+- If `memory.embedding_provider` is unset, OpenFang first tries to reuse the current `default_model` provider for embeddings when that provider is OpenAI-compatible (including custom providers behind a `base_url`). Known non-embedding provider families (`anthropic`/`gemini`/`google`/copilot variants) are skipped.
+- If your chat provider does not expose embeddings, or you want a different memory backend, configure `memory.embedding_provider` explicitly.
+- If the embedding key is missing, OpenFang now warns at boot, marks `/api/health/detail` as degraded for explicit embedding configs, and falls back to text search instead of failing later on the first recall call.
 
 For local Ollama embeddings:
 ```toml

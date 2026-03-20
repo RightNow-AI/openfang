@@ -3190,6 +3190,24 @@ impl KernelConfig {
             SearchProvider::DuckDuckGo | SearchProvider::Auto => {}
         }
 
+        if let Some(provider) = self.memory.embedding_provider.as_deref() {
+            let key_required = !matches!(provider, "ollama" | "vllm" | "lmstudio");
+            if key_required {
+                let key_env = self
+                    .memory
+                    .embedding_api_key_env
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| self.resolve_api_key_env(provider));
+                if !has_credential(&key_env) {
+                    warnings.push(format!(
+                        "memory.embedding_provider={} but {} is not set; semantic recall will degrade to text search",
+                        provider, key_env
+                    ));
+                }
+            }
+        }
+
         // --- Production bounds validation ---
         // Clamp dangerous zero/extreme values to safe defaults instead of crashing.
         warnings
@@ -3368,6 +3386,22 @@ mod tests {
         assert!(
             warnings.is_empty(),
             "runtime credential lookup should suppress false missing-secret warnings: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_warns_when_embedding_provider_key_is_missing() {
+        let mut config = KernelConfig::default();
+        config.memory.embedding_provider = Some("openai".to_string());
+        config.memory.embedding_api_key_env = Some("OPENFANG_TEST_EMBEDDING_KEY".to_string());
+
+        let warnings = config.validate_with_credential_lookup(|_| false);
+
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("memory.embedding_provider=openai")),
+            "expected embedding warning in {warnings:?}"
         );
     }
 

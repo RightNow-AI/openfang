@@ -178,14 +178,17 @@ impl EmbeddingDriver for OpenAIEmbeddingDriver {
 pub fn create_embedding_driver(
     provider: &str,
     model: &str,
-    api_key_env: &str,
+    api_key: Option<String>,
     custom_base_url: Option<&str>,
 ) -> Result<Box<dyn EmbeddingDriver + Send + Sync>, EmbeddingError> {
-    let api_key = if api_key_env.is_empty() {
-        String::new()
-    } else {
-        std::env::var(api_key_env).unwrap_or_default()
-    };
+    let api_key = api_key.unwrap_or_default();
+    let key_required = !matches!(provider, "ollama" | "vllm" | "lmstudio");
+    if key_required && api_key.trim().is_empty() {
+        return Err(EmbeddingError::MissingApiKey(format!(
+            "Embedding provider '{}' requires a non-empty API key",
+            provider
+        )));
+    }
 
     let base_url = custom_base_url
         .filter(|u| !u.is_empty())
@@ -376,9 +379,15 @@ mod tests {
     #[test]
     fn test_create_embedding_driver_ollama() {
         // Should succeed even without API key (ollama is local)
-        let driver = create_embedding_driver("ollama", "all-MiniLM-L6-v2", "", None);
+        let driver = create_embedding_driver("ollama", "all-MiniLM-L6-v2", None, None);
         assert!(driver.is_ok());
         assert_eq!(driver.unwrap().dimensions(), 384);
+    }
+
+    #[test]
+    fn test_create_embedding_driver_requires_non_empty_key_for_openai() {
+        let driver = create_embedding_driver("openai", "text-embedding-3-small", None, None);
+        assert!(matches!(driver, Err(EmbeddingError::MissingApiKey(_))));
     }
 
     #[test]
@@ -387,7 +396,7 @@ mod tests {
         let driver = create_embedding_driver(
             "ollama",
             "nomic-embed-text",
-            "",
+            None,
             Some("http://192.168.0.1:11434/v1"),
         );
         assert!(driver.is_ok());
@@ -399,7 +408,7 @@ mod tests {
         let driver = create_embedding_driver(
             "ollama",
             "nomic-embed-text",
-            "",
+            None,
             Some("http://192.168.0.1:11434"),
         );
         assert!(driver.is_ok());
@@ -411,7 +420,7 @@ mod tests {
         let driver = create_embedding_driver(
             "ollama",
             "nomic-embed-text",
-            "",
+            None,
             Some("http://192.168.0.1:11434/"),
         );
         assert!(driver.is_ok());

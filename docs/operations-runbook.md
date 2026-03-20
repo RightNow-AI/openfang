@@ -120,7 +120,7 @@ curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
 Interpretation:
 
 - `/api/health` answers "is the process alive enough for a liveness probe?"
-- `/api/health/detail` answers "is the node ready to serve traffic?" and now degrades when boot-time config warnings, restore warnings, missing default-provider auth, shutdown-in-progress, or supervisor panics are present
+- `/api/health/detail` answers "is the node ready to serve traffic?" and now degrades when boot-time config warnings, restore warnings, missing default-provider auth, explicit embedding-provider failures, shutdown-in-progress, or supervisor panics are present
 
 Common smoke checks:
 

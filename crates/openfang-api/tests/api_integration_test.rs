@@ -14,7 +14,9 @@ use openfang_api::server;
 use openfang_api::ws;
 use openfang_kernel::OpenFangKernel;
 use openfang_memory::MemorySubstrate;
-use openfang_types::config::{ChannelsConfig, DefaultModelConfig, KernelConfig, TelegramConfig};
+use openfang_types::config::{
+    ChannelsConfig, DefaultModelConfig, KernelConfig, MemoryConfig, TelegramConfig,
+};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -282,6 +284,58 @@ async fn test_health_detail_degrades_when_default_provider_auth_is_missing() {
         .unwrap()
         .iter()
         .any(|value| value == "default_provider_auth"));
+}
+
+#[tokio::test]
+async fn test_health_detail_degrades_when_explicit_embedding_provider_is_unusable() {
+    let _embedding_guard = EnvVarGuard::remove("OPENFANG_TEST_EMBEDDING_KEY");
+    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
+    let config = KernelConfig {
+        home_dir: tmp.path().to_path_buf(),
+        data_dir: tmp.path().join("data"),
+        default_model: DefaultModelConfig {
+            provider: "ollama".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: "OLLAMA_API_KEY".to_string(),
+            base_url: None,
+        },
+        memory: MemoryConfig {
+            embedding_provider: Some("openai".to_string()),
+            embedding_api_key_env: Some("OPENFANG_TEST_EMBEDDING_KEY".to_string()),
+            ..Default::default()
+        },
+        ..KernelConfig::default()
+    };
+
+    let server = start_test_server_with_config(config, tmp).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["readiness"]["ready"], false);
+    assert!(body["readiness"]["failing_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "embedding"));
+    assert_eq!(body["embedding"]["mode"], "explicit");
+    assert_eq!(body["embedding"]["provider"], "openai");
+    assert_eq!(
+        body["embedding"]["api_key_env"],
+        "OPENFANG_TEST_EMBEDDING_KEY"
+    );
+    assert_eq!(body["embedding"]["api_key_configured"], false);
+    assert_eq!(body["embedding"]["driver_active"], false);
+    assert!(body["embedding"]["warning"]
+        .as_str()
+        .unwrap()
+        .contains("OPENFANG_TEST_EMBEDDING_KEY"));
 }
 
 #[tokio::test]

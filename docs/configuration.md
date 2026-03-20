@@ -182,6 +182,11 @@ Ordered backup providers tried when the primary path fails.
 ### `[memory]`
 
 Controls SQLite path, embedding behavior, consolidation settings, and decay.
+If `memory.embedding_provider` is left unset, OpenFang now auto-detects embeddings in this order:
+
+- reuse the current `default_model` provider when it is OpenAI-compatible (including custom providers wired through `base_url`)
+- otherwise fall back to `OPENAI_API_KEY` if configured
+- otherwise probe local Ollama and finally degrade to text-search recall
 
 ### `[network]`
 

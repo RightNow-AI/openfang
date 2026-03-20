@@ -3428,6 +3428,7 @@ struct RuntimeHealthSnapshot {
     config_warnings: Vec<String>,
     restore_warnings: openfang_kernel::RestoreHealthStatus,
     default_provider_auth: String,
+    embedding: openfang_kernel::kernel::EmbeddingHealthStatus,
     failing_checks: Vec<String>,
     ready: bool,
 }
@@ -3450,6 +3451,7 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
 
     let config_warnings = state.kernel.runtime_config_warnings();
     let restore_warnings = state.kernel.runtime_restore_warnings();
+    let embedding = state.kernel.runtime_embedding_health();
     let effective_default_model = state.kernel.effective_default_model_config();
     let default_provider_auth = state
         .kernel
@@ -3488,6 +3490,9 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
     if !default_provider_auth_is_ready(&default_provider_auth) {
         failing_checks.push("default_provider_auth".to_string());
     }
+    if embedding.mode == "explicit" && embedding.warning.is_some() {
+        failing_checks.push("embedding".to_string());
+    }
     RuntimeHealthSnapshot {
         db_ok,
         shutdown_requested: health.is_shutting_down,
@@ -3496,6 +3501,7 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
         config_warnings,
         restore_warnings,
         default_provider_auth,
+        embedding,
         ready: failing_checks.is_empty(),
         failing_checks,
     }
@@ -3527,6 +3533,15 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
             "ready": snapshot.ready,
             "default_provider_auth": snapshot.default_provider_auth,
             "failing_checks": snapshot.failing_checks,
+        },
+        "embedding": {
+            "mode": snapshot.embedding.mode,
+            "provider": snapshot.embedding.provider,
+            "model": snapshot.embedding.model,
+            "api_key_env": snapshot.embedding.api_key_env,
+            "api_key_configured": snapshot.embedding.api_key_configured,
+            "driver_active": snapshot.embedding.driver_active,
+            "warning": snapshot.embedding.warning,
         },
     }))
 }
@@ -11942,9 +11957,7 @@ mod tests {
     #[test]
     fn classify_http_kernel_error_sanitizes_auth_failures() {
         let (status, message) = classify_http_kernel_error(&KernelError::OpenFang(
-            OpenFangError::LlmDriver(
-                "API error (401): invalid api key sk-test-secret".to_string(),
-            ),
+            OpenFangError::LlmDriver("API error (401): invalid api key sk-test-secret".to_string()),
         ));
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert!(!message.contains("sk-test-secret"));

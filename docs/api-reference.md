@@ -78,7 +78,7 @@ Treat the API port as sensitive even when using auth. Expose it through a contro
 Health semantics:
 
 - `GET /api/health` is a minimal liveness probe and intentionally redacts operational detail.
-- `GET /api/health/detail` is the readiness-oriented probe. It now returns `status = "degraded"` when the node is shutting down, the supervisor has recorded panics, boot-time config warnings or restore warnings are present, or the default provider auth is still missing.
+- `GET /api/health/detail` is the readiness-oriented probe. It now returns `status = "degraded"` when the node is shutting down, the supervisor has recorded panics, boot-time config warnings or restore warnings are present, the default provider auth is still missing, or an explicitly configured embedding provider is not actually usable.
 
 ---
 
@@ -692,11 +692,22 @@ Requires authentication.
     "ready": true,
     "default_provider_auth": "configured",
     "failing_checks": []
+  },
+  "embedding": {
+    "mode": "explicit",
+    "provider": "openai",
+    "model": "text-embedding-3-small",
+    "api_key_env": "OPENAI_API_KEY",
+    "api_key_configured": true,
+    "driver_active": true,
+    "warning": null
   }
 }
 ```
 
 `config_warnings` is evaluated against the daemon's active credential chain, not only raw process env vars. Secrets resolved from `vault.enc`, `secrets.env`, or `.env` therefore no longer cause false degraded readiness warnings. `restore_warnings` surfaces boot-time fallback or skipped persisted state; any non-empty restore warning set makes readiness degrade until an operator reviews the node.
+
+`embedding` reports whether semantic recall is using an explicit provider, auto-detected provider, or plain text-search fallback. Auto-detection may now reuse the current `default_model` provider when it is OpenAI-compatible (including custom providers behind a `base_url`), so custom provider setups no longer have to rely on `OPENAI_API_KEY` just to activate semantic recall. Known non-embedding provider families (`anthropic`/`gemini`/`google`/copilot variants) are excluded from this auto-reuse path. If `memory.embedding_provider` is explicitly configured but its key is missing or the embedding driver could not be created, readiness now degrades and `readiness.failing_checks` includes `embedding`.
 
 ### GET /api/status
 
