@@ -23,9 +23,9 @@ const CRITICAL_CSS = `
   *,*::before,*::after{box-sizing:border-box}
   body{margin:0}
   .app-shell{display:flex;min-height:100vh}
-  .sidebar{flex-shrink:0;width:220px;overflow:hidden}
-  .main-content{flex:1;overflow:auto}
-  .nav-icon svg{display:block;width:16px;height:16px}
+  .sidebar{flex-shrink:0;width:200px;overflow:hidden}
+  .main-content{flex:1;overflow:auto;background:#0f172a}
+  .nav-icon svg{display:block;width:15px;height:15px}
 `;
 
 export default function RootLayout({ children }) {
