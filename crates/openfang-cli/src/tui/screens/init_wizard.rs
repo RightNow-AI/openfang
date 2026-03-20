@@ -149,6 +149,22 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "volcengine_coding",
+        display: "Volcano Engine Coding Plan",
+        env_var: "VOLCENGINE_API_KEY",
+        default_model: "ark-code-latest",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "volcengine",
+        display: "Volcano Engine (Doubao)",
+        env_var: "VOLCENGINE_API_KEY",
+        default_model: "doubao-seed-1-6-251015",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
         name: "huggingface",
         display: "Hugging Face",
         env_var: "HUGGINGFACE_API_KEY",

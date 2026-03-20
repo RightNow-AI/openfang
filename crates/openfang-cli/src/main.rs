@@ -1421,6 +1421,18 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
         ("gemini", "GEMINI_API_KEY", "gemini-2.5-flash", "Gemini"),
         ("deepseek", "DEEPSEEK_API_KEY", "deepseek-chat", "DeepSeek"),
         (
+            "volcengine_coding",
+            "VOLCENGINE_API_KEY",
+            "ark-code-latest",
+            "Volcano Engine Coding Plan",
+        ),
+        (
+            "volcengine",
+            "VOLCENGINE_API_KEY",
+            "doubao-seed-1-6-251015",
+            "Volcano Engine (Doubao)",
+        ),
+        (
             "anthropic",
             "ANTHROPIC_API_KEY",
             "claude-sonnet-4-20250514",
@@ -4541,6 +4553,7 @@ fn provider_to_env_var(provider: &str) -> String {
         "perplexity" => "PERPLEXITY_API_KEY".to_string(),
         "cohere" => "COHERE_API_KEY".to_string(),
         "xai" => "XAI_API_KEY".to_string(),
+        "volcengine" | "doubao" | "volcengine_coding" => "VOLCENGINE_API_KEY".to_string(),
         "brave" => "BRAVE_API_KEY".to_string(),
         "tavily" => "TAVILY_API_KEY".to_string(),
         other => format!("{}_API_KEY", other.to_uppercase()),
