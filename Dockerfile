@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM rust:1-slim-bookworm AS builder
 WORKDIR /build
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev tini && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY xtask ./xtask
@@ -16,19 +16,21 @@ ENV CARGO_PROFILE_RELEASE_LTO=${LTO} \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CODEGEN_UNITS}
 RUN cargo build --release --bin openfang
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    python3 \
-    python3-pip \
-    python3-venv \
-    nodejs \
-    npm \
-    tini \
-    && rm -rf /var/lib/apt/lists/*
+FROM node:20-bookworm-slim AS node_runtime
 
+# Keep runtime network-free: Python provides the healthcheck interpreter,
+# and node/npm are copied from a dedicated stage for JS-based helpers.
+FROM python:3.12-slim-bookworm
 RUN useradd --system --create-home --home-dir /home/openfang --shell /usr/sbin/nologin openfang \
     && install -d -o openfang -g openfang /data /opt/openfang
+
+# Copy tini from builder stage (installed via apt in builder)
+COPY --from=builder /usr/bin/tini /usr/bin/tini
+COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node_runtime /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=node_runtime /usr/local/bin/npx /usr/local/bin/npx
+COPY --from=node_runtime /usr/local/bin/corepack /usr/local/bin/corepack
+COPY --from=node_runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 COPY --from=builder --chown=openfang:openfang /build/target/release/openfang /usr/local/bin/openfang
 COPY --from=builder --chown=openfang:openfang /build/scripts/healthcheck-openfang.py /usr/local/bin/healthcheck-openfang.py

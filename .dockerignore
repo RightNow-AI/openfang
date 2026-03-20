@@ -6,7 +6,12 @@
 target
 docs
 sdk
-scripts
+scripts/*
+!scripts/healthcheck-openfang.py
+!scripts/install.sh
+!scripts/install.ps1
+!scripts/docker/
+!scripts/docker/**
 *.md
 !crates/**/*.md
 LICENSE-*
