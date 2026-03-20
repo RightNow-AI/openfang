@@ -49,6 +49,7 @@ const NAV = [
       { href: '/school/new',         label: 'School Mode',    icon: I(<><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></>) },
       { href: '/finance',            label: 'Finance',        icon: I(<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>) },
       { href: '/investments',        label: 'Investments',    icon: I(<><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></>) },
+      { href: '/deep-research',      label: 'Deep Research',  icon: I(<><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/></>) },
     ],
   },
   {
