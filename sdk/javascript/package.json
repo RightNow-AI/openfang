@@ -1,6 +1,6 @@
 {
   "name": "openfang-sdk",
-  "version": "0.3.48",
+  "version": "0.3.49",
   "description": "Official JavaScript/TypeScript client for the OpenFang Agent OS REST API",
   "main": "index.js",
   "types": "index.d.ts",

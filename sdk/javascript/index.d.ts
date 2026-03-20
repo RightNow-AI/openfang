@@ -122,6 +122,8 @@ export class ModelResource {
   updateUnigptModels(models: Record<string, unknown>): Promise<unknown>;
   setToken(token: string): Promise<unknown>;
   getDefaultModel(): Promise<unknown>;
+  addCustomModel(model: Record<string, unknown>): Promise<unknown>;
+  removeCustomModel(model: Record<string, unknown>): Promise<unknown>;
 }
 
 export class ProviderResource {
