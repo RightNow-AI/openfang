@@ -530,7 +530,9 @@ Telegram intake rules:
 4. **Send progress updates during download**
 5. **Use session-isolated batch directories**
 
-**Batch ID Generation Rules** (consistent with bridge):
+**Batch ID Generation Rules**:
+- For Telegram manifest intake, never synthesize `batch_id` manually. Always use the `batch_key` / `batch_dir` returned by `collect-telegram-batch` or `fetch-telegram-video`; the bridge owns hashed Telegram batch key generation.
+- The examples below are only for non-manifest local download flows.
 ```python
 import hashlib
 import time
@@ -570,7 +572,7 @@ mkdir -p "$intake_dir"
 progress_msg_id=$(channel_send(
     channel="telegram",
     recipient=chat_id,
-    content=f"📥 正在下载 {filename}...",
+    message=f"📥 正在下载 {filename}...",
     metadata={"reply_to_message_id": message_id}
 ))
 
@@ -584,7 +586,7 @@ curl -L -f -o "$intake_dir/${filename}" "${url}" \
 channel_send(
     channel="telegram",
     recipient=chat_id,
-    content=f"✅ 下载完成：{filename}",
+    message=f"✅ 下载完成：{filename}",
     metadata={"edit_message_id": progress_msg_id}
 )
 ```
@@ -603,7 +605,7 @@ def download_media_group_with_progress(media_list, session_key, media_group_id, 
     progress_msg_id = channel_send(
         channel="telegram",
         recipient=chat_id,
-        content=f"📥 正在下载 {total_count} 个文件...\n进度: 0/{total_count}",
+        message=f"📥 正在下载 {total_count} 个文件...\n进度: 0/{total_count}",
         metadata={"reply_to_message_id": reply_to_msg_id}
     )
 
@@ -621,7 +623,7 @@ def download_media_group_with_progress(media_list, session_key, media_group_id, 
         channel_send(
             channel="telegram",
             recipient=chat_id,
-            content=f"📥 正在下载 {total_count} 个文件...\n进度: {idx-1}/{total_count}\n当前: {filename}",
+            message=f"📥 正在下载 {total_count} 个文件...\n进度: {idx-1}/{total_count}\n当前: {filename}",
             metadata={"edit_message_id": progress_msg_id}
         )
 
@@ -653,7 +655,7 @@ def download_media_group_with_progress(media_list, session_key, media_group_id, 
         channel_send(
             channel="telegram",
             recipient=chat_id,
-            content=f"✅ 下载完成：{success_count} 个文件",
+            message=f"✅ 下载完成：{success_count} 个文件",
             metadata={"edit_message_id": progress_msg_id}
         )
     elif success_count == 0:
@@ -662,7 +664,7 @@ def download_media_group_with_progress(media_list, session_key, media_group_id, 
         channel_send(
             channel="telegram",
             recipient=chat_id,
-            content=f"❌ 下载失败：{fail_count} 个文件\n\n{fail_summary}",
+            message=f"❌ 下载失败：{fail_count} 个文件\n\n{fail_summary}",
             metadata={"edit_message_id": progress_msg_id}
         )
         return None, None
@@ -672,7 +674,7 @@ def download_media_group_with_progress(media_list, session_key, media_group_id, 
         channel_send(
             channel="telegram",
             recipient=chat_id,
-            content=f"⚠️ 部分完成：成功 {success_count} 个，失败 {fail_count} 个\n\n失败文件：\n{fail_summary}\n\n将继续处理已下载的文件",
+            message=f"⚠️ 部分完成：成功 {success_count} 个，失败 {fail_count} 个\n\n失败文件：\n{fail_summary}\n\n将继续处理已下载的文件",
             metadata={"edit_message_id": progress_msg_id}
         )
 

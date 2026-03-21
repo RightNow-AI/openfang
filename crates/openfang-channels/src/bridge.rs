@@ -1003,41 +1003,44 @@ async fn dispatch_message(
             }
         };
 
-        if let Some(agent_info) = agent_info {
-            let is_shipinfabu_target = agent_info.tags.iter().any(|tag| tag == "hand:shipinfabu")
-                // Backward compatibility with old kernels/test mocks that only expose name.
-                || agent_info.name == "shipinfabu-hand";
-
-            if is_shipinfabu_target {
-                let manifest_path = match write_telegram_batch_to_inbox(
-                    &batch,
-                    agent_info.workspace.clone(),
-                    Some(&agent_info.name),
-                )
-                .await
-                {
-                    Ok(path) => path,
-                    Err(err) => {
-                        let msg =
-                            format!("Bridge error: failed to write Telegram inbox manifest: {err}");
-                        send_response(adapter, &message.sender, msg, thread_id, output_format)
-                            .await;
-                        return;
-                    }
-                };
-                forwarded_text =
-                    format!("{text}\n\nTelegram manifest: {}", manifest_path.display());
-                info!(
-                    "Wrote telegram batch {} to shipinfabu inbox (agent={}): {}",
-                    batch.batch_key,
-                    agent_info.name,
-                    manifest_path.display()
+        let agent_info = match agent_info {
+            Some(info) => info,
+            None => {
+                let msg = format!(
+                    "Bridge error: routed agent metadata missing for Telegram media batch (agent={agent_id}); refusing to drop manifest"
                 );
+                warn!("{msg}");
+                send_response(adapter, &message.sender, msg, thread_id, output_format).await;
+                return;
             }
-        } else {
-            warn!(
-                "telegram_media_batch present but agent {:?} returned no metadata — manifest not written, forwarding as text only",
-                agent_id
+        };
+
+        let is_shipinfabu_target = agent_info.tags.iter().any(|tag| tag == "hand:shipinfabu")
+            // Backward compatibility with old kernels/test mocks that only expose name.
+            || agent_info.name == "shipinfabu-hand";
+
+        if is_shipinfabu_target {
+            let manifest_path = match write_telegram_batch_to_inbox(
+                &batch,
+                agent_info.workspace.clone(),
+                Some(&agent_info.name),
+            )
+            .await
+            {
+                Ok(path) => path,
+                Err(err) => {
+                    let msg =
+                        format!("Bridge error: failed to write Telegram inbox manifest: {err}");
+                    send_response(adapter, &message.sender, msg, thread_id, output_format).await;
+                    return;
+                }
+            };
+            forwarded_text = format!("{text}\n\nTelegram manifest: {}", manifest_path.display());
+            info!(
+                "Wrote telegram batch {} to shipinfabu inbox (agent={}): {}",
+                batch.batch_key,
+                agent_info.name,
+                manifest_path.display()
             );
         }
     }
@@ -1130,25 +1133,45 @@ async fn dispatch_message(
 ///
 /// Preferred location is `<agent_workspace>/inbox/telegram`. Fallback is
 /// `~/.openfang/workspaces/<agent-name>/inbox/telegram`.
+fn resolve_telegram_inbox_workspace(
+    agent_workspace: Option<PathBuf>,
+    fallback_workspace_name: Option<&str>,
+    home_dir: Option<&str>,
+) -> std::io::Result<PathBuf> {
+    let workspace_name = fallback_workspace_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("shipinfabu-hand");
+    if let Some(workspace) = agent_workspace {
+        return Ok(workspace);
+    }
+
+    let home = home_dir.map(str::trim).filter(|home| !home.is_empty()).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "HOME environment variable not set and agent workspace unavailable for Telegram inbox ({workspace_name})"
+            ),
+        )
+    })?;
+
+    Ok(PathBuf::from(home)
+        .join(".openfang")
+        .join("workspaces")
+        .join(workspace_name))
+}
+
 async fn write_telegram_batch_to_inbox(
     batch: &TelegramMediaBatch,
     agent_workspace: Option<PathBuf>,
     fallback_workspace_name: Option<&str>,
 ) -> std::io::Result<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| {
-        warn!("HOME environment variable not set; using '.' as fallback for inbox directory");
-        ".".to_string()
-    });
-    let workspace_name = fallback_workspace_name
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .unwrap_or("shipinfabu-hand");
-    let workspace = agent_workspace.unwrap_or_else(|| {
-        PathBuf::from(home)
-            .join(".openfang")
-            .join("workspaces")
-            .join(workspace_name)
-    });
+    let home = std::env::var("HOME").ok();
+    let workspace = resolve_telegram_inbox_workspace(
+        agent_workspace,
+        fallback_workspace_name,
+        home.as_deref(),
+    )?;
     let inbox_dir = workspace.join("inbox").join("telegram");
 
     // Create inbox directory if it doesn't exist
@@ -2542,6 +2565,77 @@ mod tests {
         assert!(manifest.exists());
 
         let _ = tokio::fs::remove_dir_all(&workspace).await;
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_telegram_batch_missing_agent_metadata_returns_bridge_error() {
+        let agent_id = AgentId::new();
+        let mock = Arc::new(MockHandle {
+            agents: Mutex::new(Vec::new()),
+            agent_workspaces: Mutex::new(HashMap::new()),
+            agent_tags: Mutex::new(HashMap::new()),
+            last_forwarded: Mutex::new(None),
+            overrides: None,
+        });
+        let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
+        let router = Arc::new(AgentRouter::new());
+        router.set_user_default("u1".to_string(), agent_id);
+        let adapter = Arc::new(MockAdapter::new());
+
+        let batch = TelegramMediaBatch {
+            batch_key: "group_100_missing".to_string(),
+            chat_id: 100,
+            message_id: 10,
+            media_group_id: "missing".to_string(),
+            caption: None,
+            items: vec![],
+        };
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "telegram_media_batch".to_string(),
+            serde_json::to_value(batch).unwrap(),
+        );
+        let msg = ChannelMessage {
+            channel: ChannelType::Telegram,
+            platform_message_id: "m3".to_string(),
+            sender: ChannelUser {
+                platform_id: "u1".to_string(),
+                display_name: "user".to_string(),
+                openfang_user: None,
+                metadata: None,
+            },
+            content: ChannelContent::Text("收到 Telegram 媒体批次：1 个视频。".to_string()),
+            target_agent: None,
+            timestamp: Utc::now(),
+            is_group: false,
+            thread_id: None,
+            metadata,
+        };
+
+        dispatch_message(
+            &msg,
+            &handle,
+            &router,
+            adapter.as_ref(),
+            &(adapter.clone() as Arc<dyn ChannelAdapter>),
+            &ChannelRateLimiter::default(),
+        )
+        .await;
+
+        assert!(mock.last_forwarded.lock().unwrap().is_none());
+        let sent = adapter.sent_texts.lock().await.clone();
+        assert!(sent.iter().any(|text| text
+            .contains("Bridge error: routed agent metadata missing for Telegram media batch")));
+    }
+
+    #[test]
+    fn test_resolve_telegram_inbox_workspace_requires_home_without_agent_workspace() {
+        let err = resolve_telegram_inbox_workspace(None, Some("shipinfabu-hand"), None)
+            .expect_err("expected missing HOME to fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(err
+            .to_string()
+            .contains("HOME environment variable not set and agent workspace unavailable"));
     }
 
     #[test]
