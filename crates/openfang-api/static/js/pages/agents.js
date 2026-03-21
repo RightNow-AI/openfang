@@ -600,15 +600,20 @@ function agentsPage() {
     },
 
     // -- Template methods --
-    async spawnFromTemplate(name) {
+    async spawnFromTemplate(template) {
       try {
-        var data = await OpenFangAPI.get('/api/templates/' + encodeURIComponent(name));
-        if (data.manifest_toml) {
-          var res = await OpenFangAPI.post('/api/agents', { manifest_toml: data.manifest_toml });
+        var manifestToml = template.manifest_toml;
+        if (!manifestToml) {
+          // If template doesn't have manifest_toml, fetch it from the API
+          var data = await OpenFangAPI.get('/api/templates/' + encodeURIComponent(template.name));
+          manifestToml = data.manifest_toml;
+        }
+        if (manifestToml) {
+          var res = await OpenFangAPI.post('/api/agents', { manifest_toml: manifestToml });
           if (res.agent_id) {
-            OpenFangToast.success('Agent "' + (res.name || name) + '" spawned from template');
+            OpenFangToast.success('Agent "' + (res.name || template.name) + '" spawned from template');
             await Alpine.store('app').refreshAgents();
-            this.chatWithAgent({ id: res.agent_id, name: res.name || name, model_provider: '?', model_name: '?' });
+            this.chatWithAgent({ id: res.agent_id, name: res.name || template.name, model_provider: '?', model_name: '?' });
           }
         }
       } catch(e) {

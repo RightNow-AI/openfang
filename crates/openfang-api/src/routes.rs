@@ -3640,8 +3640,9 @@ pub async fn list_templates() -> impl IntoResponse {
                         .to_string_lossy()
                         .to_string();
 
-                    let description = std::fs::read_to_string(&manifest_path)
-                        .ok()
+                    let manifest_content = std::fs::read_to_string(&manifest_path).ok();
+                    let description = manifest_content
+                        .as_ref()
                         .and_then(|content| toml::from_str::<AgentManifest>(&content).ok())
                         .map(|m| m.description)
                         .unwrap_or_default();
@@ -3653,6 +3654,7 @@ pub async fn list_templates() -> impl IntoResponse {
                         "name": name,
                         "description": description,
                         "category": category,
+                        "manifest_toml": manifest_content.unwrap_or_default(),
                     }));
                 }
             }

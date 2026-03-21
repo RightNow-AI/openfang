@@ -881,7 +881,7 @@
             <div class="text-sm font-bold mb-2" style="color:var(--text-dim);letter-spacing:0.5px;font-size:11px;text-transform:uppercase" x-text="agents.length ? 'Or Start a New Agent' : 'Start Chatting'"></div>
             <div class="card-grid">
               <template x-for="t in builtinTemplates" :key="t.name">
-                <div class="card" style="cursor:pointer" @click="spawnBuiltin(t)">
+                <div class="card" style="cursor:pointer" @click="t.manifest_toml ? spawnFromTemplate(t) : spawnBuiltin(t)">
                   <div class="flex justify-between items-center mb-1">
                     <div class="card-header" style="margin:0;font-size:14px;font-weight:600" x-text="t.name"></div>
                     <span class="badge badge-dim" x-text="t.category"></span>
