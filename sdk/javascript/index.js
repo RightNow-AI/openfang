@@ -61,14 +61,10 @@ class OpenFang {
     }
     var res = await fetch(url, init);
     if (!res.ok) {
-      var text = await res.text().catch(function () {
-        return "";
+      var text = await res.json().catch(function () {
+        return "请求失败";
       });
-      throw new OpenFangError(
-        "HTTP " + res.status + ": " + text,
-        res.status,
-        text
-      );
+      throw new OpenFangError(text, res.status, text);
     }
     var ct = res.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
