@@ -1324,7 +1324,10 @@ async fn merge_media_group_updates(
             // file_size=0 means Telegram did not report the size (e.g. streaming video).
             // We cannot know the real size, so conservatively defer to project-side download.
             if file_size == 0 {
-                info!("Video {} has unknown file size (0), deferring to project download", file_id);
+                info!(
+                    "Video {} has unknown file size (0), deferring to project download",
+                    file_id
+                );
                 media_items.push(TelegramMediaItem {
                     kind: MediaItemKind::Video,
                     file_id: file_id.clone(),
@@ -1463,22 +1466,27 @@ async fn merge_media_group_updates(
                     // getFile returned None: either the file exceeds API limits or a network error occurred.
                     // For the official API, files >20MB cannot be resolved via getFile — treat as NeedsProjectDownload.
                     // For the local API, this is a genuine failure.
-                    let (status, reason) = if !use_local_api && file_size > OFFICIAL_API_GETFILE_LIMIT {
-                        (
-                            MediaItemStatus::NeedsProjectDownload,
-                            format!("video exceeds official API getFile limit ({} MB)", OFFICIAL_API_GETFILE_LIMIT / 1024 / 1024),
-                        )
-                    } else if !use_local_api && file_size == 0 {
-                        (
-                            MediaItemStatus::NeedsProjectDownload,
-                            "file size unknown via official API, deferred to project download".to_string(),
-                        )
-                    } else {
-                        (
-                            MediaItemStatus::DownloadFailed,
-                            "failed to resolve file path via getFile".to_string(),
-                        )
-                    };
+                    let (status, reason) =
+                        if !use_local_api && file_size > OFFICIAL_API_GETFILE_LIMIT {
+                            (
+                                MediaItemStatus::NeedsProjectDownload,
+                                format!(
+                                    "video exceeds official API getFile limit ({} MB)",
+                                    OFFICIAL_API_GETFILE_LIMIT / 1024 / 1024
+                                ),
+                            )
+                        } else if !use_local_api && file_size == 0 {
+                            (
+                                MediaItemStatus::NeedsProjectDownload,
+                                "file size unknown via official API, deferred to project download"
+                                    .to_string(),
+                            )
+                        } else {
+                            (
+                                MediaItemStatus::DownloadFailed,
+                                "failed to resolve file path via getFile".to_string(),
+                            )
+                        };
                     info!(
                         "Video {} (size: {} bytes) getFile returned None: {}",
                         file_id, file_size, reason
