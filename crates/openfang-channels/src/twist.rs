@@ -1,4 +1,4 @@
-//! Twist API v3 channel adapter.
+﻿//! Twist API v3 channel adapter.
 //!
 //! Uses the Twist REST API v3 for sending and receiving messages. Polls the
 //! comments endpoint for new messages and posts replies via the comments/add
@@ -452,6 +452,7 @@ impl ChannelAdapter for TwistAdapter {
                                     platform_id: thread_id.clone(),
                                     display_name: creator_name.to_string(),
                                     openfang_user: None,
+                                    reply_url: None,
                                 },
                                 content: msg_content,
                                 target_agent: None,

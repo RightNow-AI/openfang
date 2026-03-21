@@ -1,4 +1,4 @@
-//! Webex Bot channel adapter.
+﻿//! Webex Bot channel adapter.
 //!
 //! Connects to the Webex platform via the Mercury WebSocket for receiving
 //! real-time message events and uses the Webex REST API for sending messages.
@@ -407,6 +407,7 @@ impl ChannelAdapter for WebexAdapter {
                             platform_id: full_room_id,
                             display_name: sender_email.to_string(),
                             openfang_user: None,
+                            reply_url: None,
                         },
                         content: msg_content,
                         target_agent: None,

@@ -1,4 +1,4 @@
-//! Signal channel adapter.
+﻿//! Signal channel adapter.
 //!
 //! Uses signal-cli's JSON-RPC daemon mode for sending/receiving messages.
 //! Requires signal-cli to be installed and registered with a phone number.
@@ -196,6 +196,7 @@ impl ChannelAdapter for SignalAdapter {
                             platform_id: source.clone(),
                             display_name: source_name,
                             openfang_user: None,
+                            reply_url: None,
                         },
                         content,
                         target_agent: None,

@@ -1,4 +1,4 @@
-//! Nostr NIP-01 channel adapter.
+﻿//! Nostr NIP-01 channel adapter.
 //!
 //! Connects to Nostr relay(s) via WebSocket and subscribes to direct messages
 //! (kind 4, NIP-04) and public notes. Sends messages by creating signed events
@@ -165,10 +165,7 @@ impl ChannelAdapter for NostrAdapter {
     ) -> Result<Pin<Box<dyn Stream<Item = ChannelMessage> + Send>>, Box<dyn std::error::Error>>
     {
         let pubkey = self.derive_pubkey();
-        info!(
-            "Nostr adapter starting (pubkey: {}...)",
-            openfang_types::truncate_str(&pubkey, 16)
-        );
+        info!("Nostr adapter starting (pubkey: {}...)", &pubkey[..16]);
 
         if self.relays.is_empty() {
             return Err("Nostr: no relay URLs configured".into());
@@ -342,9 +339,10 @@ impl ChannelAdapter for NostrAdapter {
                                 platform_id: sender_pubkey.clone(),
                                 display_name: format!(
                                     "{}...",
-                                    openfang_types::truncate_str(&sender_pubkey, 8)
+                                    &sender_pubkey[..8.min(sender_pubkey.len())]
                                 ),
                                 openfang_user: None,
+                                reply_url: None,
                             },
                             content: msg_content,
                             target_agent: None,

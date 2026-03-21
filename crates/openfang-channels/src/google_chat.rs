@@ -1,4 +1,4 @@
-//! Google Chat channel adapter.
+﻿//! Google Chat channel adapter.
 //!
 //! Uses Google Chat REST API with service account JWT authentication for sending
 //! messages and a webhook listener for receiving inbound messages from Google Chat
@@ -307,6 +307,7 @@ impl ChannelAdapter for GoogleChatAdapter {
                             platform_id: space_name.to_string(),
                             display_name: sender_name.to_string(),
                             openfang_user: None,
+                            reply_url: None,
                         },
                         content: msg_content,
                         target_agent: None,

@@ -1,4 +1,4 @@
-//! Threema Gateway channel adapter.
+﻿//! Threema Gateway channel adapter.
 //!
 //! Uses the Threema Gateway HTTP API for sending messages and a local webhook
 //! HTTP server for receiving inbound messages. Authentication is performed via
@@ -164,6 +164,7 @@ fn parse_threema_webhook(
             platform_id: from.clone(),
             display_name: from.clone(),
             openfang_user: None,
+            reply_url: None,
         },
         content,
         target_agent: None,

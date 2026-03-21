@@ -1,4 +1,4 @@
-//! LINE Messaging API channel adapter.
+﻿//! LINE Messaging API channel adapter.
 //!
 //! Uses the LINE Messaging API v2 for sending push/reply messages and a lightweight
 //! axum HTTP webhook server for receiving inbound events. Webhook signature
@@ -316,6 +316,7 @@ fn parse_line_event(event: &serde_json::Value) -> Option<ChannelMessage> {
             platform_id: reply_to,
             display_name: user_id,
             openfang_user: None,
+            reply_url: None,
         },
         content,
         target_agent: None,

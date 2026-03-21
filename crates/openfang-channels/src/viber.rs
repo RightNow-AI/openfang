@@ -1,4 +1,4 @@
-//! Viber Bot API channel adapter.
+﻿//! Viber Bot API channel adapter.
 //!
 //! Uses the Viber REST API for sending messages and a webhook HTTP server for
 //! receiving inbound events. Authentication is performed via the `X-Viber-Auth-Token`
@@ -287,6 +287,7 @@ fn parse_viber_event(event: &serde_json::Value) -> Option<ChannelMessage> {
             platform_id: sender_id,
             display_name: sender_name,
             openfang_user: None,
+            reply_url: None,
         },
         content,
         target_agent: None,

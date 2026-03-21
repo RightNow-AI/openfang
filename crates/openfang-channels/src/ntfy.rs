@@ -1,4 +1,4 @@
-//! ntfy.sh channel adapter.
+﻿//! ntfy.sh channel adapter.
 //!
 //! Subscribes to a ntfy topic via Server-Sent Events (SSE) for receiving
 //! messages and publishes replies by POSTing to the same topic endpoint.
@@ -268,6 +268,7 @@ impl ChannelAdapter for NtfyAdapter {
                                                         platform_id: sender_name.to_string(),
                                                         display_name: sender_name.to_string(),
                                                         openfang_user: None,
+                                                        reply_url: None,
                                                     },
                                                     content,
                                                     target_agent: None,

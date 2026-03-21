@@ -1,4 +1,4 @@
-//! Gitter channel adapter.
+﻿//! Gitter channel adapter.
 //!
 //! Connects to the Gitter Streaming API for real-time messages and posts
 //! replies via the REST API. Uses Bearer token authentication and
@@ -277,6 +277,7 @@ impl ChannelAdapter for GitterAdapter {
                                                     platform_id: username.clone(),
                                                     display_name,
                                                     openfang_user: None,
+                                                    reply_url: None,
                                                 },
                                                 content,
                                                 target_agent: None,

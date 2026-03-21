@@ -1,4 +1,4 @@
-//! Zulip channel adapter.
+﻿//! Zulip channel adapter.
 //!
 //! Uses the Zulip REST API with HTTP Basic authentication (bot email + API key).
 //! Receives messages via Zulip's event queue system (register + long-poll) and
@@ -392,6 +392,7 @@ impl ChannelAdapter for ZulipAdapter {
                             platform_id,
                             display_name: sender_name.to_string(),
                             openfang_user: None,
+                            reply_url: None,
                         },
                         content: msg_content,
                         target_agent: None,

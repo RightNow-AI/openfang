@@ -1,4 +1,4 @@
-//! Flock Bot channel adapter.
+﻿//! Flock Bot channel adapter.
 //!
 //! Uses the Flock Messaging API with a local webhook HTTP server for receiving
 //! inbound event callbacks and the REST API for sending messages. Authentication
@@ -220,6 +220,7 @@ fn parse_flock_event(event: &serde_json::Value, own_user_id: &str) -> Option<Cha
             platform_id: to.to_string(),
             display_name: sender_name.to_string(),
             openfang_user: None,
+            reply_url: None,
         },
         content,
         target_agent: None,

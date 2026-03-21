@@ -1,4 +1,4 @@
-//! Facebook Messenger Platform channel adapter.
+﻿//! Facebook Messenger Platform channel adapter.
 //!
 //! Uses the Facebook Messenger Platform Send API (Graph API v18.0) for sending
 //! messages and a webhook HTTP server for receiving inbound events. The webhook
@@ -241,6 +241,7 @@ fn parse_messenger_entry(entry: &serde_json::Value) -> Vec<ChannelMessage> {
                 platform_id: sender_id,
                 display_name: String::new(), // Messenger doesn't include name in webhook
                 openfang_user: None,
+                reply_url: None,
             },
             content,
             target_agent: None,

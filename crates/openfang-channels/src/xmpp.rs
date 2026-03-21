@@ -1,4 +1,4 @@
-//! XMPP channel adapter (stub).
+﻿//! XMPP channel adapter (stub).
 //!
 //! This is a stub adapter for XMPP/Jabber messaging. A full XMPP implementation
 //! requires the `tokio-xmpp` crate (or equivalent) for proper SASL authentication,
@@ -231,6 +231,7 @@ mod tests {
             platform_id: "user@example.com".to_string(),
             display_name: "Test User".to_string(),
             openfang_user: None,
+            reply_url: None,
         };
         let result = adapter
             .send(&user, ChannelContent::Text("hello".to_string()))

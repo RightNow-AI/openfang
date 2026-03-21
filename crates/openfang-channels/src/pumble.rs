@@ -1,4 +1,4 @@
-//! Pumble Bot channel adapter.
+﻿//! Pumble Bot channel adapter.
 //!
 //! Uses the Pumble Bot API with a local webhook HTTP server for receiving
 //! inbound event subscriptions and the REST API for sending messages.
@@ -196,6 +196,7 @@ fn parse_pumble_event(event: &serde_json::Value, own_bot_id: &str) -> Option<Cha
             platform_id: channel_id,
             display_name: user_name.to_string(),
             openfang_user: None,
+            reply_url: None,
         },
         content,
         target_agent: None,

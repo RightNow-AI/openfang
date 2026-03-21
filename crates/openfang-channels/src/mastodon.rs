@@ -1,4 +1,4 @@
-//! Mastodon Streaming API channel adapter.
+﻿//! Mastodon Streaming API channel adapter.
 //!
 //! Uses the Mastodon REST API v1 for sending statuses (toots) and the Streaming
 //! API (Server-Sent Events) for real-time notification reception. Authentication
@@ -251,6 +251,7 @@ fn parse_mastodon_notification(
             platform_id: account_id.to_string(),
             display_name,
             openfang_user: None,
+            reply_url: None,
         },
         content,
         target_agent: None,
@@ -298,8 +299,17 @@ fn strip_html_tags(html: &str) -> String {
         }
     }
 
-    // Decode HTML entities (handles named, decimal, and hex entities)
-    let decoded = html_escape::decode_html_entities(&result);
+    // Decode HTML entities
+    let decoded = result
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&#x27;", "'")
+        .replace("&nbsp;", " ");
+
     decoded.trim().to_string()
 }
 
@@ -456,18 +466,10 @@ impl ChannelAdapter for MastodonAdapter {
                 let notifications: Vec<serde_json::Value> =
                     poll_resp.json().await.unwrap_or_default();
 
-                // Mastodon returns notifications newest-first. Record the first
-                // (highest) ID before processing so we never re-fetch these on
-                // the next poll. Updating inside the loop would leave us with
-                // the oldest ID, causing every previously seen notification to
-                // be re-delivered and re-processed.
-                if let Some(newest) = notifications.first() {
-                    if let Some(nid) = newest["id"].as_str() {
+                for notif in &notifications {
+                    if let Some(nid) = notif["id"].as_str() {
                         last_notification_id = Some(nid.to_string());
                     }
-                }
-
-                for notif in &notifications {
                     if let Some(msg) = parse_mastodon_notification(notif, &own_account_id) {
                         if tx.send(msg).await.is_err() {
                             return;
@@ -524,10 +526,6 @@ impl ChannelAdapter for MastodonAdapter {
     async fn send_typing(&self, _user: &ChannelUser) -> Result<(), Box<dyn std::error::Error>> {
         // Mastodon does not support typing indicators
         Ok(())
-    }
-
-    fn suppress_error_responses(&self) -> bool {
-        true
     }
 
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {

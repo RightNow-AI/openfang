@@ -1,4 +1,4 @@
-//! Core channel bridge types.
+﻿//! Core channel bridge types.
 
 use chrono::{DateTime, Utc};
 use openfang_types::agent::AgentId;
@@ -27,14 +27,20 @@ pub enum ChannelType {
 }
 
 /// A user on a messaging platform.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChannelUser {
     /// Platform-specific user ID.
+    #[serde(default)]
     pub platform_id: String,
     /// Human-readable display name.
+    #[serde(default)]
     pub display_name: String,
     /// Optional mapping to an OpenFang user identity.
+    #[serde(default)]
     pub openfang_user: Option<String>,
+    /// Optional platform-specific context for sending replies (e.g., sessionWebhook for DingTalk).
+    #[serde(default)]
+    pub reply_url: Option<String>,
 }
 
 /// Content types that can be received from a channel.
@@ -48,13 +54,6 @@ pub enum ChannelContent {
     File {
         url: String,
         filename: String,
-    },
-    /// Local file data (bytes read from disk). Used by the proactive `channel_send`
-    /// tool when `file_path` is provided instead of `file_url`.
-    FileData {
-        data: Vec<u8>,
-        filename: String,
-        mime_type: String,
     },
     Voice {
         url: String,
@@ -267,15 +266,6 @@ pub trait ChannelAdapter: Send + Sync {
         _thread_id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.send(user, content).await
-    }
-
-    /// Whether this adapter should suppress sending internal agent errors back to the user.
-    ///
-    /// Returns `true` for public broadcast channels (e.g. Mastodon) where posting
-    /// an error message would create a public status update. Errors are always
-    /// logged regardless of this setting.
-    fn suppress_error_responses(&self) -> bool {
-        false
     }
 }
 

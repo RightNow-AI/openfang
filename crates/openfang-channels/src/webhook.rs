@@ -1,4 +1,4 @@
-//! Generic HTTP webhook channel adapter.
+﻿//! Generic HTTP webhook channel adapter.
 //!
 //! Provides a bidirectional webhook integration point. Incoming messages are
 //! received via an HTTP server that verifies `X-Webhook-Signature` (HMAC-SHA256
@@ -253,6 +253,7 @@ impl ChannelAdapter for WebhookAdapter {
                                         platform_id: sender_id,
                                         display_name: sender_name,
                                         openfang_user: None,
+                                        reply_url: None,
                                     },
                                     content,
                                     target_agent: None,

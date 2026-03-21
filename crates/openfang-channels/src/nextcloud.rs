@@ -1,4 +1,4 @@
-//! Nextcloud Talk channel adapter.
+﻿//! Nextcloud Talk channel adapter.
 //!
 //! Uses the Nextcloud Talk REST API (OCS v2) for sending and receiving messages.
 //! Polls the chat endpoint with `lookIntoFuture=1` for near-real-time message
@@ -364,6 +364,7 @@ impl ChannelAdapter for NextcloudAdapter {
                                 platform_id: room_token.clone(),
                                 display_name: actor_display.to_string(),
                                 openfang_user: None,
+                                reply_url: None,
                             },
                             content: msg_content,
                             target_agent: None,

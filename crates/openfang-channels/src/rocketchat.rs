@@ -1,4 +1,4 @@
-//! Rocket.Chat channel adapter.
+﻿//! Rocket.Chat channel adapter.
 //!
 //! Uses the Rocket.Chat REST API for sending messages and long-polling
 //! `channels.history` for receiving new messages. Authentication is performed
@@ -312,6 +312,7 @@ impl ChannelAdapter for RocketChatAdapter {
                                 platform_id: channel_id.clone(),
                                 display_name: sender_username.to_string(),
                                 openfang_user: None,
+                                reply_url: None,
                             },
                             content: msg_content,
                             target_agent: None,

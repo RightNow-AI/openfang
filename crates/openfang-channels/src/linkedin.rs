@@ -1,4 +1,4 @@
-//! LinkedIn Messaging channel adapter.
+﻿//! LinkedIn Messaging channel adapter.
 //!
 //! Integrates with the LinkedIn Organization Messaging API using OAuth2
 //! Bearer token authentication. Polls for new messages and sends replies
@@ -326,6 +326,7 @@ impl ChannelAdapter for LinkedInAdapter {
                             platform_id: sender_urn.clone(),
                             display_name: sender_name,
                             openfang_user: None,
+                            reply_url: None,
                         },
                         content,
                         target_agent: None,

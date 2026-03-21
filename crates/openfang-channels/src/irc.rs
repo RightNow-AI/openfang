@@ -1,4 +1,4 @@
-//! IRC channel adapter for the OpenFang channel bridge.
+﻿//! IRC channel adapter for the OpenFang channel bridge.
 //!
 //! Uses raw TCP via `tokio::net::TcpStream` with `tokio::io` buffered I/O for
 //! plaintext IRC connections. Implements the core IRC protocol: NICK, USER, JOIN,
@@ -207,6 +207,7 @@ fn parse_privmsg(line: &IrcLine, bot_nick: &str) -> Option<ChannelMessage> {
             platform_id,
             display_name: sender_nick.to_string(),
             openfang_user: None,
+            reply_url: None,
         },
         content,
         target_agent: None,

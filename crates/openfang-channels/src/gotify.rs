@@ -1,4 +1,4 @@
-//! Gotify channel adapter.
+﻿//! Gotify channel adapter.
 //!
 //! Connects to a Gotify server via WebSocket for receiving push notifications
 //! and sends messages via the REST API. Uses separate app and client tokens
@@ -249,6 +249,7 @@ impl ChannelAdapter for GotifyAdapter {
                                                     title.clone()
                                                 },
                                                 openfang_user: None,
+                                                reply_url: None,
                                             },
                                             content,
                                             target_agent: None,

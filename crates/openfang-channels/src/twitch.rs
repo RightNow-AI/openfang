@@ -1,4 +1,4 @@
-//! Twitch IRC channel adapter.
+﻿//! Twitch IRC channel adapter.
 //!
 //! Connects to Twitch's IRC gateway (`irc.chat.twitch.tv`) over plain TCP and
 //! implements the IRC protocol for sending and receiving chat messages. Handles
@@ -246,6 +246,7 @@ impl ChannelAdapter for TwitchAdapter {
                                 platform_id: channel.clone(),
                                 display_name: sender_nick,
                                 openfang_user: None,
+                                reply_url: None,
                             },
                             content: msg_content,
                             target_agent: None,

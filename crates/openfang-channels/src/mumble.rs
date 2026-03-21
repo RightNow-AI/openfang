@@ -1,4 +1,4 @@
-//! Mumble text-chat channel adapter.
+﻿//! Mumble text-chat channel adapter.
 //!
 //! Connects to a Mumble server via TCP and exchanges text messages using a
 //! simplified protobuf-style framing protocol. Voice channels are ignored;
@@ -422,6 +422,7 @@ impl ChannelAdapter for MumbleAdapter {
                                             platform_id: format!("session-{actor}"),
                                             display_name: format!("user-{actor}"),
                                             openfang_user: None,
+                                            reply_url: None,
                                         },
                                         content,
                                         target_agent: None,

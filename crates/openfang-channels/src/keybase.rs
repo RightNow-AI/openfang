@@ -1,4 +1,4 @@
-//! Keybase Chat channel adapter.
+﻿//! Keybase Chat channel adapter.
 //!
 //! Uses the Keybase Chat API JSON protocol over HTTP for sending and receiving
 //! messages. Polls for new messages using the `list` + `read` API methods and
@@ -371,6 +371,7 @@ impl ChannelAdapter for KeybaseAdapter {
                                 platform_id: conv_key.clone(),
                                 display_name: sender_username.to_string(),
                                 openfang_user: None,
+                                reply_url: None,
                             },
                             content: msg_content,
                             target_agent: None,

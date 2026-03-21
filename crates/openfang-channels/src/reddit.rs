@@ -1,4 +1,4 @@
-//! Reddit API channel adapter.
+﻿//! Reddit API channel adapter.
 //!
 //! Uses the Reddit OAuth2 API for both sending and receiving messages. Authentication
 //! is performed via the OAuth2 password grant (script app) at
@@ -296,6 +296,7 @@ fn parse_reddit_comment(comment: &serde_json::Value, own_username: &str) -> Opti
             platform_id: author.to_string(),
             display_name: author.to_string(),
             openfang_user: None,
+            reply_url: None,
         },
         content,
         target_agent: None,

@@ -1,4 +1,4 @@
-//! Revolt API channel adapter.
+﻿//! Revolt API channel adapter.
 //!
 //! Uses the Revolt REST API for sending messages and WebSocket (Bonfire protocol)
 //! for real-time message reception. Authentication uses the bot token via
@@ -281,6 +281,7 @@ fn parse_revolt_message(
             platform_id: channel_id,
             display_name: author.to_string(),
             openfang_user: None,
+            reply_url: None,
         },
         content: msg_content,
         target_agent: None,

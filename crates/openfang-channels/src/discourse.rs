@@ -1,4 +1,4 @@
-//! Discourse channel adapter.
+﻿//! Discourse channel adapter.
 //!
 //! Integrates with the Discourse forum REST API. Uses long-polling on
 //! `posts.json` to receive new posts and creates replies via the same API.
@@ -301,6 +301,7 @@ impl ChannelAdapter for DiscourseAdapter {
                             platform_id: username.to_string(),
                             display_name,
                             openfang_user: None,
+                            reply_url: None,
                         },
                         content,
                         target_agent: None,

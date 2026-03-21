@@ -1,4 +1,4 @@
-//! AT Protocol (Bluesky) channel adapter.
+﻿//! AT Protocol (Bluesky) channel adapter.
 //!
 //! Uses the AT Protocol (atproto) XRPC API for authentication, posting, and
 //! polling notifications. Session creation uses `com.atproto.server.createSession`
@@ -215,7 +215,7 @@ impl BlueskyAdapter {
         let chunks = split_message(text, MAX_MESSAGE_LEN);
 
         for chunk in chunks {
-            let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
             let mut record = serde_json::json!({
                 "$type": "app.bsky.feed.post",
@@ -325,6 +325,7 @@ fn parse_bluesky_notification(
             platform_id: author_did.to_string(),
             display_name,
             openfang_user: None,
+            reply_url: None,
         },
         content,
         target_agent: None,
@@ -435,11 +436,7 @@ impl ChannelAdapter for BlueskyAdapter {
                     service_url
                 );
                 if let Some(ref seen) = last_seen_at {
-                    let encoded: String = url::form_urlencoded::Serializer::new(String::new())
-                        .append_pair("seenAt", seen)
-                        .finish();
-                    url.push('&');
-                    url.push_str(&encoded);
+                    url.push_str(&format!("&seenAt={}", seen));
                 }
 
                 let resp = match client.get(&url).bearer_auth(&token).send().await {
@@ -496,7 +493,7 @@ impl ChannelAdapter for BlueskyAdapter {
                 if last_seen_at.is_some() {
                     let mark_url = format!("{}/xrpc/app.bsky.notification.updateSeen", service_url);
                     let mark_body = serde_json::json!({
-                        "seenAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        "seenAt": Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
                     });
                     let _ = client
                         .post(&mark_url)

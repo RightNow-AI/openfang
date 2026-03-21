@@ -1,4 +1,4 @@
-//! Guilded Bot channel adapter.
+﻿//! Guilded Bot channel adapter.
 //!
 //! Connects to the Guilded Bot API via WebSocket for receiving real-time events
 //! and uses the REST API for sending messages. Authentication is performed via
@@ -279,6 +279,7 @@ impl ChannelAdapter for GuildedAdapter {
                             platform_id: channel_id,
                             display_name: created_by.to_string(),
                             openfang_user: None,
+                            reply_url: None,
                         },
                         content: msg_content,
                         target_agent: None,
