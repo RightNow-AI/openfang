@@ -79,6 +79,91 @@ metrics = []
 }
 
 #[tokio::test]
+async fn external_hand_workspace_scaffold_seeds_workspace_files() {
+    let home = tempdir().unwrap();
+    let hand_dir = tempdir().unwrap();
+    let scaffold_dir = hand_dir.path().join("workspace-scaffold");
+    std::fs::create_dir_all(&scaffold_dir).unwrap();
+    for filename in [
+        "SOUL.md",
+        "IDENTITY.md",
+        "USER.md",
+        "TOOLS.md",
+        "MEMORY.md",
+        "AGENTS.md",
+        "BOOTSTRAP.md",
+        "HEARTBEAT.md",
+    ] {
+        std::fs::write(scaffold_dir.join(filename), format!("{filename} default\n")).unwrap();
+    }
+
+    std::fs::write(
+        hand_dir.path().join("HAND.toml"),
+        r#"
+id = "external-scaffold-test"
+name = "External Scaffold Test"
+description = "Seeds workspace identity files from the hand source"
+category = "development"
+tools = []
+
+[agent]
+name = "external-scaffold-hand"
+description = "External scaffold test agent"
+system_prompt = "You are a scaffold test hand."
+
+[dashboard]
+metrics = []
+"#,
+    )
+    .unwrap();
+    std::fs::write(hand_dir.path().join("SKILL.md"), "Scaffold test skill.").unwrap();
+    std::fs::write(
+        scaffold_dir.join("AGENTS.md"),
+        "# Agent Behavioral Guidelines\n\nCustom scaffold guidance.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        scaffold_dir.join("TOOLS.md"),
+        "# Tools & Environment\n\nCustom tool notes.\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(scaffold_dir.join("prompts")).unwrap();
+    std::fs::write(
+        scaffold_dir.join("prompts").join("publish.txt"),
+        "Nested scaffold prompt.\n",
+    )
+    .unwrap();
+
+    let kernel = OpenFangKernel::boot_with_config(test_config(home.path().to_path_buf())).unwrap();
+    kernel
+        .hand_registry
+        .install_from_path(hand_dir.path())
+        .unwrap();
+    let instance = kernel
+        .activate_hand("external-scaffold-test", Default::default())
+        .unwrap();
+    let agent_id = instance.agent_id.unwrap();
+    let entry = kernel.registry.get(agent_id).unwrap();
+    let workspace = entry.manifest.workspace.clone().unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("AGENTS.md")).unwrap(),
+        "# Agent Behavioral Guidelines\n\nCustom scaffold guidance.\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("TOOLS.md")).unwrap(),
+        "# Tools & Environment\n\nCustom tool notes.\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("prompts").join("publish.txt")).unwrap(),
+        "Nested scaffold prompt.\n"
+    );
+    assert!(workspace.join("SOUL.md").is_file());
+
+    kernel.shutdown();
+}
+
+#[tokio::test]
 async fn invalid_hand_state_marks_restore_health_not_ready() {
     let home = tempdir().unwrap();
     std::fs::write(home.path().join("hand_state.json"), "{bad json").unwrap();

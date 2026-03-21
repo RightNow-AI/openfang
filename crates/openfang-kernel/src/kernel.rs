@@ -41,6 +41,17 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock, Weak};
 use tracing::{debug, info, warn};
 
+const HAND_WORKSPACE_SCAFFOLD_FILES: &[&str] = &[
+    "SOUL.md",
+    "IDENTITY.md",
+    "USER.md",
+    "TOOLS.md",
+    "MEMORY.md",
+    "AGENTS.md",
+    "BOOTSTRAP.md",
+    "HEARTBEAT.md",
+];
+
 /// The main OpenFang kernel — coordinates all subsystems.
 /// Stub LLM driver used when no providers are configured.
 /// Returns a helpful error so the dashboard still boots and users can configure providers.
@@ -343,6 +354,116 @@ fn ensure_workspace(workspace: &Path) -> KernelResult<()> {
         workspace.join("AGENT.json"),
         serde_json::to_string_pretty(&meta).unwrap_or_default(),
     );
+    Ok(())
+}
+
+fn seed_hand_workspace_scaffold(
+    workspace: &Path,
+    hand_source_dir: Option<&Path>,
+) -> KernelResult<()> {
+    let Some(source_dir) = hand_source_dir else {
+        return Ok(());
+    };
+
+    let scaffold_dir = source_dir.join("workspace-scaffold");
+    if !scaffold_dir.is_dir() {
+        return Ok(());
+    }
+
+    for filename in HAND_WORKSPACE_SCAFFOLD_FILES {
+        let required_path = scaffold_dir.join(filename);
+        if !required_path.is_file() {
+            return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                "Missing required workspace scaffold file: {}",
+                required_path.display()
+            ))));
+        }
+    }
+
+    fn copy_tree(source_dir: &Path, target_dir: &Path) -> KernelResult<()> {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+
+        for entry in std::fs::read_dir(source_dir).map_err(|e| {
+            KernelError::OpenFang(OpenFangError::Internal(format!(
+                "Failed to read workspace scaffold directory {}: {e}",
+                source_dir.display()
+            )))
+        })? {
+            let entry = entry.map_err(|e| {
+                KernelError::OpenFang(OpenFangError::Internal(format!(
+                    "Failed to enumerate workspace scaffold directory {}: {e}",
+                    source_dir.display()
+                )))
+            })?;
+            let source_path = entry.path();
+            let target_path = target_dir.join(entry.file_name());
+            let file_type = entry.file_type().map_err(|e| {
+                KernelError::OpenFang(OpenFangError::Internal(format!(
+                    "Failed to inspect workspace scaffold entry {}: {e}",
+                    source_path.display()
+                )))
+            })?;
+
+            if file_type.is_dir() {
+                std::fs::create_dir_all(&target_path).map_err(|e| {
+                    KernelError::OpenFang(OpenFangError::Internal(format!(
+                        "Failed to create workspace scaffold directory {}: {e}",
+                        target_path.display()
+                    )))
+                })?;
+                copy_tree(&source_path, &target_path)?;
+                continue;
+            }
+
+            if !file_type.is_file() {
+                continue;
+            }
+
+            let content = std::fs::read(&source_path).map_err(|e| {
+                KernelError::OpenFang(OpenFangError::Internal(format!(
+                    "Failed to read workspace scaffold {}: {e}",
+                    source_path.display()
+                )))
+            })?;
+
+            if let Some(parent) = target_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    KernelError::OpenFang(OpenFangError::Internal(format!(
+                        "Failed to create workspace scaffold parent {}: {e}",
+                        parent.display()
+                    )))
+                })?;
+            }
+
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target_path)
+            {
+                Ok(mut file) => {
+                    file.write_all(&content).map_err(|e| {
+                        KernelError::OpenFang(OpenFangError::Internal(format!(
+                            "Failed to seed workspace scaffold {}: {e}",
+                            target_path.display()
+                        )))
+                    })?;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(err) => {
+                    return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                        "Failed to create workspace scaffold {}: {err}",
+                        target_path.display()
+                    ))));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    copy_tree(&scaffold_dir, workspace)?;
+
     Ok(())
 }
 
@@ -3630,6 +3751,16 @@ impl OpenFangKernel {
                 manifest.model.system_prompt, skill_content
             );
         }
+
+        // External hands can optionally ship a workspace-scaffold/ directory.
+        // Seed it before spawn so generated identity files fill only the gaps.
+        let workspace_dir = manifest
+            .workspace
+            .clone()
+            .unwrap_or_else(|| self.config.effective_workspaces_dir().join(&manifest.name));
+        ensure_workspace(&workspace_dir)?;
+        seed_hand_workspace_scaffold(&workspace_dir, def.install_path.as_deref())?;
+        manifest.workspace = Some(workspace_dir);
 
         // If an agent with this hand's name already exists, remove it first.
         // Save triggers before kill so they can be restored under the new ID
