@@ -174,10 +174,7 @@ impl McpConnection {
             .or_else(|| strip_mcp_prefix(&self.config.name, name).map(|s| s.to_string()))
             .unwrap_or_else(|| name.to_string());
 
-        let args = arguments
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+        let args = arguments.as_object().cloned().unwrap_or_default();
 
         debug!(tool = %raw_name, server = %self.config.name, "MCP tool call");
 
@@ -236,42 +233,41 @@ impl McpConnection {
         let args_vec: Vec<String> = args.to_vec();
         let env_list: Vec<String> = env_whitelist.to_vec();
 
-        let transport =
-            TokioChildProcess::new(Command::new(&cmd_str).configure(move |cmd| {
-                for arg in &args_vec {
-                    cmd.arg(arg);
+        let transport = TokioChildProcess::new(Command::new(&cmd_str).configure(move |cmd| {
+            for arg in &args_vec {
+                cmd.arg(arg);
+            }
+            // Sandbox: clear environment, only pass whitelisted vars
+            cmd.env_clear();
+            for var_name in &env_list {
+                if let Ok(val) = std::env::var(var_name) {
+                    cmd.env(var_name, val);
                 }
-                // Sandbox: clear environment, only pass whitelisted vars
-                cmd.env_clear();
-                for var_name in &env_list {
-                    if let Ok(val) = std::env::var(var_name) {
-                        cmd.env(var_name, val);
+            }
+            // Always pass PATH for binary resolution
+            if let Ok(path) = std::env::var("PATH") {
+                cmd.env("PATH", path);
+            }
+            // On Windows, npm/node need extra vars
+            if cfg!(windows) {
+                for var in &[
+                    "APPDATA",
+                    "LOCALAPPDATA",
+                    "USERPROFILE",
+                    "SystemRoot",
+                    "TEMP",
+                    "TMP",
+                    "HOME",
+                    "HOMEDRIVE",
+                    "HOMEPATH",
+                ] {
+                    if let Ok(val) = std::env::var(var) {
+                        cmd.env(var, val);
                     }
                 }
-                // Always pass PATH for binary resolution
-                if let Ok(path) = std::env::var("PATH") {
-                    cmd.env("PATH", path);
-                }
-                // On Windows, npm/node need extra vars
-                if cfg!(windows) {
-                    for var in &[
-                        "APPDATA",
-                        "LOCALAPPDATA",
-                        "USERPROFILE",
-                        "SystemRoot",
-                        "TEMP",
-                        "TMP",
-                        "HOME",
-                        "HOMEDRIVE",
-                        "HOMEPATH",
-                    ] {
-                        if let Ok(val) = std::env::var(var) {
-                            cmd.env(var, val);
-                        }
-                    }
-                }
-            }))
-            .map_err(|e| format!("Failed to spawn MCP server '{cmd_str}': {e}"))?;
+            }
+        }))
+        .map_err(|e| format!("Failed to spawn MCP server '{cmd_str}': {e}"))?;
 
         let client = client_info
             .serve(transport)
