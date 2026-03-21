@@ -106,12 +106,18 @@ impl TelegramMediaBatch {
     }
 
     /// Build stable batch key with normalized format:
-    /// `group_<safe_chat_id>_<safe_media_group_id>`.
+    /// `group_<safe_chat_id>_<safe_media_group_id>_<hash8>`.
+    /// The 8-hex-digit hash of the raw media_group_id prevents collisions
+    /// when different IDs sanitize to the same string (e.g. "abc@def" vs "abc_def").
     pub fn stable_batch_key(chat_id: i64, media_group_id: &str) -> String {
+        let hash = media_group_id
+            .bytes()
+            .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
         format!(
-            "group_{}_{}",
+            "group_{}_{}_{:08x}",
             Self::sanitize(&chat_id.to_string()),
             Self::sanitize(media_group_id),
+            hash,
         )
     }
 
@@ -216,10 +222,19 @@ mod tests {
 
     #[test]
     fn test_stable_batch_key() {
+        // hash("173552@abc") via djb31 = 0x9f98b547
         assert_eq!(
             TelegramMediaBatch::stable_batch_key(-100123, "173552@abc"),
-            "group_100123_173552_abc"
+            "group_100123_173552_abc_9f98b547"
         );
+    }
+
+    #[test]
+    fn test_stable_batch_key_collision_prevention() {
+        // "abc@def" and "abc_def" both sanitize to "abc_def" but must produce different keys
+        let key1 = TelegramMediaBatch::stable_batch_key(1, "abc@def");
+        let key2 = TelegramMediaBatch::stable_batch_key(1, "abc_def");
+        assert_ne!(key1, key2);
     }
 
     #[test]

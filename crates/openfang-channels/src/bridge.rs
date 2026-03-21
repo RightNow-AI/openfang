@@ -1135,7 +1135,10 @@ async fn write_telegram_batch_to_inbox(
     agent_workspace: Option<PathBuf>,
     fallback_workspace_name: Option<&str>,
 ) -> std::io::Result<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let home = std::env::var("HOME").unwrap_or_else(|_| {
+        warn!("HOME environment variable not set; using '.' as fallback for inbox directory");
+        ".".to_string()
+    });
     let workspace_name = fallback_workspace_name
         .map(str::trim)
         .filter(|name| !name.is_empty())

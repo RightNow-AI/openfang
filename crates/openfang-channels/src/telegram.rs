@@ -5219,7 +5219,7 @@ mod tests {
         // Verify batch structure
         assert_eq!(batch.items.len(), 3);
         assert_eq!(batch.caption, Some("Trip recap".to_string()));
-        assert_eq!(batch.batch_key, "group_123_group_1");
+        assert_eq!(batch.batch_key, "group_123_group_1_117d5863");
 
         // Verify order: photo, video, photo
         assert_eq!(
