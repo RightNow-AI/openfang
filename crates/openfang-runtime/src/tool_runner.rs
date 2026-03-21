@@ -1272,7 +1272,12 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["skill_name", "path", "content"]
             }),
         },
-    ]
+    ].into_iter().filter(|tool| !tool.name.starts_with("hand_") 
+    && !tool.name.starts_with("browser_")
+    && !tool.name.starts_with("agent_")
+    && !tool.name.starts_with("task_")
+    && !["speech_to_text","text_to_speech","image_generate","event_publish","media_transcribe","a2a_discover","a2a_send"].contains(&tool.name.as_str())).collect::<Vec<_>>()
+    // TODO 过滤内置工具
 }
 
 // ---------------------------------------------------------------------------

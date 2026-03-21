@@ -380,6 +380,17 @@ pub async fn spawn_agent(
             );
         }
     };
+    if let Some(workspace) = &manifest.workspace {
+        if workspace.exists()
+            && is_in_home_dir(workspace)
+            && workspace.file_name() != Some(std::ffi::OsStr::new(&manifest.name))
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "当前工作目录和其他目录不能同时存在"})),
+            );
+        }
+    }
     tracing::debug!("Manifest: {:?}", manifest.model);
     if manifest.model.provider.is_empty() || manifest.model.provider == "default" {
         let default_model = state.kernel.config.default_model.clone();
@@ -489,7 +500,7 @@ pub async fn get_agent_builtin_tools_config(
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "                        agent ID"})),
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
             )
         }
     };
