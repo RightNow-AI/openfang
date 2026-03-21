@@ -80,6 +80,9 @@ pub struct AutonomousConfig {
     pub heartbeat_interval_secs: u64,
     /// Channel to send heartbeat status to (e.g., "telegram", "discord").
     pub heartbeat_channel: Option<String>,
+    /// Maximum wall-clock seconds for a single background tick.
+    /// If a tick exceeds this duration it is cancelled. Default: 300 (5 min).
+    pub max_tick_duration_secs: u64,
 }
 
 impl Default for AutonomousConfig {
@@ -90,6 +93,7 @@ impl Default for AutonomousConfig {
             max_restarts: 10,
             heartbeat_interval_secs: 30,
             heartbeat_channel: None,
+            max_tick_duration_secs: 300,
         }
     }
 }
@@ -386,6 +390,11 @@ pub struct ModelConfig {
     pub api_key_env: Option<String>,
     /// Optional base URL override for the provider.
     pub base_url: Option<String>,
+    /// Extended thinking configuration. None = thinking disabled.
+    /// Only supported by models that have reasoning capability
+    /// (e.g. Claude Sonnet 4.5+, Claude Sonnet 4.6 via OpenRouter).
+    #[serde(default)]
+    pub thinking: Option<crate::config::ThinkingConfig>,
 }
 
 impl Default for ModelConfig {
@@ -398,6 +407,7 @@ impl Default for ModelConfig {
             system_prompt: "You are a helpful AI agent.".to_string(),
             api_key_env: None,
             base_url: None,
+            thinking: None,
         }
     }
 }
@@ -727,6 +737,7 @@ mod tests {
         assert_eq!(cfg.max_iterations, 50);
         assert_eq!(cfg.max_restarts, 10);
         assert_eq!(cfg.heartbeat_interval_secs, 30);
+        assert_eq!(cfg.max_tick_duration_secs, 300);
         assert!(cfg.quiet_hours.is_none());
     }
 

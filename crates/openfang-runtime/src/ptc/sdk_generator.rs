@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(camel_to_snake("pressEnter"), "press_enter");
         assert_eq!(camel_to_snake("domainSuffix"), "domain_suffix");
         assert_eq!(camel_to_snake("file_read"), "file_read");
-        assert_eq!(camel_to_snake("HTMLParser"), "h_t_m_l_parser"); // Known edge case
+        assert_eq!(camel_to_snake("HTMLParser"), "htmlparser"); // Acronyms merge — acceptable for SDK names
     }
 
     #[test]

@@ -462,7 +462,7 @@ pub async fn run_agent_loop(
             max_tokens: manifest.model.max_tokens,
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
-            thinking: None,
+            thinking: manifest.model.thinking.clone(),
         };
 
         // Notify phase: Thinking
@@ -1761,7 +1761,7 @@ pub async fn run_agent_loop_streaming(
             max_tokens: manifest.model.max_tokens,
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
-            thinking: None,
+            thinking: manifest.model.thinking.clone(),
         };
 
         // Notify phase: on first iteration emit Streaming; on subsequent
@@ -4757,7 +4757,9 @@ mod tests {
             context_window_tokens: 0,
             label: None,
         };
-        let manifest = test_manifest();
+        let mut manifest = test_manifest();
+        // Disable PTC so the raw tool list (with web_search) is used for recovery
+        manifest.ptc_enabled = Some(false);
         let driver: Arc<dyn LlmDriver> = Arc::new(TextToolCallDriver::new());
 
         // Provide web_search as an available tool so recovery can match it
@@ -4885,7 +4887,9 @@ mod tests {
             context_window_tokens: 0,
             label: None,
         };
-        let manifest = test_manifest();
+        let mut manifest = test_manifest();
+        // Disable PTC so the raw tool list (with web_search) is used for recovery
+        manifest.ptc_enabled = Some(false);
         let driver: Arc<dyn LlmDriver> = Arc::new(TextToolCallDriver::new());
 
         let tools = vec![ToolDefinition {

@@ -372,7 +372,8 @@ mod tests {
     #[test]
     fn test_find_header_end() {
         let data = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\nbody";
-        assert_eq!(find_header_end(data), Some(33));
+        // find_header_end returns the position of the first byte of \r\n\r\n
+        assert_eq!(find_header_end(data), Some(31));
     }
 
     #[test]
