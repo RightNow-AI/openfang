@@ -41,17 +41,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock, Weak};
 use tracing::{debug, info, warn};
 
-const HAND_WORKSPACE_SCAFFOLD_FILES: &[&str] = &[
-    "SOUL.md",
-    "IDENTITY.md",
-    "USER.md",
-    "TOOLS.md",
-    "MEMORY.md",
-    "AGENTS.md",
-    "BOOTSTRAP.md",
-    "HEARTBEAT.md",
-];
-
 /// The main OpenFang kernel — coordinates all subsystems.
 /// Stub LLM driver used when no providers are configured.
 /// Returns a helpful error so the dashboard still boots and users can configure providers.
@@ -368,16 +357,6 @@ fn seed_hand_workspace_scaffold(
     let scaffold_dir = source_dir.join("workspace-scaffold");
     if !scaffold_dir.is_dir() {
         return Ok(());
-    }
-
-    for filename in HAND_WORKSPACE_SCAFFOLD_FILES {
-        let required_path = scaffold_dir.join(filename);
-        if !required_path.is_file() {
-            return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
-                "Missing required workspace scaffold file: {}",
-                required_path.display()
-            ))));
-        }
     }
 
     fn copy_tree(source_dir: &Path, target_dir: &Path) -> KernelResult<()> {

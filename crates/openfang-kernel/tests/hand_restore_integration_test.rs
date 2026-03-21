@@ -164,6 +164,71 @@ metrics = []
 }
 
 #[tokio::test]
+async fn external_hand_workspace_scaffold_can_be_partial() {
+    let home = tempdir().unwrap();
+    let hand_dir = tempdir().unwrap();
+    let scaffold_dir = hand_dir.path().join("workspace-scaffold");
+    std::fs::create_dir_all(scaffold_dir.join("prompts")).unwrap();
+
+    std::fs::write(
+        hand_dir.path().join("HAND.toml"),
+        r#"
+id = "external-partial-scaffold-test"
+name = "External Partial Scaffold Test"
+description = "Seeds partial workspace scaffold files from the hand source"
+category = "development"
+tools = []
+
+[agent]
+name = "external-partial-scaffold-hand"
+description = "External partial scaffold test agent"
+system_prompt = "You are a partial scaffold test hand."
+
+[dashboard]
+metrics = []
+"#,
+    )
+    .unwrap();
+    std::fs::write(hand_dir.path().join("SKILL.md"), "Partial scaffold test skill.").unwrap();
+    std::fs::write(
+        scaffold_dir.join("AGENTS.md"),
+        "# Agent Behavioral Guidelines\n\nPartial scaffold guidance.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        scaffold_dir.join("prompts").join("publish.txt"),
+        "Partial scaffold prompt.\n",
+    )
+    .unwrap();
+
+    let kernel = OpenFangKernel::boot_with_config(test_config(home.path().to_path_buf())).unwrap();
+    kernel
+        .hand_registry
+        .install_from_path(hand_dir.path())
+        .unwrap();
+    let instance = kernel
+        .activate_hand("external-partial-scaffold-test", Default::default())
+        .unwrap();
+    let agent_id = instance.agent_id.unwrap();
+    let entry = kernel.registry.get(agent_id).unwrap();
+    let workspace = entry.manifest.workspace.clone().unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("AGENTS.md")).unwrap(),
+        "# Agent Behavioral Guidelines\n\nPartial scaffold guidance.\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("prompts").join("publish.txt")).unwrap(),
+        "Partial scaffold prompt.\n"
+    );
+    assert!(workspace.join("SOUL.md").is_file());
+    assert!(workspace.join("TOOLS.md").is_file());
+    assert!(!workspace.join("HEARTBEAT.md").exists());
+
+    kernel.shutdown();
+}
+
+#[tokio::test]
 async fn invalid_hand_state_marks_restore_health_not_ready() {
     let home = tempdir().unwrap();
     std::fs::write(home.path().join("hand_state.json"), "{bad json").unwrap();
