@@ -56,6 +56,14 @@
 ~/.openfang/workspaces/shipinfabu-hand/inbox/telegram/<batch_key>.json
 ```
 
+如果运行时设置了 `OPENFANG_HOME=/var/lib/openfang`，对应路径会变成：
+
+```
+/var/lib/openfang/workspaces/shipinfabu-hand/inbox/telegram/<batch_key>.json
+```
+
+bridge 会优先使用 agent 的真实 workspace；只有在旧内核/测试桩没有返回 workspace metadata 时，才回退到 `$OPENFANG_HOME/workspaces/<agent-name>`，而在未设置 `OPENFANG_HOME` 的开发机上继续回退到 `~/.openfang/workspaces/<agent-name>`。
+
 `shipinfabu-hand` 可以：
 1. 读取 inbox manifest 获取完整批次信息
 2. 根据批次内容决定是否需要用户确认（多视频场景）

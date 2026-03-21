@@ -128,6 +128,8 @@ Agents are runtime instances created from manifests. They are persisted, schedul
 
 Hands are curated packages defined by `HAND.toml` and optional `SKILL.md`. The hand registry loads bundled and installed definitions, activates them into agent instances, and persists active hand state for restart recovery.
 
+External hands may also ship a `workspace-scaffold/` directory. OpenFang copies any files found there into the activated workspace before generating the default identity files, so partial scaffolds can override only the files they need while the kernel fills the rest of the standard workspace set.
+
 ### Skills
 
 Skills are pluggable tool bundles and prompt-only context packages. Bundled skills ship with the binary; installed skills live under the OpenFang home directory. Skills can add tools, requirements, and prompt context.
