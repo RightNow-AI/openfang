@@ -48,6 +48,8 @@ const TELEGRAM_BOT_COMMANDS: &[(&str, &str)] = &[
 /// If Local Bot API crashes on extremely large files, this can be reduced,
 /// but 2GB should be safe for typical video processing workflows.
 const LOCAL_API_SAFE_GETFILE_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+/// Official Bot API getFile limit (20 MB). Files larger than this cannot be resolved via getFile.
+const OFFICIAL_API_GETFILE_LIMIT: u64 = 20 * 1024 * 1024;
 /// Local file copy threshold above which we emit a live progress bar.
 const LOCAL_COPY_PROGRESS_THRESHOLD: u64 = 5 * 1024 * 1024;
 /// Copy Telegram Local Bot API files in chunks so large copies don't become a
@@ -1319,6 +1321,29 @@ async fn merge_media_group_updates(
             let chat_id = message.get("chat")?.get("id")?.as_i64()?;
             let _ = message.get("message_id")?.as_i64()?;
 
+            // file_size=0 means Telegram did not report the size (e.g. streaming video).
+            // We cannot know the real size, so conservatively defer to project-side download.
+            if file_size == 0 {
+                info!("Video {} has unknown file size (0), deferring to project download", file_id);
+                media_items.push(TelegramMediaItem {
+                    kind: MediaItemKind::Video,
+                    file_id: file_id.clone(),
+                    original_name: None,
+                    file_size: 0,
+                    duration_seconds: Some(duration),
+                    status: MediaItemStatus::NeedsProjectDownload,
+                    local_path: None,
+                    download_hint: Some(build_download_hint(
+                        &file_id,
+                        api_base_url,
+                        use_local_api,
+                        None,
+                        Some("file size unknown, deferred to project download".to_string()),
+                    )),
+                });
+                continue;
+            }
+
             if should_skip_get_file(file_size, use_local_api) {
                 info!(
                     "Video {} ({} MB) exceeds safe getFile limit ({} MB), skipping download to prevent Local Bot API restarts",
@@ -1435,9 +1460,28 @@ async fn merge_media_group_updates(
                     }
                 }
                 None => {
+                    // getFile returned None: either the file exceeds API limits or a network error occurred.
+                    // For the official API, files >20MB cannot be resolved via getFile — treat as NeedsProjectDownload.
+                    // For the local API, this is a genuine failure.
+                    let (status, reason) = if !use_local_api && file_size > OFFICIAL_API_GETFILE_LIMIT {
+                        (
+                            MediaItemStatus::NeedsProjectDownload,
+                            format!("video exceeds official API getFile limit ({} MB)", OFFICIAL_API_GETFILE_LIMIT / 1024 / 1024),
+                        )
+                    } else if !use_local_api && file_size == 0 {
+                        (
+                            MediaItemStatus::NeedsProjectDownload,
+                            "file size unknown via official API, deferred to project download".to_string(),
+                        )
+                    } else {
+                        (
+                            MediaItemStatus::DownloadFailed,
+                            "failed to resolve file path via getFile".to_string(),
+                        )
+                    };
                     info!(
-                        "Skipped video file_id: {} (size: {} bytes) - likely exceeds safe limit",
-                        file_id, file_size
+                        "Video {} (size: {} bytes) getFile returned None: {}",
+                        file_id, file_size, reason
                     );
                     media_items.push(TelegramMediaItem {
                         kind: MediaItemKind::Video,
@@ -1445,14 +1489,14 @@ async fn merge_media_group_updates(
                         original_name: None,
                         file_size,
                         duration_seconds: Some(duration),
-                        status: MediaItemStatus::DownloadFailed,
+                        status,
                         local_path: None,
                         download_hint: Some(build_download_hint(
                             &file_id,
                             api_base_url,
                             use_local_api,
                             None,
-                            Some("failed to resolve file path via getFile".to_string()),
+                            Some(reason),
                         )),
                     });
                 }

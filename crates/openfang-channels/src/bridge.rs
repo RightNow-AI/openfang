@@ -1034,6 +1034,11 @@ async fn dispatch_message(
                     manifest_path.display()
                 );
             }
+        } else {
+            warn!(
+                "telegram_media_batch present but agent {:?} returned no metadata — manifest not written, forwarding as text only",
+                agent_id
+            );
         }
     }
 
