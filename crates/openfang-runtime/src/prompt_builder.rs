@@ -197,7 +197,7 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
     if !ctx.is_subagent {
         if let Some(ref ws_ctx) = ctx.workspace_context {
             if !ws_ctx.trim().is_empty() {
-                sections.push(cap_str(ws_ctx, 1000));
+                sections.push(cap_str(ws_ctx, 2000));
             }
         }
     }
