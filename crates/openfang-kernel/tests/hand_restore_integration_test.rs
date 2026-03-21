@@ -189,7 +189,11 @@ metrics = []
 "#,
     )
     .unwrap();
-    std::fs::write(hand_dir.path().join("SKILL.md"), "Partial scaffold test skill.").unwrap();
+    std::fs::write(
+        hand_dir.path().join("SKILL.md"),
+        "Partial scaffold test skill.",
+    )
+    .unwrap();
     std::fs::write(
         scaffold_dir.join("AGENTS.md"),
         "# Agent Behavioral Guidelines\n\nPartial scaffold guidance.\n",

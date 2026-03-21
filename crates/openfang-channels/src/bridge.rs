@@ -1134,19 +1134,19 @@ fn resolve_openfang_home_dir(
     openfang_home: Option<&str>,
     home_dir: Option<&str>,
 ) -> std::io::Result<PathBuf> {
-    if let Some(openfang_home) = openfang_home
-        .map(str::trim)
-        .filter(|home| !home.is_empty())
-    {
+    if let Some(openfang_home) = openfang_home.map(str::trim).filter(|home| !home.is_empty()) {
         return Ok(PathBuf::from(openfang_home));
     }
 
-    let home = home_dir.map(str::trim).filter(|home| !home.is_empty()).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "OPENFANG_HOME/HOME environment variables not set".to_string(),
-        )
-    })?;
+    let home = home_dir
+        .map(str::trim)
+        .filter(|home| !home.is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "OPENFANG_HOME/HOME environment variables not set".to_string(),
+            )
+        })?;
 
     Ok(PathBuf::from(home).join(".openfang"))
 }
@@ -1175,9 +1175,7 @@ fn resolve_telegram_inbox_workspace(
         )
     })?;
 
-    Ok(openfang_home
-        .join("workspaces")
-        .join(workspace_name))
+    Ok(openfang_home.join("workspaces").join(workspace_name))
 }
 
 async fn write_telegram_batch_to_inbox(
@@ -2672,14 +2670,32 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_telegram_inbox_workspace_uses_home_without_openfang_home() {
+        let workspace = resolve_telegram_inbox_workspace(
+            None,
+            Some("shipinfabu-hand"),
+            None,
+            Some("/Users/tester"),
+        )
+        .expect("expected HOME fallback to resolve");
+        assert_eq!(
+            workspace,
+            PathBuf::from("/Users/tester")
+                .join(".openfang")
+                .join("workspaces")
+                .join("shipinfabu-hand")
+        );
+    }
+
+    #[test]
     fn test_resolve_telegram_inbox_workspace_requires_openfang_home_or_home_without_agent_workspace(
     ) {
         let err = resolve_telegram_inbox_workspace(None, Some("shipinfabu-hand"), None, None)
             .expect_err("expected missing HOME to fail");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
-        assert!(err
-            .to_string()
-            .contains("OPENFANG_HOME/HOME environment variables not set and agent workspace unavailable"));
+        assert!(err.to_string().contains(
+            "OPENFANG_HOME/HOME environment variables not set and agent workspace unavailable"
+        ));
     }
 
     #[test]
