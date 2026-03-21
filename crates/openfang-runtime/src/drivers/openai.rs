@@ -1175,7 +1175,10 @@ impl LlmDriver for OpenAIDriver {
 
                                 // ID (sent in first chunk for this tool)
                                 if let Some(id) = call["id"].as_str() {
-                                    tool_accum[idx].0 = id.to_string();
+                                    // Fix: Empty string IDs are overwritten, leading to inconsistencies in certain models.
+                                    if !id.is_empty() {
+                                        tool_accum[idx].0 = id.to_string();
+                                    }
                                 }
 
                                 if let Some(func) = call.get("function") {
