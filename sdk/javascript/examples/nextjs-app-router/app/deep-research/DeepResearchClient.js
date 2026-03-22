@@ -18,6 +18,8 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 // ─── Pipeline stages ──────────────────────────────────────────────────────────
 
@@ -31,6 +33,16 @@ const STAGES = [
 
 // Average ms each stage takes (rough pacing to feel realistic while backend runs)
 const STAGE_DURATIONS = [4000, 8000, 12000, 6000, 8000];
+const RUN_EVENT_TYPES = [
+  'run.started',
+  'run.routed',
+  'run.token',
+  'run.phase',
+  'run.tool',
+  'run.status',
+  'run.completed',
+  'run.failed',
+];
 
 // ─── Report parser ────────────────────────────────────────────────────────────
 
@@ -59,6 +71,10 @@ function parseReport(text) {
   if (leadM) sections.lead = leadM[1].trim();
 
   return sections;
+}
+
+function hasMeaningfulReportContent(text) {
+  return typeof text === 'string' && text.trim().length > 0;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -122,48 +138,33 @@ function SourceCard({ url }) {
 }
 
 // Minimal markdown → text rendering (bold, numbered lists, bullets)
-function MiniMarkdown({ text }) {
+function MarkdownBlock({ text }) {
   if (!text) return null;
-  const lines = text.split('\n');
-  const elements = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    if (!line.trim()) { elements.push(<br key={i} />); i++; continue; }
-    // numbered item
-    const numM = line.match(/^(\d+)\.\s+(.*)/);
-    if (numM) {
-      const bold = numM[2].replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-      elements.push(
-        <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6, lineHeight: 1.6 }}>
-          <span style={{ color: 'var(--accent)', fontWeight: 700, minWidth: 20 }}>{numM[1]}.</span>
-          <span dangerouslySetInnerHTML={{ __html: bold }} />
-        </div>
-      );
-      i++; continue;
-    }
-    // bullet
-    if (line.startsWith('- ') || line.startsWith('* ')) {
-      const bold = line.slice(2).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-      elements.push(
-        <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4, lineHeight: 1.6 }}>
-          <span style={{ color: 'var(--accent)', marginTop: 2 }}>·</span>
-          <span dangerouslySetInnerHTML={{ __html: bold }} />
-        </div>
-      );
-      i++; continue;
-    }
-    // heading inside section
-    if (line.startsWith('#')) {
-      const bold = line.replace(/^#+\s*/, '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-      elements.push(<p key={i} style={{ fontWeight: 700, marginBottom: 4 }} dangerouslySetInnerHTML={{ __html: bold }} />);
-      i++; continue;
-    }
-    const bold = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    elements.push(<p key={i} style={{ marginBottom: 4, lineHeight: 1.65 }} dangerouslySetInnerHTML={{ __html: bold }} />);
-    i++;
-  }
-  return <div style={{ fontSize: 14, color: 'var(--text)' }}>{elements}</div>;
+  return (
+    <div style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.7 }}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: (props) => <h1 style={{ fontSize: 24, margin: '0 0 14px' }} {...props} />,
+          h2: (props) => <h2 style={{ fontSize: 18, margin: '20px 0 10px' }} {...props} />,
+          h3: (props) => <h3 style={{ fontSize: 15, margin: '18px 0 8px' }} {...props} />,
+          p: (props) => <p style={{ margin: '0 0 10px' }} {...props} />,
+          ul: (props) => <ul style={{ margin: '0 0 12px', paddingLeft: 22 }} {...props} />,
+          ol: (props) => <ol style={{ margin: '0 0 12px', paddingLeft: 22 }} {...props} />,
+          li: (props) => <li style={{ marginBottom: 4 }} {...props} />,
+          a: (props) => <a target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }} {...props} />,
+          blockquote: (props) => <blockquote style={{ margin: '0 0 12px', paddingLeft: 14, borderLeft: '3px solid var(--border-light)', color: 'var(--text-dim)' }} {...props} />,
+          code: ({ inline, className, children, ...props }) => inline
+            ? <code className={className} style={{ background: 'var(--surface2)', padding: '1px 5px', borderRadius: 4, fontSize: 13 }} {...props}>{children}</code>
+            : <code className={className} style={{ fontSize: 13 }} {...props}>{children}</code>,
+          pre: (props) => <pre style={{ margin: '0 0 12px', padding: '12px 14px', borderRadius: 10, background: 'var(--surface2)', overflowX: 'auto' }} {...props} />,
+          strong: (props) => <strong style={{ color: 'var(--text)' }} {...props} />,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -182,10 +183,71 @@ export default function DeepResearchClient() {
   const [followUp, setFollowUp]  = useState('');
   const [followLoading, setFollowLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('findings'); // findings | sources | open
+  const [runId, setRunId]        = useState(null);
+  const [runSnapshot, setRunSnapshot] = useState(null);
+  const [autoScrollPinned, setAutoScrollPinned] = useState(true);
 
   const stageTimerRef = useRef(null);
   const abortRef      = useRef(null);
+  const sseRef        = useRef(null);
   const bottomRef     = useRef(null);
+  const rawReplyRef   = useRef('');
+  const reportPaneRef = useRef(null);
+
+  const setReportText = useCallback((nextText) => {
+    rawReplyRef.current = nextText;
+    setRawReply(nextText);
+    setReport(nextText ? parseReport(nextText) : null);
+  }, []);
+
+  const appendReportText = useCallback((chunk) => {
+    const nextText = rawReplyRef.current + chunk;
+    setReportText(nextText);
+  }, [setReportText]);
+
+  const updateStageFromEvent = useCallback((event) => {
+    if (event.type === 'run.routed') {
+      setStageIdx((idx) => Math.max(idx, 1));
+      return;
+    }
+
+    if (event.type === 'run.started' && event.runId !== runId) {
+      setStageIdx((idx) => Math.max(idx, 2));
+      return;
+    }
+
+    if (event.type === 'run.tool') {
+      setStageIdx((idx) => Math.max(idx, 2));
+      return;
+    }
+
+    if (event.type === 'run.phase') {
+      const phaseName = String(event.phase ?? '').toLowerCase();
+      if (phaseName === 'spawning_agent' || phaseName === 'agent_ready') {
+        setStageIdx((idx) => Math.max(idx, 0));
+        return;
+      }
+      if (phaseName === 'tool_use') {
+        setStageIdx((idx) => Math.max(idx, 3));
+        return;
+      }
+      if (phaseName === 'streaming' || phaseName === 'done') {
+        setStageIdx((idx) => Math.max(idx, 4));
+      }
+    }
+
+    if (event.type === 'run.token') {
+      setStageIdx((idx) => Math.max(idx, 4));
+    }
+  }, [runId]);
+
+  const handleReportPaneScroll = useCallback(() => {
+    const pane = reportPaneRef.current;
+    if (!pane) return;
+    const thresholdPx = 40;
+    const distanceFromBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+    setAutoScrollPinned(distanceFromBottom <= thresholdPx);
+  }, []);
 
   // ── Fetch researcher agent on mount ──────────────────────────────────────
   useEffect(() => {
@@ -201,6 +263,13 @@ export default function DeepResearchClient() {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (phase !== 'running' || !autoScrollPinned) return;
+    const pane = reportPaneRef.current;
+    if (!pane) return;
+    pane.scrollTo({ top: pane.scrollHeight, behavior: 'smooth' });
+  }, [phase, rawReply, autoScrollPinned]);
 
   // ── Stage animation while running ────────────────────────────────────────
   function startStageAnimation() {
@@ -221,6 +290,179 @@ export default function DeepResearchClient() {
     setStageIdx(STAGES.length - 1); // mark all done
   }
 
+  async function fetchRunSnapshot(currentRunId) {
+    if (!currentRunId) return null;
+    const response = await fetch(`/api/runs/${encodeURIComponent(currentRunId)}`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    setRunSnapshot(data);
+    return data;
+  }
+
+  function saveTextFile(filename, content, mimeType = 'text/plain;charset=utf-8') {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleDownload(format) {
+    const slug = query.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'research-report';
+    if (format === 'json') {
+      saveTextFile(`${slug}.json`, JSON.stringify({ query, report, rawReply }, null, 2), 'application/json;charset=utf-8');
+      return;
+    }
+    saveTextFile(`${slug}.md`, rawReply || report?.raw || '');
+  }
+
+  async function handleCheckLatestRun() {
+    if (!runId) return;
+    try {
+      const data = await fetchRunSnapshot(runId);
+      if (data.status === 'completed' && hasMeaningfulReportContent(data.output)) {
+        stopStageAnimation();
+        setRunId(null);
+        setReportText(data.output);
+        setPhase('done');
+        return;
+      }
+
+      if (data.status === 'completed' && !hasMeaningfulReportContent(data.output ?? '')) {
+        stopStageAnimation();
+        setErrMsg(data.error || 'Research finished without producing a report');
+        setPhase('error');
+        return;
+      }
+
+      if (data.status === 'failed' || data.status === 'cancelled') {
+        stopStageAnimation();
+        setErrMsg(data.error || 'Research failed');
+        setPhase('error');
+      }
+    } catch (err) {
+      setErrMsg(err.message || 'Could not load the latest run status');
+      setPhase('error');
+    }
+  }
+
+  useEffect(() => {
+    if (phase !== 'running' || !runId) return undefined;
+
+    const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
+    sseRef.current = source;
+
+    const detachListeners = RUN_EVENT_TYPES.map((eventType) => {
+      const listener = (e) => {
+        let event;
+        try {
+          event = JSON.parse(e.data);
+        } catch {
+          return;
+        }
+
+        updateStageFromEvent(event);
+
+        if (event.type === 'run.phase' && event.detail === 'researcher' && event.phase === 'agent_ready') {
+          setAgentName('researcher');
+        }
+
+        if (event.type === 'run.token') {
+          appendReportText(event.content ?? '');
+          return;
+        }
+
+        if (event.type === 'run.completed' && event.runId === runId) {
+          detachListeners.forEach((detach) => detach());
+          source.close();
+          sseRef.current = null;
+          stopStageAnimation();
+          const output = typeof event.output === 'string'
+            ? event.output
+            : String(event.output ?? '');
+          if (!hasMeaningfulReportContent(output)) {
+            setRunSnapshot((prev) => prev ? { ...prev, status: 'failed', output, error: 'Research finished without producing a report' } : prev);
+            setErrMsg('Research finished without producing a report');
+            setPhase('error');
+            return;
+          }
+          setRunSnapshot((prev) => prev ? { ...prev, status: 'completed', output } : prev);
+          setRunId(null);
+          setReportText(output);
+          setPhase('done');
+          return;
+        }
+
+        if (event.type === 'run.failed' && event.runId === runId) {
+          detachListeners.forEach((detach) => detach());
+          source.close();
+          sseRef.current = null;
+          stopStageAnimation();
+          fetchRunSnapshot(runId).catch(() => {});
+          setErrMsg(event.error || 'Research failed');
+          setPhase('error');
+        }
+      };
+
+      source.addEventListener(eventType, listener);
+      return () => source.removeEventListener(eventType, listener);
+    });
+
+    source.onerror = async () => {
+      detachListeners.forEach((detach) => detach());
+      source.close();
+      sseRef.current = null;
+
+      try {
+        const r = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+
+        if (data.status === 'completed') {
+          stopStageAnimation();
+          if (!hasMeaningfulReportContent(data.output ?? '')) {
+            setRunSnapshot({ ...data, status: 'failed', error: data.error || 'Research finished without producing a report' });
+            setErrMsg(data.error || 'Research finished without producing a report');
+            setPhase('error');
+            return;
+          }
+          setRunSnapshot(data);
+          setRunId(null);
+          setReportText(data.output ?? '');
+          setPhase('done');
+          return;
+        }
+
+        if (data.status === 'failed' || data.status === 'cancelled') {
+          stopStageAnimation();
+          setRunSnapshot(data);
+          setErrMsg(data.error || 'Research failed');
+          setPhase('error');
+          return;
+        }
+      } catch (err) {
+        stopStageAnimation();
+        setErrMsg(err.message || 'Lost connection while tracking research');
+        setPhase('error');
+        return;
+      }
+
+      stopStageAnimation();
+      setErrMsg('Lost connection while tracking research');
+      setPhase('error');
+    };
+
+    return () => {
+      detachListeners.forEach((detach) => detach());
+      source.close();
+      if (sseRef.current === source) sseRef.current = null;
+    };
+  }, [appendReportText, phase, runId, setReportText, updateStageFromEvent]);
+
   // ── Run research ──────────────────────────────────────────────────────────
   const handleResearch = useCallback(async () => {
     const q = query.trim();
@@ -228,10 +470,13 @@ export default function DeepResearchClient() {
 
     setPhase('running');
     setReport(null);
-    setRawReply('');
+    setReportText('');
     setErrMsg('');
     setHistory([]);
     setActiveTab('findings');
+    setRunId(null);
+    setRunSnapshot(null);
+    setAutoScrollPinned(true);
     startStageAnimation();
 
     // Build the full message with optional seed URLs
@@ -247,35 +492,17 @@ export default function DeepResearchClient() {
     try {
       abortRef.current = new AbortController();
 
-      let reply = '';
-      if (agentId) {
-        const r = await fetch(`/api/agents/${encodeURIComponent(agentId)}/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: prompt }),
-          signal: abortRef.current.signal,
-        });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-        reply = data.reply ?? '';
-      } else {
-        // Fallback: route through alive with researcher-framed request
-        const r = await fetch('/api/runs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: `[RESEARCH REQUEST] ${prompt}` }),
-          signal: abortRef.current.signal,
-        });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-        // For runs, wait and poll... actually just show that it was dispatched
-        reply = `Research dispatched via orchestrator (run ID: ${data.runId}). Check Sessions for results.`;
-      }
-
-      stopStageAnimation();
-      setRawReply(reply);
-      setReport(parseReport(reply));
-      setPhase('done');
+      const r = await fetch('/api/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: `[RESEARCH REQUEST] ${prompt}` }),
+        signal: abortRef.current.signal,
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setRunId(data.runId);
+      setRunSnapshot({ runId: data.runId, sessionId: data.sessionId, status: data.status, output: null, error: null, childRuns: [] });
+      return;
     } catch (err) {
       stopStageAnimation();
       if (err.name === 'AbortError') {
@@ -285,7 +512,7 @@ export default function DeepResearchClient() {
         setPhase('error');
       }
     }
-  }, [query, seedUrls, phase, agentId]);
+  }, [phase, query, seedUrls, setReportText]);
 
   // ── Follow-up Q&A ─────────────────────────────────────────────────────────
   const handleFollowUp = useCallback(async () => {
@@ -314,7 +541,11 @@ export default function DeepResearchClient() {
 
   const handleStop = () => {
     abortRef.current?.abort();
+    sseRef.current?.close();
     clearTimeout(stageTimerRef.current);
+    if (runId) {
+      fetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' }).catch(() => {});
+    }
     setPhase('idle');
   };
 
@@ -323,11 +554,16 @@ export default function DeepResearchClient() {
     setQuery('');
     setSeedUrls('');
     setReport(null);
-    setRawReply('');
+    setReportText('');
     setHistory([]);
     setStageIdx(-1);
     setErrMsg('');
+    setRunId(null);
+    setRunSnapshot(null);
+    setAutoScrollPinned(true);
   };
+
+  const hasStreamingReport = phase === 'running' && hasMeaningfulReportContent(rawReply);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -627,60 +863,127 @@ export default function DeepResearchClient() {
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 20,
-            padding: 40,
+            overflow: 'hidden',
           }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 48, marginBottom: 16 }}>
-                {stageIdx >= 0 ? STAGES[Math.min(stageIdx, STAGES.length - 1)].icon : '🔬'}
+            <div style={{ padding: '24px 28px 16px', borderBottom: '1px solid var(--border-light)', background: 'var(--surface)', flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    <div style={{ fontSize: 34 }}>
+                      {stageIdx >= 0 ? STAGES[Math.min(stageIdx, STAGES.length - 1)].icon : '🔬'}
+                    </div>
+                    <div>
+                      <h3 style={{ margin: '0 0 4px', fontSize: 17, color: 'var(--text)' }}>
+                        {stageIdx >= 0 ? STAGES[Math.min(stageIdx, STAGES.length - 1)].label + '…' : 'Starting…'}
+                      </h3>
+                      <p style={{ margin: 0, fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                        {stageIdx >= 0 ? STAGES[Math.min(stageIdx, STAGES.length - 1)].desc : 'Initializing research pipeline'}
+                      </p>
+                    </div>
+                  </div>
+                  <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: 0 }}>
+                    Researching: <em style={{ color: 'var(--text)' }}>{query.length > 110 ? query.slice(0, 110) + '…' : query}</em>
+                  </p>
+                </div>
+                {runId && (
+                  <div style={{
+                    padding: '10px 12px',
+                    background: 'var(--surface2)',
+                    border: '1px solid var(--border-light)',
+                    borderRadius: 8,
+                    fontSize: 12,
+                    color: 'var(--text-dim)',
+                    lineHeight: 1.5,
+                    textAlign: 'right',
+                  }}>
+                    <div>Live run</div>
+                    <div style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono, monospace)' }}>{runId}</div>
+                  </div>
+                )}
               </div>
-              <h3 style={{ margin: '0 0 6px', fontSize: 17, color: 'var(--text)' }}>
-                {stageIdx >= 0 ? STAGES[Math.min(stageIdx, STAGES.length - 1)].label + '…' : 'Starting…'}
-              </h3>
-              <p style={{ margin: 0, fontSize: 13, color: 'var(--text-dim)', maxWidth: 340, lineHeight: 1.6 }}>
-                {stageIdx >= 0 ? STAGES[Math.min(stageIdx, STAGES.length - 1)].desc : 'Initializing research pipeline'}
-              </p>
+
+              <div style={{ width: '100%', marginTop: 16, background: 'var(--surface2)', borderRadius: 8, height: 6, overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%',
+                  background: 'var(--accent)',
+                  borderRadius: 8,
+                  width: `${((stageIdx + 1) / STAGES.length) * 100}%`,
+                  transition: 'width 0.8s ease',
+                }} />
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 14 }}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {STAGES.map((s, i) => (
+                    <div
+                      key={s.id}
+                      title={s.label}
+                      style={{
+                        width: i <= stageIdx ? 10 : 8,
+                        height: i <= stageIdx ? 10 : 8,
+                        borderRadius: '50%',
+                        background: i < stageIdx
+                          ? '#22c55e'
+                          : i === stageIdx
+                          ? 'var(--accent)'
+                          : 'var(--border-light)',
+                        transition: 'all 0.3s',
+                      }}
+                    />
+                  ))}
+                </div>
+                <div style={{ fontSize: 12, color: autoScrollPinned ? 'var(--accent)' : 'var(--text-dim)' }}>
+                  {autoScrollPinned ? 'Auto-following live report' : 'Auto-follow paused'}
+                </div>
+              </div>
             </div>
 
-            {/* Animated progress bar */}
-            <div style={{ width: '100%', maxWidth: 480, background: 'var(--surface2)', borderRadius: 8, height: 6, overflow: 'hidden' }}>
-              <div style={{
-                height: '100%',
-                background: 'var(--accent)',
-                borderRadius: 8,
-                width: `${((stageIdx + 1) / STAGES.length) * 100}%`,
-                transition: 'width 0.8s ease',
-              }} />
+            <div
+              ref={reportPaneRef}
+              onScroll={handleReportPaneScroll}
+              style={{ flex: 1, overflow: 'auto', padding: '20px 28px 28px' }}
+            >
+              {hasStreamingReport ? (
+                <div style={{ maxWidth: 860 }}>
+                  <div style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '6px 10px',
+                    marginBottom: 14,
+                    background: 'var(--accent)11',
+                    border: '1px solid var(--accent)33',
+                    borderRadius: 999,
+                    fontSize: 12,
+                    color: 'var(--accent)',
+                    fontWeight: 600,
+                  }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'currentColor' }} />
+                    Streaming report draft
+                  </div>
+                  <MarkdownBlock text={rawReply} />
+                </div>
+              ) : (
+                <div style={{
+                  height: '100%',
+                  minHeight: 280,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: 'var(--text-dim)',
+                  textAlign: 'center',
+                  padding: 24,
+                }}>
+                  <div>
+                    <div style={{ fontSize: 36, marginBottom: 10 }}>
+                      {stageIdx >= 0 ? STAGES[Math.min(stageIdx, STAGES.length - 1)].icon : '🔬'}
+                    </div>
+                    <div style={{ fontSize: 14, color: 'var(--text)' }}>Waiting for report text…</div>
+                    <div style={{ fontSize: 12, marginTop: 6 }}>Tool events and routing are active; the report pane will fill as tokens arrive.</div>
+                  </div>
+                </div>
+              )}
             </div>
-
-            {/* Stage dots */}
-            <div style={{ display: 'flex', gap: 8 }}>
-              {STAGES.map((s, i) => (
-                <div
-                  key={s.id}
-                  title={s.label}
-                  style={{
-                    width: i <= stageIdx ? 10 : 8,
-                    height: i <= stageIdx ? 10 : 8,
-                    borderRadius: '50%',
-                    background: i < stageIdx
-                      ? '#22c55e'
-                      : i === stageIdx
-                      ? 'var(--accent)'
-                      : 'var(--border-light)',
-                    transition: 'all 0.3s',
-                  }}
-                />
-              ))}
-            </div>
-
-            <p style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>
-              Researching: <em style={{ color: 'var(--text)' }}>
-                {query.length > 80 ? query.slice(0, 80) + '…' : query}
-              </em>
-            </p>
           </div>
         )}
 
@@ -694,21 +997,97 @@ export default function DeepResearchClient() {
             justifyContent: 'center',
             gap: 12,
             color: 'var(--text-dim)',
+            padding: 32,
+            textAlign: 'center',
           }}>
             <div style={{ fontSize: 48 }}>⚠️</div>
             <h3 style={{ margin: 0, color: '#ef4444' }}>Research failed</h3>
-            <p style={{ margin: 0, fontSize: 13 }}>{errMsg}</p>
+            <p style={{ margin: 0, fontSize: 13, maxWidth: 620, lineHeight: 1.6 }}>{errMsg}</p>
+            {runId && (
+              <div style={{
+                marginTop: 4,
+                padding: '10px 12px',
+                background: 'var(--surface2)',
+                border: '1px solid var(--border-light)',
+                borderRadius: 8,
+                fontSize: 12,
+                color: 'var(--text-dim)',
+              }}>
+                Run ID: <span style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono, monospace)' }}>{runId}</span>
+              </div>
+            )}
+            {runSnapshot?.children?.length > 0 && (
+              <div style={{
+                maxWidth: 720,
+                width: '100%',
+                padding: '12px 14px',
+                background: 'var(--surface2)',
+                border: '1px solid var(--border-light)',
+                borderRadius: 10,
+                textAlign: 'left',
+              }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Backend run details</div>
+                {runSnapshot.children.map((child) => (
+                  <div key={child.runId} style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 6, lineHeight: 1.5 }}>
+                    <strong style={{ color: 'var(--text)' }}>{child.agent}</strong>: {child.status}
+                    {child.error ? ` — ${child.error}` : ''}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 8 }}>
+              {runId && (
+                <button
+                  onClick={handleCheckLatestRun}
+                  style={{ padding: '8px 16px', background: 'var(--surface2)', color: 'var(--text)', border: '1px solid var(--border-light)', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}
+                >
+                  Check Latest Result
+                </button>
+              )}
+              {runId && (
+                <button
+                  onClick={() => navigator.clipboard?.writeText(runId)}
+                  style={{ padding: '8px 16px', background: 'var(--surface2)', color: 'var(--text)', border: '1px solid var(--border-light)', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}
+                >
+                  Copy Run ID
+                </button>
+              )}
+              <button
+                onClick={handleReset}
+                style={{ padding: '8px 20px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}
+              >
+                Try Again
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Done: Run Dispatched ────────────────────────────────────── */}
+        {phase === 'done' && runId && (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 40, textAlign: 'center' }}>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>🚀</div>
+            <h3 style={{ margin: '0 0 8px', fontSize: 18, color: 'var(--text)' }}>Research Dispatched</h3>
+            <p style={{ margin: 0, fontSize: 14, color: 'var(--text-dim)', maxWidth: 400, lineHeight: 1.6 }}>
+              Your deep research query has been securely handed off to the orchestrator. Because no dedicated Researcher agent was found, this task is running asynchronously in the background.
+            </p>
+            <div style={{ marginTop: 24, padding: '12px 16px', background: 'var(--surface2)', borderRadius: 8, border: '1px solid var(--border-light)', fontSize: 13, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span>Run ID: <code style={{ color: 'var(--accent)', background: 'var(--surface)', padding: '2px 6px', borderRadius: 4 }}>{runId}</code></span>
+              <button onClick={() => navigator.clipboard?.writeText(runId)} style={{ padding: '4px 8px', border: '1px solid var(--border-light)', background: 'var(--surface)', borderRadius: 4, cursor: 'pointer', fontSize: 12, color: 'var(--text)' }}>Copy</button>
+            </div>
+            <p style={{ marginTop: 24, fontSize: 13, color: 'var(--text-dim)' }}>
+              Check the <strong>Inbox</strong> or <strong>Sessions</strong> tab later to view the final report.
+            </p>
             <button
               onClick={handleReset}
-              style={{ marginTop: 8, padding: '8px 20px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}
+              style={{ marginTop: 16, padding: '8px 20px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}
             >
-              Try Again
+              Research Another Topic
             </button>
           </div>
         )}
 
         {/* ── Done: Report ───────────────────────────────────────────────── */}
-        {phase === 'done' && report && (
+        {phase === 'done' && report && !runId && (
           <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
 
             {/* Report header */}
@@ -743,6 +1122,20 @@ export default function DeepResearchClient() {
                     style={{ padding: '6px 12px', background: 'var(--surface2)', border: '1px solid var(--border-light)', borderRadius: 6, fontSize: 12, cursor: 'pointer', color: 'var(--text)' }}
                   >
                     📋 Copy
+                  </button>
+                  <button
+                    onClick={() => handleDownload('markdown')}
+                    title="Download markdown report"
+                    style={{ padding: '6px 12px', background: 'var(--surface2)', border: '1px solid var(--border-light)', borderRadius: 6, fontSize: 12, cursor: 'pointer', color: 'var(--text)' }}
+                  >
+                    ⬇ Markdown
+                  </button>
+                  <button
+                    onClick={() => handleDownload('json')}
+                    title="Download structured report JSON"
+                    style={{ padding: '6px 12px', background: 'var(--surface2)', border: '1px solid var(--border-light)', borderRadius: 6, fontSize: 12, cursor: 'pointer', color: 'var(--text)' }}
+                  >
+                    ⬇ JSON
                   </button>
                 </div>
               </div>
@@ -795,7 +1188,7 @@ export default function DeepResearchClient() {
               )}
 
               {activeTab === 'findings' && (
-                <MiniMarkdown text={report.findings || rawReply} />
+                <MarkdownBlock text={report.findings || rawReply} />
               )}
 
               {activeTab === 'sources' && (
@@ -805,18 +1198,18 @@ export default function DeepResearchClient() {
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
                         {report.sourceUrls.map(url => <SourceCard key={url} url={url} />)}
                       </div>
-                      <MiniMarkdown text={report.sourcesRaw} />
+                      <MarkdownBlock text={report.sourcesRaw} />
                     </>
                   ) : (
                     <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>
-                      <MiniMarkdown text={report.sourcesRaw || 'No sources extracted.'} />
+                      <MarkdownBlock text={report.sourcesRaw || 'No sources extracted.'} />
                     </div>
                   )}
                 </div>
               )}
 
               {activeTab === 'open' && (
-                <MiniMarkdown text={report.openQuestions || '_No open questions section found in the report._'} />
+                <MarkdownBlock text={report.openQuestions || '_No open questions section found in the report._'} />
               )}
 
               {activeTab === 'raw' && (

@@ -109,6 +109,7 @@ pub async fn build_router(
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         user_rate_limiter,
         orchestrator_runs: tokio::sync::RwLock::new(Vec::new()),
+        api_key_cache: dashmap::DashMap::new(),
     });
 
     // H1: Restrict CORS to explicit headers and methods rather than Any.
@@ -219,6 +220,12 @@ pub async fn build_router(
             axum::routing::get(routes::health_detail),
         )
         .route("/api/status", axum::routing::get(routes::status))
+        .route("/api/finance/summary", axum::routing::get(routes::finance_summary))
+        .route(
+            "/api/keys/cache",
+            axum::routing::get(routes::get_api_key_cache)
+                .post(routes::set_api_key_cache),
+        )
         .route("/api/version", axum::routing::get(routes::version))
         .route(
             "/api/agents",

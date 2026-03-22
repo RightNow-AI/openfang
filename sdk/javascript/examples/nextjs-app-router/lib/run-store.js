@@ -86,6 +86,23 @@ async function warmCache() {
   }
 }
 
+async function syncFromDisk() {
+  const persisted = await readAll();
+  for (const [id, rec] of Object.entries(persisted)) {
+    const cached = cache.get(id);
+    if (!cached) {
+      cache.set(id, rec);
+      continue;
+    }
+
+    const cachedUpdatedAt = Date.parse(cached.updatedAt || 0) || 0;
+    const persistedUpdatedAt = Date.parse(rec.updatedAt || 0) || 0;
+    if (persistedUpdatedAt >= cachedUpdatedAt) {
+      cache.set(id, rec);
+    }
+  }
+}
+
 const runStore = {
   /**
    * Create a new run record.
@@ -146,6 +163,20 @@ const runStore = {
   },
 
   /**
+   * Update only the run output without changing status.
+   *
+   * @param {string} runId
+   * @param {string|null} output
+   */
+  setOutput(runId, output) {
+    const record = cache.get(runId);
+    if (!record) return;
+    record.output = output;
+    record.updatedAt = new Date().toISOString();
+    scheduleWrite();
+  },
+
+  /**
    * Get a run by ID. Tries cache first, falls back to disk on miss
    * (handles the case where the process restarted).
    *
@@ -153,8 +184,8 @@ const runStore = {
    * @returns {Promise<RunRecord|null>}
    */
   async get(runId) {
-    if (cache.has(runId)) return cache.get(runId);
     await warmCache();
+    await syncFromDisk();
     return cache.get(runId) ?? null;
   },
 
@@ -177,6 +208,7 @@ const runStore = {
    */
   async listRecent(limit = 50) {
     await warmCache();
+    await syncFromDisk();
     const all = [...cache.values()];
     return all
       .filter((r) => r.parentRunId === null)
@@ -192,6 +224,7 @@ const runStore = {
    */
   async getChildren(parentRunId) {
     await warmCache();
+    await syncFromDisk();
     return [...cache.values()].filter((r) => r.parentRunId === parentRunId);
   },
 };

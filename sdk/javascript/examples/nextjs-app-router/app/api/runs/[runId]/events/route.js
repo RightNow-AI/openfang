@@ -25,8 +25,8 @@ const SSE_HEADERS = {
   'X-Accel-Buffering': 'no', // disable nginx buffering
 };
 
-function sseData(event) {
-  return `data: ${JSON.stringify(event)}\n\n`;
+function sseEvent(eventName, payload) {
+  return `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
 }
 
 export async function GET(request, { params }) {
@@ -35,7 +35,7 @@ export async function GET(request, { params }) {
   // Validate run exists
   const run = await runStore.get(runId);
   if (!run) {
-    return new Response('data: {"type":"error","message":"Run not found"}\n\n', {
+    return new Response(sseEvent('error', { type: 'error', message: 'Run not found' }), {
       status: 404,
       headers: SSE_HEADERS,
     });
@@ -64,7 +64,7 @@ export async function GET(request, { params }) {
       // ── 1. Replay buffered events ─────────────────────────────────────────
       const buffered = run.events ?? [];
       for (const event of buffered) {
-        enqueue(sseData(event));
+        enqueue(sseEvent(event.type, event));
       }
 
       // ── 2. If run already terminal, close immediately ─────────────────────
@@ -75,11 +75,12 @@ export async function GET(request, { params }) {
 
       // ── 3. Subscribe to live events ───────────────────────────────────────
       const unsubscribe = eventBus.subscribe(runId, (event) => {
-        enqueue(sseData(event));
+        enqueue(sseEvent(event.type, event));
 
         const isTerminal =
           event.type === 'run.completed' ||
-          event.type === 'run.failed';
+          event.type === 'run.failed' ||
+          (event.type === 'run.status' && event.status === 'cancelled');
 
         // Close after the terminal event for the parent run (not child runs)
         if (isTerminal && event.runId === runId) {

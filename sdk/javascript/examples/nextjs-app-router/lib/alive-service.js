@@ -11,8 +11,8 @@
  *   3. Route to a specialist (or keep in alive if no match)
  *   4. Emit run.routed
  *   5. Create a child run for the specialist
- *   6. Call OpenFang daemon with the specialist's agentId
- *   7. Emit run.token (full response — daemon is synchronous, no streaming yet)
+ *   6. Stream OpenFang daemon output from the specialist's agentId
+ *   7. Emit incremental run.token events as content arrives
  *   8. Emit run.completed / run.failed
  *   9. Update run records
  *
@@ -26,6 +26,10 @@
  * } | {
  *   type: 'run.token',     runId: string, agent: string, content: string
  * } | {
+ *   type: 'run.phase',     runId: string, agent: string, phase: string, detail?: string|null
+ * } | {
+ *   type: 'run.tool',      runId: string, agent: string, tool: string, input?: unknown
+ * } | {
  *   type: 'run.status',    runId: string, agent: string, status: string
  * } | {
  *   type: 'run.completed', runId: string, agent: string, output: unknown
@@ -36,11 +40,48 @@
 
 'use strict';
 
-const { agentRegistry } = require('./agent-registry');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+
 const { agentRouter } = require('./agent-router');
 const { openfangClient } = require('./openfang-client');
 const { runStore } = require('./run-store');
 const { eventBus } = require('./event-bus');
+
+const FIRST_REPORT_TOKEN_TIMEOUT_MS = 60_000;
+const RESEARCHER_NAME = 'researcher';
+
+async function loadResearcherManifest() {
+  const candidatePaths = [
+    path.resolve(process.cwd(), 'agents', 'researcher', 'agent.toml'),
+    path.resolve(process.cwd(), '..', '..', '..', '..', 'agents', 'researcher', 'agent.toml'),
+    path.resolve(__dirname, '..', '..', '..', '..', '..', 'agents', 'researcher', 'agent.toml'),
+  ];
+
+  for (const candidatePath of candidatePaths) {
+    try {
+      return await fs.readFile(candidatePath, 'utf8');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error('Could not find agents/researcher/agent.toml');
+}
+
+function buildResearchFallbackMessage(message) {
+  return [
+    '[SYSTEM OVERRIDE: You are the lead research analyst.]',
+    'You MUST output a long-form, highly detailed, and structured research report.',
+    'Use markdown headings, numbered findings, sources with URLs, confidence, and open questions.',
+    'Do not give a short, conversational, or empty answer.',
+    'If live data is unavailable, synthesize the best known current state and state your assumptions.',
+    '',
+    `User Request: ${message}`,
+  ].join('\n');
+}
 
 /**
  * Emit a RunEvent to the event bus AND append it to the run's replay buffer.
@@ -51,6 +92,50 @@ const { eventBus } = require('./event-bus');
 function emit(runId, event) {
   runStore.appendEvent(runId, event);
   eventBus.emit(runId, event);
+}
+
+async function ensureResearcherAgent(parentRunId, daemonList) {
+  const existingResearcher = daemonList.find(
+    (agent) => (agent.name ?? agent.title ?? '').toLowerCase() === RESEARCHER_NAME,
+  );
+  if (existingResearcher) {
+    return {
+      daemonList,
+      researcher: existingResearcher,
+    };
+  }
+
+  emit(parentRunId, {
+    type: 'run.phase',
+    runId: parentRunId,
+    agent: 'alive',
+    phase: 'spawning_agent',
+    detail: 'researcher',
+  });
+
+  const manifestToml = await loadResearcherManifest();
+  await openfangClient.spawnAgentFromManifest(manifestToml);
+  const refreshedList = await openfangClient.listAgents();
+  const researcher = refreshedList.find(
+    (agent) => (agent.name ?? agent.title ?? '').toLowerCase() === RESEARCHER_NAME,
+  );
+
+  if (!researcher) {
+    throw new Error('Researcher agent spawn completed but the daemon still does not list researcher');
+  }
+
+  emit(parentRunId, {
+    type: 'run.phase',
+    runId: parentRunId,
+    agent: 'alive',
+    phase: 'agent_ready',
+    detail: 'researcher',
+  });
+
+  return {
+    daemonList: refreshedList,
+    researcher,
+  };
 }
 
 const aliveService = {
@@ -108,7 +193,7 @@ const aliveService = {
 
     // Fetch the daemon agent list once — reused for both routing context and ID resolution
     const rawDaemonAgents = await openfangClient.listAgents().catch(() => []);
-    const daemonList = Array.isArray(rawDaemonAgents)
+    let daemonList = Array.isArray(rawDaemonAgents)
       ? rawDaemonAgents
       : (rawDaemonAgents?.agents ?? []);
 
@@ -121,29 +206,72 @@ const aliveService = {
 
     const logicalTarget = specialistId ?? 'alive';
 
-    function resolveAgentId(logicalName) {
+    if (logicalTarget.toLowerCase().includes(RESEARCHER_NAME)) {
+      const ensured = await ensureResearcherAgent(parentRunId, daemonList);
+      daemonList = ensured.daemonList;
+    }
+
+    function resolveTarget(logicalName) {
       // 1. Exact ID match
       const byId = daemonList.find((a) => a.id === logicalName);
-      if (byId) return byId.id;
+      if (byId) {
+        return {
+          id: byId.id,
+          label: byId.name ?? byId.title ?? logicalName,
+        };
+      }
       // 2. Title/name match (case-insensitive)
       const lower = logicalName.toLowerCase();
       const byTitle = daemonList.find(
         (a) => (a.name ?? a.title ?? '').toLowerCase() === lower,
       );
-      if (byTitle) return byTitle.id;
-      // 3. Fallback: prefer 'assistant', then first available
+      if (byTitle) {
+        return {
+          id: byTitle.id,
+          label: byTitle.name ?? byTitle.title ?? logicalName,
+        };
+      }
+      // 3. Fallback: prefer exact 'assistant', then assistant-like agents, then first available
+      const exactAssistant = daemonList.find(
+        (a) => (a.name ?? a.title ?? '').toLowerCase() === 'assistant',
+      );
+      if (exactAssistant) {
+        return {
+          id: exactAssistant.id,
+          label: exactAssistant.name ?? exactAssistant.title ?? 'assistant',
+        };
+      }
       const assistant = daemonList.find((a) =>
         (a.name ?? a.title ?? '').toLowerCase().includes('assistant'),
       );
-      if (assistant) return assistant.id;
-      return daemonList[0]?.id ?? null;
+      if (assistant) {
+        return {
+          id: assistant.id,
+          label: assistant.name ?? assistant.title ?? 'assistant',
+        };
+      }
+      const first = daemonList[0];
+      if (!first) return null;
+      return {
+        id: first.id,
+        label: first.name ?? first.title ?? logicalName,
+      };
     }
 
-    const targetAgent = resolveAgentId(logicalTarget);
-    if (!targetAgent) {
+    const resolvedTarget = resolveTarget(logicalTarget);
+    if (!resolvedTarget) {
       throw new Error('No agents available in daemon');
     }
-    const targetLabel = logicalTarget; // human-readable name for events
+    const targetAgent = resolvedTarget.id;
+    const targetLabel = logicalTarget === 'alive'
+      ? 'alive'
+      : resolvedTarget.label;
+    const needsResearchFallbackPrompt =
+      logicalTarget.toLowerCase().includes('researcher') &&
+      !targetLabel.toLowerCase().includes('researcher');
+    const finalMessage = needsResearchFallbackPrompt
+      ? buildResearchFallbackMessage(message)
+      : message;
 
     emit(parentRunId, {
       type: 'run.routed',
@@ -169,11 +297,59 @@ const aliveService = {
       agent: targetLabel,
     });
 
-    // Call the daemon
-    let result;
+    // Stream the daemon output and persist progress incrementally.
+    let responseText = '';
+    let streamCompleted = false;
+    const streamController = new AbortController();
+    const firstTokenTimeout = setTimeout(() => {
+      if (!responseText.trim()) {
+        streamController.abort(new Error('Research agent did not produce any report text within 60s'));
+      }
+    }, FIRST_REPORT_TOKEN_TIMEOUT_MS);
     try {
-      result = await openfangClient.sendMessage(targetAgent, message, sessionId);
+      await openfangClient.streamMessage(targetAgent, finalMessage, async ({ event, data }) => {
+        if (event === 'chunk' && typeof data?.content === 'string' && data.content) {
+          clearTimeout(firstTokenTimeout);
+          responseText += data.content;
+          runStore.setOutput(childRun.runId, responseText);
+          runStore.setOutput(parentRunId, responseText);
+          emit(parentRunId, {
+            type: 'run.token',
+            runId: childRun.runId,
+            agent: targetLabel,
+            content: data.content,
+          });
+          return;
+        }
+
+        if (event === 'phase') {
+          emit(parentRunId, {
+            type: 'run.phase',
+            runId: childRun.runId,
+            agent: targetLabel,
+            phase: String(data?.phase ?? 'running'),
+            detail: data?.detail ?? null,
+          });
+          return;
+        }
+
+        if (event === 'tool_use' || event === 'tool_result') {
+          emit(parentRunId, {
+            type: 'run.tool',
+            runId: childRun.runId,
+            agent: targetLabel,
+            tool: String(data?.tool ?? 'unknown'),
+            input: data?.input,
+          });
+          return;
+        }
+
+        if (event === 'done') {
+          streamCompleted = true;
+        }
+      }, { signal: streamController.signal });
     } catch (err) {
+      clearTimeout(firstTokenTimeout);
       const errMsg = err instanceof Error ? err.message : String(err);
       runStore.setStatus(childRun.runId, 'failed', { error: errMsg });
       emit(parentRunId, {
@@ -191,17 +367,31 @@ const aliveService = {
       });
       return;
     }
+    clearTimeout(firstTokenTimeout);
 
-    const responseText = String(result?.response ?? '');
+    if (!responseText.trim()) {
+      const errMsg = streamCompleted
+        ? 'Research agent completed without producing a report'
+        : 'Daemon stream ended before the assistant produced a reply';
+      runStore.setStatus(childRun.runId, 'failed', { error: errMsg });
+      emit(parentRunId, {
+        type: 'run.failed',
+        runId: childRun.runId,
+        agent: targetLabel,
+        error: errMsg,
+      });
+      runStore.setStatus(parentRunId, 'failed', { error: errMsg });
+      emit(parentRunId, {
+        type: 'run.failed',
+        runId: parentRunId,
+        agent: 'alive',
+        error: errMsg,
+      });
+      return;
+    }
 
     // Child completed
     runStore.setStatus(childRun.runId, 'completed', { output: responseText });
-    emit(parentRunId, {
-      type: 'run.token',
-      runId: childRun.runId,
-      agent: targetLabel,
-      content: responseText,
-    });
     emit(parentRunId, {
       type: 'run.completed',
       runId: childRun.runId,

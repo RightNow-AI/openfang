@@ -21,6 +21,17 @@ import AgentTrace from '../components/AgentTrace';
 import { sendViaRun, sendDirect } from '../../lib/chat-transport';
 import { track } from '../../lib/telemetry';
 
+const RUN_EVENT_TYPES = [
+  'run.started',
+  'run.routed',
+  'run.token',
+  'run.phase',
+  'run.tool',
+  'run.status',
+  'run.completed',
+  'run.failed',
+];
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 function terminalStatus(status) {
@@ -45,7 +56,7 @@ export default function ChatClient({ agentId = null, agentName = null }) {
   const [error, setError] = useState('');
   const [helperOpen, setHelperOpen] = useState(false);
   const [sessionId] = useState(() =>
-    typeof crypto !== 'undefined' ? crypto.randomUUID() : String(Date.now()),
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Date.now()),
   );
 
   const sseRef = useRef(null);
@@ -130,7 +141,51 @@ export default function ChatClient({ agentId = null, agentName = null }) {
       const source = new EventSource(`/api/runs/${runId}/events`);
       sseRef.current = source;
 
-      source.onmessage = (e) => {
+      const detachListeners = RUN_EVENT_TYPES.map((eventType) => {
+        const listener = (e) => {
+          if (activeTurnIdRef.current !== turnId) return;
+
+          let event;
+          try { event = JSON.parse(e.data); } catch { return; }
+
+          setTurns((prev) =>
+            prev.map((t) => {
+              if (t.id !== turnId) return t;
+              const newEvents = [...t.events, event];
+              const newStatus = statusFromEvent(event) ?? t.status;
+              return { ...t, events: newEvents, status: newStatus };
+            }),
+          );
+
+          const isParentTerminal =
+            (event.type === 'run.completed' || event.type === 'run.failed') &&
+            event.runId === runId;
+
+          if (isParentTerminal) {
+            source.close();
+            sseRef.current = null;
+            setRunning(false);
+          }
+        };
+
+        source.addEventListener(eventType, listener);
+        return () => source.removeEventListener(eventType, listener);
+      });
+
+      source.onerror = () => {
+        detachListeners.forEach((detach) => detach());
+        source.close();
+        sseRef.current = null;
+        setTurns((prev) =>
+          prev.map((t) =>
+            t.id === turnId && !terminalStatus(t.status) ? { ...t, status: 'failed' } : t,
+          ),
+        );
+        setError('Connection lost. Check that the daemon is running.');
+        setRunning(false);
+      };
+
+      source.addEventListener('message', (e) => {
         if (activeTurnIdRef.current !== turnId) return;
 
         let event;
@@ -155,19 +210,7 @@ export default function ChatClient({ agentId = null, agentName = null }) {
           sseRef.current = null;
           setRunning(false);
         }
-      };
-
-      source.onerror = () => {
-        source.close();
-        sseRef.current = null;
-        setTurns((prev) =>
-          prev.map((t) =>
-            t.id === turnId && !terminalStatus(t.status) ? { ...t, status: 'failed' } : t,
-          ),
-        );
-        setError('Connection lost. Check that the daemon is running.');
-        setRunning(false);
-      };
+      }, { once: true });
     },
     [running, sessionId, isDirect, agentId],
   );

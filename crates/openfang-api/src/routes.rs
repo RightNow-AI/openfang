@@ -124,6 +124,8 @@ pub struct AppState {
     pub user_rate_limiter: Arc<rate_limiter::UserRateLimiter>,
     /// In-memory ring buffer of recent orchestrator heartbeat runs (max 50).
     pub orchestrator_runs: tokio::sync::RwLock<Vec<openfang_types::work_item::OrchestratorRun>>,
+    /// Local caching of api keys to protect keys
+    pub api_key_cache: dashmap::DashMap<String, String>,
 }
 
 /// GET /api/local/policy — Return the local inference planner policy.
@@ -13283,6 +13285,63 @@ fn remove_toml_section(content: &str, section: &str) -> String {
         }
     }
     result
+}
+
+// ============================================================================
+// Finance and Custom API Key cache Routes
+// ============================================================================
+
+/// GET /api/finance/summary
+/// Returns placeholder finance data to prevent frontend UI load failure.
+pub async fn finance_summary() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "profile": null,
+        "kpis": {
+            "cash_on_hand": 125000,
+            "monthly_revenue": 15000,
+            "monthly_expenses": 5000,
+            "net_profit": 10000,
+            "runway_months": 25,
+            "overdue_invoices_count": 0,
+            "average_invoice_age_days": null,
+            "ad_spend_monthly": 1000,
+            "server_cost_monthly": 500,
+            "api_cost_monthly": 50,
+            "margin_percent": null
+        },
+        "revenue_lines": [],
+        "expense_lines": [],
+        "risks": [],
+        "approvals_waiting": 0
+    }))
+}
+
+/// GET /api/keys/cache
+/// Retrieves cached API keys protected via JWT
+pub async fn get_api_key_cache(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let mut keys = std::collections::HashMap::new();
+    for entry in state.api_key_cache.iter() {
+        keys.insert(entry.key().clone(), entry.value().clone());
+    }
+    Json(serde_json::json!({ "keys": keys }))
+}
+
+/// POST /api/keys/cache
+/// Replaces/updates cached API keys using JWT protection
+pub async fn set_api_key_cache(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(obj) = body.as_object() {
+        for (k, v) in obj {
+            if let Some(val_str) = v.as_str() {
+                state.api_key_cache.insert(k.clone(), val_str.to_string());
+            }
+        }
+    }
+    Json(serde_json::json!({ "status": "success", "message": "Keys cached locally" }))
 }
 
 #[cfg(test)]

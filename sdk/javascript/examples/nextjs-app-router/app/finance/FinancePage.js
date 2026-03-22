@@ -10,6 +10,7 @@ import RecommendedFinanceTab from './RecommendedFinanceTab';
 import FinanceOverviewTab from './FinanceOverviewTab';
 import FinanceTemplatesTab from './FinanceTemplatesTab';
 import AdvancedFinanceTab from './AdvancedFinanceTab';
+import InvestmentFinanceTab from './InvestmentFinanceTab';
 import { emptyFinanceSummary } from './lib/finance-ui';
 
 export default function FinancePage({ initialTab, initialView, autoOpenWizard }) {
@@ -160,6 +161,9 @@ export default function FinancePage({ initialTab, initialView, autoOpenWizard })
               view={view}
               onOpenDetail={handleOpenDetail}
             />
+          )}
+          {activeTab === 'investment' && (
+            <InvestmentFinanceTab />
           )}
           {activeTab === 'templates' && (
             <FinanceTemplatesTab
