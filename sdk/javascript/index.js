@@ -586,6 +586,10 @@ class SkillResource {
     }
     return res.json();
   }
+
+  async reload() {
+    return this._c._request("POST", "/api/skills/reload");
+  }
 }
 
 // ── Channel Resource ────────────────────────────────────────────
