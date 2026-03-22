@@ -1605,6 +1605,8 @@ pub struct ChannelsConfig {
     pub bluesky: Option<BlueskyConfig>,
     /// Feishu/Lark Open Platform configuration (None = disabled).
     pub feishu: Option<FeishuConfig>,
+    /// WeChat iLink Bot configuration (None = disabled).
+    pub wechat: Option<WeChatConfig>,
     /// Revolt (Discord-like) configuration (None = disabled).
     pub revolt: Option<RevoltConfig>,
     // Wave 4 — Enterprise & community channels
@@ -2462,6 +2464,26 @@ impl Default for WeComConfig {
     }
 }
 
+/// WeChat iLink Bot channel adapter configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WeChatConfig {
+    /// WeChat user IDs allowed to interact (empty = allow all).
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
+    pub allowed_users: Vec<String>,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Override the iLink API base URL.
+    pub api_base_url: Option<String>,
+    /// Override the iLink CDN base URL for future media support.
+    pub cdn_base_url: Option<String>,
+    /// Directory for persisted bot token and sync cursor.
+    pub state_dir: Option<String>,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
 /// Revolt (Discord-like) channel adapter configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -3235,6 +3257,12 @@ impl KernelConfig {
                 ));
             }
         }
+        if self.channels.wechat.is_some() {
+            warnings.push(
+                "WeChat configured: QR login is required on first startup; no env var is needed"
+                    .to_string(),
+            );
+        }
         if let Some(ref rv) = self.channels.revolt {
             if std::env::var(&rv.bot_token_env)
                 .unwrap_or_default()
@@ -3642,6 +3670,14 @@ mod tests {
     }
 
     #[test]
+    fn test_wechat_config_defaults() {
+        let wc = WeChatConfig::default();
+        assert!(wc.allowed_users.is_empty());
+        assert!(wc.default_agent.is_none());
+        assert!(wc.api_base_url.is_none());
+    }
+
+    #[test]
     fn test_matrix_config_defaults() {
         let mx = MatrixConfig::default();
         assert_eq!(mx.homeserver_url, "https://matrix.org");
@@ -3685,6 +3721,7 @@ mod tests {
         let config = KernelConfig {
             channels: ChannelsConfig {
                 whatsapp: Some(WhatsAppConfig::default()),
+                wechat: Some(WeChatConfig::default()),
                 signal: Some(SignalConfig::default()),
                 matrix: Some(MatrixConfig::default()),
                 email: Some(EmailConfig::default()),
@@ -3693,6 +3730,7 @@ mod tests {
             ..Default::default()
         };
         assert!(config.channels.whatsapp.is_some());
+        assert!(config.channels.wechat.is_some());
         assert!(config.channels.signal.is_some());
         assert!(config.channels.matrix.is_some());
         assert!(config.channels.email.is_some());

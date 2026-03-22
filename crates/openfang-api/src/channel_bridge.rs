@@ -30,6 +30,7 @@ use openfang_channels::messenger::MessengerAdapter;
 use openfang_channels::reddit::RedditAdapter;
 use openfang_channels::revolt::RevoltAdapter;
 use openfang_channels::viber::ViberAdapter;
+use openfang_channels::wechat::WeChatAdapter;
 // Wave 4
 use openfang_channels::flock::FlockAdapter;
 use openfang_channels::guilded::GuildedAdapter;
@@ -784,6 +785,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             "mastodon" => channels.mastodon.as_ref().map(|c| c.overrides.clone()),
             "bluesky" => channels.bluesky.as_ref().map(|c| c.overrides.clone()),
             "feishu" => channels.feishu.as_ref().map(|c| c.overrides.clone()),
+            "wechat" => channels.wechat.as_ref().map(|c| c.overrides.clone()),
             "revolt" => channels.revolt.as_ref().map(|c| c.overrides.clone()),
             // Wave 4
             "nextcloud" => channels.nextcloud.as_ref().map(|c| c.overrides.clone()),
@@ -1093,6 +1095,7 @@ pub async fn start_channel_bridge_with_config(
         || config.mastodon.is_some()
         || config.bluesky.is_some()
         || config.feishu.is_some()
+        || config.wechat.is_some()
         || config.revolt.is_some()
         // Wave 4
         || config.nextcloud.is_some()
@@ -1443,6 +1446,17 @@ pub async fn start_channel_bridge_with_config(
             ));
             adapters.push((adapter, fs_config.default_agent.clone()));
         }
+    }
+
+    // WeChat iLink
+    if let Some(ref wc_config) = config.wechat {
+        let adapter = Arc::new(WeChatAdapter::new(
+            wc_config.allowed_users.clone(),
+            wc_config.api_base_url.clone(),
+            wc_config.cdn_base_url.clone(),
+            wc_config.state_dir.clone(),
+        ));
+        adapters.push((adapter, wc_config.default_agent.clone()));
     }
 
     // Revolt
@@ -1854,6 +1868,7 @@ mod tests {
         assert!(config.channels.mastodon.is_none());
         assert!(config.channels.bluesky.is_none());
         assert!(config.channels.feishu.is_none());
+        assert!(config.channels.wechat.is_none());
         assert!(config.channels.revolt.is_none());
         // Wave 4
         assert!(config.channels.nextcloud.is_none());

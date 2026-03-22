@@ -41,6 +41,12 @@ listen_addr = "127.0.0.1:4200"           # OFP listen address
 # bot_token_env = "SLACK_BOT_TOKEN"
 # app_token_env = "SLACK_APP_TOKEN"
 
+# [wechat]
+# allowed_users = []                      # Empty = allow all
+# default_agent = "assistant"
+# state_dir = "~/.openfang/wechat"        # Persist QR-login token and sync cursor
+# api_base_url = "https://ilinkai.weixin.qq.com"
+
 # MCP server connections
 # [[mcp_servers]]
 # name = "filesystem"
