@@ -45,6 +45,13 @@ const DEBOUNCE_MS: u64 = 100;
 /// Flush text buffer when it exceeds this many characters.
 const DEBOUNCE_CHARS: usize = 200;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum StreamingEventPhaseState {
+    None,
+    Thinking,
+    Streaming,
+}
+
 // ---------------------------------------------------------------------------
 // Verbose Level
 // ---------------------------------------------------------------------------
@@ -523,11 +530,26 @@ async fn handle_text_message(
                         let mut accumulated_text = String::new();
                         let mut stream_usage: Option<openfang_types::message::TokenUsage> = None;
                         let mut is_silent = false;
+                        let mut streaming_phase_state = StreamingEventPhaseState::None;
                         let far_future = tokio::time::Instant::now() + Duration::from_secs(86400);
-                        let mut flush_deadline = far_future;
+                        let flush_deadline = Arc::new(Mutex::new(far_future));
+
+                        let sender_stream_clone = Arc::clone(&sender_stream);
+                        let flush_deadline_clone = Arc::clone(&flush_deadline);
+                        let deal_text_buffer = async move |text: &str, text_buffer: &mut String| {
+                            text_buffer.push_str(text);
+                            let mut flush_deadline = flush_deadline_clone.lock().await;
+                            if text_buffer.len() >= DEBOUNCE_CHARS {
+                                let _ = flush_text_buffer(&sender_stream_clone, text_buffer).await;
+                                *flush_deadline = far_future;
+                            } else if *flush_deadline >= far_future {
+                                *flush_deadline = tokio::time::Instant::now()
+                                    + Duration::from_millis(DEBOUNCE_MS);
+                            }
+                        };
 
                         loop {
-                            let sleep = tokio::time::sleep_until(flush_deadline);
+                            let sleep = { tokio::time::sleep_until(*flush_deadline.lock().await) };
                             tokio::pin!(sleep);
 
                             tokio::select! {
@@ -554,20 +576,32 @@ async fn handle_text_message(
                                             }
 
                                             if let StreamEvent::TextDelta { ref text } = ev {
-                                                accumulated_text.push_str(text);
-                                                text_buffer.push_str(text);
-                                                if text_buffer.len() >= DEBOUNCE_CHARS {
-                                                    let _ = flush_text_buffer(
+                                                if streaming_phase_state != StreamingEventPhaseState::Streaming {
+                                                    streaming_phase_state = StreamingEventPhaseState::Streaming;
+                                                    let _ = send_json(
                                                         &sender_stream,
-                                                        &mut text_buffer,
+                                                        &serde_json::json!({
+                                                            "phase": "streaming",
+                                                            "type": "phase",
+                                                        }),
                                                     )
                                                     .await;
-                                                    flush_deadline = far_future;
-                                                } else if flush_deadline >= far_future {
-                                                    flush_deadline =
-                                                        tokio::time::Instant::now()
-                                                            + Duration::from_millis(DEBOUNCE_MS);
                                                 }
+                                                accumulated_text.push_str(text);
+                                                deal_text_buffer(text, &mut text_buffer).await;
+                                            } else if let StreamEvent::ThinkingDelta { ref text } = ev {
+                                                if streaming_phase_state != StreamingEventPhaseState::Thinking {
+                                                    streaming_phase_state = StreamingEventPhaseState::Thinking;
+                                                    let _ = send_json(
+                                                        &sender_stream,
+                                                        &serde_json::json!({
+                                                            "phase": "thinking",
+                                                            "type": "phase",
+                                                        }),
+                                                    )
+                                                    .await;
+                                                }
+                                                deal_text_buffer(text, &mut text_buffer).await;
                                             } else {
                                                 // Flush pending text before non-text events
                                                 let _ = flush_text_buffer(
@@ -575,7 +609,7 @@ async fn handle_text_message(
                                                     &mut text_buffer,
                                                 )
                                                 .await;
-                                                flush_deadline = far_future;
+                                                *flush_deadline.lock().await = far_future;
 
                                                 // Send typing indicator for tool events
                                                 if let StreamEvent::ToolUseStart {
@@ -615,7 +649,7 @@ async fn handle_text_message(
                                         &mut text_buffer,
                                     )
                                     .await;
-                                    flush_deadline = far_future;
+                                    *flush_deadline.lock().await = far_future;
                                 }
                             }
                         }

@@ -1152,7 +1152,11 @@ impl LlmDriver for OpenAIDriver {
                         }
 
                         // Reasoning/thinking content delta (DeepSeek-R1, Qwen3 via LM Studio/Ollama)
-                        if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                        // reasoning content delta (eg. Qwen3-397B)
+                        if let Some(reasoning) = delta["reasoning_content"]
+                            .as_str()
+                            .or_else(|| delta["reasoning"].as_str())
+                        {
                             if !reasoning.is_empty() {
                                 reasoning_content.push_str(reasoning);
                                 let _ = tx
