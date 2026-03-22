@@ -613,7 +613,7 @@ async fn handle_text_message(
 
                                                 // Send typing indicator for tool events
                                                 if let StreamEvent::ToolUseStart {
-                                                    ref name, ..
+                                                    ref name, ref id, ..
                                                 } = ev
                                                 {
                                                     let _ = send_json(
@@ -622,6 +622,7 @@ async fn handle_text_message(
                                                             "type": "typing",
                                                             "state": "tool",
                                                             "tool": name,
+                                                            "id": id,
                                                         }),
                                                     )
                                                     .await;
@@ -1032,9 +1033,10 @@ async fn handle_command(
 fn map_stream_event(event: &StreamEvent, verbose: VerboseLevel) -> Option<serde_json::Value> {
     match event {
         StreamEvent::TextDelta { .. } => None, // Handled by debounce buffer
-        StreamEvent::ToolUseStart { name, .. } => Some(serde_json::json!({
+        StreamEvent::ToolUseStart { name, id } => Some(serde_json::json!({
             "type": "tool_start",
             "tool": name,
+            "id": id,
         })),
         StreamEvent::ToolUseEnd { name, input, .. } if name == "canvas_present" => {
             let html = input.get("html").and_then(|v| v.as_str()).unwrap_or("");
@@ -1049,7 +1051,9 @@ fn map_stream_event(event: &StreamEvent, verbose: VerboseLevel) -> Option<serde_
                 "title": title,
             }))
         }
-        StreamEvent::ToolUseEnd { name, input, .. } => match verbose {
+        StreamEvent::ToolUseEnd {
+            name, input, id, ..
+        } => match verbose {
             VerboseLevel::Off => None,
             VerboseLevel::On => {
                 let input_preview: String = serde_json::to_string(input)
@@ -1060,6 +1064,7 @@ fn map_stream_event(event: &StreamEvent, verbose: VerboseLevel) -> Option<serde_
                 Some(serde_json::json!({
                     "type": "tool_end",
                     "tool": name,
+                    "id": id,
                     "input": input_preview,
                 }))
             }
@@ -1072,16 +1077,19 @@ fn map_stream_event(event: &StreamEvent, verbose: VerboseLevel) -> Option<serde_
                 Some(serde_json::json!({
                     "type": "tool_end",
                     "tool": name,
+                    "id": id,
                     "input": input_preview,
                 }))
             }
         },
         StreamEvent::ToolExecutionResult {
+            id,
             name,
             result_preview,
             is_error,
         } => match verbose {
             VerboseLevel::Off => Some(serde_json::json!({
+                "id": id,
                 "type": "tool_result",
                 "tool": name,
                 "is_error": is_error,
@@ -1089,6 +1097,7 @@ fn map_stream_event(event: &StreamEvent, verbose: VerboseLevel) -> Option<serde_
             VerboseLevel::On => {
                 let truncated: String = result_preview.chars().take(200).collect();
                 Some(serde_json::json!({
+                    "id": id,
                     "type": "tool_result",
                     "tool": name,
                     "result": truncated,
@@ -1096,6 +1105,7 @@ fn map_stream_event(event: &StreamEvent, verbose: VerboseLevel) -> Option<serde_
                 }))
             }
             VerboseLevel::Full => Some(serde_json::json!({
+                "id": id,
                 "type": "tool_result",
                 "tool": name,
                 "result": result_preview,
