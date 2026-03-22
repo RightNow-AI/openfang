@@ -2027,19 +2027,24 @@ impl OpenFangKernel {
                     // Persist usage to database (same as non-streaming path)
                     let model = &manifest.model.model;
                     let cost = MeteringEngine::estimate_cost_with_catalog(
-                        &kernel_clone.model_catalog.read().unwrap_or_else(|e| e.into_inner()),
+                        &kernel_clone
+                            .model_catalog
+                            .read()
+                            .unwrap_or_else(|e| e.into_inner()),
                         model,
                         result.total_usage.input_tokens,
                         result.total_usage.output_tokens,
                     );
-                    let _ = kernel_clone.metering.record(&openfang_memory::usage::UsageRecord {
-                        agent_id,
-                        model: model.clone(),
-                        input_tokens: result.total_usage.input_tokens,
-                        output_tokens: result.total_usage.output_tokens,
-                        cost_usd: cost,
-                        tool_calls: result.iterations.saturating_sub(1),
-                    });
+                    let _ = kernel_clone
+                        .metering
+                        .record(&openfang_memory::usage::UsageRecord {
+                            agent_id,
+                            model: model.clone(),
+                            input_tokens: result.total_usage.input_tokens,
+                            output_tokens: result.total_usage.output_tokens,
+                            cost_usd: cost,
+                            tool_calls: result.iterations.saturating_sub(1),
+                        });
 
                     let _ = kernel_clone
                         .registry
@@ -4381,6 +4386,20 @@ impl OpenFangKernel {
 
                     // --- Auto-recovery for crashed agents ---
                     if status.state == AgentState::Crashed {
+                        // Reactive agents don't need recovery — they only run when
+                        // a user message arrives. If one ends up Crashed somehow,
+                        // reset it silently without publishing an event or entering
+                        // the recovery counter loop (which can trigger background
+                        // API calls with the full session context).
+                        if let Some(entry) = kernel.registry.get(status.agent_id) {
+                            if matches!(entry.manifest.schedule, ScheduleMode::Reactive) {
+                                let _ = kernel
+                                    .registry
+                                    .set_state(status.agent_id, AgentState::Running);
+                                continue;
+                            }
+                        }
+
                         let failures = recovery_tracker.failure_count(status.agent_id);
 
                         if failures >= config.max_recovery_attempts {
@@ -4464,6 +4483,20 @@ impl OpenFangKernel {
 
                     // --- Unresponsive Running agent ---
                     if status.unresponsive && status.state == AgentState::Running {
+                        let is_background =
+                            if let Some(entry) = kernel.registry.get(status.agent_id) {
+                                matches!(
+                                    entry.manifest.schedule,
+                                    ScheduleMode::Continuous { .. } | ScheduleMode::Periodic { .. }
+                                )
+                            } else {
+                                false
+                            };
+
+                        if !is_background {
+                            continue;
+                        }
+
                         // Mark as Crashed so next cycle triggers recovery
                         let _ = kernel
                             .registry

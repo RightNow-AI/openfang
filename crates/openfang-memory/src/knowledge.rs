@@ -100,11 +100,7 @@ impl KnowledgeStore {
         let mut idx = 1;
 
         if let Some(ref source) = pattern.source {
-            sql.push_str(&format!(
-                " AND (s.id = ?{} OR s.name = ?{})",
-                idx,
-                idx + 1
-            ));
+            sql.push_str(&format!(" AND (s.id = ?{} OR s.name = ?{})", idx, idx + 1));
             params.push(Box::new(source.clone()));
             params.push(Box::new(source.clone()));
             idx += 2;
@@ -117,11 +113,7 @@ impl KnowledgeStore {
             idx += 1;
         }
         if let Some(ref target) = pattern.target {
-            sql.push_str(&format!(
-                " AND (t.id = ?{} OR t.name = ?{})",
-                idx,
-                idx + 1
-            ));
+            sql.push_str(&format!(" AND (t.id = ?{} OR t.name = ?{})", idx, idx + 1));
             params.push(Box::new(target.clone()));
             params.push(Box::new(target.clone()));
             idx += 2;

@@ -57,8 +57,15 @@ fn phantom_action_detected(text: &str) -> bool {
     let lower = text.to_lowercase();
     let action_verbs = ["sent ", "posted ", "emailed ", "delivered ", "forwarded "];
     let channel_refs = [
-        "telegram", "whatsapp", "slack", "discord", "email", "channel",
-        "message sent", "successfully sent", "has been sent",
+        "telegram",
+        "whatsapp",
+        "slack",
+        "discord",
+        "email",
+        "channel",
+        "message sent",
+        "successfully sent",
+        "has been sent",
     ];
     let has_action = action_verbs.iter().any(|v| lower.contains(v));
     let has_channel = channel_refs.iter().any(|c| lower.contains(c));
@@ -272,7 +279,9 @@ pub async fn run_agent_loop(
     // The LLM already received them via llm_messages above.
     for msg in session.messages.iter_mut() {
         if let MessageContent::Blocks(blocks) = &mut msg.content {
-            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            let had_images = blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Image { .. }));
             if had_images {
                 blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
                 if blocks.is_empty() {
@@ -454,7 +463,10 @@ pub async fn run_agent_loop(
                 // One-shot retry: if the LLM returns empty text with no tool use,
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
-                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
+                if text.trim().is_empty()
+                    && response.tool_calls.is_empty()
+                    && !response.has_any_content()
+                {
                     let is_silent_failure =
                         response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {
@@ -499,7 +511,10 @@ pub async fn run_agent_loop(
                 // channel action (send, post, email, etc.) but never actually
                 // called the corresponding tool, re-prompt once to force real
                 // tool usage instead of hallucinated completion.
-                let text = if !any_tools_executed && iteration == 0 && phantom_action_detected(&text) {
+                let text = if !any_tools_executed
+                    && iteration == 0
+                    && phantom_action_detected(&text)
+                {
                     warn!(agent = %manifest.name, "Phantom action detected — re-prompting for real tool use");
                     messages.push(Message::assistant(text));
                     messages.push(Message::user(
@@ -1275,7 +1290,9 @@ pub async fn run_agent_loop_streaming(
     // The LLM already received them via llm_messages above.
     for msg in session.messages.iter_mut() {
         if let MessageContent::Blocks(blocks) = &mut msg.content {
-            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            let had_images = blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Image { .. }));
             if had_images {
                 blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
                 if blocks.is_empty() {
@@ -1475,7 +1492,10 @@ pub async fn run_agent_loop_streaming(
                 // One-shot retry: if the LLM returns empty text with no tool use,
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
-                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
+                if text.trim().is_empty()
+                    && response.tool_calls.is_empty()
+                    && !response.has_any_content()
+                {
                     let is_silent_failure =
                         response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {

@@ -12,7 +12,7 @@
 use crate::registry::AgentRegistry;
 use chrono::Utc;
 use dashmap::DashMap;
-use openfang_types::agent::{AgentId, AgentState};
+use openfang_types::agent::{AgentId, AgentState, ScheduleMode};
 use tracing::{debug, warn};
 
 /// Default heartbeat check interval (seconds).
@@ -143,13 +143,22 @@ pub fn check_agents(registry: &AgentRegistry, config: &HeartbeatConfig) -> Vec<H
 
         let inactive_secs = (now - entry_ref.last_active).num_seconds();
 
-        // Determine timeout: use agent's autonomous config if set, else default
-        let timeout_secs = entry_ref
-            .manifest
-            .autonomous
-            .as_ref()
-            .map(|a| a.heartbeat_interval_secs * UNRESPONSIVE_MULTIPLIER)
-            .unwrap_or(config.default_timeout_secs) as i64;
+        let is_background_agent = matches!(
+            entry_ref.manifest.schedule,
+            ScheduleMode::Continuous { .. } | ScheduleMode::Periodic { .. }
+        );
+        let timeout_secs = if is_background_agent {
+            entry_ref
+                .manifest
+                .autonomous
+                .as_ref()
+                .map(|a| a.heartbeat_interval_secs * UNRESPONSIVE_MULTIPLIER)
+                .unwrap_or(config.default_timeout_secs)
+        } else {
+            // Reactive/Proactive agents: always use the default timeout
+            // regardless of any autonomous config that may be present
+            config.default_timeout_secs
+        } as i64;
 
         // Crashed agents are always considered unresponsive
         let unresponsive = entry_ref.state == AgentState::Crashed || inactive_secs > timeout_secs;
