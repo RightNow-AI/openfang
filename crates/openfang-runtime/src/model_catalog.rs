@@ -2382,40 +2382,6 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
-        // vLLM (1) — generic local entry + dynamic discovery
-        // ══════════════════════════════════════════════════════════════
-        ModelCatalogEntry {
-            id: "vllm-local".into(),
-            display_name: "vLLM Local Model".into(),
-            provider: "vllm".into(),
-            tier: ModelTier::Local,
-            context_window: 32_768,
-            max_output_tokens: 4_096,
-            input_cost_per_m: 0.0,
-            output_cost_per_m: 0.0,
-            supports_tools: true,
-            supports_vision: false,
-            supports_streaming: true,
-            aliases: vec![],
-        },
-        // ══════════════════════════════════════════════════════════════
-        // LM Studio (1) — generic local entry + dynamic discovery
-        // ══════════════════════════════════════════════════════════════
-        ModelCatalogEntry {
-            id: "lmstudio-local".into(),
-            display_name: "LM Studio Local Model".into(),
-            provider: "lmstudio".into(),
-            tier: ModelTier::Local,
-            context_window: 32_768,
-            max_output_tokens: 4_096,
-            input_cost_per_m: 0.0,
-            output_cost_per_m: 0.0,
-            supports_tools: true,
-            supports_vision: false,
-            supports_streaming: true,
-            aliases: vec![],
-        },
-        // ══════════════════════════════════════════════════════════════
         // Perplexity (4)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
