@@ -35,7 +35,7 @@ impl std::fmt::Display for TriggerId {
 }
 
 /// What kind of events a trigger matches on.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerPattern {
     /// Match any lifecycle event (agent spawned, started, terminated, etc.).

@@ -95,9 +95,32 @@ impl MemorySubstrate {
 
     /// Remove an agent from persistent storage and cascade-delete sessions.
     pub fn remove_agent(&self, agent_id: AgentId) -> OpenFangResult<()> {
-        // Delete associated sessions first
-        let _ = self.sessions.delete_agent_sessions(agent_id);
-        self.structured.remove_agent(agent_id)
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        let agent_id = agent_id.0.to_string();
+        tx.execute(
+            "DELETE FROM canonical_sessions WHERE agent_id = ?1",
+            rusqlite::params![agent_id],
+        )
+        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        tx.execute(
+            "DELETE FROM sessions WHERE agent_id = ?1",
+            rusqlite::params![agent_id],
+        )
+        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        tx.execute(
+            "DELETE FROM agents WHERE id = ?1",
+            rusqlite::params![agent_id],
+        )
+        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        tx.commit()
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        Ok(())
     }
 
     /// Load all agent entries from persistent storage.
@@ -697,6 +720,7 @@ impl Memory for MemorySubstrate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openfang_types::agent::{AgentEntry, AgentManifest, AgentMode, AgentState};
 
     #[tokio::test]
     async fn test_substrate_kv() {
@@ -786,5 +810,92 @@ mod tests {
         let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
         let claimed = substrate.task_claim("nobody").await.unwrap();
         assert!(claimed.is_none());
+    }
+
+    fn test_agent_entry(agent_id: AgentId, name: &str) -> AgentEntry {
+        let manifest = AgentManifest {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            description: "Test agent".to_string(),
+            author: "test".to_string(),
+            module: "builtin:chat".to_string(),
+            ..AgentManifest::default()
+        };
+
+        AgentEntry {
+            id: agent_id,
+            name: name.to_string(),
+            manifest,
+            state: AgentState::Running,
+            mode: AgentMode::default(),
+            created_at: chrono::Utc::now(),
+            last_active: chrono::Utc::now(),
+            parent: None,
+            children: Vec::new(),
+            session_id: openfang_types::agent::SessionId::new(),
+            tags: Vec::new(),
+            identity: Default::default(),
+            onboarding_completed: false,
+            onboarding_completed_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_remove_agent_cascades_regular_and_canonical_sessions() {
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let agent_id = AgentId::new();
+        let entry = test_agent_entry(agent_id, "cascade-agent");
+        substrate.save_agent(&entry).unwrap();
+        substrate.create_session(agent_id).unwrap();
+        let canonical_seed: Vec<openfang_types::message::Message> = Vec::new();
+        substrate
+            .append_canonical(agent_id, &canonical_seed, Some(100))
+            .unwrap();
+
+        substrate.remove_agent(agent_id).unwrap();
+
+        let conn = substrate.conn.lock().unwrap();
+        let regular_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE agent_id = ?1",
+                rusqlite::params![agent_id.0.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let canonical_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM canonical_sessions WHERE agent_id = ?1",
+                rusqlite::params![agent_id.0.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+
+        assert!(substrate.load_agent(agent_id).unwrap().is_none());
+        assert_eq!(regular_count, 0);
+        assert_eq!(canonical_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_remove_agent_rolls_back_when_transaction_fails() {
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let agent_id = AgentId::new();
+        let entry = test_agent_entry(agent_id, "rollback-agent");
+        substrate.save_agent(&entry).unwrap();
+        let session = substrate.create_session(agent_id).unwrap();
+        let canonical_seed: Vec<openfang_types::message::Message> = Vec::new();
+        substrate
+            .append_canonical(agent_id, &canonical_seed, Some(100))
+            .unwrap();
+
+        {
+            let conn = substrate.conn.lock().unwrap();
+            conn.execute("DROP TABLE canonical_sessions", []).unwrap();
+        }
+
+        let err = substrate.remove_agent(agent_id).unwrap_err();
+        assert!(matches!(err, OpenFangError::Memory(_)));
+        assert!(substrate.load_agent(agent_id).unwrap().is_some());
+        assert!(substrate.get_session(session.id).unwrap().is_some());
     }
 }

@@ -3624,19 +3624,18 @@ impl OpenFangKernel {
 
     /// Kill an agent.
     pub fn kill_agent(&self, agent_id: AgentId) -> KernelResult<()> {
-        let entry_snapshot = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
-        })?;
-        self.memory
-            .remove_agent(agent_id)
+        let entry = self
+            .registry
+            .remove(agent_id)
             .map_err(KernelError::OpenFang)?;
-        let entry = match self.registry.remove(agent_id) {
-            Ok(entry) => entry,
-            Err(err) => {
-                let _ = self.memory.save_agent(&entry_snapshot);
-                return Err(KernelError::OpenFang(err));
+        if let Err(err) = self.memory.remove_agent(agent_id) {
+            if let Err(restore_err) = self.registry.register(entry.clone()) {
+                return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                    "agent delete failed: {err}; registry rollback also failed: {restore_err}"
+                ))));
             }
-        };
+            return Err(KernelError::OpenFang(err));
+        }
         if let Some((_, handle)) = self.running_tasks.remove(&agent_id) {
             handle.abort();
         }
@@ -5179,13 +5178,19 @@ impl OpenFangKernel {
 
         // For proactive agents, auto-register triggers from conditions
         if let ScheduleMode::Proactive { conditions } = schedule {
+            let existing = self.triggers.list_agent_triggers(agent_id);
             for condition in conditions {
                 if let Some(pattern) = background::parse_condition(condition) {
                     let prompt = format!(
                         "[PROACTIVE ALERT] Condition '{condition}' matched: {{{{event}}}}. \
                          Review and take appropriate action. Agent: {name}"
                     );
-                    self.triggers.register(agent_id, pattern, prompt, 0);
+                    let already_registered = existing.iter().any(|trigger| {
+                        trigger.pattern == pattern && trigger.prompt_template == prompt
+                    });
+                    if !already_registered {
+                        self.triggers.register(agent_id, pattern, prompt, 0);
+                    }
                 }
             }
             info!(agent = %name, id = %agent_id, "Registered proactive triggers");
@@ -8052,6 +8057,82 @@ mod tests {
             1,
             "restarting background startup should replace the tracked loop, not duplicate it"
         );
+    }
+
+    #[tokio::test]
+    async fn test_start_background_for_proactive_agent_does_not_duplicate_triggers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = Arc::new(
+            OpenFangKernel::boot_with_config(KernelConfig {
+                home_dir: tmp.path().to_path_buf(),
+                data_dir: tmp.path().join("data"),
+                default_model: DefaultModelConfig {
+                    provider: "ollama".to_string(),
+                    model: "test-model".to_string(),
+                    api_key_env: "OLLAMA_API_KEY".to_string(),
+                    base_url: None,
+                },
+                ..KernelConfig::default()
+            })
+            .expect("Kernel should boot"),
+        );
+        kernel.set_self_handle();
+
+        let mut manifest = test_manifest("proactive-runtime", "runtime trigger", vec![]);
+        manifest.schedule = ScheduleMode::Proactive {
+            conditions: vec!["event:lifecycle".to_string()],
+        };
+
+        let agent_id = kernel.spawn_agent(manifest).expect("agent should spawn");
+        assert_eq!(kernel.triggers.list_agent_triggers(agent_id).len(), 1);
+
+        kernel.start_background_for_agent(
+            agent_id,
+            "proactive-runtime",
+            &ScheduleMode::Proactive {
+                conditions: vec!["event:lifecycle".to_string()],
+            },
+        );
+        assert_eq!(
+            kernel.triggers.list_agent_triggers(agent_id).len(),
+            1,
+            "restarting proactive startup should not duplicate schedule-derived triggers"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_kill_agent_restores_registry_when_persistent_delete_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = Arc::new(
+            OpenFangKernel::boot_with_config(KernelConfig {
+                home_dir: tmp.path().to_path_buf(),
+                data_dir: tmp.path().join("data"),
+                default_model: DefaultModelConfig {
+                    provider: "ollama".to_string(),
+                    model: "test-model".to_string(),
+                    api_key_env: "OLLAMA_API_KEY".to_string(),
+                    base_url: None,
+                },
+                ..KernelConfig::default()
+            })
+            .expect("Kernel should boot"),
+        );
+        kernel.set_self_handle();
+
+        let agent_id = kernel
+            .spawn_agent(test_manifest("kill-rollback", "rollback", vec![]))
+            .expect("agent should spawn");
+
+        {
+            let conn = kernel.memory.usage_conn();
+            let conn = conn.lock().unwrap();
+            conn.execute("DROP TABLE canonical_sessions", []).unwrap();
+        }
+
+        let err = kernel.kill_agent(agent_id).unwrap_err();
+        assert!(format!("{err}").contains("canonical_sessions"));
+        assert!(kernel.registry.get(agent_id).is_some());
+        assert!(kernel.memory.load_agent(agent_id).unwrap().is_some());
     }
 
     #[test]

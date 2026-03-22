@@ -3745,6 +3745,21 @@ mod tests {
         assert!(result.is_error);
         assert!(result.content.contains("Command timed out after 1s"));
 
+        for _ in 0..50 {
+            if script_pid_path.exists() && child_pid_path.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            script_pid_path.exists(),
+            "timeout test did not capture the script PID before cleanup"
+        );
+        assert!(
+            child_pid_path.exists(),
+            "timeout test did not capture the child PID before cleanup"
+        );
+
         let script_pid = std::fs::read_to_string(&script_pid_path)
             .unwrap()
             .trim()
