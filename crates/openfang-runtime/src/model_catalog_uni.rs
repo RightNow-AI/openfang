@@ -1,3 +1,10 @@
+/*
+ * @Author             : Felix
+ * @Email              : 307253927@qq.com
+ * @Date               : 2026-03-22 16:08:27
+ * @LastEditors        : Felix
+ * @LastEditTime       : 2026-03-22 16:08:38
+ */
 //! Model catalog — registry of known models with metadata, pricing, and auth detection.
 //!
 //! Provides a comprehensive catalog of 130+ builtin models across 28 providers,
