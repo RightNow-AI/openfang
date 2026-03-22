@@ -551,16 +551,6 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             model_count: 0,
             is_local: false,
         },
-        ProviderInfo {
-            id: "lemonade".into(),
-            display_name: "Lemonade".into(),
-            api_key_env: "LEMONADE_API_KEY".into(),
-            base_url: LEMONADE_BASE_URL.into(),
-            key_required: false,
-            auth_status: AuthStatus::NotRequired,
-            model_count: 0,
-            is_local: false,
-        },
         // ── New providers (8) ──────────────────────────────────────
         ProviderInfo {
             id: "perplexity".into(),
@@ -664,28 +654,6 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             model_count: 0,
             is_local: false,
         },
-        // ── Chutes.ai ───────────────────────────────────────────────
-        ProviderInfo {
-            id: "chutes".into(),
-            display_name: "Chutes.ai".into(),
-            api_key_env: "CHUTES_API_KEY".into(),
-            base_url: CHUTES_BASE_URL.into(),
-            key_required: true,
-            auth_status: AuthStatus::Missing,
-            model_count: 0,
-            is_local: false,
-        },
-        // ── Venice.ai ────────────────────────────────────────────────
-        ProviderInfo {
-            id: "venice".into(),
-            display_name: "Venice.ai".into(),
-            api_key_env: "VENICE_API_KEY".into(),
-            base_url: VENICE_BASE_URL.into(),
-            key_required: true,
-            auth_status: AuthStatus::Missing,
-            model_count: 0,
-            is_local: false,
-        },
         // ── Venice.ai ────────────────────────────────────────────────
         ProviderInfo {
             id: "venice".into(),
@@ -770,26 +738,6 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             is_local: false,
         },
         ProviderInfo {
-            id: "zai".into(),
-            display_name: "Z.AI".into(),
-            api_key_env: "ZHIPU_API_KEY".into(),
-            base_url: ZAI_BASE_URL.into(),
-            key_required: true,
-            auth_status: AuthStatus::Missing,
-            model_count: 0,
-            is_local: false,
-        },
-        ProviderInfo {
-            id: "zai_coding".into(),
-            display_name: "Z.AI Coding".into(),
-            api_key_env: "ZHIPU_API_KEY".into(),
-            base_url: ZAI_CODING_BASE_URL.into(),
-            key_required: true,
-            auth_status: AuthStatus::Missing,
-            model_count: 0,
-            is_local: false,
-        },
-        ProviderInfo {
             id: "moonshot".into(),
             display_name: "Moonshot (Kimi)".into(),
             api_key_env: "MOONSHOT_API_KEY".into(),
@@ -801,17 +749,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
         },
         ProviderInfo {
             id: "kimi_coding".into(),
-            display_name: "Kimi for Code".into(),
-            api_key_env: "KIMI_API_KEY".into(),
-            base_url: KIMI_CODING_BASE_URL.into(),
-            key_required: true,
-            auth_status: AuthStatus::Missing,
-            model_count: 0,
-            is_local: false,
-        },
-        ProviderInfo {
-            id: "kimi_coding".into(),
-            display_name: "Kimi for Code".into(),
+            display_name: "KimiCode".into(),
             api_key_env: "KIMI_API_KEY".into(),
             base_url: KIMI_CODING_BASE_URL.into(),
             key_required: true,
@@ -821,7 +759,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
         },
         ProviderInfo {
             id: "qianfan".into(),
-            display_name: "Baidu Qianfan".into(),
+            display_name: "百度千帆".into(),
             api_key_env: "QIANFAN_API_KEY".into(),
             base_url: QIANFAN_BASE_URL.into(),
             key_required: true,
@@ -842,7 +780,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
         // ── Volcano Engine (Doubao) ──────────────────────────────────
         ProviderInfo {
             id: "volcengine".into(),
-            display_name: "Volcano Engine (Doubao)".into(),
+            display_name: "字节(Doubao)".into(),
             api_key_env: "VOLCENGINE_API_KEY".into(),
             base_url: VOLCENGINE_BASE_URL.into(),
             key_required: true,
@@ -852,17 +790,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
         },
         ProviderInfo {
             id: "volcengine_coding".into(),
-            display_name: "Volcano Engine Coding Plan".into(),
-            api_key_env: "VOLCENGINE_API_KEY".into(),
-            base_url: VOLCENGINE_CODING_BASE_URL.into(),
-            key_required: true,
-            auth_status: AuthStatus::Missing,
-            model_count: 0,
-            is_local: false,
-        },
-        ProviderInfo {
-            id: "volcengine_coding".into(),
-            display_name: "Volcano Engine Coding Plan".into(),
+            display_name: "字节Coding Plan".into(),
             api_key_env: "VOLCENGINE_API_KEY".into(),
             base_url: VOLCENGINE_CODING_BASE_URL.into(),
             key_required: true,
@@ -876,17 +804,6 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             display_name: "AWS Bedrock".into(),
             api_key_env: "AWS_ACCESS_KEY_ID".into(),
             base_url: BEDROCK_BASE_URL.into(),
-            key_required: true,
-            auth_status: AuthStatus::Missing,
-            model_count: 0,
-            is_local: false,
-        },
-        // ── Azure OpenAI ───────────────────────────────────────────
-        ProviderInfo {
-            id: "azure".into(),
-            display_name: "Azure OpenAI".into(),
-            api_key_env: "AZURE_OPENAI_API_KEY".into(),
-            base_url: AZURE_OPENAI_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -948,7 +865,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
         },
         ProviderInfo {
             id: "coding_plan".into(),
-            display_name: "Coding Plan".into(),
+            display_name: "千问CodingPlan".into(),
             api_key_env: "CODING_PLAN_API_KEY".into(),
             base_url: CODING_PLAN_BASE_URL.into(),
             key_required: true,
