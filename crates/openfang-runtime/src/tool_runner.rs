@@ -3352,10 +3352,10 @@ async fn get_git_sh_path() -> Option<&'static str> {
         if let Some(parent) = path.parent() {
             let parent_str = parent.to_string_lossy();
 
-            let sh_path = if parent_str.ends_with("cmd") {
-                let parent_dir = parent.parent()?;
-                parent_dir.join("usr").join("bin").join("sh.exe")
-            } else if parent_str.ends_with("mingw64") || parent_str.ends_with("mingw32") {
+            let sh_path = if parent_str.ends_with("cmd")
+                || parent_str.ends_with("mingw64")
+                || parent_str.ends_with("mingw32")
+            {
                 let parent_dir = parent.parent()?;
                 parent_dir.join("usr").join("bin").join("sh.exe")
             } else {

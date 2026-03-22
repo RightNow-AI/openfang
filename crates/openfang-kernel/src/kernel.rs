@@ -2330,9 +2330,6 @@ impl OpenFangKernel {
             }
         }
 
-        // if skill snapshot is not empty, add skill-tools to tools
-        if skill_snapshot.count() > 0 {}
-
         // Lazy backfill: create workspace for existing agents spawned before workspaces
         if manifest.workspace.is_none() {
             let workspace_dir = self.config.effective_workspaces_dir().join(&manifest.name);

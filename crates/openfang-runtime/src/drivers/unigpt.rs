@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 13:50:06
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-21 20:54:05
+ * @LastEditTime       : 2026-03-22 14:05:20
  */
 //! UniGPT-compatible API driver.
 //!
@@ -413,7 +413,7 @@ impl LlmDriver for UniGPTDriver {
 
         let max_retries = 3;
         for attempt in 0..=max_retries {
-            let url = format!("{}", self.base_url);
+            let url = self.base_url.to_string();
             info!(url = %url, attempt, "Sending UniGPT API request");
             debug!(
                 "Request: {:?}",
@@ -868,7 +868,7 @@ impl LlmDriver for UniGPTDriver {
         // Retry loop for the initial HTTP request
         let max_retries = 3;
         for attempt in 0..=max_retries {
-            let url = format!("{}", self.base_url);
+            let url = self.base_url.to_string();
             info!(url = %url, attempt, "Sending UniGPT streaming request");
             debug!(
                 "Request: {:?}",

@@ -400,7 +400,7 @@ pub async fn spawn_agent(
         if !default_model.api_key_env.is_empty() {
             model.api_key_env = Some(default_model.api_key_env.clone());
         }
-        if !default_model.base_url.is_none() {
+        if default_model.base_url.is_some() {
             model.base_url = default_model.base_url.clone();
         }
         manifest.model = model;
@@ -463,8 +463,8 @@ pub async fn patch_agent_config(
             return agent_not_found();
         }
     }
-    if req.tool_allowlist.is_some() || req.tool_blocklist.is_some() {
-        if state
+    if (req.tool_allowlist.is_some() || req.tool_blocklist.is_some())
+        && state
             .kernel
             .registry
             .update_tool_filters(
@@ -473,9 +473,8 @@ pub async fn patch_agent_config(
                 req.tool_blocklist.take(),
             )
             .is_err()
-        {
-            return agent_not_found();
-        }
+    {
+        return agent_not_found();
     }
 
     if let Some(request) = req.patch.take() {
@@ -819,7 +818,7 @@ pub async fn set_agent_workspace(
                 }
 
                 // Try atomic rename first
-                if let Err(_) = std::fs::rename(&source, &target) {
+                if std::fs::rename(&source, &target).is_err() {
                     // If rename fails (cross-device or other reasons), use recursive move
                     if source.is_dir() {
                         if let Err(e) = move_dir_recursive(&source, &target) {
@@ -1024,7 +1023,7 @@ fn remove_agent_workspace<P: AsRef<std::path::Path>>(
         tracing::info!("Agent_workspace workspace: {}", workspace.display());
         if is_in_home_dir(workspace) {
             tracing::debug!("Removing workspace: {}", workspace.display());
-            std::fs::remove_dir_all(&workspace)
+            std::fs::remove_dir_all(workspace)
                 .map_err(|e| format!("Failed to remove workspace: {e}"))?;
         } else {
             [

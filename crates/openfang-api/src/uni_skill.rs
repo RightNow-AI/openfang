@@ -3,7 +3,7 @@
 * @Email              : 307253927@qq.com
 * @Date               : 2026-03-19 17:02:07
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-20 16:21:34
+ * @LastEditTime       : 2026-03-22 14:04:25
 */
 use axum::{extract::State, response::IntoResponse, Json};
 
@@ -296,7 +296,7 @@ pub async fn install_local_skill(
                     }
                     if enclosed_name
                         .file_name()
-                        .map_or(false, |n| n.to_string_lossy().starts_with("._"))
+                        .is_some_and(|n| n.to_string_lossy().starts_with("._"))
                     {
                         continue;
                     }
