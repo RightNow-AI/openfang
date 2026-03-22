@@ -10,6 +10,7 @@ use crate::types::{
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::Stream;
+use qrcode::{render::unicode, QrCode};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -22,6 +23,7 @@ const DEFAULT_API_BASE_URL: &str = "https://ilinkai.weixin.qq.com";
 const DEFAULT_CDN_BASE_URL: &str = "https://novac2c.cdn.weixin.qq.com/c2c";
 const LONG_POLL_TIMEOUT_MS: u64 = 35_000;
 const API_TIMEOUT_SECS: u64 = 15;
+const QR_STATUS_TIMEOUT_SECS: u64 = 45;
 const INITIAL_BACKOFF_SECS: u64 = 2;
 const MAX_BACKOFF_SECS: u64 = 30;
 const SESSION_EXPIRED_ERRCODE: i64 = -14;
@@ -220,6 +222,11 @@ impl WeChatAdapter {
             *guard = Some(account_id.clone());
         }
         self.save_account_data(&token, &account_id, user_id.as_deref());
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.connected = true;
+            runtime.started_at.get_or_insert_with(Utc::now);
+            runtime.last_error = None;
+        }
         Ok(())
     }
 
@@ -254,18 +261,32 @@ impl WeChatAdapter {
             println!("Scan payload: {qrcode}");
         } else {
             println!("Scan URL: {qr_image_url}");
+            if let Some(qr) = render_terminal_qr(qr_image_url) {
+                println!("\n{qr}\n");
+            }
         }
 
         let deadline = Instant::now() + Duration::from_secs(8 * 60);
         while Instant::now() < deadline {
-            let status_response = self
+            let status_response = match self
                 .client
                 .get(self.api_url("get_qrcode_status"))
                 .query(&[("qrcode", qrcode.as_str())])
-                .timeout(Duration::from_secs(API_TIMEOUT_SECS))
+                .timeout(Duration::from_secs(QR_STATUS_TIMEOUT_SECS))
                 .send()
                 .await
-                .map_err(|err| err.to_string())?;
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    // The QR-status endpoint behaves like a long poll: timeouts are normal
+                    // while the user hasn't scanned yet, so we keep waiting instead of
+                    // aborting adapter startup.
+                    if err.is_timeout() {
+                        continue;
+                    }
+                    return Err(err.to_string());
+                }
+            };
 
             if !status_response.status().is_success() {
                 let status = status_response.status();
@@ -549,10 +570,9 @@ impl ChannelAdapter for WeChatAdapter {
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = ChannelMessage> + Send>>, Box<dyn std::error::Error>>
     {
-        self.ensure_logged_in().await.map_err(io_error)?;
         if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.connected = true;
-            runtime.started_at = Some(Utc::now());
+            runtime.connected = self.get_token().is_some();
+            runtime.started_at.get_or_insert_with(Utc::now);
             runtime.last_error = None;
         }
 
@@ -635,6 +655,17 @@ fn build_base_info() -> serde_json::Value {
     serde_json::json!({
         "channel_version": env!("CARGO_PKG_VERSION")
     })
+}
+
+fn render_terminal_qr(data: &str) -> Option<String> {
+    let code = QrCode::new(data.as_bytes()).ok()?;
+    Some(
+        code.render::<unicode::Dense1x2>()
+            .dark_color(unicode::Dense1x2::Dark)
+            .light_color(unicode::Dense1x2::Light)
+            .quiet_zone(true)
+            .build(),
+    )
 }
 
 fn build_headers(token: Option<&str>) -> reqwest::header::HeaderMap {

@@ -32,6 +32,7 @@ hex = { workspace = true }
 html-escape = { workspace = true }
 regex-lite = "0.1"
 roxmltree = "0.21"
+qrcode = "0.14"
 
 lettre = { workspace = true }
 imap = { workspace = true }
