@@ -64,34 +64,19 @@ Meaning:
   - `promtool check` for the bundled Prometheus artifacts
   - stateful `scripts/live-api-smoke-openfang.sh` validation in daemon smoke and release provider-canary flows
 
-## Evidence Collected In This Review
+## Evidence Handling
 
-The following checks were run successfully against the current workspace on 2026-03-23:
+Keep one-off execution evidence in CI logs, release artifacts, or an operator review record instead of hard-coding machine-specific command output into this document.
+For each new production-readiness review, capture at least:
 
-- `cargo build --workspace --lib`
-- `cargo test --workspace`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo build --release -p openfang-cli`
-- `bash -n scripts/backup-openfang.sh`
-- `bash -n scripts/live-api-smoke-openfang.sh`
-- `bash -n scripts/preflight-openfang.sh`
-- `bash -n scripts/restore-openfang.sh`
-- `python3 -m py_compile scripts/healthcheck-openfang.py`
-- `OPENFANG_API_KEY=live-smoke-key docker compose config`
+- the three Rust quality gates (`cargo build --workspace --lib`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`)
+- release-binary or container boot evidence
+- authenticated `/api/health/detail` and `/api/metrics` checks
+- `scripts/smoke-openfang.sh`, `scripts/live-api-smoke-openfang.sh`, and strict `scripts/preflight-openfang.sh` output
+- backup evidence showing the resulting `BACKUP.txt` metadata
+- any target-environment `provider-canary`, `systemd-analyze`, and `promtool` results
 
-- Live validation now includes both the legacy smoke suite and the new stateful API verification:
-
-- daemon booted from `target/release/openfang` with `OPENFANG_HOME=/tmp/openfang-live.DjB8sO` and `OPENFANG_API_KEY` on `127.0.0.1:4217`
-- `GET /api/health` returned `status = "ok"`
-- authenticated `GET /api/health/detail` returned `status = "ok"` and `usage_store = "connected"`
-- authenticated `GET /api/metrics` exposed `openfang_usage_store_ok 1`
-- `scripts/smoke-openfang.sh` passed against the release daemon
-- `scripts/live-api-smoke-openfang.sh` successfully spawned/listed/budgeted/killed an agent against `127.0.0.1:4217`
-- strict `scripts/preflight-openfang.sh` first failed closed on an intentionally too-permissive `0644` temp `config.toml`, then passed after `chmod 600`
-- online `scripts/preflight-openfang.sh` passed
-- offline `scripts/preflight-openfang.sh --offline` passed
-- `POST /api/shutdown` completed a graceful daemon stop before backup validation
-- `scripts/backup-openfang.sh` completed and wrote `openfang_binary`, `openfang_version`, `openfang_binary_sha256`, and `openfang_git_sha` into `BACKUP.txt`
+This file intentionally records the stable conclusion and the remaining cutover gates, not the ephemeral details of one workstation run.
 
 ## Remaining Required Checks Before Real Production Cutover
 

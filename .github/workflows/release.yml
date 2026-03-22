@@ -52,6 +52,7 @@ jobs:
             --exclude-paths=<(echo -e "target/\n.git/\nCargo.lock")
           bash -n scripts/backup-openfang.sh
           bash -n scripts/preflight-openfang.sh
+          bash -n scripts/provider-canary-openfang.sh
           bash -n scripts/restore-openfang.sh
           bash -n scripts/smoke-openfang.sh
           bash -n scripts/live-api-smoke-openfang.sh
@@ -453,6 +454,7 @@ jobs:
 
           curl -fsS "$OPENFANG_BASE_URL/api/health" >/dev/null
           bash scripts/smoke-openfang.sh "$OPENFANG_BASE_URL"
+          OPENFANG_API_KEY="$OPENFANG_API_KEY" bash scripts/live-api-smoke-openfang.sh "$OPENFANG_BASE_URL"
 
   provider-canary:
     name: Provider Canary

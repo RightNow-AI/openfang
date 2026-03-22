@@ -18,6 +18,21 @@ cargo build --workspace --lib
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 OPENFANG_API_KEY=release-preflight-placeholder docker compose config
+bash -n scripts/backup-openfang.sh
+bash -n scripts/preflight-openfang.sh
+bash -n scripts/provider-canary-openfang.sh
+bash -n scripts/restore-openfang.sh
+bash -n scripts/smoke-openfang.sh
+bash -n scripts/live-api-smoke-openfang.sh
+python3 -m py_compile scripts/healthcheck-openfang.py
+```
+
+If you are mirroring the current `Release` workflow exactly, also run these host-tool checks on a Linux environment that has the binaries installed:
+
+```bash
+systemd-analyze verify deploy/openfang.service
+promtool check rules deploy/openfang-alerts.yml
+promtool check config deploy/prometheus-scrape.yml
 ```
 
 Confirm release metadata is aligned:
@@ -39,6 +54,9 @@ Confirm GitHub-side prerequisites:
 - Actions secrets include `TAURI_SIGNING_PRIVATE_KEY`
 - Actions secrets include `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 - Actions secrets include `GROQ_API_KEY` for the mandatory release provider canary
+- optional CI provider-canary secrets are distinct from the release workflow:
+  `OPENFANG_PROVIDER_CANARY_API_KEY`, `OPENFANG_CANARY_BASE_URL`, `OPENFANG_CANARY_PROVIDER`,
+  `OPENFANG_CANARY_MODEL`, and `OPENFANG_CANARY_API_KEY_ENV` only control the main CI job
 - optional macOS signing/notarization secrets are present if you are shipping signed macOS builds
 - the `ghcr.io/tytsxai/openfang-upstream-fork` package exists or can be created by the workflow
 

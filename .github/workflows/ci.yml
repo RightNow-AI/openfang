@@ -255,6 +255,7 @@ jobs:
           done
           test "$health_status" = "healthy"
           bash scripts/smoke-openfang.sh "$OPENFANG_BASE_URL"
+          OPENFANG_API_KEY="$OPENFANG_API_KEY" bash scripts/live-api-smoke-openfang.sh "$OPENFANG_BASE_URL"
       - name: Upload Docker smoke log on failure
         if: failure()
         run: docker logs openfang-ci-smoke || true
