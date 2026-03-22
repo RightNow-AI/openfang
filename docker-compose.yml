@@ -17,6 +17,8 @@ services:
       # Public binds require an explicit strong API key. Do not fall back to a
       # placeholder value here or the daemon will refuse to boot.
       - OPENFANG_API_KEY=${OPENFANG_API_KEY:?set OPENFANG_API_KEY to a strong random value}
+      # Fail the baked-in healthcheck closed if protected readiness cannot authenticate.
+      - OPENFANG_STRICT_PRODUCTION=1
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}

@@ -781,6 +781,7 @@ Key gauges and counters now include:
 
 - `openfang_readiness_ready` — `1` when the node is ready to serve traffic
 - `openfang_database_ok` — `1` when the health probe can reach SQLite
+- `openfang_usage_store_ok` — `1` when the usage/metering store queries succeed
 - `openfang_shutdown_requested` — `1` after graceful shutdown has started
 - `openfang_default_provider_auth_missing` — `1` when the effective default provider is missing credentials
 - `openfang_config_warnings` — current count of runtime config warnings

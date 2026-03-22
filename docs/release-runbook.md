@@ -17,7 +17,7 @@ Before tagging a release, confirm all of the following:
 cargo build --workspace --lib
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-docker compose config
+OPENFANG_API_KEY=release-preflight-placeholder docker compose config
 ```
 
 Confirm release metadata is aligned:
@@ -160,6 +160,7 @@ OPENFANG_API_KEY="$(openssl rand -hex 32)"
 docker run --rm -p 4200:4200 \
   -e OPENFANG_LISTEN=0.0.0.0:4200 \
   -e OPENFANG_API_KEY="$OPENFANG_API_KEY" \
+  -e OPENFANG_STRICT_PRODUCTION=1 \
   openfang:local start
 ```
 
@@ -168,6 +169,14 @@ In another terminal:
 ```bash
 curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
   http://127.0.0.1:4200/api/health/detail
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/live-api-smoke-openfang.sh
+```
+
+If you are validating the shipped systemd unit, install the strict preflight helper before enabling the unit:
+
+```bash
+sudo install -d /usr/local/lib/openfang
+sudo install -m 0755 scripts/preflight-openfang.sh /usr/local/lib/openfang/preflight-openfang.sh
 ```
 
 ### Provider path

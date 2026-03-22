@@ -11,6 +11,11 @@ import tomllib
 
 
 MAX_INCLUDE_DEPTH = 10
+TRUTHY_VALUES = {"1", "true", "yes", "on"}
+
+
+def truthy(value: str) -> bool:
+    return value.strip().lower() in TRUTHY_VALUES
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -141,6 +146,7 @@ def load_runtime_config() -> dict:
 RUNTIME_CONFIG = load_runtime_config()
 RUNTIME_ENV = runtime_override_env()
 API_KEY = str(RUNTIME_ENV.get("OPENFANG_API_KEY", RUNTIME_CONFIG.get("api_key", ""))).strip()
+STRICT_PRODUCTION = truthy(os.environ.get("OPENFANG_STRICT_PRODUCTION", ""))
 
 
 def resolve_base_url() -> str:
@@ -170,6 +176,11 @@ try:
 except urllib.error.HTTPError as exc:
     if API_KEY or exc.code not in {401, 403}:
         raise
+    if STRICT_PRODUCTION:
+        raise SystemExit(
+            "OPENFANG_STRICT_PRODUCTION requires an authenticated /api/health/detail probe; "
+            "configure OPENFANG_API_KEY or config api_key for the healthcheck"
+        ) from exc
     payload = fetch_json("/api/health", with_auth=False)
 
 status = payload.get("status")

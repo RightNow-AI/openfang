@@ -101,6 +101,12 @@ For a bundled smoke check:
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
 ```
 
+For the stateful agent lifecycle and budget path:
+
+```bash
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/live-api-smoke-openfang.sh
+```
+
 For a real provider-backed canary:
 
 ```bash
@@ -148,6 +154,7 @@ If you restore or replace runtime state, validate again:
 
 ```bash
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/live-api-smoke-openfang.sh
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
 

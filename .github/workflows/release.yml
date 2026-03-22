@@ -32,6 +32,7 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
+            prometheus \
             patchelf
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -49,7 +50,16 @@ jobs:
             --fail \
             --only-verified \
             --exclude-paths=<(echo -e "target/\n.git/\nCargo.lock")
+          bash -n scripts/backup-openfang.sh
+          bash -n scripts/preflight-openfang.sh
+          bash -n scripts/restore-openfang.sh
+          bash -n scripts/smoke-openfang.sh
+          bash -n scripts/live-api-smoke-openfang.sh
+          python3 -m py_compile scripts/healthcheck-openfang.py
           OPENFANG_API_KEY=release-preflight-placeholder docker compose config
+          systemd-analyze verify deploy/openfang.service
+          promtool check rules deploy/openfang-alerts.yml
+          promtool check config deploy/prometheus-scrape.yml
 
   # ── Tauri Desktop App (Windows + macOS + Linux) ───────────────────────────
   # Produces: .msi, .exe (Windows) | .dmg, .app (macOS) | .AppImage, .deb (Linux)
@@ -489,6 +499,7 @@ jobs:
 
           curl -fsS http://127.0.0.1:4200/api/health >/dev/null
           bash scripts/provider-canary-openfang.sh
+          OPENFANG_API_KEY=release-provider-canary-key bash scripts/live-api-smoke-openfang.sh http://127.0.0.1:4200
       - name: Upload provider canary log on failure
         if: failure()
         uses: actions/upload-artifact@v4

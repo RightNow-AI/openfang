@@ -12,9 +12,11 @@ User=openfang
 Group=openfang
 Environment=OPENFANG_HOME=/var/lib/openfang
 Environment=OPENFANG_ENV_FILE=/etc/openfang/env
+Environment=OPENFANG_STRICT_PRODUCTION=1
 ExecStart=/usr/local/bin/openfang start
 ExecStartPre=/usr/bin/test -x /usr/local/bin/openfang
-ExecStartPre=/bin/bash -lc 'set -euo pipefail; : "${OPENFANG_HOME:=/var/lib/openfang}"; test -r "$OPENFANG_HOME/config.toml"; mkdir -p "$OPENFANG_HOME/data"; test -w "$OPENFANG_HOME"; test -w "$OPENFANG_HOME/data"; if [[ -x /usr/local/lib/openfang/preflight-openfang.sh ]]; then OPENFANG_HOME="$OPENFANG_HOME" OPENFANG_ENV_FILE="${OPENFANG_ENV_FILE:-/etc/openfang/env}" OPENFANG_PREFLIGHT_OFFLINE=1 /usr/local/lib/openfang/preflight-openfang.sh --offline; fi'
+ExecStartPre=/bin/bash -lc 'if [[ "${OPENFANG_STRICT_PRODUCTION:-1}" != "1" ]]; then exit 0; fi; if [[ ! -x /usr/local/lib/openfang/preflight-openfang.sh ]]; then echo "strict production requires /usr/local/lib/openfang/preflight-openfang.sh" >&2; exit 1; fi'
+ExecStartPre=/bin/bash -lc 'set -euo pipefail; : "${OPENFANG_HOME:=/var/lib/openfang}"; test -r "$OPENFANG_HOME/config.toml"; mkdir -p "$OPENFANG_HOME/data"; test -w "$OPENFANG_HOME"; test -w "$OPENFANG_HOME/data"; if [[ -x /usr/local/lib/openfang/preflight-openfang.sh ]]; then OPENFANG_HOME="$OPENFANG_HOME" OPENFANG_ENV_FILE="${OPENFANG_ENV_FILE:-/etc/openfang/env}" OPENFANG_PREFLIGHT_OFFLINE=1 OPENFANG_STRICT_PRODUCTION="${OPENFANG_STRICT_PRODUCTION:-1}" /usr/local/lib/openfang/preflight-openfang.sh --offline; fi'
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
@@ -25,7 +27,9 @@ Environment=RUST_LOG=openfang=info,warn
 EnvironmentFile=-/etc/openfang/env
 WorkingDirectory=/var/lib/openfang
 StateDirectory=openfang
+StateDirectoryMode=0700
 LogsDirectory=openfang
+LogsDirectoryMode=0700
 SyslogIdentifier=openfang
 
 # Security hardening

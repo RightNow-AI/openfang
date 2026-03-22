@@ -46,6 +46,18 @@ groups:
             SQLite connectivity is failing. Check filesystem permissions,
             disk health, and restore procedures before restarting repeatedly.
 
+      - alert: OpenFangUsageStoreUnavailable
+        expr: openfang_usage_store_ok == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: OpenFang usage store health probe failed
+          description: >
+            Usage/metering tracking is currently unreachable. Check the usage
+            database, disk health, and restore procedures before restarting
+            repeatedly.
+
       - alert: OpenFangDefaultProviderMissingAuth
         expr: openfang_default_provider_auth_missing == 1
         for: 5m

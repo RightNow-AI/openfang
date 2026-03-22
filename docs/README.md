@@ -10,8 +10,9 @@ If you are taking over the project, read these in order:
 2. [Core Modules](core-modules.md)
 3. [Deployment](deployment.md)
 4. [Configuration](configuration.md)
-5. [Operations Runbook](operations-runbook.md)
-6. [Troubleshooting](troubleshooting.md)
+5. [Production Readiness](production-readiness.md)
+6. [Operations Runbook](operations-runbook.md)
+7. [Troubleshooting](troubleshooting.md)
 
 Then move to the detailed references for your area.
 
@@ -24,6 +25,7 @@ Then move to the detailed references for your area.
 | [Core Modules](core-modules.md) | Which crate/file owns which behavior |
 | [Deployment](deployment.md) | Local, container, and server deployment paths |
 | [Configuration](configuration.md) | Config layout, precedence, secrets, hot reload boundaries |
+| [Production Readiness](production-readiness.md) | Current ready/not-ready assessment, cutover gates, and residual risks |
 | [Operations Runbook](operations-runbook.md) | Health checks, backup, restore, upgrade, rollback |
 | `scripts/preflight-openfang.sh` | Runtime and deployment preflight for production cutovers |
 | `deploy/prometheus-scrape.yml` | Starter Prometheus scrape job with Bearer auth for `/api/metrics` |

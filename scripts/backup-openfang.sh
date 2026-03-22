@@ -92,6 +92,60 @@ env_file_var() {
   ' "${env_file}"
 }
 
+capture_openfang_metadata() {
+  if ! command -v openfang >/dev/null 2>&1; then
+    echo ""
+    return
+  fi
+
+  sha256_file() {
+    local path="$1"
+    local digest=""
+
+    if command -v sha256sum >/dev/null 2>&1; then
+      if digest="$(sha256sum "${path}" 2>/dev/null | awk '{print $1}')" && [[ -n "${digest}" ]]; then
+        printf '%s\n' "${digest}"
+        return 0
+      fi
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+      if digest="$(shasum -a 256 "${path}" 2>/dev/null | awk '{print $1}')" && [[ -n "${digest}" ]]; then
+        printf '%s\n' "${digest}"
+        return 0
+      fi
+    fi
+    if command -v openssl >/dev/null 2>&1; then
+      if digest="$(openssl dgst -sha256 "${path}" 2>/dev/null | awk '{print $NF}')" && [[ -n "${digest}" ]]; then
+        printf '%s\n' "${digest}"
+        return 0
+      fi
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+      python3 - "${path}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+hasher = hashlib.sha256()
+with path.open("rb") as fh:
+    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+        hasher.update(chunk)
+print(hasher.hexdigest())
+PY
+      return 0
+    fi
+    return 1
+  }
+
+  local binary version sha git_sha
+  binary="$(command -v openfang)"
+  version="$(openfang --version 2>/dev/null | head -n 1 || true)"
+  sha="$(sha256_file "${binary}" 2>/dev/null || true)"
+  git_sha="$(printf '%s\n' "${version}" | grep -oE '[0-9a-f]{7,}' | head -n 1)"
+  printf '%s|%s|%s|%s' "${binary}" "${version}" "${sha}" "${git_sha}"
+}
+
 auto_detect_external_env_file() {
   local openfang_home="$1"
   local candidate="/etc/openfang/env"
@@ -738,6 +792,13 @@ if [[ -n "${EXTERNAL_ENV_FILE}" && -f "${EXTERNAL_ENV_FILE}" ]]; then
   EXTERNAL_ENV_MODE="$(file_mode "${EXTERNAL_ENV_FILE}" || true)"
 fi
 
+OPENFANG_METADATA="$(capture_openfang_metadata)"
+IFS='|' read -r OPENFANG_BINARY OPENFANG_VERSION OPENFANG_BINARY_SHA256 OPENFANG_GIT_SHA <<< "${OPENFANG_METADATA:-|||}"
+OPENFANG_BINARY="${OPENFANG_BINARY:-unknown}"
+OPENFANG_VERSION="${OPENFANG_VERSION:-unknown}"
+OPENFANG_BINARY_SHA256="${OPENFANG_BINARY_SHA256:-unknown}"
+OPENFANG_GIT_SHA="${OPENFANG_GIT_SHA:-unknown}"
+
 cat > "${DEST}/BACKUP.txt" <<EOF
 created_at=${TIMESTAMP}
 source_home=${OPENFANG_HOME}
@@ -747,6 +808,10 @@ external_env_source=${EXTERNAL_ENV_FILE}
 external_env_mode=${EXTERNAL_ENV_MODE}
 sqlite_source=${SQLITE_PATH}
 sqlite_rel_path=${SQLITE_REL_PATH}
+openfang_binary=${OPENFANG_BINARY}
+openfang_version=${OPENFANG_VERSION}
+openfang_binary_sha256=${OPENFANG_BINARY_SHA256}
+openfang_git_sha=${OPENFANG_GIT_SHA}
 EOF
 
 if [[ "${KEEP_BACKUPS}" =~ ^[0-9]+$ ]] && (( KEEP_BACKUPS > 0 )); then

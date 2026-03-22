@@ -145,6 +145,7 @@ OPENFANG_API_KEY="$(openssl rand -hex 32)"
 docker run --rm -p 4200:4200 \
   -e OPENFANG_LISTEN=0.0.0.0:4200 \
   -e OPENFANG_API_KEY="$OPENFANG_API_KEY" \
+  -e OPENFANG_STRICT_PRODUCTION=1 \
   -v openfang-data:/data \
   openfang:local start
 ```
@@ -156,6 +157,7 @@ Confirm:
 - `/data` volume persists between container restarts
 - `/api/health/detail` reports `status = "ok"` with the same auth mode the deployment will use
 - Container healthcheck follows `OPENFANG_LISTEN` (or explicit `OPENFANG_BASE_URL`) so non-default listen ports do not flap to `unhealthy`
+- Container healthcheck runs with `OPENFANG_STRICT_PRODUCTION=1` (or an equivalent fail-closed policy) so missing machine auth cannot silently downgrade readiness to liveness
 
 Before shipping a production image or binary cutover, also verify operator safety rails:
 
@@ -173,13 +175,23 @@ OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_PREFLIGHT_OFFLINE=1 scripts/preflig
 OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_STRICT_PRODUCTION=1 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
 
+After those file-based validations, run the stateful smoke that actually spawns an agent, exercises its budget, and then kills it so the runtime path your customers hit is really exercised:
+
+```bash
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/live-api-smoke-openfang.sh
+```
+
 Keep `/etc/openfang/env` readable by the `openfang` service user as well as root. `0640 root:openfang` is the supported baseline so `ExecStartPre` preflight and host-side operator scripts can read the same file.
+Strict preflight accepts that external env baseline while still requiring owner-only permissions for the rest of the runtime secret files.
 
 Pass criteria:
 - backup succeeds while the daemon is stopped, or live backup is explicitly opted into
-- offline preflight validates config resolution, state-file integrity, writable runtime paths, and SQLite quick-check
+- offline preflight validates config resolution, config-include dependencies, sensitive file permissions, state-file integrity, writable runtime paths, and SQLite quick-check
 - live preflight validates runtime reachability and checks `/api/health/detail` readiness when the provided auth context can access protected endpoints
 - if the release is meant to serve provider-backed traffic, one real `scripts/provider-canary-openfang.sh` run succeeds and is archived with the release evidence
+- the same `scripts/live-api-smoke-openfang.sh` run also proves stateful agent workflows before cutover
+- the CI `deploy-lint` job must pass so `systemd-analyze verify deploy/openfang.service`, `docker compose config`, and `promtool check` for the stored Prometheus rules/config all succeed
+- when secrets for `OPENFANG_PROVIDER_CANARY_API_KEY`, `OPENFANG_CANARY_BASE_URL`, `OPENFANG_CANARY_PROVIDER`, `OPENFANG_CANARY_MODEL`, and `OPENFANG_CANARY_API_KEY_ENV` are populated, the `provider-canary` job runs in CI and its logs become release evidence alongside any manual canary steps
 - if you deploy via systemd, install `scripts/preflight-openfang.sh` to `/usr/local/lib/openfang/preflight-openfang.sh` so `ExecStartPre` can block obvious bad config/state before `Restart=on-failure` turns it into a restart loop
 
 ---

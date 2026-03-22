@@ -5,6 +5,7 @@ This repository is a working fork of OpenFang with an integrated `shipinbot` pro
 ## Start Here
 
 - Core platform docs: [docs/README.md](docs/README.md)
+- Production-ready assessment: [docs/production-readiness.md](docs/production-readiness.md)
 - Repository structure: [PROJECTS.md](PROJECTS.md)
 - shipinbot docs: [projects/shipinbot/docs/INDEX.md](projects/shipinbot/docs/INDEX.md)
 - Telegram workflow notes: [SHIPINBOT_INTEGRATION_GUIDE.md](SHIPINBOT_INTEGRATION_GUIDE.md)
@@ -101,8 +102,9 @@ The documentation set is organized so a new maintainer can move from overview to
 3. [docs/core-modules.md](docs/core-modules.md)
 4. [docs/deployment.md](docs/deployment.md)
 5. [docs/configuration.md](docs/configuration.md)
-6. [docs/operations-runbook.md](docs/operations-runbook.md)
-7. [docs/troubleshooting.md](docs/troubleshooting.md)
+6. [docs/production-readiness.md](docs/production-readiness.md)
+7. [docs/operations-runbook.md](docs/operations-runbook.md)
+8. [docs/troubleshooting.md](docs/troubleshooting.md)
 
 For shipinbot ownership and production procedures, continue with `projects/shipinbot/docs/`.
 

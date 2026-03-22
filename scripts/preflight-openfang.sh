@@ -159,7 +159,7 @@ fi
 
 runtime_inspect() {
   local mode="$1"
-  python3 - "${CONFIG_PATH}" "${OPENFANG_HOME}" "${mode}" "${EXTERNAL_ENV_FILE}" <<'PY'
+  python3 - "${CONFIG_PATH}" "${OPENFANG_HOME}" "${mode}" "${EXTERNAL_ENV_FILE}" "${STRICT_PRODUCTION}" <<'PY'
 import ipaddress
 import os
 import stat
@@ -289,6 +289,53 @@ def load_config_with_includes(
     return merged
 
 
+def collect_config_dependency_paths(
+    config_path,
+    visited=None,
+    depth=0,
+):
+    if depth > MAX_INCLUDE_DEPTH:
+        raise SystemExit(f"config include depth exceeded {MAX_INCLUDE_DEPTH}")
+
+    if visited is None:
+        visited = set()
+
+    canonical_path = config_path.resolve(strict=True)
+    if canonical_path in visited:
+        raise SystemExit(f"circular config include detected: {config_path}")
+    visited.add(canonical_path)
+
+    config_dir = canonical_path.parent
+    root = tomllib.loads(canonical_path.read_text(encoding="utf-8"))
+    includes = root.get("include") or []
+    files = [canonical_path]
+
+    if not isinstance(includes, list):
+        raise SystemExit("config include must be an array")
+
+    for include in includes:
+        if not isinstance(include, str):
+            continue
+        include_path = Path(include)
+        if include_path.is_absolute():
+            raise SystemExit(f"config include rejects absolute path: {include}")
+        if ".." in include_path.parts:
+            raise SystemExit(f"config include rejects path traversal: {include}")
+        resolved = (config_dir / include_path).resolve(strict=True)
+        try:
+            resolved.relative_to(config_dir)
+        except ValueError as exc:
+            raise SystemExit(f"config include escapes config directory: {include}") from exc
+        files.extend(collect_config_dependency_paths(resolved, visited, depth + 1))
+
+    visited.remove(canonical_path)
+    return files
+
+
+def truthy(value):
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def split_host_port(addr):
     listen = str(addr).strip()
     if not listen:
@@ -359,6 +406,7 @@ openfang_home = Path(sys.argv[2])
 mode = sys.argv[3]
 external_env_arg = sys.argv[4].strip() if len(sys.argv) > 4 else ""
 external_env_path = Path(external_env_arg) if external_env_arg else None
+strict_production = truthy(sys.argv[5]) if len(sys.argv) > 5 else False
 
 cfg = load_config_with_includes(config_path)
 helper_env = runtime_helper_env(openfang_home)
@@ -449,22 +497,48 @@ else:
 
 if os.name == "posix":
     print("\n== Sensitive File Permissions ==")
-    candidates = [
-        config_path,
-        openfang_home / ".env",
-        openfang_home / "secrets.env",
-        openfang_home / "vault.enc",
-    ]
+    candidates = collect_config_dependency_paths(config_path)
+    candidates.extend(
+        [
+            openfang_home / ".env",
+            openfang_home / "secrets.env",
+            openfang_home / "vault.enc",
+        ]
+    )
     if external_env_path is not None:
         candidates.append(external_env_path)
+    resolved_external_env = None
+    if external_env_path is not None and external_env_path.exists():
+        resolved_external_env = external_env_path.resolve(strict=True)
+    seen = set()
     for candidate in candidates:
         if not candidate.exists():
             continue
+        candidate = candidate.resolve(strict=True)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
         mode_bits = stat.S_IMODE(candidate.stat().st_mode)
+        if (
+            resolved_external_env is not None
+            and candidate == resolved_external_env
+            and mode_bits & 0o027 == 0
+        ):
+            print(f"ok  {candidate}")
+            continue
         if mode_bits & 0o077:
-            print(
-                f"warn {candidate} permissions are {oct(mode_bits)}; restrict to owner-only access"
+            message = (
+                f"{candidate} permissions are {oct(mode_bits)}; restrict to owner-only access"
             )
+            if resolved_external_env is not None and candidate == resolved_external_env:
+                message = (
+                    f"{candidate} permissions are {oct(mode_bits)}; keep external env files at 0600 or group-readable only (for example 0640 root:openfang)"
+                )
+            if strict_production:
+                raise SystemExit(
+                    f"strict production mode rejects loose sensitive file permissions: {message}"
+                )
+            print(f"warn {message}")
         else:
             print(f"ok  {candidate}")
 PY

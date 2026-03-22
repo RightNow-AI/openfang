@@ -11,6 +11,8 @@ This guide documents the deployment paths that are actually supported by the ass
 | Docker / Compose | Local services and containerized hosts | `Dockerfile`, `docker-compose.yml` |
 | Linux systemd | Server deployment | `deploy/openfang.service` |
 
+CI now includes a `deploy-lint` job that runs `systemd-analyze verify deploy/openfang.service`, `docker compose config`, and `promtool check` against `deploy/openfang-alerts.yml`/`deploy/prometheus-scrape.yml`, plus an optional `provider-canary` job that executes `scripts/provider-canary-openfang.sh` whenever the `OPENFANG_PROVIDER_CANARY_API_KEY`, `OPENFANG_CANARY_BASE_URL`, `OPENFANG_CANARY_PROVIDER`, `OPENFANG_CANARY_MODEL`, and `OPENFANG_CANARY_API_KEY_ENV` secrets are configured in the repository.
+
 ## Common Requirements
 
 - one working inference path: a remote LLM provider or a reachable local model endpoint
@@ -127,6 +129,7 @@ You must provide a real API key before booting the container. The daemon rejects
 cat > .env <<'EOF'
 OPENFANG_LISTEN=0.0.0.0:4200
 OPENFANG_API_KEY=<paste-a-random-hex-string-here>
+OPENFANG_STRICT_PRODUCTION=1
 GROQ_API_KEY=replace-me
 EOF
 
@@ -152,7 +155,7 @@ curl -H "Authorization: Bearer $OPENFANG_API_KEY" \
 
 If auth is disabled and you are testing from inside the container, omit the header.
 Treat `/api/health` as liveness only. For deploy validation and orchestrator health checks, prefer `/api/health/detail` and require `status = "ok"`.
-The container image and Compose healthcheck now resolves auth the same way the daemon does: `OPENFANG_API_KEY` from the real process environment wins, otherwise `api_key` from `config.toml` is used. If a deployment relies on dashboard auth only, the baked-in probe still falls back to `/api/health` because it cannot reuse a login session cookie.
+The container image and Compose healthcheck now resolves auth the same way the daemon does: `OPENFANG_API_KEY` from the real process environment wins, otherwise `api_key` from `config.toml` is used. The repository Compose file also sets `OPENFANG_STRICT_PRODUCTION=1`, so a missing machine credential causes the container probe to fail closed instead of silently downgrading from readiness to liveness.
 For production automation, keep a machine API key available for readiness probes, Prometheus scrapes, and operator scripts; dashboard auth alone is not enough for full protected-path validation.
 Healthcheck address resolution now follows `OPENFANG_BASE_URL` first; when that is unset it derives the probe URL from `OPENFANG_LISTEN` so non-default listen ports do not flap to unhealthy.
 
@@ -166,7 +169,7 @@ OPENFANG_STRICT_PRODUCTION=1 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/prefli
 These operational scripts are repository artifacts and are typically run from the host (or CI runner) that has this repo checked out. Do not assume they exist inside the runtime container image.
 `scripts/preflight-openfang.sh` is strict by default and fails if the live API is unreachable or if `/api/health/detail` reports a degraded node. Use `--offline` (or `OPENFANG_PREFLIGHT_OFFLINE=1`) only for intentional file-only checks.
 
-If this node is supposed to serve real provider-backed responses, also run a real canary:
+If this node is supposed to serve real provider-backed responses, also run a real canary and the stateful live smoke:
 
 ```bash
 OPENFANG_API_KEY="$OPENFANG_API_KEY" \
@@ -176,10 +179,14 @@ OPENFANG_CANARY_API_KEY_ENV=GROQ_API_KEY \
 scripts/provider-canary-openfang.sh
 ```
 
+```bash
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/live-api-smoke-openfang.sh
+```
+
 The canary now requires per-agent token usage to increase after the LLM round-trip. Spend counters are still checked for non-regression, but they may remain unchanged for free or local provider paths.
 For automation and cutovers, prefer `OPENFANG_STRICT_PRODUCTION=1` so smoke/preflight fail closed when protected operational checks cannot authenticate.
 
-If you scrape Prometheus, wire alerts from `deploy/openfang-alerts.yml` into the same environment. The readiness metrics (`openfang_readiness_ready`, `openfang_database_ok`, `openfang_default_provider_auth_missing`, `openfang_config_warnings`, `openfang_restore_warnings`) are designed to match the daemon's own `/api/health/detail` interpretation, including secrets resolved from `vault.enc`, `secrets.env`, and `.env`.
+If you scrape Prometheus, wire alerts from `deploy/openfang-alerts.yml` into the same environment. The readiness metrics (`openfang_readiness_ready`, `openfang_database_ok`, `openfang_usage_store_ok`, `openfang_default_provider_auth_missing`, `openfang_config_warnings`, `openfang_restore_warnings`) are designed to match the daemon's own `/api/health/detail` interpretation, including secrets resolved from `vault.enc`, `secrets.env`, and `.env`.
 Use `deploy/prometheus-scrape.yml` as the starter scrape job when you want a working Prometheus example that already includes Bearer auth for `/api/metrics`.
 The sample alert rules now include both `absent(openfang_info)` and `up{job="openfang"} == 0`; update the `job` matcher if your Prometheus scrape config uses a different label.
 
@@ -198,7 +205,7 @@ It assumes:
 
 ```bash
 sudo useradd --system --home /var/lib/openfang --shell /usr/sbin/nologin openfang
-sudo install -d -o openfang -g openfang /var/lib/openfang
+sudo install -m 0700 -d -o openfang -g openfang /var/lib/openfang
 sudo install -d /etc/openfang
 sudo install -d /usr/local/lib/openfang
 sudo install -m 0644 deploy/openfang.service /etc/systemd/system/openfang.service
@@ -225,7 +232,10 @@ If you enable dashboard auth in `config.toml`, set a valid Argon2id `password_ha
 Legacy 64-character SHA-256 hex digests still work for compatibility, but do not use them for new deployments.
 Keep `/etc/openfang/env` readable by the `openfang` service user as well as root. `0640 root:openfang` is the supported baseline so `ExecStartPre` preflight and host-side backup/preflight/restore scripts can read the same external env source.
 The systemd unit template exports `OPENFANG_ENV_FILE=/etc/openfang/env` so operator scripts can consistently find the same external env source.
-The unit also performs a minimal pre-start gate: it requires a readable `config.toml`, writable runtime directories, and, when `/usr/local/lib/openfang/preflight-openfang.sh` is installed, it runs `preflight-openfang.sh --offline` before starting the daemon.
+Strict preflight treats that external env file as a special case: `0600` remains valid, and `0640 root:openfang` is also accepted so the service user can read it without weakening the rest of the runtime secrets baseline.
+The systemd unit template also sets `StateDirectoryMode=0700` and `LogsDirectoryMode=0700` so the runtime state and log directories do not default to world-readable permissions.
+The unit also performs a fail-closed pre-start gate: it requires a readable `config.toml`, writable runtime directories, enables `OPENFANG_STRICT_PRODUCTION=1`, and runs `/usr/local/lib/openfang/preflight-openfang.sh --offline` before starting the daemon.
+Strict mode treats the helper itself as mandatory: if `/usr/local/lib/openfang/preflight-openfang.sh` is missing while `OPENFANG_STRICT_PRODUCTION=1`, the unit fails to start so the deeper preflight cannot be bypassed.
 
 ### Service Management
 

@@ -938,10 +938,10 @@ if ! restore_external_env_file \
   exit 1
 fi
 
-rm -rf "${ROLLBACK_HOME}"
-
 echo "Restore completed."
+echo "Rollback copy preserved at: ${ROLLBACK_HOME}"
 echo "Next steps:"
 echo "  1. Start the daemon"
 echo "  2. Run scripts/smoke-openfang.sh"
 echo "  3. Run scripts/preflight-openfang.sh"
+echo "  4. Delete ${ROLLBACK_HOME} only after startup and readiness checks pass"

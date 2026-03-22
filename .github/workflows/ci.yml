@@ -124,6 +124,21 @@ jobs:
             --exclude-paths=<(echo -e "target/\n.git/\nCargo.lock")
 
   # ── Installer smoke test (verify repo-owned install entrypoints) ───────────
+  provider-canary:
+    name: Provider Canary (optional)
+    runs-on: ubuntu-latest
+    if: ${{ secrets.OPENFANG_PROVIDER_CANARY_API_KEY != '' && secrets.OPENFANG_CANARY_BASE_URL != '' && secrets.OPENFANG_CANARY_PROVIDER != '' && secrets.OPENFANG_CANARY_MODEL != '' && secrets.OPENFANG_CANARY_API_KEY_ENV != '' }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run provider canary
+        env:
+          OPENFANG_BASE_URL: ${{ secrets.OPENFANG_CANARY_BASE_URL }}
+          OPENFANG_API_KEY: ${{ secrets.OPENFANG_PROVIDER_CANARY_API_KEY }}
+          OPENFANG_CANARY_PROVIDER: ${{ secrets.OPENFANG_CANARY_PROVIDER }}
+          OPENFANG_CANARY_MODEL: ${{ secrets.OPENFANG_CANARY_MODEL }}
+          OPENFANG_CANARY_API_KEY_ENV: ${{ secrets.OPENFANG_CANARY_API_KEY_ENV }}
+        run: bash scripts/provider-canary-openfang.sh
+
   install-smoke:
     name: Install Script Smoke Test
     runs-on: ubuntu-latest
@@ -180,6 +195,7 @@ jobs:
           curl -fsS http://127.0.0.1:4200/api/health >/dev/null
           bash scripts/smoke-openfang.sh
           bash scripts/preflight-openfang.sh
+          OPENFANG_API_KEY=ci-smoke-key-please-change bash scripts/live-api-smoke-openfang.sh http://127.0.0.1:4200
       - name: Upload daemon smoke log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -199,6 +215,7 @@ jobs:
         env:
           OPENFANG_API_KEY: ci-docker-smoke-key
           OPENFANG_BASE_URL: http://127.0.0.1:4210
+          OPENFANG_STRICT_PRODUCTION: "1"
         run: |
           trap 'docker logs openfang-ci-smoke >/dev/null 2>&1 || true; docker rm -f openfang-ci-smoke >/dev/null 2>&1 || true' EXIT
           docker_home="$RUNNER_TEMP/docker-openfang-home"
@@ -218,6 +235,7 @@ jobs:
             -v "$docker_home:/data" \
             -e OPENFANG_LISTEN=0.0.0.0:4310 \
             -e OPENFANG_API_KEY="$OPENFANG_API_KEY" \
+          -e OPENFANG_STRICT_PRODUCTION="$OPENFANG_STRICT_PRODUCTION" \
             openfang-ci-smoke start
 
           for _ in $(seq 1 30); do
@@ -240,6 +258,27 @@ jobs:
       - name: Upload Docker smoke log on failure
         if: failure()
         run: docker logs openfang-ci-smoke || true
+      - name: Validate docker compose
+        run: OPENFANG_API_KEY=ci-compose-validate docker compose config >/dev/null
+
+  deploy-lint:
+    name: Deploy Artifact Validation
+    runs-on: ubuntu-latest
+    needs: docker-smoke
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate systemd unit
+        run: systemd-analyze verify deploy/openfang.service
+      - name: Validate docker-compose configuration
+        run: OPENFANG_API_KEY=ci-deploy-lint docker compose -f docker-compose.yml config >/dev/null
+      - name: Install promtool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y prometheus
+      - name: Validate Prometheus artifacts
+        run: |
+          promtool check rules deploy/openfang-alerts.yml
+          promtool check config deploy/prometheus-scrape.yml
 
   ops-scripts:
     name: Ops Scripts
@@ -253,11 +292,98 @@ jobs:
       - name: Syntax check operational scripts
         run: |
           bash -n scripts/backup-openfang.sh
+          bash -n scripts/live-api-smoke-openfang.sh
           bash -n scripts/preflight-openfang.sh
           bash -n scripts/provider-canary-openfang.sh
           bash -n scripts/restore-openfang.sh
           bash -n scripts/smoke-openfang.sh
           python3 -m py_compile scripts/healthcheck-openfang.py
+      - name: Healthcheck strict mode fails closed without authenticated readiness
+        run: |
+          tmpdir="$RUNNER_TEMP/healthcheck-strict"
+          rm -rf "$tmpdir"
+          mkdir -p "$tmpdir"
+          cat > "$tmpdir/mock_health.py" <<'PY'
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          import json
+          import os
+
+          mode = os.environ["MOCK_MODE"]
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == "/api/health/detail":
+                      if mode == "auth-required":
+                          self.send_response(401)
+                          self.end_headers()
+                          return
+                      body = json.dumps({"status": "ok"}).encode()
+                  elif self.path == "/api/health":
+                      body = json.dumps({"status": "ok"}).encode()
+                  else:
+                      self.send_response(404)
+                      self.end_headers()
+                      return
+                  self.send_response(200)
+                  self.send_header("Content-Type", "application/json")
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+
+              def log_message(self, format, *args):
+                  return
+
+          HTTPServer(("127.0.0.1", 43291), Handler).serve_forever()
+          PY
+          MOCK_MODE=auth-required python3 "$tmpdir/mock_health.py" &
+          server_pid=$!
+          trap 'kill "$server_pid" >/dev/null 2>&1 || true; wait "$server_pid" >/dev/null 2>&1 || true' EXIT
+          sleep 1
+          OPENFANG_BASE_URL=http://127.0.0.1:43291 python3 scripts/healthcheck-openfang.py
+          if OPENFANG_STRICT_PRODUCTION=1 OPENFANG_BASE_URL=http://127.0.0.1:43291 python3 scripts/healthcheck-openfang.py >"$tmpdir/strict.out" 2>"$tmpdir/strict.err"; then
+            echo "strict healthcheck unexpectedly passed without authenticated readiness"
+            exit 1
+          fi
+          grep -q 'OPENFANG_STRICT_PRODUCTION requires an authenticated /api/health/detail probe' "$tmpdir/strict.err"
+      - name: Preflight strict mode rejects loose sensitive file permissions
+        run: |
+          export OPENFANG_HOME="$RUNNER_TEMP/preflight-strict-home"
+          rm -rf "$OPENFANG_HOME"
+          mkdir -p "$OPENFANG_HOME/config.d" "$OPENFANG_HOME/data"
+          cat > "$OPENFANG_HOME/config.toml" <<'EOF'
+          include = ["config.d/providers.toml"]
+          api_listen = "127.0.0.1:4200"
+          EOF
+          cat > "$OPENFANG_HOME/config.d/providers.toml" <<'EOF'
+          log_level = "info"
+          EOF
+          chmod 600 "$OPENFANG_HOME/config.toml"
+          chmod 644 "$OPENFANG_HOME/config.d/providers.toml"
+          if OPENFANG_API_KEY=test-machine-key OPENFANG_STRICT_PRODUCTION=1 bash scripts/preflight-openfang.sh --offline >"$RUNNER_TEMP/preflight-strict.out" 2>"$RUNNER_TEMP/preflight-strict.err"; then
+            echo "strict preflight unexpectedly passed with loose include permissions"
+            exit 1
+          fi
+          grep -q 'strict production mode rejects loose sensitive file permissions' "$RUNNER_TEMP/preflight-strict.err"
+          chmod 600 "$OPENFANG_HOME/config.d/providers.toml"
+          OPENFANG_API_KEY=test-machine-key OPENFANG_STRICT_PRODUCTION=1 bash scripts/preflight-openfang.sh --offline >"$RUNNER_TEMP/preflight-strict-pass.log"
+          grep -q 'ok  sqlite_path=' "$RUNNER_TEMP/preflight-strict-pass.log"
+      - name: Preflight strict mode accepts systemd-style external env permissions
+        run: |
+          export OPENFANG_HOME="$RUNNER_TEMP/preflight-systemd-home"
+          export OPENFANG_ENV_FILE="$RUNNER_TEMP/preflight-systemd.env"
+          rm -rf "$OPENFANG_HOME" "$OPENFANG_ENV_FILE"
+          mkdir -p "$OPENFANG_HOME/data"
+          cat > "$OPENFANG_HOME/config.toml" <<'EOF'
+          api_listen = "127.0.0.1:4200"
+          EOF
+          cat > "$OPENFANG_ENV_FILE" <<EOF
+          OPENFANG_HOME=$OPENFANG_HOME
+          OPENFANG_API_KEY=test-machine-key
+          EOF
+          chmod 600 "$OPENFANG_HOME/config.toml"
+          chmod 640 "$OPENFANG_ENV_FILE"
+          OPENFANG_STRICT_PRODUCTION=1 bash scripts/preflight-openfang.sh --offline >"$RUNNER_TEMP/preflight-systemd-pass.log"
+          grep -q 'ok  sqlite_path=' "$RUNNER_TEMP/preflight-systemd-pass.log"
       - name: Restore guardrails reject malformed backups
         run: |
           export OPENFANG_HOME="$RUNNER_TEMP/restore-guard-home"
@@ -346,6 +472,30 @@ jobs:
             exit 1
           fi
           grep -q 'python3 is required to resolve runtime sqlite_path' "$backup_log"
+      - name: Backup metadata hashing falls back when sha256sum is unavailable
+        run: |
+          export OPENFANG_HOME="$RUNNER_TEMP/openfang-home-hash-fallback"
+          rm -rf "$OPENFANG_HOME"
+          mkdir -p "$OPENFANG_HOME/data"
+          cat > "$OPENFANG_HOME/config.toml" <<'EOF'
+          api_listen = "127.0.0.1:4200"
+          EOF
+          sqlite3 "$OPENFANG_HOME/data/openfang.db" 'CREATE TABLE demo (id INTEGER PRIMARY KEY, value TEXT);'
+          tool_bin="$RUNNER_TEMP/hash-fallback-bin"
+          rm -rf "$tool_bin"
+          mkdir -p "$tool_bin"
+          cat > "$tool_bin/openfang" <<'EOF'
+          #!/usr/bin/env bash
+          echo "openfang 0.0.0 (deadbeef)"
+          EOF
+          cat > "$tool_bin/sha256sum" <<'EOF'
+          #!/usr/bin/env bash
+          exit 127
+          EOF
+          chmod +x "$tool_bin/openfang" "$tool_bin/sha256sum"
+          PATH="$tool_bin:$PATH" bash scripts/backup-openfang.sh "$RUNNER_TEMP/backups-hash-fallback"
+          backup_dir="$(find "$RUNNER_TEMP/backups-hash-fallback" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          grep -Eq '^openfang_binary_sha256=[0-9a-f]{64}$' "$backup_dir/BACKUP.txt"
       - name: Backup and restore roundtrip
         run: |
           export OPENFANG_HOME="$RUNNER_TEMP/openfang-home"
