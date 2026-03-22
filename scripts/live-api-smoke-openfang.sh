@@ -35,6 +35,7 @@ fi
 AUTH=(-H "Authorization: Bearer ${API_KEY}")
 CONTENT=(-H "Content-Type: application/json")
 agent_id=""
+cleanup_needed=1
 agent_name="live-smoke-agent-$(python3 - <<'PY'
 import uuid
 print(uuid.uuid4().hex[:8])
@@ -47,23 +48,21 @@ run_curl() {
 }
 
 cleanup() {
+  [[ "${cleanup_needed}" == "1" ]] || return 0
+
   if [[ -n "${agent_id}" ]]; then
     curl -fsS -X DELETE "${AUTH[@]}" "${BASE_URL}/api/agents/${agent_id}" >/dev/null 2>&1 || true
     return
   fi
 
   local fallback_ids
-  fallback_ids="$(run_curl "/api/agents" | python3 - "${agent_name}" <<'PY'
-import json
-import sys
-
+  fallback_ids="$(run_curl "/api/agents" | python3 -c 'import json, sys
 payload = json.load(sys.stdin)
 target_name = sys.argv[1]
 for agent in payload:
     if agent.get("name") == target_name and agent.get("id"):
         print(agent["id"])
-PY
-)" || return 0
+' "${agent_name}")" || return 0
 
   while IFS= read -r fallback_id; do
     [[ -n "${fallback_id}" ]] || continue
@@ -198,5 +197,6 @@ then
   echo "error killed agent still appears in /api/agents" >&2
   exit 1
 fi
+cleanup_needed=0
 
 echo "live API smoke completed against ${BASE_URL}"
