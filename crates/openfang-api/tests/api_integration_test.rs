@@ -13,10 +13,12 @@ use openfang_api::routes::{self, AppState};
 use openfang_api::server;
 use openfang_api::ws;
 use openfang_kernel::OpenFangKernel;
+use openfang_memory::usage::UsageRecord;
 use openfang_memory::MemorySubstrate;
 use openfang_types::config::{
-    ChannelsConfig, DefaultModelConfig, KernelConfig, MemoryConfig, TelegramConfig,
+    BudgetConfig, ChannelsConfig, DefaultModelConfig, KernelConfig, MemoryConfig, TelegramConfig,
 };
+use openfang_types::message::TokenUsage;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -139,13 +141,41 @@ async fn start_test_server_with_config(config: KernelConfig, tmp: tempfile::Temp
             axum::routing::post(routes::send_message),
         )
         .route(
+            "/api/agents/{id}",
+            axum::routing::get(routes::get_agent).delete(routes::kill_agent),
+        )
+        .route(
             "/api/agents/{id}/session",
             axum::routing::get(routes::get_agent_session),
         )
+        .route(
+            "/api/agents/{id}/sessions",
+            axum::routing::post(routes::create_agent_session),
+        )
+        .route(
+            "/api/agents/{id}/sessions/{session_id}/switch",
+            axum::routing::post(routes::switch_agent_session),
+        )
+        .route(
+            "/api/agents/{id}/session/reset",
+            axum::routing::post(routes::reset_session),
+        )
+        .route(
+            "/api/agents/{id}/history",
+            axum::routing::delete(routes::clear_agent_history),
+        )
         .route("/api/agents/{id}/ws", axum::routing::get(ws::agent_ws))
         .route(
-            "/api/agents/{id}",
-            axum::routing::delete(routes::kill_agent),
+            "/api/budget",
+            axum::routing::get(routes::budget_status).put(routes::update_budget),
+        )
+        .route(
+            "/api/budget/agents",
+            axum::routing::get(routes::agent_budget_ranking),
+        )
+        .route(
+            "/api/budget/agents/{id}",
+            axum::routing::get(routes::agent_budget_status).put(routes::update_agent_budget),
         )
         .route(
             "/api/triggers",
@@ -194,6 +224,35 @@ async fn start_test_server_with_config(config: KernelConfig, tmp: tempfile::Temp
     }
 }
 
+async fn start_full_test_server_with_config(
+    config: KernelConfig,
+    tmp: tempfile::TempDir,
+) -> TestServer {
+    let kernel = Arc::new(OpenFangKernel::boot_with_config(config).expect("Kernel should boot"));
+    kernel.set_self_handle();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind test server");
+    let addr = listener.local_addr().unwrap();
+    let (app, state) = server::build_router(kernel, addr).await;
+
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    TestServer {
+        base_url: format!("http://{}", addr),
+        state,
+        _tmp: tmp,
+    }
+}
+
 /// Manifest that uses ollama (no API key required, won't make real LLM calls).
 const TEST_MANIFEST: &str = r#"
 name = "test-agent"
@@ -224,6 +283,25 @@ module = "builtin:chat"
 [model]
 provider = "groq"
 model = "llama-3.3-70b-versatile"
+system_prompt = "You are a test agent. Reply concisely."
+
+[capabilities]
+tools = ["file_read"]
+memory_read = ["*"]
+memory_write = ["self.*"]
+"#;
+
+/// Manifest that inherits the kernel default provider/model labels.
+const DEFAULT_MODEL_MANIFEST: &str = r#"
+name = "metrics-default-agent"
+version = "0.1.0"
+description = "Integration test agent"
+author = "test"
+module = "builtin:chat"
+
+[model]
+provider = "default"
+model = "default"
 system_prompt = "You are a test agent. Reply concisely."
 
 [capabilities]
@@ -369,6 +447,115 @@ async fn test_health_detail_uses_effective_default_model_override() {
         .unwrap()
         .iter()
         .any(|value| value == "default_provider_auth"));
+}
+
+#[tokio::test]
+async fn test_runtime_surfaces_use_effective_default_model_override() {
+    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
+    let config = KernelConfig {
+        home_dir: tmp.path().to_path_buf(),
+        data_dir: tmp.path().join("data"),
+        default_model: DefaultModelConfig {
+            provider: "ollama".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: "OLLAMA_API_KEY".to_string(),
+            base_url: None,
+        },
+        ..KernelConfig::default()
+    };
+    let server = start_full_test_server_with_config(config, tmp).await;
+    {
+        let mut override_guard = server.state.kernel.default_model_override.write().unwrap();
+        *override_guard = Some(DefaultModelConfig {
+            provider: "groq".to_string(),
+            model: "llama-3.3-70b-versatile".to_string(),
+            api_key_env: "GROQ_API_KEY".to_string(),
+            base_url: None,
+        });
+    }
+
+    let client = reqwest::Client::new();
+
+    let spawn = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": DEFAULT_MODEL_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(spawn.status(), 201);
+    let spawn_body: serde_json::Value = spawn.json().await.unwrap();
+    let agent_id: openfang_types::agent::AgentId =
+        spawn_body["agent_id"].as_str().unwrap().parse().unwrap();
+    server.state.kernel.scheduler.record_usage(
+        agent_id,
+        &TokenUsage {
+            input_tokens: 2,
+            output_tokens: 3,
+        },
+    );
+
+    let agents = client
+        .get(format!("{}/api/agents", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(agents.status(), 200);
+    let agents_body: Vec<serde_json::Value> = agents.json().await.unwrap();
+    let agent = agents_body
+        .iter()
+        .find(|item| item["id"] == agent_id.to_string())
+        .unwrap();
+    assert_eq!(agent["model_provider"], "groq");
+    assert_eq!(agent["model_name"], "llama-3.3-70b-versatile");
+
+    let metrics = client
+        .get(format!("{}/api/metrics", server.base_url))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(metrics.contains(
+        "openfang_tokens_total{agent=\"metrics-default-agent\",provider=\"groq\",model=\"llama-3.3-70b-versatile\"} 5"
+    ));
+
+    let hand = client
+        .get(format!("{}/api/hands/lead", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(hand.status(), 200);
+    let hand_body: serde_json::Value = hand.json().await.unwrap();
+    assert_eq!(hand_body["agent"]["provider"], "groq");
+    assert_eq!(hand_body["agent"]["model"], "llama-3.3-70b-versatile");
+
+    let activate = client
+        .post(format!("{}/api/hands/lead/activate", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(activate.status(), 200);
+    let activate_body: serde_json::Value = activate.json().await.unwrap();
+    let hand_agent_id: openfang_types::agent::AgentId =
+        activate_body["agent_id"].as_str().unwrap().parse().unwrap();
+    let hand_agent = server.state.kernel.registry.get(hand_agent_id).unwrap();
+    assert_eq!(hand_agent.manifest.model.provider, "groq");
+    assert_eq!(hand_agent.manifest.model.model, "llama-3.3-70b-versatile");
+
+    let config = client
+        .get(format!("{}/api/config", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(config.status(), 200);
+    let config_body: serde_json::Value = config.json().await.unwrap();
+    assert_eq!(config_body["default_model"]["provider"], "groq");
+    assert_eq!(
+        config_body["default_model"]["model"],
+        "llama-3.3-70b-versatile"
+    );
+    assert_eq!(config_body["default_model"]["api_key_env"], "GROQ_API_KEY");
 }
 
 #[tokio::test]
@@ -652,8 +839,321 @@ async fn test_metrics_expose_readiness_gauges() {
 
     assert!(body.contains("openfang_readiness_ready"));
     assert!(body.contains("openfang_database_ok"));
+    assert!(body.contains("openfang_usage_store_ok"));
     assert!(body.contains("openfang_config_warnings"));
     assert!(body.contains("openfang_restore_warnings"));
+}
+
+#[tokio::test]
+async fn test_health_detail_degrades_when_usage_store_is_unusable() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    {
+        let conn = server.state.kernel.memory.usage_conn();
+        let conn = conn.lock().unwrap();
+        conn.execute("DROP TABLE usage_events", []).unwrap();
+    }
+
+    let resp = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 503);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["usage_store"], "error");
+    assert!(body["readiness"]["failing_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "usage_store"));
+}
+
+#[tokio::test]
+async fn test_budget_endpoints_fail_when_usage_store_is_unusable() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+    let agent_id = server.state.kernel.registry.list()[0].id.to_string();
+
+    {
+        let conn = server.state.kernel.memory.usage_conn();
+        let conn = conn.lock().unwrap();
+        conn.execute("DROP TABLE usage_events", []).unwrap();
+    }
+
+    let global = client
+        .get(format!("{}/api/budget", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(global.status(), 500);
+
+    let ranking = client
+        .get(format!("{}/api/budget/agents", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ranking.status(), 500);
+
+    let per_agent = client
+        .get(format!(
+            "{}/api/budget/agents/{}",
+            server.base_url, agent_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(per_agent.status(), 500);
+}
+
+#[tokio::test]
+async fn test_update_budget_rejects_negative_values() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+    let original_daily_limit = server.state.kernel.effective_budget_config().max_daily_usd;
+
+    let resp = client
+        .put(format!("{}/api/budget", server.base_url))
+        .json(&serde_json::json!({
+            "max_daily_usd": -1.0
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("max_daily_usd cannot be negative"));
+    assert_eq!(
+        server.state.kernel.effective_budget_config().max_daily_usd,
+        original_daily_limit
+    );
+}
+
+#[tokio::test]
+async fn test_update_budget_rejects_negative_hourly_limit() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .put(format!("{}/api/budget", server.base_url))
+        .json(&serde_json::json!({
+            "max_hourly_usd": -2.5,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("max_hourly_usd cannot be negative"));
+}
+
+#[tokio::test]
+async fn test_update_budget_returns_update_status_when_usage_store_is_unusable() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    {
+        let conn = server.state.kernel.memory.usage_conn();
+        let conn = conn.lock().unwrap();
+        conn.execute("DROP TABLE usage_events", []).unwrap();
+    }
+
+    let resp = client
+        .put(format!("{}/api/budget", server.base_url))
+        .json(&serde_json::json!({
+            "max_daily_usd": 1.25
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "warning");
+    assert_eq!(body["update_status"], "applied");
+    assert_eq!(body["budget"]["max_daily_usd"], 1.25);
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("budget status unavailable after update"));
+    assert_eq!(
+        server.state.kernel.effective_budget_config().max_daily_usd,
+        1.25
+    );
+}
+
+#[tokio::test]
+async fn test_send_message_rejects_when_global_budget_is_exhausted() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let spawn = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    let spawn_body: serde_json::Value = spawn.json().await.unwrap();
+    let agent_id: openfang_types::agent::AgentId =
+        spawn_body["agent_id"].as_str().unwrap().parse().unwrap();
+
+    server
+        .state
+        .kernel
+        .set_effective_budget_config(BudgetConfig {
+            max_daily_usd: 0.01,
+            ..BudgetConfig::default()
+        });
+    server
+        .state
+        .kernel
+        .metering
+        .record(&UsageRecord {
+            agent_id,
+            model: "test-model".to_string(),
+            input_tokens: 1,
+            output_tokens: 1,
+            cost_usd: 0.02,
+            tool_calls: 0,
+        })
+        .unwrap();
+
+    let resp = client
+        .post(format!(
+            "{}/api/agents/{}/message",
+            server.base_url, agent_id
+        ))
+        .json(&serde_json::json!({"message": "hello"}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 429);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("quota"));
+}
+
+#[tokio::test]
+async fn test_update_agent_budget_rejects_negative_values() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+    let agent_id = server.state.kernel.registry.list()[0].id.to_string();
+
+    let resp = client
+        .put(format!(
+            "{}/api/budget/agents/{}",
+            server.base_url, agent_id
+        ))
+        .json(&serde_json::json!({
+            "max_cost_per_day_usd": -1.0
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("cannot be negative"));
+}
+
+#[tokio::test]
+async fn test_update_agent_budget_rolls_back_when_persistence_fails() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+    let agent_id = server.state.kernel.registry.list()[0].id;
+    let original_daily_limit = server
+        .state
+        .kernel
+        .registry
+        .get(agent_id)
+        .unwrap()
+        .manifest
+        .resources
+        .max_cost_per_day_usd;
+
+    {
+        let conn = server.state.kernel.memory.usage_conn();
+        let conn = conn.lock().unwrap();
+        conn.execute("DROP TABLE agents", []).unwrap();
+    }
+
+    let resp = client
+        .put(format!(
+            "{}/api/budget/agents/{}",
+            server.base_url, agent_id
+        ))
+        .json(&serde_json::json!({
+            "max_cost_per_day_usd": 12.5
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 500);
+    let current_daily_limit = server
+        .state
+        .kernel
+        .registry
+        .get(agent_id)
+        .unwrap()
+        .manifest
+        .resources
+        .max_cost_per_day_usd;
+    assert_eq!(current_daily_limit, original_daily_limit);
+}
+
+#[tokio::test]
+async fn test_metrics_resolve_default_provider_labels() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": DEFAULT_MODEL_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let agent_id = body["agent_id"].as_str().unwrap().parse().unwrap();
+    server.state.kernel.scheduler.record_usage(
+        agent_id,
+        &TokenUsage {
+            input_tokens: 2,
+            output_tokens: 3,
+        },
+    );
+
+    let metrics = client
+        .get(format!("{}/api/metrics", server.base_url))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(metrics.contains(
+        "openfang_tokens_total{agent=\"metrics-default-agent\",provider=\"ollama\",model=\"test-model\"} 5"
+    ));
+    assert!(!metrics.contains(
+        "openfang_tokens_total{agent=\"metrics-default-agent\",provider=\"default\",model=\"default\"}"
+    ));
 }
 
 #[tokio::test]
@@ -693,6 +1193,7 @@ async fn test_spawn_list_kill_agent() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["name"], "test-agent");
     let agent_id = body["agent_id"].as_str().unwrap().to_string();
+    let parsed_agent_id: openfang_types::agent::AgentId = agent_id.parse().unwrap();
     assert!(!agent_id.is_empty());
 
     // --- List (2 agents: default assistant + test-agent) ---
@@ -717,6 +1218,13 @@ async fn test_spawn_list_kill_agent() {
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "killed");
+    assert!(server
+        .state
+        .kernel
+        .memory
+        .load_agent(parsed_agent_id)
+        .unwrap()
+        .is_none());
 
     // --- List (only default assistant remains) ---
     let resp = client
@@ -728,6 +1236,126 @@ async fn test_spawn_list_kill_agent() {
     let agents: Vec<serde_json::Value> = resp.json().await.unwrap();
     assert_eq!(agents.len(), 1);
     assert_eq!(agents[0]["name"], "assistant");
+}
+
+#[tokio::test]
+async fn test_session_operations_persist_active_session_pointer() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let spawn = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    let spawn_body: serde_json::Value = spawn.json().await.unwrap();
+    let agent_id_str = spawn_body["agent_id"].as_str().unwrap().to_string();
+    let agent_id: openfang_types::agent::AgentId = agent_id_str.parse().unwrap();
+
+    let create = client
+        .post(format!(
+            "{}/api/agents/{}/sessions",
+            server.base_url, agent_id_str
+        ))
+        .json(&serde_json::json!({"label": "smoke"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create.status(), 200);
+    let create_body: serde_json::Value = create.json().await.unwrap();
+    let new_session_id = create_body["session_id"].as_str().unwrap().to_string();
+
+    let persisted = server
+        .state
+        .kernel
+        .memory
+        .load_agent(agent_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.session_id.0.to_string(), new_session_id);
+
+    let switch = client
+        .post(format!(
+            "{}/api/agents/{}/sessions/{}/switch",
+            server.base_url, agent_id_str, new_session_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(switch.status(), 200);
+
+    let persisted = server
+        .state
+        .kernel
+        .memory
+        .load_agent(agent_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.session_id.0.to_string(), new_session_id);
+}
+
+#[tokio::test]
+async fn test_reset_and_clear_history_persist_new_session_pointer() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let spawn = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    let spawn_body: serde_json::Value = spawn.json().await.unwrap();
+    let agent_id_str = spawn_body["agent_id"].as_str().unwrap().to_string();
+    let agent_id: openfang_types::agent::AgentId = agent_id_str.parse().unwrap();
+
+    let detail = client
+        .get(format!("{}/api/agents/{}", server.base_url, agent_id_str))
+        .send()
+        .await
+        .unwrap();
+    let detail_body: serde_json::Value = detail.json().await.unwrap();
+    let original_session_id = detail_body["session_id"].as_str().unwrap().to_string();
+
+    let reset = client
+        .post(format!(
+            "{}/api/agents/{}/session/reset",
+            server.base_url, agent_id_str
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reset.status(), 200);
+
+    let after_reset = server
+        .state
+        .kernel
+        .memory
+        .load_agent(agent_id)
+        .unwrap()
+        .unwrap();
+    let reset_session_id = after_reset.session_id.0.to_string();
+    assert_ne!(reset_session_id, original_session_id);
+
+    let clear = client
+        .delete(format!(
+            "{}/api/agents/{}/history",
+            server.base_url, agent_id_str
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(clear.status(), 200);
+
+    let after_clear = server
+        .state
+        .kernel
+        .memory
+        .load_agent(agent_id)
+        .unwrap()
+        .unwrap();
+    assert_ne!(after_clear.session_id.0.to_string(), reset_session_id);
 }
 
 #[tokio::test]

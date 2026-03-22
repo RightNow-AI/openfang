@@ -79,6 +79,11 @@ impl RestoreHealthStatus {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ReloadHealthStatus {
+    pub warnings: Vec<String>,
+}
+
 pub struct OpenFangKernel {
     /// Kernel configuration.
     pub config: KernelConfig,
@@ -187,6 +192,8 @@ pub struct OpenFangKernel {
     pub budget_override: std::sync::RwLock<Option<openfang_types::config::BudgetConfig>>,
     /// Restore diagnostics collected during boot and hand restoration.
     restore_health: std::sync::RwLock<RestoreHealthStatus>,
+    /// Runtime warnings produced when on-disk config cannot be fully applied.
+    reload_health: std::sync::RwLock<ReloadHealthStatus>,
     /// Effective provider URL overrides after runtime writes and hot-reload.
     pub effective_provider_urls: std::sync::RwLock<std::collections::HashMap<String, String>>,
     /// Per-agent message locks — serializes LLM calls for the same agent to prevent
@@ -1267,6 +1274,7 @@ impl OpenFangKernel {
             default_model_override: std::sync::RwLock::new(None),
             budget_override: std::sync::RwLock::new(None),
             restore_health: std::sync::RwLock::new(restore_health),
+            reload_health: std::sync::RwLock::new(ReloadHealthStatus::default()),
             effective_provider_urls: std::sync::RwLock::new(initial_provider_urls),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
@@ -1651,15 +1659,19 @@ impl OpenFangKernel {
             .register(entry.clone())
             .map_err(KernelError::OpenFang)?;
 
-        // Update parent's children list
+        // Persist agent to SQLite so it survives restarts
+        if let Err(err) = self.memory.save_agent(&entry) {
+            let _ = self.registry.remove(agent_id);
+            self.scheduler.unregister(agent_id);
+            self.capabilities.revoke_all(agent_id);
+            let _ = self.memory.delete_session(session_id);
+            return Err(KernelError::OpenFang(err));
+        }
+
+        // Update parent's children list only after the child has been durably saved.
         if let Some(parent_id) = parent {
             self.registry.add_child(parent_id, agent_id);
         }
-
-        // Persist agent to SQLite so it survives restarts
-        self.memory
-            .save_agent(&entry)
-            .map_err(KernelError::OpenFang)?;
 
         info!(agent = %name, id = %agent_id, "Agent spawned");
 
@@ -1671,16 +1683,23 @@ impl OpenFangKernel {
             "ok",
         );
 
-        // For proactive agents spawned at runtime, auto-register triggers
-        if let ScheduleMode::Proactive { conditions } = &entry.manifest.schedule {
-            for condition in conditions {
-                if let Some(pattern) = background::parse_condition(condition) {
-                    let prompt = format!(
-                        "[PROACTIVE ALERT] Condition '{condition}' matched: {{{{event}}}}. \
-                         Review and take appropriate action. Agent: {name}"
+        if !matches!(entry.manifest.schedule, ScheduleMode::Reactive) {
+            if tokio::runtime::Handle::try_current().is_ok() {
+                if let Some(kernel) = self.self_handle.get().and_then(|weak| weak.upgrade()) {
+                    kernel.start_background_for_agent(agent_id, &name, &entry.manifest.schedule);
+                } else {
+                    debug!(
+                        agent = %name,
+                        id = %agent_id,
+                        "Deferring autonomous schedule startup until kernel self handle is available"
                     );
-                    self.triggers.register(agent_id, pattern, prompt, 0);
                 }
+            } else {
+                debug!(
+                    agent = %name,
+                    id = %agent_id,
+                    "Deferring autonomous schedule startup until a Tokio runtime is available"
+                );
             }
         }
 
@@ -1830,6 +1849,10 @@ impl OpenFangKernel {
         // agents are not blocked — each agent has its own independent lock.
         let lock = self.agent_message_lock(agent_id);
         let _guard = lock.lock().await;
+
+        self.metering
+            .check_global_budget(&self.effective_budget_config())
+            .map_err(KernelError::OpenFang)?;
 
         // Enforce quota before running the agent loop
         self.scheduler
@@ -2915,14 +2938,21 @@ impl OpenFangKernel {
             result.total_usage.input_tokens,
             result.total_usage.output_tokens,
         );
-        let _ = self.metering.record(&openfang_memory::usage::UsageRecord {
+        if let Err(err) = self.metering.record(&openfang_memory::usage::UsageRecord {
             agent_id,
             model: model.clone(),
             input_tokens: result.total_usage.input_tokens,
             output_tokens: result.total_usage.output_tokens,
             cost_usd: cost,
             tool_calls: result.iterations.saturating_sub(1),
-        });
+        }) {
+            warn!(
+                agent_id = %agent_id,
+                model = %model,
+                error = %err,
+                "Failed to persist metering record"
+            );
+        }
 
         // Populate cost on the result based on usage_footer mode
         let mut result = result;
@@ -2956,22 +2986,29 @@ impl OpenFangKernel {
         }
     }
 
+    fn persist_agent_entry(&self, agent_id: AgentId) -> KernelResult<()> {
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+        self.memory
+            .save_agent(&entry)
+            .map_err(KernelError::OpenFang)
+    }
+
     /// Reset an agent's session — auto-saves a summary to memory, then clears messages
     /// and creates a fresh session ID.
     pub fn reset_session(&self, agent_id: AgentId) -> KernelResult<()> {
         let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
         })?;
+        let old_session_id = entry.session_id;
 
         // Auto-save session context to workspace memory before clearing
-        if let Ok(Some(old_session)) = self.memory.get_session(entry.session_id) {
+        if let Ok(Some(old_session)) = self.memory.get_session(old_session_id) {
             if old_session.messages.len() >= 2 {
                 self.save_session_summary(agent_id, &entry, &old_session);
             }
         }
-
-        // Delete the old session
-        let _ = self.memory.delete_session(entry.session_id);
 
         // Create a fresh session
         let new_session = self
@@ -2980,9 +3017,23 @@ impl OpenFangKernel {
             .map_err(KernelError::OpenFang)?;
 
         // Update registry with new session ID
-        self.registry
-            .update_session_id(agent_id, new_session.id)
-            .map_err(KernelError::OpenFang)?;
+        if let Err(err) = self.registry.update_session_id(agent_id, new_session.id) {
+            let _ = self.memory.delete_session(new_session.id);
+            return Err(KernelError::OpenFang(err));
+        }
+        if let Err(err) = self.persist_agent_entry(agent_id) {
+            let _ = self.registry.update_session_id(agent_id, old_session_id);
+            let _ = self.memory.delete_session(new_session.id);
+            return Err(err);
+        }
+        if let Err(err) = self.memory.delete_session(old_session_id) {
+            warn!(
+                agent_id = %agent_id,
+                session_id = %old_session_id.0,
+                error = %err,
+                "Failed to delete superseded session after reset"
+            );
+        }
 
         // Reset quota tracking so /new clears "token quota exceeded"
         self.scheduler.reset_usage(agent_id);
@@ -2995,15 +3046,10 @@ impl OpenFangKernel {
     ///
     /// Creates a fresh empty session afterward so the agent is still usable.
     pub fn clear_agent_history(&self, agent_id: AgentId) -> KernelResult<()> {
-        let _entry = self.registry.get(agent_id).ok_or_else(|| {
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
         })?;
-
-        // Delete all regular sessions
-        let _ = self.memory.delete_agent_sessions(agent_id);
-
-        // Delete canonical (cross-channel) session
-        let _ = self.memory.delete_canonical_session(agent_id);
+        let previous_session_id = entry.session_id;
 
         // Create a fresh session
         let new_session = self
@@ -3012,8 +3058,23 @@ impl OpenFangKernel {
             .map_err(KernelError::OpenFang)?;
 
         // Update registry with new session ID
-        self.registry
-            .update_session_id(agent_id, new_session.id)
+        if let Err(err) = self.registry.update_session_id(agent_id, new_session.id) {
+            let _ = self.memory.delete_session(new_session.id);
+            return Err(KernelError::OpenFang(err));
+        }
+        if let Err(err) = self.persist_agent_entry(agent_id) {
+            let _ = self
+                .registry
+                .update_session_id(agent_id, previous_session_id);
+            let _ = self.memory.delete_session(new_session.id);
+            return Err(err);
+        }
+
+        self.memory
+            .delete_agent_sessions_except(agent_id, new_session.id)
+            .map_err(KernelError::OpenFang)?;
+        self.memory
+            .delete_canonical_session(agent_id)
             .map_err(KernelError::OpenFang)?;
 
         info!(agent_id = %agent_id, "All agent history cleared");
@@ -3054,9 +3115,10 @@ impl OpenFangKernel {
         label: Option<&str>,
     ) -> KernelResult<serde_json::Value> {
         // Verify agent exists
-        let _entry = self.registry.get(agent_id).ok_or_else(|| {
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
         })?;
+        let previous_session_id = entry.session_id;
 
         let session = self
             .memory
@@ -3064,9 +3126,17 @@ impl OpenFangKernel {
             .map_err(KernelError::OpenFang)?;
 
         // Switch to the new session
-        self.registry
-            .update_session_id(agent_id, session.id)
-            .map_err(KernelError::OpenFang)?;
+        if let Err(err) = self.registry.update_session_id(agent_id, session.id) {
+            let _ = self.memory.delete_session(session.id);
+            return Err(KernelError::OpenFang(err));
+        }
+        if let Err(err) = self.persist_agent_entry(agent_id) {
+            let _ = self
+                .registry
+                .update_session_id(agent_id, previous_session_id);
+            let _ = self.memory.delete_session(session.id);
+            return Err(err);
+        }
 
         info!(agent_id = %agent_id, label = ?label, "Created new session");
 
@@ -3083,9 +3153,10 @@ impl OpenFangKernel {
         session_id: SessionId,
     ) -> KernelResult<()> {
         // Verify agent exists
-        let _entry = self.registry.get(agent_id).ok_or_else(|| {
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
         })?;
+        let previous_session_id = entry.session_id;
 
         // Verify session exists and belongs to this agent
         let session = self
@@ -3105,6 +3176,12 @@ impl OpenFangKernel {
         self.registry
             .update_session_id(agent_id, session_id)
             .map_err(KernelError::OpenFang)?;
+        if let Err(err) = self.persist_agent_entry(agent_id) {
+            let _ = self
+                .registry
+                .update_session_id(agent_id, previous_session_id);
+            return Err(err);
+        }
 
         info!(agent_id = %agent_id, session_id = %session_id.0, "Switched session");
         Ok(())
@@ -3547,10 +3624,19 @@ impl OpenFangKernel {
 
     /// Kill an agent.
     pub fn kill_agent(&self, agent_id: AgentId) -> KernelResult<()> {
-        let entry = self
-            .registry
-            .remove(agent_id)
+        let entry_snapshot = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+        self.memory
+            .remove_agent(agent_id)
             .map_err(KernelError::OpenFang)?;
+        let entry = match self.registry.remove(agent_id) {
+            Ok(entry) => entry,
+            Err(err) => {
+                let _ = self.memory.save_agent(&entry_snapshot);
+                return Err(KernelError::OpenFang(err));
+            }
+        };
         if let Some((_, handle)) = self.running_tasks.remove(&agent_id) {
             handle.abort();
         }
@@ -3574,9 +3660,6 @@ impl OpenFangKernel {
                 warn!("Failed to persist cron jobs after agent deletion: {e}");
             }
         }
-
-        // Remove from persistent storage
-        let _ = self.memory.remove_agent(agent_id);
 
         // SECURITY: Record agent kill in audit trail
         self.audit_log.record(
@@ -3623,13 +3706,14 @@ impl OpenFangKernel {
 
         // Build an agent manifest from the hand definition.
         // If the hand declares provider/model as "default", inherit the kernel's configured LLM.
+        let effective_default_model = self.effective_default_model_config();
         let hand_provider = if def.agent.provider == "default" {
-            self.config.default_model.provider.clone()
+            effective_default_model.provider.clone()
         } else {
             def.agent.provider.clone()
         };
         let hand_model = if def.agent.model == "default" {
-            self.config.default_model.model.clone()
+            effective_default_model.model.clone()
         } else {
             def.agent.model.clone()
         };
@@ -3914,16 +3998,32 @@ impl OpenFangKernel {
         // Read and parse config file (using load_config to process $include directives)
         let config_path = self.config_path();
         let mut new_config = if config_path.exists() {
-            crate::config::try_load_config(Some(config_path))
-                .map_err(|e| format!("Config load failed: {e}"))?
+            match crate::config::try_load_config(Some(config_path)) {
+                Ok(config) => config,
+                Err(e) => {
+                    let message = format!("Config load failed: {e}");
+                    self.set_reload_health_warnings(vec![format!(
+                        "config reload failed: {message}; runtime still uses the previous effective config"
+                    )]);
+                    return Err(message);
+                }
+            }
         } else {
-            return Err("Config file not found".to_string());
+            let message = "Config file not found".to_string();
+            self.set_reload_health_warnings(vec![format!(
+                "config reload failed: {message}; runtime still uses the previous effective config"
+            )]);
+            return Err(message);
         };
         Self::apply_runtime_config_overrides(&mut new_config);
 
         // Validate new config
         if let Err(errors) = validate_config_for_reload(&new_config) {
-            return Err(format!("Validation failed: {}", errors.join("; ")));
+            let message = format!("Validation failed: {}", errors.join("; "));
+            self.set_reload_health_warnings(vec![format!(
+                "config reload failed: {message}; runtime still uses the previous effective config"
+            )]);
+            return Err(message);
         }
 
         // Diff against the effective runtime state rather than the immutable
@@ -3937,6 +4037,11 @@ impl OpenFangKernel {
         } else {
             Vec::new()
         };
+
+        self.set_reload_health_warnings(Self::reload_follow_up_warnings(
+            &plan,
+            &hot_actions_applied,
+        ));
 
         Ok(ReloadOutcome {
             plan,
@@ -4037,6 +4142,43 @@ impl OpenFangKernel {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    fn set_reload_health_warnings(&self, warnings: Vec<String>) {
+        let mut guard = self
+            .reload_health
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.warnings = warnings;
+    }
+
+    fn reload_follow_up_warnings(
+        plan: &crate::config_reload::ReloadPlan,
+        hot_actions_applied: &[crate::config_reload::HotAction],
+    ) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        if plan.restart_required {
+            warnings.push(format!(
+                "config reload pending restart: {}",
+                plan.restart_reasons.join("; ")
+            ));
+        }
+
+        let pending_actions: Vec<String> = plan
+            .hot_actions
+            .iter()
+            .filter(|action| !hot_actions_applied.contains(action))
+            .map(|action| format!("{action:?}"))
+            .collect();
+        if !pending_actions.is_empty() {
+            warnings.push(format!(
+                "config reload pending follow-up for actions: {}",
+                pending_actions.join(", ")
+            ));
+        }
+
+        warnings
     }
 
     pub fn set_effective_budget_config(&self, budget: openfang_types::config::BudgetConfig) {
@@ -5033,6 +5175,8 @@ impl OpenFangKernel {
         name: &str,
         schedule: &ScheduleMode,
     ) {
+        self.background.stop_agent(agent_id);
+
         // For proactive agents, auto-register triggers from conditions
         if let ScheduleMode::Proactive { conditions } = schedule {
             for condition in conditions {
@@ -5156,12 +5300,20 @@ impl OpenFangKernel {
             .credential_resolver
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        self.config.validate_with_credential_lookup(|key| {
+        let mut warnings = self.config.validate_with_credential_lookup(|key| {
             resolver
                 .resolve(key)
                 .map(|value| !value.trim().is_empty())
                 .unwrap_or(false)
-        })
+        });
+        warnings.extend(
+            self.reload_health
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .warnings
+                .clone(),
+        );
+        warnings
     }
 
     pub fn runtime_restore_warnings(&self) -> RestoreHealthStatus {
@@ -7488,6 +7640,21 @@ mod tests {
         write_reload_test_config_at(&home_dir.join("config.toml"), home_dir, data_dir, model);
     }
 
+    fn write_reload_warning_test_config(home_dir: &Path, data_dir: &Path, extra_sections: &str) {
+        let home = serde_json::to_string(home_dir.to_string_lossy().as_ref()).unwrap();
+        let data = serde_json::to_string(data_dir.to_string_lossy().as_ref()).unwrap();
+        let contents = format!(
+            "home_dir = {home}\n\
+             data_dir = {data}\n\
+             api_listen = \"127.0.0.1:4200\"\n\
+             [default_model]\n\
+             provider = \"ollama\"\n\
+             model = \"test-model\"\n\
+             {extra_sections}"
+        );
+        std::fs::write(home_dir.join("config.toml"), contents).unwrap();
+    }
+
     #[test]
     fn test_manifest_to_capabilities() {
         let mut manifest = AgentManifest {
@@ -7845,6 +8012,48 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_spawn_agent_starts_background_loop_immediately_when_runtime_handle_is_available()
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = Arc::new(
+            OpenFangKernel::boot_with_config(KernelConfig {
+                home_dir: tmp.path().to_path_buf(),
+                data_dir: tmp.path().join("data"),
+                default_model: DefaultModelConfig {
+                    provider: "ollama".to_string(),
+                    model: "test-model".to_string(),
+                    api_key_env: "OLLAMA_API_KEY".to_string(),
+                    base_url: None,
+                },
+                ..KernelConfig::default()
+            })
+            .expect("Kernel should boot"),
+        );
+        kernel.set_self_handle();
+
+        let mut manifest = test_manifest("continuous-runtime", "runtime loop", vec![]);
+        manifest.schedule = ScheduleMode::Continuous {
+            check_interval_secs: 60,
+        };
+
+        let agent_id = kernel.spawn_agent(manifest).expect("agent should spawn");
+        assert_eq!(kernel.background.active_count(), 1);
+
+        kernel.start_background_for_agent(
+            agent_id,
+            "continuous-runtime",
+            &ScheduleMode::Continuous {
+                check_interval_secs: 60,
+            },
+        );
+        assert_eq!(
+            kernel.background.active_count(),
+            1,
+            "restarting background startup should replace the tracked loop, not duplicate it"
+        );
+    }
+
     #[test]
     fn test_reload_config_round_trips_hot_default_model_changes() {
         let _lock = env_lock();
@@ -7920,6 +8129,79 @@ mod tests {
         );
         assert_eq!(kernel.config.api_listen, "127.0.0.1:43111");
         assert_eq!(kernel.config.api_key, "env-reload-secret");
+    }
+
+    #[test]
+    fn test_reload_config_pending_follow_up_surfaces_as_runtime_warning() {
+        let _lock = env_lock();
+        let _listen_guard = EnvVarGuard::remove("OPENFANG_LISTEN");
+        let _api_key_guard = EnvVarGuard::remove("OPENFANG_API_KEY");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().to_path_buf();
+        let data_dir = home_dir.join("data");
+        write_reload_warning_test_config(&home_dir, &data_dir, "");
+
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: data_dir.clone(),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: String::new(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        })
+        .unwrap();
+
+        write_reload_warning_test_config(&home_dir, &data_dir, "[web]\ncache_ttl_minutes = 42\n");
+        let outcome = kernel.reload_config().unwrap();
+        assert!(outcome
+            .plan
+            .hot_actions
+            .contains(&crate::config_reload::HotAction::ReloadWebConfig));
+
+        let warnings = kernel.runtime_config_warnings();
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("config reload pending follow-up")
+                && warning.contains("ReloadWebConfig")
+        }));
+    }
+
+    #[test]
+    fn test_reload_config_failure_surfaces_as_runtime_warning() {
+        let _lock = env_lock();
+        let _listen_guard = EnvVarGuard::remove("OPENFANG_LISTEN");
+        let _api_key_guard = EnvVarGuard::remove("OPENFANG_API_KEY");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().to_path_buf();
+        let data_dir = home_dir.join("data");
+        write_reload_warning_test_config(&home_dir, &data_dir, "");
+
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: data_dir.clone(),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: String::new(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        })
+        .unwrap();
+
+        std::fs::write(home_dir.join("config.toml"), "log_level = [\n").unwrap();
+        let err = kernel.reload_config().unwrap_err();
+        assert!(err.contains("Config load failed"));
+
+        let warnings = kernel.runtime_config_warnings();
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("config reload failed")
+                && warning.contains("previous effective config")
+        }));
     }
 
     #[test]

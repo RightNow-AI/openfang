@@ -789,11 +789,28 @@ pub async fn run_daemon(
                     match k.reload_config() {
                         Ok(outcome) => {
                             if outcome.plan.has_changes() {
-                                tracing::info!(
-                                    detected = ?outcome.plan.hot_actions,
-                                    applied = ?outcome.hot_actions_applied,
-                                    "Config hot-reload evaluated"
-                                );
+                                let pending: Vec<String> = outcome
+                                    .plan
+                                    .hot_actions
+                                    .iter()
+                                    .filter(|action| !outcome.hot_actions_applied.contains(action))
+                                    .map(|action| format!("{action:?}"))
+                                    .collect();
+                                if outcome.plan.restart_required || !pending.is_empty() {
+                                    tracing::warn!(
+                                        restart_required = outcome.plan.restart_required,
+                                        restart_reasons = ?outcome.plan.restart_reasons,
+                                        pending_follow_up = ?pending,
+                                        applied = ?outcome.hot_actions_applied,
+                                        "Config hot-reload left the runtime partially applied"
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        detected = ?outcome.plan.hot_actions,
+                                        applied = ?outcome.hot_actions_applied,
+                                        "Config hot-reload evaluated"
+                                    );
+                                }
                             } else {
                                 tracing::debug!("Config hot-reload: no actionable changes");
                             }

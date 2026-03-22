@@ -128,6 +128,24 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Delete all sessions belonging to an agent except the provided session ID.
+    pub fn delete_agent_sessions_except(
+        &self,
+        agent_id: AgentId,
+        keep_session_id: SessionId,
+    ) -> OpenFangResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM sessions WHERE agent_id = ?1 AND id != ?2",
+            rusqlite::params![agent_id.0.to_string(), keep_session_id.0.to_string()],
+        )
+        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        Ok(())
+    }
+
     /// Delete the canonical (cross-channel) session for an agent.
     pub fn delete_canonical_session(&self, agent_id: AgentId) -> OpenFangResult<()> {
         let conn = self

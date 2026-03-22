@@ -160,3 +160,9 @@ lto = "thin"
 codegen-units = 8
 opt-level = 2
 strip = false
+
+[patch.crates-io]
+# Keep imap-proto on the stable 0.10 line used by `imap = "2"`, but patch the
+# macro definitions locally so future Rust versions do not turn the dependency
+# into a hard build error.
+imap-proto = { path = "third_party/imap-proto" }

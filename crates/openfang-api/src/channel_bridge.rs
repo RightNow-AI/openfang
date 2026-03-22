@@ -924,7 +924,10 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
 
     async fn budget_text(&self) -> String {
         let budget = self.kernel.effective_budget_config();
-        let status = self.kernel.metering.budget_status(&budget);
+        let status = match self.kernel.metering.budget_status(&budget) {
+            Ok(status) => status,
+            Err(e) => return format!("Budget status unavailable: {e}"),
+        };
 
         let fmt_limit = |v: f64| -> String {
             if v > 0.0 {

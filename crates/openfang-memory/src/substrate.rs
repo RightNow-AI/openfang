@@ -184,6 +184,15 @@ impl MemorySubstrate {
         self.sessions.delete_agent_sessions(agent_id)
     }
 
+    pub fn delete_agent_sessions_except(
+        &self,
+        agent_id: AgentId,
+        keep_session_id: SessionId,
+    ) -> OpenFangResult<()> {
+        self.sessions
+            .delete_agent_sessions_except(agent_id, keep_session_id)
+    }
+
     /// Delete the canonical (cross-channel) session for an agent.
     pub fn delete_canonical_session(&self, agent_id: AgentId) -> OpenFangResult<()> {
         self.sessions.delete_canonical_session(agent_id)

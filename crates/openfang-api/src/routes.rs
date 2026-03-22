@@ -16,7 +16,7 @@ use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::tool_runner::builtin_tool_definitions;
 use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Once};
 use std::time::Instant;
 
 /// Shared application state.
@@ -39,6 +39,25 @@ pub struct AppState {
     /// Avoids blocking the `/api/providers` endpoint on TCP timeouts to
     /// unreachable local services. 60-second TTL.
     pub provider_probe_cache: openfang_runtime::provider_health::ProbeCache,
+}
+
+fn effective_provider_and_model<'a>(
+    entry: &'a openfang_types::agent::AgentEntry,
+    default_model: &'a openfang_types::config::DefaultModelConfig,
+) -> (&'a str, &'a str) {
+    let provider =
+        if entry.manifest.model.provider.is_empty() || entry.manifest.model.provider == "default" {
+            default_model.provider.as_str()
+        } else {
+            entry.manifest.model.provider.as_str()
+        };
+    let model = if entry.manifest.model.model.is_empty() || entry.manifest.model.model == "default"
+    {
+        default_model.model.as_str()
+    } else {
+        entry.manifest.model.model.as_str()
+    };
+    (provider, model)
 }
 
 fn extract_status_code(s: &str) -> Option<u16> {
@@ -222,7 +241,8 @@ pub async fn spawn_agent(
 pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Snapshot catalog once for enrichment
     let catalog = state.kernel.model_catalog.read().ok();
-    let dm = &state.kernel.config.default_model;
+    let default_model = state.kernel.effective_default_model_config();
+    let dm = &default_model;
 
     let agents: Vec<serde_json::Value> = state
         .kernel
@@ -230,19 +250,7 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
         .list()
         .into_iter()
         .map(|e| {
-            // Resolve "default" provider/model to actual kernel defaults
-            let provider =
-                if e.manifest.model.provider.is_empty() || e.manifest.model.provider == "default" {
-                    dm.provider.as_str()
-                } else {
-                    e.manifest.model.provider.as_str()
-                };
-            let model = if e.manifest.model.model.is_empty() || e.manifest.model.model == "default"
-            {
-                dm.model.as_str()
-            } else {
-                e.manifest.model.model.as_str()
-            };
+            let (provider, model) = effective_provider_and_model(&e, dm);
 
             // Enrich from catalog
             let (tier, auth_status) = catalog
@@ -372,10 +380,14 @@ mod http_error_tests {
     use super::{
         classify_http_kernel_error, derive_custom_provider_api_key_env,
         escape_prometheus_label_value, extract_status_code, json_to_toml_value,
-        resolve_attachments, upload_path, validate_secret_env_key, validate_secret_env_value,
-        with_message_text_block, AttachmentRef, UploadMeta, UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
+        resolve_attachments, serve_upload, upload_path, validate_secret_env_key,
+        validate_secret_env_value, with_message_text_block, AttachmentRef, UploadMeta,
+        UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
     };
-    use axum::http::StatusCode;
+    use axum::body::to_bytes;
+    use axum::extract::Path;
+    use axum::http::{header::CONTENT_TYPE, StatusCode};
+    use axum::response::IntoResponse;
     use openfang_kernel::error::KernelError;
     use openfang_types::error::OpenFangError;
     use openfang_types::message::ContentBlock;
@@ -427,6 +439,69 @@ mod http_error_tests {
         assert!(blocks.is_empty());
         assert!(!path.exists());
         assert!(UPLOAD_REGISTRY.get(&file_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn serve_upload_reads_file_from_disk_without_blocking_registry_lookup() {
+        let file_id = uuid::Uuid::new_v4().to_string();
+        let path = upload_path(&file_id);
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, b"hello upload").await.unwrap();
+
+        let response = serve_upload(Path(file_id.clone())).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "text/plain");
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"hello upload");
+
+        let _ = tokio::fs::remove_file(&path).await;
+        UPLOAD_REGISTRY.remove(&file_id);
+    }
+
+    #[tokio::test]
+    async fn serve_upload_sniffs_pdf_content_type_from_disk_when_registry_is_missing() {
+        let file_id = uuid::Uuid::new_v4().to_string();
+        let path = upload_path(&file_id);
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, b"%PDF-1.7\n%test").await.unwrap();
+
+        let response = serve_upload(Path(file_id.clone())).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "application/pdf"
+        );
+
+        let _ = tokio::fs::remove_file(&path).await;
+        UPLOAD_REGISTRY.remove(&file_id);
+    }
+
+    #[tokio::test]
+    async fn serve_upload_detects_pdf_when_registry_missing() {
+        let file_id = uuid::Uuid::new_v4().to_string();
+        let path = upload_path(&file_id);
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, b"%PDF-1.4\n%EOF").await.unwrap();
+
+        let response = serve_upload(Path(file_id.clone())).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers().clone();
+        let header_value = headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_eq!(header_value, "application/pdf");
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(body.starts_with(b"%PDF-"));
+
+        let _ = tokio::fs::remove_file(&path).await;
+        UPLOAD_REGISTRY.remove(&file_id);
     }
 
     #[test]
@@ -3438,6 +3513,7 @@ pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 struct RuntimeHealthSnapshot {
     db_ok: bool,
+    usage_store_ok: bool,
     shutdown_requested: bool,
     panic_count: u64,
     restart_count: u64,
@@ -3464,6 +3540,7 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
         .memory
         .structured_get(shared_id, "__health_check__")
         .is_ok();
+    let usage_store_ok = state.kernel.memory.usage().query_today_cost().is_ok();
 
     let config_warnings = state.kernel.runtime_config_warnings();
     let restore_warnings = state.kernel.runtime_restore_warnings();
@@ -3484,6 +3561,9 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
     let mut failing_checks = Vec::new();
     if !db_ok {
         failing_checks.push("database".to_string());
+    }
+    if !usage_store_ok {
+        failing_checks.push("usage_store".to_string());
     }
     if health.is_shutting_down {
         failing_checks.push("shutdown_requested".to_string());
@@ -3508,6 +3588,7 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
     }
     RuntimeHealthSnapshot {
         db_ok,
+        usage_store_ok,
         shutdown_requested: health.is_shutting_down,
         panic_count: health.panic_count,
         restart_count: health.restart_count,
@@ -3541,6 +3622,7 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
             "restart_count": snapshot.restart_count,
             "agent_count": state.kernel.registry.count(),
             "database": if snapshot.db_ok { "connected" } else { "error" },
+            "usage_store": if snapshot.usage_store_ok { "connected" } else { "error" },
             "config_warnings": snapshot.config_warnings,
             "restore_warnings": {
                 "persisted_agent_rows": snapshot.restore_warnings.persisted_agent_rows,
@@ -3596,6 +3678,7 @@ fn escape_prometheus_label_value(value: &str) -> String {
 pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut out = String::with_capacity(2048);
     let snapshot = runtime_health_snapshot(&state);
+    let effective_default_model = state.kernel.effective_default_model_config();
 
     // Uptime
     let uptime = state.started_at.elapsed().as_secs();
@@ -3629,6 +3712,12 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
     out.push_str(&format!(
         "openfang_database_ok {}\n",
         if snapshot.db_ok { 1 } else { 0 }
+    ));
+    out.push_str("# HELP openfang_usage_store_ok Whether usage/metering queries succeeded.\n");
+    out.push_str("# TYPE openfang_usage_store_ok gauge\n");
+    out.push_str(&format!(
+        "openfang_usage_store_ok {}\n",
+        if snapshot.usage_store_ok { 1 } else { 0 }
     ));
     out.push_str(
         "# HELP openfang_shutdown_requested Whether graceful shutdown has been requested.\n",
@@ -3667,8 +3756,9 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
     out.push_str("# TYPE openfang_tool_calls_total gauge\n");
     for agent in &agents {
         let name = escape_prometheus_label_value(&agent.name);
-        let provider = escape_prometheus_label_value(&agent.manifest.model.provider);
-        let model = escape_prometheus_label_value(&agent.manifest.model.model);
+        let (provider, model) = effective_provider_and_model(agent, &effective_default_model);
+        let provider = escape_prometheus_label_value(provider);
+        let model = escape_prometheus_label_value(model);
         if let Some((tokens, tools)) = state.kernel.scheduler.get_usage(agent.id) {
             out.push_str(&format!(
                 "openfang_tokens_total{{agent=\"{name}\",provider=\"{provider}\",model=\"{model}\"}} {tokens}\n"
@@ -4274,6 +4364,7 @@ pub async fn get_hand(
 ) -> impl IntoResponse {
     match state.kernel.hand_registry.get_definition(&hand_id) {
         Some(def) => {
+            let effective_default_model = state.kernel.effective_default_model_config();
             let reqs = state
                 .kernel
                 .hand_registry
@@ -4325,10 +4416,10 @@ pub async fn get_hand(
                         "name": def.agent.name,
                         "description": def.agent.description,
                         "provider": if def.agent.provider == "default" {
-                            &state.kernel.config.default_model.provider
+                            &effective_default_model.provider
                         } else { &def.agent.provider },
                         "model": if def.agent.model == "default" {
-                            &state.kernel.config.default_model.model
+                            &effective_default_model.model
                         } else { &def.agent.model },
                     },
                     "dashboard": def.dashboard.metrics.iter().map(|m| serde_json::json!({
@@ -4698,41 +4789,17 @@ pub async fn activate_hand(
     let config = body.map(|b| b.0.config).unwrap_or_default();
 
     match state.kernel.activate_hand(&hand_id, config) {
-        Ok(instance) => {
-            // If the hand agent has a non-reactive schedule (autonomous hands),
-            // start its background loop so it begins running immediately.
-            if let Some(agent_id) = instance.agent_id {
-                let entry = state
-                    .kernel
-                    .registry
-                    .list()
-                    .into_iter()
-                    .find(|e| e.id == agent_id);
-                if let Some(entry) = entry {
-                    if !matches!(
-                        entry.manifest.schedule,
-                        openfang_types::agent::ScheduleMode::Reactive
-                    ) {
-                        state.kernel.start_background_for_agent(
-                            agent_id,
-                            &entry.name,
-                            &entry.manifest.schedule,
-                        );
-                    }
-                }
-            }
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "instance_id": instance.instance_id,
-                    "hand_id": instance.hand_id,
-                    "status": format!("{}", instance.status),
-                    "agent_id": instance.agent_id.map(|a| a.to_string()),
-                    "agent_name": instance.agent_name,
-                    "activated_at": instance.activated_at.to_rfc3339(),
-                })),
-            )
-        }
+        Ok(instance) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "instance_id": instance.instance_id,
+                "hand_id": instance.hand_id,
+                "status": format!("{}", instance.status),
+                "agent_id": instance.agent_id.map(|a| a.to_string()),
+                "agent_name": instance.agent_name,
+                "activated_at": instance.activated_at.to_rfc3339(),
+            })),
+        ),
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": format!("{e}")})),
@@ -5395,14 +5462,15 @@ pub async fn list_tools(State(state): State<Arc<AppState>>) -> impl IntoResponse
 pub async fn get_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Return a redacted view of the kernel config
     let config = &state.kernel.config;
+    let effective_default_model = state.kernel.effective_default_model_config();
     Json(serde_json::json!({
         "home_dir": config.home_dir.to_string_lossy(),
         "data_dir": config.data_dir.to_string_lossy(),
         "api_key": if config.api_key.is_empty() { "not set" } else { "***" },
         "default_model": {
-            "provider": config.default_model.provider,
-            "model": config.default_model.model,
-            "api_key_env": config.default_model.api_key_env,
+            "provider": effective_default_model.provider,
+            "model": effective_default_model.model,
+            "api_key_env": effective_default_model.api_key_env,
         },
         "memory": {
             "decay_rate": config.memory.decay_rate,
@@ -5516,8 +5584,19 @@ pub async fn usage_daily(State(state): State<Arc<AppState>>) -> impl IntoRespons
 /// GET /api/budget — Current budget status (limits, spend, % used).
 pub async fn budget_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let budget = state.kernel.effective_budget_config();
-    let status = state.kernel.metering.budget_status(&budget);
-    Json(serde_json::to_value(&status).unwrap_or_default())
+    match state.kernel.metering.budget_status(&budget) {
+        Ok(status) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(&status).unwrap_or_default()),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "status": "error",
+                "error": format!("budget status unavailable: {e}"),
+            })),
+        ),
+    }
 }
 
 /// PUT /api/budget — Update global budget limits and persist them to config.toml.
@@ -5526,14 +5605,29 @@ pub async fn update_budget(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let mut budget = state.kernel.effective_budget_config();
+    for (field, value) in [
+        ("max_hourly_usd", body["max_hourly_usd"].as_f64()),
+        ("max_daily_usd", body["max_daily_usd"].as_f64()),
+        ("max_monthly_usd", body["max_monthly_usd"].as_f64()),
+    ] {
+        if let Some(v) = value {
+            if v < 0.0 {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("{field} cannot be negative")})),
+                );
+            }
+        }
+    }
+
     if let Some(v) = body["max_hourly_usd"].as_f64() {
-        budget.max_hourly_usd = v.max(0.0);
+        budget.max_hourly_usd = v;
     }
     if let Some(v) = body["max_daily_usd"].as_f64() {
-        budget.max_daily_usd = v.max(0.0);
+        budget.max_daily_usd = v;
     }
     if let Some(v) = body["max_monthly_usd"].as_f64() {
-        budget.max_monthly_usd = v.max(0.0);
+        budget.max_monthly_usd = v;
     }
     if let Some(v) = body["alert_threshold"].as_f64() {
         budget.alert_threshold = v.clamp(0.0, 1.0);
@@ -5650,15 +5744,39 @@ pub async fn update_budget(
     );
 
     let effective_budget = state.kernel.effective_budget_config();
-    let status = state.kernel.metering.budget_status(&effective_budget);
-    let mut payload = serde_json::to_value(&status).unwrap_or_default();
-    if let Some(map) = payload.as_object_mut() {
-        map.insert(
-            "update_status".to_string(),
-            serde_json::Value::String(reload_status.to_string()),
-        );
+    let http_status = match reload_status {
+        "applied" => StatusCode::OK,
+        "saved_reload_pending" => StatusCode::CONFLICT,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    };
+
+    match state.kernel.metering.budget_status(&effective_budget) {
+        Ok(status) => {
+            let mut payload = serde_json::to_value(&status).unwrap_or_default();
+            if let Some(map) = payload.as_object_mut() {
+                map.insert(
+                    "update_status".to_string(),
+                    serde_json::Value::String(reload_status.to_string()),
+                );
+            }
+            (http_status, Json(payload))
+        }
+        Err(e) => (
+            http_status,
+            Json(serde_json::json!({
+                "status": "warning",
+                "update_status": reload_status,
+                "budget": {
+                    "max_hourly_usd": effective_budget.max_hourly_usd,
+                    "max_daily_usd": effective_budget.max_daily_usd,
+                    "max_monthly_usd": effective_budget.max_monthly_usd,
+                    "alert_threshold": effective_budget.alert_threshold,
+                    "default_max_llm_tokens_per_hour": effective_budget.default_max_llm_tokens_per_hour,
+                },
+                "error": format!("budget status unavailable after update: {e}"),
+            })),
+        ),
     }
-    (StatusCode::OK, Json(payload))
 }
 
 /// GET /api/budget/agents/{id} — Per-agent budget/quota status.
@@ -5688,9 +5806,33 @@ pub async fn agent_budget_status(
 
     let quota = &entry.manifest.resources;
     let usage_store = openfang_memory::usage::UsageStore::new(state.kernel.memory.usage_conn());
-    let hourly = usage_store.query_hourly(agent_id).unwrap_or(0.0);
-    let daily = usage_store.query_daily(agent_id).unwrap_or(0.0);
-    let monthly = usage_store.query_monthly(agent_id).unwrap_or(0.0);
+    let hourly = match usage_store.query_hourly(agent_id) {
+        Ok(value) => value,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("usage query failed: {e}")})),
+            );
+        }
+    };
+    let daily = match usage_store.query_daily(agent_id) {
+        Ok(value) => value,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("usage query failed: {e}")})),
+            );
+        }
+    };
+    let monthly = match usage_store.query_monthly(agent_id) {
+        Ok(value) => value,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("usage query failed: {e}")})),
+            );
+        }
+    };
 
     // Token usage from scheduler
     let token_usage = state.kernel.scheduler.get_usage(agent_id);
@@ -5728,30 +5870,34 @@ pub async fn agent_budget_status(
 /// GET /api/budget/agents — Per-agent cost ranking (top spenders).
 pub async fn agent_budget_ranking(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let usage_store = openfang_memory::usage::UsageStore::new(state.kernel.memory.usage_conn());
-    let agents: Vec<serde_json::Value> = state
-        .kernel
-        .registry
-        .list()
-        .iter()
-        .filter_map(|entry| {
-            let daily = usage_store.query_daily(entry.id).unwrap_or(0.0);
-            if daily > 0.0 {
-                Some(serde_json::json!({
-                    "agent_id": entry.id.to_string(),
-                    "name": entry.name,
-                    "daily_cost_usd": daily,
-                    "hourly_limit": entry.manifest.resources.max_cost_per_hour_usd,
-                    "daily_limit": entry.manifest.resources.max_cost_per_day_usd,
-                    "monthly_limit": entry.manifest.resources.max_cost_per_month_usd,
-                    "max_llm_tokens_per_hour": entry.manifest.resources.max_llm_tokens_per_hour,
-                }))
-            } else {
-                None
+    let mut agents = Vec::new();
+    for entry in state.kernel.registry.list() {
+        let daily = match usage_store.query_daily(entry.id) {
+            Ok(value) => value,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("usage query failed: {e}")})),
+                );
             }
-        })
-        .collect();
+        };
+        if daily > 0.0 {
+            agents.push(serde_json::json!({
+                "agent_id": entry.id.to_string(),
+                "name": entry.name,
+                "daily_cost_usd": daily,
+                "hourly_limit": entry.manifest.resources.max_cost_per_hour_usd,
+                "daily_limit": entry.manifest.resources.max_cost_per_day_usd,
+                "monthly_limit": entry.manifest.resources.max_cost_per_month_usd,
+                "max_llm_tokens_per_hour": entry.manifest.resources.max_llm_tokens_per_hour,
+            }));
+        }
+    }
 
-    Json(serde_json::json!({"agents": agents, "total": agents.len()}))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"agents": agents, "total": agents.len()})),
+    )
 }
 
 /// PUT /api/budget/agents/{id} — Update per-agent budget limits at runtime.
@@ -5775,6 +5921,21 @@ pub async fn update_agent_budget(
     let monthly = body["max_cost_per_month_usd"].as_f64();
     let tokens = body["max_llm_tokens_per_hour"].as_u64();
 
+    for (field, value) in [
+        ("max_cost_per_hour_usd", hourly),
+        ("max_cost_per_day_usd", daily),
+        ("max_cost_per_month_usd", monthly),
+    ] {
+        if let Some(v) = value {
+            if v < 0.0 {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("{field} cannot be negative")})),
+                );
+            }
+        }
+    }
+
     if hourly.is_none() && daily.is_none() && monthly.is_none() && tokens.is_none() {
         return (
             StatusCode::BAD_REQUEST,
@@ -5784,6 +5945,16 @@ pub async fn update_agent_budget(
         );
     }
 
+    let previous_resources = match state.kernel.registry.get(agent_id) {
+        Some(entry) => entry.manifest.resources.clone(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            );
+        }
+    };
+
     match state
         .kernel
         .registry
@@ -5792,7 +5963,24 @@ pub async fn update_agent_budget(
         Ok(()) => {
             // Persist updated entry
             if let Some(entry) = state.kernel.registry.get(agent_id) {
-                let _ = state.kernel.memory.save_agent(&entry);
+                if let Err(e) = state.kernel.memory.save_agent(&entry) {
+                    tracing::warn!(agent_id = %agent_id, error = %e, "Failed to persist updated agent budget");
+                    if let Err(rollback_err) = state.kernel.registry.update_resources(
+                        agent_id,
+                        Some(previous_resources.max_cost_per_hour_usd),
+                        Some(previous_resources.max_cost_per_day_usd),
+                        Some(previous_resources.max_cost_per_month_usd),
+                        Some(previous_resources.max_llm_tokens_per_hour),
+                    ) {
+                        tracing::error!(agent_id = %agent_id, error = %rollback_err, "Failed to roll back in-memory agent budget after persistence error");
+                    }
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(
+                            serde_json::json!({"error": format!("Failed to persist updated agent budget: {e}")}),
+                        ),
+                    );
+                }
             }
             (
                 StatusCode::OK,
@@ -9806,6 +9994,7 @@ struct UploadMeta {
 
 /// In-memory upload metadata registry.
 static UPLOAD_REGISTRY: LazyLock<DashMap<String, UploadMeta>> = LazyLock::new(DashMap::new);
+static UPLOAD_JANITOR_STARTED: Once = Once::new();
 
 /// Maximum upload size: 10 MB.
 const MAX_UPLOAD_SIZE: usize = 10 * 1024 * 1024;
@@ -9851,6 +10040,20 @@ fn upload_is_expired_path(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+async fn upload_created_at_from_path_async(
+    path: &std::path::Path,
+) -> Option<std::time::SystemTime> {
+    let meta = tokio::fs::metadata(path).await.ok()?;
+    meta.modified().ok().or_else(|| meta.created().ok())
+}
+
+async fn upload_is_expired_path_async(path: &std::path::Path) -> bool {
+    upload_created_at_from_path_async(path)
+        .await
+        .map(upload_is_expired)
+        .unwrap_or(false)
+}
+
 fn cleanup_expired_uploads() -> usize {
     let mut removed = 0usize;
     let expired_ids: Vec<String> = UPLOAD_REGISTRY
@@ -9886,18 +10089,20 @@ fn cleanup_expired_uploads() -> usize {
 }
 
 pub fn start_upload_janitor() {
-    tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(UPLOAD_JANITOR_INTERVAL_SECS));
-        loop {
-            interval.tick().await;
-            let removed = tokio::task::spawn_blocking(cleanup_expired_uploads)
-                .await
-                .unwrap_or(0);
-            if removed > 0 {
-                tracing::info!(removed, "Upload janitor removed expired files");
+    UPLOAD_JANITOR_STARTED.call_once(|| {
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(UPLOAD_JANITOR_INTERVAL_SECS));
+            loop {
+                interval.tick().await;
+                let removed = tokio::task::spawn_blocking(cleanup_expired_uploads)
+                    .await
+                    .unwrap_or(0);
+                if removed > 0 {
+                    tracing::info!(removed, "Upload janitor removed expired files");
+                }
             }
-        }
+        });
     });
 }
 
@@ -9972,7 +10177,7 @@ pub async fn upload_file(
     // Generate file ID and save
     let file_id = uuid::Uuid::new_v4().to_string();
     let upload_dir = upload_dir();
-    if let Err(e) = std::fs::create_dir_all(&upload_dir) {
+    if let Err(e) = tokio::fs::create_dir_all(&upload_dir).await {
         tracing::warn!("Failed to create upload dir: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -9981,7 +10186,7 @@ pub async fn upload_file(
     }
 
     let file_path = upload_dir.join(&file_id);
-    if let Err(e) = std::fs::write(&file_path, &body) {
+    if let Err(e) = tokio::fs::write(&file_path, &body).await {
         tracing::warn!("Failed to write upload: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -10058,6 +10263,7 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
 
     // Look up metadata from registry; fall back to disk probe for generated images
     // (image_generate saves files without registering in UPLOAD_REGISTRY).
+    let mut fallback_body: Option<Vec<u8>> = None;
     let content_type = match UPLOAD_REGISTRY.get(&file_id) {
         Some(m) => {
             let created_at = m.created_at;
@@ -10065,7 +10271,7 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
             drop(m);
             if upload_is_expired(created_at) {
                 UPLOAD_REGISTRY.remove(&file_id);
-                let _ = std::fs::remove_file(&file_path);
+                let _ = tokio::fs::remove_file(&file_path).await;
                 return (
                     StatusCode::NOT_FOUND,
                     [(
@@ -10078,8 +10284,7 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
             content_type
         }
         None => {
-            // Infer content type from file magic bytes
-            if !file_path.exists() {
+            if tokio::fs::metadata(&file_path).await.is_err() {
                 return (
                     StatusCode::NOT_FOUND,
                     [(
@@ -10089,8 +10294,8 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
                     b"{\"error\":\"File not found\"}".to_vec(),
                 );
             }
-            if upload_is_expired_path(&file_path) {
-                let _ = std::fs::remove_file(&file_path);
+            if upload_is_expired_path_async(&file_path).await {
+                let _ = tokio::fs::remove_file(&file_path).await;
                 return (
                     StatusCode::NOT_FOUND,
                     [(
@@ -10100,25 +10305,84 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
                     b"{\"error\":\"File expired\"}".to_vec(),
                 );
             }
-            "image/png".to_string()
+            let data = match tokio::fs::read(&file_path).await {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            "application/json".to_string(),
+                        )],
+                        b"{\"error\":\"File not found on disk\"}".to_vec(),
+                    );
+                }
+            };
+            let detected = detect_content_type_from_bytes(&data, "application/octet-stream");
+            fallback_body = Some(data);
+            detected
         }
     };
 
-    match std::fs::read(&file_path) {
-        Ok(data) => (
-            StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, content_type)],
-            data,
-        ),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            [(
-                axum::http::header::CONTENT_TYPE,
-                "application/json".to_string(),
-            )],
-            b"{\"error\":\"File not found on disk\"}".to_vec(),
-        ),
+    let data = match fallback_body {
+        Some(bytes) => bytes,
+        None => match tokio::fs::read(&file_path).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "application/json".to_string(),
+                    )],
+                    b"{\"error\":\"File not found on disk\"}".to_vec(),
+                );
+            }
+        },
+    };
+
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, content_type)],
+        data,
+    )
+}
+
+fn detect_content_type_from_bytes(bytes: &[u8], fallback: &str) -> String {
+    if bytes.starts_with(b"%PDF-") {
+        return "application/pdf".to_string();
     }
+    if bytes.len() >= 3 && bytes[..3] == [0xFF, 0xD8, 0xFF] {
+        return "image/jpeg".to_string();
+    }
+    if bytes.len() >= 4 && bytes[..4] == [0x89, 0x50, 0x4E, 0x47] {
+        return "image/png".to_string();
+    }
+    if bytes.len() >= 4 && bytes[..4] == [0x47, 0x49, 0x46, 0x38] {
+        return "image/gif".to_string();
+    }
+    if bytes.len() >= 12
+        && bytes[..4] == [0x52, 0x49, 0x46, 0x46]
+        && bytes[8..12] == [0x57, 0x45, 0x42, 0x50]
+    {
+        return "image/webp".to_string();
+    }
+    if bytes.len() >= 4 && bytes[..4] == [0x50, 0x4B, 0x03, 0x04] {
+        return "application/zip".to_string();
+    }
+    if bytes
+        .iter()
+        .all(|&b| matches!(b, 9 | 10 | 13) || (0x20..=0x7E).contains(&b))
+    {
+        if let Ok(sample) = std::str::from_utf8(bytes) {
+            let lower = sample.to_ascii_lowercase();
+            if lower.contains("<html") || lower.contains("<!doctype html") {
+                return "text/html".to_string();
+            }
+        }
+        return "text/plain".to_string();
+    }
+    fallback.to_string()
 }
 
 // ---------------------------------------------------------------------------

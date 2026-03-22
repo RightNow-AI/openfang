@@ -101,12 +101,15 @@ impl MeteringEngine {
     }
 
     /// Get budget status — current spend vs limits for all time windows.
-    pub fn budget_status(&self, budget: &openfang_types::config::BudgetConfig) -> BudgetStatus {
-        let hourly = self.store.query_global_hourly().unwrap_or(0.0);
-        let daily = self.store.query_today_cost().unwrap_or(0.0);
-        let monthly = self.store.query_global_monthly().unwrap_or(0.0);
+    pub fn budget_status(
+        &self,
+        budget: &openfang_types::config::BudgetConfig,
+    ) -> OpenFangResult<BudgetStatus> {
+        let hourly = self.store.query_global_hourly()?;
+        let daily = self.store.query_today_cost()?;
+        let monthly = self.store.query_global_monthly()?;
 
-        BudgetStatus {
+        Ok(BudgetStatus {
             hourly_spend: hourly,
             hourly_limit: budget.max_hourly_usd,
             hourly_pct: if budget.max_hourly_usd > 0.0 {
@@ -130,7 +133,7 @@ impl MeteringEngine {
             },
             alert_threshold: budget.alert_threshold,
             default_max_llm_tokens_per_hour: budget.default_max_llm_tokens_per_hour,
-        }
+        })
     }
 
     /// Get a usage summary, optionally filtered by agent.

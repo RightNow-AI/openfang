@@ -311,6 +311,20 @@ impl AgentRegistry {
         monthly: Option<f64>,
         tokens_per_hour: Option<u64>,
     ) -> OpenFangResult<()> {
+        for (field, value) in [
+            ("max_cost_per_hour_usd", hourly),
+            ("max_cost_per_day_usd", daily),
+            ("max_cost_per_month_usd", monthly),
+        ] {
+            if let Some(v) = value {
+                if v < 0.0 {
+                    return Err(OpenFangError::InvalidInput(format!(
+                        "{field} cannot be negative"
+                    )));
+                }
+            }
+        }
+
         let mut entry = self
             .agents
             .get_mut(&id)

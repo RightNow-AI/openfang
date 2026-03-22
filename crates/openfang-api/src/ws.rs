@@ -931,7 +931,15 @@ async fn handle_command(
         }
         "budget" => {
             let budget = state.kernel.effective_budget_config();
-            let status = state.kernel.metering.budget_status(&budget);
+            let status = match state.kernel.metering.budget_status(&budget) {
+                Ok(status) => status,
+                Err(e) => {
+                    return serde_json::json!({
+                        "type": "error",
+                        "content": format!("Budget status unavailable: {e}"),
+                    });
+                }
+            };
             let fmt = |v: f64| -> String {
                 if v > 0.0 {
                     format!("${v:.2}")
