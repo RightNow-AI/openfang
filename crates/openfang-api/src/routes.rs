@@ -14,6 +14,7 @@ use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::tool_runner::builtin_tool_definitions;
 use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
+use qrcode::{render::svg, QrCode};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -2985,6 +2986,7 @@ async fn send_channel_test_message(channel_name: &str, target_id: &str) -> Resul
     Ok(())
 }
 
+#[derive(Clone)]
 struct WeChatQrFlowState {
     qrcode: String,
     api_base_url: String,
@@ -3039,6 +3041,22 @@ fn persist_wechat_account_state(
         serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())
+}
+
+fn render_qr_data_url(data: &str) -> Option<String> {
+    use base64::Engine as _;
+
+    let qr = QrCode::new(data.as_bytes()).ok()?;
+    let svg = qr
+        .render::<svg::Color<'_>>()
+        .min_dimensions(256, 256)
+        .dark_color(svg::Color("#000000"))
+        .light_color(svg::Color("#ffffff"))
+        .build();
+    Some(format!(
+        "data:image/svg+xml;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(svg)
+    ))
 }
 
 /// POST /api/channels/wechat/qr/start — Start a WeChat QR login session.
@@ -3128,6 +3146,11 @@ pub async fn wechat_qr_start(State(state): State<Arc<AppState>>) -> impl IntoRes
         }));
     }
 
+    let qr_render_source = if qr_image_url.is_empty() {
+        qrcode.clone()
+    } else {
+        qr_image_url.clone()
+    };
     let session_id = uuid::Uuid::new_v4().to_string();
     WECHAT_QR_FLOWS.insert(
         session_id.clone(),
@@ -3144,7 +3167,7 @@ pub async fn wechat_qr_start(State(state): State<Arc<AppState>>) -> impl IntoRes
 
     Json(serde_json::json!({
         "available": true,
-        "qr_data_url": qr_image_url,
+        "qr_data_url": render_qr_data_url(&qr_render_source).unwrap_or(qr_image_url),
         "session_id": session_id,
         "message": "Scan this QR code with WeChat, then confirm login on your phone.",
         "connected": false
@@ -3159,7 +3182,7 @@ pub async fn wechat_qr_status(
     WECHAT_QR_FLOWS.retain(|_, flow| flow.expires_at > Instant::now());
 
     let session_id = params.get("session_id").cloned().unwrap_or_default();
-    let Some(flow) = WECHAT_QR_FLOWS.get(&session_id) else {
+    let Some(flow) = WECHAT_QR_FLOWS.get(&session_id).map(|entry| entry.clone()) else {
         return Json(serde_json::json!({
             "connected": false,
             "expired": true,
@@ -3168,7 +3191,6 @@ pub async fn wechat_qr_status(
     };
 
     if flow.expires_at <= Instant::now() {
-        drop(flow);
         WECHAT_QR_FLOWS.remove(&session_id);
         return Json(serde_json::json!({
             "connected": false,
@@ -3244,7 +3266,6 @@ pub async fn wechat_qr_status(
             "message": "QR scanned. Confirm the login in WeChat on your phone."
         })),
         "expired" => {
-            drop(flow);
             WECHAT_QR_FLOWS.remove(&session_id);
             Json(serde_json::json!({
                 "connected": false,
@@ -3265,15 +3286,15 @@ pub async fn wechat_qr_status(
             };
             let account_id =
                 match payload.get("ilink_bot_id").and_then(serde_json::Value::as_str) {
-                    Some(value) if !value.is_empty() => value.to_string(),
-                    _ => {
-                        return Json(serde_json::json!({
-                            "connected": false,
-                            "expired": false,
-                            "message": "WeChat login completed but account_id was missing."
-                        }))
-                    }
-                };
+                Some(value) if !value.is_empty() => value.to_string(),
+                _ => {
+                    return Json(serde_json::json!({
+                        "connected": false,
+                        "expired": false,
+                        "message": "WeChat login completed but account_id was missing."
+                    }))
+                }
+            };
             let user_id = payload
                 .get("ilink_user_id")
                 .and_then(serde_json::Value::as_str)
@@ -3316,7 +3337,6 @@ pub async fn wechat_qr_status(
                 user_id.as_deref(),
             );
 
-            drop(flow);
             WECHAT_QR_FLOWS.remove(&session_id);
 
             let _ = crate::channel_bridge::reload_channels_from_disk(&state).await;

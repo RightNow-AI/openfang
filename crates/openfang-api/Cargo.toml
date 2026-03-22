@@ -38,6 +38,7 @@ hmac = { workspace = true }
 hex = { workspace = true }
 socket2 = { workspace = true }
 reqwest = { workspace = true }
+qrcode = "0.14"
 
 [dev-dependencies]
 tokio-test = { workspace = true }

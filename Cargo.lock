@@ -3833,6 +3833,7 @@ dependencies = [
  "openfang-skills",
  "openfang-types",
  "openfang-wire",
+ "qrcode",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
