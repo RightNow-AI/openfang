@@ -2628,7 +2628,6 @@ impl Default for MqttConfig {
         }
     }
 }
-
 /// Revolt (Discord-like) channel adapter configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
