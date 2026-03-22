@@ -3,7 +3,7 @@
 This document is the current production-ready assessment for the OpenFang platform in this repository.
 It is intentionally narrow: it focuses on whether the existing product can be deployed and operated safely, not on future roadmap work or large refactors.
 
-Assessment date: 2026-03-22
+Assessment date: 2026-03-23
 
 ## Current Status
 
@@ -66,30 +66,32 @@ Meaning:
 
 ## Evidence Collected In This Review
 
-The following checks were run successfully against the current workspace on 2026-03-22:
+The following checks were run successfully against the current workspace on 2026-03-23:
 
 - `cargo build --workspace --lib`
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test -p openfang-api --test api_integration_test`
 - `cargo build --release -p openfang-cli`
 - `bash -n scripts/backup-openfang.sh`
 - `bash -n scripts/live-api-smoke-openfang.sh`
 - `bash -n scripts/preflight-openfang.sh`
+- `bash -n scripts/restore-openfang.sh`
 - `python3 -m py_compile scripts/healthcheck-openfang.py`
+- `OPENFANG_API_KEY=live-smoke-key docker compose config`
 
 - Live validation now includes both the legacy smoke suite and the new stateful API verification:
 
-- daemon booted from `target/release/openfang`
+- daemon booted from `target/release/openfang` with `OPENFANG_HOME=/tmp/openfang-live.DjB8sO` and `OPENFANG_API_KEY` on `127.0.0.1:4217`
 - `GET /api/health` returned `status = "ok"`
-- authenticated `GET /api/health/detail` returned `status = "ok"`
-- authenticated `GET /api/metrics` exposed `openfang_usage_store_ok`
+- authenticated `GET /api/health/detail` returned `status = "ok"` and `usage_store = "connected"`
+- authenticated `GET /api/metrics` exposed `openfang_usage_store_ok 1`
 - `scripts/smoke-openfang.sh` passed against the release daemon
+- `scripts/live-api-smoke-openfang.sh` successfully spawned/listed/budgeted/killed an agent against `127.0.0.1:4217`
+- strict `scripts/preflight-openfang.sh` first failed closed on an intentionally too-permissive `0644` temp `config.toml`, then passed after `chmod 600`
 - online `scripts/preflight-openfang.sh` passed
 - offline `scripts/preflight-openfang.sh --offline` passed
 - `POST /api/shutdown` completed a graceful daemon stop before backup validation
-- `scripts/backup-openfang.sh` completed and wrote versioned rollback metadata into `BACKUP.txt`
-- `scripts/live-api-smoke-openfang.sh` successfully spawned/listed/budgeted/killed an agent against 127.0.0.1:4217
+- `scripts/backup-openfang.sh` completed and wrote `openfang_binary`, `openfang_version`, `openfang_binary_sha256`, and `openfang_git_sha` into `BACKUP.txt`
 
 ## Remaining Required Checks Before Real Production Cutover
 
