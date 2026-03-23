@@ -1430,7 +1430,7 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
             "volcengine",
             "VOLCENGINE_API_KEY",
             "doubao-seed-1-6-251015",
-            "Volcano Engine (Doubao)",
+            "Volcano Engine",
         ),
         (
             "anthropic",

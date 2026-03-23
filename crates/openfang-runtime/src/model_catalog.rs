@@ -850,7 +850,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
         // ── Volcano Engine (Doubao) ──────────────────────────────────
         ProviderInfo {
             id: "volcengine".into(),
-            display_name: "Volcano Engine (Doubao)".into(),
+            display_name: "Volcano Engine".into(),
             api_key_env: "VOLCENGINE_API_KEY".into(),
             base_url: VOLCENGINE_BASE_URL.into(),
             key_required: true,

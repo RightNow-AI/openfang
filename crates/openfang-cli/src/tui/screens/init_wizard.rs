@@ -78,7 +78,7 @@ const PROVIDERS: &[ProviderInfo] = &[
     },
     ProviderInfo {
         name: "volcengine",
-        display: "Volcano Engine (Doubao)",
+        display: "Volcano Engine",
         env_var: "VOLCENGINE_API_KEY",
         default_model: "doubao-seed-1-6-251015",
         needs_key: true,
