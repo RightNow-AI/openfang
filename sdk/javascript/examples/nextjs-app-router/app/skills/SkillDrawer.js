@@ -1,6 +1,5 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
-import { track } from '../../lib/telemetry';
 
 // ─── SkillDrawer ──────────────────────────────────────────────────────────────
 // Read-only detail view for a single skill.
@@ -22,22 +21,27 @@ export default function SkillDrawer({ skillName, onClose, onToggle, togglePendin
     const controller = new AbortController();
     abortRef.current = controller;
 
-    setDetail(null);
-    setError('');
-    setLoading(true);
+    const loadDetail = async () => {
+      setDetail(null);
+      setError('');
+      setLoading(true);
 
-    fetch(`/api/skills/${encodeURIComponent(skillName)}`, { signal: controller.signal })
-      .then(r => r.json())
-      .then(data => {
+      try {
+        const response = await fetch(`/api/skills/${encodeURIComponent(skillName)}`, {
+          signal: controller.signal,
+        });
+        const data = await response.json();
         if (data?.error) throw new Error(data.error);
         setDetail(data);
         setLoading(false);
-      })
-      .catch(e => {
+      } catch (e) {
         if (e.name === 'AbortError') return;
         setError(e.message || 'Could not load skill details.');
         setLoading(false);
-      });
+      }
+    };
+
+    void loadDetail();
 
     return () => controller.abort();
   }, [skillName]);

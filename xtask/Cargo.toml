@@ -8,3 +8,4 @@ description = "Build automation for the OpenFang workspace"
 [dependencies]
 openfang-api = { path = "../crates/openfang-api" }
 serde_json = { workspace = true }
+utoipa = { workspace = true }

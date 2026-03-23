@@ -3,19 +3,23 @@ import { useState, useEffect } from 'react';
 
 export default function HandDetailDrawer({ open, handId, onClose, onConfigure, onTurnOff }) {
   const [hand, setHand] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => Boolean(open && handId));
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (!open || !handId) return;
-    setHand(null);
-    setError('');
-    setLoading(true);
-    fetch(`/api/hands/${handId}`)
+    const controller = new AbortController();
+
+    fetch(`/api/hands/${handId}`, { signal: controller.signal })
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       .then(d => setHand(d?.hand ?? d))
-      .catch(e => setError(e?.message || 'Could not load hand details.'))
+      .catch(e => {
+        if (e?.name === 'AbortError') return;
+        setError(e?.message || 'Could not load hand details.');
+      })
       .finally(() => setLoading(false));
+
+    return () => controller.abort();
   }, [open, handId]);
 
   if (!open) return null;

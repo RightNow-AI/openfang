@@ -1,106 +1,98 @@
-# OpenFang Documentation
+# LegendClaw Documentation
 
-Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operating System -- 14 Rust crates, 40 channels, 60 skills, 20 LLM providers, 76 API endpoints, and 16 security systems in a single binary.
+This documentation index is organized around how people actually approach the product: getting it running, understanding the platform, using workflow surfaces, connecting integrations, and contributing changes.
+
+The workspace still uses `openfang-*` crate names internally. The product-facing surface is moving toward the LegendClaw shape described in the root README.
 
 ---
 
-## Getting Started
+## Start Here
 
-| Guide | Description |
-|-------|-------------|
-| [Getting Started](getting-started.md) | Installation, first agent, first chat session |
-| [Configuration](configuration.md) | Complete `config.toml` reference with every field |
-| [CLI Reference](cli-reference.md) | Every command and subcommand with examples |
-| [Troubleshooting](troubleshooting.md) | Common issues, FAQ, diagnostics |
+- Install and run the system: [Getting Started](getting-started.md)
+- Configure the runtime: [Configuration](configuration.md)
+- Debug setup issues: [Troubleshooting](troubleshooting.md)
+- Understand commands and flags: [CLI Reference](cli-reference.md)
 
-## Core Concepts
+## Core Platform
 
-| Guide | Description |
-|-------|-------------|
-| [Architecture](architecture.md) | 12-crate structure, kernel boot, agent lifecycle, memory substrate |
-| [Agent Templates](agent-templates.md) | 30 pre-built agents across 4 performance tiers |
-| [Workflows](workflows.md) | Multi-agent pipelines with branching, fan-out, loops, and triggers |
-| [Security](security.md) | 16 defense-in-depth security systems |
+- [Architecture](architecture.md): kernel, runtime, memory, API, channels, desktop, and build layers
+- [Workflows](workflows.md): multi-agent pipelines, branching, approvals, and execution flow
+- [Security](security.md): defense-in-depth model and runtime protections
+- [API Reference](api-reference.md): app-facing REST, SSE, and WebSocket routes
 
-## Integrations
+## Hands And Agents
 
-| Guide | Description |
-|-------|-------------|
-| [Integration Contract](integration-contract.md) | Frozen app-facing contract for SDKs, backends, gateways, auth, and base URL usage |
-| [Channel Adapters](channel-adapters.md) | 40 messaging channels -- setup, configuration, custom adapters |
-| [LLM Providers](providers.md) | 20 providers, 51 models, 23 aliases -- setup and model routing |
-| [Skills](skill-development.md) | 60 bundled skills, custom skill development, FangHub marketplace |
-| [MCP & A2A](mcp-a2a.md) | Model Context Protocol and Agent-to-Agent protocol integration |
+- [Agent Templates](agent-templates.md): built-in agent manifests and authoring patterns
+- [Skill Development](skill-development.md): skill authoring, structure, and runtime behavior
+- [Skill State Contract](skill-state-contract.md): state expectations for skill execution
 
-## Reference
+## Business And Product Surfaces
 
-| Guide | Description |
-|-------|-------------|
-| [API Reference](api-reference.md) | All 76 REST/WS/SSE endpoints with request/response examples |
-| [Desktop App](desktop.md) | Tauri 2.0 native app -- build, features, architecture |
+- [Business Modes](business-modes.md): entry point for Command Center, Agency, Growth, School, and Chief of Staff product surfaces
+- [Command Center](command-center.md): shared operating shell for intake, planning, approvals, and results
+- [Agency Mode](agency-mode.md): service delivery surface for scoped client work
+- [Growth Mode](growth-mode.md): campaign and acquisition surface for creative and optimization loops
+- [School Mode](school-mode.md): program and cohort surface for education operations
+- [Chief Of Staff Mode](chief-of-staff-mode.md): planning and follow-through surface for structured operator support
+- [Workflows](workflows.md): execution model behind business-mode and orchestration flows
+- [Personal Chief of Staff v1](personal-chief-of-staff-v1.md): product-shaping reference for structured agent operations
+- [Launch Roadmap](launch-roadmap.md): current direction, priorities, and sequencing
 
-## Release & Operations
+## Channels And Integrations
 
-| Guide | Description |
-|-------|-------------|
-| [Production Checklist](production-checklist.md) | Every step before tagging v0.1.0 -- signing keys, secrets, verification |
+- [Channels](channels.md): top-level guide to channel families, selection, and deployment pattern
+- [Channel Adapters](channel-adapters.md): messaging adapters, setup, and custom adapter extension points
+- [Integrations](integrations.md): top-level guide to app, SDK, MCP, A2A, and gateway contracts
+- [API Surfaces](api-surfaces.md): top-level routing guide for REST, streaming, OpenAI-compatible, and protocol APIs
+- [Providers And Models](providers-and-models.md): top-level routing guide for choosing provider strategy and model access
+- [Providers](providers.md): LLM provider setup and model routing
+- [MCP & A2A](mcp-a2a.md): integration patterns for external agent and tool systems
+- [Integration Contract](integration-contract.md): stable app-facing contract for SDKs, gateways, auth, and base URLs
 
-## Additional Resources
+## Operations
 
-| Resource | Description |
-|----------|-------------|
-| [CONTRIBUTING.md](../CONTRIBUTING.md) | Development setup, code style, PR guidelines |
-| [MIGRATION.md](../MIGRATION.md) | Migrating from OpenClaw, LangChain, or AutoGPT |
-| [SECURITY.md](../SECURITY.md) | Security policy and vulnerability reporting |
-| [CHANGELOG.md](../CHANGELOG.md) | Release notes and version history |
+- [Production Checklist](production-checklist.md): release and deployment readiness checklist
+- [Desktop](desktop.md): native desktop app notes and build context
+- [Configuration](configuration.md): runtime configuration reference
+- [Troubleshooting](troubleshooting.md): common failure modes and recovery paths
+
+## Additional References
+
+- [CONTRIBUTING.md](../CONTRIBUTING.md): contribution paths, testing requirements, and PR expectations
+- [MIGRATION.md](../MIGRATION.md): migration notes from adjacent ecosystems
+- [SECURITY.md](../SECURITY.md): security policy and reporting process
+- [CHANGELOG.md](../CHANGELOG.md): release history and notable changes
 
 ---
 
 ## Quick Reference
 
-### Start in 30 Seconds
+### Minimal Bring-Up
 
 ```bash
 export GROQ_API_KEY="your-key"
-openfang init && openfang start
-# Open http://127.0.0.1:50051
+cargo build --workspace --lib
+target/release/openfang.exe start
 ```
 
-### Key Numbers
+Then open the backend or dashboard:
 
-| Metric | Count |
-|--------|-------|
-| Crates | 14 |
-| Agent templates | 30 |
-| Messaging channels | 40 |
-| Bundled skills | 60 |
-| Built-in tools | 38 |
-| LLM providers | 20 |
-| Models in catalog | 51 |
-| Model aliases | 23 |
-| API endpoints | 76 |
-| Security systems | 16 |
-| Tests | 967 |
+- `http://127.0.0.1:50051/api/health`
+- `http://localhost:3002`
 
-### Important Paths
+### Useful Paths
 
-| Path | Description |
-|------|-------------|
-| `~/.openfang/config.toml` | Main configuration file |
-| `~/.openfang/data/openfang.db` | SQLite database |
-| `~/.openfang/skills/` | Installed skills |
-| `~/.openfang/daemon.json` | Daemon PID and port info |
-| `agents/` | Agent template manifests |
+- `agents/`: agent manifest definitions
+- `crates/`: Rust workspace crates
+- `sdk/javascript/examples/nextjs-app-router/`: primary web frontend
+- `packages/whatsapp-gateway/`: WhatsApp web gateway package
+- `docs/`: product and development documentation
 
-### Key Environment Variables
+### Common Environment Variables
 
-| Variable | Provider |
-|----------|----------|
-| `ANTHROPIC_API_KEY` | Anthropic (Claude) |
-| `OPENAI_API_KEY` | OpenAI (GPT-4o) |
-| `GEMINI_API_KEY` | Google Gemini |
-| `GROQ_API_KEY` | Groq (fast Llama/Mixtral) |
-| `DEEPSEEK_API_KEY` | DeepSeek |
-| `XAI_API_KEY` | xAI (Grok) |
-
-Only one provider key is needed to get started. Groq offers a free tier.
+- `GROQ_API_KEY`: fast low-friction provider for local validation
+- `OPENAI_API_KEY`: OpenAI-compatible runtime access
+- `ANTHROPIC_API_KEY`: Claude provider access
+- `GEMINI_API_KEY`: Gemini provider access
+- `OPENFANG_DASHBOARD_URL`: override dashboard redirect target
+- `OPENFANG_LEGACY_UI`: force legacy UI behavior when needed

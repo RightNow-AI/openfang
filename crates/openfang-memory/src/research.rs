@@ -573,8 +573,10 @@ mod tests {
     #[test]
     fn upsert_control_plane_persists() {
         let store = test_store();
-        let mut cfg = ControlPlaneConfig::default();
-        cfg.label = "custom".into();
+            let cfg = ControlPlaneConfig {
+                label: "custom".into(),
+                ..ControlPlaneConfig::default()
+            };
         store.upsert_control_plane(&cfg).unwrap();
         let loaded = store.load_control_plane().unwrap();
         assert_eq!(loaded.label, "custom");
@@ -583,11 +585,15 @@ mod tests {
     #[test]
     fn upsert_control_plane_replaces_previous() {
         let store = test_store();
-        let mut cfg1 = ControlPlaneConfig::default();
-        cfg1.label = "v1".into();
+            let cfg1 = ControlPlaneConfig {
+                label: "v1".into(),
+                ..ControlPlaneConfig::default()
+            };
         store.upsert_control_plane(&cfg1).unwrap();
-        let mut cfg2 = ControlPlaneConfig::default();
-        cfg2.label = "v2".into();
+            let cfg2 = ControlPlaneConfig {
+                label: "v2".into(),
+                ..ControlPlaneConfig::default()
+            };
         store.upsert_control_plane(&cfg2).unwrap();
         let loaded = store.load_control_plane().unwrap();
         assert_eq!(loaded.label, "v2");

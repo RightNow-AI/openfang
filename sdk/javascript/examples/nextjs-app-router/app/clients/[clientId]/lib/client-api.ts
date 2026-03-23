@@ -8,6 +8,11 @@ import type {
   ApprovalItem,
   ClientApprovalsResponse,
   ClientHomeResponse,
+  FounderWorkspaceSnapshot,
+  FounderTaskItem,
+  FounderTaskStatus,
+  FounderRunItem,
+  FounderWorkspaceItem,
   ClientMemoryFact,
   ClientPlanResponse,
   ClientPulseResponse,
@@ -23,6 +28,174 @@ import type {
   PlannedTask,
   RunResult,
 } from "../../../../lib/command-center-types";
+
+async function jsonResponse<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as { error?: string }).error || `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+function founderWorkspaceIdForClient(clientId: string) {
+  return `client-${clientId}`;
+}
+
+function buildFounderWorkspacePayload(profile: ClientProfile): FounderWorkspaceItem {
+  return {
+    workspaceId: founderWorkspaceIdForClient(profile.id),
+    clientId: profile.id,
+    name: `${profile.business_name} Founder Workspace`,
+    companyName: profile.business_name,
+    idea: profile.main_goal || profile.offer || "",
+    stage: "validation",
+    playbookDefaults: {
+      defaultPlaybookId: "customer-discovery",
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function ensureFounderWorkspace(profile: ClientProfile): Promise<FounderWorkspaceItem> {
+  const workspaceId = founderWorkspaceIdForClient(profile.id);
+  const response = await fetch(`/api/founder/workspaces/${encodeURIComponent(workspaceId)}`);
+
+  if (response.ok) {
+    const data = await jsonResponse<{ workspace: FounderWorkspaceItem }>(response);
+    return data.workspace;
+  }
+
+  if (response.status !== 404) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error((body as { error?: string }).error || `Request failed: ${response.status}`);
+  }
+
+  const payload = buildFounderWorkspacePayload(profile);
+  const created = await jsonResponse<{ workspace: FounderWorkspaceItem }>(
+    await fetch("/api/founder/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  );
+  return created.workspace;
+}
+
+async function listFounderRunsForWorkspace(workspaceId: string): Promise<FounderRunItem[]> {
+  const data = await jsonResponse<{ runs: FounderRunItem[] }>(
+    await fetch(`/api/founder/workspaces/${encodeURIComponent(workspaceId)}/runs`, {
+      cache: "no-store",
+    }),
+  );
+  return Array.isArray(data.runs) ? data.runs : [];
+}
+
+async function listFounderWorkspacesForClient(clientId: string): Promise<FounderWorkspaceItem[]> {
+  const search = new URLSearchParams({ clientId }).toString();
+  const data = await jsonResponse<{ workspaces: FounderWorkspaceItem[] }>(
+    await fetch(`/api/founder/workspaces?${search}`, {
+      cache: "no-store",
+    }),
+  );
+  return Array.isArray(data.workspaces) ? data.workspaces : [];
+}
+
+async function listFounderPlaybookLabels(): Promise<Record<string, string>> {
+  try {
+    const data = await jsonResponse<{ playbooks: Array<{ id?: string; title?: string }> }>(
+      await fetch("/api/playbooks", {
+        cache: "no-store",
+      }),
+    );
+    return Array.isArray(data.playbooks)
+      ? data.playbooks.reduce<Record<string, string>>((labels, playbook) => {
+          const playbookId = String(playbook?.id ?? "").trim();
+          if (!playbookId) return labels;
+          labels[playbookId] = String(playbook?.title ?? playbookId).trim() || playbookId;
+          return labels;
+        }, {})
+      : {};
+  } catch (error) {
+    console.error("[client-api] failed to fetch founder playbook labels", error);
+    return {};
+  }
+}
+
+export async function getFounderWorkspaceSnapshotForClient(clientId: string): Promise<FounderWorkspaceSnapshot> {
+  if (!clientId) {
+    return { workspace: null, runs: [], playbookLabels: {} };
+  }
+
+  const [workspaces, playbookLabels] = await Promise.all([
+    listFounderWorkspacesForClient(clientId).catch((error) => {
+      console.error(`[client-api] failed to fetch founder workspaces for client ${clientId}`, error);
+      return [];
+    }),
+    listFounderPlaybookLabels(),
+  ]);
+
+  const workspace = workspaces[0] ?? null;
+  if (!workspace) {
+    return { workspace: null, runs: [], playbookLabels };
+  }
+
+  const runs = await listFounderRunsForWorkspace(workspace.workspaceId).catch((error) => {
+    console.error(`[client-api] failed to fetch founder runs for workspace ${workspace.workspaceId}`, error);
+    return [];
+  });
+
+  return { workspace, runs, playbookLabels };
+}
+
+export async function getFounderTasks(workspaceId: string): Promise<FounderTaskItem[]> {
+  if (!workspaceId) return [];
+
+  try {
+    const data = await jsonResponse<{ tasks: FounderTaskItem[] }>(
+      await fetch(`/api/founder/workspaces/${encodeURIComponent(workspaceId)}/tasks`, {
+        cache: 'no-store',
+      }),
+    );
+    return Array.isArray(data.tasks) ? data.tasks : [];
+  } catch (error) {
+    console.error(`[client-api] failed to fetch founder tasks for workspace ${workspaceId}`, error);
+    return [];
+  }
+}
+
+export async function updateFounderTaskStatus(
+  workspaceId: string,
+  taskId: string,
+  status: FounderTaskStatus,
+): Promise<FounderTaskItem | null> {
+  if (!workspaceId || !taskId) return null;
+
+  try {
+    const data = await jsonResponse<{ task: FounderTaskItem }>(
+      await fetch(`/api/founder/workspaces/${encodeURIComponent(workspaceId)}/tasks/${encodeURIComponent(taskId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      }),
+    );
+    return data.task ?? null;
+  } catch (error) {
+    console.error(`[client-api] failed to update founder task ${taskId}`, error);
+    return null;
+  }
+}
+
+export async function getFounderWorkspaceForClient(clientId: string): Promise<FounderWorkspaceItem> {
+  const { client } = await getClient(clientId);
+  return ensureFounderWorkspace(client);
+}
+
+export async function getFounderRunsForClient(clientId: string): Promise<{ workspace: FounderWorkspaceItem; runs: FounderRunItem[] }> {
+  const workspace = await getFounderWorkspaceForClient(clientId);
+  const runs = await listFounderRunsForWorkspace(workspace.workspaceId);
+  return { workspace, runs };
+}
 
 function mapHealth(tasks: PlannedTask[], approvals: CommandCenterApproval[], results: RunResult[]): HealthLevel {
   const failedTasks = tasks.filter((task) => task.status === "failed").length;
@@ -202,6 +375,7 @@ export async function getClientHome(clientId: string): Promise<ClientHomeRespons
     getApprovals(clientId),
     getResults(clientId),
   ]);
+  const founderSnapshot = await getFounderWorkspaceSnapshotForClient(profile.id);
   const summary = deriveClientSummary(profile, tasks, approvals, results);
   const mappedTasks = tasks.map(mapTask);
   const pendingApprovals = approvals.map(mapApproval).filter((approval) => approval.status === "needs_review");
@@ -228,6 +402,7 @@ export async function getClientHome(clientId: string): Promise<ClientHomeRespons
       approval_lag_hours: pendingApprovals.length > 0 ? pendingApprovals.length * 4 : null,
       renewal_likelihood: summary.health === "green" ? 78 : summary.health === "yellow" ? 62 : 38,
     },
+    founder_workspace: founderSnapshot.workspace,
   };
 }
 
@@ -342,11 +517,13 @@ export async function getClientApprovals(clientId: string): Promise<ClientApprov
 }
 
 export async function getClientResults(clientId: string): Promise<ClientResultsResponse> {
-  const [{ results }, { tasks }, { approvals }] = await Promise.all([
+  const [{ client: profile }, { results }, { tasks }, { approvals }] = await Promise.all([
+    getClient(clientId),
     getResults(clientId),
     getTasks(clientId),
     getApprovals(clientId),
   ]);
+  const founderSnapshot = await getFounderWorkspaceSnapshotForClient(profile.id);
   const completed = results.filter((result) => result.status === "completed");
   const failed = results.filter((result) => result.status === "failed");
   return {
@@ -397,5 +574,7 @@ export async function getClientResults(clientId: string): Promise<ClientResultsR
       proof_point: result.output_type,
       quote_candidate: null,
     })),
+    founder_workspace: founderSnapshot.workspace,
+    founder_runs: founderSnapshot.runs,
   };
 }

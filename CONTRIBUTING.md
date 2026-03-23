@@ -1,9 +1,10 @@
 # Contributing to OpenFang
 
-Thank you for your interest in contributing to OpenFang. This guide covers everything you need to get started, from setting up your development environment to submitting pull requests.
+Thank you for contributing. This workspace powers the current LegendClaw product surface while still using the OpenFang crate layout internally. This guide is organized to help contributors choose the right path quickly instead of reading the whole repository to figure out where to start.
 
 ## Table of Contents
 
+- [Choose a Contribution Path](#choose-a-contribution-path)
 - [Development Environment](#development-environment)
 - [Building and Testing](#building-and-testing)
 - [Code Style](#code-style)
@@ -13,6 +14,28 @@ Thank you for your interest in contributing to OpenFang. This guide covers every
 - [How to Add a New Tool](#how-to-add-a-new-tool)
 - [Pull Request Process](#pull-request-process)
 - [Code of Conduct](#code-of-conduct)
+
+---
+
+## Choose a Contribution Path
+
+Start with the path that matches your change:
+
+- **Runtime and backend code**: `crates/openfang-*`, APIs, orchestration, channels, memory, security
+- **Frontend and app surfaces**: `sdk/javascript/examples/nextjs-app-router/`
+- **Agents and hands**: `agents/`, prompts, manifests, workflow-facing capability design
+- **Docs and onboarding**: `README.md`, `docs/`, examples, quick starts, troubleshooting
+- **Integrations and gateways**: channel adapters, MCP, A2A, packages like `packages/whatsapp-gateway/`
+
+Before opening a PR, be explicit about which user surface you changed:
+
+- operator experience
+- contributor experience
+- app developer integration
+- runtime reliability
+- security boundary
+
+If your change spans more than one of those surfaces, split it unless the pieces are inseparable.
 
 ---
 
@@ -90,6 +113,18 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The CI pipeline enforces zero clippy warnings.
 
+### Documentation and Frontend Changes
+
+If you modify the Next.js app or onboarding docs, validate the relevant surface as well:
+
+```bash
+cd sdk/javascript/examples/nextjs-app-router
+npm install
+npm run build
+```
+
+For docs-only changes, at minimum verify that referenced files, commands, and paths are still correct.
+
 ### Format Code
 
 ```bash
@@ -130,7 +165,7 @@ cargo run -- doctor
 OpenFang is organized as a Cargo workspace with 14 crates:
 
 | Crate | Role |
-|-------|------|
+| ----- | ---- |
 | `openfang-types` | Shared type definitions, taint tracking, manifest signing (Ed25519), model catalog, MCP/A2A config types |
 | `openfang-memory` | SQLite-backed memory substrate with vector embeddings, usage tracking, canonical sessions, JSONL mirroring |
 | `openfang-runtime` | Agent loop, 3 LLM drivers (Anthropic/Gemini/OpenAI-compat), 38 built-in tools, WASM sandbox, MCP client/server, A2A protocol |
@@ -153,21 +188,29 @@ OpenFang is organized as a Cargo workspace with 14 crates:
 - **Daemon detection**: The CLI checks `~/.openfang/daemon.json` and pings the health endpoint. If a daemon is running, commands use HTTP; otherwise, they boot an in-process kernel.
 - **Capability-based security**: Every agent operation is checked against the agent's granted capabilities before execution.
 
+### Where To Put New Work
+
+- Put kernel, runtime, API, memory, channels, and CLI changes in the relevant `crates/openfang-*` crate.
+- Put dashboard and app-facing route changes in `sdk/javascript/examples/nextjs-app-router/`.
+- Put manifests in `agents/`.
+- Put user-facing guides in `docs/`.
+- Keep release notes and historical detail out of onboarding docs when possible.
+
 ---
 
 ## How to Add a New Agent Template
 
 Agent templates live in the `agents/` directory. Each template is a folder containing an `agent.toml` manifest.
 
-### Steps
+### Agent Template Steps
 
 1. Create a new directory under `agents/`:
 
-```
+```text
 agents/my-agent/agent.toml
 ```
 
-2. Write the manifest:
+1. Write the manifest:
 
 ```toml
 name = "my-agent"
@@ -191,7 +234,7 @@ memory_write = ["self.*"]
 agent_spawn = false
 ```
 
-3. Include a system prompt if needed by adding it to the `[model]` section:
+1. Include a system prompt if needed by adding it to the `[model]` section:
 
 ```toml
 [model]
@@ -202,13 +245,13 @@ You are a specialized agent that...
 """
 ```
 
-4. Test by spawning:
+1. Test by spawning:
 
 ```bash
 openfang agent spawn agents/my-agent/agent.toml
 ```
 
-5. Submit a PR with the new template.
+1. Submit a PR with the new template.
 
 ---
 
@@ -216,11 +259,11 @@ openfang agent spawn agents/my-agent/agent.toml
 
 Channel adapters live in `crates/openfang-channels/src/`. Each adapter implements the `ChannelAdapter` trait.
 
-### Steps
+### Channel Adapter Steps
 
 1. Create a new file: `crates/openfang-channels/src/myplatform.rs`
 
-2. Implement the `ChannelAdapter` trait (defined in `types.rs`):
+1. Implement the `ChannelAdapter` trait (defined in `types.rs`):
 
 ```rust
 use crate::types::{ChannelAdapter, ChannelMessage, ChannelType};
@@ -252,19 +295,19 @@ impl ChannelAdapter for MyPlatformAdapter {
 }
 ```
 
-3. Register the module in `crates/openfang-channels/src/lib.rs`:
+1. Register the module in `crates/openfang-channels/src/lib.rs`:
 
 ```rust
 pub mod myplatform;
 ```
 
-4. Wire it up in the channel bridge (`crates/openfang-api/src/channel_bridge.rs`) so the daemon starts it alongside other adapters.
+1. Wire it up in the channel bridge (`crates/openfang-api/src/channel_bridge.rs`) so the daemon starts it alongside other adapters.
 
-5. Add configuration support in `openfang-types` config structs (add a `[channels.myplatform]` section).
+1. Add configuration support in `openfang-types` config structs (add a `[channels.myplatform]` section).
 
-6. Add CLI setup wizard instructions in `crates/openfang-cli/src/main.rs` under `cmd_channel_setup`.
+1. Add CLI setup wizard instructions in `crates/openfang-cli/src/main.rs` under `cmd_channel_setup`.
 
-7. Write tests and submit a PR.
+1. Write tests and submit a PR.
 
 ---
 
@@ -287,13 +330,13 @@ async fn tool_my_tool(input: &serde_json::Value) -> Result<String, String> {
 }
 ```
 
-2. Register it in the `execute_tool` match block:
+1. Register it in the `execute_tool` match block:
 
 ```rust
 "my_tool" => tool_my_tool(input).await,
 ```
 
-3. Add the tool definition to `builtin_tool_definitions()`:
+1. Add the tool definition to `builtin_tool_definitions()`:
 
 ```rust
 ToolDefinition {
@@ -312,16 +355,16 @@ ToolDefinition {
 },
 ```
 
-4. Agents that need the tool must list it in their manifest:
+1. Agents that need the tool must list it in their manifest:
 
 ```toml
 [capabilities]
 tools = ["my_tool"]
 ```
 
-5. Write tests for the tool function.
+1. Write tests for the tool function.
 
-6. If the tool requires kernel access (e.g., inter-agent communication), accept `Option<&Arc<dyn KernelHandle>>` and handle the `None` case gracefully.
+1. If the tool requires kernel access (e.g., inter-agent communication), accept `Option<&Arc<dyn KernelHandle>>` and handle the `None` case gracefully.
 
 ---
 
@@ -344,11 +387,22 @@ tools = ["my_tool"]
 
 7. **CI must pass**: All automated checks must be green before merge.
 
+### PR Framing
+
+Good PRs answer these questions quickly:
+
+- Who is this change for?
+- What product or platform surface changed?
+- How was it validated?
+- Did it affect security, routing, persistence, or approval behavior?
+
+If you changed docs, examples, or onboarding copy, say which path got easier for a first-time user.
+
 ### Commit Messages
 
 Use clear, imperative-mood messages:
 
-```
+```text
 Add Matrix channel adapter with E2EE support
 Fix session restore crash on kernel reboot
 Refactor capability manager to use DashMap

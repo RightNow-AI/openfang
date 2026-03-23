@@ -142,6 +142,50 @@ export type NextActionItem = {
   type: "task" | "renewal" | "upsell" | "follow_up" | "research";
 };
 
+export type FounderWorkspaceItem = {
+  workspaceId: string;
+  clientId: string;
+  name: string;
+  companyName: string;
+  idea: string;
+  stage: string;
+  playbookDefaults: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FounderRunItem = {
+  runId: string;
+  workspaceId: string;
+  playbookId: string | null;
+  prompt: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  summary: string;
+  citations: string[];
+  nextActions: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FounderTaskStatus = 'pending' | 'in_progress' | 'completed' | 'dismissed';
+
+export type FounderTaskItem = {
+  taskId: string;
+  workspaceId: string;
+  runId: string;
+  description: string;
+  category: string;
+  status: FounderTaskStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FounderWorkspaceSnapshot = {
+  workspace: FounderWorkspaceItem | null;
+  runs: FounderRunItem[];
+  playbookLabels: Record<string, string>;
+};
+
 export type ClientHomeResponse = {
   client: ClientSummary;
   priorities: PriorityItem[];
@@ -155,6 +199,7 @@ export type ClientHomeResponse = {
     approval_lag_hours: number | null;
     renewal_likelihood: number | null;
   };
+  founder_workspace: FounderWorkspaceItem | null;
 };
 
 export type ClientPulseResponse = {
@@ -249,4 +294,6 @@ export type ClientResultsResponse = {
     proof_point: string;
     quote_candidate: string | null;
   }>;
+  founder_workspace: FounderWorkspaceItem | null;
+  founder_runs: FounderRunItem[];
 };

@@ -942,6 +942,7 @@ export default function SkillsPageV2({ initialSkills }) {
       {/* Detail drawer */}
       {drawerOpen && drawerSkill && (
         <SkillDrawer
+          key={drawerSkill}
           skillName={drawerSkill}
           onClose={() => setDrawerOpen(false)}
           onToggle={(name, enabled) => handleToggle(name, !enabled)}

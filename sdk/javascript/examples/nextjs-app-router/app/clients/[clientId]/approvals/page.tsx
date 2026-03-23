@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import ClientShell from "../components/ClientShell";
 import styles from "../../client-dashboard.module.css";
 import { getClientApprovals, getClientHome } from "../lib/client-api";
@@ -12,8 +13,6 @@ import {
   runApprovedClientTask,
 } from "../lib/client-actions";
 import type { ApprovalItem, ClientApprovalsResponse, ClientHomeResponse } from "../lib/client-types";
-
-type Props = { params: Promise<{ clientId: string }> };
 
 function cloneApprovals(data: ClientApprovalsResponse): ClientApprovalsResponse {
   return {
@@ -126,8 +125,9 @@ function ApprovalBucket({
   );
 }
 
-export default function ClientApprovalsPage({ params }: Props) {
-  const [clientId, setClientId] = useState("");
+export default function ClientApprovalsPage() {
+  const params = useParams<{ clientId: string }>();
+  const clientId = Array.isArray(params?.clientId) ? params.clientId[0] || "" : params?.clientId || "";
   const [home, setHome] = useState<ClientHomeResponse | null>(null);
   const [approvals, setApprovals] = useState<ClientApprovalsResponse | null>(null);
   const [error, setError] = useState("");
@@ -142,12 +142,11 @@ export default function ClientApprovalsPage({ params }: Props) {
   }
 
   useEffect(() => {
-    params.then(({ clientId: id }) => {
-      setClientId(id);
-      loadDashboard(id)
-        .catch((event: Error) => setError(event.message));
-    });
-  }, [params]);
+    if (!clientId) return;
+
+    loadDashboard(clientId)
+      .catch((event: Error) => setError(event.message));
+  }, [clientId]);
 
   async function mutateTask(
     taskId: string,

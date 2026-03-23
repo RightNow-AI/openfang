@@ -3,22 +3,25 @@ import { useState, useEffect } from 'react';
 
 export default function IntegrationDetailDrawer({ open, integrationId, onClose, onConnect, onDisconnect, onTest }) {
   const [intg, setIntg] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => Boolean(open && integrationId));
   const [error, setError] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
 
   useEffect(() => {
     if (!open || !integrationId) return;
-    setIntg(null);
-    setError('');
-    setTestResult(null);
-    setLoading(true);
-    fetch(`/api/integrations/${integrationId}`)
+    const controller = new AbortController();
+
+    fetch(`/api/integrations/${integrationId}`, { signal: controller.signal })
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       .then(d => setIntg(d?.integration ?? d))
-      .catch(e => setError(e?.message || 'Could not load integration.'))
+      .catch(e => {
+        if (e?.name === 'AbortError') return;
+        setError(e?.message || 'Could not load integration.');
+      })
       .finally(() => setLoading(false));
+
+    return () => controller.abort();
   }, [open, integrationId]);
 
   const handleTest = async () => {

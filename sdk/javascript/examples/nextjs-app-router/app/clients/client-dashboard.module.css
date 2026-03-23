@@ -126,6 +126,210 @@
   background: linear-gradient(135deg, rgba(30, 41, 59, 0.92), rgba(15, 23, 42, 0.72));
 }
 
+.founderPanel {
+  margin-bottom: 18px;
+}
+
+.founderPanelHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.founderPanelGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+  gap: 16px;
+}
+
+.founderPrimaryColumn,
+.founderSecondaryColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.founderWorkspaceSummary,
+.founderLatestRunCard,
+.founderNextActionsPanel,
+.founderRecentRunsPanel,
+.founderEmptyState {
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.24);
+}
+
+.founderSummaryCard {
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.12), rgba(15, 23, 42, 0.24));
+}
+
+.founderSummaryTopRow,
+.founderCardHeaderRow,
+.founderRunTopRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.founderSummaryIdeaBlock,
+.founderNextStepBlock,
+.founderPrimaryNextActionCard {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.22);
+}
+
+.founderPrimaryNextAction {
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.founderSummaryActions,
+.founderWizardActions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.founderEmptyStateStrong {
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.1), rgba(15, 23, 42, 0.22));
+}
+
+.founderCitationRow {
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.founderActionItem {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 0;
+}
+
+.founderActionItem + .founderActionItem {
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.founderActionIndex {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.18);
+  color: #93c5fd;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.founderRunLink {
+  display: block;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  color: inherit;
+  text-decoration: none;
+  background: rgba(15, 23, 42, 0.18);
+  transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.founderRunLink:hover {
+  transform: translateY(-1px);
+  border-color: rgba(96, 165, 250, 0.28);
+  background: rgba(15, 23, 42, 0.3);
+}
+
+.founderRunPreview {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.founderWizardProgress {
+  margin-bottom: 18px;
+}
+
+.founderWizardProgressBar {
+  width: 100%;
+  height: 8px;
+  margin-bottom: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.founderWizardProgressBar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.founderWizardProgressFillStep1 {
+  width: 25%;
+}
+
+.founderWizardProgressFillStep2 {
+  width: 50%;
+}
+
+.founderWizardProgressFillStep3 {
+  width: 75%;
+}
+
+.founderWizardProgressFillStep4 {
+  width: 100%;
+}
+
+.founderWizardStepCard,
+.founderWizardReviewCard {
+  padding: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.22);
+}
+
+.founderWizardStepTitle,
+.founderWizardChoiceTitle {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.founderWizardChoiceGrid {
+  display: grid;
+  gap: 12px;
+}
+
+.founderWizardChoice {
+  width: 100%;
+  padding: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.18);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.founderWizardChoiceSelected {
+  border-color: rgba(96, 165, 250, 0.55);
+  background: rgba(37, 99, 235, 0.14);
+}
+
 .shellHeaderTop {
   display: flex;
   align-items: flex-start;
@@ -251,6 +455,16 @@
   color: var(--text-muted);
 }
 
+.errorBanner {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: 12px;
+  background: rgba(127, 29, 29, 0.18);
+  color: #fecaca;
+  font-size: 13px;
+}
+
 .emptyText {
   color: var(--text-muted);
   font-size: 13px;
@@ -281,6 +495,41 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.taskRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.taskRowBody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.taskTextDone {
+  color: var(--text-muted);
+  font-size: 15px;
+  font-weight: 700;
+  text-decoration: line-through;
+}
+
+.taskStatusSelect {
+  min-width: 140px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--input-bg);
+  color: inherit;
+  font-size: 13px;
 }
 
 .stackTight {
@@ -580,6 +829,10 @@
 @media (max-width: 1180px) {
   .shellGrid,
   .splitGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .founderPanelGrid {
     grid-template-columns: 1fr;
   }
 

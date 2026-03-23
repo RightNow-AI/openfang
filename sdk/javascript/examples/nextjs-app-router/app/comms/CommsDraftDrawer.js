@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 
 export default function CommsDraftDrawer({ open, draftId, onClose, onApprove, onRequestChanges, onSend }) {
   const [draft, setDraft] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => Boolean(open && draftId));
   const [error, setError] = useState('');
   const [changeNote, setChangeNote] = useState('');
   const [showChangeInput, setShowChangeInput] = useState(false);
@@ -11,15 +11,18 @@ export default function CommsDraftDrawer({ open, draftId, onClose, onApprove, on
 
   useEffect(() => {
     if (!open || !draftId) return;
-    setDraft(null);
-    setError('');
-    setShowChangeInput(false);
-    setLoading(true);
-    fetch(`/api/comms/drafts/${draftId}`)
+    const controller = new AbortController();
+
+    fetch(`/api/comms/drafts/${draftId}`, { signal: controller.signal })
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       .then(d => setDraft(d?.draft ?? d))
-      .catch(e => setError(e?.message || 'Could not load draft.'))
+      .catch(e => {
+        if (e?.name === 'AbortError') return;
+        setError(e?.message || 'Could not load draft.');
+      })
       .finally(() => setLoading(false));
+
+    return () => controller.abort();
   }, [open, draftId]);
 
   const act = async (fn, key) => {

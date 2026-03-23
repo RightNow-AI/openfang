@@ -1046,12 +1046,16 @@ pub async fn build_router(
     let modes_state = std::sync::Arc::new(tokio::sync::RwLock::new(
         crate::modes::ModesStore::default(),
     ));
+    let studio_state = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::studio::StudioStore::default(),
+    ));
 
     let app = axum::Router::new()
         .route("/{*path}", axum::routing::any(outer_catch_all))
         .route("/", axum::routing::options(|| async { axum::http::StatusCode::NO_CONTENT }))
         .merge(crate::command_center::router(command_center_state))
         .merge(crate::modes::router(modes_state))
+        .merge(crate::studio::router(studio_state))
         .merge(app)
         .layer(cors2);
 

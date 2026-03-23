@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import ClientShell from "../components/ClientShell";
 import styles from "../../client-dashboard.module.css";
 import { getClientHome, getClientPlan } from "../lib/client-api";
@@ -12,8 +13,6 @@ import {
   runApprovedClientTask,
 } from "../lib/client-actions";
 import type { ClientHomeResponse, ClientPlanResponse, TaskItem } from "../lib/client-types";
-
-type Props = { params: Promise<{ clientId: string }> };
 
 const BOARD_TARGETS = ["backlog", "this_week", "today", "waiting", "done"] as const;
 const DEFAULT_ASSIGNEES = ["planner_agent", "ops_agent", "writer_agent", "review_agent"];
@@ -178,8 +177,9 @@ function TaskColumn({
   );
 }
 
-export default function ClientPlanPage({ params }: Props) {
-  const [clientId, setClientId] = useState("");
+export default function ClientPlanPage() {
+  const params = useParams<{ clientId: string }>();
+  const clientId = Array.isArray(params?.clientId) ? params.clientId[0] || "" : params?.clientId || "";
   const [home, setHome] = useState<ClientHomeResponse | null>(null);
   const [plan, setPlan] = useState<ClientPlanResponse | null>(null);
   const [error, setError] = useState("");
@@ -194,12 +194,11 @@ export default function ClientPlanPage({ params }: Props) {
   }
 
   useEffect(() => {
-    params.then(({ clientId: id }) => {
-      setClientId(id);
-      loadDashboard(id)
-        .catch((event: Error) => setError(event.message));
-    });
-  }, [params]);
+    if (!clientId) return;
+
+    loadDashboard(clientId)
+      .catch((event: Error) => setError(event.message));
+  }, [clientId]);
 
   async function mutateTask(
     taskId: string,

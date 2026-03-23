@@ -54,11 +54,6 @@ function fmtTime(ts) {
   try { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); } catch { return ts; }
 }
 
-function fmtDate(iso) {
-  if (!iso) return '—';
-  try { return new Date(iso).toLocaleString(); } catch { return iso; }
-}
-
 // ─── Wizard primitives ────────────────────────────────────────────────────────
 
 function WizardStep({ step, total = 5, title, subtitle, onBack, onNext, nextLabel, nextDisabled, children }) {
@@ -542,6 +537,7 @@ export default function CommsPageV2({ initialTopology, initialEvents }) {
         {activeTab === 'advanced'    && <AdvancedCommsTab topology={topology} events={events} loading={loading} error={error} onRefresh={refresh} />}
       </div>
       <CommsDraftDrawer
+        key={drawerDraftId ?? 'comms-draft-closed'}
         open={!!drawerDraftId}
         draftId={drawerDraftId}
         onClose={() => setDrawerDraftId(null)}

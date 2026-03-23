@@ -1,5 +1,5 @@
 'use client';
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { apiClient } from '../../lib/api-client';
 import { workApi } from '../../lib/work-api';

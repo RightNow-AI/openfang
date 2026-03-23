@@ -337,16 +337,9 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
                 match part {
                     GeminiPart::Text { text } => {
                         if !text.is_empty() {
-                            // Preserve thought_signature in provider_metadata so
-                            // it gets echoed back on the next request.  Gemini
-                            // 3.x thinking models include thoughtSignature on
-                            // ALL parts (text + functionCall).
-                            let thought_signature: Option<String> = None;
-                            let provider_metadata = thought_signature
-                                .map(|sig| serde_json::json!({ "thought_signature": sig }));
                             content.push(ContentBlock::Text {
                                 text,
-                                provider_metadata,
+                                provider_metadata: None,
                             });
                         }
                     }
@@ -356,9 +349,6 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
                         // gets echoed back on the next request (Gemini 2.5+/3.x).
                         // The signature lives at the part level, not inside
                         // functionCall.
-                        let thought_signature = function_call.thought_signature.clone();
-                        let provider_metadata = thought_signature
-                            .map(|sig| serde_json::json!({ "thought_signature": sig }));
                         content.push(ContentBlock::ToolUse {
                             id: id.clone(),
                             name: function_call.name.clone(),
@@ -574,7 +564,6 @@ impl LlmDriver for GeminiDriver {
             // Parse SSE stream
             let mut buffer = String::new();
             let mut text_content = String::new();
-            let mut text_thought_sig: Option<String> = None;
             // Track function calls: (name, args_json)
             let mut fn_calls: Vec<(String, serde_json::Value)> = Vec::new();
             let mut finish_reason: Option<String> = None;
@@ -666,11 +655,9 @@ impl LlmDriver for GeminiDriver {
             let mut tool_calls = Vec::new();
 
             if !text_content.is_empty() {
-                let provider_metadata =
-                    text_thought_sig.map(|sig| serde_json::json!({ "thought_signature": sig }));
                 content.push(ContentBlock::Text {
                     text: text_content,
-                    provider_metadata,
+                    provider_metadata: None,
                 });
             }
 

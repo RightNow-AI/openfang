@@ -754,10 +754,15 @@ fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]
         "## Peer Agents\n\
          You are part of a multi-agent system. These active agents are running alongside you:\n",
     );
-    for (name, _state, model) in peers.iter().take(limit) {
+    for (name, _state, model) in peers
+        .iter()
+        .filter(|(name, _, _)| name != self_name)
+        .take(limit)
+    {
         out.push_str(&format!("- **{}** — model: {}\n", name, model));
     }
-    let overflow = peers.len().saturating_sub(limit);
+    let visible_peers = peers.iter().filter(|(name, _, _)| name != self_name).count();
+    let overflow = visible_peers.saturating_sub(limit);
     if overflow > 0 {
         out.push_str(&format!("- …and {overflow} more active peers\n"));
     }

@@ -106,6 +106,7 @@ export default function SkillsClient({ initialSkills }) {
       {/* Detail drawer */}
       {drawerOpen && selectedSkillName && (
         <SkillDrawer
+          key={selectedSkillName}
           skillName={selectedSkillName}
           onClose={closeDrawer}
           onToggle={handleToggle}
@@ -227,7 +228,7 @@ export default function SkillsClient({ initialSkills }) {
         <InstallModal
           open={modalOpen}
           onClose={() => setModalOpen(false)}
-          onInstallSuccess={(name) => {
+          onInstallSuccess={() => {
             setModalOpen(false);
             refresh();
           }}

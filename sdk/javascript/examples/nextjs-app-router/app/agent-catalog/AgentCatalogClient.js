@@ -46,8 +46,6 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
     nameRef.current?.focus();
     const controller = new AbortController();
     const templateKey = entry.agent_id || entry.name;
-    setLoadingTemplate(true);
-    setLoadError('');
     fetch(`/api/templates/${encodeURIComponent(templateKey)}`, { signal: controller.signal })
       .then(r => r.json())
       .then(data => {
@@ -486,6 +484,7 @@ export default function AgentCatalogClient({ initialEntries }) {
       {/* Detail modal */}
       {detailEntry && (
         <DetailModal
+          key={detailEntry.catalog_id || detailEntry.agent_id || detailEntry.name}
           entry={detailEntry}
           onClose={closeDetail}
           onSpawnSuccess={handleSpawnSuccess}

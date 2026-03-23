@@ -8924,6 +8924,7 @@ version = "0.4.5"
 dependencies = [
  "openfang-api",
  "serde_json",
+ "utoipa",
 ]
 
 [[package]]

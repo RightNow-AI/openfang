@@ -1,30 +1,29 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import ClientShell from "../components/ClientShell";
 import { getClientHome, getClientPulse } from "../lib/client-api";
 import type { ClientHomeResponse, ClientPulseResponse } from "../lib/client-types";
 import styles from "../../client-dashboard.module.css";
 
-type Props = { params: Promise<{ clientId: string }> };
-
-export default function ClientPulsePage({ params }: Props) {
-  const [clientId, setClientId] = useState("");
+export default function ClientPulsePage() {
+  const params = useParams<{ clientId: string }>();
+  const clientId = Array.isArray(params?.clientId) ? params.clientId[0] || "" : params?.clientId || "";
   const [home, setHome] = useState<ClientHomeResponse | null>(null);
   const [pulse, setPulse] = useState<ClientPulseResponse | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    params.then(({ clientId: id }) => {
-      setClientId(id);
-      Promise.all([getClientHome(id), getClientPulse(id)])
-        .then(([homeData, pulseData]) => {
-          setHome(homeData);
-          setPulse(pulseData);
-        })
-        .catch((event: Error) => setError(event.message));
-    });
-  }, [params]);
+    if (!clientId) return;
+
+    Promise.all([getClientHome(clientId), getClientPulse(clientId)])
+      .then(([homeData, pulseData]) => {
+        setHome(homeData);
+        setPulse(pulseData);
+      })
+      .catch((event: Error) => setError(event.message));
+  }, [clientId]);
 
   if (error) return <main className={`${styles.statusPage} ${styles.errorText}`}>Error: {error}</main>;
   if (!home || !pulse) return <main className={styles.statusPage}>Loading…</main>;

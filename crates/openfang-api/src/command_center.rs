@@ -65,16 +65,13 @@ pub fn router(state: CommandCenterState) -> Router {
 // Data models
 // ────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalMode {
     None,
+    #[default]
     Required,
     Conditional,
-}
-
-impl Default for ApprovalMode {
-    fn default() -> Self { Self::Required }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -593,7 +590,7 @@ async fn run_task(
     let now = Utc::now().to_rfc3339();
     let result = RunResult {
         id:               format!("run_{}", Uuid::new_v4().simple()),
-        task_id:          task_id,
+        task_id,
         client_id:        task_client,
         status:           "completed".into(),
         output_type:      "markdown".into(),

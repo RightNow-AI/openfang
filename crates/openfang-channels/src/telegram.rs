@@ -773,7 +773,7 @@ async fn parse_telegram_update(
 
     // Extract forum topic thread_id (Telegram sends this as `message_thread_id`
     // for messages inside forum topics / reply threads).
-    let _thread_id = message["message_thread_id"]
+    let thread_id = message["message_thread_id"]
         .as_i64()
         .map(|tid| tid.to_string());
 
@@ -810,8 +810,8 @@ async fn parse_telegram_update(
         target_agent: None,
         timestamp,
         is_group,
-        thread_id: None,
-        metadata: HashMap::new(),
+        thread_id,
+        metadata,
     })
 }
 
@@ -822,28 +822,37 @@ pub fn calculate_backoff(current: Duration) -> Duration {
 
 /// Check if a message contains a mention of the given bot username in its entities.
 fn check_mention_entities(message: &serde_json::Value, bot_username: &str) -> bool {
-    let text = message["text"].as_str().unwrap_or("");
     let target = format!("@{}", bot_username);
-    if text.contains(&target) {
-        return true;
-    }
-    // Also check entities array
-    if let Some(entities) = message["entities"].as_array() {
-        for entity in entities {
-            if entity["type"].as_str() == Some("mention") {
-                let offset = entity["offset"].as_u64().unwrap_or(0) as usize;
-                let length = entity["length"].as_u64().unwrap_or(0) as usize;
-                let chars: Vec<char> = text.chars().collect();
-                if offset + length <= chars.len() {
-                    let mention: String = chars[offset..offset + length].iter().collect();
-                    if mention.eq_ignore_ascii_case(&target) {
-                        return true;
+
+    let matches_target = |text: &str, entities: Option<&Vec<serde_json::Value>>| {
+        if text.to_ascii_lowercase().contains(&target.to_ascii_lowercase()) {
+            return true;
+        }
+        if let Some(entities) = entities {
+            for entity in entities {
+                if entity["type"].as_str() == Some("mention") {
+                    let offset = entity["offset"].as_u64().unwrap_or(0) as usize;
+                    let length = entity["length"].as_u64().unwrap_or(0) as usize;
+                    let chars: Vec<char> = text.chars().collect();
+                    if offset + length <= chars.len() {
+                        let mention: String = chars[offset..offset + length].iter().collect();
+                        if mention.eq_ignore_ascii_case(&target) {
+                            return true;
+                        }
                     }
                 }
             }
         }
+        false
+    };
+
+    let text = message["text"].as_str().unwrap_or("");
+    if matches_target(text, message["entities"].as_array()) {
+        return true;
     }
-    false
+
+    let caption = message["caption"].as_str().unwrap_or("");
+    matches_target(caption, message["caption_entities"].as_array())
 }
 
 /// Sanitize text for Telegram HTML parse mode.

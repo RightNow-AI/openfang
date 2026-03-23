@@ -118,6 +118,18 @@ const fieldInput = {
   boxSizing: 'border-box',
 };
 
+function getProviderFormDefaults(selectedId, current, allProviders) {
+  const meta = PROVIDERS.find(provider => provider.id === selectedId) ?? PROVIDERS[0];
+  const fromCatalog = allProviders?.find(provider => provider.id === selectedId);
+
+  return {
+    baseUrl: fromCatalog?.base_url ?? meta.defaultUrl,
+    defaultModel: selectedId === current?.provider && current?.model
+      ? current.model
+      : meta.defaultModel,
+  };
+}
+
 function StatusBadge({ status }) {
   const map = {
     configured:   { label: 'Connected',      color: 'var(--success)',  bg: 'var(--success-subtle)' },
@@ -142,40 +154,31 @@ function StatusBadge({ status }) {
 // ── Provider Settings Panel ─────────────────────────────────────────────────
 function ProviderPanel({ current, allProviders, onSaved }) {
   const pMeta = PROVIDERS.find(p => p.id === current?.provider) ?? PROVIDERS[0];
+  const initialSelectedId = current?.provider ?? 'anthropic';
+  const initialDefaults = getProviderFormDefaults(initialSelectedId, current, allProviders);
 
-  const [selectedId, setSelectedId] = useState(current?.provider ?? 'anthropic');
+  const [selectedId, setSelectedId] = useState(initialSelectedId);
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
-  const [baseUrl, setBaseUrl] = useState('');
-  const [defaultModel, setDefaultModel] = useState('');
+  const [baseUrl, setBaseUrl] = useState(initialDefaults.baseUrl);
+  const [defaultModel, setDefaultModel] = useState(initialDefaults.defaultModel);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saveMsg, setSaveMsg] = useState(null);
   const [testResult, setTestResult] = useState(null);
 
-  // Populate fields when provider selection changes
-  useEffect(() => {
-    const meta = PROVIDERS.find(p => p.id === selectedId);
-    if (!meta) return;
+  const meta = PROVIDERS.find(p => p.id === selectedId) ?? pMeta;
+  const catalogEntry = allProviders?.find(p => p.id === selectedId);
+
+  const handleProviderChange = useCallback((nextProviderId) => {
+    const nextDefaults = getProviderFormDefaults(nextProviderId, current, allProviders);
+    setSelectedId(nextProviderId);
     setApiKey('');
     setTestResult(null);
     setSaveMsg(null);
-    // Pre-fill URL from catalog list or fallback
-    const fromCatalog = allProviders?.find(p => p.id === selectedId);
-    setBaseUrl(fromCatalog?.base_url ?? meta.defaultUrl);
-    // Pre-fill model: use current if same provider, else use catalog default
-    if (selectedId === current?.provider && current?.model) {
-      setDefaultModel(current.model);
-    } else {
-      setDefaultModel(meta.defaultModel);
-    }
-  }, [selectedId, current, allProviders]);
-
-  const meta = PROVIDERS.find(p => p.id === selectedId) ?? pMeta;
-  const catalogEntry = allProviders?.find(p => p.id === selectedId);
-  const authStatus = selectedId === current?.provider
-    ? (current?.api_key_configured ? 'configured' : (meta.keyPrefix ? 'missing' : 'not_required'))
-    : (catalogEntry?.auth_status ?? 'missing');
+    setBaseUrl(nextDefaults.baseUrl);
+    setDefaultModel(nextDefaults.defaultModel);
+  }, [allProviders, current]);
 
   async function handleSave() {
     setSaving(true);
@@ -183,7 +186,7 @@ function ProviderPanel({ current, allProviders, onSaved }) {
     try {
       const body = { provider: selectedId, default_model: defaultModel, base_url: baseUrl };
       if (apiKey.trim()) body.api_key = apiKey.trim();
-      const res = await apiClient.put('/api/settings/providers/current', body);
+      await apiClient.put('/api/settings/providers/current', body);
       setSaveMsg({ type: 'success', text: `Saved. Restart the daemon to apply the new provider.` });
       onSaved?.();
     } catch (e) {
@@ -221,7 +224,7 @@ function ProviderPanel({ current, allProviders, onSaved }) {
         <label style={fieldLabel}>AI Provider</label>
         <select
           value={selectedId}
-          onChange={e => setSelectedId(e.target.value)}
+          onChange={e => handleProviderChange(e.target.value)}
           style={{ ...fieldInput, cursor: 'pointer' }}
         >
           {PROVIDERS.map(p => (
@@ -407,7 +410,36 @@ export default function SettingsPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      setLoading(true);
+      try {
+        const [cur, rawProviders, cfg] = await Promise.all([
+          apiClient.get('/api/settings/providers/current').catch(() => null),
+          apiClient.get('/api/providers').catch(() => []),
+          apiClient.get('/api/config').catch(() => null),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        setCurrent(cur);
+        const providers = Array.isArray(rawProviders) ? rawProviders : (rawProviders?.providers ?? []);
+        setAllProviders(providers);
+        setConfig(cfg);
+      } catch {
+        // handled per-request above
+      }
+      if (!cancelled) {
+        setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const tabs = [
     { id: 'providers', label: '🔌 Providers' },
@@ -459,6 +491,7 @@ export default function SettingsPage() {
               )}
             </div>
             <ProviderPanel
+              key={`${current?.provider ?? 'none'}:${current?.model ?? 'none'}:${current?.base_url ?? 'none'}:${current?.api_key_configured ? 'configured' : 'missing'}`}
               current={current}
               allProviders={allProviders}
               onSaved={load}

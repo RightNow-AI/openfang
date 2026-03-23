@@ -86,6 +86,7 @@ pub struct OpenFangKernel {
     /// Cost metering engine.
     pub metering: Arc<MeteringEngine>,
     /// Default LLM driver (from kernel config).
+    #[allow(dead_code)]
     default_driver: Arc<dyn LlmDriver>,
     /// WASM sandbox engine (shared across all WASM agent executions).
     wasm_sandbox: WasmSandbox,
@@ -2422,7 +2423,7 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
-        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        _content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
@@ -4155,7 +4156,7 @@ impl OpenFangKernel {
         // Cron scheduler tick loop — fires due jobs every 15 seconds
         {
             let kernel = Arc::clone(self);
-            let permits = Arc::new(tokio::sync::Semaphore::new(CRON_MAX_CONCURRENT_JOBS));
+            let _permits = Arc::new(tokio::sync::Semaphore::new(CRON_MAX_CONCURRENT_JOBS));
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
                 // Use Skip to avoid burst-firing after a long job blocks the loop.
@@ -4735,6 +4736,7 @@ impl OpenFangKernel {
         }
     }
 
+    #[allow(dead_code)]
     fn lookup_provider_url(&self, provider: &str) -> Option<String> {
         // 1. Boot-time config (from config.toml [provider_urls])
         if let Some(url) = self.config.provider_urls.get(provider) {
@@ -5697,6 +5699,7 @@ pub fn shared_memory_agent_id() -> AgentId {
     ]))
 }
 
+#[allow(dead_code)]
 async fn execute_cron_job(kernel: Arc<OpenFangKernel>, job: openfang_types::scheduler::CronJob) {
     let job_id = job.id;
     let agent_id = job.agent_id;
@@ -5738,7 +5741,7 @@ async fn execute_cron_job(kernel: Arc<OpenFangKernel>, job: openfang_types::sche
                 Ok(Ok(result)) => {
                     tracing::info!(job = %job_name, "Cron job completed successfully");
                     kernel.cron_scheduler.record_success(job_id);
-                    cron_deliver_response(&kernel, agent_id, &result.response, &delivery).await;
+                    let _ = cron_deliver_response(&kernel, agent_id, &result.response, &delivery).await;
                 }
                 Ok(Err(e)) => {
                     let err_msg = format!("{e}");

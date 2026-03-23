@@ -17,6 +17,7 @@ pub mod request_context;
 pub mod routes;
 pub mod security;
 pub mod server;
+pub mod studio;
 pub mod stream_chunker;
 pub mod stream_dedup;
 pub mod types;

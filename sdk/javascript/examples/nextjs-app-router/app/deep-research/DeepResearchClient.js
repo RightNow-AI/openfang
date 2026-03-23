@@ -18,8 +18,14 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import FounderPlaybookChips from './FounderPlaybookChips';
+import ResearchCitationsPanel from './ResearchCitationsPanel';
+import ResearchDeliverablePanel from './ResearchDeliverablePanel';
+import ResearchNextActionsCard from './ResearchNextActionsCard';
+import ResearchStatusCard from './ResearchStatusCard';
 
 // ─── Pipeline stages ──────────────────────────────────────────────────────────
 
@@ -46,25 +52,66 @@ const RUN_EVENT_TYPES = [
 
 // ─── Report parser ────────────────────────────────────────────────────────────
 
+function extractSection(text, heading) {
+  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`#{1,3}\\s*${escapedHeading}([\\s\\S]*?)(?=#{1,3}|\\n---|$)`, 'i');
+  const match = text.match(regex);
+  return match ? match[1].trim() : null;
+}
+
+function extractUniqueUrls(text) {
+  if (!text) return [];
+  const urlRe = /https?:\/\/[^\s)\]>"',]+/g;
+  return [...new Set(text.match(urlRe) || [])];
+}
+
+function countStructuredItems(text) {
+  if (!text) return 0;
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^([-*+]\s+|\d+\.\s+)/.test(line)).length;
+}
+
+function sectionLines(text) {
+  if (!text) return [];
+  return text
+    .split('\n')
+    .map((line) => line.replace(/^[-*+]\s+/, '').replace(/^\d+\.\s+/, '').trim())
+    .filter(Boolean);
+}
+
 function parseReport(text) {
   const sections = { raw: text };
 
-  const findingsM = text.match(/#{1,3}\s*Key Findings([\s\S]*?)(?=#{1,3}|\n---|\*\*Sources|$)/i);
-  if (findingsM) sections.findings = findingsM[1].trim();
+  const findings = extractSection(text, 'Key Findings');
+  if (findings) sections.findings = findings;
 
-  const sourcesM = text.match(/#{1,3}\s*Sources Used([\s\S]*?)(?=#{1,3}|\n---|\*\*Confidence|$)/i);
-  if (sourcesM) {
-    const raw = sourcesM[1].trim();
-    const urlRe = /https?:\/\/[^\s)\]>"',]+/g;
-    sections.sourceUrls = [...new Set(raw.match(urlRe) || [])];
+  const sources = extractSection(text, 'Sources Used');
+  if (sources) {
+    const raw = sources.trim();
+    sections.sourceUrls = extractUniqueUrls(raw);
     sections.sourcesRaw = raw;
   }
 
   const confM = text.match(/#{1,3}\s*Confidence Level[:\s]*([\s\S]*?)(?=#{1,3}|\n---|\*\*Open|$)/i);
   if (confM) sections.confidence = confM[1].trim().split('\n')[0].trim();
 
-  const openM = text.match(/#{1,3}\s*Open Questions([\s\S]*?)(?=#{1,3}|\n---|$)/i);
-  if (openM) sections.openQuestions = openM[1].trim();
+  const openQuestions = extractSection(text, 'Open Questions');
+  if (openQuestions) sections.openQuestions = openQuestions;
+
+  const citations = extractSection(text, 'Citations');
+  if (citations) {
+    sections.citations = citations;
+    sections.citationUrls = extractUniqueUrls(citations);
+    sections.citationCount = countStructuredItems(citations) || sections.citationUrls.length;
+  }
+
+  const nextActions = extractSection(text, 'Next Actions');
+  if (nextActions) {
+    sections.nextActions = nextActions;
+    sections.nextActionCount = countStructuredItems(nextActions);
+  }
 
   // Lead answer = first non-blank paragraph before any ## heading
   const leadM = text.match(/^(?!#)([\s\S]+?)(?=\n#{1,3}|\n---)/);
@@ -170,8 +217,10 @@ function MarkdownBlock({ text }) {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function DeepResearchClient() {
+  const searchParams = useSearchParams();
   const [query, setQuery]         = useState('');
   const [seedUrls, setSeedUrls]  = useState('');
+  const [selectedPlaybook, setSelectedPlaybook] = useState(null);
   const [phase, setPhase]        = useState('idle'); // idle | running | done | error
   const [stageIdx, setStageIdx]  = useState(-1);
   const [report, setReport]      = useState(null);
@@ -186,6 +235,16 @@ export default function DeepResearchClient() {
   const [runId, setRunId]        = useState(null);
   const [runSnapshot, setRunSnapshot] = useState(null);
   const [autoScrollPinned, setAutoScrollPinned] = useState(true);
+  const [founderWorkspace, setFounderWorkspace] = useState(null);
+  const [founderRuns, setFounderRuns] = useState([]);
+
+  const workspaceId = searchParams.get('workspaceId')?.trim() || null;
+  const clientId = searchParams.get('clientId')?.trim() || null;
+  const clientName = searchParams.get('clientName')?.trim() || null;
+  const requestedPlaybookId = searchParams.get('playbookId')?.trim() || null;
+  const requestedRunId = searchParams.get('runId')?.trim() || null;
+  const draftQuery = searchParams.get('draftQuery')?.trim() || null;
+  const autoStart = searchParams.get('autoStart') === '1';
 
   const stageTimerRef = useRef(null);
   const abortRef      = useRef(null);
@@ -193,6 +252,7 @@ export default function DeepResearchClient() {
   const bottomRef     = useRef(null);
   const rawReplyRef   = useRef('');
   const reportPaneRef = useRef(null);
+  const autoStartRef  = useRef(false);
 
   const setReportText = useCallback((nextText) => {
     rawReplyRef.current = nextText;
@@ -249,6 +309,17 @@ export default function DeepResearchClient() {
     setAutoScrollPinned(distanceFromBottom <= thresholdPx);
   }, []);
 
+  const refreshFounderRuns = useCallback(async () => {
+    if (!workspaceId) return;
+
+    try {
+      const response = await fetch(`/api/founder/workspaces/${encodeURIComponent(workspaceId)}/runs`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) return;
+      setFounderRuns(Array.isArray(data?.runs) ? data.runs : []);
+    } catch {}
+  }, [workspaceId]);
+
   // ── Fetch researcher agent on mount ──────────────────────────────────────
   useEffect(() => {
     const base = process.env.NEXT_PUBLIC_OPENFANG_BASE_URL || 'http://127.0.0.1:50051';
@@ -263,6 +334,139 @@ export default function DeepResearchClient() {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!requestedPlaybookId || selectedPlaybook?.id === requestedPlaybookId) return;
+
+    let cancelled = false;
+
+    fetch('/api/playbooks')
+      .then((response) => response.ok ? response.json() : { playbooks: [] })
+      .then((data) => {
+        if (cancelled) return;
+        const playbook = Array.isArray(data?.playbooks)
+          ? data.playbooks.find((item) => item?.id === requestedPlaybookId)
+          : null;
+        if (!playbook) return;
+        setSelectedPlaybook(playbook);
+        if (!query.trim() && Array.isArray(playbook.starterQuestions) && playbook.starterQuestions.length > 0) {
+          setQuery(playbook.starterQuestions[0]);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [query, requestedPlaybookId, selectedPlaybook]);
+
+  useEffect(() => {
+    if (!draftQuery || query.trim()) return;
+    setQuery(draftQuery);
+  }, [draftQuery, query]);
+
+  useEffect(() => {
+    if (!workspaceId) return;
+
+    let cancelled = false;
+
+    async function loadWorkspace() {
+      const response = await fetch(`/api/founder/workspaces/${encodeURIComponent(workspaceId)}`);
+
+      if (response.ok) {
+        const data = await response.json().catch(() => ({}));
+        if (cancelled) return;
+        setFounderWorkspace(data.workspace ?? null);
+        return;
+      }
+
+      if (response.status !== 404 || !clientId) {
+        return;
+      }
+
+      const createResponse = await fetch('/api/founder/workspaces', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          clientId,
+          name: `${clientName || 'Client'} Founder Workspace`,
+          companyName: clientName || 'Client',
+          idea: query.trim(),
+          stage: 'validation',
+          playbookDefaults: requestedPlaybookId ? { defaultPlaybookId: requestedPlaybookId } : { defaultPlaybookId: 'customer-discovery' },
+        }),
+      });
+
+      if (!createResponse.ok) return;
+
+      const created = await createResponse.json().catch(() => ({}));
+      if (cancelled) return;
+      setFounderWorkspace(created.workspace ?? null);
+    }
+
+    loadWorkspace().catch(() => {});
+    refreshFounderRuns().catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId, clientName, query, refreshFounderRuns, requestedPlaybookId, workspaceId]);
+
+  useEffect(() => {
+    if (!founderWorkspace?.playbookDefaults?.defaultPlaybookId || requestedPlaybookId || selectedPlaybook) return;
+
+    let cancelled = false;
+
+    fetch('/api/playbooks')
+      .then((response) => response.ok ? response.json() : { playbooks: [] })
+      .then((data) => {
+        if (cancelled) return;
+        const playbook = Array.isArray(data?.playbooks)
+          ? data.playbooks.find((item) => item?.id === founderWorkspace.playbookDefaults.defaultPlaybookId)
+          : null;
+        if (playbook) setSelectedPlaybook(playbook);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [founderWorkspace, requestedPlaybookId, selectedPlaybook]);
+
+  useEffect(() => {
+    if (!requestedRunId) return;
+
+    let cancelled = false;
+
+    async function reopenRun() {
+      if (workspaceId) {
+        const founderRunResponse = await fetch(`/api/founder/workspaces/${encodeURIComponent(workspaceId)}/runs?runId=${encodeURIComponent(requestedRunId)}`);
+        if (founderRunResponse.ok) {
+          const founderRunData = await founderRunResponse.json().catch(() => ({}));
+          const founderRun = founderRunData.run ?? null;
+          if (!cancelled && founderRun?.prompt) {
+            setQuery(founderRun.prompt);
+          }
+        }
+      }
+
+      const response = await fetch(`/api/runs/${encodeURIComponent(requestedRunId)}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || cancelled) return;
+
+      setRunSnapshot(data);
+      setRunId(null);
+      setPhase('done');
+      setReportText(data.output ?? '');
+    }
+
+    reopenRun().catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [requestedRunId, setReportText, workspaceId]);
 
   useEffect(() => {
     if (phase !== 'running' || !autoScrollPinned) return;
@@ -299,6 +503,28 @@ export default function DeepResearchClient() {
     return data;
   }
 
+  const persistFounderRun = useCallback(async ({ currentRunId, output, status = 'completed' }) => {
+    if (!workspaceId || !currentRunId || !hasMeaningfulReportContent(output)) return;
+
+    const parsed = parseReport(output);
+    const response = await fetch(`/api/founder/workspaces/${encodeURIComponent(workspaceId)}/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        runId: currentRunId,
+        playbookId: selectedPlaybook?.id ?? runSnapshot?.playbookId ?? null,
+        prompt: query.trim(),
+        status,
+        summary: parsed.lead || parsed.findings || output.slice(0, 280),
+        citations: sectionLines(parsed.citations),
+        nextActions: sectionLines(parsed.nextActions),
+      }),
+    });
+    if (response.ok) {
+      refreshFounderRuns().catch(() => {});
+    }
+  }, [query, refreshFounderRuns, runSnapshot?.playbookId, selectedPlaybook, workspaceId]);
+
   function saveTextFile(filename, content, mimeType = 'text/plain;charset=utf-8') {
     const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
@@ -326,6 +552,7 @@ export default function DeepResearchClient() {
       const data = await fetchRunSnapshot(runId);
       if (data.status === 'completed' && hasMeaningfulReportContent(data.output)) {
         stopStageAnimation();
+        await persistFounderRun({ currentRunId: runId, output: data.output, status: data.status });
         setRunId(null);
         setReportText(data.output);
         setPhase('done');
@@ -391,6 +618,7 @@ export default function DeepResearchClient() {
             return;
           }
           setRunSnapshot((prev) => prev ? { ...prev, status: 'completed', output } : prev);
+          persistFounderRun({ currentRunId: runId, output, status: 'completed' }).catch(() => {});
           setRunId(null);
           setReportText(output);
           setPhase('done');
@@ -431,6 +659,7 @@ export default function DeepResearchClient() {
             return;
           }
           setRunSnapshot(data);
+          await persistFounderRun({ currentRunId: runId, output: data.output ?? '', status: data.status });
           setRunId(null);
           setReportText(data.output ?? '');
           setPhase('done');
@@ -461,7 +690,14 @@ export default function DeepResearchClient() {
       source.close();
       if (sseRef.current === source) sseRef.current = null;
     };
-  }, [appendReportText, phase, runId, setReportText, updateStageFromEvent]);
+  }, [appendReportText, persistFounderRun, phase, runId, setReportText, updateStageFromEvent]);
+
+  const handlePlaybookChange = useCallback((playbook) => {
+    setSelectedPlaybook(playbook);
+    if (playbook && !query.trim() && Array.isArray(playbook.starterQuestions) && playbook.starterQuestions.length > 0) {
+      setQuery(playbook.starterQuestions[0]);
+    }
+  }, [query]);
 
   // ── Run research ──────────────────────────────────────────────────────────
   const handleResearch = useCallback(async () => {
@@ -489,19 +725,45 @@ export default function DeepResearchClient() {
       ? `Research the following question thoroughly:\n\n${q}\n\nSeed sources to start from (fetch these first):\n${urlLines.map(u => '- ' + u).join('\n')}`
       : q;
 
+    const requestContext = {
+      ...(urlLines.length > 0 ? { seed_urls: urlLines } : {}),
+      ...(clientId ? { client_id: clientId } : {}),
+      ...(clientName ? { client_name: clientName } : {}),
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
+      ...(founderWorkspace?.companyName ? { company_name: founderWorkspace.companyName } : {}),
+      ...(founderWorkspace?.idea ? { idea: founderWorkspace.idea } : {}),
+      ...(founderWorkspace?.stage ? { stage: founderWorkspace.stage } : {}),
+      ...(founderWorkspace?.playbookDefaults ? { playbook_defaults: founderWorkspace.playbookDefaults } : {}),
+    };
+
     try {
       abortRef.current = new AbortController();
 
       const r = await fetch('/api/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: `[RESEARCH REQUEST] ${prompt}` }),
+        body: JSON.stringify({
+          message: `[RESEARCH REQUEST] ${prompt}`,
+          playbookId: selectedPlaybook?.id ?? null,
+          workspaceId,
+          clientId,
+          context: Object.keys(requestContext).length > 0 ? requestContext : null,
+        }),
         signal: abortRef.current.signal,
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       setRunId(data.runId);
-      setRunSnapshot({ runId: data.runId, sessionId: data.sessionId, status: data.status, output: null, error: null, childRuns: [] });
+      setRunSnapshot({
+        runId: data.runId,
+        sessionId: data.sessionId,
+        status: data.status,
+        output: null,
+        error: null,
+        childRuns: [],
+        playbookId: data.playbookId ?? selectedPlaybook?.id ?? null,
+        workspaceId: data.workspaceId ?? workspaceId,
+      });
       return;
     } catch (err) {
       stopStageAnimation();
@@ -512,7 +774,15 @@ export default function DeepResearchClient() {
         setPhase('error');
       }
     }
-  }, [phase, query, seedUrls, setReportText]);
+  }, [clientId, clientName, founderWorkspace, phase, query, seedUrls, selectedPlaybook, setReportText, workspaceId]);
+
+  useEffect(() => {
+    if (!autoStart || autoStartRef.current || phase !== 'idle' || !query.trim()) return;
+    if (requestedPlaybookId && !selectedPlaybook) return;
+
+    autoStartRef.current = true;
+    handleResearch();
+  }, [autoStart, handleResearch, phase, query, requestedPlaybookId, selectedPlaybook]);
 
   // ── Follow-up Q&A ─────────────────────────────────────────────────────────
   const handleFollowUp = useCallback(async () => {
@@ -553,6 +823,7 @@ export default function DeepResearchClient() {
     handleStop();
     setQuery('');
     setSeedUrls('');
+    setSelectedPlaybook(null);
     setReport(null);
     setReportText('');
     setHistory([]);
@@ -564,6 +835,19 @@ export default function DeepResearchClient() {
   };
 
   const hasStreamingReport = phase === 'running' && hasMeaningfulReportContent(rawReply);
+  const nextActionItems = sectionLines(report?.nextActions);
+  const reportTabs = [
+    { id: 'findings', label: report?.findings ? '📌 Key Findings' : selectedPlaybook ? '📌 Playbook Output' : '📌 Findings' },
+    { id: 'sources', label: '🔗 Sources' + (report?.sourceUrls?.length ? ` (${report.sourceUrls.length})` : '') },
+    ...(report?.citations
+      ? [{ id: 'citations', label: '📚 Citations' + (report.citationCount ? ` (${report.citationCount})` : '') }]
+      : []),
+    ...(report?.nextActions
+      ? [{ id: 'actions', label: '✅ Next Actions' + (report.nextActionCount ? ` (${report.nextActionCount})` : '') }]
+      : []),
+    { id: 'open', label: '❓ Open Questions' },
+    { id: 'raw', label: '📄 Full Report' },
+  ];
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -605,13 +889,49 @@ export default function DeepResearchClient() {
 
         {/* Query input */}
         <div style={{ padding: '16px 20px 0', flexShrink: 0 }}>
+          <FounderPlaybookChips
+            value={selectedPlaybook?.id ?? null}
+            onChange={handlePlaybookChange}
+            disabled={phase === 'running'}
+          />
+
+          {(founderWorkspace || clientName || workspaceId) && (
+            <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border-light)', background: 'var(--surface2)' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                Founder Workspace
+              </div>
+              <div style={{ marginTop: 6, fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+                {founderWorkspace?.name || clientName || 'Linked workspace'}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                {founderWorkspace?.companyName || clientName || 'This workspace'} · {founderWorkspace?.stage || 'validation'}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                Runs from this session will be tagged to {workspaceId || 'the active founder workspace'} for later review.
+              </div>
+            </div>
+          )}
+
           <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
             Research Question
           </label>
+          {selectedPlaybook && (
+            <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border-light)', background: 'var(--surface2)' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>{selectedPlaybook.icon}</span>
+                <span>{selectedPlaybook.title}</span>
+              </div>
+              <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-dim)' }}>
+                {selectedPlaybook.description}
+              </div>
+            </div>
+          )}
           <textarea
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="What do you want to research deeply? Be specific — the more context the better."
+            placeholder={selectedPlaybook
+              ? `Use the ${selectedPlaybook.title} playbook. Describe the company, customer, stage, and constraints.`
+              : 'What do you want to research deeply? Be specific — the more context the better.'}
             disabled={phase === 'running'}
             rows={5}
             style={{
@@ -943,6 +1263,12 @@ export default function DeepResearchClient() {
               onScroll={handleReportPaneScroll}
               style={{ flex: 1, overflow: 'auto', padding: '20px 28px 28px' }}
             >
+              <ResearchStatusCard
+                phase="running"
+                title="We’re working on your research"
+                message="Stay on this page. We’re gathering sources, comparing them, and turning them into a readable result."
+                detail={founderWorkspace ? `This run will be saved to ${founderWorkspace.name}.` : 'The result will appear here as soon as the report text starts streaming.'}
+              />
               {hasStreamingReport ? (
                 <div style={{ maxWidth: 860 }}>
                   <div style={{
@@ -991,31 +1317,20 @@ export default function DeepResearchClient() {
         {phase === 'error' && (
           <div style={{
             flex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 12,
-            color: 'var(--text-dim)',
+            overflow: 'auto',
             padding: 32,
-            textAlign: 'center',
           }}>
-            <div style={{ fontSize: 48 }}>⚠️</div>
-            <h3 style={{ margin: 0, color: '#ef4444' }}>Research failed</h3>
-            <p style={{ margin: 0, fontSize: 13, maxWidth: 620, lineHeight: 1.6 }}>{errMsg}</p>
-            {runId && (
-              <div style={{
-                marginTop: 4,
-                padding: '10px 12px',
-                background: 'var(--surface2)',
-                border: '1px solid var(--border-light)',
-                borderRadius: 8,
-                fontSize: 12,
-                color: 'var(--text-dim)',
-              }}>
-                Run ID: <span style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono, monospace)' }}>{runId}</span>
-              </div>
-            )}
+            <div style={{ maxWidth: 860, margin: '0 auto' }}>
+              <ResearchStatusCard
+                phase="error"
+                title="The research didn’t finish"
+                message={errMsg || 'Something went wrong before the result was ready.'}
+                detail={runId ? `Technical detail: run ${runId}` : 'Try the same question again or simplify the wording.'}
+                actions={[
+                  ...(runId ? [{ label: 'Check latest result', onClick: handleCheckLatestRun }] : []),
+                  { label: 'Try again', onClick: handleReset, primary: true },
+                ]}
+              />
             {runSnapshot?.children?.length > 0 && (
               <div style={{
                 maxWidth: 720,
@@ -1035,54 +1350,25 @@ export default function DeepResearchClient() {
                 ))}
               </div>
             )}
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 8 }}>
-              {runId && (
-                <button
-                  onClick={handleCheckLatestRun}
-                  style={{ padding: '8px 16px', background: 'var(--surface2)', color: 'var(--text)', border: '1px solid var(--border-light)', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}
-                >
-                  Check Latest Result
-                </button>
-              )}
-              {runId && (
-                <button
-                  onClick={() => navigator.clipboard?.writeText(runId)}
-                  style={{ padding: '8px 16px', background: 'var(--surface2)', color: 'var(--text)', border: '1px solid var(--border-light)', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}
-                >
-                  Copy Run ID
-                </button>
-              )}
-              <button
-                onClick={handleReset}
-                style={{ padding: '8px 20px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}
-              >
-                Try Again
-              </button>
             </div>
           </div>
         )}
 
         {/* ── Done: Run Dispatched ────────────────────────────────────── */}
         {phase === 'done' && runId && (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 40, textAlign: 'center' }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>🚀</div>
-            <h3 style={{ margin: '0 0 8px', fontSize: 18, color: 'var(--text)' }}>Research Dispatched</h3>
-            <p style={{ margin: 0, fontSize: 14, color: 'var(--text-dim)', maxWidth: 400, lineHeight: 1.6 }}>
-              Your deep research query has been securely handed off to the orchestrator. Because no dedicated Researcher agent was found, this task is running asynchronously in the background.
-            </p>
-            <div style={{ marginTop: 24, padding: '12px 16px', background: 'var(--surface2)', borderRadius: 8, border: '1px solid var(--border-light)', fontSize: 13, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span>Run ID: <code style={{ color: 'var(--accent)', background: 'var(--surface)', padding: '2px 6px', borderRadius: 4 }}>{runId}</code></span>
-              <button onClick={() => navigator.clipboard?.writeText(runId)} style={{ padding: '4px 8px', border: '1px solid var(--border-light)', background: 'var(--surface)', borderRadius: 4, cursor: 'pointer', fontSize: 12, color: 'var(--text)' }}>Copy</button>
+          <div style={{ flex: 1, overflow: 'auto', padding: 32 }}>
+            <div style={{ maxWidth: 760, margin: '0 auto' }}>
+              <ResearchStatusCard
+                phase="dispatched"
+                title="Your research started"
+                message="The result is still loading. Stay on this page and use the button below if you want to check again now."
+                detail={runId ? `Technical detail: run ${runId}` : null}
+                actions={[
+                  { label: 'Check latest result', onClick: handleCheckLatestRun, primary: true },
+                  { label: 'Start over', onClick: handleReset },
+                ]}
+              />
             </div>
-            <p style={{ marginTop: 24, fontSize: 13, color: 'var(--text-dim)' }}>
-              Check the <strong>Inbox</strong> or <strong>Sessions</strong> tab later to view the final report.
-            </p>
-            <button
-              onClick={handleReset}
-              style={{ marginTop: 16, padding: '8px 20px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}
-            >
-              Research Another Topic
-            </button>
           </div>
         )}
 
@@ -1108,46 +1394,14 @@ export default function DeepResearchClient() {
                     {query.length > 100 ? query.slice(0, 100) + '…' : query}
                   </p>
                 </div>
-                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                  <button
-                    onClick={() => { setQuery(query); handleResearch(); }}
-                    title="Re-run this research"
-                    style={{ padding: '6px 12px', background: 'var(--surface2)', border: '1px solid var(--border-light)', borderRadius: 6, fontSize: 12, cursor: 'pointer', color: 'var(--text)' }}
-                  >
-                    ↻ Refresh
-                  </button>
-                  <button
-                    onClick={() => navigator.clipboard?.writeText(rawReply)}
-                    title="Copy raw report"
-                    style={{ padding: '6px 12px', background: 'var(--surface2)', border: '1px solid var(--border-light)', borderRadius: 6, fontSize: 12, cursor: 'pointer', color: 'var(--text)' }}
-                  >
-                    📋 Copy
-                  </button>
-                  <button
-                    onClick={() => handleDownload('markdown')}
-                    title="Download markdown report"
-                    style={{ padding: '6px 12px', background: 'var(--surface2)', border: '1px solid var(--border-light)', borderRadius: 6, fontSize: 12, cursor: 'pointer', color: 'var(--text)' }}
-                  >
-                    ⬇ Markdown
-                  </button>
-                  <button
-                    onClick={() => handleDownload('json')}
-                    title="Download structured report JSON"
-                    style={{ padding: '6px 12px', background: 'var(--surface2)', border: '1px solid var(--border-light)', borderRadius: 6, fontSize: 12, cursor: 'pointer', color: 'var(--text)' }}
-                  >
-                    ⬇ JSON
-                  </button>
+                <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+                  Completed deliverable
                 </div>
               </div>
 
               {/* Tab bar */}
               <div style={{ display: 'flex', gap: 2, marginTop: 14 }}>
-                {[
-                  { id: 'findings', label: '📌 Key Findings' },
-                  { id: 'sources',  label: '🔗 Sources' + (report.sourceUrls?.length ? ` (${report.sourceUrls.length})` : '') },
-                  { id: 'open',     label: '❓ Open Questions' },
-                  { id: 'raw',      label: '📄 Full Report' },
-                ].map(t => (
+                {reportTabs.map((t) => (
                   <button
                     key={t.id}
                     onClick={() => setActiveTab(t.id)}
@@ -1170,61 +1424,123 @@ export default function DeepResearchClient() {
 
             {/* Tab content */}
             <div style={{ flex: 1, overflow: 'auto', padding: '20px 28px' }}>
+              <ResearchDeliverablePanel
+                query={query}
+                report={report}
+                founderWorkspace={founderWorkspace}
+                onRefresh={() => { setQuery(query); handleResearch(); }}
+                onCopy={() => navigator.clipboard?.writeText(rawReply)}
+                onDownloadMarkdown={() => handleDownload('markdown')}
+                onDownloadJson={() => handleDownload('json')}
+              />
 
-              {/* Lead answer */}
-              {report.lead && activeTab === 'findings' && (
-                <div style={{
-                  padding: '14px 16px',
-                  background: 'var(--accent)11',
-                  border: '1px solid var(--accent)33',
-                  borderRadius: 10,
-                  marginBottom: 20,
-                  fontSize: 14,
-                  lineHeight: 1.65,
-                  color: 'var(--text)',
-                }}>
-                  {report.lead}
-                </div>
-              )}
-
-              {activeTab === 'findings' && (
-                <MarkdownBlock text={report.findings || rawReply} />
-              )}
-
-              {activeTab === 'sources' && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(280px, 0.65fr)', gap: 18, alignItems: 'start' }}>
                 <div>
-                  {report.sourceUrls?.length > 0 ? (
-                    <>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
-                        {report.sourceUrls.map(url => <SourceCard key={url} url={url} />)}
-                      </div>
-                      <MarkdownBlock text={report.sourcesRaw} />
-                    </>
-                  ) : (
-                    <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>
-                      <MarkdownBlock text={report.sourcesRaw || 'No sources extracted.'} />
+                  {/* Lead answer */}
+                  {report.lead && activeTab === 'findings' && (
+                    <div style={{
+                      padding: '14px 16px',
+                      background: 'var(--accent)11',
+                      border: '1px solid var(--accent)33',
+                      borderRadius: 10,
+                      marginBottom: 20,
+                      fontSize: 14,
+                      lineHeight: 1.65,
+                      color: 'var(--text)',
+                    }}>
+                      {report.lead}
                     </div>
                   )}
+
+                  {activeTab === 'findings' && (
+                    <MarkdownBlock text={report.findings || rawReply} />
+                  )}
+
+                  {activeTab === 'sources' && (
+                    <div>
+                      {report.sourceUrls?.length > 0 ? (
+                        <>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+                            {report.sourceUrls.map((url) => <SourceCard key={url} url={url} />)}
+                          </div>
+                          <MarkdownBlock text={report.sourcesRaw} />
+                        </>
+                      ) : (
+                        <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>
+                          <MarkdownBlock text={report.sourcesRaw || 'No sources extracted.'} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {activeTab === 'citations' && (
+                    <div>
+                      {report.citationUrls?.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+                          {report.citationUrls.map((url) => <SourceCard key={url} url={url} />)}
+                        </div>
+                      )}
+                      <MarkdownBlock text={report.citations || '_No citations section found in the report._'} />
+                    </div>
+                  )}
+
+                  {activeTab === 'actions' && (
+                    <MarkdownBlock text={report.nextActions || '_No next actions section found in the report._'} />
+                  )}
+
+                  {activeTab === 'open' && (
+                    <MarkdownBlock text={report.openQuestions || '_No open questions section found in the report._'} />
+                  )}
+
+                  {activeTab === 'raw' && (
+                    <pre style={{
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      fontSize: 13,
+                      lineHeight: 1.7,
+                      color: 'var(--text)',
+                      margin: 0,
+                      fontFamily: 'inherit',
+                    }}>
+                      {rawReply}
+                    </pre>
+                  )}
                 </div>
-              )}
 
-              {activeTab === 'open' && (
-                <MarkdownBlock text={report.openQuestions || '_No open questions section found in the report._'} />
-              )}
+                <div style={{ display: 'grid', gap: 14 }}>
+                  <ResearchNextActionsCard
+                    actions={nextActionItems}
+                    onCopy={nextActionItems.length > 0
+                      ? () => navigator.clipboard?.writeText(nextActionItems.join('\n'))
+                      : undefined}
+                  />
+                  <ResearchCitationsPanel urls={report.citationUrls || report.sourceUrls || []} />
+                  {workspaceId && founderRuns.length > 0 ? (
+                    <div style={{ padding: '16px', border: '1px solid var(--border-light)', borderRadius: 12, background: 'var(--surface2)' }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>Recent founder runs</div>
+                      <div style={{ display: 'grid', gap: 10 }}>
+                        {founderRuns.slice(0, 4).map((run) => (
+                          <a
+                            key={run.runId}
+                            href={`/deep-research?${new URLSearchParams({
+                              clientId: clientId || '',
+                              clientName: clientName || founderWorkspace?.companyName || 'Client',
+                              workspaceId,
+                              runId: run.runId,
+                              ...(run.playbookId ? { playbookId: run.playbookId } : {}),
+                            }).toString()}`}
+                            style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(148,163,184,0.14)', textDecoration: 'none', color: 'inherit' }}
+                          >
+                            <div style={{ fontSize: 13, fontWeight: 700 }}>{run.playbookId || 'founder research'}</div>
+                            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>{run.summary || run.prompt}</div>
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
 
-              {activeTab === 'raw' && (
-                <pre style={{
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  fontSize: 13,
-                  lineHeight: 1.7,
-                  color: 'var(--text)',
-                  margin: 0,
-                  fontFamily: 'inherit',
-                }}>
-                  {rawReply}
-                </pre>
-              )}
             </div>
 
             {/* ── Q&A Follow-up ──────────────────────────────────────────── */}

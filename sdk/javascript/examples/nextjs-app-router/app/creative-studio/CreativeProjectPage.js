@@ -247,6 +247,7 @@ export default function CreativeProjectPage({ initialProject, initialMessages = 
 
       {/* Brief edit drawer */}
       <CreativeProjectDrawer
+        key={project?.id ?? 'creative-project-drawer'}
         open={drawerOpen}
         project={project}
         onClose={() => setDrawerOpen(false)}

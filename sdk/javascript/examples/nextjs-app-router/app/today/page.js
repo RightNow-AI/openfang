@@ -89,7 +89,33 @@ export default function TodayPage() {
     setActionInFlight('');
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      setLoading(true);
+      setError('');
+      try {
+        const data = await apiClient.get('/api/planner/today');
+        if (cancelled) {
+          return;
+        }
+        setPlan(data.plan || data || null);
+        setSummary(data.summary || null);
+      } catch (e) {
+        if (!cancelled) {
+          setError(e.message || 'Could not load today plan.');
+        }
+      }
+      if (!cancelled) {
+        setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const hasPlan = plan && (
     plan.daily_outcome ||

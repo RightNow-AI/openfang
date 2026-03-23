@@ -90,6 +90,7 @@ async fn start_test_server_with_provider(
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         user_rate_limiter: rate_limiter::create_user_rate_limiter(),
         orchestrator_runs: tokio::sync::RwLock::new(Vec::new()),
+        api_key_cache: dashmap::DashMap::new(),
     });
 
     let app = Router::new()
@@ -753,6 +754,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         user_rate_limiter: rate_limiter::create_user_rate_limiter(),
         orchestrator_runs: tokio::sync::RwLock::new(Vec::new()),
+        api_key_cache: dashmap::DashMap::new(),
     });
 
     let gcra_limiter = rate_limiter::create_rate_limiter();

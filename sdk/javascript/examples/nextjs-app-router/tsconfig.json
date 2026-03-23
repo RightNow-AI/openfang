@@ -33,6 +33,11 @@
     ".next/types/**/*.ts"
   ],
   "exclude": [
+    ".next/cache",
+    ".next/server",
+    ".next/static",
+    ".next/standalone",
+    "build",
     "node_modules",
     "capacitor.config.ts"
   ]

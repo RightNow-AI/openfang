@@ -530,6 +530,7 @@ export default function HandsPageV2({ initialHands }) {
   return (
     <div data-cy="hands-page">
       <HandDetailDrawer
+        key={drawerHandId ?? 'hand-detail-closed'}
         open={!!drawerHandId}
         handId={drawerHandId}
         onClose={() => setDrawerHandId(null)}

@@ -1,22 +1,28 @@
 'use client';
 import { useState, useEffect } from 'react';
+import ProviderCredentialManager from './ProviderCredentialManager';
+import { GLOBAL_PROVIDER_CREDENTIAL_WORKSPACE_ID, getProviderMeta } from '../lib/provider-directory';
 
-export default function AgentTemplateDetailDrawer({ open, templateId, onClose, onSpawn }) {
+export default function AgentTemplateDetailDrawer({ open, templateId, onClose, onSpawn, onProviderChange }) {
   const [tpl, setTpl] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => Boolean(open && templateId));
   const [error, setError] = useState('');
   const [spawning, setSpawning] = useState(false);
 
   useEffect(() => {
     if (!open || !templateId) return;
-    setTpl(null);
-    setError('');
-    setLoading(true);
-    fetch(`/api/agent-templates/${templateId}`)
+    const controller = new AbortController();
+
+    fetch(`/api/templates/${encodeURIComponent(templateId)}`, { signal: controller.signal })
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       .then(d => setTpl(d?.template ?? d))
-      .catch(e => setError(e?.message || 'Could not load template.'))
+      .catch(e => {
+        if (e?.name === 'AbortError') return;
+        setError(e?.message || 'Could not load template.');
+      })
       .finally(() => setLoading(false));
+
+    return () => controller.abort();
   }, [open, templateId]);
 
   const handleSpawn = async () => {
@@ -24,6 +30,9 @@ export default function AgentTemplateDetailDrawer({ open, templateId, onClose, o
     try { await onSpawn?.(templateId); onClose(); } catch {}
     setSpawning(false);
   };
+
+  const providerValue = tpl?.manifest?.model?.provider ?? tpl?.manifest?.model?.vendor ?? tpl?.model ?? null;
+  const provider = getProviderMeta(providerValue);
 
   if (!open) return null;
 
@@ -51,6 +60,28 @@ export default function AgentTemplateDetailDrawer({ open, templateId, onClose, o
                 </span>
               </div>
             )}
+
+            <Section title="Provider access">
+              {provider ? (
+                <>
+                  <div style={{ fontSize: 13, color: 'var(--text-secondary,#bbb)', marginBottom: 10 }}>
+                    This template expects <strong>{provider.icon} {provider.name}</strong>. Configure the global operator key here if the provider is still missing.
+                  </div>
+                  <ProviderCredentialManager
+                    workspaceId={GLOBAL_PROVIDER_CREDENTIAL_WORKSPACE_ID}
+                    providerId={provider.id}
+                    title={`${provider.name} key`}
+                    description={provider.description}
+                    compact
+                    onChange={onProviderChange}
+                  />
+                </>
+              ) : (
+                <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>
+                  Provider metadata was not detected for this template yet.
+                </div>
+              )}
+            </Section>
 
             {tpl.description && (
               <div style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--text-secondary,#bbb)', marginBottom: 18 }}>{tpl.description}</div>

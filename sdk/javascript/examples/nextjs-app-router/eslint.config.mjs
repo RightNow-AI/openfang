@@ -1,5 +1,6 @@
 import nextCoreWebVitals from "eslint-config-next/core-web-vitals";
 import nextTypescript from "eslint-config-next/typescript";
+import reactHooks from "eslint-plugin-react-hooks";
 
 const eslintConfig = [
   ...nextCoreWebVitals,
@@ -14,6 +15,9 @@ const eslintConfig = [
   // Downgrade React Compiler's setState-in-effect to a warning;
   // the pattern (setLoading(true) before async fetch) is intentional.
   {
+    plugins: {
+      "react-hooks": reactHooks,
+    },
     rules: {
       "react-hooks/set-state-in-effect": "warn",
     },

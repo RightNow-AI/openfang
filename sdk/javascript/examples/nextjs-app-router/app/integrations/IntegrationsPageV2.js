@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { apiClient } from '../../lib/api-client';
 import { track } from '../../lib/telemetry';
 import IntegrationDetailDrawer from './IntegrationDetailDrawer';
@@ -1126,6 +1126,7 @@ export default function IntegrationsPageV2({ initialIntegrations = [] }) {
         />
       )}
       <IntegrationDetailDrawer
+        key={drawerIntegrationId ?? 'integration-detail-closed'}
         open={!!drawerIntegrationId}
         integrationId={drawerIntegrationId}
         onClose={() => setDrawerIntegrationId(null)}

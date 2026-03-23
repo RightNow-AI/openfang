@@ -10,7 +10,26 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
-jobs:
+jobs  frontend-guard:
+    name: Frontend Guard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/javascript/examples/nextjs-app-router
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: sdk/javascript/examples/nextjs-app-router/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Lint frontend
+        run: npm run lint
+      - name: Build frontend
+        run: npm run build
+
   # ── Rust library crates (all 3 platforms) ──────────────────────────────────
   build-lib:
     name: Build libs / ${{ matrix.os }}

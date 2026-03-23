@@ -1,14 +1,17 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { HealthLevel } from "../lib/client-types";
+import FounderWorkspacePanel from "./FounderWorkspacePanel";
+import { getFounderWorkspaceSnapshotForClient } from "../lib/client-api";
+import type { FounderWorkspaceSnapshot, HealthLevel } from "../lib/client-types";
 import styles from "../../client-dashboard.module.css";
 
 type ClientShellProps = {
   clientId: string;
   clientName: string;
-  currentPage: "home" | "pulse" | "plan" | "approvals" | "results";
+  currentPage: "home" | "pulse" | "plan" | "approvals" | "results" | "founder";
   approvalsWaiting: number;
   tasksDueToday: number;
   lastActivityAt: string | null;
@@ -22,6 +25,7 @@ const pageLabels: Record<ClientShellProps["currentPage"], string> = {
   plan: "Plan and Assign",
   approvals: "Approvals and Execution",
   results: "Results and Review",
+  founder: "Founder Start",
 };
 
 const navItems = [
@@ -47,6 +51,24 @@ function formatWhen(value: string | null) {
   return date.toLocaleString();
 }
 
+function buildFounderWorkspaceHref(
+  clientId: string,
+  clientName: string,
+  workspaceId: string,
+  playbookId?: string | null,
+) {
+  return `/deep-research?${new URLSearchParams({
+    clientId,
+    clientName,
+    workspaceId,
+    ...(playbookId ? { playbookId } : {}),
+  }).toString()}`;
+}
+
+function buildFounderStartHref(clientId: string) {
+  return `/clients/${clientId}/founder/start`;
+}
+
 export default function ClientShell({
   clientId,
   clientName,
@@ -58,6 +80,51 @@ export default function ClientShell({
   children,
 }: ClientShellProps) {
   const pathname = usePathname();
+  const [founderSnapshot, setFounderSnapshot] = useState<FounderWorkspaceSnapshot | null>(null);
+  const [founderLoading, setFounderLoading] = useState(true);
+  const [founderError, setFounderError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadFounderSnapshot() {
+      setFounderLoading(true);
+      setFounderError("");
+
+      try {
+        const snapshot = await getFounderWorkspaceSnapshotForClient(clientId);
+        if (cancelled) return;
+        setFounderSnapshot(snapshot);
+      } catch (error) {
+        if (cancelled) return;
+        setFounderError(error instanceof Error ? error.message : "Failed to load founder workspace.");
+      } finally {
+        if (!cancelled) setFounderLoading(false);
+      }
+    }
+
+    loadFounderSnapshot().catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
+
+  const founderWorkspaceId = founderSnapshot?.workspace?.workspaceId || `client-${clientId}`;
+  const founderStartHref = buildFounderStartHref(clientId);
+  const hasFounderRuns = Boolean(founderSnapshot?.runs?.length);
+  const hasFounderWorkspace = Boolean(founderSnapshot?.workspace);
+  const founderPlaybookId = founderSnapshot?.runs?.[0]?.playbookId
+    ?? (typeof founderSnapshot?.workspace?.playbookDefaults?.defaultPlaybookId === "string"
+      ? founderSnapshot.workspace.playbookDefaults.defaultPlaybookId
+      : null);
+  const founderWorkspaceHref = buildFounderWorkspaceHref(clientId, clientName, founderWorkspaceId, founderPlaybookId);
+  const founderPrimaryHref = hasFounderRuns ? founderWorkspaceHref : founderStartHref;
+  const founderPrimaryLabel = hasFounderRuns
+    ? "Resume founder work"
+    : hasFounderWorkspace
+      ? "Start founder research"
+      : "Start founder setup";
 
   return (
     <main className={styles.shellPage}>
@@ -90,6 +157,10 @@ export default function ClientShell({
           </nav>
 
           <div className={styles.shellSecondary}>
+            <div className={styles.eyebrow}>Founder Tools</div>
+            <Link href={founderPrimaryHref} className={styles.linkButton}>
+              {founderPrimaryLabel}
+            </Link>
             {secondaryItems.map((label) => (
               <div key={label} className={styles.shellSecondaryItem}>
                 {label}
@@ -115,6 +186,9 @@ export default function ClientShell({
                 <span className={styles.healthPill} data-health={health}>
                   {healthLabels[health]}
                 </span>
+                <Link href={founderPrimaryHref} className={styles.linkButton}>
+                  {founderPrimaryLabel}
+                </Link>
                 <Link href={`/clients/${clientId}/approvals`} className={styles.linkButton}>
                   Approvals {approvalsWaiting > 0 ? `(${approvalsWaiting})` : ""}
                 </Link>
@@ -138,6 +212,16 @@ export default function ClientShell({
               ))}
             </div>
           </header>
+
+          <FounderWorkspacePanel
+            clientId={clientId}
+            clientName={clientName}
+            founderHref={founderWorkspaceHref}
+            founderStartHref={founderStartHref}
+            loading={founderLoading}
+            error={founderError}
+            snapshot={founderSnapshot}
+          />
 
           {children}
         </section>

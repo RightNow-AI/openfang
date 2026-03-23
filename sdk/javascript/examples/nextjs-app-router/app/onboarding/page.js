@@ -107,29 +107,6 @@ function Expandable({ title, children }) {
   );
 }
 
-function CopyButton({ text }) {
-  const [copied, setCopied] = useState(false);
-  async function copy() {
-    try { await navigator.clipboard.writeText(text); } catch (_) {}
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-  return (
-    <button
-      onClick={copy}
-      style={{
-        padding: '3px 10px', fontSize: 11, borderRadius: 5, cursor: 'pointer',
-        background: copied ? 'var(--success-subtle)' : 'var(--surface3)',
-        border: `1px solid ${copied ? 'var(--success)' : 'var(--border)'}`,
-        color: copied ? 'var(--success)' : 'var(--text-dim)',
-        verticalAlign: 'middle', marginLeft: 8,
-      }}
-    >
-      {copied ? '✓ Copied' : 'Copy'}
-    </button>
-  );
-}
-
 function CodeBlock({ children }) {
   return (
     <div style={{
@@ -181,15 +158,35 @@ const ONBOARDING_PROVIDERS = [
   { id: 'ollama',     name: 'Ollama (local)', icon: '🏠', desc: 'Run models locally — no API key needed',             keyUrl: null,                                      prefix: null,     defaultModel: 'llama3.2',                  local: true  },
 ];
 
+function getOnboardingInitialProviderId() {
+  try {
+    return sessionStorage.getItem('openfang-provider-id') || 'openrouter';
+  } catch {
+    return 'openrouter';
+  }
+}
+
+function getOnboardingProviderBaseUrl(providerId) {
+  const defaults = {
+    openrouter: 'https://openrouter.ai/api/v1',
+    groq: 'https://api.groq.com/openai/v1',
+    anthropic: 'https://api.anthropic.com',
+    openai: 'https://api.openai.com/v1',
+    gemini: 'https://generativelanguage.googleapis.com',
+    xai: 'https://api.x.ai/v1',
+    ollama: 'http://127.0.0.1:11434/v1',
+  };
+
+  return defaults[providerId] ?? '';
+}
+
 // ── OnboardingProviderStep component ─────────────────────────────────────────
 function OnboardingProviderStep({ onNext, onBack }) {
   // Restore last-saved provider from session so Back navigation snaps to the right one
-  const [selectedId, setSelectedId] = useState(() => {
-    try { return sessionStorage.getItem('openfang-provider-id') || 'openrouter'; } catch { return 'openrouter'; }
-  });
+  const [selectedId, setSelectedId] = useState(getOnboardingInitialProviderId);
   const [apiKey,     setApiKey]     = useState('');
   const [showKey,    setShowKey]    = useState(false);
-  const [baseUrl,    setBaseUrl]    = useState('');
+  const [baseUrl,    setBaseUrl]    = useState(() => getOnboardingProviderBaseUrl(getOnboardingInitialProviderId()));
   const [saving,     setSaving]     = useState(false);
   const [testing,    setTesting]    = useState(false);
   const [result,     setResult]     = useState(null); // { type: 'save'|'test', ok, msg }
@@ -205,6 +202,15 @@ function OnboardingProviderStep({ onNext, onBack }) {
 
   const meta = ONBOARDING_PROVIDERS.find(p => p.id === selectedId) ?? ONBOARDING_PROVIDERS[0];
 
+  const handleProviderChange = useCallback((nextProviderId) => {
+    setSelectedId(nextProviderId);
+    setApiKey('');
+    setResult(null);
+    setReloadMsg(null);
+    setFailCount(0);
+    setBaseUrl(getOnboardingProviderBaseUrl(nextProviderId));
+  }, []);
+
   // ── On mount: fetch current config from daemon to detect saved key ──────────
   useEffect(() => {
     let cancelled = false;
@@ -214,12 +220,12 @@ function OnboardingProviderStep({ onNext, onBack }) {
         if (!cancelled && data?.api_key_configured && data.provider) {
           setDaemonConfig(data);
           // Snap dropdown to the provider the daemon already has configured
-          setSelectedId(data.provider);
+          handleProviderChange(data.provider);
         }
-      } catch (_) { /* daemon may not be running yet — ignore silently */ }
+      } catch { /* daemon may not be running yet — ignore silently */ }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [handleProviderChange]);
 
   // ── Client-side key format validation ────────────────────────────────────────
   function validateKeyFormat(key) {
@@ -250,23 +256,6 @@ function OnboardingProviderStep({ onNext, onBack }) {
   }
 
   const keyWarnings = !meta.local ? validateKeyFormat(apiKey) : null;
-
-  // Reset fields when provider changes
-  useEffect(() => {
-    setApiKey('');
-    setResult(null);
-    setReloadMsg(null);
-    const defaults = {
-      openrouter: 'https://openrouter.ai/api/v1',
-      groq:       'https://api.groq.com/openai/v1',
-      anthropic:  'https://api.anthropic.com',
-      openai:     'https://api.openai.com/v1',
-      gemini:     'https://generativelanguage.googleapis.com',
-      xai:        'https://api.x.ai/v1',
-      ollama:     'http://127.0.0.1:11434/v1',
-    };
-    setBaseUrl(defaults[selectedId] ?? '');
-  }, [selectedId]);
 
   async function saveAndTest() {
     // Auto-trim stray whitespace and update the visible field
@@ -310,7 +299,7 @@ function OnboardingProviderStep({ onNext, onBack }) {
       try {
         await apiClient.post('/api/config/reload', {});
         setReloadMsg({ ok: true, msg: '✅ AI provider is active and ready.' });
-      } catch (_) {
+      } catch {
         // Non-fatal — key is saved, provider will be active on next request
         setReloadMsg({ ok: true, msg: '✅ Key saved. Your AI provider is ready to use.' });
       }
@@ -346,7 +335,7 @@ function OnboardingProviderStep({ onNext, onBack }) {
         </label>
         <select
           value={selectedId}
-          onChange={e => setSelectedId(e.target.value)}
+          onChange={e => handleProviderChange(e.target.value)}
           style={{ width: '100%', padding: '9px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text)', fontSize: 13, cursor: 'pointer' }}
         >
           {ONBOARDING_PROVIDERS.map(p => (
@@ -467,7 +456,7 @@ function OnboardingProviderStep({ onNext, onBack }) {
               <button
                 key={p.id}
                 className="btn btn-ghost btn-sm"
-                onClick={() => { setSelectedId(p.id); setResult(null); setReloadMsg(null); setFailCount(0); }}
+                onClick={() => handleProviderChange(p.id)}
               >
                 {p.icon} Try {p.name}
               </button>
@@ -510,8 +499,6 @@ export default function OnboardingPage() {
   const [sending,      setSending]      = useState(false);
   const [sendElapsed,  setSendElapsed]  = useState(0);   // live second counter shown in button
   const [sendError,    setSendError]    = useState(null);
-  const [runId,        setRunId]        = useState(null);
-
   const textareaRef = useRef(null);
 
   const step = STEPS[stepIdx];
@@ -548,7 +535,11 @@ export default function OnboardingPage() {
   // Auto-run check when we land on the status step
   useEffect(() => {
     if (step?.id === 'check-status' && !statusChecked) {
-      checkStatus();
+      const timeoutId = setTimeout(() => {
+        checkStatus();
+      }, 0);
+
+      return () => clearTimeout(timeoutId);
     }
   }, [step, statusChecked, checkStatus]);
 

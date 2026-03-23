@@ -1,0 +1,112 @@
+{
+  "entries": [
+    {
+      "id": "fk_customerdev_momtest",
+      "source": "founders-kit",
+      "title": "The Mom Test",
+      "url": "https://momtestbook.com/",
+      "category": "customer-development",
+      "subcategory": "books",
+      "resourceType": "book",
+      "description": "A practical framework for customer interviews that avoids false validation signals.",
+      "tags": ["interviews", "validation", "discovery"],
+      "stageTags": ["idea", "validation"]
+    },
+    {
+      "id": "fk_customerdev_yc_pmfit",
+      "source": "founders-kit",
+      "title": "Y Combinator Product-Market Fit Guidance",
+      "url": "https://www.ycombinator.com/library",
+      "category": "customer-development",
+      "subcategory": "guides",
+      "resourceType": "guide",
+      "description": "Founder advice on finding urgent user problems and recognizing product-market fit signals.",
+      "tags": ["pmf", "yc", "product-market-fit"],
+      "stageTags": ["validation", "build"]
+    },
+    {
+      "id": "fk_fundraising_venturedeals",
+      "source": "founders-kit",
+      "title": "Venture Deals",
+      "url": "https://www.venturedeals.com/",
+      "category": "fundraising",
+      "subcategory": "books",
+      "resourceType": "book",
+      "description": "Foundational book on venture financing mechanics, terms, and negotiation.",
+      "tags": ["venture", "term-sheet", "seed"],
+      "stageTags": ["fundraise"]
+    },
+    {
+      "id": "fk_fundraising_yc_seed",
+      "source": "founders-kit",
+      "title": "YC Seed Fundraising Guide",
+      "url": "https://www.ycombinator.com/library/4A-a-guide-to-seed-fundraising",
+      "category": "fundraising",
+      "subcategory": "guides",
+      "resourceType": "guide",
+      "description": "Tactical guidance on raising a seed round, investor process, and traction expectations.",
+      "tags": ["yc", "seed", "pitch"],
+      "stageTags": ["fundraise"]
+    },
+    {
+      "id": "fk_gtm_traction",
+      "source": "founders-kit",
+      "title": "Traction",
+      "url": "https://tractionbook.com/",
+      "category": "go-to-market",
+      "subcategory": "books",
+      "resourceType": "book",
+      "description": "The canonical framework for narrowing channel strategy using the bullseye method.",
+      "tags": ["channels", "growth", "bullseye"],
+      "stageTags": ["launch", "growth"]
+    },
+    {
+      "id": "fk_gtm_hackernews",
+      "source": "founders-kit",
+      "title": "Hacker News",
+      "url": "https://news.ycombinator.com/",
+      "category": "places-to-share-and-promote",
+      "subcategory": "communities",
+      "resourceType": "channel",
+      "description": "High-signal launch and discussion surface for technical products and founder stories.",
+      "tags": ["launch", "community", "distribution"],
+      "stageTags": ["launch", "growth"]
+    },
+    {
+      "id": "fk_gtm_reddit",
+      "source": "founders-kit",
+      "title": "Reddit",
+      "url": "https://www.reddit.com/",
+      "category": "places-to-share-and-promote",
+      "subcategory": "communities",
+      "resourceType": "channel",
+      "description": "Distribution surface with niche communities for customer discovery and early launch traction.",
+      "tags": ["community", "distribution", "audience"],
+      "stageTags": ["validation", "launch", "growth"]
+    },
+    {
+      "id": "fk_payments_stripe",
+      "source": "founders-kit",
+      "title": "Stripe",
+      "url": "https://stripe.com/",
+      "category": "payments",
+      "subcategory": "tools",
+      "resourceType": "tool",
+      "description": "Leading developer-friendly payments platform for subscriptions, usage billing, and checkout.",
+      "tags": ["payments", "billing", "subscriptions"],
+      "stageTags": ["build", "launch", "operate"]
+    },
+    {
+      "id": "fk_analytics_posthog",
+      "source": "founders-kit",
+      "title": "PostHog",
+      "url": "https://posthog.com/",
+      "category": "analytics",
+      "subcategory": "tools",
+      "resourceType": "tool",
+      "description": "Product analytics platform for event capture, funnels, session replay, and experimentation.",
+      "tags": ["analytics", "product-analytics", "events"],
+      "stageTags": ["build", "launch", "growth"]
+    }
+  ]
+}

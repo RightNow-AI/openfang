@@ -38,6 +38,7 @@ const NAV = [
     label: 'Create',
     items: [
       { href: '/creative-studio', label: 'Creative Studio', icon: I(<><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></>) },
+      { href: '/studio', label: 'Studio Pipeline', icon: I(<><path d="M3 7h18"/><path d="M6 3h12v18H6z"/><path d="M9 11h6"/><path d="M9 15h4"/></>) },
     ],
   },
   {
@@ -96,7 +97,7 @@ const NAV = [
 ];
 
 
-function NavSection({ section, collapsed: sidebarCollapsed }) {
+function NavSection({ section, collapsed: sidebarCollapsed, onNavigate }) {
   const [open, setOpen] = useState(true);
   const pathname = usePathname();
 
@@ -117,6 +118,7 @@ function NavSection({ section, collapsed: sidebarCollapsed }) {
             className={`nav-item${active ? ' active' : ''}`}
             title={sidebarCollapsed ? item.label : undefined}
             data-cy={`nav-link-${item.href.slice(1)}`}
+            onClick={onNavigate}
           >
             <span className="nav-icon">{item.icon}</span>
             {!sidebarCollapsed && <span className="nav-label">{item.label}</span>}
@@ -128,12 +130,17 @@ function NavSection({ section, collapsed: sidebarCollapsed }) {
 }
 
 export default function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem('openfang-sidebar') === 'collapsed';
+  });
   const [mobileOpen, setMobileOpen] = useState(false);
   const [connState, setConnState] = useState('connecting'); // 'connected' | 'disconnected' | 'connecting'
   const [agentCount, setAgentCount] = useState(0);
-  const [theme, setTheme] = useState('system');
-  const pathname = usePathname();
+  const [theme, setTheme] = useState(() => {
+    if (typeof window === 'undefined') return 'system';
+    return window.localStorage.getItem('openfang-theme-mode') || 'system';
+  });
 
   function applyTheme(mode) {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -141,18 +148,9 @@ export default function Sidebar() {
     document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
   }
 
-  // Persist sidebar state
   useEffect(() => {
-    const saved = localStorage.getItem('openfang-sidebar');
-    if (saved === 'collapsed') setCollapsed(true);
-
-    const savedTheme = localStorage.getItem('openfang-theme-mode') || 'system';
-    setTheme(savedTheme);
-    applyTheme(savedTheme);
-  }, []);
-
-  // Close mobile menu on navigation
-  useEffect(() => { setMobileOpen(false); }, [pathname]);
+    applyTheme(theme);
+  }, [theme]);
 
   function cycleTheme() {
     const modes = ['system', 'light', 'dark'];
@@ -175,28 +173,36 @@ export default function Sidebar() {
   // Poll daemon health for connection status
   useEffect(() => {
     let timer;
+    let cancelled = false;
+
     async function check() {
       try {
         const base = process.env.NEXT_PUBLIC_OPENFANG_BASE_URL || 'http://127.0.0.1:50051';
         const r = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(4000) });
         if (r.ok) {
-          const d = await r.json();
-          setConnState('connected');
+          await r.json();
+          if (!cancelled) setConnState('connected');
           // Also fetch agent count
           try {
             const ar = await fetch(`${base}/api/agents`, { signal: AbortSignal.timeout(4000) });
-            if (ar.ok) { const agents = await ar.json(); setAgentCount(Array.isArray(agents) ? agents.length : 0); }
-          } catch (_) {}
+            if (ar.ok) {
+              const agents = await ar.json();
+              if (!cancelled) setAgentCount(Array.isArray(agents) ? agents.length : 0);
+            }
+          } catch {}
         } else {
-          setConnState('disconnected');
+          if (!cancelled) setConnState('disconnected');
         }
-      } catch (_) {
-        setConnState('disconnected');
+      } catch {
+        if (!cancelled) setConnState('disconnected');
       }
-      timer = setTimeout(check, 10000);
+      if (!cancelled) timer = setTimeout(check, 10000);
     }
     check();
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, []);
 
   const connLabel = connState === 'connected' ? `${agentCount} agent${agentCount === 1 ? '' : 's'} running`
@@ -241,7 +247,12 @@ export default function Sidebar() {
         {/* Navigation */}
         <div className="sidebar-nav" role="navigation" aria-label="Main navigation">
           {NAV.map(section => (
-            <NavSection key={section.label} section={section} collapsed={collapsed} />
+            <NavSection
+              key={section.label}
+              section={section}
+              collapsed={collapsed}
+              onNavigate={() => setMobileOpen(false)}
+            />
           ))}
         </div>
 

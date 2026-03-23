@@ -125,6 +125,7 @@ async fn test_full_daemon_lifecycle() {
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         user_rate_limiter: openfang_api::rate_limiter::create_user_rate_limiter(),
         orchestrator_runs: tokio::sync::RwLock::new(Vec::new()),
+        api_key_cache: dashmap::DashMap::new(),
     });
 
     let app = Router::new()
@@ -259,6 +260,7 @@ async fn test_server_immediate_responsiveness() {
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         user_rate_limiter: openfang_api::rate_limiter::create_user_rate_limiter(),
         orchestrator_runs: tokio::sync::RwLock::new(Vec::new()),
+        api_key_cache: dashmap::DashMap::new(),
     });
 
     let app = Router::new()

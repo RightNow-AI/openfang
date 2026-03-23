@@ -44,18 +44,37 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const { agentRouter } = require('./agent-router');
+const {
+  getPlaybook,
+  validatePlaybookContext,
+  validatePlaybookOutput,
+  resolvePlaybookExecution,
+  buildFounderPlaybookPrompt,
+} = require('./founder-playbooks');
+const { searchFoundersKit } = require('./founders-kit-search');
 const { openfangClient } = require('./openfang-client');
 const { runStore } = require('./run-store');
+const { taskStore } = require('./task-store');
 const { eventBus } = require('./event-bus');
+
+const deps = {
+  agentRouter,
+  searchFoundersKit,
+  openfangClient,
+  runStore,
+  taskStore,
+  eventBus,
+};
 
 const FIRST_REPORT_TOKEN_TIMEOUT_MS = 60_000;
 const RESEARCHER_NAME = 'researcher';
+const FOUNDER_ADVISOR_NAME = 'founder-advisor';
 
-async function loadResearcherManifest() {
+async function loadAgentManifest(agentName) {
   const candidatePaths = [
-    path.resolve(process.cwd(), 'agents', 'researcher', 'agent.toml'),
-    path.resolve(process.cwd(), '..', '..', '..', '..', 'agents', 'researcher', 'agent.toml'),
-    path.resolve(__dirname, '..', '..', '..', '..', '..', 'agents', 'researcher', 'agent.toml'),
+    path.resolve(process.cwd(), 'agents', agentName, 'agent.toml'),
+    path.resolve(process.cwd(), '..', '..', '..', '..', 'agents', agentName, 'agent.toml'),
+    path.resolve(__dirname, '..', '..', '..', '..', '..', 'agents', agentName, 'agent.toml'),
   ];
 
   for (const candidatePath of candidatePaths) {
@@ -68,7 +87,7 @@ async function loadResearcherManifest() {
     }
   }
 
-  throw new Error('Could not find agents/researcher/agent.toml');
+  throw new Error(`Could not find agents/${agentName}/agent.toml`);
 }
 
 function buildResearchFallbackMessage(message) {
@@ -90,18 +109,39 @@ function buildResearchFallbackMessage(message) {
  * @param {RunEvent} event
  */
 function emit(runId, event) {
-  runStore.appendEvent(runId, event);
-  eventBus.emit(runId, event);
+  deps.runStore.appendEvent(runId, event);
+  deps.eventBus.emit(runId, event);
 }
 
-async function ensureResearcherAgent(parentRunId, daemonList) {
-  const existingResearcher = daemonList.find(
-    (agent) => (agent.name ?? agent.title ?? '').toLowerCase() === RESEARCHER_NAME,
+function buildFounderWorkspaceContext(workspace, runtimeContext = null) {
+  const merged = {
+    ...(runtimeContext && typeof runtimeContext === 'object' ? runtimeContext : {}),
+    workspaceId: workspace.workspaceId,
+    clientId: workspace.clientId,
+    name: workspace.name,
+    companyName: workspace.companyName,
+    idea: workspace.idea,
+    stage: workspace.stage,
+    playbookDefaults: workspace.playbookDefaults ?? null,
+  };
+
+  if (merged.company_name && !merged.companyName) merged.companyName = merged.company_name;
+  if (merged.client_name && !merged.companyName) merged.companyName = merged.client_name;
+  if (merged.workspace_id && !merged.workspaceId) merged.workspaceId = merged.workspace_id;
+  if (merged.client_id && !merged.clientId) merged.clientId = merged.client_id;
+
+  return merged;
+}
+
+async function ensureNamedAgent(parentRunId, daemonList, logicalName) {
+  const normalizedName = String(logicalName ?? '').toLowerCase();
+  const existingAgent = daemonList.find(
+    (agent) => (agent.name ?? agent.title ?? '').toLowerCase() === normalizedName,
   );
-  if (existingResearcher) {
+  if (existingAgent) {
     return {
       daemonList,
-      researcher: existingResearcher,
+      agent: existingAgent,
     };
   }
 
@@ -110,18 +150,18 @@ async function ensureResearcherAgent(parentRunId, daemonList) {
     runId: parentRunId,
     agent: 'alive',
     phase: 'spawning_agent',
-    detail: 'researcher',
+    detail: logicalName,
   });
 
-  const manifestToml = await loadResearcherManifest();
-  await openfangClient.spawnAgentFromManifest(manifestToml);
-  const refreshedList = await openfangClient.listAgents();
-  const researcher = refreshedList.find(
-    (agent) => (agent.name ?? agent.title ?? '').toLowerCase() === RESEARCHER_NAME,
+  const manifestToml = await loadAgentManifest(logicalName);
+  await deps.openfangClient.spawnAgentFromManifest(manifestToml);
+  const refreshedList = await deps.openfangClient.listAgents();
+  const hydratedAgent = refreshedList.find(
+    (agent) => (agent.name ?? agent.title ?? '').toLowerCase() === normalizedName,
   );
 
-  if (!researcher) {
-    throw new Error('Researcher agent spawn completed but the daemon still does not list researcher');
+  if (!hydratedAgent) {
+    throw new Error(`${logicalName} spawn completed but the daemon still does not list ${logicalName}`);
   }
 
   emit(parentRunId, {
@@ -129,12 +169,12 @@ async function ensureResearcherAgent(parentRunId, daemonList) {
     runId: parentRunId,
     agent: 'alive',
     phase: 'agent_ready',
-    detail: 'researcher',
+    detail: logicalName,
   });
 
   return {
     daemonList: refreshedList,
-    researcher,
+    agent: hydratedAgent,
   };
 }
 
@@ -145,22 +185,25 @@ const aliveService = {
    * Returns the parentRunId immediately. The run progresses asynchronously.
    * Subscribe to `GET /api/runs/:runId/events` to follow progress.
    *
-   * @param {{ sessionId: string, message: string }} opts
+   * @param {{ sessionId: string, message: string, playbookId?: string|null, workspaceId?: string|null, context?: Record<string, unknown>|null }} opts
    * @returns {Promise<{ runId: string, status: 'queued' }>}
    */
-  async start({ sessionId, message }) {
+  async start({ sessionId, message, playbookId = null, workspaceId = null, context = null }) {
     // Create parent run synchronously so the caller gets a runId to poll
-    const parentRun = await runStore.create({
+    const parentRun = await deps.runStore.create({
       sessionId,
       agent: 'alive',
       input: message,
+      playbookId,
+      workspaceId,
+      context,
     });
 
     // Fire-and-forget — the route handler returns before this finishes
     setImmediate(() => {
-      aliveService._execute(parentRun, sessionId, message).catch((err) => {
+      aliveService._execute(parentRun, sessionId, message, playbookId, workspaceId, context).catch((err) => {
         const errMsg = err instanceof Error ? err.message : String(err);
-        runStore.setStatus(parentRun.runId, 'failed', { error: errMsg });
+        deps.runStore.setStatus(parentRun.runId, 'failed', { error: errMsg });
         emit(parentRun.runId, {
           type: 'run.failed',
           runId: parentRun.runId,
@@ -179,12 +222,33 @@ const aliveService = {
    * @param {import('./run-store').RunRecord} parentRun
    * @param {string} sessionId
    * @param {string} message
+   * @param {string|null} playbookId
+   * @param {string|null} workspaceId
+   * @param {Record<string, unknown>|null} context
    */
-  async _execute(parentRun, sessionId, message) {
+  async _execute(parentRun, sessionId, message, playbookId = null, workspaceId = null, context = null) {
     const { runId: parentRunId } = parentRun;
+    const playbook = playbookId ? getPlaybook(playbookId) : null;
+    let hydratedFounderContext = context;
+    let founderExecution = null;
+
+    if (playbook) {
+      if (!workspaceId) {
+        throw new Error(`Playbook execution blocked: workspaceId is required for ${playbook.id}.`);
+      }
+
+      const workspace = await deps.runStore.getFounderWorkspace(workspaceId);
+      if (!workspace) {
+        throw new Error(`Playbook execution blocked: founder workspace not found for ${workspaceId}.`);
+      }
+
+      hydratedFounderContext = buildFounderWorkspaceContext(workspace, context);
+      validatePlaybookContext(playbook, hydratedFounderContext);
+      founderExecution = resolvePlaybookExecution(playbook);
+    }
 
     // Mark alive running
-    runStore.setStatus(parentRunId, 'running');
+    deps.runStore.setStatus(parentRunId, 'running');
     emit(parentRunId, {
       type: 'run.started',
       runId: parentRunId,
@@ -192,22 +256,30 @@ const aliveService = {
     });
 
     // Fetch the daemon agent list once — reused for both routing context and ID resolution
-    const rawDaemonAgents = await openfangClient.listAgents().catch(() => []);
+    const rawDaemonAgents = await deps.openfangClient.listAgents().catch(() => []);
     let daemonList = Array.isArray(rawDaemonAgents)
       ? rawDaemonAgents
       : (rawDaemonAgents?.agents ?? []);
 
     // Route: find a specialist or handle directly with alive
     // Pass the already-fetched daemon list so agentRegistry doesn't re-fetch
-    const { agent: specialistId, reason } = agentRouter.select({
-      message,
-      availableAgents: daemonList,
-    });
+    const routed = playbook
+      ? {
+          agent: founderExecution.runtimeAgent,
+          displayAgent: founderExecution.logicalAgent,
+          reason: `playbook ${playbook.id} selected -> ${founderExecution.logicalAgent}`,
+        }
+      : deps.agentRouter.select({ message, availableAgents: daemonList });
 
-    const logicalTarget = specialistId ?? 'alive';
+    const logicalTarget = routed.agent ?? 'alive';
+    const displayTarget = routed.displayAgent ?? logicalTarget;
+    const reason = routed.reason;
 
-    if (logicalTarget.toLowerCase().includes(RESEARCHER_NAME)) {
-      const ensured = await ensureResearcherAgent(parentRunId, daemonList);
+    if (
+      logicalTarget.toLowerCase().includes(RESEARCHER_NAME) ||
+      logicalTarget.toLowerCase().includes(FOUNDER_ADVISOR_NAME)
+    ) {
+      const ensured = await ensureNamedAgent(parentRunId, daemonList, logicalTarget);
       daemonList = ensured.daemonList;
     }
 
@@ -263,15 +335,34 @@ const aliveService = {
       throw new Error('No agents available in daemon');
     }
     const targetAgent = resolvedTarget.id;
-    const targetLabel = logicalTarget === 'alive'
-      ? 'alive'
-      : resolvedTarget.label;
-    const needsResearchFallbackPrompt =
-      logicalTarget.toLowerCase().includes('researcher') &&
-      !targetLabel.toLowerCase().includes('researcher');
-    const finalMessage = needsResearchFallbackPrompt
-      ? buildResearchFallbackMessage(message)
+    const targetRuntimeLabel = logicalTarget === 'alive' ? 'alive' : resolvedTarget.label;
+    const targetLabel = playbook
+      ? displayTarget
+      : targetRuntimeLabel;
+    const playbookReferences = playbook
+      ? deps.searchFoundersKit({
+          query: [
+            message,
+            playbook.title,
+            playbook.category,
+            hydratedFounderContext?.companyName,
+            hydratedFounderContext?.idea,
+            hydratedFounderContext?.stage,
+          ].filter(Boolean).join(' '),
+          category: playbook.retrieval?.categories?.[0] ?? playbook.category,
+          limit: playbook.retrieval?.limit ?? 6,
+        })
+      : [];
+    const playbookPrompt = playbook
+      ? buildFounderPlaybookPrompt({ playbook, message, context: hydratedFounderContext, references: playbookReferences })
       : message;
+    const needsResearchFallbackPrompt =
+      (logicalTarget.toLowerCase().includes(RESEARCHER_NAME) || logicalTarget.toLowerCase().includes(FOUNDER_ADVISOR_NAME)) &&
+      !targetRuntimeLabel.toLowerCase().includes(RESEARCHER_NAME) &&
+      !targetRuntimeLabel.toLowerCase().includes(FOUNDER_ADVISOR_NAME);
+    const finalMessage = needsResearchFallbackPrompt
+      ? buildResearchFallbackMessage(playbook ? playbookPrompt : message)
+      : playbookPrompt;
 
     emit(parentRunId, {
       type: 'run.routed',
@@ -282,20 +373,41 @@ const aliveService = {
     });
 
     // Create child run (even when alive handles it directly, record the leaf)
-    const childRun = await runStore.create({
+    const childRun = await deps.runStore.create({
       sessionId,
       agent: targetLabel,
       input: message,
       parentRunId,
+      playbookId,
+      workspaceId,
+      context: hydratedFounderContext,
     });
 
-    runStore.setStatus(childRun.runId, 'running');
+    deps.runStore.setStatus(childRun.runId, 'running');
     emit(parentRunId, {
       type: 'run.started',
       runId: childRun.runId,
       parentRunId,
       agent: targetLabel,
     });
+
+    const failRunTree = (error) => {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      deps.runStore.setStatus(childRun.runId, 'failed', { error: errMsg });
+      emit(parentRunId, {
+        type: 'run.failed',
+        runId: childRun.runId,
+        agent: targetLabel,
+        error: errMsg,
+      });
+      deps.runStore.setStatus(parentRunId, 'failed', { error: errMsg });
+      emit(parentRunId, {
+        type: 'run.failed',
+        runId: parentRunId,
+        agent: 'alive',
+        error: errMsg,
+      });
+    };
 
     // Stream the daemon output and persist progress incrementally.
     let responseText = '';
@@ -307,12 +419,12 @@ const aliveService = {
       }
     }, FIRST_REPORT_TOKEN_TIMEOUT_MS);
     try {
-      await openfangClient.streamMessage(targetAgent, finalMessage, async ({ event, data }) => {
+      await deps.openfangClient.streamMessage(targetAgent, finalMessage, async ({ event, data }) => {
         if (event === 'chunk' && typeof data?.content === 'string' && data.content) {
           clearTimeout(firstTokenTimeout);
           responseText += data.content;
-          runStore.setOutput(childRun.runId, responseText);
-          runStore.setOutput(parentRunId, responseText);
+          deps.runStore.setOutput(childRun.runId, responseText);
+          deps.runStore.setOutput(parentRunId, responseText);
           emit(parentRunId, {
             type: 'run.token',
             runId: childRun.runId,
@@ -350,21 +462,7 @@ const aliveService = {
       }, { signal: streamController.signal });
     } catch (err) {
       clearTimeout(firstTokenTimeout);
-      const errMsg = err instanceof Error ? err.message : String(err);
-      runStore.setStatus(childRun.runId, 'failed', { error: errMsg });
-      emit(parentRunId, {
-        type: 'run.failed',
-        runId: childRun.runId,
-        agent: targetLabel,
-        error: errMsg,
-      });
-      runStore.setStatus(parentRunId, 'failed', { error: errMsg });
-      emit(parentRunId, {
-        type: 'run.failed',
-        runId: parentRunId,
-        agent: 'alive',
-        error: errMsg,
-      });
+      failRunTree(err);
       return;
     }
     clearTimeout(firstTokenTimeout);
@@ -373,41 +471,45 @@ const aliveService = {
       const errMsg = streamCompleted
         ? 'Research agent completed without producing a report'
         : 'Daemon stream ended before the assistant produced a reply';
-      runStore.setStatus(childRun.runId, 'failed', { error: errMsg });
-      emit(parentRunId, {
-        type: 'run.failed',
-        runId: childRun.runId,
-        agent: targetLabel,
-        error: errMsg,
-      });
-      runStore.setStatus(parentRunId, 'failed', { error: errMsg });
-      emit(parentRunId, {
-        type: 'run.failed',
-        runId: parentRunId,
-        agent: 'alive',
-        error: errMsg,
-      });
+      failRunTree(errMsg);
       return;
     }
 
-    // Child completed
-    runStore.setStatus(childRun.runId, 'completed', { output: responseText });
-    emit(parentRunId, {
-      type: 'run.completed',
-      runId: childRun.runId,
-      agent: targetLabel,
-      output: responseText,
-    });
+    try {
+      let validatedOutput = null;
+      if (playbook) {
+        validatedOutput = validatePlaybookOutput(playbook, responseText);
+        if (workspaceId) {
+          await deps.taskStore.createTasksFromRun({
+            workspaceId,
+            runId: childRun.runId,
+            actions: validatedOutput.nextActions,
+            defaultCategory: playbook.category,
+          });
+        }
+      }
 
-    // Parent (alive) merges and completes — for now output == child output
-    // Later, call alive agent to summarize/reformat
-    runStore.setStatus(parentRunId, 'completed', { output: responseText });
-    emit(parentRunId, {
-      type: 'run.completed',
-      runId: parentRunId,
-      agent: 'alive',
-      output: responseText,
-    });
+      // Child completed
+      deps.runStore.setStatus(childRun.runId, 'completed', { output: responseText });
+      emit(parentRunId, {
+        type: 'run.completed',
+        runId: childRun.runId,
+        agent: targetLabel,
+        output: responseText,
+      });
+
+      // Parent (alive) merges and completes — for now output == child output
+      // Later, call alive agent to summarize/reformat
+      deps.runStore.setStatus(parentRunId, 'completed', { output: responseText });
+      emit(parentRunId, {
+        type: 'run.completed',
+        runId: parentRunId,
+        agent: 'alive',
+        output: responseText,
+      });
+    } catch (err) {
+      failRunTree(err);
+    }
   },
 
   /**
@@ -416,21 +518,36 @@ const aliveService = {
    * @param {string} runId
    */
   async cancel(runId) {
-    const run = await runStore.get(runId);
+    const run = await deps.runStore.get(runId);
     if (!run) throw new Error(`Run not found: ${runId}`);
     if (run.status === 'completed' || run.status === 'failed') return; // already terminal
 
-    runStore.setStatus(runId, 'cancelled');
+    deps.runStore.setStatus(runId, 'cancelled');
     emit(runId, { type: 'run.status', runId, agent: run.agent, status: 'cancelled' });
 
-    const children = await runStore.getChildren(runId);
+    const children = await deps.runStore.getChildren(runId);
     for (const child of children) {
       if (child.status === 'queued' || child.status === 'running') {
-        runStore.setStatus(child.runId, 'cancelled');
+        deps.runStore.setStatus(child.runId, 'cancelled');
         emit(runId, { type: 'run.status', runId: child.runId, agent: child.agent, status: 'cancelled' });
       }
     }
   },
 };
 
-module.exports = { aliveService };
+function __setTestDeps(overrides = {}) {
+  Object.assign(deps, overrides);
+}
+
+function __resetTestDeps() {
+  Object.assign(deps, {
+    agentRouter,
+    searchFoundersKit,
+    openfangClient,
+    runStore,
+    taskStore,
+    eventBus,
+  });
+}
+
+module.exports = { aliveService, __setTestDeps, __resetTestDeps };

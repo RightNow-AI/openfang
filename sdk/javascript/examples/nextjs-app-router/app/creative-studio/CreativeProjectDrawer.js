@@ -1,15 +1,11 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 
 const PLATFORM_OPTIONS = ['Instagram', 'TikTok', 'YouTube', 'LinkedIn', 'Twitter / X', 'Email', 'Website', 'Other'];
 
 export default function CreativeProjectDrawer({ open, project, onClose, onSave }) {
   const [form, setForm] = useState(project ?? {});
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (project) setForm(project);
-  }, [project]);
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 

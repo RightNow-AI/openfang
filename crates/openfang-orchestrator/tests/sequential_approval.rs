@@ -19,6 +19,7 @@ fn approval_workflow() -> WorkflowDefinition {
                 },
                 prompt: "Research: {{input}}".to_string(),
                 store_as: Some("research".to_string()),
+                next_step_id: None,
             }),
             WorkflowNode::Approval(ApprovalNode {
                 id: "approval-1".to_string(),
@@ -34,6 +35,7 @@ fn approval_workflow() -> WorkflowDefinition {
                 },
                 prompt: "Write using {{research}}".to_string(),
                 store_as: Some("draft".to_string()),
+                next_step_id: None,
             }),
         ],
     }

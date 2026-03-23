@@ -33,11 +33,10 @@ function providerBadgeLabel(p) {
 // ── Setup Checklist ───────────────────────────────────────────────────────────
 
 function SetupChecklist({ providers, agents, channels }) {
-  const [dismissed, setDismissed] = useState(false);
-
-  useEffect(() => {
-    setDismissed(localStorage.getItem('of-checklist-dismissed') === 'true');
-  }, []);
+  const [dismissed, setDismissed] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem('of-checklist-dismissed') === 'true';
+  });
 
   const items = [
     { key: 'provider', label: 'Configure an LLM provider', done: providers.some(p => p.auth_status === 'configured'), href: '/settings' },

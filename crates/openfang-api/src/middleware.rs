@@ -132,7 +132,7 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    return match auth::resolve_principal(request.headers(), request.uri(), &state) {
+    match auth::resolve_principal(request.headers(), request.uri(), &state) {
         Ok(Some(principal)) => {
             let actor_type = match &principal {
                 AuthPrincipal::ApiKey => "api_key",
@@ -177,7 +177,7 @@ pub async fn auth(
             );
             response
         }
-    };
+    }
 }
 
 /// Security headers middleware — applied to ALL API responses.

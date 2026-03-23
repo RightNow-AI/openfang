@@ -100,30 +100,6 @@ const AUTH_PATTERNS: &[&str] = &[
     "not authenticated",
 ];
 
-/// Patterns that indicate 403 is NOT an auth issue (quota, region, model
-/// permission). Checked before falling back to Auth for status 403.
-const FORBIDDEN_NON_AUTH_PATTERNS: &[&str] = &[
-    "quota",
-    "limit",
-    "balance",
-    "credit",
-    "billing",
-    "region",
-    "not available",
-    "not supported",
-    "not allowed",
-    "access denied", // model/resource access, not API key
-    "permission",    // model permission, not API key auth
-    "insufficient",
-    "exceeded",
-    "capacity",
-    "blocked",
-    "restricted",
-    "not enabled",
-    "does not exist",
-    "model", // model-level 403 (e.g., "model access forbidden")
-];
-
 /// Rate-limit patterns.
 const RATE_LIMIT_PATTERNS: &[&str] = &[
     "rate limit",

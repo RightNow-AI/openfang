@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 /// to prevent leaking API keys from other providers. We keep the full env
 /// intact (so Node.js, NVM, SSL, proxies, etc. all work) and only remove
 /// secrets that belong to other LLM providers.
+#[cfg_attr(not(test), allow(dead_code))]
 const SENSITIVE_ENV_EXACT: &[&str] = &[
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -47,6 +48,7 @@ const SENSITIVE_ENV_EXACT: &[&str] = &[
 
 /// Suffixes that indicate a secret — remove any env var ending with these
 /// unless it starts with `CLAUDE_`.
+#[cfg_attr(not(test), allow(dead_code))]
 const SENSITIVE_SUFFIXES: &[&str] = &["_SECRET", "_TOKEN", "_PASSWORD"];
 
 /// Default subprocess timeout in seconds (5 minutes).
@@ -152,6 +154,26 @@ impl ClaudeCodeDriver {
             _ => Some(stripped.to_string()),
         }
     }
+
+    fn configure_command(&self, cmd: &mut tokio::process::Command, prompt: &str, output_format: &str) {
+        cmd.arg("-p").arg(prompt);
+        if self.skip_permissions {
+            cmd.arg("--dangerously-skip-permissions");
+        }
+        cmd.arg("--output-format").arg(output_format);
+
+        for key in SENSITIVE_ENV_EXACT {
+            cmd.env_remove(key);
+        }
+        for (key, _) in std::env::vars() {
+            if key.starts_with("CLAUDE_") {
+                continue;
+            }
+            if SENSITIVE_SUFFIXES.iter().any(|suffix| key.ends_with(suffix)) {
+                cmd.env_remove(key);
+            }
+        }
+    }
 }
 
 /// JSON output from `claude -p --output-format json`.
@@ -201,11 +223,7 @@ impl LlmDriver for ClaudeCodeDriver {
         let model_flag = Self::model_flag(&request.model);
 
         let mut cmd = tokio::process::Command::new(&self.cli_path);
-        cmd.arg("-p")
-            .arg(&prompt)
-            .arg("--dangerously-skip-permissions")
-            .arg("--output-format")
-            .arg("json");
+        self.configure_command(&mut cmd, &prompt, "json");
 
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);
@@ -314,7 +332,7 @@ impl LlmDriver for ClaudeCodeDriver {
 
             return Err(LlmError::Api {
                 status: status.code().unwrap_or(1) as u16,
-                message: format!("Claude CLI failed: {stderr}"),
+                message,
             });
         }
 
@@ -369,12 +387,8 @@ impl LlmDriver for ClaudeCodeDriver {
         let model_flag = Self::model_flag(&request.model);
 
         let mut cmd = tokio::process::Command::new(&self.cli_path);
-        cmd.arg("-p")
-            .arg(&prompt)
-            .arg("--dangerously-skip-permissions")
-            .arg("--output-format")
-            .arg("stream-json")
-            .arg("--verbose");
+        self.configure_command(&mut cmd, &prompt, "stream-json");
+        cmd.arg("--verbose");
 
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);

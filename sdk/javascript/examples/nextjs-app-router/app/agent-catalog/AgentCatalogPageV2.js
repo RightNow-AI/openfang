@@ -1,9 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { apiClient } from '../../lib/api-client';
 import { track } from '../../lib/telemetry';
 import AgentTemplateDetailDrawer from './AgentTemplateDetailDrawer';
+import { GLOBAL_PROVIDER_CREDENTIAL_WORKSPACE_ID, getProviderMeta } from '../lib/provider-directory';
+import ProviderCredentialManager from './ProviderCredentialManager';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Static config
@@ -94,6 +96,7 @@ function normalizeEntry(raw) {
     example: raw.example || '',
     purpose: raw.purpose || '',
     role: raw.role || '',
+    template_id: raw.template_id || raw.template_name || raw.catalog_id || raw.id || null,
   };
 }
 
@@ -105,6 +108,77 @@ function divisionColor(div) {
     general: '#0EA5E9',
   };
   return map[div] || '#64748B';
+}
+
+function ProviderVaultPanel({ statusEntries, onStatusRefresh }) {
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <ProviderCredentialManager
+        workspaceId={GLOBAL_PROVIDER_CREDENTIAL_WORKSPACE_ID}
+        allowProviderSelect
+        title="Provider Vault"
+        description="Save operator-level provider keys once in Agent Catalog. Studio execution routes reuse these keys automatically when a workspace does not have an override."
+        statusEntries={statusEntries}
+        onStatusRefresh={onStatusRefresh}
+      />
+    </div>
+  );
+}
+
+function ProviderReadinessPill({ readiness }) {
+  if (!readiness?.providerId) {
+    return null;
+  }
+
+  const isReady = Boolean(readiness.ready);
+  return (
+    <span
+      style={{
+        fontSize: 10,
+        padding: '2px 8px',
+        borderRadius: 100,
+        background: isReady ? 'rgba(52,211,153,.12)' : 'rgba(245,158,11,.12)',
+        color: isReady ? '#34d399' : '#f59e0b',
+        border: `1px solid ${isReady ? 'rgba(52,211,153,.26)' : 'rgba(245,158,11,.24)'}`,
+      }}
+    >
+      {readiness.providerIcon ? `${readiness.providerIcon} ` : ''}
+      {isReady ? 'Configured' : 'Missing'}
+    </span>
+  );
+}
+
+function packReadinessSummary(pack, readinessByTemplate) {
+  const entries = pack.template_names
+    .map((templateId) => readinessByTemplate[templateId])
+    .filter(Boolean);
+
+  if (entries.length === 0) {
+    return null;
+  }
+
+  const configuredCount = entries.filter((entry) => entry.ready).length;
+  const missingCount = entries.length - configuredCount;
+
+  return {
+    configuredCount,
+    missingCount,
+    complete: missingCount === 0,
+  };
+}
+
+function PackReadinessLine({ summary }) {
+  if (!summary) {
+    return null;
+  }
+
+  return (
+    <div style={{ fontSize: 12, color: summary.complete ? '#34d399' : '#f59e0b' }}>
+      {summary.complete
+        ? `All ${summary.configuredCount} provider dependencies configured`
+        : `${summary.configuredCount} configured, ${summary.missingCount} missing`}
+    </div>
+  );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -222,7 +296,7 @@ function StepStyle({ value, onChange }) {
   );
 }
 
-function StepRecommendations({ goal, mode, style, entries, onSpawnPack, spawnStatus }) {
+function StepRecommendations({ goal, mode, style, entries, onSpawnPack, spawnStatus, readinessByTemplate }) {
   const pack = AGENT_STARTERS.find((s) => s.mode === mode || (mode === 'general' && s.id === 'agency_core_agents'));
   const filtered =
     style === 'show-all'
@@ -248,6 +322,7 @@ function StepRecommendations({ goal, mode, style, entries, onSpawnPack, spawnSta
             {pack.title}
           </div>
           <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 12 }}>{pack.subtitle}</div>
+          <PackReadinessLine summary={packReadinessSummary(pack, readinessByTemplate)} />
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
             {pack.includesAgents.map((a) => (
               <span
@@ -319,8 +394,16 @@ function StepRecommendations({ goal, mode, style, entries, onSpawnPack, spawnSta
                   padding: '10px 14px',
                 }}
               >
-                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{e.name}</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{e.name}</div>
+                  <ProviderReadinessPill readiness={readinessByTemplate[e.template_id || e.catalog_id] || null} />
+                </div>
                 <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{e.description}</div>
+                {(readinessByTemplate[e.template_id || e.catalog_id] || null)?.providerName ? (
+                  <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>
+                    Provider: {readinessByTemplate[e.template_id || e.catalog_id].providerName}
+                  </div>
+                ) : null}
               </div>
             ))}
             {filtered.length === 0 && (
@@ -373,7 +456,7 @@ function StepFinish({ mode, style, onClose }) {
 // Wizard modal
 // ──────────────────────────────────────────────────────────────────────────────
 
-function AgentCatalogWizard({ entries, onClose, onSpawned }) {
+function AgentCatalogWizard({ entries, onClose, onSpawned, readinessByTemplate }) {
   const [step, setStep] = useState(1);
   const [goal, setGoal] = useState('');
   const [mode, setMode] = useState('');
@@ -485,6 +568,7 @@ function AgentCatalogWizard({ entries, onClose, onSpawned }) {
             entries={entries}
             onSpawnPack={handleSpawnPack}
             spawnStatus={spawnStatus}
+            readinessByTemplate={readinessByTemplate}
           />
         )}
         {step === 5 && (
@@ -545,7 +629,7 @@ function AgentCatalogWizard({ entries, onClose, onSpawned }) {
 // Cards
 // ──────────────────────────────────────────────────────────────────────────────
 
-function AgentStarterPackCard({ pack, onSpawn, spawnStatus }) {
+function AgentStarterPackCard({ pack, onSpawn, spawnStatus, readinessSummary }) {
   const status = spawnStatus[pack.id];
   return (
     <div
@@ -592,6 +676,7 @@ function AgentStarterPackCard({ pack, onSpawn, spawnStatus }) {
           </span>
         ))}
       </div>
+      <PackReadinessLine summary={readinessSummary} />
       {status === 'done' ? (
         <div style={{ color: 'var(--success)', fontSize: 13, fontWeight: 600 }}>✓ Agents spawned</div>
       ) : (
@@ -622,7 +707,7 @@ function AgentStarterPackCard({ pack, onSpawn, spawnStatus }) {
   );
 }
 
-function AgentCardSimple({ entry }) {
+function AgentCardSimple({ entry, readiness }) {
   const color = divisionColor(entry.division);
   return (
     <div
@@ -648,7 +733,10 @@ function AgentCardSimple({ entry }) {
         🤖
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{entry.name}</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{entry.name}</div>
+          <ProviderReadinessPill readiness={readiness} />
+        </div>
         <div
           style={{
             fontSize: 12,
@@ -661,6 +749,11 @@ function AgentCardSimple({ entry }) {
         >
           {entry.description}
         </div>
+        {readiness?.providerName ? (
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 5 }}>
+            Provider: {readiness.providerName}
+          </div>
+        ) : null}
         <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
           <span
             style={{
@@ -698,7 +791,7 @@ function AgentCardSimple({ entry }) {
 // Tabs
 // ──────────────────────────────────────────────────────────────────────────────
 
-function RecommendedAgentsTab({ entries, onOpenWizard }) {
+function RecommendedAgentsTab({ entries, onOpenWizard, readinessByTemplate }) {
   return (
     <div>
       {/* Hero CTA */}
@@ -758,6 +851,7 @@ function RecommendedAgentsTab({ entries, onOpenWizard }) {
             pack={pack}
             onSpawn={() => {}}
             spawnStatus={{}}
+            readinessSummary={packReadinessSummary(pack, readinessByTemplate)}
           />
         ))}
       </div>
@@ -765,7 +859,7 @@ function RecommendedAgentsTab({ entries, onOpenWizard }) {
   );
 }
 
-function MyAgentsTab({ entries, loading, onOpenWizard }) {
+function MyAgentsTab({ entries, loading, onOpenWizard, readinessByTemplate }) {
   if (loading) {
     return (
       <div style={{ color: 'var(--text-dim)', fontSize: 14, padding: '40px 0', textAlign: 'center' }}>
@@ -816,13 +910,13 @@ function MyAgentsTab({ entries, loading, onOpenWizard }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {myAgents.map((e) => (
-        <AgentCardSimple key={e.catalog_id} entry={e} />
+        <AgentCardSimple key={e.catalog_id} entry={e} readiness={readinessByTemplate[e.template_id || e.catalog_id] || null} />
       ))}
     </div>
   );
 }
 
-function TemplatesAgentsTab({ onSpawn, spawnStatus }) {
+function TemplatesAgentsTab({ onSpawn, spawnStatus, readinessByTemplate }) {
   return (
     <div>
       <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 16 }}>
@@ -841,6 +935,7 @@ function TemplatesAgentsTab({ onSpawn, spawnStatus }) {
             pack={pack}
             onSpawn={onSpawn}
             spawnStatus={spawnStatus}
+            readinessSummary={packReadinessSummary(pack, readinessByTemplate)}
           />
         ))}
       </div>
@@ -848,7 +943,7 @@ function TemplatesAgentsTab({ onSpawn, spawnStatus }) {
   );
 }
 
-function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
+function AdvancedAgentsTab({ entries, loading, error, onRefresh, readinessByTemplate }) {
   const [filter, setFilter] = useState('');
   const [expanded, setExpanded] = useState(null);
   const [spawnName, setSpawnName] = useState('');
@@ -956,13 +1051,19 @@ function AdvancedAgentsTab({ entries, loading, error, onRefresh }) {
               }}
             >
               <div
-                style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}
+                style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', marginBottom: 4, flexWrap: 'wrap' }}
               >
-                {e.name}
+                <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{e.name}</span>
+                <ProviderReadinessPill readiness={readinessByTemplate[e.template_id || e.catalog_id] || null} />
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 10 }}>
                 {e.description}
               </div>
+              {(readinessByTemplate[e.template_id || e.catalog_id] || null)?.providerName ? (
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10 }}>
+                  Provider: {readinessByTemplate[e.template_id || e.catalog_id].providerName}
+                </div>
+              ) : null}
               <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
                 <button
                   data-cy="catalog-details-btn"
@@ -1103,6 +1204,9 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
   const [showWizard, setShowWizard] = useState(false);
   const [packSpawnStatus, setPackSpawnStatus] = useState({});
   const [drawerTemplateId, setDrawerTemplateId] = useState(null);
+  const [globalProviderStatuses, setGlobalProviderStatuses] = useState([]);
+  const [templateProviders, setTemplateProviders] = useState({});
+  const templateProviderCacheRef = useRef({});
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -1117,6 +1221,67 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
       setLoading(false);
     }
   }, []);
+
+  const refreshProviderStatuses = useCallback(async () => {
+    try {
+      const data = await apiClient.get(`/api/setup/agent-keys?workspaceId=${encodeURIComponent(GLOBAL_PROVIDER_CREDENTIAL_WORKSPACE_ID)}`);
+      setGlobalProviderStatuses(Array.isArray(data) ? data : []);
+    } catch {
+      setGlobalProviderStatuses([]);
+    }
+  }, []);
+
+  const refreshTemplateProviders = useCallback(async (sourceEntries) => {
+    const templateIds = Array.from(
+      new Set(sourceEntries.map((entry) => entry.template_id || entry.catalog_id).filter(Boolean)),
+    );
+
+    const uncachedTemplateIds = templateIds.filter((templateId) => !(templateId in templateProviderCacheRef.current));
+
+    if (uncachedTemplateIds.length === 0) {
+      setTemplateProviders((previous) => ({ ...previous, ...templateProviderCacheRef.current }));
+      return;
+    }
+
+    const results = await Promise.all(
+      uncachedTemplateIds.map(async (templateId) => {
+        try {
+          const data = await apiClient.get(`/api/templates/${encodeURIComponent(templateId)}`);
+          const template = data?.template ?? data;
+          const provider = getProviderMeta(
+            template?.manifest?.model?.provider ?? template?.manifest?.model?.vendor ?? template?.model ?? null,
+          );
+          return [templateId, provider ? { providerId: provider.id, providerName: provider.name, providerIcon: provider.icon } : null];
+        } catch {
+          return [templateId, null];
+        }
+      }),
+    );
+
+    Object.assign(templateProviderCacheRef.current, Object.fromEntries(results));
+    setTemplateProviders((previous) => ({ ...previous, ...templateProviderCacheRef.current }));
+  }, []);
+
+  useEffect(() => {
+    refreshProviderStatuses();
+  }, [refreshProviderStatuses]);
+
+  useEffect(() => {
+    refreshTemplateProviders(entries);
+  }, [entries, refreshTemplateProviders]);
+
+  const readinessByTemplate = useMemo(() => {
+    const configuredProviders = new Set(globalProviderStatuses.map((entry) => entry.providerId));
+    return Object.fromEntries(
+      Object.entries(templateProviders).map(([templateId, provider]) => {
+        if (!provider?.providerId) {
+          return [templateId, null];
+        }
+
+        return [templateId, { ...provider, ready: configuredProviders.has(provider.providerId) }];
+      }),
+    );
+  }, [globalProviderStatuses, templateProviders]);
 
   async function handlePackSpawn(pack) {
     setPackSpawnStatus((prev) => ({ ...prev, [pack.id]: 'loading' }));
@@ -1155,6 +1320,8 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
         </p>
       </div>
 
+      <ProviderVaultPanel statusEntries={globalProviderStatuses} onStatusRefresh={refreshProviderStatuses} />
+
       {/* Tabs */}
       <div
         style={{
@@ -1187,13 +1354,13 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
 
       {/* Tab content */}
       {tab === 'recommended' && (
-        <RecommendedAgentsTab entries={entries} onOpenWizard={() => setShowWizard(true)} onOpenDetail={id => setDrawerTemplateId(id)} />
+        <RecommendedAgentsTab entries={entries} onOpenWizard={() => setShowWizard(true)} onOpenDetail={id => setDrawerTemplateId(id)} readinessByTemplate={readinessByTemplate} />
       )}
       {tab === 'my' && (
-        <MyAgentsTab entries={entries} loading={loading} onOpenWizard={() => setShowWizard(true)} onOpenDetail={id => setDrawerTemplateId(id)} />
+        <MyAgentsTab entries={entries} loading={loading} onOpenWizard={() => setShowWizard(true)} onOpenDetail={id => setDrawerTemplateId(id)} readinessByTemplate={readinessByTemplate} />
       )}
       {tab === 'templates' && (
-        <TemplatesAgentsTab onSpawn={handlePackSpawn} spawnStatus={packSpawnStatus} />
+        <TemplatesAgentsTab onSpawn={handlePackSpawn} spawnStatus={packSpawnStatus} readinessByTemplate={readinessByTemplate} />
       )}
       {tab === 'advanced' && (
         <AdvancedAgentsTab
@@ -1201,6 +1368,7 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
           loading={loading}
           error={error}
           onRefresh={refresh}
+          readinessByTemplate={readinessByTemplate}
         />
       )}
 
@@ -1210,12 +1378,15 @@ export default function AgentCatalogPageV2({ initialEntries = [] }) {
           entries={entries}
           onClose={() => setShowWizard(false)}
           onSpawned={refresh}
+          readinessByTemplate={readinessByTemplate}
         />
       )}
       <AgentTemplateDetailDrawer
+        key={drawerTemplateId ?? 'agent-template-detail-closed'}
         open={!!drawerTemplateId}
         templateId={drawerTemplateId}
         onClose={() => setDrawerTemplateId(null)}
+        onProviderChange={refreshProviderStatuses}
         onSpawn={async (id) => {
           await apiClient.post('/api/agents/spawn', { template_id: id });
           await refresh();
