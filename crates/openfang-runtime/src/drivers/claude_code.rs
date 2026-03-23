@@ -474,6 +474,11 @@ impl LlmDriver for ClaudeCodeDriver {
 
         Self::apply_env_filter(&mut cmd);
 
+        // Same HOME and stdin hygiene as the non-streaming path.
+        if let Some(home) = home_dir() {
+            cmd.env("HOME", &home);
+        }
+        cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
