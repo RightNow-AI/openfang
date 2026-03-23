@@ -977,18 +977,33 @@ channel = ""
 
 #### `[channels.dingtalk]`
 
+Supports two modes:
+- **Webhook mode** (default): Receives messages via HTTP callback. Requires a public-facing port.
+- **Stream mode**: Connects to DingTalk via WebSocket long-connection. No public IP or port needed.
+
 ```toml
+# Webhook mode (default)
 [channels.dingtalk]
+mode = "webhook"
 access_token_env = "DINGTALK_ACCESS_TOKEN"
 secret_env = "DINGTALK_SECRET"
 webhook_port = 8457
+
+# Stream mode (recommended — no public IP needed)
+[channels.dingtalk]
+mode = "stream"
+client_id_env = "DINGTALK_CLIENT_ID"
+client_secret_env = "DINGTALK_CLIENT_SECRET"
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `access_token_env` | string | `"DINGTALK_ACCESS_TOKEN"` | Env var holding the DingTalk webhook access token. |
-| `secret_env` | string | `"DINGTALK_SECRET"` | Env var holding the DingTalk signing secret. |
-| `webhook_port` | u16 | `8457` | Port for the incoming webhook. |
+| `mode` | string | `"webhook"` | Connection mode: `"webhook"` or `"stream"`. |
+| `access_token_env` | string | `"DINGTALK_ACCESS_TOKEN"` | Env var holding the DingTalk webhook access token (webhook mode). |
+| `secret_env` | string | `"DINGTALK_SECRET"` | Env var holding the DingTalk signing secret (webhook mode). |
+| `webhook_port` | u16 | `8457` | Port for the incoming webhook (webhook mode only). |
+| `client_id_env` | string | `"DINGTALK_CLIENT_ID"` | Env var holding the Client ID / AppKey (stream mode). |
+| `client_secret_env` | string | `"DINGTALK_CLIENT_SECRET"` | Env var holding the Client Secret / AppSecret (stream mode). |
 | `default_agent` | string or null | `null` | Agent name to route messages to. |
 
 #### `[channels.discourse]`
@@ -1351,8 +1366,10 @@ Complete table of all environment variables referenced by the configuration. Non
 | `FLOCK_BOT_TOKEN` | Flock | Flock bot token. |
 | `TWIST_TOKEN` | Twist | Twist API token. |
 | `MUMBLE_PASSWORD` | Mumble | Mumble server password. |
-| `DINGTALK_ACCESS_TOKEN` | DingTalk | DingTalk webhook access token. |
-| `DINGTALK_SECRET` | DingTalk | DingTalk signing secret. |
+| `DINGTALK_ACCESS_TOKEN` | DingTalk | DingTalk webhook access token (webhook mode). |
+| `DINGTALK_SECRET` | DingTalk | DingTalk signing secret (webhook mode). |
+| `DINGTALK_CLIENT_ID` | DingTalk | DingTalk Client ID / AppKey (stream mode). |
+| `DINGTALK_CLIENT_SECRET` | DingTalk | DingTalk Client Secret / AppSecret (stream mode). |
 | `DISCOURSE_API_KEY` | Discourse | Discourse API key. |
 | `GITTER_TOKEN` | Gitter | Gitter auth token. |
 | `NTFY_TOKEN` | ntfy | ntfy auth token (optional for public topics). |
@@ -1404,7 +1421,7 @@ For every **enabled channel** (i.e., its config section is present in the TOML),
 | Flock | `bot_token_env` |
 | Twist | `token_env` |
 | Mumble | `password_env` |
-| DingTalk | `access_token_env` |
+| DingTalk | `access_token_env` (webhook) or `client_id_env` + `client_secret_env` (stream) |
 | Discourse | `api_key_env` |
 | Gitter | `token_env` |
 | ntfy | `token_env` (only if `token_env` is non-empty; public topics are OK without auth) |

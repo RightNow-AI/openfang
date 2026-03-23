@@ -1492,7 +1492,15 @@ pub async fn start_channel_bridge_with_config(
 
     // DingTalk
     if let Some(ref dt_config) = config.dingtalk {
-        if let Some(token) = read_token(&dt_config.access_token_env, "DingTalk") {
+        if dt_config.mode == "stream" {
+            if let Some(client_id) = read_token(&dt_config.client_id_env, "DingTalk (client_id)") {
+                let client_secret =
+                    read_token(&dt_config.client_secret_env, "DingTalk (client_secret)")
+                        .unwrap_or_default();
+                let adapter = Arc::new(DingTalkAdapter::new_stream(client_id, client_secret));
+                adapters.push((adapter, dt_config.default_agent.clone()));
+            }
+        } else if let Some(token) = read_token(&dt_config.access_token_env, "DingTalk") {
             let secret = read_token(&dt_config.secret_env, "DingTalk (secret)").unwrap_or_default();
             let adapter = Arc::new(DingTalkAdapter::new(token, secret, dt_config.webhook_port));
             adapters.push((adapter, dt_config.default_agent.clone()));

@@ -2633,15 +2633,28 @@ impl Default for MumbleConfig {
 }
 
 /// DingTalk Robot API channel adapter configuration.
+///
+/// Supports two modes:
+/// - `"webhook"` (default): Receives messages via HTTP callback. Requires a public-facing port.
+/// - `"stream"`: Connects to DingTalk via WebSocket long-connection. No public IP/port needed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DingTalkConfig {
-    /// Env var name holding the webhook access token.
+    /// Connection mode: `"webhook"` or `"stream"`.
+    pub mode: String,
+    /// Env var name holding the webhook access token (webhook mode).
     pub access_token_env: String,
-    /// Env var name holding the signing secret.
+    /// Env var name holding the signing secret (webhook mode).
     pub secret_env: String,
-    /// Port for the incoming webhook.
+    /// Port for the incoming webhook (webhook mode only).
     pub webhook_port: u16,
+    /// Env var name holding the Client ID / AppKey (stream mode).
+    pub client_id_env: String,
+    /// Env var name holding the Client Secret / AppSecret (stream mode).
+    pub client_secret_env: String,
+    /// Subscribed event types for stream mode (empty = all).
+    #[serde(default)]
+    pub stream_subscriptions: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
     /// Per-channel behavior overrides.
@@ -2652,9 +2665,13 @@ pub struct DingTalkConfig {
 impl Default for DingTalkConfig {
     fn default() -> Self {
         Self {
+            mode: "webhook".to_string(),
             access_token_env: "DINGTALK_ACCESS_TOKEN".to_string(),
             secret_env: "DINGTALK_SECRET".to_string(),
             webhook_port: 8457,
+            client_id_env: "DINGTALK_CLIENT_ID".to_string(),
+            client_secret_env: "DINGTALK_CLIENT_SECRET".to_string(),
+            stream_subscriptions: Vec::new(),
             default_agent: None,
             overrides: ChannelOverrides::default(),
         }
@@ -3167,7 +3184,26 @@ impl KernelConfig {
             }
         }
         if let Some(ref dt) = self.channels.dingtalk {
-            if std::env::var(&dt.access_token_env)
+            if dt.mode == "stream" {
+                if std::env::var(&dt.client_id_env)
+                    .unwrap_or_default()
+                    .is_empty()
+                {
+                    warnings.push(format!(
+                        "DingTalk stream mode configured but {} is not set",
+                        dt.client_id_env
+                    ));
+                }
+                if std::env::var(&dt.client_secret_env)
+                    .unwrap_or_default()
+                    .is_empty()
+                {
+                    warnings.push(format!(
+                        "DingTalk stream mode configured but {} is not set",
+                        dt.client_secret_env
+                    ));
+                }
+            } else if std::env::var(&dt.access_token_env)
                 .unwrap_or_default()
                 .is_empty()
             {

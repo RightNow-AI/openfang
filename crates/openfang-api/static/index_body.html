@@ -2019,6 +2019,21 @@
                       </ol>
                     </details>
 
+                    <!-- DingTalk mode selector -->
+                    <div x-show="isDingTalkChannel()" class="mb-3">
+                      <label class="text-sm" style="display:block;margin-bottom:0.5rem">Connection mode</label>
+                      <div class="flex gap-2" style="flex-wrap:wrap">
+                        <label class="btn btn-ghost btn-sm" :class="{ 'btn-primary': dingTalkMode() === 'webhook' }" style="display:flex;align-items:center;gap:0.4rem;cursor:pointer">
+                          <input type="radio" name="dingtalk-mode" value="webhook" :checked="dingTalkMode() === 'webhook'" @change="updateDingTalkMode('webhook')">
+                          <span>Webhook</span>
+                        </label>
+                        <label class="btn btn-ghost btn-sm" :class="{ 'btn-primary': dingTalkMode() === 'stream' }" style="display:flex;align-items:center;gap:0.4rem;cursor:pointer">
+                          <input type="radio" name="dingtalk-mode" value="stream" :checked="dingTalkMode() === 'stream'" @change="updateDingTalkMode('stream')">
+                          <span>Stream</span>
+                        </label>
+                      </div>
+                    </div>
+
                     <!-- Basic fields only (the minimum to get started) -->
                     <template x-for="f in (isQrChannel() && showBusinessApi) ? advancedFields() : basicFields()" :key="f.key">
                       <div style="margin-bottom:0.75rem">

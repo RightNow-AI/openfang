@@ -199,8 +199,8 @@ const CHANNEL_DEFS: &[ChannelDef] = &[
         name: "dingtalk",
         display_name: "DingTalk",
         category: "Enterprise",
-        env_vars: &["DINGTALK_ACCESS_TOKEN", "DINGTALK_SECRET"],
-        description: "DingTalk Robot API adapter",
+        env_vars: &["DINGTALK_ACCESS_TOKEN", "DINGTALK_SECRET", "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"],
+        description: "DingTalk Robot API adapter (webhook or stream mode)",
     },
     ChannelDef {
         name: "pumble",

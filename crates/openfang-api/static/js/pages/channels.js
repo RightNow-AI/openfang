@@ -67,14 +67,35 @@ function channelsPage() {
       return configured.length + '/' + all.length;
     },
 
-    basicFields() {
+    isDingTalkChannel() {
+      return this.setupModal && this.setupModal.name === 'dingtalk';
+    },
+
+    dingTalkMode() {
+      if (!this.isDingTalkChannel()) return '';
+      return this.formValues.mode === 'stream' ? 'stream' : 'webhook';
+    },
+
+    visibleFields() {
       if (!this.setupModal || !this.setupModal.fields) return [];
-      return this.setupModal.fields.filter(function(f) { return !f.advanced; });
+      var fields = this.setupModal.fields;
+      if (!this.isDingTalkChannel()) return fields;
+      var mode = this.dingTalkMode();
+      return fields.filter(function(f) {
+        if (f.key === 'mode' || f.key === 'default_agent') return true;
+        if (mode === 'stream') {
+          return f.key === 'client_id_env' || f.key === 'client_secret_env';
+        }
+        return f.key === 'access_token_env' || f.key === 'secret_env' || f.key === 'webhook_port';
+      });
+    },
+
+    basicFields() {
+      return this.visibleFields().filter(function(f) { return !f.advanced; });
     },
 
     advancedFields() {
-      if (!this.setupModal || !this.setupModal.fields) return [];
-      return this.setupModal.fields.filter(function(f) { return f.advanced; });
+      return this.visibleFields().filter(function(f) { return f.advanced; });
     },
 
     hasAdvanced() {
@@ -150,6 +171,9 @@ function channelsPage() {
           }
         });
       }
+      if (ch.name === 'dingtalk') {
+        vals.mode = vals.mode === 'stream' ? 'stream' : 'webhook';
+      }
       this.formValues = vals;
       this.showAdvanced = false;
       this.showBusinessApi = false;
@@ -160,6 +184,39 @@ function channelsPage() {
       if (ch.setup_type === 'qr') {
         this.startQR();
       }
+    },
+
+    updateDingTalkMode(mode) {
+      if (!this.isDingTalkChannel()) return;
+      this.formValues.mode = mode === 'stream' ? 'stream' : 'webhook';
+      if (this.formValues.mode === 'stream') {
+        delete this.formValues.access_token_env;
+        delete this.formValues.secret_env;
+        delete this.formValues.webhook_port;
+      } else {
+        delete this.formValues.client_id_env;
+        delete this.formValues.client_secret_env;
+      }
+    },
+
+    buildChannelPayload() {
+      if (!this.isDingTalkChannel()) {
+        return { fields: this.formValues };
+      }
+      var mode = this.dingTalkMode();
+      var payloadFields = { mode: mode };
+      if (this.formValues.default_agent !== undefined && this.formValues.default_agent !== null) {
+        payloadFields.default_agent = this.formValues.default_agent;
+      }
+      if (mode === 'stream') {
+        if (this.formValues.client_id_env !== undefined) payloadFields.client_id_env = this.formValues.client_id_env;
+        if (this.formValues.client_secret_env !== undefined) payloadFields.client_secret_env = this.formValues.client_secret_env;
+      } else {
+        if (this.formValues.access_token_env !== undefined) payloadFields.access_token_env = this.formValues.access_token_env;
+        if (this.formValues.secret_env !== undefined) payloadFields.secret_env = this.formValues.secret_env;
+        if (this.formValues.webhook_port !== undefined) payloadFields.webhook_port = this.formValues.webhook_port;
+      }
+      return { fields: payloadFields };
     },
 
     // ── QR Code Flow (WhatsApp Web style) ──────────────────────────
@@ -230,9 +287,7 @@ function channelsPage() {
       var name = this.setupModal.name;
       this.configuring = true;
       try {
-        await OpenFangAPI.post('/api/channels/' + name + '/configure', {
-          fields: this.formValues
-        });
+        await OpenFangAPI.post('/api/channels/' + name + '/configure', this.buildChannelPayload());
         this.setupStep = 2;
         // Auto-test after save
         try {

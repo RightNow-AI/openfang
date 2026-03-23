@@ -14,7 +14,7 @@ use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::tool_runner::builtin_tool_definitions;
 use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
@@ -1622,18 +1622,21 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
     },
     ChannelMeta {
         name: "dingtalk", display_name: "DingTalk", icon: "DT",
-        description: "DingTalk Robot API adapter",
+        description: "DingTalk Robot API adapter (webhook or stream mode)",
         category: "enterprise", difficulty: "Easy", setup_time: "~3 min",
-        quick_setup: "Paste your webhook token and signing secret",
+        quick_setup: "Choose webhook or stream mode, then paste credentials",
         setup_type: "form",
         fields: &[
-            ChannelField { key: "access_token_env", label: "Access Token", field_type: FieldType::Secret, env_var: Some("DINGTALK_ACCESS_TOKEN"), required: true, placeholder: "abc123...", advanced: false },
-            ChannelField { key: "secret_env", label: "Signing Secret", field_type: FieldType::Secret, env_var: Some("DINGTALK_SECRET"), required: true, placeholder: "SEC...", advanced: false },
+            ChannelField { key: "mode", label: "Mode", field_type: FieldType::Text, env_var: None, required: false, placeholder: "webhook or stream", advanced: false },
+            ChannelField { key: "access_token_env", label: "Access Token (webhook)", field_type: FieldType::Secret, env_var: Some("DINGTALK_ACCESS_TOKEN"), required: false, placeholder: "abc123...", advanced: false },
+            ChannelField { key: "secret_env", label: "Signing Secret (webhook)", field_type: FieldType::Secret, env_var: Some("DINGTALK_SECRET"), required: false, placeholder: "SEC...", advanced: false },
             ChannelField { key: "webhook_port", label: "Webhook Port", field_type: FieldType::Number, env_var: None, required: false, placeholder: "8457", advanced: true },
+            ChannelField { key: "client_id_env", label: "Client ID / AppKey (stream)", field_type: FieldType::Secret, env_var: Some("DINGTALK_CLIENT_ID"), required: false, placeholder: "dingxxx...", advanced: false },
+            ChannelField { key: "client_secret_env", label: "Client Secret / AppSecret (stream)", field_type: FieldType::Secret, env_var: Some("DINGTALK_CLIENT_SECRET"), required: false, placeholder: "abc123...", advanced: false },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
         ],
-        setup_steps: &["Create a robot in your DingTalk group", "Copy the token and signing secret", "Paste them below"],
-        config_template: "[channels.dingtalk]\naccess_token_env = \"DINGTALK_ACCESS_TOKEN\"\nsecret_env = \"DINGTALK_SECRET\"",
+        setup_steps: &["Create a robot in DingTalk", "Choose mode: webhook (needs public IP) or stream (no public IP needed)", "For webhook: copy token and signing secret", "For stream: copy Client ID and Client Secret from the app page"],
+        config_template: "[channels.dingtalk]\nmode = \"stream\"\nclient_id_env = \"DINGTALK_CLIENT_ID\"\nclient_secret_env = \"DINGTALK_CLIENT_SECRET\"",
     },
     ChannelMeta {
         name: "pumble", display_name: "Pumble", icon: "PB",
@@ -2143,8 +2146,63 @@ pub async fn configure_channel(
     let secrets_path = home.join("secrets.env");
     let config_path = home.join("config.toml");
     let mut config_fields: HashMap<String, (String, FieldType)> = HashMap::new();
+    let mut allowed_keys: Option<HashSet<&'static str>> = None;
+
+    if name == "dingtalk" {
+        let mode = match fields.get("mode").and_then(|v| v.as_str()) {
+            Some("webhook") | None => "webhook",
+            Some("stream") => "stream",
+            Some(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "DingTalk mode must be 'webhook' or 'stream'"})),
+                )
+            }
+        };
+
+        let allowed: HashSet<&'static str> = if mode == "stream" {
+            ["mode", "default_agent", "client_id_env", "client_secret_env"]
+                .into_iter()
+                .collect()
+        } else {
+            [
+                "mode",
+                "default_agent",
+                "access_token_env",
+                "secret_env",
+                "webhook_port",
+            ]
+            .into_iter()
+            .collect()
+        };
+        allowed_keys = Some(allowed);
+        config_fields.insert("mode".to_string(), (mode.to_string(), FieldType::Text));
+
+        let inactive_secret_keys = if mode == "stream" {
+            ["DINGTALK_ACCESS_TOKEN", "DINGTALK_SECRET"]
+        } else {
+            ["DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"]
+        };
+        for env_key in inactive_secret_keys {
+            if let Err(e) = remove_secret_env(&secrets_path, env_key) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("Failed to remove stale secret: {e}")})),
+                );
+            }
+            unsafe {
+                std::env::remove_var(env_key);
+            }
+        }
+    }
 
     for field_def in meta.fields {
+        if let Some(allowed) = &allowed_keys {
+            if !allowed.contains(field_def.key) {
+                continue;
+            }
+        }
+
         let value = fields
             .get(field_def.key)
             .and_then(|v| v.as_str())

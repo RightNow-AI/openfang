@@ -95,7 +95,7 @@ All adapters share a common foundation: graceful shutdown via `watch::channel`, 
 | Pumble | Webhook | `PUMBLE_WEBHOOK_URL`, `PUMBLE_TOKEN` | `Custom("pumble")` |
 | Flock | Webhook | `FLOCK_TOKEN` | `Custom("flock")` |
 | Twist | API v3 polling | `TWIST_TOKEN` | `Custom("twist")` |
-| DingTalk | Robot API webhook | `DINGTALK_TOKEN`, `DINGTALK_SECRET` | `Custom("dingtalk")` |
+| DingTalk | Robot API webhook or Stream (WebSocket) | Webhook: `DINGTALK_ACCESS_TOKEN`, `DINGTALK_SECRET` / Stream: `DINGTALK_CLIENT_ID`, `DINGTALK_CLIENT_SECRET` | `Custom("dingtalk")` |
 
 ### Notification (2)
 
