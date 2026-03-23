@@ -57,7 +57,7 @@ Token lifetime: `expiresIn` seconds (usually 7200 = 2 hours). Re-authenticate wh
 **Query parameters**:
 | Param | Required | Description |
 |-------|----------|-------------|
-| `workspaceId` | Yes | Infisical project ID |
+| `projectId` | Yes | Infisical project ID |
 | `environment` | Yes | Environment slug (e.g. `prod`, `staging`, `dev`) |
 | `secretPath` | No | Path prefix, default `/` |
 | `includeImports` | No | Include imported secrets, default `false` |
@@ -66,7 +66,7 @@ Token lifetime: `expiresIn` seconds (usually 7200 = 2 hours). Re-authenticate wh
 **curl example**:
 ```bash
 curl -s -X GET \
-  "$INFISICAL_URL/api/v4/secrets?workspaceId=$PROJECT_ID&environment=$ENVIRONMENT&secretPath=/" \
+  "$INFISICAL_URL/api/v4/secrets?projectId=$PROJECT_ID&environment=$ENVIRONMENT&secretPath=/" \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 

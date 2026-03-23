@@ -227,7 +227,7 @@ If multiple projects are returned, sync all of them. Store each project ID in th
 For each project ID, fetch all secrets:
 ```bash
 curl -s -X GET \
-  "$INFISICAL_URL/api/v4/secrets?workspaceId=<PROJECT_ID>&environment=<ENV>&secretPath=/" \
+  "$INFISICAL_URL/api/v4/secrets?projectId=<PROJECT_ID>&environment=<ENV>&secretPath=/" \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
