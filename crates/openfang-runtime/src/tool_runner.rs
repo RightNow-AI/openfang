@@ -3410,8 +3410,8 @@ pub async fn skill_write(
                 let content = input["content"]
                     .as_str()
                     .ok_or("Missing 'content' parameter")?;
-                if let Some(parent) = resolved.parent() {
-                    tokio::fs::create_dir_all(parent)
+                if !resolved.exists() {
+                    tokio::fs::create_dir_all(&resolved)
                         .await
                         .map_err(|e| format!("Failed to create directories: {e}"))?;
                 }
