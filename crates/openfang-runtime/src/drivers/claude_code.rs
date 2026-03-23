@@ -192,8 +192,13 @@ impl ClaudeCodeDriver {
 ///
 /// The CLI may return the response text in different fields depending on
 /// version: `result`, `content`, or `text`. We try all three.
+/// All fields use `#[serde(default)]` so deserialization never fails on
+/// missing keys — older and newer CLI versions differ in which fields are emitted.
 #[derive(Debug, Deserialize)]
 struct ClaudeJsonOutput {
+    // Fix: `result` now has #[serde(default)] so deserialization succeeds
+    // even when the CLI emits the response in `content` or `text` instead.
+    #[serde(default)]
     result: Option<String>,
     #[serde(default)]
     content: Option<String>,
