@@ -149,6 +149,43 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Replace an existing agent entry, updating all indexes atomically.
+    pub fn replace(&self, entry: AgentEntry) -> OpenFangResult<()> {
+        let id = entry.id;
+        let old_entry = self
+            .agents
+            .get(&id)
+            .map(|existing| existing.value().clone())
+            .ok_or_else(|| OpenFangError::AgentNotFound(id.to_string()))?;
+
+        if let Some(existing_id) = self.name_index.get(&entry.name).as_deref().copied() {
+            if existing_id != id {
+                return Err(OpenFangError::AgentAlreadyExists(entry.name.clone()));
+            }
+        }
+
+        self.name_index.remove(&old_entry.name);
+        for tag in &old_entry.tags {
+            if let Some(mut ids) = self.tag_index.get_mut(tag) {
+                ids.retain(|&agent_id| agent_id != id);
+                if ids.is_empty() {
+                    drop(ids);
+                    self.tag_index.remove(tag);
+                }
+            }
+        }
+
+        self.name_index.insert(entry.name.clone(), id);
+        for tag in &entry.tags {
+            let mut ids = self.tag_index.entry(tag.clone()).or_default();
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        self.agents.insert(id, entry);
+        Ok(())
+    }
+
     /// Update an agent's model configuration.
     pub fn update_model(&self, id: AgentId, new_model: String) -> OpenFangResult<()> {
         let mut entry = self

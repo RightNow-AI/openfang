@@ -28,10 +28,16 @@ pub struct BindingContext {
 pub struct AgentRouter {
     /// Default agent per user (keyed by openfang_user or platform_id).
     user_defaults: DashMap<String, AgentId>,
+    /// Stored names for user defaults so stale UUIDs can be refreshed on respawn.
+    user_default_names: DashMap<String, String>,
     /// Direct routes: (channel_type_key, platform_user_id) -> AgentId.
     direct_routes: DashMap<(String, String), AgentId>,
+    /// Stored names for direct routes so stale UUIDs can be refreshed on respawn.
+    direct_route_names: DashMap<(String, String), String>,
     /// System-wide default agent.
-    default_agent: Option<AgentId>,
+    default_agent: Mutex<Option<AgentId>>,
+    /// Stored name for the system-wide default agent.
+    default_agent_name: Mutex<Option<String>>,
     /// Per-channel-type default agent (e.g., Telegram -> agent_a, Discord -> agent_b).
     channel_defaults: DashMap<String, AgentId>,
     /// Per-channel-type default agent *name* (for re-resolution when UUID becomes stale).
@@ -44,13 +50,24 @@ pub struct AgentRouter {
     agent_name_cache: DashMap<String, AgentId>,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RouteRefreshReport {
+    pub channel_defaults: Vec<String>,
+    pub user_defaults: Vec<String>,
+    pub direct_routes: Vec<(String, String)>,
+    pub system_default: bool,
+}
+
 impl AgentRouter {
     /// Create a new router.
     pub fn new() -> Self {
         Self {
             user_defaults: DashMap::new(),
+            user_default_names: DashMap::new(),
             direct_routes: DashMap::new(),
-            default_agent: None,
+            direct_route_names: DashMap::new(),
+            default_agent: Mutex::new(None),
+            default_agent_name: Mutex::new(None),
             channel_defaults: DashMap::new(),
             channel_default_names: DashMap::new(),
             bindings: Mutex::new(Vec::new()),
@@ -60,12 +77,26 @@ impl AgentRouter {
     }
 
     /// Set the system-wide default agent.
-    pub fn set_default(&mut self, agent_id: AgentId) {
-        self.default_agent = Some(agent_id);
+    pub fn set_default(&self, agent_id: AgentId) {
+        *self.default_agent.lock().unwrap_or_else(|e| e.into_inner()) = Some(agent_id);
+        *self
+            .default_agent_name
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Set the system-wide default agent and remember the name for stale-ID refresh.
+    pub fn set_default_with_name(&self, agent_id: AgentId, agent_name: String) {
+        *self.default_agent.lock().unwrap_or_else(|e| e.into_inner()) = Some(agent_id);
+        *self
+            .default_agent_name
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(agent_name);
     }
 
     /// Set a per-channel-type default agent (e.g., "Telegram" -> agent_id).
     pub fn set_channel_default(&self, channel_key: String, agent_id: AgentId) {
+        self.channel_default_names.remove(&channel_key);
         self.channel_defaults.insert(channel_key, agent_id);
     }
 
@@ -115,9 +146,79 @@ impl AgentRouter {
         updated
     }
 
+    pub fn refresh_user_defaults_for_agent(
+        &self,
+        agent_name: &str,
+        new_agent_id: AgentId,
+    ) -> Vec<String> {
+        let mut updated = Vec::new();
+        for entry in self.user_default_names.iter() {
+            if entry.value() == agent_name {
+                let user_key = entry.key().clone();
+                self.user_defaults.insert(user_key.clone(), new_agent_id);
+                updated.push(user_key);
+            }
+        }
+        updated
+    }
+
+    pub fn refresh_direct_routes_for_agent(
+        &self,
+        agent_name: &str,
+        new_agent_id: AgentId,
+    ) -> Vec<(String, String)> {
+        let mut updated = Vec::new();
+        for entry in self.direct_route_names.iter() {
+            if entry.value() == agent_name {
+                let route_key = entry.key().clone();
+                self.direct_routes.insert(route_key.clone(), new_agent_id);
+                updated.push(route_key);
+            }
+        }
+        updated
+    }
+
+    pub fn refresh_default_for_agent(&self, agent_name: &str, new_agent_id: AgentId) -> bool {
+        let default_name = self
+            .default_agent_name
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if default_name.as_deref() == Some(agent_name) {
+            *self.default_agent.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_agent_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn refresh_named_routes_for_agent(
+        &self,
+        agent_name: &str,
+        new_agent_id: AgentId,
+    ) -> RouteRefreshReport {
+        RouteRefreshReport {
+            channel_defaults: self.refresh_channel_defaults_for_agent(agent_name, new_agent_id),
+            user_defaults: self.refresh_user_defaults_for_agent(agent_name, new_agent_id),
+            direct_routes: self.refresh_direct_routes_for_agent(agent_name, new_agent_id),
+            system_default: self.refresh_default_for_agent(agent_name, new_agent_id),
+        }
+    }
+
     /// Set a user's default agent.
     pub fn set_user_default(&self, user_key: String, agent_id: AgentId) {
+        self.user_default_names.remove(&user_key);
         self.user_defaults.insert(user_key, agent_id);
+    }
+
+    /// Set a user's default agent and remember the name for stale-ID refresh.
+    pub fn set_user_default_with_name(
+        &self,
+        user_key: String,
+        agent_id: AgentId,
+        agent_name: String,
+    ) {
+        self.user_defaults.insert(user_key.clone(), agent_id);
+        self.user_default_names.insert(user_key, agent_name);
     }
 
     /// Set a direct route for a specific (channel, user) pair.
@@ -127,8 +228,23 @@ impl AgentRouter {
         platform_user_id: String,
         agent_id: AgentId,
     ) {
+        self.direct_route_names
+            .remove(&(channel_key.clone(), platform_user_id.clone()));
         self.direct_routes
             .insert((channel_key, platform_user_id), agent_id);
+    }
+
+    /// Set a direct route and remember the name for stale-ID refresh.
+    pub fn set_direct_route_with_name(
+        &self,
+        channel_key: String,
+        platform_user_id: String,
+        agent_id: AgentId,
+        agent_name: String,
+    ) {
+        let route_key = (channel_key, platform_user_id);
+        self.direct_routes.insert(route_key.clone(), agent_id);
+        self.direct_route_names.insert(route_key, agent_name);
     }
 
     /// Load agent bindings from configuration. Sorts by specificity (most specific first).
@@ -204,7 +320,7 @@ impl AgentRouter {
         }
 
         // 4. System default
-        self.default_agent
+        *self.default_agent.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Resolve with full binding context (supports guild_id, roles, account_id).
@@ -238,7 +354,7 @@ impl AgentRouter {
         if let Some(agent) = self.channel_defaults.get(&channel_key) {
             return Some(*agent);
         }
-        self.default_agent
+        *self.default_agent.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Resolve broadcast: returns all agents that should receive a message for the given peer.
@@ -391,7 +507,7 @@ mod tests {
 
     #[test]
     fn test_routing_priority() {
-        let mut router = AgentRouter::new();
+        let router = AgentRouter::new();
         let default_agent = AgentId::new();
         let user_agent = AgentId::new();
         let direct_agent = AgentId::new();
@@ -568,7 +684,7 @@ mod tests {
 
     #[test]
     fn test_channel_default_routing() {
-        let mut router = AgentRouter::new();
+        let router = AgentRouter::new();
         let system_default = AgentId::new();
         let telegram_default = AgentId::new();
         let discord_default = AgentId::new();
@@ -625,8 +741,42 @@ mod tests {
     }
 
     #[test]
+    fn test_refresh_named_routes_for_agent_updates_all_named_routes() {
+        let router = AgentRouter::new();
+        let old_id = AgentId::new();
+        let new_id = AgentId::new();
+
+        router.set_default_with_name(old_id, "ops-bot".to_string());
+        router.set_user_default_with_name("user-1".to_string(), old_id, "ops-bot".to_string());
+        router.set_direct_route_with_name(
+            "Telegram".to_string(),
+            "peer-1".to_string(),
+            old_id,
+            "ops-bot".to_string(),
+        );
+        router.set_channel_default_with_name("Discord".to_string(), old_id, "ops-bot".to_string());
+
+        let report = router.refresh_named_routes_for_agent("ops-bot", new_id);
+        assert!(report.system_default);
+        assert_eq!(report.user_defaults, vec!["user-1".to_string()]);
+        assert_eq!(
+            report.direct_routes,
+            vec![("Telegram".to_string(), "peer-1".to_string())]
+        );
+        assert_eq!(report.channel_defaults, vec!["Discord".to_string()]);
+
+        assert_eq!(router.resolve(&ChannelType::CLI, "local", None), Some(new_id));
+        assert_eq!(
+            router.resolve(&ChannelType::CLI, "peer-1", Some("user-1")),
+            Some(new_id)
+        );
+        assert_eq!(router.resolve(&ChannelType::Telegram, "peer-1", None), Some(new_id));
+        assert_eq!(router.resolve(&ChannelType::Discord, "other", None), Some(new_id));
+    }
+
+    #[test]
     fn test_empty_bindings_legacy_behavior() {
-        let mut router = AgentRouter::new();
+        let router = AgentRouter::new();
         let default_id = AgentId::new();
         router.set_default(default_id);
         router.load_bindings(&[]);

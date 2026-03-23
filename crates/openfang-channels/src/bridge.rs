@@ -927,17 +927,17 @@ async fn dispatch_message(
             // Fallback: try "assistant" agent, then first available agent
             let fallback = handle.find_agent_by_name("assistant").await.ok().flatten();
             let fallback = match fallback {
-                Some(id) => Some(id),
+                Some(id) => Some((id, "assistant".to_string())),
                 None => handle
                     .list_agents()
                     .await
                     .ok()
-                    .and_then(|agents| agents.first().map(|(id, _)| *id)),
+                    .and_then(|agents| agents.first().cloned()),
             };
             match fallback {
-                Some(id) => {
+                Some((id, name)) => {
                     // Auto-set this as the user's default so future messages route directly
-                    router.set_user_default(message.sender.platform_id.clone(), id);
+                    router.set_user_default_with_name(message.sender.platform_id.clone(), id, name);
                     id
                 }
                 None => {
@@ -1460,16 +1460,16 @@ async fn dispatch_with_blocks(
         None => {
             let fallback = handle.find_agent_by_name("assistant").await.ok().flatten();
             let fallback = match fallback {
-                Some(id) => Some(id),
+                Some(id) => Some((id, "assistant".to_string())),
                 None => handle
                     .list_agents()
                     .await
                     .ok()
-                    .and_then(|agents| agents.first().map(|(id, _)| *id)),
+                    .and_then(|agents| agents.first().cloned()),
             };
             match fallback {
-                Some(id) => {
-                    router.set_user_default(message.sender.platform_id.clone(), id);
+                Some((id, name)) => {
+                    router.set_user_default_with_name(message.sender.platform_id.clone(), id, name);
                     id
                 }
                 None => {
@@ -1649,14 +1649,22 @@ async fn handle_command(
             let agent_name = &args[0];
             match handle.find_agent_by_name(agent_name).await {
                 Ok(Some(agent_id)) => {
-                    router.set_user_default(sender.platform_id.clone(), agent_id);
+                    router.set_user_default_with_name(
+                        sender.platform_id.clone(),
+                        agent_id,
+                        agent_name.to_string(),
+                    );
                     format!("Now talking to agent: {agent_name}")
                 }
                 Ok(None) => {
                     // Try to spawn it
                     match handle.spawn_agent_by_name(agent_name).await {
                         Ok(agent_id) => {
-                            router.set_user_default(sender.platform_id.clone(), agent_id);
+                            router.set_user_default_with_name(
+                                sender.platform_id.clone(),
+                                agent_id,
+                                agent_name.to_string(),
+                            );
                             format!("Spawned and connected to agent: {agent_name}")
                         }
                         Err(e) => {

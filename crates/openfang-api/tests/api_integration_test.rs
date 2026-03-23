@@ -11,6 +11,7 @@ use axum::Router;
 use openfang_api::middleware;
 use openfang_api::routes::{self, AppState};
 use openfang_api::server;
+use openfang_api::webchat;
 use openfang_api::ws;
 use openfang_kernel::OpenFangKernel;
 use openfang_memory::usage::UsageRecord;
@@ -117,6 +118,7 @@ async fn start_test_server_with_config(config: KernelConfig, tmp: tempfile::Temp
     });
 
     let app = Router::new()
+        .route("/", axum::routing::get(webchat::webchat_page))
         .route("/api/health", axum::routing::get(routes::health))
         .route(
             "/api/health/detail",
@@ -139,6 +141,14 @@ async fn start_test_server_with_config(config: KernelConfig, tmp: tempfile::Temp
         .route(
             "/api/agents/{id}/message",
             axum::routing::post(routes::send_message),
+        )
+        .route(
+            "/api/agents/{id}/message/stream",
+            axum::routing::post(routes::send_message_stream),
+        )
+        .route(
+            "/api/agents/{id}/restart",
+            axum::routing::post(routes::restart_agent),
         )
         .route(
             "/api/agents/{id}",
@@ -353,6 +363,7 @@ async fn test_health_detail_degrades_when_default_provider_auth_is_missing() {
         .unwrap();
 
     assert_eq!(resp.status(), 503);
+    assert!(resp.headers().contains_key("x-request-id"));
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "degraded");
     assert_eq!(body["readiness"]["ready"], false);
@@ -824,7 +835,67 @@ async fn test_health_detail_keeps_ready_after_recorded_panic() {
 }
 
 #[tokio::test]
-async fn test_metrics_expose_readiness_gauges() {
+async fn test_health_detail_degrades_when_agent_runtime_is_unhealthy() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let spawn = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({
+            "manifest_toml": r#"
+name = "heartbeat-agent"
+version = "0.1.0"
+description = "Autonomous test agent"
+author = "openfang"
+module = "builtin:chat"
+
+[model]
+provider = "default"
+model = "default"
+system_prompt = "You are a helper."
+
+[autonomous]
+heartbeat_interval_secs = 30
+"#
+        }))
+        .send()
+        .await
+        .unwrap();
+    let spawn_body: serde_json::Value = spawn.json().await.unwrap();
+    let agent_id: openfang_types::agent::AgentId =
+        spawn_body["agent_id"].as_str().unwrap().parse().unwrap();
+
+    server
+        .state
+        .kernel
+        .registry
+        .set_state(agent_id, openfang_types::agent::AgentState::Crashed)
+        .unwrap();
+
+    let resp = client
+        .get(format!("{}/api/health/detail", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 503);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["agent_runtime"]["unhealthy_count"], 1);
+    assert!(body["agent_runtime"]["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value["agent_id"] == agent_id.to_string()));
+    assert!(body["readiness"]["failing_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "agent_runtime"));
+}
+
+#[tokio::test]
+async fn test_metrics_expose_operational_metric_families() {
     let server = start_test_server().await;
     let client = reqwest::Client::new();
 
@@ -840,8 +911,14 @@ async fn test_metrics_expose_readiness_gauges() {
     assert!(body.contains("openfang_readiness_ready"));
     assert!(body.contains("openfang_database_ok"));
     assert!(body.contains("openfang_usage_store_ok"));
+    assert!(body.contains("openfang_shutdown_requested"));
+    assert!(body.contains("openfang_default_provider_auth_missing"));
     assert!(body.contains("openfang_config_warnings"));
     assert!(body.contains("openfang_restore_warnings"));
+    assert!(body.contains("openfang_agent_runtime_issues"));
+    assert!(body.contains("openfang_panics_total"));
+    assert!(body.contains("openfang_restarts_total"));
+    assert!(body.contains("openfang_info"));
 }
 
 #[tokio::test]
@@ -1042,6 +1119,136 @@ async fn test_send_message_rejects_when_global_budget_is_exhausted() {
     assert_eq!(resp.status(), 429);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("quota"));
+}
+
+#[tokio::test]
+async fn test_send_message_stream_rejects_when_global_budget_is_exhausted() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let spawn = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    let spawn_body: serde_json::Value = spawn.json().await.unwrap();
+    let agent_id: openfang_types::agent::AgentId =
+        spawn_body["agent_id"].as_str().unwrap().parse().unwrap();
+
+    server
+        .state
+        .kernel
+        .set_effective_budget_config(BudgetConfig {
+            max_daily_usd: 0.01,
+            ..BudgetConfig::default()
+        });
+    server
+        .state
+        .kernel
+        .metering
+        .record(&UsageRecord {
+            agent_id,
+            model: "test-model".to_string(),
+            input_tokens: 1,
+            output_tokens: 1,
+            cost_usd: 0.02,
+            tool_calls: 0,
+        })
+        .unwrap();
+
+    let resp = client
+        .post(format!(
+            "{}/api/agents/{}/message/stream",
+            server.base_url, agent_id
+        ))
+        .json(&serde_json::json!({"message": "hello"}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 429);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("quota"));
+}
+
+#[tokio::test]
+async fn test_restart_agent_keeps_same_id_and_session() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let spawn = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    let spawn_body: serde_json::Value = spawn.json().await.unwrap();
+    let agent_id = spawn_body["agent_id"].as_str().unwrap().to_string();
+
+    let before = server
+        .state
+        .kernel
+        .registry
+        .get(agent_id.parse().unwrap())
+        .unwrap();
+    let session_id = before.session_id.0.to_string();
+
+    let resp = client
+        .post(format!("{}/api/agents/{}/restart", server.base_url, agent_id))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "restarted");
+    assert_eq!(body["agent_id"], agent_id);
+
+    let after = server
+        .state
+        .kernel
+        .registry
+        .get(agent_id.parse().unwrap())
+        .unwrap();
+    assert_eq!(after.id.0.to_string(), agent_id);
+    assert_eq!(after.session_id.0.to_string(), session_id);
+}
+
+#[tokio::test]
+async fn test_restart_agent_failure_keeps_agent_registered() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let spawn = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    let spawn_body: serde_json::Value = spawn.json().await.unwrap();
+    let agent_id: openfang_types::agent::AgentId =
+        spawn_body["agent_id"].as_str().unwrap().parse().unwrap();
+
+    {
+        let conn = server.state.kernel.memory.usage_conn();
+        let conn = conn.lock().unwrap();
+        conn.execute("DROP TABLE agents", []).unwrap();
+    }
+
+    let resp = client
+        .post(format!("{}/api/agents/{}/restart", server.base_url, agent_id))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 500);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("Persistent state update failed"));
+    assert!(server.state.kernel.registry.get(agent_id).is_some());
 }
 
 #[tokio::test]
@@ -1797,6 +2004,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
     };
 
     let app = Router::new()
+        .route("/", axum::routing::get(webchat::webchat_page))
         .route("/api/health", axum::routing::get(routes::health))
         .route(
             "/api/health/detail",
@@ -1930,6 +2138,7 @@ async fn start_test_server_with_session_auth(username: &str, password: &str) -> 
     };
 
     let app = Router::new()
+        .route("/", axum::routing::get(webchat::webchat_page))
         .route("/api/health", axum::routing::get(routes::health))
         .route(
             "/api/health/detail",
@@ -1988,6 +2197,29 @@ async fn test_auth_health_is_public() {
 }
 
 #[tokio::test]
+async fn test_dashboard_shell_is_public_and_contains_expected_markers() {
+    let server = start_test_server_with_auth("secret-key-123").await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp.headers().contains_key("x-request-id"));
+    assert!(resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html")));
+
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<title>OpenFang Dashboard</title>"));
+    assert!(body.contains("<body x-data=\"app\""));
+}
+
+#[tokio::test]
 async fn test_auth_health_detail_requires_auth() {
     let server = start_test_server_with_auth("secret-key-123").await;
     let client = reqwest::Client::new();
@@ -1998,6 +2230,7 @@ async fn test_auth_health_detail_requires_auth() {
         .await
         .unwrap();
     assert_eq!(unauthenticated.status(), 401);
+    assert!(unauthenticated.headers().contains_key("x-request-id"));
 
     let authenticated = client
         .get(format!("{}/api/health/detail", server.base_url))

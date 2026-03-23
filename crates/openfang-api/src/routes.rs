@@ -75,6 +75,15 @@ fn classify_http_kernel_error(err: &KernelError) -> (StatusCode, String) {
     if inner.contains("Agent not found") {
         return (StatusCode::NOT_FOUND, "Agent not found".to_string());
     }
+    if inner.contains("already exists") {
+        return (StatusCode::CONFLICT, inner);
+    }
+    if inner.contains("Invalid input") {
+        return (StatusCode::BAD_REQUEST, inner);
+    }
+    if inner.contains("Persistent state update failed") {
+        return (StatusCode::INTERNAL_SERVER_ERROR, inner);
+    }
     if inner.contains("quota") || inner.contains("Quota") {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -891,15 +900,23 @@ pub async fn kill_agent(
         ),
         Err(e) => {
             tracing::warn!("kill_agent failed for {id}: {e}");
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Agent not found or already terminated"})),
-            )
+            let message = format!("{e}");
+            if message.contains("Agent not found") {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "Agent not found or already terminated"})),
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": message})),
+                )
+            }
         }
     }
 }
 
-/// POST /api/agents/{id}/restart — Restart an agent by respawning its manifest.
+/// POST /api/agents/{id}/restart — Restart an agent runtime without deleting persisted state.
 pub async fn restart_agent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -914,40 +931,18 @@ pub async fn restart_agent(
         }
     };
 
-    let entry = match state.kernel.registry.get(agent_id) {
-        Some(entry) => entry,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Agent not found"})),
-            );
-        }
-    };
-
-    let manifest = entry.manifest.clone();
-    let old_name = entry.name.clone();
-
-    if let Err(e) = state.kernel.kill_agent(agent_id) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to stop agent: {e}")})),
-        );
-    }
-
-    match state.kernel.spawn_agent(manifest) {
-        Ok(new_id) => (
+    match state.kernel.restart_agent_runtime(agent_id) {
+        Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "restarted",
-                "old_agent_id": id,
-                "agent_id": new_id.to_string(),
-                "name": old_name,
+                "agent_id": id,
             })),
         ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to restart agent: {e}")})),
-        ),
+        Err(e) => {
+            let (status, error) = classify_http_kernel_error(&e);
+            (status, Json(serde_json::json!({"error": error})))
+        }
     }
 }
 
@@ -3521,8 +3516,17 @@ struct RuntimeHealthSnapshot {
     restore_warnings: openfang_kernel::RestoreHealthStatus,
     default_provider_auth: String,
     embedding: openfang_kernel::kernel::EmbeddingHealthStatus,
+    agent_runtime_issues: Vec<AgentRuntimeIssue>,
     failing_checks: Vec<String>,
     ready: bool,
+}
+
+#[derive(serde::Serialize)]
+struct AgentRuntimeIssue {
+    agent_id: String,
+    name: String,
+    state: String,
+    inactive_secs: i64,
 }
 
 fn default_provider_auth_is_ready(status: &str) -> bool {
@@ -3545,6 +3549,19 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
     let config_warnings = state.kernel.runtime_config_warnings();
     let restore_warnings = state.kernel.runtime_restore_warnings();
     let embedding = state.kernel.runtime_embedding_health();
+    let agent_runtime_issues: Vec<AgentRuntimeIssue> = openfang_kernel::heartbeat::check_agents(
+        &state.kernel.registry,
+        &openfang_kernel::heartbeat::HeartbeatConfig::default(),
+    )
+    .into_iter()
+    .filter(|status| status.unresponsive)
+    .map(|status| AgentRuntimeIssue {
+        agent_id: status.agent_id.to_string(),
+        name: status.name,
+        state: format!("{:?}", status.state),
+        inactive_secs: status.inactive_secs,
+    })
+    .collect();
     let effective_default_model = state.kernel.effective_default_model_config();
     let default_provider_auth = state
         .kernel
@@ -3586,6 +3603,9 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
     if embedding.mode == "explicit" && embedding.warning.is_some() {
         failing_checks.push("embedding".to_string());
     }
+    if !agent_runtime_issues.is_empty() {
+        failing_checks.push("agent_runtime".to_string());
+    }
     RuntimeHealthSnapshot {
         db_ok,
         usage_store_ok,
@@ -3596,6 +3616,7 @@ fn runtime_health_snapshot(state: &Arc<AppState>) -> RuntimeHealthSnapshot {
         restore_warnings,
         default_provider_auth,
         embedding,
+        agent_runtime_issues,
         ready: failing_checks.is_empty(),
         failing_checks,
     }
@@ -3644,6 +3665,10 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
                 "api_key_configured": snapshot.embedding.api_key_configured,
                 "driver_active": snapshot.embedding.driver_active,
                 "warning": snapshot.embedding.warning,
+            },
+            "agent_runtime": {
+                "unhealthy_count": snapshot.agent_runtime_issues.len(),
+                "agents": snapshot.agent_runtime_issues,
             },
         })),
     )
@@ -3748,6 +3773,14 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
     out.push_str(&format!(
         "openfang_restore_warnings {}\n\n",
         snapshot.restore_warnings.total_warning_count()
+    ));
+    out.push_str(
+        "# HELP openfang_agent_runtime_issues Number of unhealthy autonomous or crashed agents.\n",
+    );
+    out.push_str("# TYPE openfang_agent_runtime_issues gauge\n");
+    out.push_str(&format!(
+        "openfang_agent_runtime_issues {}\n\n",
+        snapshot.agent_runtime_issues.len()
     ));
     // Per-agent token and tool usage
     out.push_str("# HELP openfang_tokens_total Total tokens consumed (rolling hourly window).\n");
@@ -6235,27 +6268,18 @@ pub async fn patch_agent(
 
     // Apply partial updates using dedicated registry methods
     if let Some(name) = body.get("name").and_then(|v| v.as_str()) {
-        if let Err(e) = state
-            .kernel
-            .registry
-            .update_name(agent_id, name.to_string())
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            );
+        if let Err(e) = state.kernel.update_agent_name(agent_id, name.to_string()) {
+            let (status, error) = classify_http_kernel_error(&e);
+            return (status, Json(serde_json::json!({"error": error})));
         }
     }
     if let Some(desc) = body.get("description").and_then(|v| v.as_str()) {
         if let Err(e) = state
             .kernel
-            .registry
-            .update_description(agent_id, desc.to_string())
+            .update_agent_description(agent_id, desc.to_string())
         {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            );
+            let (status, error) = classify_http_kernel_error(&e);
+            return (status, Json(serde_json::json!({"error": error})));
         }
     }
     if let Some(model) = body.get("model").and_then(|v| v.as_str()) {
@@ -6264,28 +6288,21 @@ pub async fn patch_agent(
             .kernel
             .set_agent_model(agent_id, model, explicit_provider)
         {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            );
+            let (status, error) = classify_http_kernel_error(&e);
+            return (status, Json(serde_json::json!({"error": error})));
         }
     }
     if let Some(system_prompt) = body.get("system_prompt").and_then(|v| v.as_str()) {
         if let Err(e) = state
             .kernel
-            .registry
-            .update_system_prompt(agent_id, system_prompt.to_string())
+            .update_agent_system_prompt(agent_id, system_prompt.to_string())
         {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            );
+            let (status, error) = classify_http_kernel_error(&e);
+            return (status, Json(serde_json::json!({"error": error})));
         }
     }
 
-    // Persist updated entry to SQLite
     if let Some(entry) = state.kernel.registry.get(agent_id) {
-        let _ = state.kernel.memory.save_agent(&entry);
         (
             StatusCode::OK,
             Json(
@@ -7541,10 +7558,10 @@ pub async fn set_model(
                 ),
             )
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        ),
+        Err(e) => {
+            let (status, error) = classify_http_kernel_error(&e);
+            (status, Json(serde_json::json!({"error": error})))
+        }
     }
 }
 
@@ -7624,10 +7641,10 @@ pub async fn set_agent_tools(
         .set_agent_tool_filters(agent_id, allowlist, blocklist)
     {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        ),
+        Err(e) => {
+            let (status, error) = classify_http_kernel_error(&e);
+            (status, Json(serde_json::json!({"error": error})))
+        }
     }
 }
 
@@ -7705,10 +7722,10 @@ pub async fn set_agent_skills(
             StatusCode::OK,
             Json(serde_json::json!({"status": "ok", "skills": skills})),
         ),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        ),
+        Err(e) => {
+            let (status, error) = classify_http_kernel_error(&e);
+            (status, Json(serde_json::json!({"error": error})))
+        }
     }
 }
 
@@ -7793,10 +7810,10 @@ pub async fn set_agent_mcp_servers(
             StatusCode::OK,
             Json(serde_json::json!({"status": "ok", "mcp_servers": servers})),
         ),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        ),
+        Err(e) => {
+            let (status, error) = classify_http_kernel_error(&e);
+            (status, Json(serde_json::json!({"error": error})))
+        }
     }
 }
 
@@ -9317,21 +9334,15 @@ pub async fn update_agent_identity(
         greeting_style: req.greeting_style,
     };
 
-    match state.kernel.registry.update_identity(agent_id, identity) {
-        Ok(()) => {
-            // Persist identity to SQLite
-            if let Some(entry) = state.kernel.registry.get(agent_id) {
-                let _ = state.kernel.memory.save_agent(&entry);
-            }
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"status": "ok", "agent_id": id})),
-            )
-        }
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Agent not found"})),
+    match state.kernel.update_agent_identity(agent_id, identity) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "ok", "agent_id": id})),
         ),
+        Err(e) => {
+            let (status, error) = classify_http_kernel_error(&e);
+            (status, Json(serde_json::json!({"error": error})))
+        }
     }
 }
 
@@ -9437,46 +9448,32 @@ pub async fn patch_agent_config(
     // Update name
     if let Some(ref new_name) = req.name {
         if !new_name.is_empty() {
-            if let Err(e) = state
-                .kernel
-                .registry
-                .update_name(agent_id, new_name.clone())
-            {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({"error": format!("{e}")})),
-                );
+            if let Err(e) = state.kernel.update_agent_name(agent_id, new_name.clone()) {
+                let (status, error) = classify_http_kernel_error(&e);
+                return (status, Json(serde_json::json!({"error": error})));
             }
         }
     }
 
     // Update description
     if let Some(ref new_desc) = req.description {
-        if state
+        if let Err(e) = state
             .kernel
-            .registry
-            .update_description(agent_id, new_desc.clone())
-            .is_err()
+            .update_agent_description(agent_id, new_desc.clone())
         {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Agent not found"})),
-            );
+            let (status, error) = classify_http_kernel_error(&e);
+            return (status, Json(serde_json::json!({"error": error})));
         }
     }
 
     // Update system prompt (hot-swap — takes effect on next message)
     if let Some(ref new_prompt) = req.system_prompt {
-        if state
+        if let Err(e) = state
             .kernel
-            .registry
-            .update_system_prompt(agent_id, new_prompt.clone())
-            .is_err()
+            .update_agent_system_prompt(agent_id, new_prompt.clone())
         {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Agent not found"})),
-            );
+            let (status, error) = classify_http_kernel_error(&e);
+            return (status, Json(serde_json::json!({"error": error})));
         }
     }
 
@@ -9504,16 +9501,9 @@ pub async fn patch_agent_config(
             vibe: req.vibe.or(current.vibe),
             greeting_style: req.greeting_style.or(current.greeting_style),
         };
-        if state
-            .kernel
-            .registry
-            .update_identity(agent_id, merged)
-            .is_err()
-        {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Agent not found"})),
-            );
+        if let Err(e) = state.kernel.update_agent_identity(agent_id, merged) {
+            let (status, error) = classify_http_kernel_error(&e);
+            return (status, Json(serde_json::json!({"error": error})));
         }
     }
 
@@ -9532,27 +9522,21 @@ pub async fn patch_agent_config(
                             .kernel
                             .set_agent_model(agent_id, new_model, Some(new_provider))
                     {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({"error": format!("{e}")})),
-                        );
+                        let (status, error) = classify_http_kernel_error(&e);
+                        return (status, Json(serde_json::json!({"error": error})));
                     }
                 } else {
                     // Provider is empty string — resolve from catalog
                     if let Err(e) = state.kernel.set_agent_model(agent_id, new_model, None) {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({"error": format!("{e}")})),
-                        );
+                        let (status, error) = classify_http_kernel_error(&e);
+                        return (status, Json(serde_json::json!({"error": error})));
                     }
                 }
             } else {
                 // No provider field at all — resolve from catalog
                 if let Err(e) = state.kernel.set_agent_model(agent_id, new_model, None) {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": format!("{e}")})),
-                    );
+                    let (status, error) = classify_http_kernel_error(&e);
+                    return (status, Json(serde_json::json!({"error": error})));
                 }
             }
         }
@@ -9560,23 +9544,12 @@ pub async fn patch_agent_config(
 
     // Update fallback model chain
     if let Some(fallbacks) = req.fallback_models {
-        if state
+        if let Err(e) = state
             .kernel
-            .registry
-            .update_fallback_models(agent_id, fallbacks)
-            .is_err()
+            .update_agent_fallback_models(agent_id, fallbacks)
         {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Agent not found"})),
-            );
-        }
-    }
-
-    // Persist updated manifest to database so changes survive restart
-    if let Some(entry) = state.kernel.registry.get(agent_id) {
-        if let Err(e) = state.kernel.memory.save_agent(&entry) {
-            tracing::warn!("Failed to persist agent config update: {e}");
+            let (status, error) = classify_http_kernel_error(&e);
+            return (status, Json(serde_json::json!({"error": error})));
         }
     }
 
@@ -9669,11 +9642,17 @@ pub async fn clone_agent(
         }
     }
 
-    // Copy identity from source
-    let _ = state
+    // Copy identity from source and fail closed if it cannot be persisted.
+    if let Err(e) = state
         .kernel
-        .registry
-        .update_identity(new_id, source.identity.clone());
+        .update_agent_identity(new_id, source.identity.clone())
+    {
+        let _ = state.kernel.kill_agent(new_id);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Clone identity copy failed: {e}")})),
+        );
+    }
 
     // Register in channel router so binding resolution finds the cloned agent
     if let Some(ref mgr) = *state.bridge_manager.lock().await {
@@ -12287,6 +12266,27 @@ mod tests {
         ));
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert!(!message.contains("sk-test-secret"));
+    }
+
+    #[test]
+    fn classify_http_kernel_error_maps_invalid_input_to_bad_request() {
+        let (status, message) = classify_http_kernel_error(&KernelError::OpenFang(
+            OpenFangError::InvalidInput("Unknown skill: bundled".to_string()),
+        ));
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(message.contains("Unknown skill"));
+    }
+
+    #[test]
+    fn classify_http_kernel_error_maps_persistence_failures_to_internal_server_error() {
+        let (status, message) = classify_http_kernel_error(&KernelError::OpenFang(
+            OpenFangError::Internal(
+                "Persistent state update failed: Memory error: attempt to write a readonly database"
+                    .to_string(),
+            ),
+        ));
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(message.contains("Persistent state update failed"));
     }
 }
 

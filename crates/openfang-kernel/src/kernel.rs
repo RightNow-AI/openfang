@@ -30,7 +30,7 @@ use openfang_runtime::tool_runner::builtin_tool_definitions;
 use openfang_types::agent::*;
 use openfang_types::capability::Capability;
 use openfang_types::config::KernelConfig;
-use openfang_types::error::OpenFangError;
+use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::event::*;
 use openfang_types::memory::Memory;
 use openfang_types::tool::ToolDefinition;
@@ -1850,18 +1850,10 @@ impl OpenFangKernel {
         let lock = self.agent_message_lock(agent_id);
         let _guard = lock.lock().await;
 
-        self.metering
-            .check_global_budget(&self.effective_budget_config())
-            .map_err(KernelError::OpenFang)?;
-
-        // Enforce quota before running the agent loop
-        self.scheduler
-            .check_quota(agent_id)
-            .map_err(KernelError::OpenFang)?;
-
         let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
         })?;
+        self.enforce_message_preflight(agent_id, &entry)?;
 
         // Dispatch based on module type
         let result = if entry.manifest.module.starts_with("wasm:") {
@@ -2011,14 +2003,10 @@ impl OpenFangKernel {
         let lock = self.agent_message_lock(agent_id);
         let agent_guard = lock.lock_owned().await;
 
-        // Enforce quota before spawning the streaming task
-        self.scheduler
-            .check_quota(agent_id)
-            .map_err(KernelError::OpenFang)?;
-
         let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
         })?;
+        self.enforce_message_preflight(agent_id, &entry)?;
 
         let is_wasm = entry.manifest.module.starts_with("wasm:");
         let is_python = entry.manifest.module.starts_with("python:");
@@ -2602,11 +2590,6 @@ impl OpenFangKernel {
         sender_name: Option<String>,
         channel_metadata: Option<serde_json::Map<String, serde_json::Value>>,
     ) -> KernelResult<AgentLoopResult> {
-        // Check metering quota before starting
-        self.metering
-            .check_quota(agent_id, &entry.manifest.resources)
-            .map_err(KernelError::OpenFang)?;
-
         let mut session = self
             .memory
             .get_session(entry.session_id)
@@ -2973,6 +2956,27 @@ impl OpenFangKernel {
         Ok(result)
     }
 
+    fn entry_uses_llm_runtime(entry: &AgentEntry) -> bool {
+        !entry.manifest.module.starts_with("wasm:") && !entry.manifest.module.starts_with("python:")
+    }
+
+    fn enforce_message_preflight(&self, agent_id: AgentId, entry: &AgentEntry) -> KernelResult<()> {
+        self.metering
+            .check_global_budget(&self.effective_budget_config())
+            .map_err(KernelError::OpenFang)?;
+        self.scheduler
+            .check_quota(agent_id)
+            .map_err(KernelError::OpenFang)?;
+
+        if Self::entry_uses_llm_runtime(entry) {
+            self.metering
+                .check_quota(agent_id, &entry.manifest.resources)
+                .map_err(KernelError::OpenFang)?;
+        }
+
+        Ok(())
+    }
+
     /// Resolve a module path relative to the kernel's home directory.
     ///
     /// If the path is absolute, return it as-is. Otherwise, resolve relative
@@ -2993,6 +2997,126 @@ impl OpenFangKernel {
         self.memory
             .save_agent(&entry)
             .map_err(KernelError::OpenFang)
+    }
+
+    fn update_persisted_agent_entry<F>(&self, agent_id: AgentId, update: F) -> KernelResult<()>
+    where
+        F: FnOnce(&crate::registry::AgentRegistry, AgentId) -> OpenFangResult<()>,
+    {
+        let previous_entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+
+        update(&self.registry, agent_id).map_err(KernelError::OpenFang)?;
+
+        if let Err(err) = self.persist_agent_entry(agent_id) {
+            if let Err(restore_err) = self.registry.replace(previous_entry) {
+                return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                    "Persistent state update failed: {err}; in-memory rollback also failed: {restore_err}"
+                ))));
+            }
+            return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                "Persistent state update failed: {err}"
+            ))));
+        }
+
+        Ok(())
+    }
+
+    pub fn update_agent_name(&self, agent_id: AgentId, new_name: String) -> KernelResult<()> {
+        self.update_persisted_agent_entry(agent_id, move |registry, id| {
+            registry.update_name(id, new_name)
+        })
+    }
+
+    pub fn update_agent_description(
+        &self,
+        agent_id: AgentId,
+        new_description: String,
+    ) -> KernelResult<()> {
+        self.update_persisted_agent_entry(agent_id, move |registry, id| {
+            registry.update_description(id, new_description)
+        })
+    }
+
+    pub fn update_agent_system_prompt(
+        &self,
+        agent_id: AgentId,
+        new_system_prompt: String,
+    ) -> KernelResult<()> {
+        self.update_persisted_agent_entry(agent_id, move |registry, id| {
+            registry.update_system_prompt(id, new_system_prompt)
+        })
+    }
+
+    pub fn update_agent_identity(
+        &self,
+        agent_id: AgentId,
+        identity: AgentIdentity,
+    ) -> KernelResult<()> {
+        self.update_persisted_agent_entry(agent_id, move |registry, id| {
+            registry.update_identity(id, identity)
+        })
+    }
+
+    pub fn update_agent_fallback_models(
+        &self,
+        agent_id: AgentId,
+        fallback_models: Vec<openfang_types::agent::FallbackModel>,
+    ) -> KernelResult<()> {
+        self.update_persisted_agent_entry(agent_id, move |registry, id| {
+            registry.update_fallback_models(id, fallback_models)
+        })
+    }
+
+    pub fn restart_agent_runtime(self: &Arc<Self>, agent_id: AgentId) -> KernelResult<()> {
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+        let restart_background = !matches!(entry.manifest.schedule, ScheduleMode::Reactive)
+            && matches!(entry.state, AgentState::Running | AgentState::Crashed);
+        let agent_name = entry.name.clone();
+
+        let cancelled = self.stop_agent_run(agent_id)?;
+        self.background.stop_agent(agent_id);
+        self.browser_ctx.cleanup_agent_nowait(&agent_id.to_string());
+        let killed_processes = self
+            .process_manager
+            .kill_agent_processes(&agent_id.to_string());
+
+        let restart_result =
+            self.update_persisted_agent_entry(agent_id, |registry, id| {
+                registry.set_state(id, AgentState::Running)
+            });
+
+        if let Err(err) = restart_result {
+            if restart_background {
+                self.start_background_for_agent(agent_id, &agent_name, &entry.manifest.schedule);
+            }
+            return Err(err);
+        }
+
+        if restart_background {
+            self.start_background_for_agent(agent_id, &agent_name, &entry.manifest.schedule);
+        }
+
+        let event = Event::new(
+            agent_id,
+            EventTarget::Broadcast,
+            EventPayload::Lifecycle(LifecycleEvent::Started { agent_id }),
+        );
+        let _triggered = self.triggers.evaluate(&event);
+        self.event_bus.publish_immediate(event);
+
+        info!(
+            agent_id = %agent_id,
+            cancelled_run = cancelled,
+            killed_processes,
+            restarted_background = restart_background,
+            "Agent runtime restarted"
+        );
+
+        Ok(())
     }
 
     /// Reset an agent's session — auto-saves a summary to memory, then clears messages
@@ -3320,26 +3444,24 @@ impl OpenFangKernel {
 
         if let Some(provider) = provider {
             let api_key_env = Some(self.config.resolve_api_key_env(&provider));
-            self.registry
-                .update_model_provider_config(
-                    agent_id,
-                    normalized_model.clone(),
-                    provider.clone(),
+            let model_for_update = normalized_model.clone();
+            let provider_for_update = provider.clone();
+            self.update_persisted_agent_entry(agent_id, move |registry, id| {
+                registry.update_model_provider_config(
+                    id,
+                    model_for_update.clone(),
+                    provider_for_update.clone(),
                     api_key_env,
                     None,
                 )
-                .map_err(KernelError::OpenFang)?;
+            })?;
             info!(agent_id = %agent_id, model = %normalized_model, provider = %provider, "Agent model+provider updated");
         } else {
-            self.registry
-                .update_model(agent_id, normalized_model.clone())
-                .map_err(KernelError::OpenFang)?;
+            let model_for_update = normalized_model.clone();
+            self.update_persisted_agent_entry(agent_id, move |registry, id| {
+                registry.update_model(id, model_for_update.clone())
+            })?;
             info!(agent_id = %agent_id, model = %normalized_model, "Agent model updated (provider unchanged)");
-        }
-
-        // Persist the updated entry
-        if let Some(entry) = self.registry.get(agent_id) {
-            let _ = self.memory.save_agent(&entry);
         }
 
         // Clear canonical session to prevent memory poisoning from old model's responses
@@ -3360,20 +3482,17 @@ impl OpenFangKernel {
             let known = registry.skill_names();
             for name in &skills {
                 if !known.contains(name) {
-                    return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                    return Err(KernelError::OpenFang(OpenFangError::InvalidInput(format!(
                         "Unknown skill: {name}"
                     ))));
                 }
             }
         }
 
-        self.registry
-            .update_skills(agent_id, skills.clone())
-            .map_err(KernelError::OpenFang)?;
-
-        if let Some(entry) = self.registry.get(agent_id) {
-            let _ = self.memory.save_agent(&entry);
-        }
+        let skills_for_update = skills.clone();
+        self.update_persisted_agent_entry(agent_id, move |registry, id| {
+            registry.update_skills(id, skills_for_update.clone())
+        })?;
 
         info!(agent_id = %agent_id, skills = ?skills, "Agent skills updated");
         Ok(())
@@ -3398,7 +3517,7 @@ impl OpenFangKernel {
                 for name in &servers {
                     let normalized = openfang_runtime::mcp::normalize_name(name);
                     if !known_servers.contains(&normalized) {
-                        return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                        return Err(KernelError::OpenFang(OpenFangError::InvalidInput(format!(
                             "Unknown MCP server: {name}"
                         ))));
                     }
@@ -3406,13 +3525,10 @@ impl OpenFangKernel {
             }
         }
 
-        self.registry
-            .update_mcp_servers(agent_id, servers.clone())
-            .map_err(KernelError::OpenFang)?;
-
-        if let Some(entry) = self.registry.get(agent_id) {
-            let _ = self.memory.save_agent(&entry);
-        }
+        let servers_for_update = servers.clone();
+        self.update_persisted_agent_entry(agent_id, move |registry, id| {
+            registry.update_mcp_servers(id, servers_for_update.clone())
+        })?;
 
         info!(agent_id = %agent_id, servers = ?servers, "Agent MCP servers updated");
         Ok(())
@@ -3425,13 +3541,15 @@ impl OpenFangKernel {
         allowlist: Option<Vec<String>>,
         blocklist: Option<Vec<String>>,
     ) -> KernelResult<()> {
-        self.registry
-            .update_tool_filters(agent_id, allowlist.clone(), blocklist.clone())
-            .map_err(KernelError::OpenFang)?;
-
-        if let Some(entry) = self.registry.get(agent_id) {
-            let _ = self.memory.save_agent(&entry);
-        }
+        let allowlist_for_update = allowlist.clone();
+        let blocklist_for_update = blocklist.clone();
+        self.update_persisted_agent_entry(agent_id, move |registry, id| {
+            registry.update_tool_filters(
+                id,
+                allowlist_for_update.clone(),
+                blocklist_for_update.clone(),
+            )
+        })?;
 
         info!(
             agent_id = %agent_id,
@@ -7472,6 +7590,16 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner())
     }
 
+    fn set_query_only(kernel: &OpenFangKernel, enabled: bool) {
+        let conn = kernel.memory.usage_conn();
+        let conn = conn.lock().unwrap();
+        conn.execute(
+            &format!("PRAGMA query_only = {}", if enabled { 1 } else { 0 }),
+            [],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn test_build_embedding_plan_uses_provider_convention_for_explicit_provider() {
         let plan = build_embedding_plan(
@@ -8133,6 +8261,156 @@ mod tests {
         assert!(format!("{err}").contains("canonical_sessions"));
         assert!(kernel.registry.get(agent_id).is_some());
         assert!(kernel.memory.load_agent(agent_id).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_set_agent_skills_persists_on_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "OLLAMA_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        })
+        .expect("Kernel should boot");
+
+        let agent_id = kernel
+            .spawn_agent(test_manifest("skill-persist", "persist skills", vec![]))
+            .expect("agent should spawn");
+        let skill_name = kernel
+            .skill_registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .skill_names()
+            .into_iter()
+            .next()
+            .expect("expected at least one known skill");
+
+        kernel
+            .set_agent_skills(agent_id, vec![skill_name.clone()])
+            .expect("skill update should persist");
+
+        let persisted = kernel
+            .memory
+            .load_agent(agent_id)
+            .expect("load_agent should succeed")
+            .expect("agent should stay persisted");
+        assert_eq!(persisted.manifest.skills, vec![skill_name]);
+    }
+
+    #[test]
+    fn test_set_agent_model_rolls_back_on_persist_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "OLLAMA_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        })
+        .expect("Kernel should boot");
+
+        let agent_id = kernel
+            .spawn_agent(test_manifest("model-rollback", "rollback model", vec![]))
+            .expect("agent should spawn");
+        let before = kernel.registry.get(agent_id).expect("agent should exist");
+
+        set_query_only(&kernel, true);
+        let err = kernel
+            .set_agent_model(agent_id, "other-model", Some("ollama"))
+            .expect_err("model update should fail when persistence is read-only");
+        set_query_only(&kernel, false);
+
+        assert!(format!("{err}").contains("Persistent state update failed"));
+
+        let after = kernel
+            .registry
+            .get(agent_id)
+            .expect("agent should stay registered");
+        assert_eq!(
+            after.manifest.model.provider,
+            before.manifest.model.provider
+        );
+        assert_eq!(after.manifest.model.model, before.manifest.model.model);
+
+        let persisted = kernel
+            .memory
+            .load_agent(agent_id)
+            .expect("load_agent should succeed")
+            .expect("agent should stay persisted");
+        assert_eq!(
+            persisted.manifest.model.provider,
+            before.manifest.model.provider
+        );
+        assert_eq!(persisted.manifest.model.model, before.manifest.model.model);
+    }
+
+    #[test]
+    fn test_update_agent_identity_rolls_back_on_persist_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = OpenFangKernel::boot_with_config(KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "OLLAMA_API_KEY".to_string(),
+                base_url: None,
+            },
+            ..KernelConfig::default()
+        })
+        .expect("Kernel should boot");
+
+        let agent_id = kernel
+            .spawn_agent(test_manifest(
+                "identity-rollback",
+                "rollback identity",
+                vec![],
+            ))
+            .expect("agent should spawn");
+        let before = kernel.registry.get(agent_id).expect("agent should exist");
+
+        set_query_only(&kernel, true);
+        let err = kernel
+            .update_agent_identity(
+                agent_id,
+                AgentIdentity {
+                    emoji: Some(":)".to_string()),
+                    avatar_url: None,
+                    color: Some("#112233".to_string()),
+                    archetype: None,
+                    vibe: None,
+                    greeting_style: None,
+                },
+            )
+            .expect_err("identity update should fail when persistence is read-only");
+        set_query_only(&kernel, false);
+
+        assert!(format!("{err}").contains("Persistent state update failed"));
+
+        let after = kernel
+            .registry
+            .get(agent_id)
+            .expect("agent should stay registered");
+        assert_eq!(after.identity.emoji, before.identity.emoji);
+        assert_eq!(after.identity.color, before.identity.color);
+
+        let persisted = kernel
+            .memory
+            .load_agent(agent_id)
+            .expect("load_agent should succeed")
+            .expect("agent should stay persisted");
+        assert_eq!(persisted.identity.emoji, before.identity.emoji);
+        assert_eq!(persisted.identity.color, before.identity.color);
     }
 
     #[test]

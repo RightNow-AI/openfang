@@ -1824,7 +1824,7 @@ pub async fn start_channel_bridge_with_config(
     }
 
     // Resolve per-channel default agents AND set the first one as system-wide fallback
-    let mut router = AgentRouter::new();
+    let router = AgentRouter::new();
     let mut system_default_set = false;
     for (adapter, default_agent) in &adapters {
         if let Some(ref name) = default_agent {
@@ -1854,7 +1854,7 @@ pub async fn start_channel_bridge_with_config(
                 router.set_channel_default_with_name(channel_key, agent_id, name.clone());
                 // First configured default also becomes system-wide fallback
                 if !system_default_set {
-                    router.set_default(agent_id);
+                    router.set_default_with_name(agent_id, name.clone());
                     system_default_set = true;
                 }
             }
@@ -1926,12 +1926,32 @@ pub async fn start_channel_bridge_with_config(
                                 );
 
                                 router_clone.register_agent(name.clone(), agent_id);
-                                for channel_key in router_clone.refresh_channel_defaults_for_agent(&name, agent_id) {
+                                let refresh = router_clone.refresh_named_routes_for_agent(&name, agent_id);
+                                for channel_key in refresh.channel_defaults {
                                     info!(
                                         channel = channel_key,
                                         agent = %name,
                                         new_id = %agent_id,
                                         "Updated channel default agent ID after respawn"
+                                    );
+                                }
+                                if refresh.system_default {
+                                    info!(agent = %name, new_id = %agent_id, "Updated system default agent ID after respawn");
+                                }
+                                if !refresh.user_defaults.is_empty() {
+                                    info!(
+                                        agent = %name,
+                                        new_id = %agent_id,
+                                        routes = refresh.user_defaults.len(),
+                                        "Updated user default agent routes after respawn"
+                                    );
+                                }
+                                if !refresh.direct_routes.is_empty() {
+                                    info!(
+                                        agent = %name,
+                                        new_id = %agent_id,
+                                        routes = refresh.direct_routes.len(),
+                                        "Updated direct agent routes after respawn"
                                     );
                                 }
                             }
