@@ -45,4 +45,3 @@ Thumbs.db
 *.swo
 *~
 .serena/
-crates/openfang-desktop/gen/schemas/linux-schema.json

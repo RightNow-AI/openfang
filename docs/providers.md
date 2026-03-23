@@ -1,6 +1,6 @@
 # LLM Providers Guide
 
-OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **21 providers**, **56 builtin models**, and **26 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
+OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **20 providers**, **51 builtin models**, and **23 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
 
 ---
 
@@ -549,41 +549,9 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 
 ---
 
-### 21. NVIDIA NIM
-
-| | |
-|---|---|
-| **Display Name** | NVIDIA NIM |
-| **Driver** | OpenAI-compatible |
-| **Env Var** | `NVIDIA_API_KEY` |
-| **Base URL** | `https://integrate.api.nvidia.com/v1` |
-| **Key Required** | Yes |
-| **Free Tier** | Yes (rate-limited) |
-| **Auth** | `Authorization: Bearer` header |
-| **Models** | 8 |
-
-**Available Models:**
-- `meta/llama-3.3-70b-instruct` (Balanced) -- recommended default
-- `nvidia/llama-3.3-nemotron-super-49b-v1.5` (Smart) -- NVIDIA-tuned, 49B
-- `nvidia/llama-3.1-nemotron-ultra-253b-v1` (Frontier) -- max quality, 253B
-- `nvidia/llama-3.1-nemotron-70b-instruct` (Smart)
-- `meta/llama-3.1-405b-instruct` (Frontier)
-- `meta/llama-3.1-70b-instruct` (Balanced)
-- `mistralai/mistral-large-latest` (Smart)
-- `nvidia/nemotron-4-340b-instruct` (Frontier)
-
-**Setup:**
-1. Sign up at [build.nvidia.com](https://build.nvidia.com)
-2. Generate an API key (starts with `nvapi-`)
-3. `export NVIDIA_API_KEY="nvapi-..."`
-
-**Notes:** NVIDIA NIM provides hosted inference for open-source and NVIDIA-tuned models via an OpenAI-compatible API. Supports tool calling and streaming. Also known as `nvidia-nim`.
-
----
-
 ## Model Catalog
 
-The complete catalog of all 56 builtin models, sorted by provider. Pricing is per million tokens.
+The complete catalog of all 51 builtin models, sorted by provider. Pricing is per million tokens.
 
 | # | Model ID | Display Name | Provider | Tier | Context Window | Max Output | Input $/M | Output $/M | Tools | Vision |
 |---|----------|-------------|----------|------|---------------|------------|-----------|------------|-------|--------|
@@ -640,14 +608,6 @@ The complete catalog of all 56 builtin models, sorted by provider. Pricing is pe
 | 51 | `grok-2-mini` | Grok 2 Mini | xai | Fast | 131,072 | 32,768 | $0.30 | $0.50 | Yes | No |
 | 52 | `hf/meta-llama/Llama-3.3-70B-Instruct` | Llama 3.3 70B (HF) | huggingface | Balanced | 128,000 | 4,096 | $0.30 | $0.30 | No | No |
 | 53 | `replicate/meta-llama-3.3-70b-instruct` | Llama 3.3 70B (Replicate) | replicate | Balanced | 128,000 | 4,096 | $0.40 | $0.40 | No | No |
-| 54 | `meta/llama-3.3-70b-instruct` | Llama 3.3 70B Instruct (NVIDIA NIM) | nvidia | Balanced | 128,000 | 4,096 | $0.88 | $0.88 | Yes | No |
-| 55 | `nvidia/llama-3.3-nemotron-super-49b-v1.5` | Nemotron Super 49B v1.5 (NVIDIA NIM) | nvidia | Smart | 128,000 | 4,096 | $0.88 | $0.88 | Yes | No |
-| 56 | `nvidia/llama-3.1-nemotron-ultra-253b-v1` | Nemotron Ultra 253B (NVIDIA NIM) | nvidia | Frontier | 128,000 | 4,096 | $4.20 | $4.20 | Yes | No |
-| 57 | `nvidia/llama-3.1-nemotron-70b-instruct` | Nemotron 70B Instruct (NVIDIA NIM) | nvidia | Smart | 128,000 | 4,096 | $0.88 | $0.88 | Yes | No |
-| 58 | `meta/llama-3.1-405b-instruct` | Llama 3.1 405B Instruct (NVIDIA NIM) | nvidia | Frontier | 128,000 | 4,096 | $5.00 | $16.00 | Yes | No |
-| 59 | `meta/llama-3.1-70b-instruct` | Llama 3.1 70B Instruct (NVIDIA NIM) | nvidia | Balanced | 128,000 | 4,096 | $0.88 | $0.88 | Yes | No |
-| 60 | `mistralai/mistral-large-latest` | Mistral Large (NVIDIA NIM) | nvidia | Smart | 128,000 | 4,096 | $2.00 | $6.00 | Yes | No |
-| 61 | `nvidia/nemotron-4-340b-instruct` | Nemotron 4 340B Instruct (NVIDIA NIM) | nvidia | Frontier | 4,096 | 4,096 | $4.20 | $4.20 | Yes | No |
 
 **Model Tiers:**
 
@@ -667,7 +627,7 @@ The complete catalog of all 56 builtin models, sorted by provider. Pricing is pe
 
 ## Model Aliases
 
-All 26 aliases resolve to canonical model IDs. Aliases are case-insensitive.
+All 23 aliases resolve to canonical model IDs. Aliases are case-insensitive.
 
 | Alias | Resolves To |
 |-------|------------|
@@ -694,9 +654,6 @@ All 26 aliases resolve to canonical model IDs. Aliases are case-insensitive.
 | `sonar` | `sonar-pro` |
 | `jamba` | `jamba-1.5-large` |
 | `command-r` | `command-r-plus` |
-| `nemotron` | `meta/llama-3.3-70b-instruct` |
-| `nemotron-super` | `nvidia/llama-3.3-nemotron-super-49b-v1.5` |
-| `nemotron-ultra` | `nvidia/llama-3.1-nemotron-ultra-253b-v1` |
 
 You can use aliases anywhere a model ID is accepted: in config files, REST API calls, chat commands, and the model routing configuration.
 
@@ -1090,7 +1047,6 @@ Quick reference for all provider environment variables:
 | Hugging Face | `HF_API_KEY` | Yes |
 | xAI | `XAI_API_KEY` | Yes |
 | Replicate | `REPLICATE_API_TOKEN` | Yes |
-| NVIDIA NIM | `NVIDIA_API_KEY` | Yes |
 
 ---
 

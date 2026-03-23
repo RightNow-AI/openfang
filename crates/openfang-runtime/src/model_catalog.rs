@@ -919,9 +919,7 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("codex-4.1", "codex/gpt-4.1"),
         ("codex-o4", "codex/o4-mini"),
         // NVIDIA NIM aliases
-        ("nemotron", "meta/llama-3.3-70b-instruct"),
-        ("nemotron-super", "nvidia/llama-3.3-nemotron-super-49b-v1.5"),
-        ("nemotron-ultra", "nvidia/llama-3.1-nemotron-ultra-253b-v1"),
+        ("nemotron", "nvidia/llama-3.1-nemotron-70b-instruct"),
         // Venice aliases
         ("venice", "venice-uncensored"),
         // Claude Code aliases
@@ -2160,50 +2158,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
-        // NVIDIA NIM (8)
+        // NVIDIA NIM (5)
         // ══════════════════════════════════════════════════════════════
-        ModelCatalogEntry {
-            id: "meta/llama-3.3-70b-instruct".into(),
-            display_name: "Llama 3.3 70B Instruct (NVIDIA NIM)".into(),
-            provider: "nvidia".into(),
-            tier: ModelTier::Balanced,
-            context_window: 128_000,
-            max_output_tokens: 4_096,
-            input_cost_per_m: 0.88,
-            output_cost_per_m: 0.88,
-            supports_tools: true,
-            supports_vision: false,
-            supports_streaming: true,
-            aliases: vec![],
-        },
-        ModelCatalogEntry {
-            id: "nvidia/llama-3.3-nemotron-super-49b-v1.5".into(),
-            display_name: "Nemotron Super 49B v1.5 (NVIDIA NIM)".into(),
-            provider: "nvidia".into(),
-            tier: ModelTier::Smart,
-            context_window: 128_000,
-            max_output_tokens: 4_096,
-            input_cost_per_m: 0.88,
-            output_cost_per_m: 0.88,
-            supports_tools: true,
-            supports_vision: false,
-            supports_streaming: true,
-            aliases: vec!["nemotron-super".into()],
-        },
-        ModelCatalogEntry {
-            id: "nvidia/llama-3.1-nemotron-ultra-253b-v1".into(),
-            display_name: "Nemotron Ultra 253B (NVIDIA NIM)".into(),
-            provider: "nvidia".into(),
-            tier: ModelTier::Frontier,
-            context_window: 128_000,
-            max_output_tokens: 4_096,
-            input_cost_per_m: 4.20,
-            output_cost_per_m: 4.20,
-            supports_tools: true,
-            supports_vision: false,
-            supports_streaming: true,
-            aliases: vec!["nemotron-ultra".into()],
-        },
         ModelCatalogEntry {
             id: "nvidia/llama-3.1-nemotron-70b-instruct".into(),
             display_name: "Nemotron 70B Instruct (NVIDIA NIM)".into(),
