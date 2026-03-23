@@ -648,7 +648,11 @@ fn truncate_for_log(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        format!("{}…[truncated, {} total bytes]", &s[..max_len], s.len())
+        let mut boundary = max_len;
+        while boundary > 0 && !s.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        format!("{}…[truncated, {} total bytes]", &s[..boundary], s.len())
     }
 }
 
@@ -847,11 +851,10 @@ impl LlmDriver for GeminiDriver {
                     chunk_preview = %truncate_for_log(&chunk_str, 200),
                     "Gemini SSE chunk received"
                 );
-                buffer.push_str(&chunk_str);
-
                 // Normalize \r\n to \n so the SSE delimiter \n\n works for
                 // both Unix (\n\n) and HTTP-standard (\r\n\r\n) line endings.
-                buffer = buffer.replace("\r\n", "\n");
+                // Normalize per chunk to avoid O(n*m) re-scanning of the full buffer.
+                buffer.push_str(&chunk_str.replace("\r\n", "\n"));
 
                 // Process complete SSE events (delimited by \n\n)
                 while let Some(pos) = buffer.find("\n\n") {
@@ -1901,6 +1904,139 @@ mod tests {
             }
             _ => panic!("Expected Text or Thought variant"),
         }
+    }
+
+    // ── enforce_function_call_ordering tests ─────────────────────────────
+
+    fn make_text_content(role: &str, text: &str) -> GeminiContent {
+        GeminiContent {
+            role: Some(role.to_string()),
+            parts: vec![GeminiPart::Text {
+                text: text.to_string(),
+                thought_signature: None,
+            }],
+        }
+    }
+
+    fn make_function_call_content(name: &str) -> GeminiContent {
+        GeminiContent {
+            role: Some("model".to_string()),
+            parts: vec![GeminiPart::FunctionCall {
+                function_call: GeminiFunctionCallData {
+                    name: name.to_string(),
+                    args: serde_json::json!({}),
+                },
+                thought_signature: None,
+            }],
+        }
+    }
+
+    fn make_function_response_content(name: &str) -> GeminiContent {
+        GeminiContent {
+            role: Some("user".to_string()),
+            parts: vec![GeminiPart::FunctionResponse {
+                function_response: GeminiFunctionResponseData {
+                    name: name.to_string(),
+                    response: serde_json::json!({"result": "ok"}),
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn test_enforce_ordering_removes_intervening_text_between_fc_and_fr() {
+        let contents = vec![
+            make_text_content("user", "Hello"),
+            make_function_call_content("get_weather"),
+            make_text_content("model", "[no response]"),
+            make_function_response_content("get_weather"),
+            make_text_content("model", "The weather is sunny."),
+        ];
+        let result = enforce_function_call_ordering(contents);
+        // The intervening "[no response]" model turn should be removed.
+        // Expected: user("Hello"), model(functionCall), user(functionResponse), model("The weather is sunny.")
+        assert_eq!(result.len(), 4);
+        assert!(result[1]
+            .parts
+            .iter()
+            .any(|p| matches!(p, GeminiPart::FunctionCall { .. })));
+        assert!(result[2]
+            .parts
+            .iter()
+            .any(|p| matches!(p, GeminiPart::FunctionResponse { .. })));
+    }
+
+    #[test]
+    fn test_enforce_ordering_strips_orphaned_function_call() {
+        let contents = vec![
+            make_text_content("user", "Hello"),
+            make_function_call_content("get_weather"),
+            make_text_content("model", "I could not call that tool."),
+        ];
+        let result = enforce_function_call_ordering(contents);
+        // The orphaned functionCall should be stripped, replaced with placeholder text.
+        // No FunctionCall parts should remain.
+        for content in &result {
+            for part in &content.parts {
+                assert!(
+                    !matches!(part, GeminiPart::FunctionCall { .. }),
+                    "Orphaned FunctionCall should have been stripped"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_enforce_ordering_prepends_user_turn_when_starts_with_model() {
+        let contents = vec![
+            make_function_call_content("search"),
+            make_function_response_content("search"),
+        ];
+        let result = enforce_function_call_ordering(contents);
+        // First turn must be "user"
+        assert_eq!(result[0].role.as_deref(), Some("user"));
+        // And it should be a synthetic text turn, not the functionResponse
+        assert!(result[0]
+            .parts
+            .iter()
+            .any(|p| matches!(p, GeminiPart::Text { .. })));
+    }
+
+    #[test]
+    fn test_enforce_ordering_merges_consecutive_same_role_turns() {
+        let contents = vec![
+            make_text_content("user", "Hello"),
+            make_text_content("user", "How are you?"),
+            make_text_content("model", "I'm fine."),
+        ];
+        let result = enforce_function_call_ordering(contents);
+        // Two consecutive user turns should be merged into one
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].role.as_deref(), Some("user"));
+        assert_eq!(result[0].parts.len(), 2);
+    }
+
+    #[test]
+    fn test_enforce_ordering_passthrough_when_already_valid() {
+        let contents = vec![
+            make_text_content("user", "Hello"),
+            make_function_call_content("search"),
+            make_function_response_content("search"),
+            make_text_content("model", "Done."),
+        ];
+        let result = enforce_function_call_ordering(contents);
+        assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn test_truncate_for_log_handles_multibyte_utf8() {
+        // Japanese text: each char is 3 bytes in UTF-8
+        let s = "こんにちは世界"; // 7 chars, 21 bytes
+        // Truncating at 5 bytes should not panic — lands in middle of 2nd char
+        let result = truncate_for_log(&s, 5);
+        assert!(result.contains("…[truncated"));
+        // Should contain only the first complete character (3 bytes)
+        assert!(result.starts_with("こ"));
     }
 
     #[test]
