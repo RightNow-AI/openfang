@@ -165,6 +165,7 @@ Before shipping a production image or binary cutover, also verify operator safet
 scripts/backup-openfang.sh
 OPENFANG_PREFLIGHT_OFFLINE=1 scripts/preflight-openfang.sh --offline
 OPENFANG_STRICT_PRODUCTION=1 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
 ```
 
 For systemd-style deployments using `/etc/openfang/env`, include:
@@ -173,6 +174,7 @@ For systemd-style deployments using `/etc/openfang/env`, include:
 OPENFANG_ENV_FILE=/etc/openfang/env scripts/backup-openfang.sh
 OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_PREFLIGHT_OFFLINE=1 scripts/preflight-openfang.sh --offline
 OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_STRICT_PRODUCTION=1 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
+OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
 ```
 
 After those file-based validations, run the stateful smoke that actually spawns an agent, exercises its budget, and then kills it so the runtime path your customers hit is really exercised:
@@ -186,8 +188,10 @@ Strict preflight accepts that external env baseline while still requiring owner-
 
 Pass criteria:
 - backup succeeds while the daemon is stopped, or live backup is explicitly opted into
+- `BACKUP.txt` records the binary fingerprint you will actually roll back to; if the deploy binary is not on `PATH`, set `OPENFANG_BINARY_PATH` or run the backup from the source checkout that contains `target/release|debug/openfang`
 - offline preflight validates config resolution, config-include dependencies, sensitive file permissions, state-file integrity, writable runtime paths, and SQLite quick-check
 - live preflight validates runtime reachability and checks `/api/health/detail` readiness when the provided auth context can access protected endpoints
+- `scripts/smoke-openfang.sh` validates the public dashboard shell and the alert-backed metric families before cutover
 - if the release is meant to serve provider-backed traffic, one real `scripts/provider-canary-openfang.sh` run succeeds and is archived with the release evidence
 - the same `scripts/live-api-smoke-openfang.sh` run also proves stateful agent workflows before cutover
 - the CI `deploy-lint` job must pass so `systemd-analyze verify deploy/openfang.service`, `docker compose config`, and `promtool check` for the stored Prometheus rules/config all succeed

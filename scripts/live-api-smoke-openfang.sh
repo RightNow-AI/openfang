@@ -123,6 +123,25 @@ echo "ok listed spawned agent"
 agent_detail=$(run_curl "/api/agents/${agent_id}")
 echo "ok fetched agent detail"
 
+PATCH_PAYLOAD=$(python3 - <<PY
+import json
+print(json.dumps({"description": "Smoke agent updated"}))
+PY
+)
+curl -fsS -X PATCH "${BASE_URL}/api/agents/${agent_id}" "${AUTH[@]}" "${CONTENT[@]}" -d "${PATCH_PAYLOAD}" >/dev/null
+echo "ok patched agent description"
+
+IDENTITY_PAYLOAD=$(python3 - <<PY
+import json
+print(json.dumps({"emoji": ":)", "color": "#112233"}))
+PY
+)
+curl -fsS -X PATCH "${BASE_URL}/api/agents/${agent_id}/identity" "${AUTH[@]}" "${CONTENT[@]}" -d "${IDENTITY_PAYLOAD}" >/dev/null
+echo "ok patched agent identity"
+
+agent_detail=$(run_curl "/api/agents/${agent_id}")
+echo "ok fetched updated agent detail"
+
 UPDATE_PAYLOAD=$(python3 - <<PY
 import json
 print(json.dumps({"max_cost_per_day_usd": 0.01}))
@@ -144,9 +163,16 @@ if ! printf '%s' "${agent_detail}" | python3 -c 'import json, sys
 payload = json.load(sys.stdin)
 if not payload.get("id"):
     raise SystemExit("missing id")
+if payload.get("description") != "Smoke agent updated":
+    raise SystemExit("description patch mismatch")
+identity = payload.get("identity") or {}
+if identity.get("emoji") != ":)":
+    raise SystemExit("identity emoji mismatch")
+if identity.get("color") != "#112233":
+    raise SystemExit("identity color mismatch")
 '
 then
-  echo "error agent detail missing id" >&2
+  echo "error agent detail did not reflect config/identity updates" >&2
   exit 1
 fi
 if ! printf '%s' "${budget}" | python3 -c 'import json, sys

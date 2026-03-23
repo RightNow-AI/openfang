@@ -497,6 +497,25 @@ jobs:
           PATH="$tool_bin:$PATH" bash scripts/backup-openfang.sh "$RUNNER_TEMP/backups-hash-fallback"
           backup_dir="$(find "$RUNNER_TEMP/backups-hash-fallback" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
           grep -Eq '^openfang_binary_sha256=[0-9a-f]{64}$' "$backup_dir/BACKUP.txt"
+      - name: Backup metadata detects repo-local binary when PATH lacks openfang
+        run: |
+          export OPENFANG_HOME="$RUNNER_TEMP/openfang-home-local-binary"
+          rm -rf "$OPENFANG_HOME" "$RUNNER_TEMP/backups-local-binary"
+          mkdir -p "$OPENFANG_HOME/data" target/debug
+          cat > "$OPENFANG_HOME/config.toml" <<'EOF'
+          api_listen = "127.0.0.1:4200"
+          EOF
+          sqlite3 "$OPENFANG_HOME/data/openfang.db" 'CREATE TABLE demo (id INTEGER PRIMARY KEY, value TEXT);'
+          trap 'rm -f target/debug/openfang' EXIT
+          cat > target/debug/openfang <<'EOF'
+          #!/usr/bin/env bash
+          echo "openfang 0.0.0 (feedcafe)"
+          EOF
+          chmod +x target/debug/openfang
+          PATH="/usr/bin:/bin" bash scripts/backup-openfang.sh "$RUNNER_TEMP/backups-local-binary"
+          backup_dir="$(find "$RUNNER_TEMP/backups-local-binary" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          grep -q "^openfang_binary=$PWD/target/debug/openfang$" "$backup_dir/BACKUP.txt"
+          grep -Eq '^openfang_binary_sha256=[0-9a-f]{64}$' "$backup_dir/BACKUP.txt"
       - name: Backup and restore roundtrip
         run: |
           export OPENFANG_HOME="$RUNNER_TEMP/openfang-home"

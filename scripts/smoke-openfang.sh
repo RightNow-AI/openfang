@@ -65,6 +65,27 @@ mark_failure() {
   smoke_failures=1
 }
 
+check_dashboard_shell() {
+  local body
+
+  body="$(curl_with_auth "${BASE_URL}/")"
+  printf '%s' "${body}" | python3 -c '
+import sys
+
+body = sys.stdin.read()
+required = [
+    "<title>OpenFang Dashboard</title>",
+    "<body x-data=\"app\"",
+    "document.addEventListener('\''alpine:init'\''",
+]
+missing = [marker for marker in required if marker not in body]
+if missing:
+    raise SystemExit(
+        "dashboard shell is missing expected markers: " + ", ".join(missing)
+    )
+'
+}
+
 require_json_status() {
   local url="$1"
   local description="$2"
@@ -115,6 +136,45 @@ if entries == 0 or warning:
 PY
 }
 
+check_required_metrics() {
+  local url="$1"
+  local body
+
+  body="$(curl_with_auth "${url}")"
+  printf '%s' "${body}" | python3 -c '
+import sys
+
+lines = sys.stdin.read().splitlines()
+required = [
+    "openfang_readiness_ready",
+    "openfang_database_ok",
+    "openfang_usage_store_ok",
+    "openfang_shutdown_requested",
+    "openfang_default_provider_auth_missing",
+    "openfang_config_warnings",
+    "openfang_restore_warnings",
+    "openfang_agent_runtime_issues",
+    "openfang_panics_total",
+    "openfang_restarts_total",
+    "openfang_info",
+]
+
+missing = []
+for metric in required:
+    if not any(
+        line.startswith(f"{metric} ") or line.startswith(f"{metric}{{")
+        for line in lines
+    ):
+        missing.append(metric)
+
+if missing:
+    raise SystemExit(
+        "metrics endpoint is missing required operational metric families: "
+        + ", ".join(missing)
+    )
+'
+}
+
 check_protected() {
   local mode="$1"
   local url="$2"
@@ -139,6 +199,8 @@ check_protected() {
 }
 
 require_json_status "${BASE_URL}/api/health" "health" "ok"
+check_dashboard_shell
+echo "ok  dashboard shell"
 
 if check_protected "json-status" "${BASE_URL}/api/status" "status" "running"; then
   echo "ok  status"
@@ -147,6 +209,7 @@ if check_protected "json-status" "${BASE_URL}/api/health/detail" "health detail"
   echo "ok  health detail"
 fi
 if check_protected "status" "${BASE_URL}/api/metrics" "metrics"; then
+  check_required_metrics "${BASE_URL}/api/metrics"
   echo "ok  metrics"
 fi
 if check_protected "audit" "${BASE_URL}/api/audit/verify" "audit verify"; then

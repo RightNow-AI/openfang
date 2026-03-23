@@ -13,6 +13,7 @@ Environment:
   OPENFANG_HOME          Runtime home to back up (default: $HOME/.openfang)
   OPENFANG_ENV_FILE      Optional external env file to back up (for example /etc/openfang/env)
                          If unset, backup only auto-detects /etc/openfang/env when it matches the current OPENFANG_HOME
+  OPENFANG_BINARY_PATH   Optional daemon binary to fingerprint in BACKUP.txt
   OPENFANG_KEEP_BACKUPS  Number of backups to keep in backup-root (default: 5)
   OPENFANG_ALLOW_LIVE_BACKUP
                          Set to 1 only when you intentionally accept a live,
@@ -30,6 +31,7 @@ BACKUP_ROOT="${1:-$HOME/openfang-backups}"
 KEEP_BACKUPS="${OPENFANG_KEEP_BACKUPS:-5}"
 ALLOW_LIVE_BACKUP="${OPENFANG_ALLOW_LIVE_BACKUP:-0}"
 CONFIG_PATH="${OPENFANG_HOME}/config.toml"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ensure_readable_file() {
   local path="$1"
@@ -93,10 +95,34 @@ env_file_var() {
 }
 
 capture_openfang_metadata() {
-  if ! command -v openfang >/dev/null 2>&1; then
-    echo ""
-    return
-  fi
+  detect_openfang_binary() {
+    local candidate repo_root
+
+    if [[ -n "${OPENFANG_BINARY_PATH:-}" ]]; then
+      if [[ -x "${OPENFANG_BINARY_PATH}" ]]; then
+        printf '%s\n' "${OPENFANG_BINARY_PATH}"
+        return 0
+      fi
+      echo "warn OPENFANG_BINARY_PATH is not executable: ${OPENFANG_BINARY_PATH}" >&2
+    fi
+
+    if candidate="$(command -v openfang 2>/dev/null)" && [[ -n "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+
+    repo_root="$(cd "${SCRIPT_DIR}/.." && pwd)"
+    for candidate in \
+      "${repo_root}/target/release/openfang" \
+      "${repo_root}/target/debug/openfang"; do
+      if [[ -x "${candidate}" ]]; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    done
+
+    return 1
+  }
 
   sha256_file() {
     local path="$1"
@@ -139,8 +165,12 @@ PY
   }
 
   local binary version sha git_sha
-  binary="$(command -v openfang)"
-  version="$(openfang --version 2>/dev/null | head -n 1 || true)"
+  binary="$(detect_openfang_binary || true)"
+  if [[ -z "${binary}" ]]; then
+    echo ""
+    return
+  fi
+  version="$("${binary}" --version 2>/dev/null | head -n 1 || true)"
   sha="$(sha256_file "${binary}" 2>/dev/null || true)"
   git_sha="$(printf '%s\n' "${version}" | grep -oE '[0-9a-f]{7,}' | head -n 1)"
   printf '%s|%s|%s|%s' "${binary}" "${version}" "${sha}" "${git_sha}"

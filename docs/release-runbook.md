@@ -187,6 +187,7 @@ In another terminal:
 ```bash
 curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
   http://127.0.0.1:4200/api/health/detail
+OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/live-api-smoke-openfang.sh
 ```
 

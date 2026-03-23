@@ -167,6 +167,7 @@ OPENFANG_STRICT_PRODUCTION=1 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/prefli
 ```
 
 These operational scripts are repository artifacts and are typically run from the host (or CI runner) that has this repo checked out. Do not assume they exist inside the runtime container image.
+`scripts/smoke-openfang.sh` now fails if `/api/metrics` is reachable but missing the operational metric families that the bundled Prometheus rules and runbooks depend on.
 `scripts/preflight-openfang.sh` is strict by default and fails if the live API is unreachable or if `/api/health/detail` reports a degraded node. Use `--offline` (or `OPENFANG_PREFLIGHT_OFFLINE=1`) only for intentional file-only checks.
 
 If this node is supposed to serve real provider-backed responses, also run a real canary and the stateful live smoke:
@@ -186,7 +187,7 @@ OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/live-api-smoke-openfang.sh
 The canary now requires per-agent token usage to increase after the LLM round-trip. Spend counters are still checked for non-regression, but they may remain unchanged for free or local provider paths.
 For automation and cutovers, prefer `OPENFANG_STRICT_PRODUCTION=1` so smoke/preflight fail closed when protected operational checks cannot authenticate.
 
-If you scrape Prometheus, wire alerts from `deploy/openfang-alerts.yml` into the same environment. The readiness metrics (`openfang_readiness_ready`, `openfang_database_ok`, `openfang_usage_store_ok`, `openfang_default_provider_auth_missing`, `openfang_config_warnings`, `openfang_restore_warnings`) are designed to match the daemon's own `/api/health/detail` interpretation, including secrets resolved from `vault.enc`, `secrets.env`, and `.env`.
+If you scrape Prometheus, wire alerts from `deploy/openfang-alerts.yml` into the same environment. The readiness metrics (`openfang_readiness_ready`, `openfang_database_ok`, `openfang_usage_store_ok`, `openfang_default_provider_auth_missing`, `openfang_config_warnings`, `openfang_restore_warnings`, `openfang_agent_runtime_issues`) are designed to match the daemon's own `/api/health/detail` interpretation, including secrets resolved from `vault.enc`, `secrets.env`, and `.env`.
 Use `deploy/prometheus-scrape.yml` as the starter scrape job when you want a working Prometheus example that already includes Bearer auth for `/api/metrics`.
 The sample alert rules now include both `absent(openfang_info)` and `up{job="openfang"} == 0`; update the `job` matcher if your Prometheus scrape config uses a different label.
 

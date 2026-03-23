@@ -24,11 +24,14 @@ Meaning:
 - global budget limits are now enforced on the live message path rather than only exposed in read APIs
 - global budget updates now reject negative values instead of silently converting them into unlimited budgets
 - upload serving now sniffs on-disk content types instead of defaulting unknown files to `image/png`
+- agent config, identity, model, skill, tool, and MCP updates now fail closed when SQLite persistence fails instead of returning success with runtime-only drift
+- cloned agents now persist copied identity state instead of dropping it on daemon restart
 - health/readiness already fails closed for broken usage-store access, degraded restore state, and missing provider auth where applicable
 
 ### Stability and failure handling
 
 - agent spawn and kill now fail closed on persistence errors instead of leaving runtime-only or database-only ghosts behind
+- agent metadata/config mutation paths now roll back in-memory changes when persistence fails, so restarts cannot silently resurrect stale state after a "successful" API write
 - config hot reload now surfaces follow-up warnings instead of silently appearing fully applied
 - budget endpoints and channel/websocket budget readouts now return explicit errors when metering storage is unavailable
 - per-agent budget persistence rolls back in-memory state on save failure
