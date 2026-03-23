@@ -300,7 +300,7 @@ async fn handle_agent_ws(
 
     // Per-connection rate limiting: max 10 messages per 60 seconds
     let mut msg_times: Vec<std::time::Instant> = Vec::new();
-    const MAX_PER_MIN: usize = 30;
+    const MAX_PER_MIN: usize = 60;
     const WINDOW: Duration = Duration::from_secs(60);
 
     // Track last activity for idle timeout
@@ -362,7 +362,7 @@ async fn handle_agent_ws(
                         &sender,
                         &serde_json::json!({
                             "type": "error",
-                            "content": "Rate limit exceeded. Max 10 messages per minute.",
+                            "content": format!("Rate limit exceeded. Max {} messages per minute.", MAX_PER_MIN),
                         }),
                     )
                     .await;
