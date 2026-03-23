@@ -14,7 +14,7 @@ use openfang_kernel::workflow::{
 use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::tool_runner::builtin_tool_definitions;
-use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
+use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest, SessionId};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Once};
 use std::time::Instant;
@@ -39,6 +39,42 @@ pub struct AppState {
     /// Avoids blocking the `/api/providers` endpoint on TCP timeouts to
     /// unreachable local services. 60-second TTL.
     pub provider_probe_cache: openfang_runtime::provider_health::ProbeCache,
+}
+
+pub(crate) struct AbortOnDropStream<T> {
+    inner: std::pin::Pin<Box<dyn futures::Stream<Item = T> + Send>>,
+    abort_handle: Option<tokio::task::AbortHandle>,
+}
+
+impl<T> AbortOnDropStream<T> {
+    pub(crate) fn new<S>(stream: S, abort_handle: tokio::task::AbortHandle) -> Self
+    where
+        S: futures::Stream<Item = T> + Send + 'static,
+    {
+        Self {
+            inner: Box::pin(stream),
+            abort_handle: Some(abort_handle),
+        }
+    }
+}
+
+impl<T> Drop for AbortOnDropStream<T> {
+    fn drop(&mut self) {
+        if let Some(abort_handle) = self.abort_handle.take() {
+            abort_handle.abort();
+        }
+    }
+}
+
+impl<T> futures::Stream for AbortOnDropStream<T> {
+    type Item = T;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
 }
 
 fn effective_provider_and_model<'a>(
@@ -70,6 +106,16 @@ fn extract_status_code(s: &str) -> Option<u16> {
 }
 
 fn classify_http_kernel_error(err: &KernelError) -> (StatusCode, String) {
+    if matches!(
+        err,
+        KernelError::OpenFang(openfang_types::error::OpenFangError::ShuttingDown)
+    ) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Shutdown in progress".to_string(),
+        );
+    }
+
     let inner = format!("{err}");
 
     if inner.contains("Agent not found") {
@@ -387,20 +433,26 @@ pub fn with_message_text_block(
 #[cfg(test)]
 mod http_error_tests {
     use super::{
-        classify_http_kernel_error, derive_custom_provider_api_key_env,
-        escape_prometheus_label_value, extract_status_code, json_to_toml_value,
+        classify_http_kernel_error, delete_session, derive_custom_provider_api_key_env,
+        escape_prometheus_label_value, extract_status_code, json_to_toml_value, patch_agent_config,
         resolve_attachments, serve_upload, upload_path, validate_secret_env_key,
-        validate_secret_env_value, with_message_text_block, AttachmentRef, UploadMeta,
-        UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
+        validate_secret_env_value, with_message_text_block, AbortOnDropStream, AppState,
+        AttachmentRef, PatchAgentConfigRequest, UploadMeta, UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
     };
     use axum::body::to_bytes;
-    use axum::extract::Path;
+    use axum::extract::{Path, State};
     use axum::http::{header::CONTENT_TYPE, StatusCode};
     use axum::response::IntoResponse;
+    use axum::Json;
+    use dashmap::DashMap;
     use openfang_kernel::error::KernelError;
+    use openfang_kernel::OpenFangKernel;
+    use openfang_types::agent::AgentManifest;
+    use openfang_types::config::{DefaultModelConfig, KernelConfig};
     use openfang_types::error::OpenFangError;
     use openfang_types::message::ContentBlock;
     use std::io::ErrorKind;
+    use std::sync::Arc;
     use std::time::{Duration, SystemTime};
 
     #[test]
@@ -597,6 +649,277 @@ mod http_error_tests {
             let err = derive_custom_provider_api_key_env(provider_name).unwrap_err();
             assert_eq!(err.kind(), ErrorKind::InvalidInput);
         }
+    }
+
+    #[test]
+    fn classify_http_kernel_error_maps_shutting_down_to_service_unavailable() {
+        let (status, message) =
+            classify_http_kernel_error(&KernelError::OpenFang(OpenFangError::ShuttingDown));
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(message, "Shutdown in progress");
+    }
+
+    #[tokio::test]
+    async fn delete_session_rejects_active_session_with_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = Arc::new(
+            OpenFangKernel::boot_with_config(KernelConfig {
+                home_dir: tmp.path().to_path_buf(),
+                data_dir: tmp.path().join("data"),
+                default_model: DefaultModelConfig {
+                    provider: "ollama".to_string(),
+                    model: "test-model".to_string(),
+                    api_key_env: String::new(),
+                    base_url: None,
+                },
+                ..KernelConfig::default()
+            })
+            .expect("kernel should boot"),
+        );
+
+        let manifest: AgentManifest = toml::from_str(
+            r#"
+name = "active-session-delete-test"
+version = "0.1.0"
+description = "test agent"
+author = "test"
+module = "builtin:chat"
+
+[model]
+provider = "ollama"
+model = "test-model"
+"#,
+        )
+        .expect("manifest should parse");
+        let agent_id = kernel.spawn_agent(manifest).expect("agent should spawn");
+        let active_session_id = kernel
+            .registry
+            .get(agent_id)
+            .expect("agent entry should exist")
+            .session_id;
+
+        let state = Arc::new(AppState {
+            kernel: Arc::clone(&kernel),
+            started_at: std::time::Instant::now(),
+            bridge_manager: tokio::sync::Mutex::new(None),
+            channels_config: tokio::sync::RwLock::new(
+                openfang_types::config::ChannelsConfig::default(),
+            ),
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            clawhub_cache: DashMap::new(),
+            provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        });
+
+        let response = delete_session(State(state), Path(active_session_id.0.to_string()))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn patch_agent_config_is_atomic_when_name_conflicts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = Arc::new(
+            OpenFangKernel::boot_with_config(KernelConfig {
+                home_dir: tmp.path().to_path_buf(),
+                data_dir: tmp.path().join("data"),
+                default_model: DefaultModelConfig {
+                    provider: "ollama".to_string(),
+                    model: "test-model".to_string(),
+                    api_key_env: String::new(),
+                    base_url: None,
+                },
+                ..KernelConfig::default()
+            })
+            .expect("kernel should boot"),
+        );
+
+        let manifest_a: AgentManifest = toml::from_str(
+            r#"
+name = "atomic-a"
+version = "0.1.0"
+description = "original description"
+author = "test"
+module = "builtin:chat"
+
+[model]
+provider = "ollama"
+model = "test-model"
+"#,
+        )
+        .expect("manifest should parse");
+        let manifest_b: AgentManifest = toml::from_str(
+            r#"
+name = "atomic-b"
+version = "0.1.0"
+description = "other description"
+author = "test"
+module = "builtin:chat"
+
+[model]
+provider = "ollama"
+model = "test-model"
+"#,
+        )
+        .expect("manifest should parse");
+
+        let agent_a = kernel
+            .spawn_agent(manifest_a)
+            .expect("agent A should spawn");
+        let _agent_b = kernel
+            .spawn_agent(manifest_b)
+            .expect("agent B should spawn");
+
+        let state = Arc::new(AppState {
+            kernel: Arc::clone(&kernel),
+            started_at: std::time::Instant::now(),
+            bridge_manager: tokio::sync::Mutex::new(None),
+            channels_config: tokio::sync::RwLock::new(
+                openfang_types::config::ChannelsConfig::default(),
+            ),
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            clawhub_cache: DashMap::new(),
+            provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        });
+
+        let response = patch_agent_config(
+            State(Arc::clone(&state)),
+            Path(agent_a.to_string()),
+            Json(PatchAgentConfigRequest {
+                name: Some("atomic-b".to_string()),
+                description: Some("should not stick".to_string()),
+                system_prompt: None,
+                emoji: None,
+                avatar_url: None,
+                color: None,
+                archetype: None,
+                vibe: None,
+                greeting_style: None,
+                model: None,
+                provider: None,
+                api_key_env: None,
+                base_url: None,
+                fallback_models: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let entry = state
+            .kernel
+            .registry
+            .get(agent_a)
+            .expect("agent A should still exist");
+        assert_eq!(entry.name, "atomic-a");
+        assert_eq!(entry.manifest.description, "original description");
+    }
+
+    #[tokio::test]
+    async fn patch_agent_config_updates_connection_hints() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = Arc::new(
+            OpenFangKernel::boot_with_config(KernelConfig {
+                home_dir: tmp.path().to_path_buf(),
+                data_dir: tmp.path().join("data"),
+                default_model: DefaultModelConfig {
+                    provider: "ollama".to_string(),
+                    model: "test-model".to_string(),
+                    api_key_env: String::new(),
+                    base_url: None,
+                },
+                ..KernelConfig::default()
+            })
+            .expect("kernel should boot"),
+        );
+
+        let manifest: AgentManifest = toml::from_str(
+            r#"
+name = "connection-hints"
+version = "0.1.0"
+description = "connection hint test"
+author = "test"
+module = "builtin:chat"
+
+[model]
+provider = "ollama"
+model = "test-model"
+"#,
+        )
+        .expect("manifest should parse");
+
+        let agent_id = kernel.spawn_agent(manifest).expect("agent should spawn");
+
+        let state = Arc::new(AppState {
+            kernel: Arc::clone(&kernel),
+            started_at: std::time::Instant::now(),
+            bridge_manager: tokio::sync::Mutex::new(None),
+            channels_config: tokio::sync::RwLock::new(
+                openfang_types::config::ChannelsConfig::default(),
+            ),
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            clawhub_cache: DashMap::new(),
+            provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        });
+
+        let response = patch_agent_config(
+            State(Arc::clone(&state)),
+            Path(agent_id.to_string()),
+            Json(PatchAgentConfigRequest {
+                name: None,
+                description: None,
+                system_prompt: None,
+                emoji: None,
+                avatar_url: None,
+                color: None,
+                archetype: None,
+                vibe: None,
+                greeting_style: None,
+                model: None,
+                provider: None,
+                api_key_env: Some("CUSTOM_PROVIDER_KEY".to_string()),
+                base_url: Some("https://llm.example.test/v1".to_string()),
+                fallback_models: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let entry = state
+            .kernel
+            .registry
+            .get(agent_id)
+            .expect("agent should still exist");
+        assert_eq!(
+            entry.manifest.model.api_key_env.as_deref(),
+            Some("CUSTOM_PROVIDER_KEY")
+        );
+        assert_eq!(
+            entry.manifest.model.base_url.as_deref(),
+            Some("https://llm.example.test/v1")
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_on_drop_stream_aborts_task_handle() {
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        let abort_handle = handle.abort_handle();
+
+        let stream = AbortOnDropStream::new(
+            futures::stream::empty::<Result<axum::response::sse::Event, std::convert::Infallible>>(
+            ),
+            abort_handle,
+        );
+        drop(stream);
+
+        let err = handle.await.expect_err("task should be aborted");
+        assert!(err.is_cancelled());
     }
 }
 
@@ -1678,7 +2001,7 @@ pub async fn send_message_stream(
     };
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
-    let (rx, _handle) = match state
+    let (rx, handle) = match state
         .kernel
         .send_message_streaming_with_blocks(
             agent_id,
@@ -1697,6 +2020,7 @@ pub async fn send_message_stream(
             return (status, Json(serde_json::json!({"error": error}))).into_response();
         }
     };
+    let abort_handle = handle.abort_handle();
 
     let sse_stream = stream::unfold(rx, |mut rx| async move {
         match rx.recv().await {
@@ -1739,7 +2063,9 @@ pub async fn send_message_stream(
         }
     });
 
-    Sse::new(sse_stream).into_response()
+    let guarded_stream = AbortOnDropStream::new(sse_stream, abort_handle);
+
+    Sse::new(guarded_stream).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -6039,6 +6365,14 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> impl IntoRespo
     }
 }
 
+fn is_active_session_for_any_agent(kernel: &OpenFangKernel, session_id: SessionId) -> bool {
+    kernel
+        .registry
+        .list()
+        .iter()
+        .any(|entry| entry.session_id == session_id)
+}
+
 /// DELETE /api/sessions/:id — Delete a session.
 pub async fn delete_session(
     State(state): State<Arc<AppState>>,
@@ -6053,6 +6387,15 @@ pub async fn delete_session(
             );
         }
     };
+
+    if is_active_session_for_any_agent(&state.kernel, session_id) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "Cannot delete an active session. Switch or reset the agent session first."
+            })),
+        );
+    }
 
     match state.kernel.memory.delete_session(session_id) {
         Ok(()) => (
@@ -9369,7 +9712,7 @@ pub struct PatchAgentConfigRequest {
     pub fallback_models: Option<Vec<openfang_types::agent::FallbackModel>>,
 }
 
-/// PATCH /api/agents/{id}/config — Hot-update agent name, description, system prompt, and identity.
+/// PATCH /api/agents/{id}/config — Hot-update agent config fields atomically.
 pub async fn patch_agent_config(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -9381,6 +9724,16 @@ pub async fn patch_agent_config(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "Invalid agent ID"})),
+            );
+        }
+    };
+
+    let current_entry = match state.kernel.registry.get(agent_id) {
+        Some(entry) => entry,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
             );
         }
     };
@@ -9445,36 +9798,59 @@ pub async fn patch_agent_config(
         }
     }
 
+    let normalized_api_key_env = match req.api_key_env.as_deref() {
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Some(None)
+            } else {
+                if let Err(err) = validate_secret_env_key(trimmed) {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": err.to_string()})),
+                    );
+                }
+                Some(Some(trimmed.to_string()))
+            }
+        }
+        None => None,
+    };
+
+    let normalized_base_url = match req.base_url.as_deref() {
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Some(None)
+            } else if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "Base URL must start with http:// or https://"})),
+                );
+            } else {
+                Some(Some(trimmed.to_string()))
+            }
+        }
+        None => None,
+    };
+
+    let mut updated_entry = current_entry.clone();
+
     // Update name
     if let Some(ref new_name) = req.name {
         if !new_name.is_empty() {
-            if let Err(e) = state.kernel.update_agent_name(agent_id, new_name.clone()) {
-                let (status, error) = classify_http_kernel_error(&e);
-                return (status, Json(serde_json::json!({"error": error})));
-            }
+            updated_entry.name = new_name.clone();
+            updated_entry.manifest.name = new_name.clone();
         }
     }
 
     // Update description
     if let Some(ref new_desc) = req.description {
-        if let Err(e) = state
-            .kernel
-            .update_agent_description(agent_id, new_desc.clone())
-        {
-            let (status, error) = classify_http_kernel_error(&e);
-            return (status, Json(serde_json::json!({"error": error})));
-        }
+        updated_entry.manifest.description = new_desc.clone();
     }
 
     // Update system prompt (hot-swap — takes effect on next message)
     if let Some(ref new_prompt) = req.system_prompt {
-        if let Err(e) = state
-            .kernel
-            .update_agent_system_prompt(agent_id, new_prompt.clone())
-        {
-            let (status, error) = classify_http_kernel_error(&e);
-            return (status, Json(serde_json::json!({"error": error})));
-        }
+        updated_entry.manifest.model.system_prompt = new_prompt.clone();
     }
 
     // Update identity fields (merge — only overwrite provided fields)
@@ -9486,71 +9862,67 @@ pub async fn patch_agent_config(
         || req.greeting_style.is_some();
 
     if has_identity_field {
-        // Read current identity, merge with provided fields
-        let current = state
-            .kernel
-            .registry
-            .get(agent_id)
-            .map(|e| e.identity)
-            .unwrap_or_default();
-        let merged = AgentIdentity {
-            emoji: req.emoji.or(current.emoji),
-            avatar_url: req.avatar_url.or(current.avatar_url),
-            color: req.color.or(current.color),
-            archetype: req.archetype.or(current.archetype),
-            vibe: req.vibe.or(current.vibe),
-            greeting_style: req.greeting_style.or(current.greeting_style),
+        let current_identity = updated_entry.identity.clone();
+        updated_entry.identity = AgentIdentity {
+            emoji: req.emoji.clone().or(current_identity.emoji),
+            avatar_url: req.avatar_url.clone().or(current_identity.avatar_url),
+            color: req.color.clone().or(current_identity.color),
+            archetype: req.archetype.clone().or(current_identity.archetype),
+            vibe: req.vibe.clone().or(current_identity.vibe),
+            greeting_style: req
+                .greeting_style
+                .clone()
+                .or(current_identity.greeting_style),
         };
-        if let Err(e) = state.kernel.update_agent_identity(agent_id, merged) {
-            let (status, error) = classify_http_kernel_error(&e);
-            return (status, Json(serde_json::json!({"error": error})));
-        }
     }
 
     // Update model/provider — use set_agent_model for catalog-based provider
     // resolution when provider is not explicitly provided (fixes #387/#466:
     // changing model from another provider without specifying provider now
     // auto-resolves the correct provider from the model catalog).
-    if let Some(ref new_model) = req.model {
+    let model_changed = if let Some(ref new_model) = req.model {
         if !new_model.is_empty() {
-            if let Some(ref new_provider) = req.provider {
-                if !new_provider.is_empty() {
-                    // Explicit provider given — still route through set_agent_model
-                    // so provider-specific auth/env hints stay in sync.
-                    if let Err(e) =
-                        state
-                            .kernel
-                            .set_agent_model(agent_id, new_model, Some(new_provider))
-                    {
-                        let (status, error) = classify_http_kernel_error(&e);
-                        return (status, Json(serde_json::json!({"error": error})));
-                    }
-                } else {
-                    // Provider is empty string — resolve from catalog
-                    if let Err(e) = state.kernel.set_agent_model(agent_id, new_model, None) {
-                        let (status, error) = classify_http_kernel_error(&e);
-                        return (status, Json(serde_json::json!({"error": error})));
-                    }
-                }
-            } else {
-                // No provider field at all — resolve from catalog
-                if let Err(e) = state.kernel.set_agent_model(agent_id, new_model, None) {
-                    let (status, error) = classify_http_kernel_error(&e);
-                    return (status, Json(serde_json::json!({"error": error})));
-                }
+            let explicit_provider = req.provider.as_deref().filter(|value| !value.is_empty());
+            if let Err(e) = state.kernel.apply_model_update_to_entry(
+                &mut updated_entry,
+                new_model,
+                explicit_provider,
+            ) {
+                let (status, error) = classify_http_kernel_error(&e);
+                return (status, Json(serde_json::json!({"error": error})));
             }
+            true
+        } else {
+            false
         }
-    }
+    } else {
+        false
+    };
 
     // Update fallback model chain
-    if let Some(fallbacks) = req.fallback_models {
-        if let Err(e) = state
-            .kernel
-            .update_agent_fallback_models(agent_id, fallbacks)
-        {
-            let (status, error) = classify_http_kernel_error(&e);
-            return (status, Json(serde_json::json!({"error": error})));
-        }
+    if let Some(ref fallbacks) = req.fallback_models {
+        updated_entry.manifest.fallback_models = fallbacks.clone();
+    }
+
+    // Apply direct connection-hint overrides after model resolution so explicit
+    // request fields win over provider defaults.
+    if let Some(api_key_env) = normalized_api_key_env {
+        updated_entry.manifest.model.api_key_env = api_key_env;
+    }
+    if let Some(base_url) = normalized_base_url {
+        updated_entry.manifest.model.base_url = base_url;
+    }
+
+    if let Err(e) = state
+        .kernel
+        .replace_persisted_agent_entry(agent_id, updated_entry)
+    {
+        let (status, error) = classify_http_kernel_error(&e);
+        return (status, Json(serde_json::json!({"error": error})));
+    }
+
+    if model_changed {
+        let _ = state.kernel.memory.delete_canonical_session(agent_id);
     }
 
     (

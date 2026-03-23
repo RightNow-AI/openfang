@@ -6,7 +6,7 @@
 //!
 //! Supports both streaming (SSE) and non-streaming responses.
 
-use crate::routes::AppState;
+use crate::routes::{AbortOnDropStream, AppState};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -399,7 +399,7 @@ async fn stream_response(
 ) -> Result<axum::response::Response, String> {
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
 
-    let (mut rx, _handle) = state
+    let (mut rx, handle) = state
         .kernel
         .send_message_streaming_with_blocks(
             agent_id,
@@ -411,6 +411,7 @@ async fn stream_response(
         )
         .await
         .map_err(|e| format!("Streaming setup failed: {e}"))?;
+    let abort_handle = handle.abort_handle();
 
     let (tx, stream_rx) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(64);
 
@@ -555,7 +556,10 @@ async fn stream_response(
         let _ = tx.send(Ok(SseEvent::default().data("[DONE]"))).await;
     });
 
-    let stream = tokio_stream::wrappers::ReceiverStream::new(stream_rx);
+    let stream = AbortOnDropStream::new(
+        tokio_stream::wrappers::ReceiverStream::new(stream_rx),
+        abort_handle,
+    );
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response())

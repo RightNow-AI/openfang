@@ -8,6 +8,9 @@ use openfang_types::tool::{ToolCall, ToolDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Sentinel error message used when streaming consumer disconnects.
+pub const STREAM_CONSUMER_DISCONNECTED: &str = "stream consumer disconnected";
+
 /// Error type for LLM driver operations.
 #[derive(Error, Debug)]
 pub enum LlmError {
@@ -157,14 +160,16 @@ pub trait LlmDriver: Send + Sync {
         let response = self.complete(request).await?;
         let text = response.text();
         if !text.is_empty() {
-            let _ = tx.send(StreamEvent::TextDelta { text }).await;
+            tx.send(StreamEvent::TextDelta { text })
+                .await
+                .map_err(|_| LlmError::Http(STREAM_CONSUMER_DISCONNECTED.to_string()))?;
         }
-        let _ = tx
-            .send(StreamEvent::ContentComplete {
-                stop_reason: response.stop_reason,
-                usage: response.usage,
-            })
-            .await;
+        tx.send(StreamEvent::ContentComplete {
+            stop_reason: response.stop_reason,
+            usage: response.usage,
+        })
+        .await
+        .map_err(|_| LlmError::Http(STREAM_CONSUMER_DISCONNECTED.to_string()))?;
         Ok(response)
     }
 }
@@ -320,6 +325,51 @@ mod tests {
                 stop_reason: StopReason::EndTurn,
                 ..
             }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_default_stream_returns_disconnect_error_when_receiver_is_dropped() {
+        use tokio::sync::mpsc;
+
+        struct FakeDriver;
+
+        #[async_trait]
+        impl LlmDriver for FakeDriver {
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "Hello!".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage::default(),
+                })
+            }
+        }
+
+        let driver = FakeDriver;
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+
+        let request = CompletionRequest {
+            model: "test".to_string(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: 100,
+            temperature: 0.0,
+            system: None,
+            thinking: None,
+        };
+
+        let err = driver.stream(request, tx).await.unwrap_err();
+        assert!(matches!(
+            err,
+            LlmError::Http(message) if message == STREAM_CONSUMER_DISCONNECTED
         ));
     }
 }

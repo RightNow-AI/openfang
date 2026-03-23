@@ -82,14 +82,6 @@ pub enum AuthFailure {
     InvalidCredentials,
 }
 
-fn request_is_loopback(request: &Request<Body>) -> bool {
-    request
-        .extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| ci.0.ip().is_loopback())
-        .unwrap_or(false)
-}
-
 fn normalize_forwarded_ip(raw: &str) -> Option<IpAddr> {
     let mut candidate = raw.trim().trim_matches('"');
     if candidate.is_empty() || candidate.eq_ignore_ascii_case("unknown") {
@@ -151,8 +143,16 @@ fn forwarded_header_indicates_remote_client(headers: &HeaderMap) -> bool {
     })
 }
 
+pub(crate) fn is_effective_loopback(peer_ip: IpAddr, headers: &HeaderMap) -> bool {
+    peer_ip.is_loopback() && !forwarded_header_indicates_remote_client(headers)
+}
+
 fn request_is_effective_loopback(request: &Request<Body>) -> bool {
-    request_is_loopback(request) && !forwarded_header_indicates_remote_client(request.headers())
+    request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| is_effective_loopback(ci.0.ip(), request.headers()))
+        .unwrap_or(false)
 }
 
 fn query_token_allowed(path: &str, method: &axum::http::Method) -> bool {
@@ -378,7 +378,7 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Bo
 mod tests {
     use super::*;
     use axum::extract::ConnectInfo;
-    use axum::http::Request;
+    use axum::http::{HeaderMap, Request};
     use axum::routing::get;
     use axum::Router;
     use tower::ServiceExt;
@@ -467,6 +467,26 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_is_effective_loopback_rejects_forwarded_remote_ip() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "198.51.100.42".parse().unwrap());
+        assert!(!is_effective_loopback(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            &headers
+        ));
+    }
+
+    #[test]
+    fn test_is_effective_loopback_accepts_forwarded_loopback_ip() {
+        let mut headers = HeaderMap::new();
+        headers.insert("forwarded", "for=\"[::1]:1234\"".parse().unwrap());
+        assert!(is_effective_loopback(
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+            &headers
+        ));
     }
 
     #[tokio::test]

@@ -171,7 +171,7 @@ pub async fn agent_ws(
         uri.path(),
         &headers,
         uri.query(),
-        addr.ip().is_loopback(),
+        crate::middleware::is_effective_loopback(addr.ip(), &headers),
     ) {
         warn!(ip = %addr.ip(), ?error, path = %uri.path(), "WebSocket upgrade rejected");
         return match error {
@@ -1449,6 +1449,17 @@ mod tests {
         assert!(matches!(
             finalize_stream_response("<think>reasoning only</think>", Some(usage)),
             Some(StreamResponseDisposition::EmptyPlaceholder)
+        ));
+    }
+
+    #[test]
+    fn test_websocket_effective_loopback_rejects_forwarded_remote_ip() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "198.51.100.42".parse().unwrap());
+
+        assert!(!crate::middleware::is_effective_loopback(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            &headers
         ));
     }
 }

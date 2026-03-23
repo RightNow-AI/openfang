@@ -6,6 +6,7 @@ use crate::rate_limiter;
 use crate::routes::{self, AppState};
 use crate::webchat;
 use crate::ws;
+use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::is_placeholder_api_key;
@@ -17,6 +18,11 @@ use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
+
+/// Default max request body for regular API routes.
+const DEFAULT_API_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+/// Upload endpoint body limit override (matches routes::MAX_UPLOAD_SIZE).
+const UPLOAD_BODY_LIMIT_BYTES: usize = 10 * 1024 * 1024;
 
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -238,7 +244,8 @@ pub async fn build_router(
         )
         .route(
             "/api/agents/{id}/upload",
-            axum::routing::post(routes::upload_file),
+            axum::routing::post(routes::upload_file)
+                .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT_BYTES)),
         )
         .route("/api/agents/{id}/ws", axum::routing::get(ws::agent_ws))
         // Upload serving
@@ -718,6 +725,7 @@ pub async fn build_router(
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(cors)
+        .layer(DefaultBodyLimit::max(DEFAULT_API_BODY_LIMIT_BYTES))
         .with_state(state.clone());
 
     (app, state)
@@ -1095,6 +1103,7 @@ fn validate_auth_exposure(
 mod tests {
     use super::*;
     use axum::body::Body;
+    use axum::extract::ConnectInfo;
     use axum::http::{Method, Request, StatusCode};
     use openfang_types::config::KernelConfig;
     use tower::ServiceExt;
@@ -1318,5 +1327,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(metrics.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn build_router_rejects_oversized_login_body_at_http_boundary() {
+        let kernel = Arc::new(test_kernel());
+        kernel.set_self_handle();
+        let (app, _state) = build_router(kernel, "127.0.0.1:4200".parse().unwrap()).await;
+
+        let oversized = vec![b'a'; DEFAULT_API_BODY_LIMIT_BYTES + 1];
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(oversized))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn build_router_allows_upload_body_above_default_limit() {
+        let kernel = Arc::new(test_kernel());
+        kernel.set_self_handle();
+        let (app, _state) = build_router(kernel, "127.0.0.1:4200".parse().unwrap()).await;
+
+        let valid_uuid = uuid::Uuid::new_v4().to_string();
+        let upload_body = vec![b'x'; DEFAULT_API_BODY_LIMIT_BYTES + 1];
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/api/agents/{valid_uuid}/upload"))
+            .header("content-type", "application/pdf")
+            .header("x-filename", "big.pdf")
+            .body(Body::from(upload_body))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))));
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

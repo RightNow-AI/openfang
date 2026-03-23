@@ -8,7 +8,9 @@ use crate::context_budget::{apply_context_guard, truncate_tool_result_dynamic, C
 use crate::context_overflow::{recover_from_overflow, RecoveryStage};
 use crate::embedding::EmbeddingDriver;
 use crate::kernel_handle::KernelHandle;
-use crate::llm_driver::{CompletionRequest, LlmDriver, LlmError, StreamEvent};
+use crate::llm_driver::{
+    CompletionRequest, LlmDriver, LlmError, StreamEvent, STREAM_CONSUMER_DISCONNECTED,
+};
 use crate::llm_errors;
 use crate::loop_guard::{LoopGuard, LoopGuardConfig, LoopGuardVerdict};
 use crate::mcp::McpConnection;
@@ -1078,6 +1080,9 @@ async fn stream_with_retry(
     let mut last_error = None;
 
     for attempt in 0..=MAX_RETRIES {
+        if tx.is_closed() {
+            return Err(OpenFangError::ShuttingDown);
+        }
         match driver.stream(request.clone(), tx.clone()).await {
             Ok(response) => {
                 if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
@@ -1124,6 +1129,10 @@ async fn stream_with_retry(
                 last_error = Some("Overloaded".to_string());
             }
             Err(e) => {
+                if matches!(&e, LlmError::Http(message) if message == STREAM_CONSUMER_DISCONNECTED)
+                {
+                    return Err(OpenFangError::ShuttingDown);
+                }
                 let raw_error = e.to_string();
                 let status = match &e {
                     LlmError::Api { status, .. } => Some(*status),
@@ -1375,7 +1384,7 @@ pub async fn run_agent_loop_streaming(
                     phase: "context_warning".to_string(),
                     detail: Some("Context overflow unrecoverable. Use /reset or /compact.".to_string()),
                 }).await.is_err() {
-                    warn!("Stream consumer disconnected while sending context overflow warning");
+                    return Err(OpenFangError::ShuttingDown);
                 }
             }
             _ => {
@@ -1383,7 +1392,7 @@ pub async fn run_agent_loop_streaming(
                     phase: "context_warning".to_string(),
                     detail: Some("Older messages trimmed to stay within context limits. Use /compact for smarter summarization.".to_string()),
                 }).await.is_err() {
-                    warn!("Stream consumer disconnected while sending context trim warning");
+                    return Err(OpenFangError::ShuttingDown);
                 }
             }
         }
@@ -1425,6 +1434,14 @@ pub async fn run_agent_loop_streaming(
             None,
         )
         .await?;
+
+        if stream_tx.is_closed() {
+            info!(
+                agent = %manifest.name,
+                "Streaming consumer disconnected — terminating agent loop"
+            );
+            return Err(OpenFangError::ShuttingDown);
+        }
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
@@ -1807,7 +1824,11 @@ pub async fn run_agent_loop_streaming(
                         .await
                         .is_err()
                     {
-                        warn!(agent = %manifest.name, "Stream consumer disconnected — continuing tool loop but will not stream further");
+                        info!(
+                            agent = %manifest.name,
+                            "Stream consumer disconnected — terminating agent loop"
+                        );
+                        return Err(OpenFangError::ShuttingDown);
                     }
 
                     tool_result_blocks.push(ContentBlock::ToolResult {
@@ -3419,6 +3440,52 @@ mod tests {
             "Expected max-tokens fallback in streaming, got: {:?}",
             result.response
         );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_loop_stops_when_consumer_disconnected() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(NormalDriver);
+        let (tx, rx) = mpsc::channel(64);
+        drop(rx);
+
+        let err = run_agent_loop_streaming(
+            &manifest,
+            "This stream should be cancelled",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            tx,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // on_phase
+            None, // media_engine
+            None, // tts_engine
+            None, // docker_config
+            None, // hooks
+            None, // context_window_tokens
+            None, // process_manager
+            None, // user_content_blocks
+        )
+        .await
+        .expect_err("Streaming loop should terminate when consumer disconnects");
+
+        assert!(matches!(err, OpenFangError::ShuttingDown));
     }
 
     #[test]

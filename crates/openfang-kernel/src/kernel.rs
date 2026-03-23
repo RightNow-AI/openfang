@@ -2414,6 +2414,13 @@ impl OpenFangKernel {
 
                     Ok(result)
                 }
+                Err(OpenFangError::ShuttingDown) => {
+                    info!(
+                        agent_id = %agent_id,
+                        "Streaming agent loop cancelled before completion"
+                    );
+                    Err(KernelError::OpenFang(OpenFangError::ShuttingDown))
+                }
                 Err(e) => {
                     kernel_clone.supervisor.record_panic();
                     warn!(agent_id = %agent_id, error = %e, "Streaming agent loop failed");
@@ -2961,6 +2968,10 @@ impl OpenFangKernel {
     }
 
     fn enforce_message_preflight(&self, agent_id: AgentId, entry: &AgentEntry) -> KernelResult<()> {
+        if self.supervisor.is_shutting_down() {
+            return Err(KernelError::OpenFang(OpenFangError::ShuttingDown));
+        }
+
         self.metering
             .check_global_budget(&self.effective_budget_config())
             .map_err(KernelError::OpenFang)?;
@@ -3018,6 +3029,93 @@ impl OpenFangKernel {
             return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
                 "Persistent state update failed: {err}"
             ))));
+        }
+
+        Ok(())
+    }
+
+    /// Atomically replace an agent entry and persist it.
+    ///
+    /// If persistence fails, in-memory state is rolled back to the previous
+    /// entry so callers never observe partial updates.
+    pub fn replace_persisted_agent_entry(
+        &self,
+        agent_id: AgentId,
+        mut updated_entry: AgentEntry,
+    ) -> KernelResult<()> {
+        if updated_entry.id != agent_id {
+            return Err(KernelError::OpenFang(OpenFangError::InvalidInput(
+                "Agent ID mismatch while replacing entry".to_string(),
+            )));
+        }
+
+        let previous_entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+
+        updated_entry.last_active = chrono::Utc::now();
+        self.registry
+            .replace(updated_entry)
+            .map_err(KernelError::OpenFang)?;
+
+        if let Err(err) = self.persist_agent_entry(agent_id) {
+            if let Err(restore_err) = self.registry.replace(previous_entry) {
+                return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                    "Persistent state update failed: {err}; in-memory rollback also failed: {restore_err}"
+                ))));
+            }
+            return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                "Persistent state update failed: {err}"
+            ))));
+        }
+
+        Ok(())
+    }
+
+    /// Apply model/provider update rules to a cloned `AgentEntry`.
+    ///
+    /// This mirrors `set_agent_model` resolution semantics, but does not touch
+    /// registry or persistence. Callers can compose multi-field atomic updates.
+    pub fn apply_model_update_to_entry(
+        &self,
+        entry: &mut AgentEntry,
+        model: &str,
+        explicit_provider: Option<&str>,
+    ) -> KernelResult<()> {
+        let catalog_entry = self
+            .model_catalog
+            .read()
+            .ok()
+            .and_then(|catalog| catalog.find_model(model).cloned());
+        let provider = if let Some(ep) = explicit_provider {
+            Some(ep.to_string())
+        } else if entry.manifest.model.base_url.is_some() {
+            None
+        } else {
+            let resolved_provider = catalog_entry.as_ref().map(|found| found.provider.clone());
+            resolved_provider.or_else(|| infer_provider_from_model(model))
+        };
+
+        let normalized_model =
+            if let (Some(found), Some(prov)) = (catalog_entry.as_ref(), provider.as_ref()) {
+                if found.provider == *prov {
+                    strip_provider_prefix(&found.id, prov)
+                } else {
+                    strip_provider_prefix(model, prov)
+                }
+            } else if let Some(ref prov) = provider {
+                strip_provider_prefix(model, prov)
+            } else {
+                model.to_string()
+            };
+
+        if let Some(provider) = provider {
+            entry.manifest.model.model = normalized_model;
+            entry.manifest.model.provider = provider.clone();
+            entry.manifest.model.api_key_env = Some(self.config.resolve_api_key_env(&provider));
+            entry.manifest.model.base_url = None;
+        } else {
+            entry.manifest.model.model = normalized_model;
         }
 
         Ok(())
@@ -3084,10 +3182,9 @@ impl OpenFangKernel {
             .process_manager
             .kill_agent_processes(&agent_id.to_string());
 
-        let restart_result =
-            self.update_persisted_agent_entry(agent_id, |registry, id| {
-                registry.set_state(id, AgentState::Running)
-            });
+        let restart_result = self.update_persisted_agent_entry(agent_id, |registry, id| {
+            registry.set_state(id, AgentState::Running)
+        });
 
         if let Err(err) = restart_result {
             if restart_background {
@@ -3399,70 +3496,18 @@ impl OpenFangKernel {
         model: &str,
         explicit_provider: Option<&str>,
     ) -> KernelResult<()> {
-        let catalog_entry = self
-            .model_catalog
-            .read()
-            .ok()
-            .and_then(|catalog| catalog.find_model(model).cloned());
-        let provider = if let Some(ep) = explicit_provider {
-            // User explicitly set the provider — use it as-is
-            Some(ep.to_string())
-        } else {
-            // Check whether the agent has a custom base_url, which indicates
-            // a user-configured provider endpoint. In that case, preserve the
-            // current provider name instead of overriding it with auto-detection.
-            let has_custom_url = self
-                .registry
-                .get(agent_id)
-                .map(|e| e.manifest.model.base_url.is_some())
-                .unwrap_or(false);
+        let mut updated_entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+        self.apply_model_update_to_entry(&mut updated_entry, model, explicit_provider)?;
+        self.replace_persisted_agent_entry(agent_id, updated_entry.clone())?;
 
-            if has_custom_url {
-                // Keep the current provider — don't let auto-detection override
-                // a deliberately configured custom endpoint.
-                None
-            } else {
-                // No custom base_url: safe to auto-detect from catalog / model name
-                let resolved_provider = catalog_entry.as_ref().map(|entry| entry.provider.clone());
-                resolved_provider.or_else(|| infer_provider_from_model(model))
-            }
-        };
-
-        // Strip the provider prefix from the model name (e.g. "openrouter/deepseek/deepseek-chat" → "deepseek/deepseek-chat")
-        let normalized_model =
-            if let (Some(entry), Some(prov)) = (catalog_entry.as_ref(), provider.as_ref()) {
-                if entry.provider == *prov {
-                    strip_provider_prefix(&entry.id, prov)
-                } else {
-                    strip_provider_prefix(model, prov)
-                }
-            } else if let Some(ref prov) = provider {
-                strip_provider_prefix(model, prov)
-            } else {
-                model.to_string()
-            };
-
-        if let Some(provider) = provider {
-            let api_key_env = Some(self.config.resolve_api_key_env(&provider));
-            let model_for_update = normalized_model.clone();
-            let provider_for_update = provider.clone();
-            self.update_persisted_agent_entry(agent_id, move |registry, id| {
-                registry.update_model_provider_config(
-                    id,
-                    model_for_update.clone(),
-                    provider_for_update.clone(),
-                    api_key_env,
-                    None,
-                )
-            })?;
-            info!(agent_id = %agent_id, model = %normalized_model, provider = %provider, "Agent model+provider updated");
-        } else {
-            let model_for_update = normalized_model.clone();
-            self.update_persisted_agent_entry(agent_id, move |registry, id| {
-                registry.update_model(id, model_for_update.clone())
-            })?;
-            info!(agent_id = %agent_id, model = %normalized_model, "Agent model updated (provider unchanged)");
-        }
+        info!(
+            agent_id = %agent_id,
+            model = %updated_entry.manifest.model.model,
+            provider = %updated_entry.manifest.model.provider,
+            "Agent model configuration updated"
+        );
 
         // Clear canonical session to prevent memory poisoning from old model's responses
         let _ = self.memory.delete_canonical_session(agent_id);
@@ -8036,6 +8081,34 @@ mod tests {
 
         assert_eq!(published_id, agent_id);
         assert_eq!(published_name, agent_name);
+    }
+
+    #[tokio::test]
+    async fn test_send_message_rejects_new_work_after_shutdown_requested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = Arc::new(
+            OpenFangKernel::boot_with_config(KernelConfig {
+                home_dir: tmp.path().to_path_buf(),
+                data_dir: tmp.path().join("data"),
+                ..KernelConfig::default()
+            })
+            .expect("kernel should boot"),
+        );
+        let agent_id = kernel
+            .spawn_agent(test_manifest("shutdown-gate", "shutdown test", vec![]))
+            .expect("agent spawn should succeed");
+
+        kernel.supervisor.shutdown();
+
+        let err = kernel
+            .send_message(agent_id, "hello")
+            .await
+            .expect_err("message should be rejected while shutting down");
+
+        assert!(matches!(
+            err,
+            KernelError::OpenFang(OpenFangError::ShuttingDown)
+        ));
     }
 
     #[tokio::test]
