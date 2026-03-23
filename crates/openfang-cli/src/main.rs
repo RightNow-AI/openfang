@@ -5473,7 +5473,7 @@ fn cmd_models_set(model: Option<String>) {
     let body = daemon_json(
         client
             .post(format!("{base}/api/config/set"))
-            .json(&serde_json::json!({"key": "default_model.model", "value": model}))
+            .json(&serde_json::json!({"path": "default_model.model", "value": model}))
             .send(),
     );
     if body.get("error").is_some() {
