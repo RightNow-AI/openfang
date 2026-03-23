@@ -18,6 +18,7 @@ use openfang_channels::teams::TeamsAdapter;
 use openfang_channels::telegram::TelegramAdapter;
 use openfang_channels::twitch::TwitchAdapter;
 use openfang_channels::types::ChannelAdapter;
+use openfang_channels::voice::VoiceAdapter;
 use openfang_channels::whatsapp::WhatsAppAdapter;
 use openfang_channels::xmpp::XmppAdapter;
 use openfang_channels::zulip::ZulipAdapter;
@@ -49,8 +50,8 @@ use openfang_channels::discourse::DiscourseAdapter;
 use openfang_channels::gitter::GitterAdapter;
 use openfang_channels::gotify::GotifyAdapter;
 use openfang_channels::linkedin::LinkedInAdapter;
-use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::mqtt::MqttAdapter;
+use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_channels::wecom::WeComAdapter;
@@ -774,6 +775,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             "mattermost" => channels.mattermost.as_ref().map(|c| c.overrides.clone()),
             "irc" => channels.irc.as_ref().map(|c| c.overrides.clone()),
             "google_chat" => channels.google_chat.as_ref().map(|c| c.overrides.clone()),
+            "voice" => channels.voice.as_ref().map(|c| c.overrides.clone()),
             "twitch" => channels.twitch.as_ref().map(|c| c.overrides.clone()),
             "rocketchat" => channels.rocketchat.as_ref().map(|c| c.overrides.clone()),
             "zulip" => channels.zulip.as_ref().map(|c| c.overrides.clone()),
@@ -1116,7 +1118,8 @@ pub async fn start_channel_bridge_with_config(
         || config.ntfy.is_some()
         || config.gotify.is_some()
         || config.webhook.is_some()
-        || config.linkedin.is_some();
+        || config.linkedin.is_some()
+        || config.voice.is_some();
 
     if !has_any {
         return (None, Vec::new());
@@ -1302,6 +1305,15 @@ pub async fn start_channel_bridge_with_config(
             ));
             adapters.push((adapter, gc_config.default_agent.clone()));
         }
+    }
+
+    // Voice
+    if let Some(ref voice_config) = config.voice {
+        let adapter = Arc::new(VoiceAdapter::new(
+            voice_config.listen.clone(),
+            voice_config.default_agent.clone(),
+        ));
+        adapters.push((adapter, voice_config.default_agent.clone()));
     }
 
     // Twitch
@@ -1870,6 +1882,7 @@ mod tests {
         assert!(config.channels.mattermost.is_none());
         assert!(config.channels.irc.is_none());
         assert!(config.channels.google_chat.is_none());
+        assert!(config.channels.voice.is_none());
         assert!(config.channels.twitch.is_none());
         assert!(config.channels.rocketchat.is_none());
         assert!(config.channels.zulip.is_none());
