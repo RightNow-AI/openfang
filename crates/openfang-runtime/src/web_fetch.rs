@@ -72,7 +72,10 @@ impl WebFetchEngine {
             "DELETE" => self.client.delete(url),
             _ => self.client.get(url),
         };
-        req = req.header("User-Agent", format!("Mozilla/5.0 (compatible; {})", crate::USER_AGENT));
+        req = req.header(
+            "User-Agent",
+            format!("Mozilla/5.0 (compatible; {})", crate::USER_AGENT),
+        );
 
         // Add custom headers
         if let Some(hdrs) = headers {
@@ -191,9 +194,7 @@ pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
     let host = extract_host(url);
     // For IPv6 bracket notation like [::1]:80, extract [::1] as hostname
     let hostname = if host.starts_with('[') {
-        host.find(']')
-            .map(|i| &host[..=i])
-            .unwrap_or(&host)
+        host.find(']').map(|i| &host[..=i]).unwrap_or(&host)
     } else {
         host.split(':').next().unwrap_or(&host)
     };
@@ -290,8 +291,8 @@ mod tests {
         // (Chinese, Japanese, emoji — common on international finance sites).
         // Old code: &s[..max] panics when max lands inside a multi-byte char.
         let content = "\u{4f60}\u{597d}\u{4e16}\u{754c}!"; // "你好世界!" = 13 bytes
-        // Truncate at byte 7 — lands inside the 3rd Chinese char (bytes 6..9).
-        // safe_truncate_str walks back to byte 6, returning "你好".
+                                                           // Truncate at byte 7 — lands inside the 3rd Chinese char (bytes 6..9).
+                                                           // safe_truncate_str walks back to byte 6, returning "你好".
         let truncated = safe_truncate_str(content, 7);
         assert_eq!(truncated, "\u{4f60}\u{597d}");
         assert!(truncated.len() <= 7);
@@ -300,7 +301,7 @@ mod tests {
     #[test]
     fn test_truncate_emoji_no_panic() {
         let content = "\u{1f4b0}\u{1f4c8}\u{1f4b9}"; // 💰📈💹 = 12 bytes
-        // Truncate at byte 5 — lands inside the 2nd emoji (bytes 4..8).
+                                                     // Truncate at byte 5 — lands inside the 2nd emoji (bytes 4..8).
         let truncated = safe_truncate_str(content, 5);
         assert_eq!(truncated, "\u{1f4b0}"); // 4 bytes
     }

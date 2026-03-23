@@ -5,7 +5,7 @@
 
 /// Default User-Agent header sent with all outgoing HTTP requests.
 /// Some LLM providers (e.g. Moonshot, Qwen) reject requests without one.
-pub const USER_AGENT: &str = "openfang/0.3.45";
+pub const USER_AGENT: &str = "openfang/0.3.48";
 
 pub mod a2a;
 pub mod agent_loop;
@@ -15,9 +15,9 @@ pub mod auth_cooldown;
 pub mod browser;
 pub mod command_lane;
 pub mod compactor;
-pub mod copilot_oauth;
 pub mod context_budget;
 pub mod context_overflow;
+pub mod copilot_oauth;
 pub mod docker_sandbox;
 pub mod drivers;
 pub mod embedding;

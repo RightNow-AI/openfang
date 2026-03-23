@@ -222,11 +222,9 @@ impl ChannelAdapter for WhatsAppAdapter {
         if let Some(ref gw) = self.gateway_url {
             let text = match &content {
                 ChannelContent::Text(t) => t.clone(),
-                ChannelContent::Image { caption, .. } => {
-                    caption
-                        .clone()
-                        .unwrap_or_else(|| "(Image — not supported in Web mode)".to_string())
-                }
+                ChannelContent::Image { caption, .. } => caption
+                    .clone()
+                    .unwrap_or_else(|| "(Image — not supported in Web mode)".to_string()),
                 ChannelContent::File { filename, .. } => {
                     format!("(File: {filename} — not supported in Web mode)")
                 }
@@ -260,12 +258,17 @@ impl ChannelAdapter for WhatsAppAdapter {
                     "https://graph.facebook.com/v21.0/{}/messages",
                     self.phone_number_id
                 );
-                self.client
+                let resp = self.client
                     .post(&api_url)
                     .bearer_auth(&*self.access_token)
                     .json(&body)
                     .send()
                     .await?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(format!("WhatsApp API error {status}: {body}").into());
+                }
             }
             ChannelContent::File { url, filename } => {
                 let body = serde_json::json!({
@@ -281,12 +284,17 @@ impl ChannelAdapter for WhatsAppAdapter {
                     "https://graph.facebook.com/v21.0/{}/messages",
                     self.phone_number_id
                 );
-                self.client
+                let resp = self.client
                     .post(&api_url)
                     .bearer_auth(&*self.access_token)
                     .json(&body)
                     .send()
                     .await?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(format!("WhatsApp API error {status}: {body}").into());
+                }
             }
             ChannelContent::Location { lat, lon } => {
                 let body = serde_json::json!({
@@ -302,12 +310,17 @@ impl ChannelAdapter for WhatsAppAdapter {
                     "https://graph.facebook.com/v21.0/{}/messages",
                     self.phone_number_id
                 );
-                self.client
+                let resp = self.client
                     .post(&api_url)
                     .bearer_auth(&*self.access_token)
                     .json(&body)
                     .send()
                     .await?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(format!("WhatsApp API error {status}: {body}").into());
+                }
             }
             _ => {
                 self.api_send_message(&user.platform_id, "(Unsupported content type)")

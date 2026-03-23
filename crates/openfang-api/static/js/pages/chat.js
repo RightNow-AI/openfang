@@ -530,7 +530,7 @@ function chatPage() {
                 id: (t.name || 'tool') + '-hist-' + idx,
                 name: t.name || 'unknown',
                 running: false,
-                expanded: false,
+                expanded: true,
                 input: t.input || '',
                 result: t.result || '',
                 is_error: !!t.is_error
@@ -650,17 +650,32 @@ function chatPage() {
           // Show tool/phase progress so the user sees the agent is working
           var phaseMsg = this.messages.length ? this.messages[this.messages.length - 1] : null;
           if (phaseMsg && (phaseMsg.thinking || phaseMsg.streaming)) {
-            var detail = data.detail || data.phase || 'Working...';
-            // Context warning: show prominently
+            // Skip phases that have no user-meaningful display text — "streaming"
+            // and "done" are lifecycle signals, not status to show in the chat bubble.
+            if (data.phase === 'streaming' || data.phase === 'done') {
+              break;
+            }
+            // Context warning: show prominently as a separate system message
             if (data.phase === 'context_warning') {
-              this.messages.push({ id: ++msgId, role: 'system', text: detail, meta: '', tools: [] });
+              var cwDetail = data.detail || 'Context limit reached.';
+              this.messages.push({ id: ++msgId, role: 'system', text: cwDetail, meta: '', tools: [] });
             } else if (data.phase === 'thinking' && this.thinkingMode === 'stream') {
               // Stream reasoning tokens to a collapsible panel
               if (!phaseMsg._reasoning) phaseMsg._reasoning = '';
-              phaseMsg._reasoning += (detail || '') + '\n';
+              phaseMsg._reasoning += (data.detail || '') + '\n';
               phaseMsg.text = '<details><summary>Reasoning...</summary>\n\n' + phaseMsg._reasoning + '</details>';
-            } else {
-              phaseMsg.text = detail;
+            } else if (phaseMsg.thinking) {
+              // Only update text on messages still in thinking state (not yet
+              // receiving streamed content) to avoid overwriting accumulated text.
+              var phaseDetail;
+              if (data.phase === 'tool_use') {
+                phaseDetail = 'Using ' + (data.detail || 'tool') + '...';
+              } else if (data.phase === 'thinking') {
+                phaseDetail = 'Thinking...';
+              } else {
+                phaseDetail = data.detail || 'Working...';
+              }
+              phaseMsg.text = phaseDetail;
             }
           }
           this.scrollToBottom();
@@ -688,7 +703,7 @@ function chatPage() {
                   id: toolMatch[1] + '-txt-' + Date.now(),
                   name: toolMatch[1],
                   running: true,
-                  expanded: false,
+                  expanded: true,
                   input: inputMatch ? inputMatch[1].replace(/<\/function>?\s*$/, '').trim() : '',
                   result: '',
                   is_error: false
@@ -706,7 +721,7 @@ function chatPage() {
           var lastMsg = this.messages.length ? this.messages[this.messages.length - 1] : null;
           if (lastMsg && lastMsg.streaming) {
             if (!lastMsg.tools) lastMsg.tools = [];
-            lastMsg.tools.push({ id: data.tool + '-' + Date.now(), name: data.tool, running: true, expanded: false, input: '', result: '', is_error: false });
+            lastMsg.tools.push({ id: data.tool + '-' + Date.now(), name: data.tool, running: true, expanded: true, input: '', result: '', is_error: false });
           }
           this.scrollToBottom();
           break;
@@ -1031,10 +1046,16 @@ function chatPage() {
       });
     },
 
+    _latexTimer: null,
     scrollToBottom() {
       var self = this;
       var el = document.getElementById('messages');
-      if (el) self.$nextTick(function() { el.scrollTop = el.scrollHeight; });
+      if (el) self.$nextTick(function() {
+        el.scrollTop = el.scrollHeight;
+        // Debounce LaTeX rendering to avoid running on every streaming token
+        if (self._latexTimer) clearTimeout(self._latexTimer);
+        self._latexTimer = setTimeout(function() { renderLatex(el); }, 150);
+      });
     },
 
     addFiles(files) {

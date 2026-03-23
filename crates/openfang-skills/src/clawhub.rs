@@ -337,8 +337,7 @@ impl ClawHubClient {
                                     retry_after_secs = ra,
                                     "ClawHub sent Retry-After, sleeping {capped}ms"
                                 );
-                                tokio::time::sleep(std::time::Duration::from_millis(capped))
-                                    .await;
+                                tokio::time::sleep(std::time::Duration::from_millis(capped)).await;
                             }
                         }
 
@@ -360,9 +359,7 @@ impl ClawHubClient {
                     }
 
                     // Non-retryable HTTP error (4xx other than 429).
-                    return Err(SkillError::Network(format!(
-                        "{context} returned {status}"
-                    )));
+                    return Err(SkillError::Network(format!("{context} returned {status}")));
                 }
                 Err(e) => {
                     // Network / timeout error — retryable.

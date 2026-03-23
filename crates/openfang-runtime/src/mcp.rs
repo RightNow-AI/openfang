@@ -432,9 +432,7 @@ impl McpConnection {
                 let has_cmd = std::env::var("PATH")
                     .unwrap_or_default()
                     .split(';')
-                    .any(|dir| {
-                        std::path::Path::new(dir).join(&cmd_variant).exists()
-                    });
+                    .any(|dir| std::path::Path::new(dir).join(&cmd_variant).exists());
                 if has_cmd {
                     cmd_variant
                 } else {
@@ -557,12 +555,40 @@ pub fn is_mcp_tool(name: &str) -> bool {
 }
 
 /// Extract server name from an MCP tool name.
+///
+/// Falls back to first-underscore heuristic, but prefer
+/// `extract_mcp_server_from_known()` which handles server names containing
+/// hyphens (normalized to underscores) correctly.
 pub fn extract_mcp_server(tool_name: &str) -> Option<&str> {
     if !tool_name.starts_with("mcp_") {
         return None;
     }
     let rest = &tool_name[4..];
     rest.find('_').map(|pos| &rest[..pos])
+}
+
+/// Extract the original server name by matching against known server names.
+///
+/// This handles server names with hyphens (e.g. "bocha-search") correctly —
+/// the normalized prefix "mcp_bocha_search_" is matched against each known
+/// server's normalized name, returning the original (unhyphenated) name.
+pub fn extract_mcp_server_from_known<'a>(
+    tool_name: &str,
+    server_names: &[&'a str],
+) -> Option<&'a str> {
+    if !tool_name.starts_with("mcp_") {
+        return None;
+    }
+    // Sort by length descending so longer (more specific) names match first
+    let mut sorted: Vec<&&str> = server_names.iter().collect();
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.len()));
+    for name in sorted {
+        let prefix = format!("mcp_{}_", normalize_name(name));
+        if tool_name.starts_with(&prefix) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// Strip the MCP namespace prefix from a tool name.
@@ -625,6 +651,38 @@ mod tests {
             Some("github")
         );
         assert_eq!(extract_mcp_server("file_read"), None);
+    }
+
+    #[test]
+    fn test_extract_mcp_server_from_known_with_hyphens() {
+        // Server "bocha-search" normalized to "bocha_search" in tool prefix
+        let servers = vec!["bocha-search", "github"];
+        let tool = "mcp_bocha_search_bocha_web_search";
+        assert_eq!(
+            extract_mcp_server_from_known(tool, &servers),
+            Some("bocha-search")
+        );
+        // Simple server name still works
+        assert_eq!(
+            extract_mcp_server_from_known("mcp_github_create_issue", &servers),
+            Some("github")
+        );
+        // Non-MCP tool returns None
+        assert_eq!(extract_mcp_server_from_known("file_read", &servers), None);
+    }
+
+    #[test]
+    fn test_extract_mcp_server_from_known_longest_match() {
+        // "my-api" and "my-api-v2" — should match the longer one
+        let servers = vec!["my-api", "my-api-v2"];
+        assert_eq!(
+            extract_mcp_server_from_known("mcp_my_api_v2_get_users", &servers),
+            Some("my-api-v2")
+        );
+        assert_eq!(
+            extract_mcp_server_from_known("mcp_my_api_list_items", &servers),
+            Some("my-api")
+        );
     }
 
     #[test]

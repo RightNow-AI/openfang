@@ -204,12 +204,19 @@ impl CopilotDriver {
         } else {
             token.base_url.clone()
         };
-        super::openai::OpenAIDriver::new(token.token.to_string(), base_url)
-            .with_extra_headers(vec![
+        super::openai::OpenAIDriver::new(token.token.to_string(), base_url).with_extra_headers(
+            vec![
                 ("Editor-Version".to_string(), "vscode/1.96.0".to_string()),
-                ("Editor-Plugin-Version".to_string(), "copilot/1.250.0".to_string()),
-                ("Copilot-Integration-Id".to_string(), "vscode-chat".to_string()),
-            ])
+                (
+                    "Editor-Plugin-Version".to_string(),
+                    "copilot/1.250.0".to_string(),
+                ),
+                (
+                    "Copilot-Integration-Id".to_string(),
+                    "vscode-chat".to_string(),
+                ),
+            ],
+        )
     }
 }
 

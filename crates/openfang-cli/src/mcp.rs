@@ -329,7 +329,11 @@ fn handle_message(backend: &McpBackend, msg: &Value) -> Option<Value> {
 
         _ => {
             // Unknown method — always respond with error
-            Some(jsonrpc_error(rid, -32601, &format!("Method not found: {method}")))
+            Some(jsonrpc_error(
+                rid,
+                -32601,
+                &format!("Method not found: {method}"),
+            ))
         }
     }
 }

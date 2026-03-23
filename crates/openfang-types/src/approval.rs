@@ -562,8 +562,7 @@ mod tests {
     #[test]
     fn policy_require_approval_bool_true() {
         // require_approval = true → ["shell_exec"]
-        let policy: ApprovalPolicy =
-            serde_json::from_str(r#"{"require_approval": true}"#).unwrap();
+        let policy: ApprovalPolicy = serde_json::from_str(r#"{"require_approval": true}"#).unwrap();
         assert_eq!(policy.require_approval, vec!["shell_exec"]);
     }
 

@@ -30,13 +30,15 @@ pub const HUGGINGFACE_BASE_URL: &str = "https://api-inference.huggingface.co/v1"
 pub const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const REPLICATE_BASE_URL: &str = "https://api.replicate.com/v1";
 pub const VENICE_BASE_URL: &str = "https://api.venice.ai/api/v1";
+pub const NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 
 // ── GitHub Copilot ──────────────────────────────────────────────
 pub const GITHUB_COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 
 // ── Chinese providers ─────────────────────────────────────────────
 pub const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-pub const MINIMAX_BASE_URL: &str = "https://api.minimaxi.chat/v1";
+/// Global endpoint. For China mainland, override via `[provider_urls] minimax = "https://api.minimaxi.com/v1"`.
+pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 pub const ZHIPU_CODING_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
 /// Z.AI domain aliases (same API, different domain).
@@ -50,6 +52,12 @@ pub const VOLCENGINE_CODING_BASE_URL: &str = "https://ark.cn-beijing.volces.com/
 
 // ── Chutes.ai ────────────────────────────────────────────────────
 pub const CHUTES_BASE_URL: &str = "https://llm.chutes.ai/v1";
+
+// ── Azure OpenAI ────────────────────────────────────────────────────
+/// Azure OpenAI requires a per-resource URL. Users must set their own via
+/// `base_url` or `[provider_urls] azure = "https://{resource}.openai.azure.com/openai/deployments"`.
+/// This constant is intentionally empty — it is never used as a default.
+pub const AZURE_OPENAI_BASE_URL: &str = "";
 
 // ── AWS Bedrock ───────────────────────────────────────────────────
 pub const BEDROCK_BASE_URL: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";
@@ -295,5 +303,11 @@ mod tests {
         assert_eq!(parsed.id, "anthropic");
         assert_eq!(parsed.auth_status, AuthStatus::Configured);
         assert_eq!(parsed.model_count, 3);
+    }
+
+    #[test]
+    fn test_azure_openai_base_url_empty() {
+        // Azure requires user-supplied URL, so the constant must be empty.
+        assert!(AZURE_OPENAI_BASE_URL.is_empty());
     }
 }

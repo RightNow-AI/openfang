@@ -77,6 +77,8 @@ function agentsPage() {
     // -- Model switch --
     editingModel: false,
     newModelValue: '',
+    editingProvider: false,
+    newProviderValue: '',
     modelSaving: false,
     // -- Fallback chain --
     editingFallback: false,
@@ -393,7 +395,7 @@ function agentsPage() {
     },
 
     // ── Multi-step wizard navigation ──
-    openSpawnWizard() {
+    async openSpawnWizard() {
       this.showSpawnModal = true;
       this.spawnStep = 1;
       this.spawnMode = 'wizard';
@@ -401,8 +403,18 @@ function agentsPage() {
       this.selectedPreset = '';
       this.soulContent = '';
       this.spawnForm.name = '';
+      this.spawnForm.provider = 'groq';
+      this.spawnForm.model = 'llama-3.3-70b-versatile';
       this.spawnForm.systemPrompt = 'You are a helpful assistant.';
       this.spawnForm.profile = 'full';
+      try {
+        var res = await fetch('/api/status');
+        if (res.ok) {
+          var status = await res.json();
+          if (status.default_provider) this.spawnForm.provider = status.default_provider;
+          if (status.default_model) this.spawnForm.model = status.default_model;
+        }
+      } catch(e) { /* keep hardcoded defaults */ }
     },
 
     nextStep() {
@@ -624,6 +636,26 @@ function agentsPage() {
         }
       } catch(e) {
         OpenFangToast.error('Failed to change model: ' + e.message);
+      }
+      this.modelSaving = false;
+    },
+
+    // ── Provider switch ──
+    async changeProvider() {
+      if (!this.detailAgent || !this.newProviderValue.trim()) return;
+      this.modelSaving = true;
+      try {
+        var combined = this.newProviderValue.trim() + '/' + this.detailAgent.model_name;
+        var resp = await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: combined });
+        OpenFangToast.success('Provider changed to ' + (resp && resp.provider ? resp.provider : this.newProviderValue.trim()));
+        this.editingProvider = false;
+        await Alpine.store('app').refreshAgents();
+        var agents = Alpine.store('app').agents;
+        for (var i = 0; i < agents.length; i++) {
+          if (agents[i].id === this.detailAgent.id) { this.detailAgent = agents[i]; break; }
+        }
+      } catch(e) {
+        OpenFangToast.error('Failed to change provider: ' + e.message);
       }
       this.modelSaving = false;
     },

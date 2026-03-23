@@ -64,6 +64,11 @@ impl Drop for ServerHandle {
 /// any Tauri window is created. The actual axum server runs on a dedicated
 /// thread with its own tokio runtime.
 pub fn start_server() -> Result<ServerHandle, Box<dyn std::error::Error>> {
+    // Load .env and secrets.env into process environment (same as CLI).
+    // Without this, API keys stored in ~/.openfang/.env are invisible to
+    // the kernel's provider detection and credential resolver.
+    load_dotenv_files();
+
     // Boot kernel (sync — no tokio needed)
     let kernel = OpenFangKernel::boot(None)?;
     let kernel = Arc::new(kernel);
@@ -142,6 +147,47 @@ async fn run_embedded_server(
         let mut guard = state.bridge_manager.lock().await;
         if let Some(ref mut b) = *guard {
             b.stop().await;
+        }
+    }
+}
+
+/// Load ~/.openfang/.env and ~/.openfang/secrets.env into the process environment.
+/// System env vars take priority — existing vars are NOT overridden.
+fn load_dotenv_files() {
+    let home = if let Ok(h) = std::env::var("OPENFANG_HOME") {
+        std::path::PathBuf::from(h)
+    } else {
+        let user_home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_default();
+        if user_home.is_empty() {
+            return;
+        }
+        std::path::PathBuf::from(user_home).join(".openfang")
+    };
+
+    for filename in &[".env", "secrets.env"] {
+        let path = home.join(filename);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = trimmed.split_once('=') {
+                    let key = key.trim();
+                    let mut value = value.trim().to_string();
+                    if ((value.starts_with('"') && value.ends_with('"'))
+                        || (value.starts_with('\'') && value.ends_with('\'')))
+                        && value.len() >= 2
+                    {
+                        value = value[1..value.len() - 1].to_string();
+                    }
+                    if !key.is_empty() && std::env::var(key).is_err() {
+                        std::env::set_var(key, &value);
+                    }
+                }
+            }
         }
     }
 }

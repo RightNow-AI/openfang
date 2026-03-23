@@ -44,7 +44,7 @@ mod tests {
     fn multibyte_chinese() {
         // Each Chinese character is 3 bytes in UTF-8
         let s = "\u{4f60}\u{597d}\u{4e16}\u{754c}"; // "hello world" in Chinese, 12 bytes
-        // Truncating at 7 bytes should not split the 3rd char (bytes 6..9)
+                                                    // Truncating at 7 bytes should not split the 3rd char (bytes 6..9)
         let t = safe_truncate_str(s, 7);
         assert_eq!(t, "\u{4f60}\u{597d}"); // 6 bytes, 2 chars
         assert!(t.len() <= 7);

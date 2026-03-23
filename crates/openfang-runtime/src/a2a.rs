@@ -583,8 +583,7 @@ mod tests {
         assert_eq!(wrapper.state(), &A2aTaskStatus::Completed);
 
         // Test with a message payload
-        let json_with_msg =
-            r#"{"state":"working","message":{"text":"Processing..."}}"#;
+        let json_with_msg = r#"{"state":"working","message":{"text":"Processing..."}}"#;
         let wrapper2: A2aTaskStatusWrapper = serde_json::from_str(json_with_msg).unwrap();
         assert_eq!(wrapper2, A2aTaskStatus::Working);
 

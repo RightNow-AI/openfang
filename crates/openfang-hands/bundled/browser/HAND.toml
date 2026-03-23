@@ -35,7 +35,8 @@ key = "chromium"
 label = "Chromium or Google Chrome must be installed"
 requirement_type = "binary"
 check_value = "chromium"
-description = "A Chromium-based browser is required. Google Chrome, Chromium, or any Chromium derivative will work. You can also set the CHROME_PATH environment variable to point to your browser binary."
+optional = true
+description = "A Chromium-based browser is recommended. Playwright can install its own bundled browser if none is found. Google Chrome, Chromium, or any Chromium derivative will also work. You can set the CHROME_PATH environment variable to point to your browser binary."
 
 [requires.install]
 macos = "brew install --cask google-chrome"

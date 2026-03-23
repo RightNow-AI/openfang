@@ -42,6 +42,12 @@ pub struct MessageRequest {
     /// Optional file attachments (uploaded via /upload endpoint).
     #[serde(default)]
     pub attachments: Vec<AttachmentRef>,
+    /// Sender identity (e.g. WhatsApp phone number, Telegram user ID).
+    #[serde(default)]
+    pub sender_id: Option<String>,
+    /// Sender display name.
+    #[serde(default)]
+    pub sender_name: Option<String>,
 }
 
 /// Response from sending a message.

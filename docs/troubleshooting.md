@@ -555,3 +555,114 @@ openfang-memory = { path = "crates/openfang-memory" }
 ```
 
 The `openfang-kernel` crate assembles everything, but you can use individual crates for custom integrations.
+
+---
+
+## Common Community Questions
+
+### How do I update OpenFang?
+
+Re-run the install script to get the latest release:
+```bash
+curl -fsSL https://openfang.sh/install | sh
+```
+Or build from source:
+```bash
+git pull origin main
+cargo build --release -p openfang-cli
+```
+
+### How do I run OpenFang in Docker?
+
+```bash
+docker run -d --name openfang \
+  -e GROQ_API_KEY=your_key_here \
+  -p 4200:4200 \
+  ghcr.io/rightnow-ai/openfang:latest
+```
+
+### How do I protect the dashboard with a password?
+
+OpenFang doesn't have built-in login. Use a reverse proxy with basic auth:
+
+**Caddy example:**
+```
+ai.yourdomain.com {
+    basicauth {
+        username $2a$14$YOUR_HASHED_PASSWORD
+    }
+    reverse_proxy localhost:4200
+}
+```
+
+Generate a password hash: `caddy hash-password`
+
+### How do I configure the embedding model for memory?
+
+In `~/.openfang/config.toml`:
+```toml
+[memory]
+embedding_provider = "openai"     # or "ollama", "gemini"
+embedding_model = "text-embedding-3-small"
+embedding_api_key_env = "OPENAI_API_KEY"
+```
+
+For local Ollama embeddings:
+```toml
+[memory]
+embedding_provider = "ollama"
+embedding_model = "nomic-embed-text"
+```
+
+### Email channel responds to ALL emails — how do I restrict it?
+
+Add `allowed_senders` to your email config:
+```toml
+[channels.email]
+allowed_senders = ["me@example.com", "boss@company.com"]
+```
+Empty list = responds to everyone. Always set this to avoid auto-replying to spam.
+
+### How do I use Z.AI / GLM-5?
+
+```toml
+[default_model]
+provider = "zai"
+model = "glm-5-20250605"
+api_key_env = "ZHIPU_API_KEY"
+```
+
+### How do I add Kimi 2.5?
+
+Kimi models are built-in. Use alias `kimi` or the full model ID:
+```toml
+[default_model]
+provider = "moonshot"
+model = "kimi-k2.5"
+api_key_env = "MOONSHOT_API_KEY"
+```
+
+### Can I use multiple Telegram bots?
+
+Not yet — each channel type currently supports one bot. Multi-bot routing is tracked as a feature request (#586). As a workaround, run multiple OpenFang instances on different ports with different configs.
+
+### Claude Code integration shows errors
+
+Add to `~/.openfang/config.toml`:
+```toml
+[claude_code]
+skip_permissions = true
+```
+Then restart the daemon.
+
+### Trader hand shell permissions
+
+The trader hand needs shell access for executing trading scripts. In your agent's `agent.toml`:
+```toml
+[capabilities]
+shell = ["python *", "node *"]
+```
+
+### OpenRouter free models don't work
+
+OpenRouter free models have strict rate limits and may return empty responses. Use a paid model or try a different free provider like Groq (`GROQ_API_KEY`).
