@@ -1627,7 +1627,7 @@ async fn tool_shell_exec(
                 stderr.to_string()
             };
 
-            if exit_code == 0 && stdout_str.is_empty() {
+            if exit_code == 0 && stdout_str.trim().is_empty() {
                 stdout_str = "Command executed successfully".to_string();
             }
 
