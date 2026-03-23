@@ -423,6 +423,7 @@ jobs:
           IMAGE_VERSION: ${{ needs.docker.outputs.version }}
           OPENFANG_API_KEY: release-docker-smoke-key
           OPENFANG_BASE_URL: http://127.0.0.1:4210
+          OPENFANG_STRICT_PRODUCTION: "1"
         run: |
           trap 'docker logs openfang-release-smoke >/dev/null 2>&1 || true; docker rm -f openfang-release-smoke >/dev/null 2>&1 || true' EXIT
           docker_home="$RUNNER_TEMP/docker-openfang-home"
@@ -443,6 +444,7 @@ jobs:
             -v "$docker_home:/data" \
             -e OPENFANG_LISTEN=0.0.0.0:4200 \
             -e OPENFANG_API_KEY="$OPENFANG_API_KEY" \
+            -e OPENFANG_STRICT_PRODUCTION="$OPENFANG_STRICT_PRODUCTION" \
             "${IMAGE_NAME}:${IMAGE_VERSION}" start
 
           for _ in $(seq 1 30); do
@@ -453,6 +455,14 @@ jobs:
           done
 
           curl -fsS "$OPENFANG_BASE_URL/api/health" >/dev/null
+          for _ in $(seq 1 30); do
+            health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' openfang-release-smoke)"
+            if [[ "$health_status" == "healthy" ]]; then
+              break
+            fi
+            sleep 2
+          done
+          test "$health_status" = "healthy"
           bash scripts/smoke-openfang.sh "$OPENFANG_BASE_URL"
           OPENFANG_API_KEY="$OPENFANG_API_KEY" bash scripts/live-api-smoke-openfang.sh "$OPENFANG_BASE_URL"
 

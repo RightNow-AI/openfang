@@ -235,8 +235,10 @@ Keep `/etc/openfang/env` readable by the `openfang` service user as well as root
 The systemd unit template exports `OPENFANG_ENV_FILE=/etc/openfang/env` so operator scripts can consistently find the same external env source.
 Strict preflight treats that external env file as a special case: `0600` remains valid, and `0640 root:openfang` is also accepted so the service user can read it without weakening the rest of the runtime secrets baseline.
 The systemd unit template also sets `StateDirectoryMode=0700` and `LogsDirectoryMode=0700` so the runtime state and log directories do not default to world-readable permissions.
-The unit also performs a fail-closed pre-start gate: it requires a readable `config.toml`, writable runtime directories, enables `OPENFANG_STRICT_PRODUCTION=1`, and runs `/usr/local/lib/openfang/preflight-openfang.sh --offline` before starting the daemon.
-Strict mode treats the helper itself as mandatory: if `/usr/local/lib/openfang/preflight-openfang.sh` is missing while `OPENFANG_STRICT_PRODUCTION=1`, the unit fails to start so the deeper preflight cannot be bypassed.
+The unit now enforces a two-stage fail-closed gate in strict production mode:
+- pre-start gate (`ExecStartPre`): requires a readable `config.toml`, writable runtime directories, enables `OPENFANG_STRICT_PRODUCTION=1`, and runs `/usr/local/lib/openfang/preflight-openfang.sh --offline` before boot
+- post-start gate (`ExecStartPost`): retries live authenticated readiness verification for up to 30 attempts (2s interval each) using `/usr/local/lib/openfang/preflight-openfang.sh` without `--offline`
+Strict mode treats the helper itself as mandatory in both stages: if `/usr/local/lib/openfang/preflight-openfang.sh` is missing while `OPENFANG_STRICT_PRODUCTION=1`, the unit fails rather than silently skipping deeper validation.
 
 ### Service Management
 

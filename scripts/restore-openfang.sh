@@ -752,41 +752,6 @@ restore_external_env_file() {
     existing_gid="$(stat_gid "${target_env_file}" || true)"
   fi
 
-  if ! mkdir -p "$(dirname "${target_env_file}")" 2>/dev/null; then
-    echo "error could not create directory for external env file ${target_env_file}." >&2
-    return 1
-  fi
-  local temp_target
-  temp_target="${target_env_file}.tmp.$$"
-  rm -f "${temp_target}"
-
-  if ! cp -a "${backup_env_file}" "${temp_target}" 2>/dev/null; then
-    rm -f "${temp_target}"
-    echo "error could not stage external env file for ${target_env_file}; check permissions or set OPENFANG_ENV_FILE explicitly." >&2
-    return 1
-  fi
-  chmod 600 "${temp_target}" 2>/dev/null || true
-
-  if ! mv -f "${temp_target}" "${target_env_file}" 2>/dev/null; then
-    rm -f "${temp_target}"
-    echo "error could not promote restored external env file to ${target_env_file}; check permissions or set OPENFANG_ENV_FILE explicitly." >&2
-    return 1
-  fi
-
-  if [[ "$(id -u)" == "0" ]]; then
-    if [[ -n "${existing_uid}" ]]; then
-      chown "${existing_uid}" "${target_env_file}" 2>/dev/null || true
-    elif [[ "${target_env_file}" == "/etc/openfang/env" ]]; then
-      chown root "${target_env_file}" 2>/dev/null || true
-    fi
-
-    if [[ -n "${existing_gid}" ]]; then
-      chgrp "${existing_gid}" "${target_env_file}" 2>/dev/null || true
-    elif [[ "${target_env_file}" == "/etc/openfang/env" ]] && id -g openfang >/dev/null 2>&1; then
-      chgrp openfang "${target_env_file}" 2>/dev/null || true
-    fi
-  fi
-
   local final_mode
   if [[ "${target_env_file}" == "/etc/openfang/env" ]]; then
     final_mode="640"
@@ -798,9 +763,80 @@ restore_external_env_file() {
     final_mode="600"
   fi
 
-  if ! chmod "${final_mode}" "${target_env_file}" 2>/dev/null; then
-    echo "error could not set mode ${final_mode} on ${target_env_file}" >&2
+  if ! mkdir -p "$(dirname "${target_env_file}")" 2>/dev/null; then
+    echo "error could not create directory for external env file ${target_env_file}." >&2
     return 1
+  fi
+  local temp_target rollback_target
+  temp_target="${target_env_file}.tmp.$$"
+  rollback_target="${target_env_file}.rollback.$$"
+  rm -f "${temp_target}" "${rollback_target}"
+
+  if ! cp -a "${backup_env_file}" "${temp_target}" 2>/dev/null; then
+    rm -f "${temp_target}"
+    echo "error could not stage external env file for ${target_env_file}; check permissions or set OPENFANG_ENV_FILE explicitly." >&2
+    return 1
+  fi
+  chmod 600 "${temp_target}" 2>/dev/null || true
+
+  if [[ "$(id -u)" == "0" ]]; then
+    if [[ -n "${existing_uid}" ]]; then
+      if ! chown "${existing_uid}" "${temp_target}" 2>/dev/null; then
+        rm -f "${temp_target}"
+        echo "error could not apply owner ${existing_uid} on staged external env file ${temp_target}" >&2
+        return 1
+      fi
+    elif [[ "${target_env_file}" == "/etc/openfang/env" ]]; then
+      if ! chown root "${temp_target}" 2>/dev/null; then
+        rm -f "${temp_target}"
+        echo "error could not apply owner root on staged external env file ${temp_target}" >&2
+        return 1
+      fi
+    fi
+
+    if [[ -n "${existing_gid}" ]]; then
+      if ! chgrp "${existing_gid}" "${temp_target}" 2>/dev/null; then
+        rm -f "${temp_target}"
+        echo "error could not apply group ${existing_gid} on staged external env file ${temp_target}" >&2
+        return 1
+      fi
+    elif [[ "${target_env_file}" == "/etc/openfang/env" ]] && id -g openfang >/dev/null 2>&1; then
+      if ! chgrp openfang "${temp_target}" 2>/dev/null; then
+        rm -f "${temp_target}"
+        echo "error could not apply group openfang on staged external env file ${temp_target}" >&2
+        return 1
+      fi
+    fi
+  fi
+
+  if ! chmod "${final_mode}" "${temp_target}" 2>/dev/null; then
+    rm -f "${temp_target}"
+    echo "error could not set mode ${final_mode} on staged external env file ${temp_target}" >&2
+    return 1
+  fi
+
+  if [[ -e "${target_env_file}" ]]; then
+    if ! mv -f "${target_env_file}" "${rollback_target}" 2>/dev/null; then
+      rm -f "${temp_target}" "${rollback_target}"
+      echo "error could not stage existing external env file ${target_env_file} for rollback." >&2
+      return 1
+    fi
+  fi
+
+  if ! mv -f "${temp_target}" "${target_env_file}" 2>/dev/null; then
+    if [[ -e "${rollback_target}" ]]; then
+      mv -f "${rollback_target}" "${target_env_file}" 2>/dev/null || true
+    fi
+    rm -f "${temp_target}"
+    echo "error could not promote restored external env file to ${target_env_file}; check permissions or set OPENFANG_ENV_FILE explicitly." >&2
+    return 1
+  fi
+
+  if [[ -e "${rollback_target}" ]]; then
+    if ! rm -f "${rollback_target}" 2>/dev/null; then
+      echo "error restored external env file, but failed to remove rollback copy ${rollback_target}" >&2
+      return 1
+    fi
   fi
 
   echo "ok  restored external env file ${target_env_file} (mode ${final_mode})"
