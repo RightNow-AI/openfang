@@ -89,6 +89,8 @@ function agentsPage() {
     tplProviders: [],
     tplLoading: false,
     tplLoadError: '',
+    spawnProvidersLoading: false,
+    spawnProvidersError: '',
     selectedCategory: 'All',
     searchQuery: '',
 
@@ -268,6 +270,23 @@ function agentsPage() {
       });
     },
 
+    get spawnProviderGroups() {
+      var providers = (this.tplProviders || []).slice().sort(function(a, b) {
+        return (a.display_name || a.id).localeCompare(b.display_name || b.id);
+      });
+      var cloudProviders = providers.filter(function(p) { return !p.is_local; });
+      var localProviders = providers.filter(function(p) { return !!p.is_local; });
+      var groups = [];
+      if (cloudProviders.length) groups.push({ label: 'Cloud', providers: cloudProviders });
+      if (localProviders.length) groups.push({ label: 'Local', providers: localProviders });
+      return groups;
+    },
+
+    hasSpawnProvider(providerId) {
+      if (!providerId) return false;
+      return this.tplProviders.some(function(p) { return p.id === providerId; });
+    },
+
     isProviderConfigured(providerName) {
       if (!providerName) return false;
       var p = this.tplProviders.find(function(pr) { return pr.id === providerName; });
@@ -324,6 +343,20 @@ function agentsPage() {
         this.tplLoadError = e.message || 'Could not load templates.';
       }
       this.tplLoading = false;
+    },
+
+    async loadSpawnProviders(force) {
+      if (this.spawnProvidersLoading) return;
+      if (!force && this.tplProviders.length) return;
+      this.spawnProvidersLoading = true;
+      this.spawnProvidersError = '';
+      try {
+        var result = await OpenFangAPI.get('/api/providers');
+        this.tplProviders = result.providers || [];
+      } catch(e) {
+        this.spawnProvidersError = e.message || 'Could not load providers.';
+      }
+      this.spawnProvidersLoading = false;
     },
 
     chatWithAgent(agent) {
@@ -407,6 +440,7 @@ function agentsPage() {
       this.spawnForm.model = 'llama-3.3-70b-versatile';
       this.spawnForm.systemPrompt = 'You are a helpful assistant.';
       this.spawnForm.profile = 'full';
+      this.loadSpawnProviders();
       try {
         var res = await fetch('/api/status');
         if (res.ok) {

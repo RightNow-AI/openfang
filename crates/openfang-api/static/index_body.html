@@ -1155,29 +1155,19 @@
                     <div class="form-group">
                       <label>Provider</label>
                       <select class="form-select" x-model="spawnForm.provider">
-                        <optgroup label="Cloud">
-                          <option value="anthropic">Anthropic</option>
-                          <option value="openai">OpenAI</option>
-                          <option value="gemini">Google Gemini</option>
-                          <option value="groq">Groq</option>
-                          <option value="deepseek">DeepSeek</option>
-                          <option value="openrouter">OpenRouter</option>
-                          <option value="mistral">Mistral</option>
-                          <option value="xai">xAI</option>
-                          <option value="together">Together</option>
-                          <option value="fireworks">Fireworks</option>
-                          <option value="cerebras">Cerebras</option>
-                          <option value="sambanova">SambaNova</option>
-                          <option value="azure">Azure OpenAI</option>
-                          <option value="nvidia">NVIDIA NIM</option>
-                        </optgroup>
-                        <optgroup label="Local">
-                          <option value="ollama">Ollama</option>
-                          <option value="lmstudio">LM Studio</option>
-                          <option value="vllm">vLLM</option>
-                          <option value="lemonade">Lemonade</option>
-                        </optgroup>
+                        <template x-for="group in spawnProviderGroups" :key="group.label">
+                          <optgroup :label="group.label">
+                            <template x-for="provider in group.providers" :key="provider.id">
+                              <option :value="provider.id" x-text="provider.display_name || provider.id"></option>
+                            </template>
+                          </optgroup>
+                        </template>
+                        <template x-if="spawnForm.provider && !hasSpawnProvider(spawnForm.provider)">
+                          <option :value="spawnForm.provider" x-text="spawnForm.provider"></option>
+                        </template>
                       </select>
+                      <p class="text-xs text-dim" x-show="spawnProvidersLoading">Loading provider catalog...</p>
+                      <p class="text-xs text-dim" x-show="spawnProvidersError" x-text="spawnProvidersError"></p>
                     </div>
                     <div class="form-group">
                       <label>Model</label>
