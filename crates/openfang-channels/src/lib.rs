@@ -19,6 +19,7 @@ pub mod teams;
 pub mod telegram;
 pub mod twitch;
 pub mod types;
+pub mod voice;
 pub mod whatsapp;
 pub mod xmpp;
 pub mod zulip;

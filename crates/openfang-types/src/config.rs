@@ -1725,6 +1725,8 @@ pub struct ChannelsConfig {
     pub wecom: Option<WeComConfig>,
     /// MQTT pub/sub configuration (None = disabled).
     pub mqtt: Option<MqttConfig>,
+    /// Voice channel configuration (None = disabled).
+    pub voice: Option<VoiceConfig>,
 }
 
 /// Telegram channel adapter configuration.
@@ -2136,6 +2138,29 @@ impl Default for GoogleChatConfig {
             service_account_env: "GOOGLE_CHAT_SERVICE_ACCOUNT".to_string(),
             space_ids: vec![],
             webhook_port: 8444,
+            default_agent: None,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
+/// Voice channel adapter configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceConfig {
+    /// Address to bind the WebSocket server.
+    pub listen: String,
+    /// Default agent name to route voice messages to.
+    pub default_agent: Option<String>,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            listen: "0.0.0.0:4201".to_string(),
             default_agent: None,
             overrides: ChannelOverrides::default(),
         }
