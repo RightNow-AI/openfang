@@ -1183,6 +1183,7 @@ impl App {
                 name,
                 result_preview,
                 is_error,
+                ..
             } => {
                 self.chat.tool_result(&name, &result_preview, is_error);
             }
