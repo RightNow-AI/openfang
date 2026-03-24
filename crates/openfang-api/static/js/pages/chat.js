@@ -768,26 +768,24 @@ function chatPage() {
               lastMsg3.tools[trIdx].running = false;
               lastMsg3.tools[trIdx].result = data.result || '';
               lastMsg3.tools[trIdx].is_error = !!data.is_error;
-                // Extract image URLs from image_generate or browser_screenshot results
-                if ((data.tool === 'image_generate' || data.tool === 'browser_screenshot') && !data.is_error) {
-                  try {
-                    var parsed = JSON.parse(data.result);
-                    if (parsed.image_urls && parsed.image_urls.length) {
-                      lastMsg3.tools[ri]._imageUrls = parsed.image_urls;
-                    }
-                  } catch(e) { /* not JSON */ }
-                }
-                // Extract audio file path from text_to_speech results
-                if (data.tool === 'text_to_speech' && !data.is_error) {
-                  try {
-                    var ttsResult = JSON.parse(data.result);
-                    if (ttsResult.saved_to) {
-                      lastMsg3.tools[ri]._audioFile = ttsResult.saved_to;
-                      lastMsg3.tools[ri]._audioDuration = ttsResult.duration_estimate_ms;
-                    }
-                  } catch(e) { /* not JSON */ }
-                }
-                break;
+              // Extract image URLs from image_generate or browser_screenshot results
+              if ((data.tool === 'image_generate' || data.tool === 'browser_screenshot') && !data.is_error) {
+                try {
+                  var parsed = JSON.parse(data.result);
+                  if (parsed.image_urls && parsed.image_urls.length) {
+                    lastMsg3.tools[trIdx]._imageUrls = parsed.image_urls;
+                  }
+                } catch(e) { /* not JSON */ }
+              }
+              // Extract audio file path from text_to_speech results
+              if (data.tool === 'text_to_speech' && !data.is_error) {
+                try {
+                  var ttsResult = JSON.parse(data.result);
+                  if (ttsResult.saved_to) {
+                    lastMsg3.tools[trIdx]._audioFile = ttsResult.saved_to;
+                    lastMsg3.tools[trIdx]._audioDuration = ttsResult.duration_estimate_ms;
+                  }
+                } catch(e) { /* not JSON */ }
               }
             }
           }
