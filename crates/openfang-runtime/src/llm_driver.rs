@@ -135,6 +135,7 @@ pub enum StreamEvent {
     },
     /// Tool execution completed with result (emitted by agent loop, not LLM driver).
     ToolExecutionResult {
+        id: String,
         name: String,
         result_preview: String,
         is_error: bool,

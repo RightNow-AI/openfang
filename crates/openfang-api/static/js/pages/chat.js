@@ -721,33 +721,53 @@ function chatPage() {
           var lastMsg = this.messages.length ? this.messages[this.messages.length - 1] : null;
           if (lastMsg && lastMsg.streaming) {
             if (!lastMsg.tools) lastMsg.tools = [];
-            lastMsg.tools.push({ id: data.tool + '-' + Date.now(), name: data.tool, running: true, expanded: true, input: '', result: '', is_error: false });
+            lastMsg.tools.push({ id: data.id || (data.tool + '-' + Date.now()), name: data.tool, running: true, expanded: true, input: '', result: '', is_error: false });
           }
           this.scrollToBottom();
           break;
 
         case 'tool_end':
           // Tool call parsed by LLM — update tool card with input params
+          // Match by id (stable) with fallback to name+running for backward compat
           var lastMsg2 = this.messages.length ? this.messages[this.messages.length - 1] : null;
           if (lastMsg2 && lastMsg2.tools) {
-            for (var ti = lastMsg2.tools.length - 1; ti >= 0; ti--) {
-              if (lastMsg2.tools[ti].name === data.tool && lastMsg2.tools[ti].running) {
-                lastMsg2.tools[ti].input = data.input || '';
-                break;
+            var teIdx = -1;
+            if (data.id) {
+              for (var ti = 0; ti < lastMsg2.tools.length; ti++) {
+                if (lastMsg2.tools[ti].id === data.id) { teIdx = ti; break; }
               }
+            }
+            if (teIdx === -1) {
+              for (var ti2 = lastMsg2.tools.length - 1; ti2 >= 0; ti2--) {
+                if (lastMsg2.tools[ti2].name === data.tool && lastMsg2.tools[ti2].running) { teIdx = ti2; break; }
+              }
+            }
+            if (teIdx !== -1) {
+              lastMsg2.tools[teIdx].input = data.input || '';
             }
           }
           break;
 
         case 'tool_result':
           // Tool execution completed — update tool card with result
+          // Match by id (stable) with fallback to name+running for backward compat
           var lastMsg3 = this.messages.length ? this.messages[this.messages.length - 1] : null;
           if (lastMsg3 && lastMsg3.tools) {
-            for (var ri = lastMsg3.tools.length - 1; ri >= 0; ri--) {
-              if (lastMsg3.tools[ri].name === data.tool && lastMsg3.tools[ri].running) {
-                lastMsg3.tools[ri].running = false;
-                lastMsg3.tools[ri].result = data.result || '';
-                lastMsg3.tools[ri].is_error = !!data.is_error;
+            var trIdx = -1;
+            if (data.id) {
+              for (var ri = 0; ri < lastMsg3.tools.length; ri++) {
+                if (lastMsg3.tools[ri].id === data.id) { trIdx = ri; break; }
+              }
+            }
+            if (trIdx === -1) {
+              for (var ri2 = lastMsg3.tools.length - 1; ri2 >= 0; ri2--) {
+                if (lastMsg3.tools[ri2].name === data.tool && lastMsg3.tools[ri2].running) { trIdx = ri2; break; }
+              }
+            }
+            if (trIdx !== -1) {
+              lastMsg3.tools[trIdx].running = false;
+              lastMsg3.tools[trIdx].result = data.result || '';
+              lastMsg3.tools[trIdx].is_error = !!data.is_error;
                 // Extract image URLs from image_generate or browser_screenshot results
                 if ((data.tool === 'image_generate' || data.tool === 'browser_screenshot') && !data.is_error) {
                   try {
