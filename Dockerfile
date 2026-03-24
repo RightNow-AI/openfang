@@ -8,6 +8,7 @@ COPY xtask ./xtask
 COPY agents ./agents
 COPY packages ./packages
 COPY scripts ./scripts
+COPY third_party ./third_party
 # Optional build args for dev environments to speed up compilation
 # Example: docker build --build-arg LTO=false --build-arg CODEGEN_UNITS=16 .
 ARG LTO=true
