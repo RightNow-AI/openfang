@@ -2462,6 +2462,25 @@ impl Default for WeComConfig {
     }
 }
 
+/// WeChat Personal (个人微信) channel adapter configuration.
+///
+/// Uses the WeChat Personal gateway for individual account integration.
+/// Requires a separate gateway service to bridge WeChat Web protocol.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WeChatPersonalChannelConfig {
+    /// Enable WeChat Personal channel.
+    pub enabled: bool,
+    /// WeChat account ID (wxid or custom alias).
+    pub account_id: String,
+    /// CDN base URL for media files (optional).
+    pub cdn_base_url: Option<String>,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Per-channel behavior overrides.
+    pub overrides: ChannelOverrides,
+}
+
 /// Revolt (Discord-like) channel adapter configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

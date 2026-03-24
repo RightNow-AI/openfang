@@ -52,3 +52,5 @@ pub mod mumble;
 pub mod ntfy;
 pub mod webhook;
 pub mod wecom;
+// Wave 6 — WeChat Personal
+pub mod wechat_personal;

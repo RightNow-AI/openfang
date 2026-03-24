@@ -19,6 +19,7 @@ pub enum ChannelType {
     Signal,
     Matrix,
     Email,
+    WeChatPersonal,
     Teams,
     Mattermost,
     WebChat,

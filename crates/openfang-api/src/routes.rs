@@ -2885,6 +2885,133 @@ pub async fn reload_channels(State(state): State<Arc<AppState>>) -> impl IntoRes
 }
 
 // ---------------------------------------------------------------------------
+// WeChat QR login flow
+// ---------------------------------------------------------------------------
+
+/// POST /api/wechat/login/start — Start a WeChat QR login session.
+///
+/// Returns a QR code data URL for scanning with WeChat mobile app.
+/// The session_key is used to poll for login status.
+pub async fn wechat_login_start() -> impl IntoResponse {
+    // Check for WeChat gateway URL in config or env
+    let gateway_url = std::env::var("WECHAT_GATEWAY_URL").unwrap_or_default();
+
+    if gateway_url.is_empty() {
+        return Json(serde_json::json!({
+            "available": false,
+            "message": "WeChat gateway not configured. Set WECHAT_GATEWAY_URL environment variable.",
+            "help": "The WeChat gateway provides QR-based login for personal WeChat accounts."
+        }));
+    }
+
+    // Try to reach the gateway and start a QR session
+    let start_url = format!("{}/login/start", gateway_url.trim_end_matches('//'));
+    match gateway_http_post(&start_url).await {
+        Ok(body) => {
+            let qr_url = body
+                .get("qr_data_url")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let session_key = body
+                .get("session_key")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let msg = body
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Scan this QR code with WeChat to login");
+            Json(serde_json::json!({
+                "available": true,
+                "qr_data_url": qr_url,
+                "session_key": session_key,
+                "message": msg,
+            }))
+        }
+        Err(e) => Json(serde_json::json!({
+            "available": false,
+            "message": format!("Could not reach WeChat gateway: {e}"),
+            "help": "Make sure the gateway is running at the configured URL"
+        })),
+    }
+}
+
+/// GET /api/wechat/login/status — Poll for QR scan completion.
+///
+/// After calling `/login/start`, poll this endpoint to check if the user
+/// has scanned the QR code and the WeChat session is connected.
+pub async fn wechat_login_status(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let gateway_url = std::env::var("WECHAT_GATEWAY_URL").unwrap_or_default();
+
+    if gateway_url.is_empty() {
+        return Json(serde_json::json!({
+            "status": "disconnected",
+            "message": "Gateway not available"
+        }));
+    }
+
+    let session_key = params.get("session_key").cloned().unwrap_or_default();
+    let status_url = format!(
+        "{}/login/status?session_key={}",
+        gateway_url.trim_end_matches('//'),
+        session_key
+    );
+
+    match gateway_http_get(&status_url).await {
+        Ok(body) => {
+            let status = body
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("disconnected");
+            let account_id = body
+                .get("account_id")
+                .and_then(serde_json::Value::as_str);
+            let msg = body
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Waiting for scan...");
+
+            let mut resp = serde_json::json!({
+                "status": status,
+                "message": msg,
+            });
+            if let Some(id) = account_id {
+                resp["account_id"] = serde_json::json!(id);
+            }
+            Json(resp)
+        }
+        Err(_) => Json(serde_json::json!({ "status": "disconnected", "message": "Gateway unreachable" })),
+    }
+}
+
+/// POST /api/wechat/logout — Logout from WeChat.
+///
+/// Clears the current WeChat session and disconnects from the gateway.
+pub async fn wechat_logout() -> impl IntoResponse {
+    let gateway_url = std::env::var("WECHAT_GATEWAY_URL").unwrap_or_default();
+
+    if gateway_url.is_empty() {
+        return Json(serde_json::json!({
+            "cleared": false,
+            "message": "WeChat gateway not configured"
+        }));
+    }
+
+    let logout_url = format!("{}/logout", gateway_url.trim_end_matches('//'));
+    match gateway_http_post(&logout_url).await {
+        Ok(_) => Json(serde_json::json!({
+            "cleared": true,
+            "message": "Logged out successfully"
+        })),
+        Err(e) => Json(serde_json::json!({
+            "cleared": false,
+            "message": format!("Logout failed: {e}")
+        })),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WhatsApp QR login flow (OpenClaw-style)
 // ---------------------------------------------------------------------------
 
