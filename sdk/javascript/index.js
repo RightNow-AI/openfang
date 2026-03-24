@@ -291,15 +291,11 @@ class AgentResource {
   // }
 
   async upload(agentId, file) {
-    var hdrs = {
-      "Content-Type": "multipart/form-data",
-    };
     var form = new FormData();
     form.append("file", file);
     form.append("filename", file.name);
     return fetch(this._c.baseUrl + "/api/agents/" + agentId + "/upload", {
       method: "POST",
-      headers: hdrs,
       body: form,
     }).then(function (r) {
       if (!r.ok) throw new Error("Upload failed");
