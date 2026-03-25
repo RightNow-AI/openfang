@@ -1010,6 +1010,45 @@ model = "test-model"
 }
 
 /// POST /api/agents/:id/message — Send a message to an agent.
+fn normalized_agent_response(result: &openfang_runtime::agent_loop::AgentLoopResult) -> String {
+    let cleaned = crate::ws::strip_think_tags(&result.response);
+    if cleaned.trim().is_empty() {
+        format!(
+            "[The agent completed processing but returned no text response. ({} in / {} out | {} iter)]",
+            result.total_usage.input_tokens, result.total_usage.output_tokens, result.iterations,
+        )
+    } else {
+        cleaned
+    }
+}
+
+fn normalized_stream_done_response(
+    result: &openfang_runtime::agent_loop::AgentLoopResult,
+) -> String {
+    if result.silent {
+        String::new()
+    } else {
+        normalized_agent_response(result)
+    }
+}
+
+fn classify_streaming_result_error(error: &openfang_kernel::error::KernelError) -> String {
+    match error {
+        openfang_kernel::error::KernelError::OpenFang(inner) => {
+            let raw = inner.to_string();
+            let status = match inner {
+                openfang_types::error::OpenFangError::LlmDriver(message) => {
+                    extract_status_code(message)
+                }
+                _ => None,
+            };
+            openfang_runtime::llm_errors::classify_error(&raw, status).sanitized_message
+        }
+        other => other.to_string(),
+    }
+}
+
+/// POST /api/agents/:id/message — Send a message to an agent.
 pub async fn send_message(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1065,20 +1104,7 @@ pub async fn send_message(
         .await
     {
         Ok(result) => {
-            // Strip <think>...</think> blocks from model output
-            let cleaned = crate::ws::strip_think_tags(&result.response);
-
-            // Guard: ensure we never return an empty response to the client
-            let response = if cleaned.trim().is_empty() {
-                format!(
-                    "[The agent completed processing but returned no text response. ({} in / {} out | {} iter)]",
-                    result.total_usage.input_tokens,
-                    result.total_usage.output_tokens,
-                    result.iterations,
-                )
-            } else {
-                cleaned
-            };
+            let response = normalized_agent_response(&result);
             (
                 StatusCode::OK,
                 Json(serde_json::json!(MessageResponse {
@@ -2134,57 +2160,105 @@ pub async fn send_message_stream(
     };
     let abort_handle = handle.abort_handle();
 
-    let sse_stream = stream::unfold(rx, |mut rx| async move {
-        match rx.recv().await {
-            Some(event) => {
-                let sse_event: Result<Event, std::convert::Infallible> = Ok(match event {
-                    StreamEvent::TextDelta { text } => Event::default()
-                        .event("chunk")
-                        .json_data(serde_json::json!({"content": text, "done": false}))
-                        .unwrap_or_else(|_| Event::default().data("error")),
-                    StreamEvent::ToolUseStart { name, .. } => Event::default()
-                        .event("tool_use")
-                        .json_data(serde_json::json!({"tool": name}))
-                        .unwrap_or_else(|_| Event::default().data("error")),
-                    StreamEvent::ToolUseEnd { name, input, .. } => Event::default()
-                        .event("tool_result")
-                        .json_data(serde_json::json!({"tool": name, "input": input}))
-                        .unwrap_or_else(|_| Event::default().data("error")),
-                    StreamEvent::ContentComplete { usage, .. } => Event::default()
-                        .event("done")
-                        .json_data(serde_json::json!({
-                            "done": true,
-                            "usage": {
-                                "input_tokens": usage.input_tokens,
-                                "output_tokens": usage.output_tokens,
-                            }
-                        }))
-                        .unwrap_or_else(|_| Event::default().data("error")),
-                    StreamEvent::ResponseTiming {
-                        first_token_latency_ms,
-                        provider_latency_ms,
-                    } => Event::default()
-                        .event("timing")
-                        .json_data(serde_json::json!({
-                            "first_token_latency_ms": first_token_latency_ms,
-                            "provider_latency_ms": provider_latency_ms,
-                        }))
-                        .unwrap_or_else(|_| Event::default().data("error")),
-                    StreamEvent::PhaseChange { phase, detail } => Event::default()
-                        .event("phase")
-                        .json_data(serde_json::json!({
-                            "phase": phase,
-                            "detail": detail,
-                        }))
-                        .unwrap_or_else(|_| Event::default().data("error")),
-                    _ => Event::default().comment("skip"),
-                });
-                Some((sse_event, rx))
-            }
-            None => None,
+    enum StreamState {
+        Live {
+            rx: tokio::sync::mpsc::Receiver<StreamEvent>,
+            handle: tokio::task::JoinHandle<
+                openfang_kernel::error::KernelResult<openfang_runtime::agent_loop::AgentLoopResult>,
+            >,
+        },
+        Final(Option<Result<Event, std::convert::Infallible>>),
+        Done,
+    }
+
+    let sse_stream = stream::unfold(StreamState::Live { rx, handle }, |state| async move {
+        match state {
+            StreamState::Live { mut rx, handle } => match rx.recv().await {
+                Some(event) => {
+                    let sse_event: Result<Event, std::convert::Infallible> = Ok(match event {
+                        StreamEvent::TextDelta { text } => Event::default()
+                            .event("chunk")
+                            .json_data(serde_json::json!({"content": text, "done": false}))
+                            .unwrap_or_else(|_| Event::default().data("error")),
+                        StreamEvent::ToolUseStart { name, .. } => Event::default()
+                            .event("tool_use")
+                            .json_data(serde_json::json!({"tool": name}))
+                            .unwrap_or_else(|_| Event::default().data("error")),
+                        StreamEvent::ToolUseEnd { name, input, .. } => Event::default()
+                            .event("tool_result")
+                            .json_data(serde_json::json!({"tool": name, "input": input}))
+                            .unwrap_or_else(|_| Event::default().data("error")),
+                        StreamEvent::ContentComplete { usage, .. } => Event::default()
+                            .event("usage")
+                            .json_data(serde_json::json!({
+                                "usage": {
+                                    "input_tokens": usage.input_tokens,
+                                    "output_tokens": usage.output_tokens,
+                                }
+                            }))
+                            .unwrap_or_else(|_| Event::default().data("error")),
+                        StreamEvent::ResponseTiming {
+                            first_token_latency_ms,
+                            provider_latency_ms,
+                        } => Event::default()
+                            .event("timing")
+                            .json_data(serde_json::json!({
+                                "first_token_latency_ms": first_token_latency_ms,
+                                "provider_latency_ms": provider_latency_ms,
+                            }))
+                            .unwrap_or_else(|_| Event::default().data("error")),
+                        StreamEvent::PhaseChange { phase, detail } => Event::default()
+                            .event("phase")
+                            .json_data(serde_json::json!({
+                                "phase": phase,
+                                "detail": detail,
+                            }))
+                            .unwrap_or_else(|_| Event::default().data("error")),
+                        _ => Event::default().comment("skip"),
+                    });
+                    Some((sse_event, StreamState::Live { rx, handle }))
+                }
+                None => {
+                    let final_event = match handle.await {
+                        Ok(Ok(result)) => {
+                            let response = normalized_stream_done_response(&result);
+                            Ok(Event::default()
+                                .event("done")
+                                .json_data(serde_json::json!({
+                                    "done": true,
+                                    "response": response,
+                                    "silent": result.silent,
+                                    "usage": {
+                                        "input_tokens": result.total_usage.input_tokens,
+                                        "output_tokens": result.total_usage.output_tokens,
+                                    },
+                                    "iterations": result.iterations,
+                                    "first_token_latency_ms": result.first_token_latency_ms,
+                                    "provider_latency_ms": result.provider_latency_ms,
+                                    "cost_usd": result.cost_usd,
+                                }))
+                                .unwrap_or_else(|_| Event::default().data("error")))
+                        }
+                        Ok(Err(error)) => Ok(Event::default()
+                            .event("error")
+                            .json_data(serde_json::json!({
+                                "error": classify_streaming_result_error(&error),
+                            }))
+                            .unwrap_or_else(|_| Event::default().data("error"))),
+                        Err(_) => Ok(Event::default()
+                            .event("error")
+                            .json_data(serde_json::json!({
+                                "error": "Internal error occurred",
+                            }))
+                            .unwrap_or_else(|_| Event::default().data("error"))),
+                    };
+                    Some((final_event, StreamState::Final(None)))
+                }
+            },
+            StreamState::Final(pending) => pending.map(|event| (event, StreamState::Done)),
+            StreamState::Done => None,
         }
     });
-
     let guarded_stream = AbortOnDropStream::new(sse_stream, abort_handle);
 
     Sse::new(guarded_stream).into_response()
@@ -8478,16 +8552,26 @@ pub async fn delete_provider_key(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let env_var_result = {
+    let env_vars_result = {
         let catalog = state
             .kernel
             .model_catalog
             .read()
             .unwrap_or_else(|e| e.into_inner());
         match catalog.get_provider(&name) {
-            Some(provider) => Ok(provider.api_key_env.clone()),
-            None => match derive_custom_provider_api_key_env(&name) {
-                Ok(env_var) => Ok(env_var),
+            Some(provider) => {
+                let mut env_vars = vec![provider.api_key_env.clone()];
+                if let Ok(candidates) = custom_provider_api_key_env_candidates(&name) {
+                    for candidate in candidates {
+                        if !env_vars.contains(&candidate) {
+                            env_vars.push(candidate);
+                        }
+                    }
+                }
+                Ok(env_vars)
+            }
+            None => match custom_provider_api_key_env_candidates(&name) {
+                Ok(env_vars) => Ok(env_vars),
                 Err(e) => Err((
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
@@ -8497,10 +8581,11 @@ pub async fn delete_provider_key(
             },
         }
     };
-    let env_var = match env_var_result {
-        Ok(env_var) => env_var,
+    let env_vars = match env_vars_result {
+        Ok(env_vars) => env_vars,
         Err(response) => return response,
     };
+    let env_var = env_vars[0].clone();
 
     if env_var.is_empty() {
         return (
@@ -8510,19 +8595,25 @@ pub async fn delete_provider_key(
     }
 
     // Remove from vault (best-effort)
-    state.kernel.remove_credential(&env_var);
+    for candidate in &env_vars {
+        state.kernel.remove_credential(candidate);
+    }
 
     // Remove from secrets.env
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
-    if let Err(e) = remove_secret_env(&secrets_path, &env_var) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to update secrets.env: {e}")})),
-        );
+    for candidate in &env_vars {
+        if let Err(e) = remove_secret_env(&secrets_path, candidate) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to update secrets.env: {e}")})),
+            );
+        }
     }
 
     // Remove from process environment
-    std::env::remove_var(&env_var);
+    for candidate in &env_vars {
+        std::env::remove_var(candidate);
+    }
 
     // Refresh auth detection
     state
@@ -8571,7 +8662,20 @@ pub async fn test_provider(
         }
     };
 
-    let api_key = std::env::var(&env_var).ok();
+    let api_key = custom_provider_api_key_env_candidates(&name)
+        .ok()
+        .into_iter()
+        .flatten()
+        .find_map(|candidate| {
+            std::env::var(&candidate)
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            std::env::var(&env_var)
+                .ok()
+                .filter(|value| !value.is_empty())
+        });
     // Only require API key for providers that need one (skip local providers like ollama/vllm/lmstudio)
     if key_required && api_key.is_none() && !env_var.is_empty() {
         return (
@@ -8999,6 +9103,10 @@ fn validate_secret_env_key(key: &str) -> Result<(), std::io::Error> {
 
 fn derive_custom_provider_api_key_env(name: &str) -> Result<String, std::io::Error> {
     openfang_types::config::custom_provider_api_key_env(name)
+}
+
+fn custom_provider_api_key_env_candidates(name: &str) -> Result<Vec<String>, std::io::Error> {
+    openfang_types::config::custom_provider_api_key_env_candidates(name)
 }
 
 fn validate_secret_env_value(value: &str) -> Result<(), std::io::Error> {

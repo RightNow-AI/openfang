@@ -3,7 +3,7 @@
 //! Provides a comprehensive catalog of 130+ builtin models across 28 providers,
 //! with alias resolution, auth status detection, and pricing lookups.
 
-use openfang_types::config::custom_provider_api_key_env;
+use openfang_types::config::custom_provider_api_key_env_candidates;
 use openfang_types::model_catalog::{
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
     BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL,
@@ -152,7 +152,20 @@ impl ModelCatalog {
             }
 
             // Primary: check the provider's declared env var
-            let has_key = std::env::var(&provider.api_key_env).is_ok();
+            let has_key = std::env::var(&provider.api_key_env)
+                .ok()
+                .filter(|value| !value.is_empty())
+                .is_some()
+                || custom_provider_api_key_env_candidates(&provider.id)
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .any(|env_var| {
+                        std::env::var(&env_var)
+                            .ok()
+                            .filter(|value| !value.is_empty())
+                            .is_some()
+                    });
 
             // Secondary: provider-specific fallback auth
             let has_fallback = match provider.id.as_str() {
@@ -269,9 +282,12 @@ impl ModelCatalog {
             true
         } else {
             // Custom provider — add a new entry so it appears in /api/providers
-            let env_var = custom_provider_api_key_env(provider).unwrap_or_else(|_| {
-                format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"))
-            });
+            let env_var = custom_provider_api_key_env_candidates(provider)
+                .ok()
+                .and_then(|mut env_vars| env_vars.drain(..1).next())
+                .unwrap_or_else(|| {
+                    format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"))
+                });
             self.providers.push(ProviderInfo {
                 id: provider.to_string(),
                 display_name: provider.to_string(),
@@ -3890,6 +3906,32 @@ mod tests {
         assert_eq!(ollama.auth_status, AuthStatus::NotRequired);
         let vllm = catalog.get_provider("vllm").unwrap();
         assert_eq!(vllm.auth_status, AuthStatus::NotRequired);
+    }
+
+    #[test]
+    fn test_detect_auth_accepts_legacy_numeric_provider_env() {
+        let legacy_env_var = "111_API_KEY";
+        let canonical_env_var = "CUSTOM_111_API_KEY";
+        let original_legacy = std::env::var_os(legacy_env_var);
+        let original_canonical = std::env::var_os(canonical_env_var);
+        std::env::remove_var(canonical_env_var);
+        std::env::set_var(legacy_env_var, "legacy-key");
+
+        let mut catalog = ModelCatalog::new();
+        assert!(catalog.set_provider_url("111", "http://localhost:9999"));
+        catalog.detect_auth();
+
+        let provider = catalog.get_provider("111").unwrap();
+        assert_eq!(provider.auth_status, AuthStatus::Configured);
+
+        match original_legacy {
+            Some(value) => std::env::set_var(legacy_env_var, value),
+            None => std::env::remove_var(legacy_env_var),
+        }
+        match original_canonical {
+            Some(value) => std::env::set_var(canonical_env_var, value),
+            None => std::env::remove_var(canonical_env_var),
+        }
     }
 
     #[test]

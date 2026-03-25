@@ -4547,25 +4547,47 @@ fn cmd_hand_resume(id: &str) {
 // ---------------------------------------------------------------------------
 
 /// Map a provider name to its conventional environment variable name.
-fn provider_to_env_var(provider: &str) -> String {
+fn try_provider_to_env_var(provider: &str) -> Result<String, String> {
     match provider.to_lowercase().as_str() {
-        "groq" => "GROQ_API_KEY".to_string(),
-        "anthropic" => "ANTHROPIC_API_KEY".to_string(),
-        "openai" => "OPENAI_API_KEY".to_string(),
-        "gemini" => "GEMINI_API_KEY".to_string(),
-        "google" => "GOOGLE_API_KEY".to_string(),
-        "deepseek" => "DEEPSEEK_API_KEY".to_string(),
-        "openrouter" => "OPENROUTER_API_KEY".to_string(),
-        "together" => "TOGETHER_API_KEY".to_string(),
-        "mistral" => "MISTRAL_API_KEY".to_string(),
-        "fireworks" => "FIREWORKS_API_KEY".to_string(),
-        "perplexity" => "PERPLEXITY_API_KEY".to_string(),
-        "cohere" => "COHERE_API_KEY".to_string(),
-        "xai" => "XAI_API_KEY".to_string(),
-        "brave" => "BRAVE_API_KEY".to_string(),
-        "tavily" => "TAVILY_API_KEY".to_string(),
+        "groq" => Ok("GROQ_API_KEY".to_string()),
+        "anthropic" => Ok("ANTHROPIC_API_KEY".to_string()),
+        "openai" => Ok("OPENAI_API_KEY".to_string()),
+        "gemini" => Ok("GEMINI_API_KEY".to_string()),
+        "google" => Ok("GOOGLE_API_KEY".to_string()),
+        "deepseek" => Ok("DEEPSEEK_API_KEY".to_string()),
+        "openrouter" => Ok("OPENROUTER_API_KEY".to_string()),
+        "together" => Ok("TOGETHER_API_KEY".to_string()),
+        "mistral" => Ok("MISTRAL_API_KEY".to_string()),
+        "fireworks" => Ok("FIREWORKS_API_KEY".to_string()),
+        "perplexity" => Ok("PERPLEXITY_API_KEY".to_string()),
+        "cohere" => Ok("COHERE_API_KEY".to_string()),
+        "xai" => Ok("XAI_API_KEY".to_string()),
+        "brave" => Ok("BRAVE_API_KEY".to_string()),
+        "tavily" => Ok("TAVILY_API_KEY".to_string()),
         other => openfang_types::config::custom_provider_api_key_env(other)
-            .unwrap_or_else(|_| format!("{}_API_KEY", other.to_uppercase().replace('-', "_"))),
+            .map_err(|e| format!("Invalid custom provider name: {e}")),
+    }
+}
+
+fn provider_env_vars(provider: &str) -> Result<Vec<String>, String> {
+    match provider.to_lowercase().as_str() {
+        "groq" => Ok(vec!["GROQ_API_KEY".to_string()]),
+        "anthropic" => Ok(vec!["ANTHROPIC_API_KEY".to_string()]),
+        "openai" => Ok(vec!["OPENAI_API_KEY".to_string()]),
+        "gemini" => Ok(vec!["GEMINI_API_KEY".to_string()]),
+        "google" => Ok(vec!["GOOGLE_API_KEY".to_string()]),
+        "deepseek" => Ok(vec!["DEEPSEEK_API_KEY".to_string()]),
+        "openrouter" => Ok(vec!["OPENROUTER_API_KEY".to_string()]),
+        "together" => Ok(vec!["TOGETHER_API_KEY".to_string()]),
+        "mistral" => Ok(vec!["MISTRAL_API_KEY".to_string()]),
+        "fireworks" => Ok(vec!["FIREWORKS_API_KEY".to_string()]),
+        "perplexity" => Ok(vec!["PERPLEXITY_API_KEY".to_string()]),
+        "cohere" => Ok(vec!["COHERE_API_KEY".to_string()]),
+        "xai" => Ok(vec!["XAI_API_KEY".to_string()]),
+        "brave" => Ok(vec!["BRAVE_API_KEY".to_string()]),
+        "tavily" => Ok(vec!["TAVILY_API_KEY".to_string()]),
+        other => openfang_types::config::custom_provider_api_key_env_candidates(other)
+            .map_err(|e| format!("Invalid custom provider name: {e}")),
     }
 }
 
@@ -4962,7 +4984,10 @@ fn cmd_config_unset(key: &str) {
 }
 
 fn cmd_config_set_key(provider: &str) {
-    let env_var = provider_to_env_var(provider);
+    let env_var = try_provider_to_env_var(provider).unwrap_or_else(|e| {
+        ui::error(&e);
+        std::process::exit(1);
+    });
 
     let key = prompt_input(&format!("  Paste your {provider} API key: "));
     if key.is_empty() {
@@ -4994,7 +5019,10 @@ fn cmd_config_set_key(provider: &str) {
 }
 
 fn cmd_config_delete_key(provider: &str) {
-    let env_var = provider_to_env_var(provider);
+    let env_vars = provider_env_vars(provider).unwrap_or_else(|e| {
+        ui::error(&e);
+        std::process::exit(1);
+    });
 
     // Remove from vault (best-effort)
     {
@@ -5003,22 +5031,40 @@ fn cmd_config_delete_key(provider: &str) {
         if vault_path.exists() {
             let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path);
             if vault.unlock().is_ok() {
-                let _ = vault.remove(&env_var);
+                for candidate in &env_vars {
+                    let _ = vault.remove(candidate);
+                }
             }
         }
     }
 
-    match dotenv::remove_env_key(&env_var) {
-        Ok(()) => ui::success(&format!("Removed {env_var} from ~/.openfang/.env")),
-        Err(e) => {
+    for candidate in &env_vars {
+        if let Err(e) = dotenv::remove_env_key(candidate) {
             ui::error(&format!("Failed to remove key: {e}"));
             std::process::exit(1);
         }
     }
+    ui::success(&format!(
+        "Removed {} from ~/.openfang/.env",
+        env_vars.join(", ")
+    ));
 }
 
 fn cmd_config_test_key(provider: &str) {
-    let env_var = provider_to_env_var(provider);
+    let env_vars = provider_env_vars(provider).unwrap_or_else(|e| {
+        ui::error(&e);
+        std::process::exit(1);
+    });
+    let env_var = env_vars
+        .iter()
+        .find(|env_var| {
+            std::env::var(env_var.as_str())
+                .ok()
+                .filter(|v| !v.is_empty())
+                .is_some()
+        })
+        .cloned()
+        .unwrap_or_else(|| env_vars[0].clone());
 
     if std::env::var(&env_var).is_err() {
         ui::error(&format!("{env_var} not set"));
@@ -7009,12 +7055,21 @@ args = ["-y", "@modelcontextprotocol/server-github"]
     }
 
     #[test]
-    fn test_provider_to_env_var_handles_custom_provider_ids() {
+    fn test_try_provider_to_env_var_handles_custom_provider_ids() {
         assert_eq!(
-            crate::provider_to_env_var("my-provider"),
+            crate::try_provider_to_env_var("my-provider").unwrap(),
             "MY_PROVIDER_API_KEY"
         );
-        assert_eq!(crate::provider_to_env_var("111"), "CUSTOM_111_API_KEY");
+        assert_eq!(
+            crate::try_provider_to_env_var("111").unwrap(),
+            "CUSTOM_111_API_KEY"
+        );
+    }
+
+    #[test]
+    fn test_try_provider_to_env_var_rejects_invalid_custom_provider_ids() {
+        let err = crate::try_provider_to_env_var("my/provider").unwrap_err();
+        assert!(err.contains("Invalid custom provider name"));
     }
 
     #[test]

@@ -39,6 +39,32 @@ pub fn custom_provider_api_key_env(provider: &str) -> Result<String, std::io::Er
     Ok(format!("{normalized}_API_KEY"))
 }
 
+/// Return compatible API key env var names for a custom provider ID.
+///
+/// The first entry is always the canonical env var used for new writes. Numeric
+/// provider IDs also include the pre-normalization legacy name as a read/delete
+/// fallback so existing deployments keep working.
+pub fn custom_provider_api_key_env_candidates(
+    provider: &str,
+) -> Result<Vec<String>, std::io::Error> {
+    let canonical = custom_provider_api_key_env(provider)?;
+    let mut candidates = vec![canonical.clone()];
+    if provider
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_digit())
+    {
+        let legacy = format!(
+            "{}_API_KEY",
+            provider.replace('-', "_").to_ascii_uppercase()
+        );
+        if legacy != canonical {
+            candidates.push(legacy);
+        }
+    }
+    Ok(candidates)
+}
+
 /// Deserialize a `Vec<String>` that tolerates both string and integer elements.
 ///
 /// When channel configs are saved from the web dashboard, numeric IDs (e.g. Discord
@@ -3820,6 +3846,18 @@ mod tests {
     fn test_custom_provider_api_key_env_rejects_invalid_chars() {
         let err = custom_provider_api_key_env("my.provider").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_custom_provider_api_key_env_candidates_keep_numeric_legacy_fallback() {
+        assert_eq!(
+            custom_provider_api_key_env_candidates("111").unwrap(),
+            vec!["CUSTOM_111_API_KEY".to_string(), "111_API_KEY".to_string()]
+        );
+        assert_eq!(
+            custom_provider_api_key_env_candidates("my-provider").unwrap(),
+            vec!["MY_PROVIDER_API_KEY".to_string()]
+        );
     }
 
     #[test]

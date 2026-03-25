@@ -13,7 +13,7 @@ pub mod openai;
 pub mod qwen_code;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
-use openfang_types::config::custom_provider_api_key_env;
+use openfang_types::config::custom_provider_api_key_env_candidates;
 use openfang_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
     DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
@@ -391,10 +391,14 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
     // in their environment and use provider = "nvidia" without extra config.
     if let Some(ref base_url) = config.base_url {
         let api_key = config.api_key.clone().unwrap_or_else(|| {
-            let env_var = custom_provider_api_key_env(provider).unwrap_or_else(|_| {
-                format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"))
-            });
-            std::env::var(&env_var).unwrap_or_default()
+            custom_provider_api_key_env_candidates(provider)
+                .ok()
+                .and_then(|env_vars| {
+                    env_vars
+                        .into_iter()
+                        .find_map(|env_var| std::env::var(&env_var).ok().filter(|v| !v.is_empty()))
+                })
+                .unwrap_or_default()
         });
         return Ok(Arc::new(openai::OpenAIDriver::new(
             api_key,
@@ -406,19 +410,26 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
     // using the convention {PROVIDER_UPPER}_API_KEY. If found, use OpenAI-compatible
     // driver with a default base URL derived from common patterns.
     {
-        let env_var = custom_provider_api_key_env(provider)
-            .unwrap_or_else(|_| format!("{}_API_KEY", provider.to_uppercase().replace('-', "_")));
-        if let Ok(api_key) = std::env::var(&env_var) {
-            if !api_key.is_empty() {
-                return Err(LlmError::Api {
-                    status: 0,
-                    message: format!(
-                        "Provider '{}' has API key ({} is set) but no base_url configured. \
-                         Add base_url to your [default_model] config or set it in [provider_urls].",
-                        provider, env_var
-                    ),
-                });
-            }
+        let env_vars = custom_provider_api_key_env_candidates(provider).unwrap_or_else(|_| {
+            vec![format!(
+                "{}_API_KEY",
+                provider.to_uppercase().replace('-', "_")
+            )]
+        });
+        if let Some(env_var) = env_vars.into_iter().find(|env_var| {
+            std::env::var(env_var)
+                .ok()
+                .filter(|v| !v.is_empty())
+                .is_some()
+        }) {
+            return Err(LlmError::Api {
+                status: 0,
+                message: format!(
+                    "Provider '{}' has API key ({} is set) but no base_url configured. \
+                     Add base_url to your [default_model] config or set it in [provider_urls].",
+                    provider, env_var
+                ),
+            });
         }
     }
 
@@ -785,6 +796,37 @@ mod tests {
         match original {
             Some(value) => std::env::set_var(env_var, value),
             None => std::env::remove_var(env_var),
+        }
+
+        assert!(driver.is_ok());
+    }
+
+    #[test]
+    fn test_numeric_custom_provider_accepts_legacy_env_var() {
+        let _guard = env_lock().lock().unwrap();
+        let legacy_env_var = "111_API_KEY";
+        let canonical_env_var = "CUSTOM_111_API_KEY";
+        let original_legacy = std::env::var_os(legacy_env_var);
+        let original_canonical = std::env::var_os(canonical_env_var);
+        std::env::remove_var(canonical_env_var);
+        std::env::set_var(legacy_env_var, "legacy-numeric-provider-key");
+
+        let config = DriverConfig {
+            provider: "111".to_string(),
+            api_key: None,
+            base_url: Some("https://api.example.com/v1".to_string()),
+            skip_permissions: true,
+        };
+
+        let driver = create_driver(&config);
+
+        match original_legacy {
+            Some(value) => std::env::set_var(legacy_env_var, value),
+            None => std::env::remove_var(legacy_env_var),
+        }
+        match original_canonical {
+            Some(value) => std::env::set_var(canonical_env_var, value),
+            None => std::env::remove_var(canonical_env_var),
         }
 
         assert!(driver.is_ok());

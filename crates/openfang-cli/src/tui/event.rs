@@ -202,6 +202,173 @@ pub enum AppEvent {
     CommsTaskResult(String),
 }
 
+#[derive(Default)]
+struct DaemonStreamState {
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    first_token_latency_ms: Option<u64>,
+    provider_latency_ms: u64,
+    final_response: String,
+    silent: bool,
+}
+
+impl DaemonStreamState {
+    fn finish(self) -> AgentLoopResult {
+        AgentLoopResult {
+            response: self.final_response,
+            total_usage: openfang_types::message::TokenUsage {
+                input_tokens: self.total_input_tokens,
+                output_tokens: self.total_output_tokens,
+            },
+            iterations: 0,
+            cost_usd: None,
+            first_token_latency_ms: self.first_token_latency_ms,
+            provider_latency_ms: self.provider_latency_ms,
+            silent: self.silent,
+            directives: Default::default(),
+        }
+    }
+}
+
+fn usage_from_json(json: &serde_json::Value) -> openfang_types::message::TokenUsage {
+    let usage = json.get("usage").cloned().unwrap_or_default();
+    openfang_types::message::TokenUsage {
+        input_tokens: usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        output_tokens: usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+    }
+}
+
+fn apply_daemon_sse_metadata(json: &serde_json::Value, state: &mut DaemonStreamState) {
+    if let Some(latency) = json.get("first_token_latency_ms").and_then(|v| v.as_u64()) {
+        state.first_token_latency_ms = Some(latency);
+    }
+    if let Some(latency) = json.get("provider_latency_ms").and_then(|v| v.as_u64()) {
+        state.provider_latency_ms = latency;
+    }
+    if let Some(response) = json.get("response").and_then(|v| v.as_str()) {
+        state.final_response = response.to_string();
+    }
+    if let Some(done_silent) = json.get("silent").and_then(|v| v.as_bool()) {
+        state.silent = done_silent;
+    }
+}
+
+fn handle_daemon_sse_event(
+    event_name: Option<&str>,
+    json: &serde_json::Value,
+    state: &mut DaemonStreamState,
+) -> Result<Vec<AppEvent>, String> {
+    apply_daemon_sse_metadata(json, state);
+
+    let inferred = if json.get("content").is_some() {
+        Some("chunk")
+    } else if json.get("tool").is_some() && json.get("input").is_none() {
+        Some("tool_use")
+    } else if json.get("tool").is_some() && json.get("input").is_some() {
+        Some("tool_result")
+    } else if json.get("error").is_some() {
+        Some("error")
+    } else if json.get("usage").is_some() && json.get("response").is_none() {
+        Some("usage")
+    } else if json.get("done").and_then(|v| v.as_bool()) == Some(true) {
+        Some("done")
+    } else if json.get("first_token_latency_ms").is_some()
+        || json.get("provider_latency_ms").is_some()
+    {
+        Some("timing")
+    } else {
+        None
+    };
+
+    match event_name.or(inferred) {
+        Some("chunk") => Ok(json
+            .get("content")
+            .and_then(|c| c.as_str())
+            .map(|content| {
+                vec![AppEvent::Stream(StreamEvent::TextDelta {
+                    text: content.to_string(),
+                })]
+            })
+            .unwrap_or_default()),
+        Some("tool_use") => Ok(json
+            .get("tool")
+            .and_then(|t| t.as_str())
+            .map(|tool| {
+                vec![AppEvent::Stream(StreamEvent::ToolUseStart {
+                    id: String::new(),
+                    name: tool.to_string(),
+                })]
+            })
+            .unwrap_or_default()),
+        Some("tool_result") => Ok(json
+            .get("tool")
+            .and_then(|t| t.as_str())
+            .map(|tool| {
+                vec![AppEvent::Stream(StreamEvent::ToolUseEnd {
+                    id: String::new(),
+                    name: tool.to_string(),
+                    input: json["input"].clone(),
+                })]
+            })
+            .unwrap_or_default()),
+        Some("usage") => {
+            let usage = usage_from_json(json);
+            state.total_input_tokens = state.total_input_tokens.saturating_add(usage.input_tokens);
+            state.total_output_tokens = state
+                .total_output_tokens
+                .saturating_add(usage.output_tokens);
+            Ok(vec![AppEvent::Stream(StreamEvent::ContentComplete {
+                stop_reason: openfang_types::message::StopReason::EndTurn,
+                usage: openfang_types::message::TokenUsage {
+                    input_tokens: state.total_input_tokens,
+                    output_tokens: state.total_output_tokens,
+                },
+            })])
+        }
+        Some("timing") => Ok(vec![AppEvent::Stream(StreamEvent::ResponseTiming {
+            first_token_latency_ms: state.first_token_latency_ms,
+            provider_latency_ms: state.provider_latency_ms,
+        })]),
+        Some("done") => {
+            let usage = usage_from_json(json);
+            let is_final_done = json.get("response").is_some()
+                || json.get("silent").is_some()
+                || json.get("iterations").is_some()
+                || json.get("cost_usd").is_some();
+            if is_final_done {
+                state.total_input_tokens = state.total_input_tokens.max(usage.input_tokens);
+                state.total_output_tokens = state.total_output_tokens.max(usage.output_tokens);
+                Ok(Vec::new())
+            } else {
+                state.total_input_tokens =
+                    state.total_input_tokens.saturating_add(usage.input_tokens);
+                state.total_output_tokens = state
+                    .total_output_tokens
+                    .saturating_add(usage.output_tokens);
+                Ok(vec![AppEvent::Stream(StreamEvent::ContentComplete {
+                    stop_reason: openfang_types::message::StopReason::EndTurn,
+                    usage: openfang_types::message::TokenUsage {
+                        input_tokens: state.total_input_tokens,
+                        output_tokens: state.total_output_tokens,
+                    },
+                })])
+            }
+        }
+        Some("error") => Err(json
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Streaming request failed")
+            .to_string()),
+        _ => Ok(Vec::new()),
+    }
+}
+
 /// Spawn the crossterm polling + tick thread. Returns sender + receiver.
 pub fn spawn_event_thread(
     tick_rate: Duration,
@@ -367,14 +534,11 @@ pub fn spawn_daemon_stream(
             }
         }
 
-        // Accumulate usage across all iterations (tool-use loops send
-        // multiple ContentComplete events — one per LLM call).  Do NOT
-        // return early on "done": true — the SSE stream continues until
-        // the server closes the connection after the agent loop finishes.
-        let mut total_input_tokens: u64 = 0;
-        let mut total_output_tokens: u64 = 0;
-        let mut first_token_latency_ms: Option<u64> = None;
-        let mut provider_latency_ms: u64 = 0;
+        // Track cumulative usage and terminal metadata across both the legacy
+        // "done-per-iteration" stream shape and the newer split "usage" +
+        // final "done" events.
+        let mut state = DaemonStreamState::default();
+        let mut current_event: Option<String> = None;
 
         let reader = BufReader::new(RespReader(resp));
         for line in reader.lines() {
@@ -382,77 +546,34 @@ pub fn spawn_daemon_stream(
                 Ok(l) => l,
                 Err(_) => break,
             };
-            if line.is_empty() || line.starts_with("event:") {
+            if line.is_empty() {
+                current_event = None;
+                continue;
+            }
+            if let Some(event_name) = line.strip_prefix("event: ") {
+                current_event = Some(event_name.to_string());
                 continue;
             }
             if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                    if let Some(latency) = json.get("first_token_latency_ms").and_then(|v| v.as_u64())
-                    {
-                        first_token_latency_ms = Some(latency);
-                    }
-                    if let Some(latency) = json.get("provider_latency_ms").and_then(|v| v.as_u64())
-                    {
-                        provider_latency_ms = latency;
-                    }
-                    if let Some(content) = json.get("content").and_then(|c| c.as_str()) {
-                        let _ = tx.send(AppEvent::Stream(StreamEvent::TextDelta {
-                            text: content.to_string(),
-                        }));
-                    }
-                    if let Some(tool) = json.get("tool").and_then(|t| t.as_str()) {
-                        if json.get("input").is_none() {
-                            let _ = tx.send(AppEvent::Stream(StreamEvent::ToolUseStart {
-                                id: String::new(),
-                                name: tool.to_string(),
-                            }));
-                        } else {
-                            let _ = tx.send(AppEvent::Stream(StreamEvent::ToolUseEnd {
-                                id: String::new(),
-                                name: tool.to_string(),
-                                input: json["input"].clone(),
-                            }));
+                    match handle_daemon_sse_event(current_event.as_deref(), &json, &mut state) {
+                        Ok(events) => {
+                            for event in events {
+                                let _ = tx.send(event);
+                            }
+                        }
+                        Err(error) => {
+                            let _ = tx.send(AppEvent::StreamDone(Err(error)));
+                            return;
                         }
                     }
-                    if json.get("done").and_then(|d| d.as_bool()) == Some(true) {
-                        let usage = json.get("usage").cloned().unwrap_or_default();
-                        total_input_tokens += usage
-                            .get("input_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        total_output_tokens += usage
-                            .get("output_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        // Forward as ContentComplete so the UI can update
-                        // token display, but do NOT terminate — the agent
-                        // loop may continue with tool results.
-                        let _ = tx.send(AppEvent::Stream(StreamEvent::ContentComplete {
-                            stop_reason: openfang_types::message::StopReason::EndTurn,
-                            usage: openfang_types::message::TokenUsage {
-                                input_tokens: total_input_tokens,
-                                output_tokens: total_output_tokens,
-                            },
-                        }));
-                    }
                 }
+                current_event = None;
             }
         }
 
         // Connection closed — agent loop is truly done.
-        let _ = tx.send(AppEvent::StreamDone(Ok(AgentLoopResult {
-            response: String::new(),
-            total_usage: openfang_types::message::TokenUsage {
-                input_tokens: total_input_tokens,
-                output_tokens: total_output_tokens,
-            },
-            iterations: 0,
-            cost_usd: None,
-            first_token_latency_ms,
-            provider_latency_ms,
-            silent: false,
-            directives: Default::default(),
-        })));
+        let _ = tx.send(AppEvent::StreamDone(Ok(state.finish())));
     });
 }
 
@@ -2796,4 +2917,117 @@ pub fn spawn_comms_task(
             ));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_sse_usage_event_updates_cumulative_tokens() {
+        let mut state = DaemonStreamState::default();
+        let events = handle_daemon_sse_event(
+            Some("usage"),
+            &serde_json::json!({
+                "usage": {
+                    "input_tokens": 11,
+                    "output_tokens": 7
+                }
+            }),
+            &mut state,
+        )
+        .unwrap();
+
+        assert_eq!(state.total_input_tokens, 11);
+        assert_eq!(state.total_output_tokens, 7);
+        assert!(matches!(
+            events.as_slice(),
+            [AppEvent::Stream(StreamEvent::ContentComplete { usage, .. })]
+            if usage.input_tokens == 11 && usage.output_tokens == 7
+        ));
+    }
+
+    #[test]
+    fn daemon_sse_legacy_done_event_still_accumulates_usage() {
+        let mut state = DaemonStreamState::default();
+
+        let _ = handle_daemon_sse_event(
+            Some("done"),
+            &serde_json::json!({
+                "done": true,
+                "usage": {
+                    "input_tokens": 3,
+                    "output_tokens": 2
+                }
+            }),
+            &mut state,
+        )
+        .unwrap();
+        let events = handle_daemon_sse_event(
+            Some("done"),
+            &serde_json::json!({
+                "done": true,
+                "usage": {
+                    "input_tokens": 5,
+                    "output_tokens": 4
+                }
+            }),
+            &mut state,
+        )
+        .unwrap();
+
+        assert_eq!(state.total_input_tokens, 8);
+        assert_eq!(state.total_output_tokens, 6);
+        assert!(matches!(
+            events.as_slice(),
+            [AppEvent::Stream(StreamEvent::ContentComplete { usage, .. })]
+            if usage.input_tokens == 8 && usage.output_tokens == 6
+        ));
+    }
+
+    #[test]
+    fn daemon_sse_final_done_sets_terminal_metadata_without_double_counting() {
+        let mut state = DaemonStreamState {
+            total_input_tokens: 8,
+            total_output_tokens: 6,
+            ..DaemonStreamState::default()
+        };
+
+        let events = handle_daemon_sse_event(
+            Some("done"),
+            &serde_json::json!({
+                "done": true,
+                "response": "final answer",
+                "silent": false,
+                "usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 6
+                }
+            }),
+            &mut state,
+        )
+        .unwrap();
+
+        assert!(events.is_empty());
+        assert_eq!(state.final_response, "final answer");
+        assert_eq!(state.total_input_tokens, 8);
+        assert_eq!(state.total_output_tokens, 6);
+    }
+
+    #[test]
+    fn daemon_sse_error_event_is_returned_as_stream_failure() {
+        let mut state = DaemonStreamState::default();
+        let result = handle_daemon_sse_event(
+            Some("error"),
+            &serde_json::json!({
+                "error": "quota exceeded"
+            }),
+            &mut state,
+        );
+
+        match result {
+            Err(err) => assert_eq!(err, "quota exceeded"),
+            Ok(_) => panic!("expected stream failure"),
+        }
+    }
 }

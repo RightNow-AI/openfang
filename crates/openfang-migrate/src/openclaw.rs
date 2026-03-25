@@ -720,8 +720,8 @@ fn map_provider(openclaw_provider: &str) -> String {
 }
 
 /// Map OpenClaw provider to its default API key env var.
-fn default_api_key_env(provider: &str) -> String {
-    match provider {
+fn default_api_key_env(provider: &str) -> Result<String, MigrateError> {
+    let env_var = match provider {
         "anthropic" => "ANTHROPIC_API_KEY".to_string(),
         "openai" => "OPENAI_API_KEY".to_string(),
         "groq" => "GROQ_API_KEY".to_string(),
@@ -745,14 +745,14 @@ fn default_api_key_env(provider: &str) -> String {
         "huggingface" => "HF_API_KEY".to_string(),
         "replicate" => "REPLICATE_API_TOKEN".to_string(),
         "github-copilot" => "GITHUB_TOKEN".to_string(),
-        "ollama" => String::new(), // Ollama doesn't need an API key
-        // Keep explicit env names for local OpenAI-compatible providers to avoid
-        // falling back to default_model.api_key_env in kernel driver resolution.
+        "ollama" => String::new(),
         "vllm" => "VLLM_API_KEY".to_string(),
         "lmstudio" => "LMSTUDIO_API_KEY".to_string(),
-        _ => openfang_types::config::custom_provider_api_key_env(provider)
-            .unwrap_or_else(|_| format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"))),
-    }
+        _ => openfang_types::config::custom_provider_api_key_env(provider).map_err(|e| {
+            MigrateError::ConfigParse(format!("invalid custom provider id '{}': {e}", provider))
+        })?,
+    };
+    Ok(env_var)
 }
 
 fn is_known_openfang_provider_id(provider: &str) -> bool {
@@ -1375,7 +1375,7 @@ fn migrate_config_from_json(
             base_url: None,
         });
 
-    let api_key_env = default_api_key_env(&resolved.provider);
+    let api_key_env = default_api_key_env(&resolved.provider)?;
 
     // Extract channels (writes secrets.env)
     let channels = migrate_channels_from_json(root, target, dry_run, report);
@@ -2038,7 +2038,7 @@ fn convert_agent_from_json(
     let caps = derive_capabilities(&tools);
 
     let api_key_env = {
-        let env = default_api_key_env(&provider);
+        let env = default_api_key_env(&provider)?;
         if env.is_empty() {
             None
         } else {
@@ -2092,7 +2092,7 @@ fn convert_agent_from_json(
         let fallback = split_model_ref_with_context(fb, provider_catalog);
         let fb_provider = fallback.provider;
         let fb_model = fallback.model;
-        let fb_api_key = default_api_key_env(&fb_provider);
+        let fb_api_key = default_api_key_env(&fb_provider)?;
         toml_str.push_str("\n[[fallback_models]]\n");
         toml_str.push_str(&format!("provider = \"{fb_provider}\"\n"));
         toml_str.push_str(&format!("model = \"{fb_model}\"\n"));
@@ -2606,7 +2606,7 @@ fn migrate_legacy_config(
     let provider = map_provider(&oc_config.provider);
     let api_key_env = oc_config
         .api_key_env
-        .unwrap_or_else(|| default_api_key_env(&provider));
+        .unwrap_or(default_api_key_env(&provider)?);
 
     let of_config = OpenFangConfig {
         default_model: OpenFangModelConfig {
@@ -3034,14 +3034,17 @@ fn convert_legacy_agent(
         )
     });
 
-    let api_key_env = oc.api_key_env.or_else(|| {
-        let env = default_api_key_env(&provider);
-        if env.is_empty() {
-            None
-        } else {
-            Some(env)
+    let api_key_env = match oc.api_key_env {
+        Some(env) => Some(env),
+        None => {
+            let env = default_api_key_env(&provider)?;
+            if env.is_empty() {
+                None
+            } else {
+                Some(env)
+            }
         }
-    });
+    };
 
     let mut toml_str = String::new();
     toml_str.push_str(&format!(
@@ -4279,23 +4282,50 @@ mod tests {
 
     #[test]
     fn test_default_api_key_env_mapping() {
-        assert_eq!(default_api_key_env("qwen"), "DASHSCOPE_API_KEY");
-        assert_eq!(default_api_key_env("moonshot"), "MOONSHOT_API_KEY");
-        assert_eq!(default_api_key_env("minimax"), "MINIMAX_API_KEY");
-        assert_eq!(default_api_key_env("zhipu"), "ZHIPU_API_KEY");
-        assert_eq!(default_api_key_env("zhipu_coding"), "ZHIPU_API_KEY");
-        assert_eq!(default_api_key_env("qianfan"), "QIANFAN_API_KEY");
-        assert_eq!(default_api_key_env("perplexity"), "PERPLEXITY_API_KEY");
-        assert_eq!(default_api_key_env("cohere"), "COHERE_API_KEY");
-        assert_eq!(default_api_key_env("ai21"), "AI21_API_KEY");
-        assert_eq!(default_api_key_env("huggingface"), "HF_API_KEY");
-        assert_eq!(default_api_key_env("replicate"), "REPLICATE_API_TOKEN");
-        assert_eq!(default_api_key_env("github-copilot"), "GITHUB_TOKEN");
-        assert!(default_api_key_env("ollama").is_empty());
-        assert_eq!(default_api_key_env("vllm"), "VLLM_API_KEY");
-        assert_eq!(default_api_key_env("lmstudio"), "LMSTUDIO_API_KEY");
-        assert_eq!(default_api_key_env("my-provider"), "MY_PROVIDER_API_KEY");
-        assert_eq!(default_api_key_env("111"), "CUSTOM_111_API_KEY");
+        assert_eq!(default_api_key_env("qwen").unwrap(), "DASHSCOPE_API_KEY");
+        assert_eq!(default_api_key_env("moonshot").unwrap(), "MOONSHOT_API_KEY");
+        assert_eq!(default_api_key_env("minimax").unwrap(), "MINIMAX_API_KEY");
+        assert_eq!(default_api_key_env("zhipu").unwrap(), "ZHIPU_API_KEY");
+        assert_eq!(
+            default_api_key_env("zhipu_coding").unwrap(),
+            "ZHIPU_API_KEY"
+        );
+        assert_eq!(default_api_key_env("qianfan").unwrap(), "QIANFAN_API_KEY");
+        assert_eq!(
+            default_api_key_env("perplexity").unwrap(),
+            "PERPLEXITY_API_KEY"
+        );
+        assert_eq!(default_api_key_env("cohere").unwrap(), "COHERE_API_KEY");
+        assert_eq!(default_api_key_env("ai21").unwrap(), "AI21_API_KEY");
+        assert_eq!(default_api_key_env("huggingface").unwrap(), "HF_API_KEY");
+        assert_eq!(
+            default_api_key_env("replicate").unwrap(),
+            "REPLICATE_API_TOKEN"
+        );
+        assert_eq!(
+            default_api_key_env("github-copilot").unwrap(),
+            "GITHUB_TOKEN"
+        );
+        assert!(default_api_key_env("ollama").unwrap().is_empty());
+        assert_eq!(default_api_key_env("vllm").unwrap(), "VLLM_API_KEY");
+        assert_eq!(default_api_key_env("lmstudio").unwrap(), "LMSTUDIO_API_KEY");
+        assert_eq!(
+            default_api_key_env("my-provider").unwrap(),
+            "MY_PROVIDER_API_KEY"
+        );
+        assert_eq!(default_api_key_env("111").unwrap(), "CUSTOM_111_API_KEY");
+    }
+
+    #[test]
+    fn test_default_api_key_env_rejects_invalid_custom_provider() {
+        let err = default_api_key_env("bad/provider").unwrap_err();
+        assert!(matches!(err, MigrateError::ConfigParse(_)));
+    }
+
+    #[test]
+    fn test_default_api_key_env_rejects_invalid_custom_provider_id() {
+        let err = default_api_key_env("my/provider").unwrap_err();
+        assert!(matches!(err, MigrateError::ConfigParse(_)));
     }
 
     #[test]
