@@ -236,6 +236,53 @@ struct OaiToolDef {
     parameters: serde_json::Value,
 }
 
+fn push_openai_user_blocks(oai_messages: &mut Vec<OaiMessage>, blocks: &[ContentBlock]) {
+    let mut parts: Vec<OaiContentPart> = Vec::new();
+
+    for block in blocks {
+        match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
+                oai_messages.push(OaiMessage {
+                    role: "tool".to_string(),
+                    content: Some(OaiMessageContent::Text(if content.is_empty() {
+                        "(empty)".to_string()
+                    } else {
+                        content.clone()
+                    })),
+                    tool_calls: None,
+                    tool_call_id: Some(tool_use_id.clone()),
+                    reasoning_content: None,
+                });
+            }
+            ContentBlock::Text { text, .. } => {
+                parts.push(OaiContentPart::Text { text: text.clone() });
+            }
+            ContentBlock::Image { media_type, data } => {
+                parts.push(OaiContentPart::ImageUrl {
+                    image_url: OaiImageUrl {
+                        url: format!("data:{media_type};base64,{data}"),
+                    },
+                });
+            }
+            ContentBlock::Thinking { .. } | ContentBlock::Unknown | ContentBlock::ToolUse { .. } => {}
+        }
+    }
+
+    if !parts.is_empty() {
+        oai_messages.push(OaiMessage {
+            role: "user".to_string(),
+            content: Some(OaiMessageContent::Parts(parts)),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        });
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct OaiResponse {
     choices: Vec<OaiChoice>,
@@ -312,52 +359,7 @@ impl LlmDriver for OpenAIDriver {
                     });
                 }
                 (Role::User, MessageContent::Blocks(blocks)) => {
-                    // Handle tool results and images in user messages
-                    let mut parts: Vec<OaiContentPart> = Vec::new();
-                    let mut has_tool_results = false;
-                    for block in blocks {
-                        match block {
-                            ContentBlock::ToolResult {
-                                tool_use_id,
-                                content,
-                                ..
-                            } => {
-                                has_tool_results = true;
-                                oai_messages.push(OaiMessage {
-                                    role: "tool".to_string(),
-                                    content: Some(OaiMessageContent::Text(if content.is_empty() {
-                                        "(empty)".to_string()
-                                    } else {
-                                        content.clone()
-                                    })),
-                                    tool_calls: None,
-                                    tool_call_id: Some(tool_use_id.clone()),
-                                    reasoning_content: None,
-                                });
-                            }
-                            ContentBlock::Text { text, .. } => {
-                                parts.push(OaiContentPart::Text { text: text.clone() });
-                            }
-                            ContentBlock::Image { media_type, data } => {
-                                parts.push(OaiContentPart::ImageUrl {
-                                    image_url: OaiImageUrl {
-                                        url: format!("data:{media_type};base64,{data}"),
-                                    },
-                                });
-                            }
-                            ContentBlock::Thinking { .. } => {}
-                            _ => {}
-                        }
-                    }
-                    if !parts.is_empty() && !has_tool_results {
-                        oai_messages.push(OaiMessage {
-                            role: "user".to_string(),
-                            content: Some(OaiMessageContent::Parts(parts)),
-                            tool_calls: None,
-                            tool_call_id: None,
-                            reasoning_content: None,
-                        });
-                    }
+                    push_openai_user_blocks(&mut oai_messages, blocks);
                 }
                 (Role::Assistant, MessageContent::Blocks(blocks)) => {
                     let mut text_parts = Vec::new();
@@ -794,26 +796,7 @@ impl LlmDriver for OpenAIDriver {
                     });
                 }
                 (Role::User, MessageContent::Blocks(blocks)) => {
-                    for block in blocks {
-                        if let ContentBlock::ToolResult {
-                            tool_use_id,
-                            content,
-                            ..
-                        } = block
-                        {
-                            oai_messages.push(OaiMessage {
-                                role: "tool".to_string(),
-                                content: Some(OaiMessageContent::Text(if content.is_empty() {
-                                    "(empty)".to_string()
-                                } else {
-                                    content.clone()
-                                })),
-                                tool_calls: None,
-                                tool_call_id: Some(tool_use_id.clone()),
-                                reasoning_content: None,
-                            });
-                        }
-                    }
+                    push_openai_user_blocks(&mut oai_messages, blocks);
                 }
                 (Role::Assistant, MessageContent::Blocks(blocks)) => {
                     let mut text_parts = Vec::new();
@@ -1680,6 +1663,45 @@ mod tests {
     #[test]
     fn test_extract_max_tokens_limit_no_match() {
         assert_eq!(extract_max_tokens_limit("some random error"), None);
+    }
+
+    #[test]
+    fn test_push_openai_user_blocks_keeps_image_after_tool_result() {
+        let mut messages = Vec::new();
+        let blocks = vec![
+            ContentBlock::ToolResult {
+                tool_use_id: "tool_1".to_string(),
+                tool_name: "mcp_firefox_tab_capture_visible".to_string(),
+                content: "{\"imageAttached\":true}".to_string(),
+                is_error: false,
+            },
+            ContentBlock::Text {
+                text: "Screenshot attached.".to_string(),
+                provider_metadata: None,
+            },
+            ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: "iVBORw0KGgo=".to_string(),
+            },
+        ];
+
+        push_openai_user_blocks(&mut messages, &blocks);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "tool");
+        assert_eq!(messages[0].tool_call_id.as_deref(), Some("tool_1"));
+        match &messages[1].content {
+            Some(OaiMessageContent::Parts(parts)) => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(&parts[0], OaiContentPart::Text { text } if text == "Screenshot attached."));
+                assert!(matches!(
+                    &parts[1],
+                    OaiContentPart::ImageUrl { image_url }
+                    if image_url.url == "data:image/png;base64,iVBORw0KGgo="
+                ));
+            }
+            other => panic!("expected user parts, got {other:?}"),
+        }
     }
 
     // ----- extract_think_tags tests -----

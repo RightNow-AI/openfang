@@ -81,6 +81,59 @@ fn append_tool_error_guidance(tool_result_blocks: &mut Vec<ContentBlock>) {
     }
 }
 
+fn parse_inline_image_data_url(data_url: &str) -> Option<(String, String)> {
+    let rest = data_url.strip_prefix("data:")?;
+    let (metadata, payload) = rest.split_once(',')?;
+    let (media_type, encoding) = metadata.split_once(';')?;
+    if !encoding.eq_ignore_ascii_case("base64") || !media_type.starts_with("image/") {
+        return None;
+    }
+    openfang_types::message::validate_image(media_type, payload).ok()?;
+    Some((media_type.to_string(), payload.to_string()))
+}
+
+fn augment_tool_result_for_vision(tool_name: &str, content: &str) -> (String, Vec<ContentBlock>) {
+    let mut value = match serde_json::from_str::<serde_json::Value>(content) {
+        Ok(value) => value,
+        Err(_) => return (content.to_string(), Vec::new()),
+    };
+    let Some(object) = value.as_object_mut() else {
+        return (content.to_string(), Vec::new());
+    };
+
+    let image = object
+        .remove("dataUrl")
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .and_then(|data_url| parse_inline_image_data_url(&data_url));
+
+    let Some((media_type, data)) = image else {
+        return (content.to_string(), Vec::new());
+    };
+
+    object.insert("imageAttached".to_string(), serde_json::json!(true));
+    object.insert(
+        "imageMediaType".to_string(),
+        serde_json::json!(media_type.clone()),
+    );
+    object.insert(
+        "visionHint".to_string(),
+        serde_json::json!("Use the attached screenshot as visual evidence for the current page state."),
+    );
+
+    let sanitized_content = serde_json::to_string_pretty(&value)
+        .unwrap_or_else(|_| format!("Tool '{tool_name}' returned a screenshot. Image attached."));
+    let live_blocks = vec![
+        ContentBlock::Text {
+            text: format!(
+                "[Screenshot attached from tool '{tool_name}'. Use it as visual evidence for the visible page state.]"
+            ),
+            provider_metadata: None,
+        },
+        ContentBlock::Image { media_type, data },
+    ];
+
+    (sanitized_content, live_blocks)
+}
 /// Strip a provider prefix from a model ID before sending to the API.
 ///
 /// Many models are stored as `provider/org/model` (e.g. `openrouter/google/gemini-2.5-flash`)
@@ -173,7 +226,6 @@ pub async fn run_agent_loop(
         .get("hand_allowed_env")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-
     // Recall relevant memories — prefer vector similarity search when embedding driver is available
     let memories = if let Some(emb) = embedding_driver {
         match emb.embed_one(user_message).await {
@@ -557,15 +609,15 @@ pub async fn run_agent_loop(
                         }
                     }
                 } else {
-                    let _ = memory
-                        .remember(
-                            session.agent_id,
-                            &interaction_text,
-                            MemorySource::Conversation,
-                            "episodic",
-                            HashMap::new(),
-                        )
-                        .await;
+                        let _ = memory
+                            .remember(
+                                session.agent_id,
+                                &interaction_text,
+                                MemorySource::Conversation,
+                                "episodic",
+                                HashMap::new(),
+                            )
+                            .await;
                 }
 
                 // Notify phase: Done
@@ -752,6 +804,9 @@ pub async fn run_agent_loop(
                         }
                     };
 
+                    let (vision_ready_content, vision_blocks) =
+                        augment_tool_result_for_vision(&tool_call.name, &result.content);
+
                     // Fire AfterToolCall hook
                     if let Some(hook_reg) = hooks {
                         let ctx = crate::hooks::HookContext {
@@ -760,7 +815,7 @@ pub async fn run_agent_loop(
                             event: openfang_types::agent::HookEvent::AfterToolCall,
                             data: serde_json::json!({
                                 "tool_name": &tool_call.name,
-                                "result": &result.content,
+                                "result": &vision_ready_content,
                                 "is_error": result.is_error,
                             }),
                         };
@@ -768,7 +823,8 @@ pub async fn run_agent_loop(
                     }
 
                     // Dynamic truncation based on context budget (replaces flat MAX_TOOL_RESULT_CHARS)
-                    let content = truncate_tool_result_dynamic(&result.content, &context_budget);
+                    let content =
+                        truncate_tool_result_dynamic(&vision_ready_content, &context_budget);
 
                     // Append warning if verdict was Warn
                     let final_content = if let LoopGuardVerdict::Warn(ref warn_msg) = verdict {
@@ -783,6 +839,7 @@ pub async fn run_agent_loop(
                         content: final_content,
                         is_error: result.is_error,
                     });
+                    tool_result_blocks.extend(vision_blocks.iter().cloned());
                 }
 
                 append_tool_error_guidance(&mut tool_result_blocks);
@@ -1180,7 +1237,6 @@ pub async fn run_agent_loop_streaming(
         .get("hand_allowed_env")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-
     // Recall relevant memories — prefer vector similarity search when embedding driver is available
     let memories = if let Some(emb) = embedding_driver {
         match emb.embed_one(user_message).await {
@@ -1560,15 +1616,15 @@ pub async fn run_agent_loop_streaming(
                         }
                     }
                 } else {
-                    let _ = memory
-                        .remember(
-                            session.agent_id,
-                            &interaction_text,
-                            MemorySource::Conversation,
-                            "episodic",
-                            HashMap::new(),
-                        )
-                        .await;
+                        let _ = memory
+                            .remember(
+                                session.agent_id,
+                                &interaction_text,
+                                MemorySource::Conversation,
+                                "episodic",
+                                HashMap::new(),
+                            )
+                            .await;
                 }
 
                 // Notify phase: Done
@@ -1751,6 +1807,9 @@ pub async fn run_agent_loop_streaming(
                         }
                     };
 
+                    let (vision_ready_content, vision_blocks) =
+                        augment_tool_result_for_vision(&tool_call.name, &result.content);
+
                     // Fire AfterToolCall hook
                     if let Some(hook_reg) = hooks {
                         let ctx = crate::hooks::HookContext {
@@ -1759,7 +1818,7 @@ pub async fn run_agent_loop_streaming(
                             event: openfang_types::agent::HookEvent::AfterToolCall,
                             data: serde_json::json!({
                                 "tool_name": &tool_call.name,
-                                "result": &result.content,
+                                "result": &vision_ready_content,
                                 "is_error": result.is_error,
                             }),
                         };
@@ -1767,7 +1826,8 @@ pub async fn run_agent_loop_streaming(
                     }
 
                     // Dynamic truncation based on context budget (replaces flat MAX_TOOL_RESULT_CHARS)
-                    let content = truncate_tool_result_dynamic(&result.content, &context_budget);
+                    let content =
+                        truncate_tool_result_dynamic(&vision_ready_content, &context_budget);
 
                     // Append warning if verdict was Warn
                     let final_content = if let LoopGuardVerdict::Warn(ref warn_msg) = verdict {
@@ -1796,6 +1856,7 @@ pub async fn run_agent_loop_streaming(
                         content: final_content,
                         is_error: result.is_error,
                     });
+                    tool_result_blocks.extend(vision_blocks.iter().cloned());
                 }
 
                 append_tool_error_guidance(&mut tool_result_blocks);
@@ -2737,6 +2798,7 @@ mod tests {
     use super::*;
     use crate::llm_driver::{CompletionResponse, LlmError};
     use async_trait::async_trait;
+    use openfang_types::message::ContentBlock;
     use openfang_types::tool::ToolCall;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -2798,6 +2860,27 @@ mod tests {
     #[test]
     fn test_max_history_messages() {
         assert_eq!(MAX_HISTORY_MESSAGES, 20);
+    }
+
+    #[test]
+    fn test_augment_tool_result_for_vision_extracts_inline_screenshot() {
+        let payload = serde_json::json!({
+            "tabId": 7,
+            "dataUrl": "data:image/png;base64,iVBORw0KGgo=",
+        })
+        .to_string();
+
+        let (sanitized, blocks) = augment_tool_result_for_vision("mcp_firefox_tab_capture_visible", &payload);
+
+        assert!(sanitized.contains("\"imageAttached\": true"));
+        assert!(!sanitized.contains("data:image/png;base64"));
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(&blocks[0], ContentBlock::Text { .. }));
+        assert!(matches!(
+            &blocks[1],
+            ContentBlock::Image { media_type, data }
+            if media_type == "image/png" && data == "iVBORw0KGgo="
+        ));
     }
 
     // --- Integration tests for empty response guards ---
