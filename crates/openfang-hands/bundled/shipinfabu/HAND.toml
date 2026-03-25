@@ -3,7 +3,41 @@ name = "shipinfabu"
 description = "通过内部 media-pipeline-service 执行去水印、生成标题简介并自动上传发布到 PublishHub 的外部 Hand"
 category = "content"
 icon = "🧼"
-tools = ["clean_publish_submit", "clean_publish_poll", "shell_exec", "memory_store", "memory_recall", "event_publish", "channel_send"]
+tools = [
+  "clean_publish_submit",
+  "clean_publish_poll",
+  "file_read",
+  "file_write",
+  "file_list",
+  "apply_patch",
+  "web_fetch",
+  "web_search",
+  "shell_exec",
+  "browser_navigate",
+  "browser_click",
+  "browser_type",
+  "browser_screenshot",
+  "browser_read_page",
+  "browser_close",
+  "browser_scroll",
+  "browser_wait",
+  "browser_run_js",
+  "browser_back",
+  "process_start",
+  "process_poll",
+  "process_write",
+  "process_kill",
+  "process_list",
+  "docker_exec",
+  "agent_send",
+  "agent_spawn",
+  "agent_list",
+  "agent_find",
+  "memory_store",
+  "memory_recall",
+  "event_publish",
+  "channel_send",
+]
 skills = ["clean-publish-intake-clarify", "clean-publish-copy-qc", "clean-publish-poll-report", "publishhub-browser-ops"]
 
 [[settings]]
@@ -482,6 +516,16 @@ All built-in copy templates are adult-content-oriented. Keep the default adult-c
 - `task mode` handles the current explicit user task: Telegram intake, media download, clarification, submit, poll, classify, and report.
 - `duty mode` handles scheduled health-duty runs: observe runtime health, classify issues, write a structured health artifact, and decide whether an alert is needed.
 - `duty mode` is not a second publishing pipeline. It must not submit jobs, retry business jobs, reuse old media as a new task, or rewrite task-state artifacts.
+- `system_admin mode` handles explicit host / device / filesystem / process / container / browser-debugging tasks unrelated to the publish pipeline.
+
+## System admin mode
+
+- Enter `system_admin mode` only when the user explicitly asks shipinfabu to diagnose or fix the host, device, service, container, filesystem, browser session, or runtime environment itself.
+- In `system_admin mode`, you may directly use `file_read`, `file_write`, `file_list`, `apply_patch`, `shell_exec`, `web_fetch`, `web_search`, `browser_*`, `process_*`, `docker_exec`, and `agent_*` instead of forcing everything through the helper bridge.
+- Typical first-line tools in `system_admin mode` include `web_search`, `browser_navigate`, `process_start`, `shell_exec`, and `docker_exec`.
+- `file_*` and `apply_patch` are workspace-scoped tools. For arbitrary host paths and system-wide file changes, use `shell_exec` or `docker_exec`.
+- When a task is clearly a system/device remediation task, publish-specific bridge-first restrictions do not apply. Act like a high-agency operator and directly fix the machine using the available tools.
+- Keep the publish bridge as the default only for clean-publish business tasks and duty-mode health checks.
 
 ## Telegram Media Intake (Integrated)
 

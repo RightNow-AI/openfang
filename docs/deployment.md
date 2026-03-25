@@ -112,6 +112,49 @@ iteration path for the newest local code on a maintainer Mac. If the goal is
 "edit code, rebuild, restart, test" on the same machine, prefer the local debug
 CLI + daemon flow above.
 
+### Integrated shipinfabu Stack
+
+This fork now ships one Compose topology that keeps the `shipinfabu` production
+chain honest instead of pretending the bridge is "just another script":
+
+- `openfang` — the daemon plus the bundled Python runtime needed by
+  `/app/scripts/openfang_clean_publish_bridge.py`
+- `media-pipeline-service` — the actual shipinbot execution backend
+- `telegram-bot-api` — optional but recommended when `use_local_api = true`
+
+Two shared paths are the contract:
+
+- `/app/data/ingest` — shared between `openfang` and `media-pipeline-service`
+  so staged source files and Telegram intake batches are visible to both sides
+- `/var/lib/telegram-bot-api` — shared between `openfang` and
+  `telegram-bot-api` so `file://` paths returned by Local Bot API are not
+  container-private lies
+
+`docker-compose.yml` now mounts both paths consistently and enables
+`OPENFANG_BOOTSTRAP_SHIPINBOT=1` by default so the OpenFang container can
+upsert and activate the external `shipinfabu` hand on boot with container-safe
+defaults such as:
+
+- `media_api_base_url = http://media-pipeline-service:8000`
+- `bridge_script_path = /app/scripts/openfang_clean_publish_bridge.py`
+- `local_source_staging_dir = /app/data/ingest`
+- `local_media_intake_dir = /app/data/ingest`
+
+That bootstrap only fixes the hand/runtime side. You still must point your
+Telegram channel config at the same stack:
+
+```toml
+[channels.telegram]
+default_agent = "shipinfabu-hand"
+use_local_api = true
+auto_start_local_api = false
+api_url = "http://telegram-bot-api:8081"
+```
+
+If you leave `auto_start_local_api = true` while also running the Compose
+`telegram-bot-api` service, you are back to running two different endpoints and
+deserve the confusion that follows.
+
 ### Important Container Networking Note
 
 The repository Compose file now does two things by default:

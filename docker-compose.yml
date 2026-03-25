@@ -11,6 +11,8 @@ services:
       - "127.0.0.1:4200:4200"
     volumes:
       - openfang-data:/data
+      - shipinbot-data:/app/data
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
     environment:
       # Bind all container interfaces so Docker port publishing works.
       - OPENFANG_LISTEN=${OPENFANG_LISTEN:-0.0.0.0:4200}
@@ -23,9 +25,31 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
       - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
+      - MEDIA_API_TOKEN=${MEDIA_API_TOKEN:-}
+      - OPENFANG_BOOTSTRAP_SHIPINBOT=${OPENFANG_BOOTSTRAP_SHIPINBOT:-1}
+      - SHIPINBOT_DEPLOY_ROOT=/app
+      - SHIPINFABU_MEDIA_API_BASE_URL=${SHIPINFABU_MEDIA_API_BASE_URL:-http://media-pipeline-service:8000}
+      - SHIPINFABU_BRIDGE_SCRIPT_PATH=${SHIPINFABU_BRIDGE_SCRIPT_PATH:-/app/scripts/openfang_clean_publish_bridge.py}
+      - SHIPINFABU_LOCAL_SOURCE_STAGING_DIR=${SHIPINFABU_LOCAL_SOURCE_STAGING_DIR:-/app/data/ingest}
+      - SHIPINFABU_LOCAL_MEDIA_INTAKE_DIR=${SHIPINFABU_LOCAL_MEDIA_INTAKE_DIR:-/app/data/ingest}
+      - SHIPINFABU_LOCAL_MEDIA_INTAKE_RETENTION_HOURS=${SHIPINFABU_LOCAL_MEDIA_INTAKE_RETENTION_HOURS:-12}
+      - SHIPINFABU_NOTIFY_CHANNEL=${SHIPINFABU_NOTIFY_CHANNEL:-telegram}
+      - SHIPINFABU_NOTIFY_RECIPIENT=${SHIPINFABU_NOTIFY_RECIPIENT:-}
+      - SHIPINFABU_NOTIFY_STAGE_UPDATES=${SHIPINFABU_NOTIFY_STAGE_UPDATES:-true}
+      - SHIPINFABU_POLL_INTERVAL_SECONDS=${SHIPINFABU_POLL_INTERVAL_SECONDS:-10}
+      - SHIPINFABU_POLL_TIMEOUT_SECONDS=${SHIPINFABU_POLL_TIMEOUT_SECONDS:-1800}
+      - SHIPINFABU_EXECUTION_MODE=${SHIPINFABU_EXECUTION_MODE:-auto}
+      - PUBLISHHUB_BASE_URL=${PUBLISHHUB_BASE_URL:-}
+      - PUBLISHHUB_PROJECT_CODE=${PUBLISHHUB_PROJECT_CODE:-}
+      - PUBLISHHUB_USERNAME=${PUBLISHHUB_USERNAME:-}
+      - PUBLISHHUB_PASSWORD=${PUBLISHHUB_PASSWORD:-}
+      - PUBLISHHUB_AUTHOR_ID=${PUBLISHHUB_AUTHOR_ID:-}
+      - PUBLISHHUB_AUTHOR_NAME=${PUBLISHHUB_AUTHOR_NAME:-}
+      - PUBLISHHUB_CATEGORY_ID=${PUBLISHHUB_CATEGORY_ID:-}
     healthcheck:
       test:
         - CMD-SHELL
@@ -40,6 +64,60 @@ services:
         soft: 65536
         hard: 65536
     restart: unless-stopped
+  media-pipeline-service:
+    build:
+      context: ./projects/shipinbot
+    image: media-pipeline-service:local
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - shipinbot-data:/app/data
+      - ./projects/shipinbot/.runtime:/app/.runtime
+    environment:
+      - PYTHONUNBUFFERED=1
+      - COMFYUI_API_URL=${COMFYUI_API_URL:-http://comfyui-worker:8189}
+      - MEDIA_PIPELINE_DB_SECRET=${MEDIA_PIPELINE_DB_SECRET:-}
+      - MEDIA_API_TOKEN=${MEDIA_API_TOKEN:-}
+      - WAVESPEED_API_KEY=${WAVESPEED_API_KEY:-}
+      - WAVESPEED_BASE_URL=${WAVESPEED_BASE_URL:-}
+      - HIVE_GROK_API_KEY=${HIVE_GROK_API_KEY:-}
+      - HIVE_GROK_API_URL_OVERRIDE=${HIVE_GROK_API_URL_OVERRIDE:-}
+      - HIVE_GROK_MODEL_OVERRIDE=${HIVE_GROK_MODEL_OVERRIDE:-}
+      - HIVE_GROK_API_KEY_ENV_OVERRIDE=${HIVE_GROK_API_KEY_ENV_OVERRIDE:-}
+      - PUBLISHHUB_BASE_URL=${PUBLISHHUB_BASE_URL:-}
+      - PUBLISHHUB_PROJECT_CODE=${PUBLISHHUB_PROJECT_CODE:-}
+      - PUBLISHHUB_USERNAME=${PUBLISHHUB_USERNAME:-}
+      - PUBLISHHUB_PASSWORD=${PUBLISHHUB_PASSWORD:-}
+      - JOB_NOTIFY_ENABLED=${JOB_NOTIFY_ENABLED:-false}
+      - JOB_NOTIFY_CHANNEL=${JOB_NOTIFY_CHANNEL:-telegram}
+      - JOB_NOTIFY_MODE=${JOB_NOTIFY_MODE:-openfang_assisted}
+      - JOB_NOTIFY_BOT_TOKEN_ENV=${JOB_NOTIFY_BOT_TOKEN_ENV:-TELEGRAM_BOT_TOKEN}
+      - JOB_NOTIFY_RECIPIENTS=${JOB_NOTIFY_RECIPIENTS:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/healthz", timeout=5).read()
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
+      - TELEGRAM_LOCAL=1
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    restart: unless-stopped
 
 volumes:
   openfang-data:
+  shipinbot-data:
+  telegram-bot-api-data:

@@ -197,6 +197,35 @@ export MEDIA_PIPELINE_DB_SECRET="数据库密钥"
 
 ## 启动顺序
 
+### 容器化一体部署（推荐）
+
+如果 OpenFang、shipinbot 和 Telegram Local Bot API 都跑容器，不要再拆成三套各自猜路径的私有文件系统。当前仓库支持的生产口径是：
+
+- `docker compose up -d --build`
+- `openfang` 与 `media-pipeline-service` 共享 `shipinbot-data`，并且都使用 `/app/data/ingest`
+- `openfang` 与 `telegram-bot-api` 共享 `telegram-bot-api-data`，并且都挂到 `/var/lib/telegram-bot-api`
+
+对应配置链要保持一致：
+
+```toml
+[channels.telegram]
+default_agent = "shipinfabu-hand"
+download_enabled = true
+use_local_api = true
+auto_start_local_api = false
+api_url = "http://telegram-bot-api:8081"
+```
+
+```env
+OPENFANG_BOOTSTRAP_SHIPINBOT=1
+SHIPINFABU_MEDIA_API_BASE_URL=http://media-pipeline-service:8000
+SHIPINFABU_BRIDGE_SCRIPT_PATH=/app/scripts/openfang_clean_publish_bridge.py
+SHIPINFABU_LOCAL_SOURCE_STAGING_DIR=/app/data/ingest
+SHIPINFABU_LOCAL_MEDIA_INTAKE_DIR=/app/data/ingest
+```
+
+这个拓扑下，`file:///var/lib/telegram-bot-api/...` 和 `/app/data/ingest/...` 才是真路径，不是容器内自我感动的假路径。
+
 ### 1. 启动 shipinbot media-pipeline-service
 
 ```bash

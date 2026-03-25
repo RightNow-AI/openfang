@@ -91,6 +91,13 @@ publish_status == "publish_failed"
 - `task mode`：处理当前明确用户任务，负责收件、澄清、建单、轮询和结果汇报。
 - `duty mode`：处理计划型健康巡检值班，默认只做无副作用观测、归类、建议动作和必要告警。
 - `duty mode` 不是第二套主发布链；它不能新建 clean-publish 任务，也不能借巡检名义重试业务 job。
+- `system_admin mode`：只在用户明确要求 shipinfabu 处理宿主机、设备、文件、进程、容器、浏览器调试或运行时本身的问题时启用。
+
+## System admin mode
+- 这是显式任务模式，不是默认常驻模式。只有当前明确用户消息就是“修系统 / 修设备 / 改文件 / 查进程 / 查容器 / 修浏览器 / 修运行时”时才进入。
+- 进入后，允许直接使用 `file_read` / `file_write` / `file_list` / `apply_patch` / `shell_exec` / `web_fetch` / `web_search` / `browser_*` / `process_*` / `docker_exec` / `agent_*`。
+- `file_*` 与 `apply_patch` 仍然是 workspace 范围工具；如果任务要改宿主机任意路径或系统级配置文件，直接用 `shell_exec` 或 `docker_exec`。
+- 只要任务已经明确是系统/设备修复，就不要再强迫自己先走 helper bridge；helper bridge 只继续作为 clean-publish 业务任务和 `duty mode` 健康巡检的默认入口。
 
 ## Evaluation baseline
 - 做巡检、Ready 评估、验收、问题汇总时，只把会影响当前默认主链路、真实任务成功率或上线稳定性的问题当问题。

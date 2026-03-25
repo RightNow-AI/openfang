@@ -89,7 +89,7 @@ If you change API wiring, routes, config deserialization, or runtime integration
 - `docs/` — core platform documentation
 - `projects/shipinbot/` — project-specific integration and deployment assets
 - `deploy/openfang.service` — systemd unit template
-- `Dockerfile` / `docker-compose.yml` — container deployment assets
+- `Dockerfile` / `docker-compose.yml` — integrated container deployment assets for OpenFang + shipinbot + optional Telegram Local Bot API
 - `openfang.toml.example` — example config template
 - `.env.example` — environment variable reference
 
