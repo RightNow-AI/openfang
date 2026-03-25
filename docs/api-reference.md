@@ -93,7 +93,7 @@ List all running agents.
 
 ```json
 [
-  {
+{
     "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "name": "hello-world",
     "state": "Running",
@@ -575,12 +575,12 @@ List configured channel adapters and their status. Supports 40 channel adapters 
   "channels": [
     {
       "name": "telegram",
-      "enabled": true,
+      "configured": true,
       "has_token": true
     },
     {
       "name": "discord",
-      "enabled": true,
+      "configured": true,
       "has_token": false
     }
   ],
