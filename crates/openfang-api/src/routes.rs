@@ -41,6 +41,12 @@ pub struct AppState {
     pub provider_probe_cache: openfang_runtime::provider_health::ProbeCache,
 }
 
+static CONFIG_IO_LOCK: LazyLock<std::sync::Mutex<()>> = LazyLock::new(|| std::sync::Mutex::new(()));
+
+fn lock_config_io() -> std::sync::MutexGuard<'static, ()> {
+    CONFIG_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub(crate) struct AbortOnDropStream<T> {
     inner: std::pin::Pin<Box<dyn futures::Stream<Item = T> + Send>>,
     abort_handle: Option<tokio::task::AbortHandle>,
@@ -6096,6 +6102,7 @@ pub async fn update_budget(
     }
 
     let config_path = state.kernel.config_path().to_path_buf();
+    let config_guard = lock_config_io();
     let mut table: toml::value::Table = if config_path.exists() {
         match std::fs::read_to_string(&config_path) {
             Ok(content) => {
@@ -6180,6 +6187,8 @@ pub async fn update_budget(
             Json(serde_json::json!({"status": "error", "error": format!("write failed: {e}")})),
         );
     }
+    drop(config_guard);
+
     let reload_status = match state.kernel.reload_config() {
         Ok(outcome) => {
             if outcome
@@ -8688,6 +8697,7 @@ fn upsert_provider_url(
     provider: &str,
     url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _config_guard = lock_config_io();
     let content = if config_path.exists() {
         std::fs::read_to_string(config_path)?
     } else {
@@ -8909,6 +8919,7 @@ fn write_validated_config_atomically(
 /// Write or update a key in the secrets.env file.
 /// File format: one `KEY=value` per line. Existing keys are overwritten.
 fn write_secret_env(path: &std::path::Path, key: &str, value: &str) -> Result<(), std::io::Error> {
+    let _config_guard = lock_config_io();
     validate_secret_env_key(key)?;
     validate_secret_env_value(value)?;
 
@@ -8932,6 +8943,7 @@ fn write_secret_env(path: &std::path::Path, key: &str, value: &str) -> Result<()
 
 /// Remove a key from the secrets.env file.
 fn remove_secret_env(path: &std::path::Path, key: &str) -> Result<(), std::io::Error> {
+    let _config_guard = lock_config_io();
     validate_secret_env_key(key)?;
 
     if !path.exists() {
@@ -9001,6 +9013,7 @@ fn upsert_channel_config(
     channel_name: &str,
     fields: &HashMap<String, (String, FieldType)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _config_guard = lock_config_io();
     let content = if config_path.exists() {
         std::fs::read_to_string(config_path)?
     } else {
@@ -9065,6 +9078,7 @@ fn remove_channel_config(
     config_path: &std::path::Path,
     channel_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _config_guard = lock_config_io();
     if !config_path.exists() {
         return Ok(());
     }
@@ -11251,6 +11265,7 @@ pub async fn config_set(
     };
 
     let config_path = state.kernel.config_path().to_path_buf();
+    let config_guard = lock_config_io();
     // Read existing config as a TOML table, or start fresh
     let mut table: toml::value::Table = if config_path.exists() {
         match std::fs::read_to_string(&config_path) {
@@ -11336,6 +11351,8 @@ pub async fn config_set(
             Json(serde_json::json!({"status": "error", "error": format!("write failed: {e}")})),
         );
     }
+    drop(config_guard);
+
     // Trigger reload
     let reload_status = match state.kernel.reload_config() {
         Ok(outcome) => {
@@ -12754,6 +12771,7 @@ fn persist_default_model_selection(
         "\n[default_model]\nprovider = \"{}\"\nmodel = \"{}\"\napi_key_env = \"{}\"\n",
         provider, model_id, env_var
     );
+    let _config_guard = lock_config_io();
     backup_config(config_path);
 
     let updated = match std::fs::read_to_string(config_path) {
