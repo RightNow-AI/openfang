@@ -11,13 +11,13 @@ This guide documents the deployment paths that are actually supported by the ass
 | Docker / Compose | Local services and containerized hosts | `Dockerfile`, `docker-compose.yml` |
 | Linux systemd | Server deployment | `deploy/openfang.service` |
 
-CI now includes a `deploy-lint` job that runs `systemd-analyze verify deploy/openfang.service`, `docker compose config`, and `promtool check` against `deploy/openfang-alerts.yml`/`deploy/prometheus-scrape.yml`, plus an optional `provider-canary` job that executes `scripts/provider-canary-openfang.sh` whenever the `OPENFANG_PROVIDER_CANARY_API_KEY`, `OPENFANG_CANARY_BASE_URL`, `OPENFANG_CANARY_PROVIDER`, `OPENFANG_CANARY_MODEL`, and `OPENFANG_CANARY_API_KEY_ENV` secrets are configured in the repository.
+CI now includes a `deploy-lint` job that runs `systemd-analyze verify deploy/openfang.service`, `docker compose config`, and `promtool check` against `deploy/openfang-alerts.yml`/`deploy/prometheus-scrape.yml`, plus a provider canary stage in release flow.
 
 ## Common Requirements
 
 - one working inference path: a remote LLM provider or a reachable local model endpoint
 - writable OpenFang home directory
-- a plan for API authentication before exposing the service outside loopback
+- a machine API key (`OPENFANG_API_KEY`) configured in the real process environment before exposing the service outside loopback
 
 Local models are optional. If you plan to use Groq, OpenAI, Gemini, or another remote provider, not having a pre-pulled Ollama model is not a deployment blocker.
 
@@ -156,7 +156,7 @@ curl -H "Authorization: Bearer $OPENFANG_API_KEY" \
 If auth is disabled and you are testing from inside the container, omit the header.
 Treat `/api/health` as liveness only. For deploy validation and orchestrator health checks, prefer `/api/health/detail` and require `status = "ok"`.
 The container image and Compose healthcheck now resolves auth the same way the daemon does: `OPENFANG_API_KEY` from the real process environment wins, otherwise `api_key` from `config.toml` is used. The repository Compose file also sets `OPENFANG_STRICT_PRODUCTION=1`, so a missing machine credential causes the container probe to fail closed instead of silently downgrading from readiness to liveness.
-For production automation, keep a machine API key available for readiness probes, Prometheus scrapes, and operator scripts; dashboard auth alone is not enough for full protected-path validation.
+For production automation, treat a machine API key as mandatory for readiness probes, Prometheus scrapes, and operator scripts; dashboard auth alone is not enough for full protected-path validation.
 Healthcheck address resolution now follows `OPENFANG_BASE_URL` first; when that is unset it derives the probe URL from `OPENFANG_LISTEN` so non-default listen ports do not flap to unhealthy.
 
 For a broader post-deploy check, run:
@@ -240,6 +240,27 @@ The unit now enforces a two-stage fail-closed gate in strict production mode:
 - post-start gate (`ExecStartPost`): retries live authenticated readiness verification for up to 30 attempts (2s interval each) using `/usr/local/lib/openfang/preflight-openfang.sh` without `--offline`
 Strict mode treats the helper itself as mandatory in both stages: if `/usr/local/lib/openfang/preflight-openfang.sh` is missing while `OPENFANG_STRICT_PRODUCTION=1`, the unit fails rather than silently skipping deeper validation.
 
+### Scheduled Backups (systemd)
+
+This repository now ships minimal backup scheduling assets:
+
+- `deploy/openfang-backup.service`
+- `deploy/openfang-backup.timer`
+
+Install and enable them on Linux hosts that use systemd:
+
+```bash
+sudo install -d /usr/local/lib/openfang
+sudo install -m 0755 scripts/backup-openfang.sh /usr/local/lib/openfang/backup-openfang.sh
+sudo install -m 0644 deploy/openfang-backup.service /etc/systemd/system/openfang-backup.service
+sudo install -m 0644 deploy/openfang-backup.timer /etc/systemd/system/openfang-backup.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now openfang-backup.timer
+sudo systemctl list-timers openfang-backup.timer
+```
+
+The backup job only calls the existing `scripts/backup-openfang.sh` and reuses `OPENFANG_HOME`, `OPENFANG_ENV_FILE`, `OPENFANG_KEEP_BACKUPS`, and optional `OPENFANG_BACKUP_ROOT` from `/etc/openfang/env`. By default it writes to `${OPENFANG_HOME}/backups` and creates that directory on demand as the `openfang` service user.
+
 ### Service Management
 
 ```bash
@@ -256,6 +277,7 @@ This repository does not ship a production Nginx, Caddy, or Traefik config. If y
 - keep OpenFang bound to loopback or a private interface when possible
 - do not rely on "localhost-only" mode as your auth model behind the proxy; configure `OPENFANG_API_KEY` and/or dashboard auth first
 - preserve `Authorization` headers
+- do not pass API keys in URL query parameters (for example `?token=...`) because reverse-proxy/access logs can leak them
 - terminate TLS at the proxy
 - rate-limit and IP-filter at the proxy where appropriate
 - keep API auth enabled even behind the proxy

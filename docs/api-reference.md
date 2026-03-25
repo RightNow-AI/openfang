@@ -62,7 +62,8 @@ Important:
 - A same-host reverse proxy does not make this mode safe for production; the daemon may still see proxied traffic as loopback.
 - CORS is browser-only and does not protect direct API clients.
 - For production, set `OPENFANG_API_KEY` (or `api_key`) and restrict network access with loopback bind, reverse proxy, firewall, or security group rules.
-- The `?token=` query parameter is only accepted on streaming/browser transports such as SSE or WebSocket endpoints. Use bearer headers for normal API requests.
+- API keys in URL query parameters (for example `?token=...`) are rejected. Use `Authorization: Bearer ...` or dashboard session cookies.
+- Browser WebSocket clients that cannot set `Authorization` headers can use the `Sec-WebSocket-Protocol` bearer format (`openfang.bearer.<base64url-token>`).
 
 ### Public Endpoints (No Auth Required)
 

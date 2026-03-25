@@ -9,7 +9,7 @@ This is the maintainer runbook for day-2 operation of the OpenFang daemon in thi
 - main persisted state includes: `config.toml`, `.env`, `secrets.env`, `vault.enc`, `custom_models.json`, `integrations.toml`, the configured runtime sqlite file (default `data/openfang.db`), `agents/`, `skills/`, `workspaces/`, `workflows/`, `hand_state.json`, `cron_jobs.json`
 - systemd deployments often also use `/etc/openfang/env` as an external env source; scripts honor `OPENFANG_ENV_FILE` explicitly and only auto-detect `/etc/openfang/env` when it matches the current `OPENFANG_HOME`
 - `daemon.json` is a discovery file for the CLI, not a restore asset
-- if the API is bound off-loopback, auth must be enabled with `OPENFANG_API_KEY` or dashboard auth
+- if the API is bound off-loopback, production requires a machine API key (`OPENFANG_API_KEY`) for protected probes, metrics scraping, and operator scripts
 
 ## 2. Start and Stop
 
@@ -134,7 +134,7 @@ OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 ```
 
 `scripts/preflight-openfang.sh` resolves `config.toml` includes plus runtime helper files (`.env` / `secrets.env`) for provider/channel credentials, and it resolves daemon runtime overrides (`OPENFANG_LISTEN`, `OPENFANG_API_KEY`) from the same sources the daemon actually uses: the real process environment plus `OPENFANG_ENV_FILE` when present. It honors `OPENFANG_ENV_FILE`; if unset and `/etc/openfang/env` exists, that file is auto-detected only when it matches the current `OPENFANG_HOME`. When both runtime files define the same provider key, `secrets.env` wins so API/dashboard-managed secrets survive restart. Keep `/etc/openfang/env` readable by the `openfang` service user (for example `0640 root:openfang`), otherwise the unit's `ExecStartPre` preflight and host-side operator scripts will fail before the daemon starts. Strict mode accepts that external env baseline while still requiring owner-only permissions for the rest of the sensitive runtime files. If `.env` or `secrets.env` contains `OPENFANG_LISTEN` or `OPENFANG_API_KEY`, preflight now warns because the daemon ignores those override keys there. When preflight can resolve an API key, it now treats failures on protected operational endpoints as blocking instead of advisory, and it requires `/api/health/detail` to report `status = "ok"` rather than merely returning HTTP 200.
-For production hosts, keep a machine API key available even when dashboard auth is enabled, otherwise protected-path checks remain advisory instead of fully enforceable. Always run the stateful smoke script defined in this repo as part of cutover verification so you prove the agent lifecycle path that customers exercise.
+For production hosts, keep a machine API key configured even when dashboard auth is enabled, otherwise protected-path checks remain advisory instead of fully enforceable. Always run the stateful smoke script defined in this repo as part of cutover verification so you prove the agent lifecycle path that customers exercise.
 `scripts/smoke-openfang.sh` now also validates the public dashboard shell (`/`) and confirms `/api/metrics` still exposes the operational metric families used by the bundled alerts and runbooks, so a broken SPA bundle or alert drift fails during smoke instead of after cutover.
 Use `OPENFANG_STRICT_PRODUCTION=1` in deployment automation so missing machine auth becomes a hard failure instead of a warning. The shipped systemd unit enables this by default in both pre-start and post-start gates, so host installs fail closed on config/state drift before boot and on live authenticated readiness after boot (same contract as Docker/Compose health gating).
 Add `OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/live-api-smoke-openfang.sh` to your post-cutover checklist so the agent spawn/budget/kill workflow runs against each target environment before you declare it ready.
@@ -158,6 +158,7 @@ Important logging realities:
 - there is no universal daemon log file by default
 - `openfang logs` reads `~/.openfang/tui.log`, which only exists for TUI-driven logging
 - `/api/logs/stream` is an audit-log SSE stream, not a full daemon stderr stream
+- do not place machine API keys in URL query parameters (for example `?token=...`) when consuming streaming endpoints; use `Authorization: Bearer ...` or session cookie auth
 - API requests now run inside a request-scoped tracing span; use the shared `x-request-id` response header and `request_id` log field together when correlating a failing request across logs
 
 Prometheus and alerting:
@@ -256,6 +257,31 @@ Back up the runtime home before upgrades or invasive changes.
 scripts/backup-openfang.sh
 ```
 
+For long-running production nodes, treat scheduled backups as mandatory, not optional. The repository ships:
+
+- `deploy/openfang-backup.service`
+- `deploy/openfang-backup.timer`
+
+Expected host install:
+
+```bash
+sudo install -d /usr/local/lib/openfang
+sudo install -m 0755 scripts/backup-openfang.sh /usr/local/lib/openfang/backup-openfang.sh
+sudo install -m 0644 deploy/openfang-backup.service /etc/systemd/system/openfang-backup.service
+sudo install -m 0644 deploy/openfang-backup.timer /etc/systemd/system/openfang-backup.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now openfang-backup.timer
+```
+
+Verify the timer is active:
+
+```bash
+sudo systemctl status openfang-backup.timer
+sudo systemctl list-timers openfang-backup.timer
+```
+
+By default scheduled backups land under `${OPENFANG_HOME}/backups` (for example `/var/lib/openfang/backups`) and the service creates that directory automatically. Override `OPENFANG_BACKUP_ROOT` in `/etc/openfang/env` if you want a different destination.
+
 The backup script creates a consistent SQLite snapshot instead of relying on a raw `cp` of a live WAL-mode database.
 It now refuses to back up a running daemon unless you explicitly set `OPENFANG_ALLOW_LIVE_BACKUP=1`.
 It also preserves `config.toml` include dependencies under `OPENFANG_HOME` so split-config deployments restore with the same effective config tree.
@@ -316,7 +342,17 @@ After restore:
 4. restart
 5. rerun health checks, `scripts/smoke-openfang.sh`, and `scripts/live-api-smoke-openfang.sh`
 
-## 10. High-Value Inspection Targets
+## 10. Production Cutover Gates
+
+Do not cut over without all gates below passing in the target environment:
+
+1. `scripts/preflight-openfang.sh` passes in strict mode with a machine API key.
+2. `scripts/smoke-openfang.sh` and `scripts/live-api-smoke-openfang.sh` pass.
+3. `scripts/provider-canary-openfang.sh` passes against the real production provider/model/key path.
+4. Prometheus scrape works with auth, and at least one alert route is delivery-tested (not just `promtool` syntax-checked).
+5. One rollback drill is executed from a fresh backup and validated end-to-end before deleting the preserved rollback tree.
+
+## 11. High-Value Inspection Targets
 
 Check these first when the daemon behaves unexpectedly:
 
@@ -331,7 +367,7 @@ Check these first when the daemon behaves unexpectedly:
 | `crates/openfang-kernel/src/config_reload.rs` | reload semantics |
 | `crates/openfang-channels/` | adapter startup and routing |
 
-## 11. Doc Sync Rules
+## 12. Doc Sync Rules
 
 Whenever any of the following change, update operator docs in the same patch:
 

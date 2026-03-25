@@ -13,7 +13,7 @@ Meaning:
 
 - the codebase now meets the repository's compile, test, lint, health, preflight, and backup expectations
 - the most immediate production stability gaps found in this review have been patched
-- final cutover should still wait for target-environment verification of the real provider canary, Linux systemd validation, and Prometheus rule/config lint where those tools are available
+- final cutover should still wait for target-environment verification of the real provider canary, Linux systemd validation, Prometheus alert delivery checks, and rollback drill evidence
 
 ## What Is Now Covered
 
@@ -60,12 +60,13 @@ Meaning:
 ### Deployment and release hygiene
 
 - CI now validates shipped deployment artifacts beyond the Rust workspace:
-  - optional provider canary job
+  - provider canary validation in release flow
   - release preflight syntax-checks the shipped ops scripts and lints the systemd/Prometheus artifacts
   - `docker compose config`
   - `systemd-analyze verify deploy/openfang.service`
   - `promtool check` for the bundled Prometheus artifacts
   - stateful `scripts/live-api-smoke-openfang.sh` validation in daemon smoke and release provider-canary flows
+  - scheduled-backup deployment assets (`deploy/openfang-backup.service`, `deploy/openfang-backup.timer`)
 
 ## Evidence Handling
 
@@ -88,14 +89,14 @@ These are not theoretical nice-to-haves. They should be treated as cutover gates
 1. Run one real provider canary against the target deployment.
    Use `scripts/provider-canary-openfang.sh` with the same provider, model, API key source, and auth mode the production node will use. This review environment did not have `GROQ_API_KEY`, so no real provider-backed LLM round-trip was executed here.
 
-2. Confirm the optional CI `provider-canary` job is actually wired with secrets if you want automated release evidence.
-   The job only runs when `OPENFANG_PROVIDER_CANARY_API_KEY`, `OPENFANG_CANARY_BASE_URL`, `OPENFANG_CANARY_PROVIDER`, `OPENFANG_CANARY_MODEL`, and `OPENFANG_CANARY_API_KEY_ENV` are configured in GitHub Actions.
+2. Confirm CI/release canary wiring is actually backed by live secrets.
+   Provider canary evidence is only meaningful when the same provider/model/key path used by production is available in the execution environment.
 
 3. Validate the systemd unit on a Linux host or CI runner with `systemd-analyze`.
    This review updated the unit and CI wiring, but the local review machine did not have `systemd-analyze` installed.
 
 4. Validate Prometheus artifacts with `promtool` where that binary is available.
-   The rules and scrape config are now wired for linting in CI, but the local review machine did not have `promtool`.
+   The rules and scrape config are wired for linting in CI, but lint alone is insufficient.
 
 5. Confirm alert delivery, not just alert rules.
    `deploy/openfang-alerts.yml` can be syntactically valid while notification routing is still broken in the real monitoring stack.
@@ -103,13 +104,20 @@ These are not theoretical nice-to-haves. They should be treated as cutover gates
 6. Run one rollback drill using a fresh backup plus the binary/image version recorded in `BACKUP.txt`.
    The metadata is now present and restore keeps the rollback tree around for post-restore validation; the final confidence gain comes from proving restore speed, operator familiarity, and the point at which you safely delete that rollback copy.
 
+7. Confirm production machine API key contract.
+   `OPENFANG_API_KEY` must be present in the real supervisor environment so `/api/health/detail`, `/api/metrics`, and operator scripts can authenticate in strict production mode.
+
+8. Confirm scheduled backups are enabled on production hosts.
+   Install and enable `deploy/openfang-backup.timer` and verify it is active before cutover.
+
 ## Residual Risks
 
 The highest remaining risks are operational, not architectural:
 
 - real provider paths can still regress if no canary is run with live secrets
 - Linux service behavior still needs one environment with `systemd-analyze` and actual unit installation
-- Prometheus rule delivery still depends on your external monitoring system, not just the repo files
+- Prometheus alert delivery still depends on your external monitoring system, not just the repo files
+- operational recovery still depends on proving scheduled backups and rollback drill execution
 - cross-platform runtime smoke remains lighter on macOS and Windows than on Linux
 
 ## Recommended Cutover Sequence

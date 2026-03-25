@@ -1352,19 +1352,21 @@ Important:
 - If OpenFang sits behind a same-host reverse proxy, proxied traffic can still appear as loopback to the daemon.
 - In any reverse-proxy or multi-host deployment, configure `OPENFANG_API_KEY` and/or dashboard auth before exposing the service.
 
-### 17.4 Query-Token Scope
+### 17.4 Query Tokens Are Rejected
 
-OpenFang accepts `?token=` only on browser-oriented streaming transports that
-cannot reliably attach custom bearer headers:
+OpenFang rejects API keys in URL query parameters (for example `?token=...`)
+for all protected endpoints, including streaming transports.
 
-- `/api/logs/stream`
-- `/api/comms/events/stream`
-- `/api/agents/{id}/ws`
+Use:
 
-Normal protected API endpoints require `Authorization: Bearer ...` or
-dashboard session cookies. Do not use query-string credentials for ordinary
-REST requests because URLs are more likely to leak via logs, browser history,
-monitoring tools, and shared debugging artifacts.
+- `Authorization: Bearer ...` (preferred for non-browser clients)
+- dashboard session cookies (browser dashboard)
+- `Sec-WebSocket-Protocol` bearer format (`openfang.bearer.<base64url-token>`)
+  when a browser WebSocket client cannot set custom headers
+
+Do not place credentials in URLs because query strings are more likely to leak
+via reverse-proxy logs, browser history, monitoring tools, and shared debugging
+artifacts.
 
 ---
 
