@@ -213,19 +213,22 @@ pub async fn execute_tool(
         // Shell tool — metacharacter check + exec policy + taint check
         "shell_exec" => {
             let command = input["command"].as_str().unwrap_or("");
+            let is_full_exec = exec_policy
+                .is_some_and(|p| p.mode == openfang_types::config::ExecSecurityMode::Full);
 
-            // SECURITY: Always check for shell metacharacters, even in Full mode.
-            // These enable command injection regardless of exec policy.
-            if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command)
-            {
-                return ToolResult {
-                    tool_use_id: tool_use_id.to_string(),
-                    content: format!(
-                        "shell_exec blocked: command contains {reason}. \
-                         Shell metacharacters are never allowed."
-                    ),
-                    is_error: true,
-                };
+            if !is_full_exec {
+                if let Some(reason) =
+                    crate::subprocess_sandbox::contains_shell_metacharacters(command)
+                {
+                    return ToolResult {
+                        tool_use_id: tool_use_id.to_string(),
+                        content: format!(
+                            "shell_exec blocked: command contains {reason}. \
+                             Shell metacharacters require exec_policy.mode = 'full'."
+                        ),
+                        is_error: true,
+                    };
+                }
             }
 
             // Exec policy enforcement (allowlist / deny / full)
@@ -245,8 +248,6 @@ pub async fn execute_tool(
                 }
             }
             // Skip heuristic taint patterns for Full exec policy (e.g. hand agents that need curl)
-            let is_full_exec = exec_policy
-                .is_some_and(|p| p.mode == openfang_types::config::ExecSecurityMode::Full);
             if !is_full_exec {
                 if let Some(violation) = check_taint_shell_exec(command) {
                     return ToolResult {
@@ -3787,6 +3788,43 @@ mod tests {
             !child_check.status.success(),
             "timed out shell_exec should not leave child process alive"
         );
+    }
+
+    #[tokio::test]
+    async fn test_shell_exec_full_mode_allows_shell_operators() {
+        let allowed = vec!["shell_exec".to_string()];
+        let exec_policy = openfang_types::config::ExecPolicy {
+            mode: openfang_types::config::ExecSecurityMode::Full,
+            ..Default::default()
+        };
+        let result = execute_tool(
+            "test-id",
+            "shell_exec",
+            &serde_json::json!({"command": "echo first && echo second"}),
+            None,
+            Some(&allowed),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // media_engine
+            Some(&exec_policy),
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+        )
+        .await;
+
+        assert!(
+            !result.is_error,
+            "unexpected shell_exec error: {}",
+            result.content
+        );
+        assert!(result.content.contains("first"));
+        assert!(result.content.contains("second"));
     }
 
     #[tokio::test]

@@ -23,14 +23,11 @@ pub struct OpenAIDriver {
 impl OpenAIDriver {
     /// Create a new OpenAI-compatible driver.
     pub fn new(api_key: String, base_url: String) -> Self {
+        let client = openai_http_client(&base_url);
         Self {
             api_key: Zeroizing::new(api_key),
             base_url,
-            client: reqwest::Client::builder()
-                .user_agent(crate::USER_AGENT)
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .unwrap_or_default(),
+            client,
             extra_headers: Vec::new(),
         }
     }
@@ -45,6 +42,25 @@ impl OpenAIDriver {
         self.extra_headers = headers;
         self
     }
+}
+
+fn openai_http_client(base_url: &str) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .user_agent(crate::USER_AGENT)
+        .timeout(std::time::Duration::from_secs(120));
+
+    // This host is known to fail behind the local maintenance proxy on this machine:
+    // the CONNECT tunnel returns 401 before the request reaches xAI.
+    // Bypass env proxies here so xAI-compatible calls can still succeed.
+    if should_bypass_env_proxy(base_url) {
+        builder = builder.no_proxy();
+    }
+
+    builder.build().unwrap_or_default()
+}
+
+fn should_bypass_env_proxy(base_url: &str) -> bool {
+    base_url.contains("api.x.ai")
 }
 
 #[derive(Debug, Serialize)]
@@ -1506,6 +1522,12 @@ mod tests {
     fn test_openai_driver_creation() {
         let driver = OpenAIDriver::new("test-key".to_string(), "http://localhost".to_string());
         assert_eq!(driver.api_key.as_str(), "test-key");
+    }
+
+    #[test]
+    fn test_should_bypass_env_proxy_for_xai() {
+        assert!(should_bypass_env_proxy("https://api.x.ai/v1"));
+        assert!(!should_bypass_env_proxy("https://api.openai.com/v1"));
     }
 
     #[test]

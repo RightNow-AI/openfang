@@ -473,7 +473,7 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
             "accounts/fireworks/models/llama-v3p1-70b-instruct",
             "FIREWORKS_API_KEY",
         ),
-        ("xai", "grok-2", "XAI_API_KEY"),
+        ("xai", "grok-4-1-fast-reasoning", "XAI_API_KEY"),
         (
             "perplexity",
             "llama-3.1-sonar-large-128k-online",
@@ -666,6 +666,26 @@ mod tests {
         assert_eq!(d.base_url, "https://api.x.ai/v1");
         assert_eq!(d.api_key_env, "XAI_API_KEY");
         assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_detect_available_provider_prefers_supported_xai_model() {
+        let _guard = env_lock().lock().unwrap();
+        let original = std::env::var_os("XAI_API_KEY");
+        std::env::set_var("XAI_API_KEY", "test-xai-key");
+
+        let detected = detect_available_provider();
+
+        if let Some(value) = original {
+            std::env::set_var("XAI_API_KEY", value);
+        } else {
+            std::env::remove_var("XAI_API_KEY");
+        }
+
+        assert_eq!(
+            detected,
+            Some(("xai", "grok-4-1-fast-reasoning", "XAI_API_KEY"))
+        );
     }
 
     #[test]
