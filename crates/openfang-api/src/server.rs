@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 09:16:01
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-20 15:37:12
+ * @LastEditTime       : 2026-03-25 17:06:28
  */
 //! OpenFang daemon server — boots the kernel and serves the HTTP API.
 
@@ -244,7 +244,11 @@ pub async fn build_router(
         .route("/api/channels", axum::routing::get(routes::list_channels))
         .route(
             "/api/channels/{name}/configure",
-            axum::routing::post(routes::configure_channel).delete(routes::remove_channel),
+            axum::routing::post(routes::configure_channel),
+        )
+        .route(
+            "/api/channels/{name}/{id}",
+            axum::routing::delete(routes::remove_channel),
         )
         .route(
             "/api/channels/{name}/test",

@@ -1108,8 +1108,8 @@ pub async fn start_channel_bridge_with_config(
         || !config.ntfy.is_empty()
         || !config.gotify.is_empty()
         || !config.webhook.is_empty()
-        || !config.linkedin.is_empty();
-
+        || !config.linkedin.is_empty()
+        || !config.wecom.is_empty();
     if !has_any {
         return (None, Vec::new());
     }

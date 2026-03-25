@@ -2213,6 +2213,7 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
     },
 ];
 
+#[allow(dead_code)]
 /// Check if a channel is configured (has a `[[channels.xxx]]` section in config).
 fn is_channel_configured(config: &openfang_types::config::ChannelsConfig, name: &str) -> bool {
     match name {
@@ -2259,6 +2260,56 @@ fn is_channel_configured(config: &openfang_types::config::ChannelsConfig, name: 
         "mumble" => !config.mumble.is_empty(),
         "wecom" => !config.wecom.is_empty(),
         _ => false,
+    }
+}
+
+#[allow(dead_code)]
+/// Get the count of configured instances for a channel type.
+fn get_channel_config_count(config: &openfang_types::config::ChannelsConfig, name: &str) -> u32 {
+    match name {
+        "telegram" => config.telegram.len() as u32,
+        "discord" => config.discord.len() as u32,
+        "slack" => config.slack.len() as u32,
+        "whatsapp" => config.whatsapp.len() as u32,
+        "signal" => config.signal.len() as u32,
+        "matrix" => config.matrix.len() as u32,
+        "email" => config.email.len() as u32,
+        "line" => config.line.len() as u32,
+        "viber" => config.viber.len() as u32,
+        "messenger" => config.messenger.len() as u32,
+        "threema" => config.threema.len() as u32,
+        "keybase" => config.keybase.len() as u32,
+        "reddit" => config.reddit.len() as u32,
+        "mastodon" => config.mastodon.len() as u32,
+        "bluesky" => config.bluesky.len() as u32,
+        "linkedin" => config.linkedin.len() as u32,
+        "nostr" => config.nostr.len() as u32,
+        "teams" => config.teams.len() as u32,
+        "mattermost" => config.mattermost.len() as u32,
+        "google_chat" => config.google_chat.len() as u32,
+        "webex" => config.webex.len() as u32,
+        "feishu" => config.feishu.len() as u32,
+        "dingtalk" => config.dingtalk.len() as u32,
+        "dingtalk_stream" => config.dingtalk_stream.len() as u32,
+        "pumble" => config.pumble.len() as u32,
+        "flock" => config.flock.len() as u32,
+        "twist" => config.twist.len() as u32,
+        "zulip" => config.zulip.len() as u32,
+        "irc" => config.irc.len() as u32,
+        "xmpp" => config.xmpp.len() as u32,
+        "gitter" => config.gitter.len() as u32,
+        "discourse" => config.discourse.len() as u32,
+        "revolt" => config.revolt.len() as u32,
+        "guilded" => config.guilded.len() as u32,
+        "nextcloud" => config.nextcloud.len() as u32,
+        "rocketchat" => config.rocketchat.len() as u32,
+        "twitch" => config.twitch.len() as u32,
+        "ntfy" => config.ntfy.len() as u32,
+        "gotify" => config.gotify.len() as u32,
+        "webhook" => config.webhook.len() as u32,
+        "mumble" => config.mumble.len() as u32,
+        "wecom" => config.wecom.len() as u32,
+        _ => 0,
     }
 }
 
@@ -2338,6 +2389,7 @@ mod channel_meta_tests {
     }
 }
 
+#[allow(dead_code)]
 /// Serialize a channel's config to a JSON Value for pre-populating dashboard forms.
 fn channel_config_values(
     config: &openfang_types::config::ChannelsConfig,
@@ -2512,6 +2564,226 @@ fn channel_config_values(
     }
 }
 
+/// Get all configured instances for a channel type.
+fn get_channel_configs(
+    config: &openfang_types::config::ChannelsConfig,
+    name: &str,
+) -> Vec<serde_json::Value> {
+    match name {
+        "telegram" => config
+            .telegram
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "discord" => config
+            .discord
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "slack" => config
+            .slack
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "whatsapp" => config
+            .whatsapp
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "signal" => config
+            .signal
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "matrix" => config
+            .matrix
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "email" => config
+            .email
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "teams" => config
+            .teams
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "mattermost" => config
+            .mattermost
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "irc" => config
+            .irc
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "google_chat" => config
+            .google_chat
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "twitch" => config
+            .twitch
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "rocketchat" => config
+            .rocketchat
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "zulip" => config
+            .zulip
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "xmpp" => config
+            .xmpp
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "line" => config
+            .line
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "viber" => config
+            .viber
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "messenger" => config
+            .messenger
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "reddit" => config
+            .reddit
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "mastodon" => config
+            .mastodon
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "bluesky" => config
+            .bluesky
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "feishu" => config
+            .feishu
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "wecom" => config
+            .wecom
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "revolt" => config
+            .revolt
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "nextcloud" => config
+            .nextcloud
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "guilded" => config
+            .guilded
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "keybase" => config
+            .keybase
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "threema" => config
+            .threema
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "nostr" => config
+            .nostr
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "webex" => config
+            .webex
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "pumble" => config
+            .pumble
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "flock" => config
+            .flock
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "twist" => config
+            .twist
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "mumble" => config
+            .mumble
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "dingtalk" => config
+            .dingtalk
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "dingtalk_stream" => config
+            .dingtalk_stream
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "discourse" => config
+            .discourse
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "gitter" => config
+            .gitter
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "ntfy" => config
+            .ntfy
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "gotify" => config
+            .gotify
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "webhook" => config
+            .webhook
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        "linkedin" => config
+            .linkedin
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect(),
+        _ => vec![],
+    }
+}
+
 /// GET /api/channels — List all 40 channel adapters with status and field metadata.
 pub async fn list_channels(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Read the live channels config (updated on every hot-reload) instead of the
@@ -2521,9 +2793,11 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> impl IntoRespo
     let mut configured_count = 0u32;
 
     for meta in CHANNEL_REGISTRY {
-        let configured = is_channel_configured(&live_channels, meta.name);
-        if configured {
-            configured_count += 1;
+        let config_list = get_channel_configs(&live_channels, meta.name);
+        let has_configs = !config_list.is_empty();
+
+        if has_configs {
+            configured_count += config_list.len() as u32;
         }
 
         // Check if all required secret env vars are set
@@ -2537,29 +2811,48 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> impl IntoRespo
                     .unwrap_or(true)
             });
 
-        let config_vals = channel_config_values(&live_channels, meta.name);
-        let fields: Vec<serde_json::Value> = meta
-            .fields
-            .iter()
-            .map(|f| build_field_json(f, config_vals.as_ref()))
-            .collect();
+        // If there are configured instances, create an entry for each one
+        if has_configs {
+            for config_val in config_list {
+                let fields: Vec<serde_json::Value> = meta
+                    .fields
+                    .iter()
+                    .map(|f| build_field_json(f, Some(&config_val)))
+                    .collect();
 
-        channels.push(serde_json::json!({
-            "name": meta.name,
-            "display_name": meta.display_name,
-            "icon": meta.icon,
-            "description": meta.description,
-            "category": meta.category,
-            "difficulty": meta.difficulty,
-            "setup_time": meta.setup_time,
-            "quick_setup": meta.quick_setup,
-            "setup_type": meta.setup_type,
-            "configured": configured,
-            "has_token": has_token,
-            "fields": fields,
-            "setup_steps": meta.setup_steps,
-            "config_template": meta.config_template,
-        }));
+                let name_override = config_val
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+                let icon_override = config_val
+                    .get("icon")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+                let id = config_val.get("id").unwrap_or_default();
+
+                if id == meta.name {
+                    continue;
+                }
+
+                channels.push(serde_json::json!({
+                    "id": id,
+                    "name": meta.name,
+                    "display_name": name_override.unwrap_or(&meta.display_name),
+                    "icon": icon_override.unwrap_or(&meta.icon),
+                    "description": meta.description,
+                    "category": meta.category,
+                    "difficulty": meta.difficulty,
+                    "setup_time": meta.setup_time,
+                    "quick_setup": meta.quick_setup,
+                    "setup_type": meta.setup_type,
+                    "configured": true,
+                    "has_token": has_token,
+                    "fields": fields,
+                    "setup_steps": meta.setup_steps,
+                    "config_template": meta.config_template,
+                }));
+            }
+        }
     }
 
     Json(serde_json::json!({
@@ -2594,11 +2887,22 @@ pub async fn configure_channel(
             )
         }
     };
+    let id = fields
+        .get("id")
+        .and_then(|v| v.as_str().map(|s| s.to_owned()))
+        .unwrap_or(uuid::Uuid::new_v4().to_string());
+    let robot_name = fields
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&meta.display_name)
+        .to_string();
 
     let home = openfang_kernel::config::openfang_home();
     let secrets_path = home.join("secrets.env");
     let config_path = home.join("config.toml");
     let mut config_fields: HashMap<String, (String, FieldType)> = HashMap::new();
+    config_fields.insert("id".to_string(), (id.to_string(), FieldType::Text));
+    config_fields.insert("name".to_string(), (robot_name, FieldType::Text));
 
     for field_def in meta.fields {
         let value = fields
@@ -2610,8 +2914,9 @@ pub async fn configure_channel(
         }
 
         if let Some(env_var) = field_def.env_var {
+            let env_var = format!("{}_{}", id, env_var);
             // Secret field — write to secrets.env and set in process
-            if let Err(e) = write_secret_env(&secrets_path, env_var, value) {
+            if let Err(e) = write_secret_env(&secrets_path, &env_var, value) {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({"error": format!("Failed to write secret: {e}")})),
@@ -2619,14 +2924,11 @@ pub async fn configure_channel(
             }
             // SAFETY: We are the only writer; this is a single-threaded config operation
             unsafe {
-                std::env::set_var(env_var, value);
+                std::env::set_var(&env_var, value);
             }
             // Also write the env var NAME to config.toml so the channel section
             // is not empty and the kernel knows which env var to read.
-            config_fields.insert(
-                field_def.key.to_string(),
-                (env_var.to_string(), FieldType::Text),
-            );
+            config_fields.insert(field_def.key.to_string(), (env_var, FieldType::Text));
         } else {
             // Config field — collect for TOML write with type info
             config_fields.insert(
@@ -2637,7 +2939,7 @@ pub async fn configure_channel(
     }
 
     // Write config.toml section
-    if let Err(e) = upsert_channel_config(&config_path, &name, &config_fields) {
+    if let Err(e) = upsert_channel_config(&config_path, &name, &id, &config_fields) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("Failed to write config: {e}")})),
@@ -2681,7 +2983,7 @@ pub async fn configure_channel(
 /// DELETE /api/channels/{name}/configure — Remove channel secrets + config section.
 pub async fn remove_channel(
     State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
+    Path((name, id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let meta = match find_channel_meta(&name) {
         Some(m) => m,
@@ -2700,7 +3002,8 @@ pub async fn remove_channel(
     // Remove all secret env vars for this channel
     for field_def in meta.fields {
         if let Some(env_var) = field_def.env_var {
-            let _ = remove_secret_env(&secrets_path, env_var);
+            let env_var = format!("{}_{}", id, env_var);
+            let _ = remove_secret_env(&secrets_path, &env_var);
             // SAFETY: Single-threaded config operation
             unsafe {
                 std::env::remove_var(env_var);
@@ -2709,7 +3012,7 @@ pub async fn remove_channel(
     }
 
     // Remove config section
-    if let Err(e) = remove_channel_config(&config_path, &name) {
+    if let Err(e) = remove_channel_config(&config_path, &name, &id) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("Failed to remove config: {e}")})),
@@ -8272,6 +8575,7 @@ fn remove_secret_env(path: &std::path::Path, key: &str) -> Result<(), std::io::E
 fn upsert_channel_config(
     config_path: &std::path::Path,
     channel_name: &str,
+    id: &str,
     fields: &HashMap<String, (String, FieldType)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let content = if config_path.exists() {
@@ -8300,34 +8604,38 @@ fn upsert_channel_config(
         .and_then(|v| v.as_table_mut())
         .ok_or("channels is not a table")?;
 
-    // Build channel sub-table with correct TOML types
-    let mut ch_table = toml::map::Map::new();
-    for (k, (v, ft)) in fields {
-        let toml_val = match ft {
-            FieldType::Number => {
-                if let Ok(n) = v.parse::<i64>() {
-                    toml::Value::Integer(n)
-                } else {
-                    toml::Value::String(v.clone())
+    // Get or create the channel array for this channel_name
+    let channel_array = if let Some(existing) = channels_table.get(channel_name) {
+        // Channel exists - need to find by id and update, or append new
+        let mut arr = existing.as_array().cloned().unwrap_or_default();
+
+        // Try to find existing entry with same id and update it
+        let mut found_and_updated = false;
+        for (idx, item) in arr.iter_mut().enumerate() {
+            if let Some(item_table) = item.as_table() {
+                if item_table.get("id").and_then(|v| v.as_str()) == Some(id) {
+                    // Found existing entry with same id, update it
+                    let new_table = convert_fields_to_toml_table(&fields);
+                    arr[idx] = toml::Value::Table(new_table);
+                    found_and_updated = true;
+                    break;
                 }
             }
-            FieldType::List => {
-                // Always store list items as strings so that numeric IDs
-                // (e.g. Discord guild snowflakes, Telegram user IDs) are
-                // deserialized correctly into Vec<String> config fields.
-                let items: Vec<toml::Value> = v
-                    .split(',')
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| toml::Value::String(s.to_string()))
-                    .collect();
-                toml::Value::Array(items)
-            }
-            _ => toml::Value::String(v.clone()),
-        };
-        ch_table.insert(k.clone(), toml_val);
-    }
-    channels_table.insert(channel_name.to_string(), toml::Value::Table(ch_table));
+        }
+
+        if !found_and_updated {
+            // id not found, append new entry
+            let ch_table = convert_fields_to_toml_table(&fields);
+            arr.push(toml::Value::Table(ch_table));
+        }
+        arr
+    } else {
+        // Channel doesn't exist, create new array with single entry
+        let ch_table = convert_fields_to_toml_table(&fields);
+        vec![toml::Value::Table(ch_table)]
+    };
+
+    channels_table.insert(channel_name.to_string(), toml::Value::Array(channel_array));
 
     // Ensure parent directory exists
     if let Some(parent) = config_path.parent() {
@@ -8338,10 +8646,11 @@ fn upsert_channel_config(
     Ok(())
 }
 
-/// Remove a `[channels.<name>]` section from config.toml.
+/// Remove a channel entry by id from `[channels.<name>]` section in config.toml.
 fn remove_channel_config(
     config_path: &std::path::Path,
     channel_name: &str,
+    id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !config_path.exists() {
         return Ok(());
@@ -8359,7 +8668,21 @@ fn remove_channel_config(
         .and_then(|r| r.get_mut("channels"))
         .and_then(|c| c.as_table_mut())
     {
-        channels.remove(channel_name);
+        if let Some(channel_array) = channels
+            .get_mut(channel_name)
+            .and_then(|v| v.as_array_mut())
+        {
+            channel_array.retain(|item| {
+                item.as_table()
+                    .and_then(|t| t.get("id"))
+                    .and_then(|v| v.as_str())
+                    .map(|item_id| item_id != id)
+                    .unwrap_or(true)
+            });
+            if channel_array.is_empty() {
+                channels.remove(channel_name);
+            }
+        }
     }
 
     std::fs::write(config_path, toml::to_string_pretty(&doc)?)?;
@@ -10459,6 +10782,35 @@ fn json_to_toml_value(value: &serde_json::Value) -> toml::Value {
         serde_json::Value::Bool(b) => toml::Value::Boolean(*b),
         _ => toml::Value::String(value.to_string()),
     }
+}
+
+fn convert_fields_to_toml_table(
+    fields: &HashMap<String, (String, FieldType)>,
+) -> toml::map::Map<String, toml::Value> {
+    let mut table = toml::map::Map::new();
+    for (k, (v, ft)) in fields {
+        let toml_val = match ft {
+            FieldType::Number => {
+                if let Ok(n) = v.parse::<i64>() {
+                    toml::Value::Integer(n)
+                } else {
+                    toml::Value::String(v.clone())
+                }
+            }
+            FieldType::List => {
+                let items: Vec<toml::Value> = v
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| toml::Value::String(s.to_string()))
+                    .collect();
+                toml::Value::Array(items)
+            }
+            _ => toml::Value::String(v.clone()),
+        };
+        table.insert(k.clone(), toml_val);
+    }
+    table
 }
 
 // ---------------------------------------------------------------------------
