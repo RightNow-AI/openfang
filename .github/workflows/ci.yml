@@ -216,6 +216,8 @@ jobs:
           OPENFANG_API_KEY: ci-docker-smoke-key
           OPENFANG_BASE_URL: http://127.0.0.1:4210
           OPENFANG_STRICT_PRODUCTION: "1"
+          OPENFANG_SMOKE_RESTART_CMD: docker restart openfang-ci-smoke >/dev/null
+          OPENFANG_SMOKE_RESTART_TIMEOUT_SECS: "90"
         run: |
           trap 'docker logs openfang-ci-smoke >/dev/null 2>&1 || true; docker rm -f openfang-ci-smoke >/dev/null 2>&1 || true' EXIT
           docker_home="$RUNNER_TEMP/docker-openfang-home"
@@ -255,7 +257,10 @@ jobs:
           done
           test "$health_status" = "healthy"
           bash scripts/smoke-openfang.sh "$OPENFANG_BASE_URL"
-          OPENFANG_API_KEY="$OPENFANG_API_KEY" bash scripts/live-api-smoke-openfang.sh "$OPENFANG_BASE_URL"
+          OPENFANG_API_KEY="$OPENFANG_API_KEY" \
+            OPENFANG_SMOKE_RESTART_CMD="$OPENFANG_SMOKE_RESTART_CMD" \
+            OPENFANG_SMOKE_RESTART_TIMEOUT_SECS="$OPENFANG_SMOKE_RESTART_TIMEOUT_SECS" \
+            bash scripts/live-api-smoke-openfang.sh "$OPENFANG_BASE_URL"
       - name: Upload Docker smoke log on failure
         if: failure()
         run: docker logs openfang-ci-smoke || true
@@ -269,7 +274,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Validate systemd unit
-        run: systemd-analyze verify deploy/openfang.service
+        run: |
+          systemd-analyze verify deploy/openfang.service
+          systemd-analyze verify deploy/openfang-backup.service
+          systemd-analyze verify deploy/openfang-backup.timer
       - name: Validate docker-compose configuration
         run: OPENFANG_API_KEY=ci-deploy-lint docker compose -f docker-compose.yml config >/dev/null
       - name: Install promtool
@@ -653,6 +661,7 @@ jobs:
           assert os.path.realpath(status["home_dir"]) == os.path.realpath(os.environ["OPENFANG_HOME"]), status
           PY
           printf '%s' "$metrics_body" | grep -q 'openfang_readiness_ready 1'
+          OPENFANG_API_KEY="${OPENFANG_API_KEY}" bash scripts/live-api-smoke-openfang.sh "${OPENFANG_BASE_URL}"
 
           curl -fsS -X POST \
             -H "Authorization: Bearer ${OPENFANG_API_KEY}" \

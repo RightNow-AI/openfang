@@ -1,0 +1,22 @@
+[Unit]
+Description=OpenFang Runtime Backup
+Documentation=https://github.com/RightNow-AI/openfang
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=openfang
+Group=openfang
+Environment=OPENFANG_HOME=/var/lib/openfang
+Environment=OPENFANG_ENV_FILE=/etc/openfang/env
+Environment=OPENFANG_KEEP_BACKUPS=7
+Environment=OPENFANG_BACKUP_ROOT=/var/lib/openfang/backups
+EnvironmentFile=-/etc/openfang/env
+ExecStart=/bin/bash -lc 'set -euo pipefail; OPENFANG_HOME="${OPENFANG_HOME:-/var/lib/openfang}"; backup_root="${OPENFANG_BACKUP_ROOT:-${OPENFANG_HOME}/backups}"; install -d -m 0700 "${backup_root}"; OPENFANG_ENV_FILE="${OPENFANG_ENV_FILE:-/etc/openfang/env}" OPENFANG_KEEP_BACKUPS="${OPENFANG_KEEP_BACKUPS:-7}" /usr/local/lib/openfang/backup-openfang.sh "${backup_root}"'
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target

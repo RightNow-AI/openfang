@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule OpenFang Runtime Backups
+Documentation=https://github.com/RightNow-AI/openfang
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=900
+Persistent=true
+Unit=openfang-backup.service
+
+[Install]
+WantedBy=timers.target

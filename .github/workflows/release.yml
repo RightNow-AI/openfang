@@ -59,6 +59,8 @@ jobs:
           python3 -m py_compile scripts/healthcheck-openfang.py
           OPENFANG_API_KEY=release-preflight-placeholder docker compose config
           systemd-analyze verify deploy/openfang.service
+          systemd-analyze verify deploy/openfang-backup.service
+          systemd-analyze verify deploy/openfang-backup.timer
           promtool check rules deploy/openfang-alerts.yml
           promtool check config deploy/prometheus-scrape.yml
 
@@ -424,6 +426,8 @@ jobs:
           OPENFANG_API_KEY: release-docker-smoke-key
           OPENFANG_BASE_URL: http://127.0.0.1:4210
           OPENFANG_STRICT_PRODUCTION: "1"
+          OPENFANG_SMOKE_RESTART_CMD: docker restart openfang-release-smoke >/dev/null
+          OPENFANG_SMOKE_RESTART_TIMEOUT_SECS: "90"
         run: |
           trap 'docker logs openfang-release-smoke >/dev/null 2>&1 || true; docker rm -f openfang-release-smoke >/dev/null 2>&1 || true' EXIT
           docker_home="$RUNNER_TEMP/docker-openfang-home"
@@ -464,7 +468,10 @@ jobs:
           done
           test "$health_status" = "healthy"
           bash scripts/smoke-openfang.sh "$OPENFANG_BASE_URL"
-          OPENFANG_API_KEY="$OPENFANG_API_KEY" bash scripts/live-api-smoke-openfang.sh "$OPENFANG_BASE_URL"
+          OPENFANG_API_KEY="$OPENFANG_API_KEY" \
+            OPENFANG_SMOKE_RESTART_CMD="$OPENFANG_SMOKE_RESTART_CMD" \
+            OPENFANG_SMOKE_RESTART_TIMEOUT_SECS="$OPENFANG_SMOKE_RESTART_TIMEOUT_SECS" \
+            bash scripts/live-api-smoke-openfang.sh "$OPENFANG_BASE_URL"
 
   provider-canary:
     name: Provider Canary
@@ -495,6 +502,7 @@ jobs:
           OPENFANG_CANARY_PROVIDER: groq
           OPENFANG_CANARY_MODEL: llama-3.3-70b-versatile
           OPENFANG_CANARY_API_KEY_ENV: GROQ_API_KEY
+          OPENFANG_CANARY_MESSAGE: Say hello in five words.
         run: |
           mkdir -p "$OPENFANG_HOME"
           printf 'api_listen = "127.0.0.1:4200"\n' > "$OPENFANG_HOME/config.toml"
@@ -511,7 +519,12 @@ jobs:
 
           curl -fsS http://127.0.0.1:4200/api/health >/dev/null
           bash scripts/provider-canary-openfang.sh
-          OPENFANG_API_KEY=release-provider-canary-key bash scripts/live-api-smoke-openfang.sh http://127.0.0.1:4200
+          OPENFANG_API_KEY=release-provider-canary-key \
+            OPENFANG_CANARY_PROVIDER="${OPENFANG_CANARY_PROVIDER}" \
+            OPENFANG_CANARY_MODEL="${OPENFANG_CANARY_MODEL}" \
+            OPENFANG_CANARY_API_KEY_ENV="${OPENFANG_CANARY_API_KEY_ENV}" \
+            OPENFANG_CANARY_MESSAGE="${OPENFANG_CANARY_MESSAGE}" \
+            bash scripts/live-api-smoke-openfang.sh http://127.0.0.1:4200
       - name: Upload provider canary log on failure
         if: failure()
         uses: actions/upload-artifact@v4
