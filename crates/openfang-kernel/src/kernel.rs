@@ -1002,6 +1002,16 @@ impl OpenFangKernel {
         if hand_count > 0 {
             info!("Loaded {hand_count} bundled hand(s)");
         }
+        match hand_registry.load_installed(&config.home_dir.join("hands")) {
+            Ok(count) => {
+                if count > 0 {
+                    info!("Loaded {count} installed hand(s)");
+                }
+            }
+            Err(e) => {
+                warn!("Failed to load installed hands: {e}");
+            }
+        }
 
         // Initialize extension/integration registry
         let mut extension_registry =

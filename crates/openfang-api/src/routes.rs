@@ -4951,6 +4951,7 @@ pub async fn get_hand(
                     "category": def.category,
                     "icon": def.icon,
                     "tools": def.tools,
+                    "source_path": def.install_path.as_ref().map(|p| p.display().to_string()),
                     "requirements_met": requirements_met,
                     "active": active,
                     "degraded": degraded,
@@ -5337,7 +5338,39 @@ pub async fn upsert_hand(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    install_hand(State(state), Json(body)).await
+    let toml_content = body["toml_content"].as_str().unwrap_or("");
+    let skill_content = body["skill_content"].as_str().unwrap_or("");
+    let source_path = body["source_path"]
+        .as_str()
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from);
+
+    if toml_content.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Missing toml_content field"})),
+        );
+    }
+
+    match state.kernel.hand_registry.upsert_from_content_with_source(
+        toml_content,
+        skill_content,
+        source_path,
+    ) {
+        Ok(def) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "id": def.id,
+                "name": def.name,
+                "description": def.description,
+                "category": format!("{:?}", def.category),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
 }
 
 /// POST /api/hands/{hand_id}/activate — Activate a hand (spawns agent).

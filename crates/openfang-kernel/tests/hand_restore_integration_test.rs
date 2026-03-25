@@ -79,6 +79,52 @@ metrics = []
 }
 
 #[tokio::test]
+async fn installed_hand_directory_overrides_bundled_shipinfabu_on_boot() {
+    let home = tempdir().unwrap();
+    let hands_dir = home.path().join("hands").join("shipinfabu");
+    std::fs::create_dir_all(&hands_dir).unwrap();
+    std::fs::write(
+        hands_dir.join("HAND.toml"),
+        r#"
+id = "shipinfabu"
+name = "Shipinfabu External Override"
+description = "Overrides bundled hand on boot"
+category = "development"
+tools = ["file_read", "shell_exec"]
+
+[agent]
+name = "shipinfabu-hand"
+description = "Boot override agent"
+system_prompt = "Boot override prompt"
+
+[dashboard]
+metrics = []
+"#,
+    )
+    .unwrap();
+    std::fs::write(hands_dir.join("SKILL.md"), "Boot override skill.").unwrap();
+
+    let kernel = OpenFangKernel::boot_with_config(test_config(home.path().to_path_buf())).unwrap();
+    let def = kernel.hand_registry.get_definition("shipinfabu").unwrap();
+
+    assert_eq!(def.name, "Shipinfabu External Override");
+    assert_eq!(
+        def.install_path.as_deref(),
+        Some(hands_dir.canonicalize().unwrap().as_path())
+    );
+    assert_eq!(
+        def.tools,
+        vec!["file_read".to_string(), "shell_exec".to_string()]
+    );
+    assert_eq!(
+        def.install_skill_content.as_deref(),
+        Some("Boot override skill.")
+    );
+
+    kernel.shutdown();
+}
+
+#[tokio::test]
 async fn external_hand_workspace_scaffold_seeds_workspace_files() {
     let home = tempdir().unwrap();
     let hand_dir = tempdir().unwrap();

@@ -187,6 +187,43 @@ impl HandRegistry {
         count
     }
 
+    /// Load user-installed hands from `{home_dir}/hands`, overriding bundled
+    /// definitions with the same ID when present.
+    pub fn load_installed(&self, hands_dir: &Path) -> HandResult<usize> {
+        if !hands_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut count = 0;
+        for entry in std::fs::read_dir(hands_dir)
+            .map_err(|e| HandError::Config(format!("read installed hands dir: {e}")))?
+        {
+            let entry = entry
+                .map_err(|e| HandError::Config(format!("iterate installed hands dir: {e}")))?;
+            let path = entry.path();
+            if !path.is_dir() || !path.join("HAND.toml").exists() {
+                continue;
+            }
+
+            match self.upsert_from_path(&path) {
+                Ok(def) => {
+                    info!(
+                        hand = %def.id,
+                        name = %def.name,
+                        path = %path.display(),
+                        "Loaded installed hand"
+                    );
+                    count += 1;
+                }
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e, "Failed to load installed hand");
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
     /// Install a hand from a directory containing HAND.toml (and optional SKILL.md).
     pub fn install_from_path(&self, path: &Path) -> HandResult<HandDefinition> {
         let toml_path = path.join("HAND.toml");
@@ -205,6 +242,26 @@ impl HandRegistry {
         )?;
 
         info!(hand = %def.id, name = %def.name, path = %canonical_path.display(), "Installed hand from path");
+        Ok(def)
+    }
+
+    /// Insert or replace a hand definition from a hand directory.
+    pub fn upsert_from_path(&self, path: &Path) -> HandResult<HandDefinition> {
+        let toml_path = path.join("HAND.toml");
+        let skill_path = path.join("SKILL.md");
+
+        let toml_content = std::fs::read_to_string(&toml_path).map_err(|e| {
+            HandError::NotFound(format!("Cannot read {}: {e}", toml_path.display()))
+        })?;
+        let skill_content = std::fs::read_to_string(&skill_path).unwrap_or_default();
+        let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+        let def = self.upsert_from_content_with_source(
+            &toml_content,
+            &skill_content,
+            Some(canonical_path.clone()),
+        )?;
+        info!(hand = %def.id, name = %def.name, path = %canonical_path.display(), "Upserted hand from path");
         Ok(def)
     }
 
@@ -232,6 +289,38 @@ impl HandRegistry {
             )));
         }
 
+        def = Self::with_install_metadata(def, toml_content, skill_content, source_path);
+
+        info!(hand = %def.id, name = %def.name, "Installed hand from content");
+        self.definitions.insert(def.id.clone(), def.clone());
+        Ok(def)
+    }
+
+    /// Insert or replace a hand definition from raw content.
+    pub fn upsert_from_content_with_source(
+        &self,
+        toml_content: &str,
+        skill_content: &str,
+        source_path: Option<PathBuf>,
+    ) -> HandResult<HandDefinition> {
+        let def = Self::with_install_metadata(
+            bundled::parse_bundled("custom", toml_content, skill_content)?,
+            toml_content,
+            skill_content,
+            source_path,
+        );
+
+        info!(hand = %def.id, name = %def.name, "Upserted hand from content");
+        self.definitions.insert(def.id.clone(), def.clone());
+        Ok(def)
+    }
+
+    fn with_install_metadata(
+        mut def: HandDefinition,
+        toml_content: &str,
+        skill_content: &str,
+        source_path: Option<PathBuf>,
+    ) -> HandDefinition {
         def.install_path = source_path;
         def.install_toml = Some(toml_content.to_string());
         def.install_skill_content = if skill_content.is_empty() {
@@ -239,10 +328,7 @@ impl HandRegistry {
         } else {
             Some(skill_content.to_string())
         };
-
-        info!(hand = %def.id, name = %def.name, "Installed hand from content");
-        self.definitions.insert(def.id.clone(), def.clone());
-        Ok(def)
+        def
     }
 
     /// List all known hand definitions.
@@ -723,6 +809,86 @@ mod tests {
 
         // Shipinfabu hand should be loaded
         assert!(reg.get_definition("shipinfabu").is_some());
+    }
+
+    #[test]
+    fn load_installed_hands_override_bundled_definitions() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        let hands_dir = tempdir().unwrap();
+        let hand_dir = hands_dir.path().join("shipinfabu");
+        std::fs::create_dir_all(&hand_dir).unwrap();
+        std::fs::write(
+            hand_dir.join("HAND.toml"),
+            r#"
+id = "shipinfabu"
+name = "Shipinfabu External Override"
+description = "External override beats bundled"
+category = "development"
+tools = ["file_read"]
+
+[agent]
+name = "shipinfabu-hand"
+description = "Override agent"
+system_prompt = "Override prompt"
+
+[dashboard]
+metrics = []
+"#,
+        )
+        .unwrap();
+        std::fs::write(hand_dir.join("SKILL.md"), "override skill").unwrap();
+
+        let loaded = reg.load_installed(hands_dir.path()).unwrap();
+        assert_eq!(loaded, 1);
+
+        let def = reg.get_definition("shipinfabu").unwrap();
+        assert_eq!(def.name, "Shipinfabu External Override");
+        assert_eq!(def.tools, vec!["file_read".to_string()]);
+        assert_eq!(def.install_skill_content.as_deref(), Some("override skill"));
+        assert_eq!(
+            def.install_path.as_deref(),
+            Some(hand_dir.canonicalize().unwrap().as_path())
+        );
+    }
+
+    #[test]
+    fn upsert_from_content_replaces_existing_definition() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        let def = reg
+            .upsert_from_content_with_source(
+                r#"
+id = "shipinfabu"
+name = "Upserted Shipinfabu"
+description = "Replacement definition"
+category = "development"
+tools = ["web_search"]
+
+[agent]
+name = "shipinfabu-hand"
+description = "Upserted agent"
+system_prompt = "Upsert prompt"
+
+[dashboard]
+metrics = []
+"#,
+                "upsert skill",
+                Some(PathBuf::from("/tmp/shipinfabu")),
+            )
+            .unwrap();
+
+        assert_eq!(def.name, "Upserted Shipinfabu");
+        let current = reg.get_definition("shipinfabu").unwrap();
+        assert_eq!(current.name, "Upserted Shipinfabu");
+        assert_eq!(current.tools, vec!["web_search".to_string()]);
+        assert_eq!(
+            current.install_skill_content.as_deref(),
+            Some("upsert skill")
+        );
+        assert_eq!(current.install_path, Some(PathBuf::from("/tmp/shipinfabu")));
     }
 
     #[test]
