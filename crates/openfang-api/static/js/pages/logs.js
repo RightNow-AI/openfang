@@ -31,13 +31,8 @@ function logsPage() {
       var self = this;
       if (this._eventSource) { this._eventSource.close(); this._eventSource = null; }
 
-      var url = '/api/logs/stream';
-      var sep = '?';
-      var token = OpenFangAPI.getToken();
-      if (token) { url += sep + 'token=' + encodeURIComponent(token); sep = '&'; }
-
       try {
-        this._eventSource = new EventSource(url);
+        this._eventSource = new EventSource('/api/logs/stream');
       } catch(e) {
         // EventSource not supported or blocked; fall back to polling
         this.streamConnected = false;

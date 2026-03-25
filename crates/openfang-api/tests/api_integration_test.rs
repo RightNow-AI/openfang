@@ -1195,7 +1195,10 @@ async fn test_restart_agent_keeps_same_id_and_session() {
     let session_id = before.session_id.0.to_string();
 
     let resp = client
-        .post(format!("{}/api/agents/{}/restart", server.base_url, agent_id))
+        .post(format!(
+            "{}/api/agents/{}/restart",
+            server.base_url, agent_id
+        ))
         .send()
         .await
         .unwrap();
@@ -1237,7 +1240,10 @@ async fn test_restart_agent_failure_keeps_agent_registered() {
     }
 
     let resp = client
-        .post(format!("{}/api/agents/{}/restart", server.base_url, agent_id))
+        .post(format!(
+            "{}/api/agents/{}/restart",
+            server.base_url, agent_id
+        ))
         .send()
         .await
         .unwrap();

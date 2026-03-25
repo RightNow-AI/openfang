@@ -8,6 +8,7 @@ function commsPage() {
     loading: true,
     loadError: '',
     sseSource: null,
+    _pollTimer: null,
     showSendModal: false,
     showTaskModal: false,
     sendFrom: '',
@@ -39,9 +40,8 @@ function commsPage() {
     startSSE() {
       if (this.sseSource) this.sseSource.close();
       var self = this;
-      var url = OpenFangAPI.baseUrl + '/api/comms/events/stream';
-      if (OpenFangAPI.apiKey) url += '?token=' + encodeURIComponent(OpenFangAPI.apiKey);
-      this.sseSource = new EventSource(url);
+      this.stopPolling();
+      this.sseSource = new EventSource('/api/comms/events/stream');
       this.sseSource.onmessage = function(ev) {
         if (ev.data === 'ping') return;
         try {
@@ -54,6 +54,10 @@ function commsPage() {
           }
         } catch(e) { /* ignore parse errors */ }
       };
+      this.sseSource.onerror = function() {
+        self.stopSSE();
+        self.startPolling();
+      };
     },
 
     stopSSE() {
@@ -61,6 +65,28 @@ function commsPage() {
         this.sseSource.close();
         this.sseSource = null;
       }
+    },
+
+    startPolling() {
+      var self = this;
+      if (this._pollTimer) clearInterval(this._pollTimer);
+      this.fetchEvents();
+      this._pollTimer = setInterval(function() {
+        self.fetchEvents();
+      }, 5000);
+    },
+
+    stopPolling() {
+      if (this._pollTimer) {
+        clearInterval(this._pollTimer);
+        this._pollTimer = null;
+      }
+    },
+
+    async fetchEvents() {
+      try {
+        this.events = await OpenFangAPI.get('/api/comms/events?limit=200') || [];
+      } catch(e) { /* silent */ }
     },
 
     async refreshTopology() {
@@ -196,6 +222,11 @@ function commsPage() {
         OpenFangToast.error(e.message || 'Task failed');
       }
       this.taskLoading = false;
+    },
+
+    destroy() {
+      this.stopSSE();
+      this.stopPolling();
     }
   };
 }

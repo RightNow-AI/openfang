@@ -12,6 +12,12 @@ can be touched without a dashboard session.
 Environment:
   OPENFANG_BASE_URL          Base URL override (default: http://127.0.0.1:4200)
   OPENFANG_API_KEY           Bearer token used for protected endpoints (mandatory)
+  OPENFANG_CANARY_PROVIDER   Optional provider id for a provider-backed smoke agent
+  OPENFANG_CANARY_MODEL      Optional model id for provider-backed smoke
+  OPENFANG_CANARY_API_KEY_ENV Optional api_key_env recorded in provider-backed smoke manifest
+  OPENFANG_CANARY_MESSAGE    Optional provider smoke message (default: Say hello in five words.)
+  OPENFANG_SMOKE_RESTART_CMD Optional shell command to restart daemon/container for persistence check
+  OPENFANG_SMOKE_RESTART_TIMEOUT_SECS Restart health wait timeout in seconds (default: 60)
 EOF
 }
 
@@ -22,6 +28,12 @@ fi
 
 BASE_URL="${1:-${OPENFANG_BASE_URL:-http://127.0.0.1:4200}}"
 API_KEY="${OPENFANG_API_KEY:-}"
+CANARY_PROVIDER="${OPENFANG_CANARY_PROVIDER:-}"
+CANARY_MODEL="${OPENFANG_CANARY_MODEL:-}"
+CANARY_API_KEY_ENV="${OPENFANG_CANARY_API_KEY_ENV:-}"
+CANARY_MESSAGE="${OPENFANG_CANARY_MESSAGE:-Say hello in five words.}"
+RESTART_CMD="${OPENFANG_SMOKE_RESTART_CMD:-}"
+RESTART_TIMEOUT_SECS="${OPENFANG_SMOKE_RESTART_TIMEOUT_SECS:-60}"
 
 if [[ -z "${API_KEY}" ]]; then
   echo "error OPENFANG_API_KEY is required for the live API smoke" >&2
@@ -30,6 +42,24 @@ fi
 if ! command -v python3 >/dev/null 2>&1; then
   echo "error python3 is required for the live API smoke" >&2
   exit 1
+fi
+if [[ -n "${RESTART_CMD}" ]] && ! [[ "${RESTART_TIMEOUT_SECS}" =~ ^[0-9]+$ ]]; then
+  echo "error OPENFANG_SMOKE_RESTART_TIMEOUT_SECS must be an integer" >&2
+  exit 1
+fi
+provider_fields_set=0
+for value in "${CANARY_PROVIDER}" "${CANARY_MODEL}" "${CANARY_API_KEY_ENV}"; do
+  if [[ -n "${value}" ]]; then
+    provider_fields_set=$((provider_fields_set + 1))
+  fi
+done
+if (( provider_fields_set > 0 && provider_fields_set < 3 )); then
+  echo "error provider-backed smoke requires OPENFANG_CANARY_PROVIDER, OPENFANG_CANARY_MODEL, and OPENFANG_CANARY_API_KEY_ENV together" >&2
+  exit 1
+fi
+provider_backed=0
+if (( provider_fields_set == 3 )); then
+  provider_backed=1
 fi
 
 AUTH=(-H "Authorization: Bearer ${API_KEY}")
@@ -45,6 +75,18 @@ PY
 run_curl() {
   local path="$1"
   curl -fsS "${AUTH[@]}" "${BASE_URL}${path}"
+}
+
+wait_for_health() {
+  local max_attempts="$1"
+  local attempt
+  for attempt in $(seq 1 "${max_attempts}"); do
+    if curl -fsS "${BASE_URL}/api/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 cleanup() {
@@ -72,25 +114,39 @@ for agent in payload:
 
 trap cleanup EXIT
 
-MANIFEST=$(cat <<'MAN'
-name = "__LIVE_SMOKE_AGENT_NAME__"
+MANIFEST="$(AGENT_NAME="${agent_name}" CANARY_PROVIDER="${CANARY_PROVIDER}" CANARY_MODEL="${CANARY_MODEL}" CANARY_API_KEY_ENV="${CANARY_API_KEY_ENV}" PROVIDER_BACKED="${provider_backed}" python3 - <<'PY'
+import os
+
+provider_backed = os.environ["PROVIDER_BACKED"] == "1"
+provider = "default"
+model = "default"
+api_key_line = ""
+if provider_backed:
+    provider = os.environ["CANARY_PROVIDER"]
+    model = os.environ["CANARY_MODEL"]
+    api_key_line = f'api_key_env = "{os.environ["CANARY_API_KEY_ENV"]}"\n'
+
+print(
+    f'''name = "{os.environ["AGENT_NAME"]}"
 version = "0.1.0"
 description = "Smoke agent"
 author = "openfang"
 module = "builtin:chat"
 
 [model]
-provider = "default"
-model = "default"
-system_prompt = "You are a helper. Keep replies short."
+provider = "{provider}"
+model = "{model}"
+{api_key_line}system_prompt = "You are a helper. Keep replies short."
 
 [capabilities]
 tools = ["file_read"]
 memory_read = ["*"]
 memory_write = ["self.*"]
-MAN
+''',
+    end="",
 )
-MANIFEST="${MANIFEST/__LIVE_SMOKE_AGENT_NAME__/${agent_name}}"
+PY
+)"
 
 body=$(python3 - <<PY
 import json
@@ -205,6 +261,100 @@ if "total" not in payload:
 then
   echo "error budget ranking payload is malformed" >&2
   exit 1
+fi
+
+if (( provider_backed == 1 )); then
+  before_budget="$(run_curl "/api/budget/agents/${agent_id}")"
+  before_tokens="$(printf '%s' "${before_budget}" | python3 -c 'import json, sys
+payload = json.load(sys.stdin)
+print(payload.get("tokens", {}).get("used", 0))
+')"
+  MESSAGE_PAYLOAD="$(CANARY_MESSAGE="${CANARY_MESSAGE}" python3 - <<'PY'
+import json
+import os
+print(json.dumps({"message": os.environ["CANARY_MESSAGE"]}))
+PY
+)"
+  message_response="$(curl -fsS -X POST "${BASE_URL}/api/agents/${agent_id}/message" "${AUTH[@]}" "${CONTENT[@]}" -d "${MESSAGE_PAYLOAD}")"
+  if ! printf '%s' "${message_response}" | python3 -c 'import json, sys
+payload = json.load(sys.stdin)
+response = str(payload.get("response", "")).strip()
+output_tokens = int(payload.get("output_tokens", 0))
+if not response:
+    raise SystemExit("provider smoke response is empty")
+if output_tokens <= 0:
+    raise SystemExit(f"expected output_tokens > 0, got {payload}")
+'
+  then
+    echo "error provider-backed message roundtrip failed" >&2
+    exit 1
+  fi
+  after_budget="$(run_curl "/api/budget/agents/${agent_id}")"
+  if ! printf '%s' "${after_budget}" | python3 -c 'import json, sys
+before = int(sys.argv[1])
+payload = json.load(sys.stdin)
+after = int(payload.get("tokens", {}).get("used", 0))
+if after <= before:
+    raise SystemExit(f"token usage did not increase: before={before} after={after}")
+' "${before_tokens}"
+  then
+    echo "error provider-backed smoke did not increase token usage" >&2
+    exit 1
+  fi
+  echo "ok provider-backed message roundtrip"
+fi
+
+if [[ -n "${RESTART_CMD}" ]]; then
+  restart_budget_before="$(run_curl "/api/budget/agents/${agent_id}")"
+  curl -fsS -X POST "${AUTH[@]}" "${BASE_URL}/api/shutdown" >/dev/null 2>&1 || true
+  if ! bash -lc "${RESTART_CMD}"; then
+    echo "error restart command failed: ${RESTART_CMD}" >&2
+    exit 1
+  fi
+  max_attempts=$((RESTART_TIMEOUT_SECS > 0 ? RESTART_TIMEOUT_SECS : 60))
+  if ! wait_for_health "${max_attempts}"; then
+    echo "error service did not return healthy after restart within ${max_attempts}s" >&2
+    exit 1
+  fi
+  restarted_agents="$(run_curl "/api/agents")"
+  if ! printf '%s' "${restarted_agents}" | python3 -c 'import json, sys
+payload = json.load(sys.stdin)
+target = sys.argv[1]
+if not any(agent.get("id") == target for agent in payload):
+    raise SystemExit(f"agent {target} missing after restart")
+' "${agent_id}"
+  then
+    echo "error smoke agent missing after restart" >&2
+    exit 1
+  fi
+  restarted_detail="$(run_curl "/api/agents/${agent_id}")"
+  if ! printf '%s' "${restarted_detail}" | python3 -c 'import json, sys
+payload = json.load(sys.stdin)
+if payload.get("description") != "Smoke agent updated":
+    raise SystemExit("description did not persist across restart")
+identity = payload.get("identity") or {}
+if identity.get("emoji") != ":)" or identity.get("color") != "#112233":
+    raise SystemExit("identity did not persist across restart")
+'
+  then
+    echo "error smoke agent state did not persist across restart" >&2
+    exit 1
+  fi
+  restarted_budget="$(run_curl "/api/budget/agents/${agent_id}")"
+  if ! python3 - <<'PY' "${restart_budget_before}" "${restarted_budget}"
+import json
+import sys
+
+before = json.loads(sys.argv[1])
+after = json.loads(sys.argv[2])
+if abs(float((after.get("daily") or {}).get("limit", 0.0)) - float((before.get("daily") or {}).get("limit", 0.0))) >= 1e-12:
+    raise SystemExit("daily budget limit changed after restart")
+PY
+  then
+    echo "error budget state did not persist across restart" >&2
+    exit 1
+  fi
+  echo "ok restart persistence verification"
 fi
 
 killed_agent_id="${agent_id}"

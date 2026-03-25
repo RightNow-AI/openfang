@@ -212,6 +212,17 @@ var OpenFangAPI = (function() {
   var _reconnectAttempts = 0;
   var MAX_RECONNECT = 5;
 
+  function _encodeWsToken(token) {
+    try {
+      return btoa(unescape(encodeURIComponent(token)))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+    } catch(e) {
+      return '';
+    }
+  }
+
   function wsConnect(agentId, callbacks) {
     wsDisconnect();
     _wsCallbacks = callbacks || {};
@@ -222,9 +233,12 @@ var OpenFangAPI = (function() {
 
   function _doConnect(agentId) {
     try {
-      var url = WS_BASE + '/api/agents/' + agentId + '/ws';
-      if (_authToken) url += '?token=' + encodeURIComponent(_authToken);
-      _ws = new WebSocket(url);
+      var protocols = ['openfang'];
+      if (_authToken) {
+        var encodedToken = _encodeWsToken(_authToken);
+        if (encodedToken) protocols.push('openfang.bearer.' + encodedToken);
+      }
+      _ws = new WebSocket(WS_BASE + '/api/agents/' + agentId + '/ws', protocols);
 
       _ws.onopen = function() {
         _wsConnected = true;

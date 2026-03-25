@@ -8,6 +8,7 @@
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, Response, StatusCode};
 use axum::middleware::Next;
+use base64::Engine;
 use std::net::IpAddr;
 use std::time::Instant;
 use tracing::{info, Instrument};
@@ -155,13 +156,6 @@ fn request_is_effective_loopback(request: &Request<Body>) -> bool {
         .unwrap_or(false)
 }
 
-fn query_token_allowed(path: &str, method: &axum::http::Method) -> bool {
-    *method == axum::http::Method::GET
-        && (path == "/api/logs/stream"
-            || path == "/api/comms/events/stream"
-            || (path.starts_with("/api/agents/") && path.ends_with("/ws")))
-}
-
 fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
     headers
         .get("cookie")
@@ -175,25 +169,26 @@ fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
         })
 }
 
-fn extract_query_token(query: Option<&str>) -> Option<String> {
-    query.and_then(|value| {
-        url::form_urlencoded::parse(value.as_bytes()).find_map(|(key, token)| {
-            if key == "token" {
-                Some(token.into_owned())
-            } else {
-                None
-            }
-        })
+fn extract_websocket_protocol_token(headers: &HeaderMap) -> Option<String> {
+    let header = headers.get("sec-websocket-protocol")?.to_str().ok()?;
+    const PREFIX: &str = "openfang.bearer.";
+
+    header.split(',').map(str::trim).find_map(|value| {
+        let encoded = value.strip_prefix(PREFIX)?;
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .ok()?;
+        String::from_utf8(decoded).ok()
     })
 }
 
 /// Apply the non-public auth rules to an arbitrary request shape.
 pub fn authorize_request_parts(
     auth_state: &AuthState,
-    method: &Method,
-    path: &str,
+    _method: &Method,
+    _path: &str,
     headers: &HeaderMap,
-    query: Option<&str>,
+    _query: Option<&str>,
     is_loopback: bool,
 ) -> Result<(), AuthFailure> {
     // If no API key is configured and session auth is disabled, stay in
@@ -213,7 +208,10 @@ pub fn authorize_request_parts(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
 
-    let api_token = bearer_token.or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()));
+    let ws_protocol_token = extract_websocket_protocol_token(headers);
+    let api_token = bearer_token
+        .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()))
+        .or(ws_protocol_token.as_deref());
 
     let header_auth = if api_key_trimmed.is_empty() {
         None
@@ -227,21 +225,7 @@ pub fn authorize_request_parts(
         })
     };
 
-    let query_token = if api_key_trimmed.is_empty() || !query_token_allowed(path, method) {
-        None
-    } else {
-        extract_query_token(query)
-    };
-
-    let query_auth = query_token.as_deref().map(|token| {
-        use subtle::ConstantTimeEq;
-        if token.len() != api_key_trimmed.len() {
-            return false;
-        }
-        token.as_bytes().ct_eq(api_key_trimmed.as_bytes()).into()
-    });
-
-    if header_auth == Some(true) || query_auth == Some(true) {
+    if header_auth == Some(true) {
         return Ok(());
     }
 
@@ -255,7 +239,7 @@ pub fn authorize_request_parts(
         }
     }
 
-    let credential_provided = header_auth.is_some() || query_auth.is_some();
+    let credential_provided = header_auth.is_some();
     if credential_provided {
         Err(AuthFailure::InvalidCredentials)
     } else {
@@ -536,7 +520,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_token_allowed_for_stream_endpoint() {
+    async fn test_query_token_rejected_for_stream_endpoint() {
         let auth_state = AuthState {
             api_key: "secret".to_string(),
             auth_enabled: false,
@@ -552,11 +536,11 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn test_query_token_allowed_for_agent_websocket_endpoint() {
+    async fn test_query_token_rejected_for_agent_websocket_endpoint() {
         let auth_state = AuthState {
             api_key: "secret".to_string(),
             auth_enabled: false,
@@ -572,11 +556,11 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn test_query_token_is_url_decoded_for_stream_endpoint() {
+    async fn test_query_token_is_rejected_even_when_url_encoded() {
         let auth_state = AuthState {
             api_key: "abc+123=".to_string(),
             auth_enabled: false,
@@ -592,7 +576,7 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
@@ -607,6 +591,34 @@ mod tests {
         headers.insert(
             "cookie",
             format!("openfang_session={token}").parse().unwrap(),
+        );
+
+        let result = authorize_request_parts(
+            &auth_state,
+            &Method::GET,
+            "/api/agents/123/ws",
+            &headers,
+            None,
+            false,
+        );
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn test_authorize_request_parts_accepts_websocket_protocol_token() {
+        let auth_state = AuthState {
+            api_key: "api-secret".to_string(),
+            auth_enabled: false,
+            session_secret: String::new(),
+        };
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("api-secret");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "sec-websocket-protocol",
+            format!("openfang, openfang.bearer.{encoded}")
+                .parse()
+                .unwrap(),
         );
 
         let result = authorize_request_parts(

@@ -765,13 +765,22 @@ mod tests {
         );
         assert_eq!(report.channel_defaults, vec!["Discord".to_string()]);
 
-        assert_eq!(router.resolve(&ChannelType::CLI, "local", None), Some(new_id));
+        assert_eq!(
+            router.resolve(&ChannelType::CLI, "local", None),
+            Some(new_id)
+        );
         assert_eq!(
             router.resolve(&ChannelType::CLI, "peer-1", Some("user-1")),
             Some(new_id)
         );
-        assert_eq!(router.resolve(&ChannelType::Telegram, "peer-1", None), Some(new_id));
-        assert_eq!(router.resolve(&ChannelType::Discord, "other", None), Some(new_id));
+        assert_eq!(
+            router.resolve(&ChannelType::Telegram, "peer-1", None),
+            Some(new_id)
+        );
+        assert_eq!(
+            router.resolve(&ChannelType::Discord, "other", None),
+            Some(new_id)
+        );
     }
 
     #[test]

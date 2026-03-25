@@ -434,10 +434,11 @@ pub fn with_message_text_block(
 mod http_error_tests {
     use super::{
         classify_http_kernel_error, delete_session, derive_custom_provider_api_key_env,
-        escape_prometheus_label_value, extract_status_code, json_to_toml_value, patch_agent_config,
-        resolve_attachments, serve_upload, upload_path, validate_secret_env_key,
-        validate_secret_env_value, with_message_text_block, AbortOnDropStream, AppState,
-        AttachmentRef, PatchAgentConfigRequest, UploadMeta, UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
+        escape_prometheus_label_value, extract_status_code, is_dangerous_active_content_type,
+        json_to_toml_value, patch_agent_config, resolve_attachments, sanitize_served_content_type,
+        serve_upload, upload_path, validate_secret_env_key, validate_secret_env_value,
+        with_message_text_block, AbortOnDropStream, AppState, AttachmentRef,
+        PatchAgentConfigRequest, UploadMeta, UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
     };
     use axum::body::to_bytes;
     use axum::extract::{Path, State};
@@ -636,6 +637,27 @@ mod http_error_tests {
         }
 
         validate_secret_env_value("safe-secret-value").unwrap();
+    }
+
+    #[test]
+    fn dangerous_active_content_types_are_blocked() {
+        assert!(is_dangerous_active_content_type("text/html"));
+        assert!(is_dangerous_active_content_type("image/svg+xml"));
+        assert!(!is_dangerous_active_content_type("text/plain"));
+        assert!(!is_dangerous_active_content_type("image/png"));
+    }
+
+    #[test]
+    fn sanitize_served_content_type_downgrades_active_payloads() {
+        assert_eq!(
+            sanitize_served_content_type("text/html"),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            sanitize_served_content_type("image/svg+xml"),
+            "application/octet-stream"
+        );
+        assert_eq!(sanitize_served_content_type("image/png"), "image/png");
     }
 
     #[test]
@@ -1063,15 +1085,33 @@ pub async fn get_agent_session(
                                     data,
                                 } => {
                                     texts.push("[Image]".to_string());
-                                    // Persist image to upload dir so it can be
-                                    // served back when loading session history.
-                                    let file_id = uuid::Uuid::new_v4().to_string();
-                                    let upload_dir = std::env::temp_dir().join("openfang_uploads");
+                                    // Persist image to upload dir so it can be served back
+                                    // when loading session history. Use a deterministic UUIDv5
+                                    // key to avoid duplicating identical image blobs on each
+                                    // session fetch.
+                                    let mut image_key =
+                                        Vec::with_capacity(media_type.len() + 1 + data.len());
+                                    image_key.extend_from_slice(media_type.as_bytes());
+                                    image_key.push(0);
+                                    image_key.extend_from_slice(data.as_bytes());
+                                    let file_id =
+                                        uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, &image_key)
+                                            .to_string();
+                                    let upload_dir = upload_dir();
+                                    let file_path = upload_dir.join(&file_id);
                                     let _ = std::fs::create_dir_all(&upload_dir);
-                                    if let Ok(bytes) =
+
+                                    let persisted = if file_path.exists() {
+                                        true
+                                    } else if let Ok(bytes) =
                                         base64::engine::general_purpose::STANDARD.decode(data)
                                     {
-                                        let _ = std::fs::write(upload_dir.join(&file_id), &bytes);
+                                        std::fs::write(&file_path, &bytes).is_ok()
+                                    } else {
+                                        false
+                                    };
+
+                                    if persisted {
                                         UPLOAD_REGISTRY.insert(
                                             file_id.clone(),
                                             UploadMeta {
@@ -9824,7 +9864,9 @@ pub async fn patch_agent_config(
             } else if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": "Base URL must start with http:// or https://"})),
+                    Json(
+                        serde_json::json!({"error": "Base URL must start with http:// or https://"}),
+                    ),
                 );
             } else {
                 Some(Some(trimmed.to_string()))
@@ -10362,6 +10404,21 @@ fn is_allowed_content_type(ct: &str) -> bool {
         .any(|prefix| ct.starts_with(prefix))
 }
 
+fn is_dangerous_active_content_type(ct: &str) -> bool {
+    let normalized = ct.trim().to_ascii_lowercase();
+    normalized == "text/html"
+        || normalized == "application/xhtml+xml"
+        || normalized == "image/svg+xml"
+}
+
+fn sanitize_served_content_type(ct: &str) -> String {
+    if is_dangerous_active_content_type(ct) {
+        "application/octet-stream".to_string()
+    } else {
+        ct.to_string()
+    }
+}
+
 fn upload_dir() -> std::path::PathBuf {
     std::env::temp_dir().join("openfang_uploads")
 }
@@ -10497,6 +10554,14 @@ pub async fn upload_file(
             StatusCode::BAD_REQUEST,
             Json(
                 serde_json::json!({"error": "Unsupported content type. Allowed: image/*, text/*, audio/*, application/pdf"}),
+            ),
+        );
+    }
+    if is_dangerous_active_content_type(&content_type) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                serde_json::json!({"error": "Active content types are blocked (text/html, application/xhtml+xml, image/svg+xml)"}),
             ),
         );
     }
@@ -10692,6 +10757,7 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
         },
     };
 
+    let content_type = sanitize_served_content_type(&content_type);
     (
         StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, content_type)],
@@ -10725,12 +10791,6 @@ fn detect_content_type_from_bytes(bytes: &[u8], fallback: &str) -> String {
         .iter()
         .all(|&b| matches!(b, 9 | 10 | 13) || (0x20..=0x7E).contains(&b))
     {
-        if let Ok(sample) = std::str::from_utf8(bytes) {
-            let lower = sample.to_ascii_lowercase();
-            if lower.contains("<html") || lower.contains("<!doctype html") {
-                return "text/html".to_string();
-            }
-        }
         return "text/plain".to_string();
     }
     fallback.to_string()
@@ -12350,12 +12410,16 @@ pub async fn comms_send(
             )
         }
     };
-    if state.kernel.registry.get(from_id).is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Source agent not found"})),
-        );
-    }
+    let from_entry = match state.kernel.registry.get(from_id) {
+        Some(entry) => entry,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Source agent not found"})),
+            );
+        }
+    };
+    let from_name = from_entry.name.clone();
 
     // Validate to agent exists
     let to_id: openfang_types::agent::AgentId = match req.to_agent_id.parse() {
@@ -12382,7 +12446,18 @@ pub async fn comms_send(
         );
     }
 
-    match state.kernel.send_message(to_id, &req.message).await {
+    let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
+    match state
+        .kernel
+        .send_message_with_handle(
+            to_id,
+            &req.message,
+            Some(kernel_handle),
+            Some(from_id.to_string()),
+            Some(from_name),
+        )
+        .await
+    {
         Ok(result) => (
             StatusCode::OK,
             Json(serde_json::json!({

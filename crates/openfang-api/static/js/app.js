@@ -344,7 +344,7 @@ function app() {
           hash = pageRedirects[hash];
           window.location.hash = hash;
         }
-        if (validPages.indexOf(hash) >= 0) self.page = hash;
+        if (validPages.indexOf(hash) >= 0) self.setPage(hash);
       }
       window.addEventListener('hashchange', handleHash);
       handleHash();
@@ -389,9 +389,20 @@ function app() {
     },
 
     navigate(p) {
-      this.page = p;
+      this.setPage(p);
       window.location.hash = p;
       this.mobileMenuOpen = false;
+    },
+
+    setPage(nextPage) {
+      if (!nextPage || this.page === nextPage) return;
+      var prevPage = this.page;
+      if (prevPage) {
+        window.dispatchEvent(new CustomEvent('page-leave', {
+          detail: { from: prevPage, to: nextPage }
+        }));
+      }
+      this.page = nextPage;
     },
 
     setTheme(mode) {

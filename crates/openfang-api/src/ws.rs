@@ -143,8 +143,7 @@ fn try_acquire_ws_slot(ip: IpAddr) -> Option<WsConnectionGuard> {
 /// GET /api/agents/:id/ws — Upgrade to WebSocket for real-time chat.
 ///
 /// SECURITY: Authenticates via Bearer token in Authorization header
-/// or `?token=` query parameter (for browser WebSocket clients that
-/// cannot set custom headers).
+/// or the dashboard session cookie for browser clients.
 pub async fn agent_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
@@ -153,6 +152,22 @@ pub async fn agent_ws(
     headers: axum::http::HeaderMap,
     uri: axum::http::Uri,
 ) -> impl IntoResponse {
+    let ws = if headers
+        .get("sec-websocket-protocol")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .any(|item| item == "openfang")
+        })
+        .unwrap_or(false)
+    {
+        ws.protocols(["openfang"])
+    } else {
+        ws
+    };
+
     let auth_state = crate::middleware::AuthState {
         api_key: state.kernel.config.api_key.trim().to_string(),
         auth_enabled: state.kernel.config.auth.enabled,
