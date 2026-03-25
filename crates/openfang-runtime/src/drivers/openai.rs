@@ -254,7 +254,10 @@ struct OaiResponseMessage {
     tool_calls: Option<Vec<OaiToolCall>>,
     /// Reasoning/thinking content returned by some models (DeepSeek-R1, Qwen3, etc.)
     /// via LM Studio, Ollama, and other local inference servers.
+    /// Most providers use `reasoning_content`; Ollama uses `reasoning`.
     reasoning_content: Option<String>,
+    /// Ollama places thinking output in a field named `reasoning` (not `reasoning_content`).
+    reasoning: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -617,14 +620,20 @@ impl LlmDriver for OpenAIDriver {
 
             // Capture reasoning_content from models that use a separate field
             // (DeepSeek-R1, Qwen3, etc. via LM Studio/Ollama)
-            if let Some(ref reasoning) = choice.message.reasoning_content {
+            // Most providers use `reasoning_content`; Ollama uses `reasoning`.
+            let reasoning_text = choice
+                .message
+                .reasoning_content
+                .as_deref()
+                .or(choice.message.reasoning.as_deref());
+            if let Some(reasoning) = reasoning_text {
                 if !reasoning.is_empty() {
                     debug!(
                         len = reasoning.len(),
                         "Captured reasoning_content from response"
                     );
                     content.push(ContentBlock::Thinking {
-                        thinking: reasoning.clone(),
+                        thinking: reasoning.to_string(),
                     });
                 }
             }
@@ -635,8 +644,8 @@ impl LlmDriver for OpenAIDriver {
                     // embed directly in the content field.
                     let (cleaned, thinking) = extract_think_tags(&text);
                     if let Some(think_text) = thinking {
-                        // Only add if we didn't already get reasoning_content
-                        if choice.message.reasoning_content.is_none() {
+                        // Only add if we didn't already get reasoning_content or reasoning
+                        if reasoning_text.is_none() {
                             content.push(ContentBlock::Thinking {
                                 thinking: think_text,
                             });
@@ -1150,7 +1159,11 @@ impl LlmDriver for OpenAIDriver {
                         }
 
                         // Reasoning/thinking content delta (DeepSeek-R1, Qwen3 via LM Studio/Ollama)
-                        if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                        // Most providers use `reasoning_content`; Ollama uses `reasoning`.
+                        let reasoning_delta = delta["reasoning_content"]
+                            .as_str()
+                            .or_else(|| delta["reasoning"].as_str());
+                        if let Some(reasoning) = reasoning_delta {
                             if !reasoning.is_empty() {
                                 reasoning_content.push_str(reasoning);
                                 let _ = tx
