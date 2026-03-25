@@ -261,9 +261,8 @@ pub async fn run_agent_loop(
     // Add the user message to session history.
     // When content blocks are provided (e.g. text + image from a channel),
     // use multimodal message format so the LLM receives the image for vision.
-    if let Some(_blocks) = user_content_blocks {
-        // TODO 先不添加用户提示，不让大模型继续
-        // session.messages.push(Message::user_with_blocks(blocks));
+    if let Some(blocks) = user_content_blocks {
+        session.messages.push(Message::user_with_blocks(blocks));
     } else {
         session.messages.push(Message::user(user_message));
     }
@@ -1279,9 +1278,8 @@ pub async fn run_agent_loop_streaming(
     // Add the user message to session history.
     // When content blocks are provided (e.g. text + image from a channel),
     // use multimodal message format so the LLM receives the image for vision.
-    if let Some(_blocks) = user_content_blocks {
-        // TODO 先不添加用户提示，不让大模型继续
-        // session.messages.push(Message::user_with_blocks(blocks));
+    if let Some(blocks) = user_content_blocks {
+        session.messages.push(Message::user_with_blocks(blocks));
     } else {
         session.messages.push(Message::user(user_message));
     }
