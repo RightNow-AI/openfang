@@ -43,7 +43,7 @@
 
 ### 媒体项状态
 
-- `ready`: 媒体已下载到本地，`local_path` 可用
+- `ready`: 媒体已在消息生产侧下载成功。优先使用 `local_path`，但跨容器/跨宿主机场景下仍可能需要 `download_hint` 回退重拉
 - `needs_project_download`: 媒体超过安全下载阈值，需要项目侧下载器处理
 - `skipped_safe_limit`: 媒体超过 Local Bot API 安全阈值（100MB），已跳过 `getFile` 调用
 - `download_failed`: 下载尝试失败
@@ -217,6 +217,17 @@ docker run -d \
 - 那么 OpenFang 或下游 bridge 在宿主机上读取 `/var/lib/telegram-bot-api/...` 时会报 `No such file or directory`
 
 换句话说，只要你的下游逻辑会把 `getFile.result.file_path` 当作宿主机上的本地路径使用，就必须让宿主机看到同一条绝对路径。
+
+同一条链上还要一起检查这些变量，不要只盯一个：
+
+- OpenFang：`use_local_api`、`auto_start_local_api`、`api_url`、`download_dir`
+- shipinfabu / bridge：`local_media_intake_dir`、`local_source_staging_dir`、`local_media_intake_retention_hours`
+
+如果 OpenFang 用的是容器内 Local Bot API，而 bridge 跑在另一个文件系统视图里：
+
+- `file://...` 不等于 bridge 可读
+- `ready` 也不等于一定可直接提交
+- 新版本 bridge 会优先按 manifest 里的 `download_hint` 重拉；如果拿到的仍是容器私有路径，会明确报 `TELEGRAM_LOCAL_API_PATH_NOT_SHARED`
 
 ### 启动服务
 

@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaItemStatus {
-    /// Media is downloaded and ready at local_path.
+    /// Media was downloaded in the producing runtime.
+    /// `local_path` is expected to work in the same filesystem view, while
+    /// downstream consumers may still need `download_hint` when the path is not
+    /// shared across host/container boundaries.
     Ready,
     /// Media exceeds safe download limit, needs project-side download.
     NeedsProjectDownload,
@@ -45,7 +48,8 @@ pub struct TelegramMediaItem {
     /// Local file path (if downloaded).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_path: Option<String>,
-    /// Download hint for project-side downloaders.
+    /// Download hint for project-side downloaders. Even `ready` items may carry
+    /// this as a fallback when `local_path` is not reachable downstream.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub download_hint: Option<TelegramDownloadHint>,
 }

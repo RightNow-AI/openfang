@@ -238,6 +238,26 @@ fn build_download_hint(
     }
 }
 
+fn build_ready_download_hint(
+    file_id: &str,
+    api_base_url: &str,
+    use_local_api: bool,
+    file_info: &FileInfo,
+) -> TelegramDownloadHint {
+    let download_url = if file_info.local_path.is_some() {
+        None
+    } else {
+        Some(file_info.download_url.clone())
+    };
+    build_download_hint(
+        file_id,
+        api_base_url,
+        use_local_api,
+        download_url,
+        Some("downstream fallback when local_path is unavailable".to_string()),
+    )
+}
+
 fn build_single_message_batch(
     chat_id: i64,
     message_id: i64,
@@ -1408,7 +1428,12 @@ async fn merge_media_group_updates(
                                     duration_seconds: Some(duration),
                                     status: MediaItemStatus::Ready,
                                     local_path: Some(local_path.display().to_string()),
-                                    download_hint: None,
+                                    download_hint: Some(build_ready_download_hint(
+                                        &file_id,
+                                        api_base_url,
+                                        use_local_api,
+                                        &file_info,
+                                    )),
                                 });
                             }
                             Err(e) => {
@@ -1600,7 +1625,12 @@ async fn merge_media_group_updates(
                                     duration_seconds: None,
                                     status: MediaItemStatus::Ready,
                                     local_path: Some(local_path.display().to_string()),
-                                    download_hint: None,
+                                    download_hint: Some(build_ready_download_hint(
+                                        &file_id,
+                                        api_base_url,
+                                        use_local_api,
+                                        &file_info,
+                                    )),
                                 });
                             }
                             Err(e) => {
@@ -1722,7 +1752,12 @@ async fn merge_media_group_updates(
                                     duration_seconds: None,
                                     status: MediaItemStatus::Ready,
                                     local_path: Some(local_path.display().to_string()),
-                                    download_hint: None,
+                                    download_hint: Some(build_ready_download_hint(
+                                        &file_id,
+                                        api_base_url,
+                                        use_local_api,
+                                        &file_info,
+                                    )),
                                 });
                             }
                             Err(e) => {
@@ -4971,6 +5006,43 @@ mod tests {
             .download_url
             .contains("/file/botfake:token/files/large-video.mp4"));
         assert!(info.local_path.is_none());
+    }
+
+    #[test]
+    fn test_build_ready_download_hint_omits_local_file_url_but_keeps_remote_url() {
+        let local_info = FileInfo {
+            file_id: "local-file".to_string(),
+            file_size: 123,
+            file_path: "/var/lib/telegram-bot-api/videos/file_9.mp4".to_string(),
+            download_url: "file:///var/lib/telegram-bot-api/videos/file_9.mp4".to_string(),
+            local_path: Some("/var/lib/telegram-bot-api/videos/file_9.mp4".to_string()),
+        };
+        let local_hint =
+            build_ready_download_hint("local-file", "http://127.0.0.1:8081", true, &local_info);
+        assert!(local_hint.download_url.is_none());
+        assert_eq!(
+            local_hint.reason.as_deref(),
+            Some("downstream fallback when local_path is unavailable")
+        );
+
+        let remote_info = FileInfo {
+            file_id: "remote-file".to_string(),
+            file_size: 456,
+            file_path: "photos/file_1.jpg".to_string(),
+            download_url: "https://api.telegram.org/file/botfake:token/photos/file_1.jpg"
+                .to_string(),
+            local_path: None,
+        };
+        let remote_hint = build_ready_download_hint(
+            "remote-file",
+            "https://api.telegram.org",
+            false,
+            &remote_info,
+        );
+        assert_eq!(
+            remote_hint.download_url.as_deref(),
+            Some("https://api.telegram.org/file/botfake:token/photos/file_1.jpg")
+        );
     }
 
     #[tokio::test]

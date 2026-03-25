@@ -53,6 +53,11 @@ allowed_users = []
 poll_interval_secs = 1
 # download_enabled = false
 # use_local_api = false
+# When `use_local_api = true`, Telegram may return local absolute paths instead
+# of remote file URLs. If `api_url` points at an external containerized
+# telegram-bot-api, downstream consumers must share the same absolute path
+# (commonly `/var/lib/telegram-bot-api`) or restage files into their own intake
+# directory before submit.
 # api_url = "http://127.0.0.1:8081"
 # telegram_api_id = "123456"
 # telegram_api_hash_env = "TELEGRAM_API_HASH"

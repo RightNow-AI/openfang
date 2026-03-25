@@ -300,6 +300,8 @@ Important deployment notes:
 
 - If you run Local Bot API as an external service (for example a Docker container), keep `auto_start_local_api = false`. Otherwise OpenFang will still try to spawn its own `telegram-bot-api` binary and may conflict with the external service.
 - When downstream tools consume `getFile.result.file_path` as a local filesystem path, the host must see the same absolute path returned by the Local Bot API Server. A common Docker pattern is to bind-mount `/var/lib/telegram-bot-api` on the host to the same path inside the container.
+- The critical variables are a chain, not isolated toggles: `use_local_api` decides whether Telegram may return local absolute paths; `api_url` decides which Bot API instance you are talking to; `auto_start_local_api` decides whether OpenFang owns that instance; `download_dir` decides where OpenFang stages same-runtime downloads; downstream `local_media_intake_dir` / `local_source_staging_dir` decide where bridge-owned stable copies live.
+- If that chain is split across different containers or hosts, a `file://` URI is only valid when every consumer sees the same filesystem path. Otherwise downstream should re-stage from `download_hint` or fail with an explicit path-sharing error such as `TELEGRAM_LOCAL_API_PATH_NOT_SHARED`, not a generic download retry loop.
 - Some Local Bot API deployments may persist Telegram photos with a `.dat` suffix even when the payload is actually JPEG or PNG data. If downstream validation rejects non-image extensions, normalize the staged filename from the file header or MIME type before submit.
 
 See [telegram-large-files.md](telegram-large-files.md) for the full setup matrix, config examples, and troubleshooting.

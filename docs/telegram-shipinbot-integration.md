@@ -139,6 +139,8 @@ default = "12"
 
 ### OpenFang 下载的文件
 
+下面这个例子只适用于 OpenFang 与后续 bridge 运行在同一文件系统视图的场景：
+
 ```
 /tmp/openfang-telegram-downloads/
 └── AgACAgQAAxkBAAIBY2..._1710654321000.dat
@@ -165,6 +167,17 @@ python3 /Users/xiaomo/shipinbot-runtime/scripts/openfang_clean_publish_bridge.py
 5. 智能体轮询任务状态
 6. 完成后汇报结果
 ```
+
+如果 OpenFang / telegram-bot-api / shipinbot bridge 不共享同一文件系统：
+
+- `file://...` 可能不是 bridge 可读文件
+- 应优先使用 manifest 里的 `download_hint` 重新拉到 `local_media_intake_dir`
+- 如果 Local Bot API 仍返回容器私有绝对路径，bridge 会明确报 `TELEGRAM_LOCAL_API_PATH_NOT_SHARED`
+
+相关变量不要拆开理解：
+
+- OpenFang：`use_local_api`、`auto_start_local_api`、`api_url`、`download_dir`
+- shipinfabu：`local_media_intake_dir`、`local_source_staging_dir`、`local_media_intake_retention_hours`
 
 ## 环境变量
 
