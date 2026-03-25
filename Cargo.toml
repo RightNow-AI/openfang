@@ -18,10 +18,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/RightNow-AI/openfang"
+repository = "https://github.com/tytsxai/openfang-upstream-fork"
 rust-version = "1.75"
 
 [workspace.dependencies]

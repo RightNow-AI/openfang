@@ -5,6 +5,38 @@ All notable changes to OpenFang will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-03-25
+
+Compared to `v0.5.1`, this release contains 145 commits, touches 209 files, and lands 41,101 insertions with 8,549 deletions.
+
+### Added
+
+- Telegram Local Bot API integration for large-file workflows, structured media-batch manifests, metadata-aware bridge routing, and a bundled `shipinfabu` Hand/Skill stack for the shipinbot pipeline.
+- Operator tooling for backup, restore, preflight, live API smoke, provider canary, Telegram setup verification, and systemd/Prometheus deployment assets.
+- Restore-health and load-reporting coverage across agents, hands, cron state, provider readiness, uploads, and runtime health endpoints.
+- A vendored `third_party/imap-proto` patch so the `imap = "2"` stack keeps building cleanly on newer Rust toolchains.
+
+### Changed
+
+- Release metadata now points at the forked distribution path (`tytsxai/openfang-upstream-fork`) and the desktop updater targets the fork's GitHub Releases feed.
+- The repository docs were rewritten around this fork's actual operating model: OpenFang core under `crates/` and shipinbot-specific behavior under `projects/shipinbot/`.
+- Deployment defaults and examples now consistently document `127.0.0.1:4200`, external env-file handling, stricter public-bind guidance, and production preflight/rollback procedures.
+- CI and release workflows were expanded to validate Docker images, backup units, restore paths, release assets, and smoke tests before publication.
+
+### Fixed
+
+- Authentication hardening removed query-token auth, tightened loopback/proxy validation, and strengthened dashboard session handling plus readiness/reporting paths.
+- API and kernel config writes now serialize read-modify-write paths behind a shared IO lock, offload attachment resolution from hot request paths, and harden provider/default-model persistence.
+- Streaming, session persistence, agent deletion, runtime retries, hand reactivation, and channel routing were tightened to prevent partial state updates and follow-up regressions.
+- Telegram/channel handling now preserves media-group ordering, tolerates missing metadata, improves group `@mention` detection, atomically persists manifests, and stabilizes local Bot API retries/download flow.
+- Metering, memory, and restore flows were fixed for zero-priced custom models, SQLite timestamp comparisons, rollback-safe recovery, and load/report deduplication.
+- Docker and packaging now include vendored third-party sources and avoid release-time breakage from missing runtime build inputs.
+
+### Documentation
+
+- Added or refreshed runbooks for deployment, operations, health checks, Telegram group setup, large-file handling, troubleshooting, and production-readiness evidence.
+- Synced README, configuration examples, and shipinbot integration docs with the current fork behavior so release assets, env handling, and ownership boundaries match the shipped code.
+
 ## [0.1.0] - 2026-02-24
 
 ### Added
@@ -163,4 +195,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prometheus metrics for monitoring
 - Config hot-reload without restart
 
+[0.5.2]: https://github.com/tytsxai/openfang-upstream-fork/compare/v0.5.1...v0.5.2
 [0.1.0]: https://github.com/RightNow-AI/openfang/releases/tag/v0.1.0
