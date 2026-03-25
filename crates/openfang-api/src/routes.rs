@@ -411,6 +411,22 @@ pub fn resolve_attachments(
     blocks
 }
 
+pub async fn resolve_attachments_async(
+    attachments: Vec<AttachmentRef>,
+) -> Vec<openfang_types::message::ContentBlock> {
+    if attachments.is_empty() {
+        return Vec::new();
+    }
+
+    match tokio::task::spawn_blocking(move || resolve_attachments(&attachments)).await {
+        Ok(blocks) => blocks,
+        Err(error) => {
+            tracing::warn!(%error, "Attachment resolution task failed");
+            Vec::new()
+        }
+    }
+}
+
 /// Combine resolved image blocks with the user text prompt.
 ///
 /// `run_agent_loop` treats `user_content_blocks` as authoritative user input,
@@ -435,10 +451,10 @@ mod http_error_tests {
     use super::{
         classify_http_kernel_error, delete_session, derive_custom_provider_api_key_env,
         escape_prometheus_label_value, extract_status_code, is_dangerous_active_content_type,
-        json_to_toml_value, patch_agent_config, resolve_attachments, sanitize_served_content_type,
-        serve_upload, upload_path, validate_secret_env_key, validate_secret_env_value,
-        with_message_text_block, AbortOnDropStream, AppState, AttachmentRef,
-        PatchAgentConfigRequest, UploadMeta, UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
+        json_to_toml_value, patch_agent_config, resolve_attachments, resolve_attachments_async,
+        sanitize_served_content_type, serve_upload, upload_path, validate_secret_env_key,
+        validate_secret_env_value, with_message_text_block, AbortOnDropStream, AppState,
+        AttachmentRef, PatchAgentConfigRequest, UploadMeta, UPLOAD_REGISTRY, UPLOAD_TTL_SECS,
     };
     use axum::body::to_bytes;
     use axum::extract::{Path, State};
@@ -501,6 +517,44 @@ mod http_error_tests {
         assert!(blocks.is_empty());
         assert!(!path.exists());
         assert!(UPLOAD_REGISTRY.get(&file_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_attachments_async_returns_image_block_for_valid_upload() {
+        let file_id = uuid::Uuid::new_v4().to_string();
+        let path = upload_path(&file_id);
+        std::fs::create_dir_all(path.parent().expect("upload directory")).unwrap();
+        std::fs::write(&path, [0x89, 0x50, 0x4E, 0x47]).unwrap();
+        UPLOAD_REGISTRY.insert(
+            file_id.clone(),
+            UploadMeta {
+                filename: "ok.png".to_string(),
+                content_type: "image/png".to_string(),
+                created_at: SystemTime::now(),
+            },
+        );
+
+        let blocks = resolve_attachments_async(vec![AttachmentRef {
+            file_id: file_id.clone(),
+            filename: "ok.png".to_string(),
+            content_type: "image/png".to_string(),
+        }])
+        .await;
+
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(
+            &blocks[0],
+            ContentBlock::Image { media_type, .. } if media_type == "image/png"
+        ));
+
+        let _ = std::fs::remove_file(&path);
+        UPLOAD_REGISTRY.remove(&file_id);
+    }
+
+    #[tokio::test]
+    async fn resolve_attachments_async_returns_empty_for_empty_input() {
+        let blocks = resolve_attachments_async(Vec::new()).await;
+        assert!(blocks.is_empty());
     }
 
     #[tokio::test]
@@ -981,7 +1035,10 @@ pub async fn send_message(
     let content_blocks = if req.attachments.is_empty() {
         None
     } else {
-        with_message_text_block(&req.message, resolve_attachments(&req.attachments))
+        with_message_text_block(
+            &req.message,
+            resolve_attachments_async(req.attachments.clone()).await,
+        )
     };
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
@@ -2037,7 +2094,10 @@ pub async fn send_message_stream(
     let content_blocks = if req.attachments.is_empty() {
         None
     } else {
-        with_message_text_block(&req.message, resolve_attachments(&req.attachments))
+        with_message_text_block(
+            &req.message,
+            resolve_attachments_async(req.attachments.clone()).await,
+        )
     };
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
@@ -6120,7 +6180,6 @@ pub async fn update_budget(
             Json(serde_json::json!({"status": "error", "error": format!("write failed: {e}")})),
         );
     }
-
     let reload_status = match state.kernel.reload_config() {
         Ok(outcome) => {
             if outcome
@@ -8311,38 +8370,35 @@ pub async fn set_provider_key(
         if let Some(model_id) = default_model {
             // Update config.toml to persist the switch
             let config_path = state.kernel.config_path().to_path_buf();
-            let update_toml = format!(
-                "\n[default_model]\nprovider = \"{}\"\nmodel = \"{}\"\napi_key_env = \"{}\"\n",
-                name, model_id, env_var
-            );
-            backup_config(&config_path);
-            if let Ok(existing) = std::fs::read_to_string(&config_path) {
-                let cleaned = remove_toml_section(&existing, "default_model");
-                let _ = write_validated_config_atomically(
-                    &config_path,
-                    &format!("{}\n{}", cleaned.trim(), update_toml),
-                );
-            } else {
-                let _ = write_validated_config_atomically(&config_path, &update_toml);
-            }
-
-            // Hot-update the in-memory default model override so resolve_driver()
-            // immediately creates drivers for the new provider — no restart needed.
+            if let Err(error) =
+                persist_default_model_selection(&config_path, &name, &model_id, &env_var)
             {
-                let new_dm = openfang_types::config::DefaultModelConfig {
-                    provider: name.clone(),
-                    model: model_id,
-                    api_key_env: env_var.clone(),
-                    base_url: None,
-                };
-                let mut guard = state
-                    .kernel
-                    .default_model_override
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner());
-                *guard = Some(new_dm);
+                tracing::warn!(
+                    provider = %name,
+                    model = %model_id,
+                    %error,
+                    "Failed to persist default model switch after saving provider key"
+                );
+                false
+            } else {
+                // Hot-update the in-memory default model override so resolve_driver()
+                // immediately creates drivers for the new provider — no restart needed.
+                {
+                    let new_dm = openfang_types::config::DefaultModelConfig {
+                        provider: name.clone(),
+                        model: model_id,
+                        api_key_env: env_var.clone(),
+                        base_url: None,
+                    };
+                    let mut guard = state
+                        .kernel
+                        .default_model_override
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner());
+                    *guard = Some(new_dm);
+                }
+                true
             }
-            true
         } else {
             false
         }
@@ -11195,7 +11251,6 @@ pub async fn config_set(
     };
 
     let config_path = state.kernel.config_path().to_path_buf();
-
     // Read existing config as a TOML table, or start fresh
     let mut table: toml::value::Table = if config_path.exists() {
         match std::fs::read_to_string(&config_path) {
@@ -11281,7 +11336,6 @@ pub async fn config_set(
             Json(serde_json::json!({"status": "error", "error": format!("write failed: {e}")})),
         );
     }
-
     // Trigger reload
     let reload_status = match state.kernel.reload_config() {
         Ok(outcome) => {
@@ -12690,12 +12744,41 @@ fn remove_toml_section(content: &str, section: &str) -> String {
     result
 }
 
+fn persist_default_model_selection(
+    config_path: &std::path::Path,
+    provider: &str,
+    model_id: &str,
+    env_var: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let update_toml = format!(
+        "\n[default_model]\nprovider = \"{}\"\nmodel = \"{}\"\napi_key_env = \"{}\"\n",
+        provider, model_id, env_var
+    );
+    backup_config(config_path);
+
+    let updated = match std::fs::read_to_string(config_path) {
+        Ok(existing) => format!(
+            "{}\n{}",
+            remove_toml_section(&existing, "default_model").trim(),
+            update_toml
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => update_toml,
+        Err(err) => return Err(Box::new(err)),
+    };
+
+    write_validated_config_atomically(config_path, &updated)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{classify_http_kernel_error, extract_status_code};
+    use super::{
+        classify_http_kernel_error, extract_status_code, persist_default_model_selection,
+        write_secret_env,
+    };
     use axum::http::StatusCode;
     use openfang_kernel::error::KernelError;
     use openfang_types::error::OpenFangError;
+    use tempfile::tempdir;
 
     #[test]
     fn extract_status_code_parses_llm_api_errors() {
@@ -12734,6 +12817,53 @@ mod tests {
         ));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(message.contains("Persistent state update failed"));
+    }
+
+    #[test]
+    fn write_secret_env_serializes_read_modify_write_updates() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("secrets.env");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+
+        std::thread::scope(|scope| {
+            for (key, value) in [("ALPHA_KEY", "one"), ("BETA_KEY", "two")] {
+                let barrier = std::sync::Arc::clone(&barrier);
+                let path = path.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..64 {
+                        write_secret_env(&path, key, value).unwrap();
+                    }
+                });
+            }
+            barrier.wait();
+        });
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.matches("ALPHA_KEY=").count(), 1);
+        assert_eq!(content.matches("BETA_KEY=").count(), 1);
+        assert!(content.contains("ALPHA_KEY=one"));
+        assert!(content.contains("BETA_KEY=two"));
+    }
+
+    #[test]
+    fn persist_default_model_selection_replaces_existing_section() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[default_model]\nprovider = \"old\"\nmodel = \"old-model\"\napi_key_env = \"OLD_KEY\"\n\n[budget]\nmax_daily_usd = 1.0\n",
+        )
+        .unwrap();
+
+        persist_default_model_selection(&path, "new", "new-model", "NEW_KEY").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.matches("[default_model]").count(), 1);
+        assert!(content.contains("provider = \"new\""));
+        assert!(content.contains("model = \"new-model\""));
+        assert!(content.contains("api_key_env = \"NEW_KEY\""));
+        assert!(content.contains("[budget]"));
     }
 }
 
