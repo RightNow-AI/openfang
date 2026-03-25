@@ -1205,7 +1205,19 @@ async fn test_send_message_stream_emits_chunk_and_done_events() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("event: chunk"), "missing chunk event: {body}");
     assert!(body.contains("event: done"), "missing done event: {body}");
-    assert!(body.contains("event: timing"), "missing timing event: {body}");
+    assert!(
+        body.contains("event: timing"),
+        "missing timing event: {body}"
+    );
+    assert!(
+        body.contains("\"response\""),
+        "missing final response payload: {body}"
+    );
+    assert!(
+        body.find("event: timing").unwrap_or(usize::MAX)
+            < body.rfind("event: done").unwrap_or_default(),
+        "timing should arrive before the final done event: {body}"
+    );
 }
 
 #[tokio::test]

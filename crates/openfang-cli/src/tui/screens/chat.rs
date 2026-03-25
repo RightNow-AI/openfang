@@ -69,6 +69,10 @@ pub struct ChatState {
     pub last_tokens: Option<(u64, u64)>,
     /// Cost in USD from last response.
     pub last_cost_usd: Option<f64>,
+    /// Time to first token from the last completed response.
+    pub last_first_token_latency_ms: Option<u64>,
+    /// End-to-end provider wait time from the last completed response.
+    pub last_provider_latency_ms: Option<u64>,
     /// Characters received during current stream (~4 chars ≈ 1 token).
     pub streaming_chars: usize,
     /// Status message (errors, etc.)
@@ -114,6 +118,8 @@ impl ChatState {
             scroll_offset: 0,
             last_tokens: None,
             last_cost_usd: None,
+            last_first_token_latency_ms: None,
+            last_provider_latency_ms: None,
             streaming_chars: 0,
             status_msg: None,
             staged_messages: Vec::new(),
@@ -136,6 +142,8 @@ impl ChatState {
         self.scroll_offset = 0;
         self.last_tokens = None;
         self.last_cost_usd = None;
+        self.last_first_token_latency_ms = None;
+        self.last_provider_latency_ms = None;
         self.streaming_chars = 0;
         self.status_msg = None;
         self.staged_messages.clear();
@@ -783,8 +791,22 @@ fn draw_messages(f: &mut Frame, area: Rect, state: &ChatState) {
                 Some(c) if c > 0.0 => format!(" | ${:.4}", c),
                 _ => String::new(),
             };
+            let latency_str = match (
+                state.last_first_token_latency_ms,
+                state.last_provider_latency_ms,
+            ) {
+                (Some(first), Some(provider)) => {
+                    format!(" | first token: {first}ms | provider: {provider}ms")
+                }
+                (Some(first), None) => format!(" | first token: {first}ms"),
+                (None, Some(provider)) => format!(" | provider: {provider}ms"),
+                (None, None) => String::new(),
+            };
             lines.push(Line::from(vec![Span::styled(
-                format!("  [tokens: {} in / {} out{}]", input, output, cost_str),
+                format!(
+                    "  [tokens: {} in / {} out{}{}]",
+                    input, output, cost_str, latency_str
+                ),
                 theme::dim_style(),
             )]));
         }

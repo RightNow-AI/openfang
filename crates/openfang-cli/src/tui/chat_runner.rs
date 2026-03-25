@@ -136,7 +136,13 @@ impl StandaloneChat {
             StreamEvent::ContentComplete { usage, .. } => {
                 self.chat.last_tokens = Some((usage.input_tokens, usage.output_tokens));
             }
-            StreamEvent::ResponseTiming { .. } => {}
+            StreamEvent::ResponseTiming {
+                first_token_latency_ms,
+                provider_latency_ms,
+            } => {
+                self.chat.last_first_token_latency_ms = first_token_latency_ms;
+                self.chat.last_provider_latency_ms = Some(provider_latency_ms);
+            }
             StreamEvent::PhaseChange { phase, detail } => {
                 if phase == "tool_use" {
                     if let Some(tool_name) = detail {
@@ -177,6 +183,8 @@ impl StandaloneChat {
                         Some((r.total_usage.input_tokens, r.total_usage.output_tokens));
                 }
                 self.chat.last_cost_usd = r.cost_usd;
+                self.chat.last_first_token_latency_ms = r.first_token_latency_ms;
+                self.chat.last_provider_latency_ms = Some(r.provider_latency_ms);
             }
             Err(e) => {
                 self.chat.status_msg = Some(format!("Error: {e}"));

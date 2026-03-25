@@ -720,6 +720,18 @@ async fn handle_text_message(
                             let (first_token_latency_ms, provider_latency_ms) =
                                 stream_timing.unwrap_or((None, 0));
 
+                            if first_token_latency_ms.is_some() || provider_latency_ms > 0 {
+                                let _ = send_json(
+                                    sender,
+                                    &serde_json::json!({
+                                        "type": "timing",
+                                        "first_token_latency_ms": first_token_latency_ms,
+                                        "provider_latency_ms": provider_latency_ms,
+                                    }),
+                                )
+                                .await;
+                            }
+
                             let content = match finalize_stream_response(
                                 &accumulated_text,
                                 stream_usage,

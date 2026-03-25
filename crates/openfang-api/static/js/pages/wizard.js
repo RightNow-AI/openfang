@@ -209,6 +209,11 @@ function wizardPage() {
             }
 
             if (evt.event === 'done') {
+              if (evt.data && evt.data.silent) {
+                agentMsg.text = '(no reply needed)';
+              } else if (!agentMsg.text.trim() && evt.data && evt.data.response) {
+                agentMsg.text = evt.data.response;
+              }
               agentMsg.streaming = false;
             }
           }
