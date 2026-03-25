@@ -402,16 +402,7 @@ pub fn classify_error(message: &str, status: Option<u16>) -> ClassifiedError {
 /// API key") which made it impossible for users to tell what was wrong when
 /// their keys were actually valid (issue #493).
 pub fn sanitize_for_user(category: LlmErrorCategory, raw: &str) -> String {
-    let prefix = match category {
-        LlmErrorCategory::RateLimit => "Rate limited",
-        LlmErrorCategory::Overloaded => "Provider overloaded",
-        LlmErrorCategory::Timeout => "Request timed out",
-        LlmErrorCategory::Billing => "Billing issue",
-        LlmErrorCategory::Auth => "Auth error",
-        LlmErrorCategory::ContextOverflow => "Context too long",
-        LlmErrorCategory::Format => "Request failed",
-        LlmErrorCategory::ModelNotFound => "Model not found",
-    };
+    let prefix = user_facing_prefix(category);
 
     let detail = sanitize_raw_excerpt(raw);
     if detail.is_empty() {
@@ -440,6 +431,55 @@ pub fn sanitize_for_user(category: LlmErrorCategory, raw: &str) -> String {
         // Include the sanitized detail — cap total at 300 chars.
         let full = format!("{prefix}: {detail}");
         cap_message(&full, 300)
+    }
+}
+
+fn user_facing_prefix(category: LlmErrorCategory) -> &'static str {
+    match category {
+        LlmErrorCategory::RateLimit => "Rate limited",
+        LlmErrorCategory::Overloaded => "Provider overloaded",
+        LlmErrorCategory::Timeout => "Request timed out",
+        LlmErrorCategory::Billing => "Billing issue",
+        LlmErrorCategory::Auth => "Auth error",
+        LlmErrorCategory::ContextOverflow => "Context too long",
+        LlmErrorCategory::Format => "Request failed",
+        LlmErrorCategory::ModelNotFound => "Model not found",
+    }
+}
+
+/// Return `true` when `message` is already a user-facing LLM error string.
+pub fn is_user_facing_message(message: &str) -> bool {
+    [
+        LlmErrorCategory::RateLimit,
+        LlmErrorCategory::Overloaded,
+        LlmErrorCategory::Timeout,
+        LlmErrorCategory::Billing,
+        LlmErrorCategory::Auth,
+        LlmErrorCategory::ContextOverflow,
+        LlmErrorCategory::Format,
+        LlmErrorCategory::ModelNotFound,
+    ]
+    .iter()
+    .any(|category| message.starts_with(&format!("{}:", user_facing_prefix(*category))))
+}
+
+/// Strip repeated OpenFang error wrappers while preserving the original payload.
+pub fn strip_error_wrappers(mut message: &str) -> &str {
+    const WRAPPER_PREFIXES: &[&str] = &[
+        "LLM driver error: ",
+        "Internal error: ",
+        "Network error: ",
+        "IO error: ",
+    ];
+
+    loop {
+        let Some(stripped) = WRAPPER_PREFIXES
+            .iter()
+            .find_map(|prefix| message.strip_prefix(prefix))
+        else {
+            return message;
+        };
+        message = stripped;
     }
 }
 
@@ -898,6 +938,27 @@ mod tests {
             "some other error"
         );
         assert_eq!(strip_llm_wrapper("plain error"), "plain error");
+    }
+
+    #[test]
+    fn test_strip_error_wrappers_removes_nested_openfang_prefixes() {
+        assert_eq!(
+            strip_error_wrappers("Internal error: LLM driver error: Auth error: invalid x-api-key"),
+            "Auth error: invalid x-api-key"
+        );
+        assert_eq!(
+            strip_error_wrappers("Network error: Request failed: DNS lookup failed"),
+            "Request failed: DNS lookup failed"
+        );
+    }
+
+    #[test]
+    fn test_is_user_facing_message_detects_sanitized_prefixes() {
+        assert!(is_user_facing_message("Auth error: invalid x-api-key"));
+        assert!(is_user_facing_message(
+            "Request failed: upstream returned malformed JSON"
+        ));
+        assert!(!is_user_facing_message("Internal error: invalid x-api-key"));
     }
 
     #[test]
