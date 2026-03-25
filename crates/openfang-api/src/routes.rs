@@ -1036,13 +1036,18 @@ fn classify_streaming_result_error(error: &openfang_kernel::error::KernelError) 
     match error {
         openfang_kernel::error::KernelError::OpenFang(inner) => {
             let raw = inner.to_string();
-            let status = match inner {
+            let normalized = openfang_runtime::llm_errors::strip_error_wrappers(&raw);
+            if openfang_runtime::llm_errors::is_user_facing_message(normalized) {
+                return normalized.to_string();
+            }
+
+            let (raw, status) = match inner {
                 openfang_types::error::OpenFangError::LlmDriver(message) => {
-                    extract_status_code(message)
+                    (message.as_str(), extract_status_code(message))
                 }
-                _ => None,
+                _ => (normalized, None),
             };
-            openfang_runtime::llm_errors::classify_error(&raw, status).sanitized_message
+            openfang_runtime::llm_errors::classify_error(raw, status).sanitized_message
         }
         other => other.to_string(),
     }
@@ -12905,8 +12910,8 @@ fn persist_default_model_selection(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_http_kernel_error, extract_status_code, persist_default_model_selection,
-        write_secret_env,
+        classify_http_kernel_error, classify_streaming_result_error, extract_status_code,
+        persist_default_model_selection, write_secret_env,
     };
     use axum::http::StatusCode;
     use openfang_kernel::error::KernelError;
@@ -12950,6 +12955,31 @@ mod tests {
         ));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(message.contains("Persistent state update failed"));
+    }
+
+    #[test]
+    fn classify_streaming_result_error_does_not_duplicate_auth_prefix() {
+        let message = classify_streaming_result_error(&KernelError::OpenFang(
+            OpenFangError::LlmDriver("Auth error: invalid x-api-key".to_string()),
+        ));
+        assert_eq!(message, "Auth error: invalid x-api-key");
+    }
+
+    #[test]
+    fn classify_streaming_result_error_unwraps_internal_user_facing_message() {
+        let message =
+            classify_streaming_result_error(&KernelError::OpenFang(OpenFangError::Internal(
+                "Request failed: HTTP error: error sending request".to_string(),
+            )));
+        assert_eq!(message, "Request failed: HTTP error: error sending request");
+    }
+
+    #[test]
+    fn classify_streaming_result_error_unwraps_nested_internal_wrappers() {
+        let message = classify_streaming_result_error(&KernelError::OpenFang(
+            OpenFangError::Internal("LLM driver error: Auth error: invalid x-api-key".to_string()),
+        ));
+        assert_eq!(message, "Auth error: invalid x-api-key");
     }
 
     #[test]
