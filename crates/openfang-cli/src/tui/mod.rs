@@ -1166,6 +1166,7 @@ impl App {
             StreamEvent::ContentComplete { usage, .. } => {
                 self.chat.last_tokens = Some((usage.input_tokens, usage.output_tokens));
             }
+            StreamEvent::ResponseTiming { .. } => {}
             StreamEvent::PhaseChange { phase, detail } => {
                 if phase == "tool_use" {
                     if let Some(tool_name) = detail {

@@ -131,6 +131,11 @@ pub enum StreamEvent {
         stop_reason: StopReason,
         usage: TokenUsage,
     },
+    /// Aggregate timing for the full streamed agent response.
+    ResponseTiming {
+        first_token_latency_ms: Option<u64>,
+        provider_latency_ms: u64,
+    },
     /// Agent lifecycle phase change (for UX indicators).
     PhaseChange {
         phase: String,

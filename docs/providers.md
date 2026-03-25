@@ -941,6 +941,8 @@ Content-Type: application/json
 ```
 
 Configures an API key for a provider at runtime (stored as a `Zeroizing<String>`, wiped from memory on drop).
+For custom OpenAI-compatible providers, the default env var is derived from the provider ID by uppercasing and replacing hyphens with underscores.
+If the ID starts with a digit, OpenFang prefixes it with `CUSTOM_` first, so `111` becomes `CUSTOM_111_API_KEY`.
 
 ### Remove Provider API Key
 

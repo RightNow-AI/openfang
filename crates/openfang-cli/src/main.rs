@@ -4564,7 +4564,8 @@ fn provider_to_env_var(provider: &str) -> String {
         "xai" => "XAI_API_KEY".to_string(),
         "brave" => "BRAVE_API_KEY".to_string(),
         "tavily" => "TAVILY_API_KEY".to_string(),
-        other => format!("{}_API_KEY", other.to_uppercase()),
+        other => openfang_types::config::custom_provider_api_key_env(other)
+            .unwrap_or_else(|_| format!("{}_API_KEY", other.to_uppercase().replace('-', "_"))),
     }
 }
 
@@ -7005,6 +7006,15 @@ args = ["-y", "@modelcontextprotocol/server-github"]
         let clean_content = "This is a normal skill prompt with helpful instructions.";
         let warnings = openfang_skills::verify::SkillVerifier::scan_prompt_content(clean_content);
         assert!(warnings.is_empty(), "Clean content should have no warnings");
+    }
+
+    #[test]
+    fn test_provider_to_env_var_handles_custom_provider_ids() {
+        assert_eq!(
+            crate::provider_to_env_var("my-provider"),
+            "MY_PROVIDER_API_KEY"
+        );
+        assert_eq!(crate::provider_to_env_var("111"), "CUSTOM_111_API_KEY");
     }
 
     #[test]

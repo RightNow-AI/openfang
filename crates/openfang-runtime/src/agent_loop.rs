@@ -29,7 +29,8 @@ use openfang_types::tool::{ToolCall, ToolDefinition};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -140,10 +141,40 @@ pub struct AgentLoopResult {
     pub iterations: u32,
     /// Estimated cost in USD (populated by the kernel after the loop returns).
     pub cost_usd: Option<f64>,
+    /// Time to first visible text token for the full response, if streaming observed one.
+    pub first_token_latency_ms: Option<u64>,
+    /// Total time spent waiting on provider responses across all LLM calls in the loop.
+    pub provider_latency_ms: u64,
     /// True when the agent intentionally chose not to reply (NO_REPLY token or [[silent]]).
     pub silent: bool,
     /// Reply directives extracted from the agent's response.
     pub directives: openfang_types::message::ReplyDirectives,
+}
+
+const UNSET_LATENCY_MS: u64 = u64::MAX;
+
+fn record_provider_latency(total_provider_latency_ms: &mut u64, latency_ms: u64) {
+    *total_provider_latency_ms = total_provider_latency_ms.saturating_add(latency_ms);
+}
+
+fn read_first_token_latency(first_token_latency_ms: &AtomicU64) -> Option<u64> {
+    match first_token_latency_ms.load(Ordering::Relaxed) {
+        UNSET_LATENCY_MS => None,
+        value => Some(value),
+    }
+}
+
+async fn emit_response_timing(
+    stream_tx: &mpsc::Sender<StreamEvent>,
+    first_token_latency_ms: Option<u64>,
+    provider_latency_ms: u64,
+) {
+    let _ = stream_tx
+        .send(StreamEvent::ResponseTiming {
+            first_token_latency_ms,
+            provider_latency_ms,
+        })
+        .await;
 }
 
 /// Run the agent execution loop for a single user message.
@@ -312,6 +343,7 @@ pub async fn run_agent_loop(
     }
 
     let mut total_usage = TokenUsage::default();
+    let mut provider_latency_ms: u64 = 0;
     let final_response;
 
     // Safety valve: trim excessively long message histories to prevent context overflow.
@@ -394,7 +426,9 @@ pub async fn run_agent_loop(
 
         // Call LLM with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
-        let mut response = call_with_retry(&*driver, request, Some(provider_name), None).await?;
+        let (mut response, call_provider_latency_ms) =
+            call_with_retry(&*driver, request, Some(provider_name), None).await?;
+        record_provider_latency(&mut provider_latency_ms, call_provider_latency_ms);
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
@@ -453,6 +487,8 @@ pub async fn run_agent_loop(
                         total_usage,
                         iterations: iteration + 1,
                         cost_usd: None,
+                        first_token_latency_ms: None,
+                        provider_latency_ms,
                         silent: true,
                         directives: openfang_types::message::ReplyDirectives {
                             reply_to: parsed_directives.reply_to,
@@ -594,6 +630,7 @@ pub async fn run_agent_loop(
                     agent = %manifest.name,
                     iterations = iteration + 1,
                     tokens = total_usage.total(),
+                    provider_latency_ms,
                     "Agent loop completed"
                 );
 
@@ -616,6 +653,8 @@ pub async fn run_agent_loop(
                     total_usage,
                     iterations: iteration + 1,
                     cost_usd: None,
+                    first_token_latency_ms: None,
+                    provider_latency_ms,
                     silent: false,
                     directives: Default::default(),
                 });
@@ -896,6 +935,8 @@ pub async fn run_agent_loop(
                         total_usage,
                         iterations: iteration + 1,
                         cost_usd: None,
+                        first_token_latency_ms: None,
+                        provider_latency_ms,
                         silent: false,
                         directives: Default::default(),
                     });
@@ -942,7 +983,7 @@ async fn call_with_retry(
     request: CompletionRequest,
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
-) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
+) -> OpenFangResult<(crate::llm_driver::CompletionResponse, u64)> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
         match cooldown.check(provider) {
@@ -964,13 +1005,14 @@ async fn call_with_retry(
     let mut last_error = None;
 
     for attempt in 0..=MAX_RETRIES {
+        let started_at = Instant::now();
         match driver.complete(request.clone()).await {
             Ok(response) => {
                 // Record success with circuit breaker
                 if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                     cooldown.record_success(provider);
                 }
-                return Ok(response);
+                return Ok((response, started_at.elapsed().as_millis() as u64));
             }
             Err(LlmError::RateLimited { retry_after_ms }) => {
                 if attempt == MAX_RETRIES {
@@ -1055,7 +1097,7 @@ async fn stream_with_retry(
     tx: mpsc::Sender<StreamEvent>,
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
-) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
+) -> OpenFangResult<(crate::llm_driver::CompletionResponse, u64)> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
         match cooldown.check(provider) {
@@ -1083,14 +1125,32 @@ async fn stream_with_retry(
         if tx.is_closed() {
             return Err(OpenFangError::ShuttingDown);
         }
-        match driver.stream(request.clone(), tx.clone()).await {
+        let started_at = Instant::now();
+        let (proxy_tx, mut proxy_rx) = mpsc::channel::<StreamEvent>(64);
+        let client_tx = tx.clone();
+        let forwarder = tokio::spawn(async move {
+            while let Some(event) = proxy_rx.recv().await {
+                if client_tx.send(event).await.is_err() {
+                    return Err(OpenFangError::ShuttingDown);
+                }
+            }
+            Ok(())
+        });
+
+        match driver.stream(request.clone(), proxy_tx).await {
             Ok(response) => {
+                match forwarder.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => return Err(OpenFangError::ShuttingDown),
+                }
                 if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                     cooldown.record_success(provider);
                 }
-                return Ok(response);
+                return Ok((response, started_at.elapsed().as_millis() as u64));
             }
             Err(LlmError::RateLimited { retry_after_ms }) => {
+                let _ = forwarder.await;
                 if attempt == MAX_RETRIES {
                     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                         cooldown.record_failure(provider, false);
@@ -1110,6 +1170,7 @@ async fn stream_with_retry(
                 last_error = Some("Rate limited".to_string());
             }
             Err(LlmError::Overloaded { retry_after_ms }) => {
+                let _ = forwarder.await;
                 if attempt == MAX_RETRIES {
                     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                         cooldown.record_failure(provider, false);
@@ -1129,6 +1190,7 @@ async fn stream_with_retry(
                 last_error = Some("Overloaded".to_string());
             }
             Err(e) => {
+                let _ = forwarder.await;
                 if matches!(&e, LlmError::Http(message) if message == STREAM_CONSUMER_DISCONNECTED)
                 {
                     return Err(OpenFangError::ShuttingDown);
@@ -1180,7 +1242,7 @@ pub async fn run_agent_loop_streaming(
     driver: Arc<dyn LlmDriver>,
     available_tools: &[ToolDefinition],
     kernel: Option<Arc<dyn KernelHandle>>,
-    stream_tx: mpsc::Sender<StreamEvent>,
+    client_stream_tx: mpsc::Sender<StreamEvent>,
     skill_registry: Option<&SkillRegistry>,
     mcp_connections: Option<&tokio::sync::Mutex<Vec<McpConnection>>>,
     web_ctx: Option<&WebToolsContext>,
@@ -1197,6 +1259,29 @@ pub async fn run_agent_loop_streaming(
     user_content_blocks: Option<Vec<ContentBlock>>,
 ) -> OpenFangResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting streaming agent loop");
+
+    let (stream_tx, mut stream_rx) = mpsc::channel::<StreamEvent>(64);
+    let first_token_latency_ms = Arc::new(AtomicU64::new(UNSET_LATENCY_MS));
+    let first_token_latency_marker = Arc::clone(&first_token_latency_ms);
+    let stream_started_at = Instant::now();
+    tokio::spawn(async move {
+        while let Some(event) = stream_rx.recv().await {
+            if let StreamEvent::TextDelta { text } = &event {
+                if !text.is_empty() {
+                    let _ = first_token_latency_marker.compare_exchange(
+                        UNSET_LATENCY_MS,
+                        stream_started_at.elapsed().as_millis() as u64,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    );
+                }
+            }
+
+            if client_stream_tx.send(event).await.is_err() {
+                break;
+            }
+        }
+    });
 
     // Extract hand-allowed env vars from manifest metadata (set by kernel for hand settings)
     let hand_allowed_env: Vec<String> = manifest
@@ -1330,6 +1415,7 @@ pub async fn run_agent_loop_streaming(
     }
 
     let mut total_usage = TokenUsage::default();
+    let mut provider_latency_ms: u64 = 0;
     let final_response;
 
     // Safety valve: trim excessively long message histories to prevent context overflow.
@@ -1426,7 +1512,7 @@ pub async fn run_agent_loop_streaming(
 
         // Stream LLM call with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
-        let mut response = stream_with_retry(
+        let (mut response, call_provider_latency_ms) = stream_with_retry(
             &*driver,
             request,
             stream_tx.clone(),
@@ -1434,6 +1520,7 @@ pub async fn run_agent_loop_streaming(
             None,
         )
         .await?;
+        record_provider_latency(&mut provider_latency_ms, call_provider_latency_ms);
 
         if stream_tx.is_closed() {
             info!(
@@ -1492,11 +1579,16 @@ pub async fn run_agent_loop_streaming(
                         .save_session_async(session)
                         .await
                         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+                    let first_token_latency_ms = read_first_token_latency(&first_token_latency_ms);
+                    emit_response_timing(&stream_tx, first_token_latency_ms, provider_latency_ms)
+                        .await;
                     return Ok(AgentLoopResult {
                         response: String::new(),
                         total_usage,
                         iterations: iteration + 1,
                         cost_usd: None,
+                        first_token_latency_ms,
+                        provider_latency_ms,
                         silent: true,
                         directives: openfang_types::message::ReplyDirectives {
                             reply_to: parsed_directives_s.reply_to,
@@ -1613,10 +1705,15 @@ pub async fn run_agent_loop_streaming(
                     cb(LoopPhase::Done);
                 }
 
+                let first_token_latency_ms = read_first_token_latency(&first_token_latency_ms);
+                emit_response_timing(&stream_tx, first_token_latency_ms, provider_latency_ms).await;
+
                 info!(
                     agent = %manifest.name,
                     iterations = iteration + 1,
                     tokens = total_usage.total(),
+                    first_token_latency_ms,
+                    provider_latency_ms,
                     "Streaming agent loop completed"
                 );
 
@@ -1639,6 +1736,8 @@ pub async fn run_agent_loop_streaming(
                     total_usage,
                     iterations: iteration + 1,
                     cost_usd: None,
+                    first_token_latency_ms,
+                    provider_latency_ms,
                     silent: false,
                     directives: Default::default(),
                 });
@@ -1912,6 +2011,9 @@ pub async fn run_agent_loop_streaming(
                         consecutive_max_tokens,
                         "Max continuations reached (streaming), returning partial response"
                     );
+                    let first_token_latency_ms = read_first_token_latency(&first_token_latency_ms);
+                    emit_response_timing(&stream_tx, first_token_latency_ms, provider_latency_ms)
+                        .await;
                     // Fire AgentLoopEnd hook
                     if let Some(hook_reg) = hooks {
                         let ctx = crate::hooks::HookContext {
@@ -1930,6 +2032,8 @@ pub async fn run_agent_loop_streaming(
                         total_usage,
                         iterations: iteration + 1,
                         cost_usd: None,
+                        first_token_latency_ms,
+                        provider_latency_ms,
                         silent: false,
                         directives: Default::default(),
                     });
@@ -2780,6 +2884,7 @@ mod tests {
     use async_trait::async_trait;
     use openfang_types::tool::ToolCall;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
 
     #[test]
     fn test_max_iterations_constant() {
@@ -2952,6 +3057,82 @@ mod tests {
                 usage: TokenUsage {
                     input_tokens: 10,
                     output_tokens: 8,
+                },
+            })
+        }
+    }
+
+    struct TimedCompleteDriver;
+
+    #[async_trait]
+    impl LlmDriver for TimedCompleteDriver {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> Result<CompletionResponse, LlmError> {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::Text {
+                    text: "timed complete".to_string(),
+                    provider_metadata: None,
+                }],
+                stop_reason: StopReason::EndTurn,
+                tool_calls: vec![],
+                usage: TokenUsage {
+                    input_tokens: 3,
+                    output_tokens: 2,
+                },
+            })
+        }
+    }
+
+    struct TimedStreamDriver;
+
+    #[async_trait]
+    impl LlmDriver for TimedStreamDriver {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> Result<CompletionResponse, LlmError> {
+            unreachable!("stream() is used in this test");
+        }
+
+        async fn stream(
+            &self,
+            _request: CompletionRequest,
+            tx: tokio::sync::mpsc::Sender<StreamEvent>,
+        ) -> Result<CompletionResponse, LlmError> {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tx.send(StreamEvent::TextDelta {
+                text: "timed ".to_string(),
+            })
+            .await
+            .map_err(|_| LlmError::Http(STREAM_CONSUMER_DISCONNECTED.to_string()))?;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tx.send(StreamEvent::TextDelta {
+                text: "stream".to_string(),
+            })
+            .await
+            .map_err(|_| LlmError::Http(STREAM_CONSUMER_DISCONNECTED.to_string()))?;
+            tx.send(StreamEvent::ContentComplete {
+                stop_reason: StopReason::EndTurn,
+                usage: TokenUsage {
+                    input_tokens: 4,
+                    output_tokens: 2,
+                },
+            })
+            .await
+            .map_err(|_| LlmError::Http(STREAM_CONSUMER_DISCONNECTED.to_string()))?;
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::Text {
+                    text: "timed stream".to_string(),
+                    provider_metadata: None,
+                }],
+                stop_reason: StopReason::EndTurn,
+                tool_calls: vec![],
+                usage: TokenUsage {
+                    input_tokens: 4,
+                    output_tokens: 2,
                 },
             })
         }
@@ -3163,6 +3344,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_non_streaming_records_provider_latency_without_first_token() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(TimedCompleteDriver);
+
+        let result = run_agent_loop(
+            &manifest,
+            "measure provider time",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("Loop should complete without error");
+
+        assert_eq!(result.first_token_latency_ms, None);
+        assert!(
+            result.provider_latency_ms >= 15,
+            "Expected provider latency to capture wait time, got {}ms",
+            result.provider_latency_ms
+        );
+    }
+
+    #[tokio::test]
     async fn test_streaming_empty_response_after_tool_use_returns_fallback() {
         let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
@@ -3213,6 +3442,143 @@ mod tests {
             result.response.contains("Task completed"),
             "Expected fallback message in streaming, got: {:?}",
             result.response
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_records_first_token_and_provider_latency() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(TimedStreamDriver);
+        let (tx, mut rx) = mpsc::channel(64);
+
+        let result = run_agent_loop_streaming(
+            &manifest,
+            "measure first token",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            tx,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("Streaming loop should complete without error");
+
+        let mut timing_event = None;
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(100), rx.recv()).await
+        {
+            if let StreamEvent::ResponseTiming {
+                first_token_latency_ms,
+                provider_latency_ms,
+            } = event
+            {
+                timing_event = Some((first_token_latency_ms, provider_latency_ms));
+                break;
+            }
+        }
+
+        let (stream_first_token_latency_ms, stream_provider_latency_ms) =
+            timing_event.expect("expected timing event");
+        assert_eq!(result.response, "timed stream");
+        assert!(
+            result.first_token_latency_ms.unwrap_or_default() >= 15,
+            "Expected first token latency to capture wait time, got {:?}",
+            result.first_token_latency_ms
+        );
+        assert!(
+            result.provider_latency_ms >= result.first_token_latency_ms.unwrap_or_default(),
+            "Provider latency should be at least TTFT, got provider={}ms ttft={:?}",
+            result.provider_latency_ms,
+            result.first_token_latency_ms
+        );
+        assert_eq!(stream_first_token_latency_ms, result.first_token_latency_ms);
+        assert_eq!(stream_provider_latency_ms, result.provider_latency_ms);
+    }
+
+    #[tokio::test]
+    async fn test_streaming_response_reports_timing_metrics() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(NormalDriver);
+        let (tx, mut rx) = mpsc::channel(64);
+
+        let result = run_agent_loop_streaming(
+            &manifest,
+            "Say hello",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            tx,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // on_phase
+            None, // media_engine
+            None, // tts_engine
+            None, // docker_config
+            None, // hooks
+            None, // context_window_tokens
+            None, // process_manager
+            None, // user_content_blocks
+        )
+        .await
+        .expect("Streaming loop should complete without error");
+
+        assert!(result.first_token_latency_ms.is_some());
+
+        let mut timing_event = None;
+        while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await
+        {
+            if let StreamEvent::ResponseTiming {
+                first_token_latency_ms,
+                provider_latency_ms,
+            } = event
+            {
+                timing_event = Some((first_token_latency_ms, provider_latency_ms));
+                break;
+            }
+        }
+
+        assert_eq!(
+            timing_event,
+            Some((result.first_token_latency_ms, result.provider_latency_ms))
         );
     }
 

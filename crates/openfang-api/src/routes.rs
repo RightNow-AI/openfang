@@ -721,13 +721,17 @@ mod http_error_tests {
     }
 
     #[test]
-    fn derive_custom_provider_api_key_env_normalizes_hyphens_and_rejects_invalid_names() {
+    fn derive_custom_provider_api_key_env_handles_hyphens_digits_and_invalid_names() {
         assert_eq!(
             derive_custom_provider_api_key_env("my-provider").unwrap(),
             "MY_PROVIDER_API_KEY"
         );
+        assert_eq!(
+            derive_custom_provider_api_key_env("123provider").unwrap(),
+            "CUSTOM_123PROVIDER_API_KEY"
+        );
 
-        for provider_name in ["123provider", "my.provider"] {
+        for provider_name in ["my.provider", "my/provider"] {
             let err = derive_custom_provider_api_key_env(provider_name).unwrap_err();
             assert_eq!(err.kind(), ErrorKind::InvalidInput);
         }
@@ -1082,6 +1086,8 @@ pub async fn send_message(
                     input_tokens: result.total_usage.input_tokens,
                     output_tokens: result.total_usage.output_tokens,
                     iterations: result.iterations,
+                    first_token_latency_ms: result.first_token_latency_ms,
+                    provider_latency_ms: result.provider_latency_ms,
                     cost_usd: result.cost_usd,
                 })),
             )
@@ -2152,6 +2158,16 @@ pub async fn send_message_stream(
                                 "input_tokens": usage.input_tokens,
                                 "output_tokens": usage.output_tokens,
                             }
+                        }))
+                        .unwrap_or_else(|_| Event::default().data("error")),
+                    StreamEvent::ResponseTiming {
+                        first_token_latency_ms,
+                        provider_latency_ms,
+                    } => Event::default()
+                        .event("timing")
+                        .json_data(serde_json::json!({
+                            "first_token_latency_ms": first_token_latency_ms,
+                            "provider_latency_ms": provider_latency_ms,
                         }))
                         .unwrap_or_else(|_| Event::default().data("error")),
                     StreamEvent::PhaseChange { phase, detail } => Event::default()
@@ -8982,16 +8998,7 @@ fn validate_secret_env_key(key: &str) -> Result<(), std::io::Error> {
 }
 
 fn derive_custom_provider_api_key_env(name: &str) -> Result<String, std::io::Error> {
-    if name.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "provider name must not be empty",
-        ));
-    }
-
-    let normalized = name.replace('-', "_").to_ascii_uppercase();
-    validate_secret_env_key(&normalized)?;
-    Ok(format!("{normalized}_API_KEY"))
+    openfang_types::config::custom_provider_api_key_env(name)
 }
 
 fn validate_secret_env_value(value: &str) -> Result<(), std::io::Error> {

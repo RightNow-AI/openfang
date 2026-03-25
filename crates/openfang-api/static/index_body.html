@@ -4861,7 +4861,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 <template x-for="(msg, mi) in tryItMessages" :key="mi">
                   <div class="tryit-msg" :class="msg.role === 'user' ? 'tryit-msg-user' : 'tryit-msg-agent'" x-text="msg.text"></div>
                 </template>
-                <div x-show="tryItSending" class="tryit-msg tryit-msg-agent" style="opacity:0.5">Thinking...</div>
+                <div x-show="tryItSending && !tryItStreaming" class="tryit-msg tryit-msg-agent" style="opacity:0.5">Thinking...</div>
               </div>
 
               <!-- Input -->

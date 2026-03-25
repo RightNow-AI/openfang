@@ -3,6 +3,7 @@
 //! Provides a comprehensive catalog of 130+ builtin models across 28 providers,
 //! with alias resolution, auth status detection, and pricing lookups.
 
+use openfang_types::config::custom_provider_api_key_env;
 use openfang_types::model_catalog::{
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
     BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL,
@@ -268,7 +269,9 @@ impl ModelCatalog {
             true
         } else {
             // Custom provider — add a new entry so it appears in /api/providers
-            let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
+            let env_var = custom_provider_api_key_env(provider).unwrap_or_else(|_| {
+                format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"))
+            });
             self.providers.push(ProviderInfo {
                 id: provider.to_string(),
                 display_name: provider.to_string(),
@@ -4093,6 +4096,20 @@ mod tests {
         assert_eq!(
             catalog.get_provider("my-custom-llm").unwrap().base_url,
             "http://localhost:9999"
+        );
+        assert_eq!(
+            catalog.get_provider("my-custom-llm").unwrap().api_key_env,
+            "MY_CUSTOM_LLM_API_KEY"
+        );
+    }
+
+    #[test]
+    fn test_set_provider_url_numeric_custom_provider_uses_prefixed_env_var() {
+        let mut catalog = ModelCatalog::new();
+        assert!(catalog.set_provider_url("111", "http://localhost:9999"));
+        assert_eq!(
+            catalog.get_provider("111").unwrap().api_key_env,
+            "CUSTOM_111_API_KEY"
         );
     }
 

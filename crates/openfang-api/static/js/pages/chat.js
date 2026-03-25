@@ -799,6 +799,8 @@ function chatPage() {
           });
           this.messages = this.messages.filter(function(m) { return !m.thinking && !m.streaming; });
           var meta = (data.input_tokens || 0) + ' in / ' + (data.output_tokens || 0) + ' out';
+          if (data.first_token_latency_ms != null) meta += ' | first token: ' + data.first_token_latency_ms + 'ms';
+          if (data.provider_latency_ms) meta += ' | provider: ' + data.provider_latency_ms + 'ms';
           if (data.cost_usd != null) meta += ' | $' + data.cost_usd.toFixed(4);
           if (data.iterations) meta += ' | ' + data.iterations + ' iter';
           if (data.fallback_model) meta += ' | fallback: ' + data.fallback_model;
@@ -998,6 +1000,8 @@ function chatPage() {
         var res = await OpenFangAPI.post('/api/agents/' + this.currentAgent.id + '/message', httpBody);
         this.messages = this.messages.filter(function(m) { return !m.thinking; });
         var httpMeta = (res.input_tokens || 0) + ' in / ' + (res.output_tokens || 0) + ' out';
+        if (res.first_token_latency_ms != null) httpMeta += ' | first token: ' + res.first_token_latency_ms + 'ms';
+        if (res.provider_latency_ms) httpMeta += ' | provider: ' + res.provider_latency_ms + 'ms';
         if (res.cost_usd != null) httpMeta += ' | $' + res.cost_usd.toFixed(4);
         if (res.iterations) httpMeta += ' | ' + res.iterations + ' iter';
         this.messages.push({ id: ++msgId, role: 'agent', text: res.response, meta: httpMeta, tools: [], ts: Date.now() });

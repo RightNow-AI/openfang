@@ -373,6 +373,8 @@ pub fn spawn_daemon_stream(
         // the server closes the connection after the agent loop finishes.
         let mut total_input_tokens: u64 = 0;
         let mut total_output_tokens: u64 = 0;
+        let mut first_token_latency_ms: Option<u64> = None;
+        let mut provider_latency_ms: u64 = 0;
 
         let reader = BufReader::new(RespReader(resp));
         for line in reader.lines() {
@@ -385,6 +387,14 @@ pub fn spawn_daemon_stream(
             }
             if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                    if let Some(latency) = json.get("first_token_latency_ms").and_then(|v| v.as_u64())
+                    {
+                        first_token_latency_ms = Some(latency);
+                    }
+                    if let Some(latency) = json.get("provider_latency_ms").and_then(|v| v.as_u64())
+                    {
+                        provider_latency_ms = latency;
+                    }
                     if let Some(content) = json.get("content").and_then(|c| c.as_str()) {
                         let _ = tx.send(AppEvent::Stream(StreamEvent::TextDelta {
                             text: content.to_string(),
@@ -438,6 +448,8 @@ pub fn spawn_daemon_stream(
             },
             iterations: 0,
             cost_usd: None,
+            first_token_latency_ms,
+            provider_latency_ms,
             silent: false,
             directives: Default::default(),
         })));
@@ -474,6 +486,8 @@ fn daemon_fallback(
             },
             iterations: body["iterations"].as_u64().unwrap_or(0) as u32,
             cost_usd: body["cost_usd"].as_f64(),
+            first_token_latency_ms: body["first_token_latency_ms"].as_u64(),
+            provider_latency_ms: body["provider_latency_ms"].as_u64().unwrap_or(0),
             silent: false,
             directives: Default::default(),
         })

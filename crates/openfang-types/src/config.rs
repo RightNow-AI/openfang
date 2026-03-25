@@ -4,6 +4,41 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Derive a valid API key env var name for a custom provider ID.
+///
+/// Custom provider IDs may contain ASCII letters, digits, hyphens, and underscores.
+/// Hyphens are normalized to underscores. When the normalized name would start with a
+/// digit, prefix it with `CUSTOM_` so the resulting env var remains shell-friendly.
+pub fn custom_provider_api_key_env(provider: &str) -> Result<String, std::io::Error> {
+    if provider.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "provider name must not be empty",
+        ));
+    }
+
+    if !provider
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "provider name may contain only ASCII letters, digits, hyphens, and underscores",
+        ));
+    }
+
+    let mut normalized = provider.replace('-', "_").to_ascii_uppercase();
+    if normalized
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_digit())
+    {
+        normalized = format!("CUSTOM_{normalized}");
+    }
+
+    Ok(format!("{normalized}_API_KEY"))
+}
+
 /// Deserialize a `Vec<String>` that tolerates both string and integer elements.
 ///
 /// When channel configs are saved from the web dashboard, numeric IDs (e.g. Discord
@@ -1339,7 +1374,8 @@ impl KernelConfig {
             }
         }
         // 3. Convention: NVIDIA → NVIDIA_API_KEY
-        format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"))
+        custom_provider_api_key_env(provider)
+            .unwrap_or_else(|_| format!("{}_API_KEY", provider.to_uppercase().replace('-', "_")))
     }
 }
 
@@ -3777,6 +3813,13 @@ mod tests {
         // Unknown provider falls back to convention
         assert_eq!(config.resolve_api_key_env("nvidia"), "NVIDIA_API_KEY");
         assert_eq!(config.resolve_api_key_env("my-custom"), "MY_CUSTOM_API_KEY");
+        assert_eq!(config.resolve_api_key_env("111"), "CUSTOM_111_API_KEY");
+    }
+
+    #[test]
+    fn test_custom_provider_api_key_env_rejects_invalid_chars() {
+        let err = custom_provider_api_key_env("my.provider").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]

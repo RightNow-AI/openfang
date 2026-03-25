@@ -174,6 +174,7 @@ function wizardPage() {
     tryItMessages: [],
     tryItInput: '',
     tryItSending: false,
+    tryItStreaming: false,
     suggestedMessages: {
       'General': ['What can you help me with?', 'Tell me a fun fact', 'Summarize the latest AI news'],
       'Development': ['Write a Python hello world', 'Explain async/await', 'Review this code snippet'],
@@ -188,18 +189,51 @@ function wizardPage() {
     },
     async sendTryItMessage(text) {
       if (!text || !text.trim() || !this.createdAgent || this.tryItSending) return;
+      var self = this;
       text = text.trim();
       this.tryItInput = '';
       this.tryItMessages.push({ role: 'user', text: text });
       this.tryItSending = true;
+      this.tryItStreaming = false;
+      var agentMsg = { role: 'agent', text: '', streaming: true };
+      this.tryItMessages.push(agentMsg);
       try {
-        var res = await OpenFangAPI.post('/api/agents/' + this.createdAgent.id + '/message', { message: text });
-        this.tryItMessages.push({ role: 'agent', text: res.response || '(no response)' });
+        await OpenFangAPI.streamPost('/api/agents/' + this.createdAgent.id + '/message/stream', { message: text }, {
+          onEvent: function(evt) {
+            if (!evt || !evt.event) return;
+
+            if (evt.event === 'chunk') {
+              self.tryItStreaming = true;
+              agentMsg.text += (evt.data && evt.data.content) || '';
+              return;
+            }
+
+            if (evt.event === 'done') {
+              agentMsg.streaming = false;
+            }
+          }
+        });
+        agentMsg.streaming = false;
+        if (!agentMsg.text.trim()) {
+          agentMsg.text = '(no response)';
+        }
         localStorage.setItem('of-first-msg', 'true');
       } catch(e) {
-        this.tryItMessages.push({ role: 'agent', text: 'Error: ' + (e.message || 'Could not reach agent') });
+        if (e && e.message === 'Streaming not supported by this browser') {
+          try {
+            var fallback = await OpenFangAPI.post('/api/agents/' + this.createdAgent.id + '/message', { message: text });
+            agentMsg.text = fallback.response || '(no response)';
+            localStorage.setItem('of-first-msg', 'true');
+          } catch(fallbackErr) {
+            agentMsg.text = 'Error: ' + (fallbackErr.message || 'Could not reach agent');
+          }
+        } else {
+          agentMsg.text = 'Error: ' + (e.message || 'Could not reach agent');
+        }
+        agentMsg.streaming = false;
       }
       this.tryItSending = false;
+      this.tryItStreaming = false;
     },
 
     // Step 5: Channel setup (optional)

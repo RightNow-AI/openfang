@@ -2044,6 +2044,12 @@ impl OpenFangKernel {
                                 usage: result.total_usage,
                             })
                             .await;
+                        let _ = tx
+                            .send(StreamEvent::ResponseTiming {
+                                first_token_latency_ms: None,
+                                provider_latency_ms: result.provider_latency_ms,
+                            })
+                            .await;
                         kernel_clone
                             .scheduler
                             .record_usage(agent_id, &result.total_usage);
@@ -2519,6 +2525,8 @@ impl OpenFangKernel {
             },
             iterations: 1,
             cost_usd: None,
+            first_token_latency_ms: None,
+            provider_latency_ms: 0,
             silent: false,
             directives: Default::default(),
         })
@@ -2579,6 +2587,8 @@ impl OpenFangKernel {
             },
             cost_usd: None,
             iterations: 1,
+            first_token_latency_ms: None,
+            provider_latency_ms: 0,
             silent: false,
             directives: Default::default(),
         })

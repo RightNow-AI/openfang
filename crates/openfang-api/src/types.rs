@@ -58,6 +58,9 @@ pub struct MessageResponse {
     pub output_tokens: u64,
     pub iterations: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_token_latency_ms: Option<u64>,
+    pub provider_latency_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
 }
 

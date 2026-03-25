@@ -13,6 +13,7 @@ pub mod openai;
 pub mod qwen_code;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
+use openfang_types::config::custom_provider_api_key_env;
 use openfang_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
     DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
@@ -390,7 +391,9 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
     // in their environment and use provider = "nvidia" without extra config.
     if let Some(ref base_url) = config.base_url {
         let api_key = config.api_key.clone().unwrap_or_else(|| {
-            let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
+            let env_var = custom_provider_api_key_env(provider).unwrap_or_else(|_| {
+                format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"))
+            });
             std::env::var(&env_var).unwrap_or_default()
         });
         return Ok(Arc::new(openai::OpenAIDriver::new(
@@ -403,7 +406,8 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
     // using the convention {PROVIDER_UPPER}_API_KEY. If found, use OpenAI-compatible
     // driver with a default base URL derived from common patterns.
     {
-        let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
+        let env_var = custom_provider_api_key_env(provider)
+            .unwrap_or_else(|_| format!("{}_API_KEY", provider.to_uppercase().replace('-', "_")));
         if let Ok(api_key) = std::env::var(&env_var) {
             if !api_key.is_empty() {
                 return Err(LlmError::Api {
@@ -759,6 +763,30 @@ mod tests {
             skip_permissions: true,
         };
         let driver = create_driver(&config);
+        assert!(driver.is_ok());
+    }
+
+    #[test]
+    fn test_numeric_custom_provider_uses_prefixed_env_var() {
+        let _guard = env_lock().lock().unwrap();
+        let env_var = "CUSTOM_111_API_KEY";
+        let original = std::env::var_os(env_var);
+        std::env::set_var(env_var, "numeric-provider-key");
+
+        let config = DriverConfig {
+            provider: "111".to_string(),
+            api_key: None,
+            base_url: Some("https://api.example.com/v1".to_string()),
+            skip_permissions: true,
+        };
+
+        let driver = create_driver(&config);
+
+        match original {
+            Some(value) => std::env::set_var(env_var, value),
+            None => std::env::remove_var(env_var),
+        }
+
         assert!(driver.is_ok());
     }
 }

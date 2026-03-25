@@ -549,6 +549,7 @@ async fn handle_text_message(
                         let mut text_buffer = String::new();
                         let mut accumulated_text = String::new();
                         let mut stream_usage: Option<openfang_types::message::TokenUsage> = None;
+                        let mut stream_timing: Option<(Option<u64>, u64)> = None;
                         let far_future = tokio::time::Instant::now() + Duration::from_secs(86400);
                         let mut flush_deadline = far_future;
 
@@ -576,6 +577,18 @@ async fn handle_text_message(
                                             if let StreamEvent::ContentComplete { usage, .. } = &ev {
                                                 stream_usage = Some(*usage);
                                                 // Don't forward — handled below
+                                                continue;
+                                            }
+
+                                            if let StreamEvent::ResponseTiming {
+                                                first_token_latency_ms,
+                                                provider_latency_ms,
+                                            } = &ev
+                                            {
+                                                stream_timing = Some((
+                                                    *first_token_latency_ms,
+                                                    *provider_latency_ms,
+                                                ));
                                                 continue;
                                             }
 
@@ -646,7 +659,7 @@ async fn handle_text_message(
                             }
                         }
 
-                        (accumulated_text, stream_usage)
+                        (accumulated_text, stream_usage, stream_timing)
                     });
 
                     // Wait for the stream to finish (fast — closes as soon as
@@ -691,7 +704,7 @@ async fn handle_text_message(
 
                     // Send the response immediately from stream data
                     match stream_result {
-                        Ok((accumulated_text, stream_usage)) => {
+                        Ok((accumulated_text, stream_usage, stream_timing)) => {
                             // Send typing lifecycle: stop
                             let _ = send_json(
                                 sender,
@@ -704,6 +717,9 @@ async fn handle_text_message(
 
                             let usage = stream_usage.unwrap_or_default();
 
+                            let (first_token_latency_ms, provider_latency_ms) =
+                                stream_timing.unwrap_or((None, 0));
+
                             let content = match finalize_stream_response(
                                 &accumulated_text,
                                 stream_usage,
@@ -715,6 +731,8 @@ async fn handle_text_message(
                                             "type": "silent_complete",
                                             "input_tokens": usage.input_tokens,
                                             "output_tokens": usage.output_tokens,
+                                            "first_token_latency_ms": first_token_latency_ms,
+                                            "provider_latency_ms": provider_latency_ms,
                                         }),
                                     )
                                     .await;
@@ -751,6 +769,8 @@ async fn handle_text_message(
                                     "input_tokens": usage.input_tokens,
                                     "output_tokens": usage.output_tokens,
                                     "iterations": 0, // Not available from stream; handle updates later if needed
+                                    "first_token_latency_ms": first_token_latency_ms,
+                                    "provider_latency_ms": provider_latency_ms,
                                     "cost_usd": null,
                                     "context_pressure": pressure,
                                 }),
@@ -1098,6 +1118,14 @@ fn map_stream_event(event: &StreamEvent, verbose: VerboseLevel) -> Option<serde_
             "type": "phase",
             "phase": phase,
             "detail": detail,
+        })),
+        StreamEvent::ResponseTiming {
+            first_token_latency_ms,
+            provider_latency_ms,
+        } => Some(serde_json::json!({
+            "type": "timing",
+            "first_token_latency_ms": first_token_latency_ms,
+            "provider_latency_ms": provider_latency_ms,
         })),
         _ => None, // Skip ToolInputDelta, ContentComplete
     }

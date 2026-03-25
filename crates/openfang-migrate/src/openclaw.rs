@@ -750,7 +750,8 @@ fn default_api_key_env(provider: &str) -> String {
         // falling back to default_model.api_key_env in kernel driver resolution.
         "vllm" => "VLLM_API_KEY".to_string(),
         "lmstudio" => "LMSTUDIO_API_KEY".to_string(),
-        _ => format!("{}_API_KEY", provider.to_uppercase()),
+        _ => openfang_types::config::custom_provider_api_key_env(provider)
+            .unwrap_or_else(|_| format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"))),
     }
 }
 
@@ -4293,6 +4294,8 @@ mod tests {
         assert!(default_api_key_env("ollama").is_empty());
         assert_eq!(default_api_key_env("vllm"), "VLLM_API_KEY");
         assert_eq!(default_api_key_env("lmstudio"), "LMSTUDIO_API_KEY");
+        assert_eq!(default_api_key_env("my-provider"), "MY_PROVIDER_API_KEY");
+        assert_eq!(default_api_key_env("111"), "CUSTOM_111_API_KEY");
     }
 
     #[test]

@@ -1173,6 +1173,42 @@ async fn test_send_message_stream_rejects_when_global_budget_is_exhausted() {
 }
 
 #[tokio::test]
+async fn test_send_message_stream_emits_chunk_and_done_events() {
+    if std::env::var("GROQ_API_KEY").is_err() {
+        eprintln!("Skipping streaming success test: GROQ_API_KEY not set");
+        return;
+    }
+
+    let server = start_test_server_with_llm().await;
+    let client = reqwest::Client::new();
+
+    let spawn = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": LLM_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    let spawn_body: serde_json::Value = spawn.json().await.unwrap();
+    let agent_id = spawn_body["agent_id"].as_str().unwrap().to_string();
+
+    let resp = client
+        .post(format!(
+            "{}/api/agents/{}/message/stream",
+            server.base_url, agent_id
+        ))
+        .json(&serde_json::json!({"message": "Say hello in exactly two words."}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("event: chunk"), "missing chunk event: {body}");
+    assert!(body.contains("event: done"), "missing done event: {body}");
+    assert!(body.contains("event: timing"), "missing timing event: {body}");
+}
+
+#[tokio::test]
 async fn test_restart_agent_keeps_same_id_and_session() {
     let server = start_test_server().await;
     let client = reqwest::Client::new();
@@ -2346,6 +2382,24 @@ async fn test_custom_provider_key_rejects_invalid_provider_name() {
         .as_str()
         .unwrap_or_default()
         .contains("Invalid custom provider name"));
+}
+
+#[tokio::test]
+async fn test_custom_provider_key_accepts_numeric_provider_name() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/api/providers/111/key", server.base_url))
+        .json(&serde_json::json!({"key": "secret-value"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "saved");
+    assert_eq!(body["provider"], "111");
 }
 
 #[tokio::test]

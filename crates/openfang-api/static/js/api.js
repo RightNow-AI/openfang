@@ -203,6 +203,103 @@ var OpenFangAPI = (function() {
   function patch(path, body) { return request('PATCH', path, body); }
   function del(path) { return request('DELETE', path); }
 
+  function parseSseChunk(chunk, onEvent) {
+    var lines = chunk.split(/\r?\n/);
+    var eventName = 'message';
+    var dataLines = [];
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (!line || line.charAt(0) === ':') continue;
+      if (line.indexOf('event:') === 0) {
+        eventName = line.slice(6).trim() || 'message';
+        continue;
+      }
+      if (line.indexOf('data:') === 0) {
+        var dataValue = line.slice(5);
+        if (dataValue.charAt(0) === ' ') dataValue = dataValue.slice(1);
+        dataLines.push(dataValue);
+      }
+    }
+
+    if (!dataLines.length) return;
+
+    var payloadText = dataLines.join('\n');
+    var payload = payloadText;
+    try {
+      payload = JSON.parse(payloadText);
+    } catch(e) { /* leave as text */ }
+    onEvent({ event: eventName, data: payload });
+  }
+
+  async function streamPost(path, body, callbacks) {
+    callbacks = callbacks || {};
+    var opts = {
+      method: 'POST',
+      headers: Object.assign({ 'Accept': 'text/event-stream' }, headers()),
+      body: JSON.stringify(body)
+    };
+
+    try {
+      var response = await fetch(BASE + path, opts);
+      if (_connectionState !== 'connected') setConnectionState('connected');
+
+      if (!response.ok) {
+        var errorText = await response.text();
+        var errorMsg = '';
+        try {
+          var errorJson = JSON.parse(errorText);
+          errorMsg = errorJson.error || response.statusText;
+        } catch(e2) {
+          errorMsg = response.statusText;
+        }
+        throw new Error(friendlyError(response.status, errorMsg));
+      }
+
+      if (!response.body) {
+        throw new Error('Streaming not supported by this browser');
+      }
+
+      if (callbacks.onOpen) callbacks.onOpen();
+
+      var reader = response.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = '';
+
+      while (true) {
+        var result = await reader.read();
+        if (result.done) break;
+
+        buffer += decoder.decode(result.value, { stream: true });
+        var boundary = buffer.search(/\r?\n\r?\n/);
+        while (boundary !== -1) {
+          var chunk = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + (buffer.charAt(boundary) === '\r' ? 4 : 2));
+          parseSseChunk(chunk, function(evt) {
+            if (callbacks.onEvent) callbacks.onEvent(evt);
+          });
+          boundary = buffer.search(/\r?\n\r?\n/);
+        }
+      }
+
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        parseSseChunk(buffer, function(evt) {
+          if (callbacks.onEvent) callbacks.onEvent(evt);
+        });
+      }
+
+      if (callbacks.onDone) callbacks.onDone();
+    } catch(e) {
+      if (e.name === 'TypeError' && e.message.includes('Failed to fetch')) {
+        setConnectionState('disconnected');
+        throw new Error('Cannot connect to daemon — is openfang running?');
+      }
+      if (callbacks.onError) callbacks.onError(e);
+      throw e;
+    }
+  }
+
   // WebSocket manager with auto-reconnect
   var _ws = null;
   var _wsCallbacks = {};
@@ -335,6 +432,7 @@ var OpenFangAPI = (function() {
     patch: patch,
     del: del,
     delete: del,
+    streamPost: streamPost,
     upload: upload,
     wsConnect: wsConnect,
     wsDisconnect: wsDisconnect,
