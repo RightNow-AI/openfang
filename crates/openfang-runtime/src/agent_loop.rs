@@ -173,9 +173,26 @@ pub async fn run_agent_loop(
         .get("hand_allowed_env")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
+    let memory_enabled = manifest
+        .metadata
+        .get("runtime_memory_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let embeddings_enabled = manifest
+        .metadata
+        .get("runtime_embeddings_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let embedding_driver = if memory_enabled && embeddings_enabled {
+        embedding_driver
+    } else {
+        None
+    };
 
     // Recall relevant memories — prefer vector similarity search when embedding driver is available
-    let memories = if let Some(emb) = embedding_driver {
+    let memories = if !memory_enabled {
+        Vec::new()
+    } else if let Some(emb) = embedding_driver {
         match emb.embed_one(user_message).await {
             Ok(query_vec) => {
                 debug!("Using vector recall (dims={})", query_vec.len());
@@ -524,48 +541,50 @@ pub async fn run_agent_loop(
                     .await
                     .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
-                // Remember this interaction (with embedding if available)
-                let interaction_text = format!(
-                    "User asked: {}\nI responded: {}",
-                    user_message, final_response
-                );
-                if let Some(emb) = embedding_driver {
-                    match emb.embed_one(&interaction_text).await {
-                        Ok(vec) => {
-                            let _ = memory
-                                .remember_with_embedding_async(
-                                    session.agent_id,
-                                    &interaction_text,
-                                    MemorySource::Conversation,
-                                    "episodic",
-                                    HashMap::new(),
-                                    Some(&vec),
-                                )
-                                .await;
+                if memory_enabled {
+                    // Remember this interaction (with embedding if available)
+                    let interaction_text = format!(
+                        "User asked: {}\nI responded: {}",
+                        user_message, final_response
+                    );
+                    if let Some(emb) = embedding_driver {
+                        match emb.embed_one(&interaction_text).await {
+                            Ok(vec) => {
+                                let _ = memory
+                                    .remember_with_embedding_async(
+                                        session.agent_id,
+                                        &interaction_text,
+                                        MemorySource::Conversation,
+                                        "episodic",
+                                        HashMap::new(),
+                                        Some(&vec),
+                                    )
+                                    .await;
+                            }
+                            Err(e) => {
+                                warn!("Embedding for remember failed: {e}");
+                                let _ = memory
+                                    .remember(
+                                        session.agent_id,
+                                        &interaction_text,
+                                        MemorySource::Conversation,
+                                        "episodic",
+                                        HashMap::new(),
+                                    )
+                                    .await;
+                            }
                         }
-                        Err(e) => {
-                            warn!("Embedding for remember failed: {e}");
-                            let _ = memory
-                                .remember(
-                                    session.agent_id,
-                                    &interaction_text,
-                                    MemorySource::Conversation,
-                                    "episodic",
-                                    HashMap::new(),
-                                )
-                                .await;
-                        }
+                    } else {
+                        let _ = memory
+                            .remember(
+                                session.agent_id,
+                                &interaction_text,
+                                MemorySource::Conversation,
+                                "episodic",
+                                HashMap::new(),
+                            )
+                            .await;
                     }
-                } else {
-                    let _ = memory
-                        .remember(
-                            session.agent_id,
-                            &interaction_text,
-                            MemorySource::Conversation,
-                            "episodic",
-                            HashMap::new(),
-                        )
-                        .await;
                 }
 
                 // Notify phase: Done
@@ -1180,9 +1199,25 @@ pub async fn run_agent_loop_streaming(
         .get("hand_allowed_env")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-
+    let memory_enabled = manifest
+        .metadata
+        .get("runtime_memory_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let embeddings_enabled = manifest
+        .metadata
+        .get("runtime_embeddings_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let embedding_driver = if memory_enabled && embeddings_enabled {
+        embedding_driver
+    } else {
+        None
+    };
     // Recall relevant memories — prefer vector similarity search when embedding driver is available
-    let memories = if let Some(emb) = embedding_driver {
+    let memories = if !memory_enabled {
+        Vec::new()
+    } else if let Some(emb) = embedding_driver {
         match emb.embed_one(user_message).await {
             Ok(query_vec) => {
                 debug!("Using vector recall (streaming, dims={})", query_vec.len());
@@ -1527,48 +1562,50 @@ pub async fn run_agent_loop_streaming(
                     .await
                     .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
-                // Remember this interaction (with embedding if available)
-                let interaction_text = format!(
-                    "User asked: {}\nI responded: {}",
-                    user_message, final_response
-                );
-                if let Some(emb) = embedding_driver {
-                    match emb.embed_one(&interaction_text).await {
-                        Ok(vec) => {
-                            let _ = memory
-                                .remember_with_embedding_async(
-                                    session.agent_id,
-                                    &interaction_text,
-                                    MemorySource::Conversation,
-                                    "episodic",
-                                    HashMap::new(),
-                                    Some(&vec),
-                                )
-                                .await;
+                if memory_enabled {
+                    // Remember this interaction (with embedding if available)
+                    let interaction_text = format!(
+                        "User asked: {}\nI responded: {}",
+                        user_message, final_response
+                    );
+                    if let Some(emb) = embedding_driver {
+                        match emb.embed_one(&interaction_text).await {
+                            Ok(vec) => {
+                                let _ = memory
+                                    .remember_with_embedding_async(
+                                        session.agent_id,
+                                        &interaction_text,
+                                        MemorySource::Conversation,
+                                        "episodic",
+                                        HashMap::new(),
+                                        Some(&vec),
+                                    )
+                                    .await;
+                            }
+                            Err(e) => {
+                                warn!("Embedding for remember failed (streaming): {e}");
+                                let _ = memory
+                                    .remember(
+                                        session.agent_id,
+                                        &interaction_text,
+                                        MemorySource::Conversation,
+                                        "episodic",
+                                        HashMap::new(),
+                                    )
+                                    .await;
+                            }
                         }
-                        Err(e) => {
-                            warn!("Embedding for remember failed (streaming): {e}");
-                            let _ = memory
-                                .remember(
-                                    session.agent_id,
-                                    &interaction_text,
-                                    MemorySource::Conversation,
-                                    "episodic",
-                                    HashMap::new(),
-                                )
-                                .await;
-                        }
+                    } else {
+                        let _ = memory
+                            .remember(
+                                session.agent_id,
+                                &interaction_text,
+                                MemorySource::Conversation,
+                                "episodic",
+                                HashMap::new(),
+                            )
+                            .await;
                     }
-                } else {
-                    let _ = memory
-                        .remember(
-                            session.agent_id,
-                            &interaction_text,
-                            MemorySource::Conversation,
-                            "episodic",
-                            HashMap::new(),
-                        )
-                        .await;
                 }
 
                 // Notify phase: Done

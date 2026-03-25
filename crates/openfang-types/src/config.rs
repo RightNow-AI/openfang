@@ -1471,6 +1471,9 @@ impl Default for DefaultModelConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemoryConfig {
+    /// Whether runtime memory recall/remember is enabled at all.
+    #[serde(default = "default_memory_enabled")]
+    pub enabled: bool,
     /// Path to SQLite database file.
     pub sqlite_path: Option<PathBuf>,
     /// Embedding model for semantic search.
@@ -1485,9 +1488,20 @@ pub struct MemoryConfig {
     /// Environment variable name for the embedding API key.
     #[serde(default)]
     pub embedding_api_key_env: Option<String>,
+    /// Whether embedding-backed semantic recall is enabled.
+    #[serde(default = "default_memory_embeddings_enabled")]
+    pub embeddings_enabled: bool,
     /// How often to run memory consolidation (hours). 0 = disabled.
     #[serde(default = "default_consolidation_interval")]
     pub consolidation_interval_hours: u64,
+}
+
+fn default_memory_enabled() -> bool {
+    true
+}
+
+fn default_memory_embeddings_enabled() -> bool {
+    true
 }
 
 fn default_consolidation_interval() -> u64 {
@@ -1497,12 +1511,14 @@ fn default_consolidation_interval() -> u64 {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
+            enabled: default_memory_enabled(),
             sqlite_path: None,
             embedding_model: "all-MiniLM-L6-v2".to_string(),
             consolidation_threshold: 10_000,
             decay_rate: 0.1,
             embedding_provider: None,
             embedding_api_key_env: None,
+            embeddings_enabled: default_memory_embeddings_enabled(),
             consolidation_interval_hours: default_consolidation_interval(),
         }
     }

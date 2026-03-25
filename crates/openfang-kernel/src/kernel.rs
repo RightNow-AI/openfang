@@ -851,6 +851,13 @@ impl OpenFangKernel {
             Arc<dyn openfang_runtime::embedding::EmbeddingDriver + Send + Sync>,
         > = {
             use openfang_runtime::embedding::create_embedding_driver;
+            if !config.memory.enabled {
+                info!("Memory disabled in config; runtime recall/remember and embeddings are off");
+                None
+            } else if !config.memory.embeddings_enabled {
+                info!("Memory embeddings disabled in config; using text-only memory path");
+                None
+            } else {
             let configured_model = &config.memory.embedding_model;
             if let Some(ref provider) = config.memory.embedding_provider {
                 // Explicit config takes priority — use the configured embedding model.
@@ -912,6 +919,7 @@ impl OpenFangKernel {
                         None
                     }
                 }
+            }
             }
         };
 
@@ -1876,6 +1884,16 @@ impl OpenFangKernel {
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
+            manifest.metadata.insert(
+                "runtime_memory_enabled".to_string(),
+                serde_json::Value::Bool(self.config.memory.enabled),
+            );
+            manifest.metadata.insert(
+                "runtime_embeddings_enabled".to_string(),
+                serde_json::Value::Bool(
+                    self.config.memory.enabled && self.config.memory.embeddings_enabled,
+                ),
+            );
             // Store canonical context separately for injection as user message
             // (keeps system prompt stable across turns for provider prompt caching)
             if let Some(cc_msg) =
@@ -2420,6 +2438,16 @@ impl OpenFangKernel {
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
+            manifest.metadata.insert(
+                "runtime_memory_enabled".to_string(),
+                serde_json::Value::Bool(self.config.memory.enabled),
+            );
+            manifest.metadata.insert(
+                "runtime_embeddings_enabled".to_string(),
+                serde_json::Value::Bool(
+                    self.config.memory.enabled && self.config.memory.embeddings_enabled,
+                ),
+            );
             // Store canonical context separately for injection as user message
             // (keeps system prompt stable across turns for provider prompt caching)
             if let Some(cc_msg) =
