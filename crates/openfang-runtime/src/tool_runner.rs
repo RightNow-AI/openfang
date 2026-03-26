@@ -3698,70 +3698,62 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_shell_exec_timeout_kills_process_group() {
-        use std::os::unix::fs::PermissionsExt;
-
         let tmp = tempfile::tempdir().unwrap();
-        let script_pid_path = tmp.path().join("script.pid");
+        let shell_pid_path = tmp.path().join("shell.pid");
         let child_pid_path = tmp.path().join("child.pid");
-        let script_path = tmp.path().join("sleep-worker.sh");
-        std::fs::write(
-            &script_path,
-            format!(
-                "#!/bin/sh\nprintf '%s' \"$$\" > \"{}\"\nsleep 30 &\nprintf '%s' \"$!\" > \"{}\"\nwait\n",
-                script_pid_path.display(),
-                child_pid_path.display()
-            ),
-        )
-        .unwrap();
-        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script_path, perms).unwrap();
-
+        let command = format!(
+            "printf '%s' \"$$\" > \"{}\"; sleep 30 & printf '%s' \"$!\" > \"{}\"; wait",
+            shell_pid_path.display(),
+            child_pid_path.display()
+        );
+        let input = serde_json::json!({"command": command});
         let exec_policy = openfang_types::config::ExecPolicy {
             mode: openfang_types::config::ExecSecurityMode::Full,
             timeout_secs: 1,
             ..Default::default()
         };
-        let result = execute_tool(
-            "test-id",
-            "shell_exec",
-            &serde_json::json!({"command": script_path.to_string_lossy().to_string()}),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(tmp.path()),
-            None, // media_engine
-            Some(&exec_policy),
-            None, // tts_engine
-            None, // docker_config
-            None, // process_manager
-        )
-        .await;
+        let observed_shell_pid_path = shell_pid_path.clone();
+        let observed_child_pid_path = child_pid_path.clone();
+
+        let (result, captured_pids) = tokio::join!(
+            execute_tool(
+                "test-id",
+                "shell_exec",
+                &input,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(tmp.path()),
+                None, // media_engine
+                Some(&exec_policy),
+                None, // tts_engine
+                None, // docker_config
+                None, // process_manager
+            ),
+            async {
+                for _ in 0..200 {
+                    if observed_shell_pid_path.exists() && observed_child_pid_path.exists() {
+                        return true;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                false
+            }
+        );
 
         assert!(result.is_error);
         assert!(result.content.contains("Command timed out after 1s"));
-
-        for _ in 0..50 {
-            if script_pid_path.exists() && child_pid_path.exists() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
         assert!(
-            script_pid_path.exists(),
-            "timeout test did not capture the script PID before cleanup"
-        );
-        assert!(
-            child_pid_path.exists(),
-            "timeout test did not capture the child PID before cleanup"
+            captured_pids,
+            "timeout test did not capture shell and child PIDs before cleanup"
         );
 
-        let script_pid = std::fs::read_to_string(&script_pid_path)
+        let shell_pid = std::fs::read_to_string(&shell_pid_path)
             .unwrap()
             .trim()
             .parse::<u32>()
@@ -3772,8 +3764,8 @@ mod tests {
             .parse::<u32>()
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let script_check = std::process::Command::new("kill")
-            .args(["-0", &script_pid.to_string()])
+        let shell_check = std::process::Command::new("kill")
+            .args(["-0", &shell_pid.to_string()])
             .output()
             .unwrap();
         let child_check = std::process::Command::new("kill")
@@ -3781,12 +3773,12 @@ mod tests {
             .output()
             .unwrap();
         assert!(
-            !script_check.status.success(),
-            "timed out shell_exec should not leave script process alive"
+            !shell_check.status.success(),
+            "timed out shell_exec should not leave the shell process alive"
         );
         assert!(
             !child_check.status.success(),
-            "timed out shell_exec should not leave child process alive"
+            "timed out shell_exec should not leave child processes alive"
         );
     }
 
