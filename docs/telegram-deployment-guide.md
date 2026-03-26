@@ -444,7 +444,9 @@ docker compose stop openfang
    用户：把这个视频发送到 shipinbot 处理
    ```
 
-详细集成说明参考：`docs/telegram-shipinbot-integration.md`
+shipinbot 的 Hand 配置、同步和运行口径统一放在
+[`projects/shipinbot/docs/`](../projects/shipinbot/docs/INDEX.md)，直接看
+[`openfang-external-hand.md`](../projects/shipinbot/docs/openfang-external-hand.md)。
 
 ### 下一步
 
@@ -552,7 +554,7 @@ AgACAgQAAxkBAAIBY2..._1710654321000.dat
 ## 参考文档
 
 - [Telegram 大文件下载完整指南](./telegram-large-files.md)
-- [shipinbot 集成指南](./telegram-shipinbot-integration.md)
-- [实现总结](./telegram-implementation-summary.md)
+- [shipinbot 文档首页](../projects/shipinbot/docs/INDEX.md)
+- [shipinfabu 外部 Hand 维护](../projects/shipinbot/docs/openfang-external-hand.md)
 - [Local Bot API Server GitHub](https://github.com/tdlib/telegram-bot-api)
 - [获取 API Credentials](https://my.telegram.org/apps)

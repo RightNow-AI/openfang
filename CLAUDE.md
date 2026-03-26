@@ -340,7 +340,7 @@ git submodule update --init --recursive
 - `projects/shipinbot/openfang-hand/shipinfabu/HAND.toml` - Agent prompt and tools
 
 ### Documentation
-- `TELEGRAM_MEDIA_BATCH_IMPLEMENTATION.md` - OpenFang implementation summary
-- `SHIPINBOT_INTEGRATION_GUIDE.md` - shipinbot integration guide
 - `PROJECTS.md` - Project structure and submodule management
 - `docs/telegram-deployment-guide.md` - Telegram setup guide
+- `docs/telegram-large-files.md` - Telegram large-file behavior and config
+- `projects/shipinbot/docs/INDEX.md` - shipinbot operational docs index

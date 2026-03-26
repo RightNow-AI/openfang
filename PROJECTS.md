@@ -77,6 +77,5 @@ When modifying Telegram media handling:
 ## Documentation
 
 - [Telegram Deployment Guide](docs/telegram-deployment-guide.md)
-- [Telegram Media Batch Implementation](TELEGRAM_MEDIA_BATCH_IMPLEMENTATION.md)
-- [shipinbot Integration Guide](SHIPINBOT_INTEGRATION_GUIDE.md)
-- [Telegram-shipinbot Integration](docs/telegram-shipinbot-integration.md)
+- [Telegram Large Files](docs/telegram-large-files.md)
+- [shipinbot Docs Index](projects/shipinbot/docs/INDEX.md)

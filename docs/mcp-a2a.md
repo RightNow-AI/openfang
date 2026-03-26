@@ -515,7 +515,7 @@ Agent Cards are built from OpenFang agent manifests via `build_agent_card()`. Ea
 {
   "name": "code-reviewer",
   "description": "Reviews code for bugs, security issues, and style",
-  "url": "http://127.0.0.1:50051/a2a",
+  "url": "http://127.0.0.1:4200/a2a",
   "version": "0.1.0",
   "capabilities": {
     "streaming": true,
@@ -722,7 +722,7 @@ Lists all registered agents as Agent Cards:
     {
       "name": "code-reviewer",
       "description": "Reviews code for bugs and security issues",
-      "url": "http://127.0.0.1:50051/a2a",
+      "url": "http://127.0.0.1:4200/a2a",
       "version": "0.1.0",
       "capabilities": { "streaming": true, "pushNotifications": false, "stateTransitionHistory": true },
       "skills": [...],

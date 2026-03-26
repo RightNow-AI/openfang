@@ -68,8 +68,8 @@ telegram_api_hash_env = "TELEGRAM_API_HASH"
 | 文档 | 用途 |
 |------|------|
 | `docs/telegram-deployment-guide.md` | 完整部署指南 |
+| `docs/telegram-large-files.md` | 技术细节与配置参考 |
 | `docs/telegram-testing-checklist.md` | 测试清单 |
-| `docs/telegram-deployment-summary.md` | 功能总结 |
 | `scripts/install-telegram-local-api.sh` | 从仓库内 third_party 源码编译并安装二进制 |
 | `scripts/setup-telegram-local-api.sh` | 配置向导 |
 | `scripts/verify-telegram-setup.sh` | 部署验证 |

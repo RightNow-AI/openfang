@@ -8,7 +8,7 @@ This repository is a working fork of OpenFang with an integrated `shipinbot` pro
 - Production-ready assessment: [docs/production-readiness.md](docs/production-readiness.md)
 - Repository structure: [PROJECTS.md](PROJECTS.md)
 - shipinbot docs: [projects/shipinbot/docs/INDEX.md](projects/shipinbot/docs/INDEX.md)
-- Telegram workflow notes: [SHIPINBOT_INTEGRATION_GUIDE.md](SHIPINBOT_INTEGRATION_GUIDE.md)
+- Telegram large-file guide: [docs/telegram-large-files.md](docs/telegram-large-files.md)
 - **Telegram group setup**: [docs/telegram-group-setup.md](docs/telegram-group-setup.md) ⚠️ Required for group bots
 - **Telegram @mention troubleshooting**: [docs/telegram-mention-troubleshooting.md](docs/telegram-mention-troubleshooting.md) 🔧 UTF-16 bug fixes and Inline Mode issues
 

@@ -216,8 +216,6 @@ WARN File xxx (565 MB) exceeds official Bot API 20MB limit...
 ### 文档完整性
 - [ ] `docs/telegram-deployment-guide.md` 存在
 - [ ] `docs/telegram-large-files.md` 存在
-- [ ] `docs/telegram-shipinbot-integration.md` 存在
-- [ ] `docs/telegram-implementation-summary.md` 存在
 - [ ] `docs/telegram-config-example.toml` 存在
 - [ ] `scripts/setup-telegram-local-api.sh` 存在且可执行
 - [ ] README.md 包含 Telegram 部分
