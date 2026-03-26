@@ -16,6 +16,7 @@ use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::tool_runner::builtin_tool_definitions;
 use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest, SessionId};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Once};
 use std::time::Instant;
 
@@ -45,6 +46,69 @@ static CONFIG_IO_LOCK: LazyLock<std::sync::Mutex<()>> = LazyLock::new(|| std::sy
 
 fn lock_config_io() -> std::sync::MutexGuard<'static, ()> {
     CONFIG_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn workflows_dir_for_kernel(kernel: &OpenFangKernel) -> PathBuf {
+    kernel
+        .config
+        .workflows_dir
+        .clone()
+        .unwrap_or_else(|| kernel.config.home_dir.join("workflows"))
+}
+
+fn workflow_path_for_id(workflows_dir: &std::path::Path, workflow_id: WorkflowId) -> PathBuf {
+    let entries = match std::fs::read_dir(workflows_dir) {
+        Ok(entries) => entries,
+        Err(_) => {
+            return workflows_dir.join(format!("{workflow_id}.json"));
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+        let workflow = match serde_json::from_str::<Workflow>(&content) {
+            Ok(workflow) => workflow,
+            Err(_) => continue,
+        };
+        if workflow.id == workflow_id {
+            return path;
+        }
+    }
+
+    workflows_dir.join(format!("{workflow_id}.json"))
+}
+
+fn persist_workflow_to_disk(
+    kernel: &OpenFangKernel,
+    workflow: &Workflow,
+) -> std::io::Result<PathBuf> {
+    let workflows_dir = workflows_dir_for_kernel(kernel);
+    std::fs::create_dir_all(&workflows_dir)?;
+    let workflow_path = workflow_path_for_id(&workflows_dir, workflow.id);
+    let payload = serde_json::to_string_pretty(workflow)
+        .map_err(|err| std::io::Error::other(format!("serialize workflow: {err}")))?;
+    std::fs::write(&workflow_path, payload)?;
+    Ok(workflow_path)
+}
+
+fn delete_workflow_from_disk(
+    kernel: &OpenFangKernel,
+    workflow_id: WorkflowId,
+) -> std::io::Result<()> {
+    let workflows_dir = workflows_dir_for_kernel(kernel);
+    let workflow_path = workflow_path_for_id(&workflows_dir, workflow_id);
+    match std::fs::remove_file(workflow_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 pub(crate) struct AbortOnDropStream<T> {
@@ -1550,21 +1614,8 @@ pub async fn create_workflow(
     let id = state.kernel.register_workflow(workflow.clone()).await;
 
     // Persist workflow to disk so it survives daemon restarts (#751)
-    let wf_dir = state
-        .kernel
-        .config
-        .workflows_dir
-        .clone()
-        .unwrap_or_else(|| state.kernel.config.home_dir.join("workflows"));
-    if let Err(e) = std::fs::create_dir_all(&wf_dir) {
-        tracing::warn!("Failed to create workflows dir: {e}");
-    } else {
-        let wf_path = wf_dir.join(format!("{}.json", id));
-        if let Ok(json) = serde_json::to_string_pretty(&workflow) {
-            if let Err(e) = std::fs::write(&wf_path, json) {
-                tracing::warn!("Failed to persist workflow {id}: {e}");
-            }
-        }
+    if let Err(e) = persist_workflow_to_disk(&state.kernel, &workflow) {
+        tracing::warn!("Failed to persist workflow {id}: {e}");
     }
 
     (
@@ -1776,6 +1827,11 @@ pub async fn update_workflow(
         .update_workflow(workflow_id, updated)
         .await
     {
+        if let Some(workflow) = state.kernel.workflows.get_workflow(workflow_id).await {
+            if let Err(e) = persist_workflow_to_disk(&state.kernel, &workflow) {
+                tracing::warn!("Failed to persist updated workflow {id}: {e}");
+            }
+        }
         (
             StatusCode::OK,
             Json(serde_json::json!({"status": "updated", "workflow_id": id})),
@@ -1804,6 +1860,9 @@ pub async fn delete_workflow(
     });
 
     if state.kernel.workflows.remove_workflow(workflow_id).await {
+        if let Err(e) = delete_workflow_from_disk(&state.kernel, workflow_id) {
+            tracing::warn!("Failed to delete workflow file {id}: {e}");
+        }
         (
             StatusCode::OK,
             Json(serde_json::json!({"status": "removed", "workflow_id": id})),

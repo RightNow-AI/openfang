@@ -207,6 +207,12 @@ async fn start_test_server_with_config(config: KernelConfig, tmp: tempfile::Temp
             "/api/workflows/{id}/runs",
             axum::routing::get(routes::list_workflow_runs),
         )
+        .route(
+            "/api/workflows/{id}",
+            axum::routing::get(routes::get_workflow)
+                .put(routes::update_workflow)
+                .delete(routes::delete_workflow),
+        )
         .route("/api/shutdown", axum::routing::post(routes::shutdown))
         .layer(axum::middleware::from_fn(middleware::request_logging))
         .layer(TraceLayer::new_for_http())
@@ -1740,6 +1746,12 @@ async fn test_workflow_crud() {
     let body: serde_json::Value = resp.json().await.unwrap();
     let workflow_id = body["workflow_id"].as_str().unwrap().to_string();
     assert!(!workflow_id.is_empty());
+    let workflow_path = server
+        ._tmp
+        .path()
+        .join("workflows")
+        .join(format!("{workflow_id}.json"));
+    assert!(workflow_path.exists());
 
     // List workflows
     let resp = client
@@ -1752,6 +1764,41 @@ async fn test_workflow_crud() {
     assert_eq!(workflows.len(), 1);
     assert_eq!(workflows[0]["name"], "test-workflow");
     assert_eq!(workflows[0]["steps"], 1);
+
+    // Update workflow
+    let resp = client
+        .put(format!("{}/api/workflows/{}", server.base_url, workflow_id))
+        .json(&serde_json::json!({
+            "name": "test-workflow-updated",
+            "description": "Updated integration workflow",
+            "steps": [
+                {
+                    "name": "step1",
+                    "agent_name": agent_name,
+                    "prompt": "Echo updated: {{input}}",
+                    "mode": "sequential",
+                    "timeout_secs": 45
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let persisted: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&workflow_path).unwrap()).unwrap();
+    assert_eq!(persisted["name"], "test-workflow-updated");
+    assert_eq!(persisted["description"], "Updated integration workflow");
+
+    // Delete workflow
+    let resp = client
+        .delete(format!("{}/api/workflows/{}", server.base_url, workflow_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(!workflow_path.exists());
 }
 
 #[tokio::test]
@@ -2110,6 +2157,12 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         .route(
             "/api/workflows/{id}/runs",
             axum::routing::get(routes::list_workflow_runs),
+        )
+        .route(
+            "/api/workflows/{id}",
+            axum::routing::get(routes::get_workflow)
+                .put(routes::update_workflow)
+                .delete(routes::delete_workflow),
         )
         .route("/api/shutdown", axum::routing::post(routes::shutdown))
         .layer(axum::middleware::from_fn_with_state(
