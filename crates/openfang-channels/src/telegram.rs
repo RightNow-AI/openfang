@@ -59,6 +59,10 @@ const LOCAL_COPY_CHUNK_SIZE: usize = 1024 * 1024;
 const PROGRESS_REPORT_INTERVAL: Duration = Duration::from_secs(2);
 /// Emit progress updates when another 5% bucket is crossed.
 const PROGRESS_REPORT_PERCENT_BUCKET: u64 = 5;
+/// If Local Bot API is still preparing a large video, send a coarse heartbeat so the
+/// user does not mistake the initial "received" message for a stuck state.
+const DOWNLOAD_WAIT_HEARTBEAT_INITIAL_DELAY: Duration = Duration::from_secs(10);
+const DOWNLOAD_WAIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DownloadNotificationTarget {
@@ -120,6 +124,77 @@ fn emit_progress_update(
             chat_id,
             message_id,
         });
+    }
+}
+
+fn should_emit_download_progress(kind: &MediaItemKind) -> bool {
+    matches!(kind, MediaItemKind::Video)
+}
+
+fn should_emit_download_wait_heartbeat(file_size: u64, use_local_api: bool) -> bool {
+    use_local_api && file_size > LOCAL_COPY_PROGRESS_THRESHOLD
+}
+
+#[derive(Clone, Copy)]
+struct DownloadWaitNotification {
+    chat_id: i64,
+    message_id: i64,
+    waiting_text: &'static str,
+}
+
+fn message_has_video_download(message: &serde_json::Value, max_download_size: u64, use_local_api: bool) -> bool {
+    if let Some(video) = message.get("video") {
+        let file_size = video
+            .get("file_size")
+            .and_then(|size| size.as_u64())
+            .unwrap_or(0);
+        return file_size <= max_download_size && !should_skip_get_file(file_size, use_local_api);
+    }
+
+    if let Some(document) = message.get("document") {
+        let file_size = document
+            .get("file_size")
+            .and_then(|size| size.as_u64())
+            .unwrap_or(0);
+        let filename = document
+            .get("file_name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let mime_type = document
+            .get("mime_type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        return is_video_document(filename, mime_type)
+            && file_size <= max_download_size
+            && !should_skip_get_file(file_size, use_local_api);
+    }
+
+    false
+}
+
+fn initial_download_notification_text_for_message(
+    message: &serde_json::Value,
+    max_download_size: u64,
+    use_local_api: bool,
+) -> &'static str {
+    if message_has_video_download(message, max_download_size, use_local_api) {
+        "📥 正在下载视频，请稍候..."
+    } else {
+        "收到媒体，正在处理..."
+    }
+}
+
+fn initial_download_notification_text_for_media_group(
+    updates: &[serde_json::Value],
+    max_download_size: u64,
+    use_local_api: bool,
+) -> &'static str {
+    if updates.iter().filter_map(telegram_message).any(|message| {
+        message_has_video_download(message, max_download_size, use_local_api)
+    }) {
+        "📥 正在下载视频，请稍候..."
+    } else {
+        "收到媒体，正在处理..."
     }
 }
 
@@ -1136,7 +1211,11 @@ impl ChannelAdapter for TelegramAdapter {
                                     &api_base_url,
                                     token.as_str(),
                                     target,
-                                    "收到媒体，正在处理...",
+                                    initial_download_notification_text_for_message(
+                                        update,
+                                        max_download_size,
+                                        use_local_api,
+                                    ),
                                 )
                                 .await
                             }
@@ -1296,7 +1375,11 @@ async fn merge_media_group_updates(
                     api_base_url,
                     token,
                     target,
-                    "收到媒体，正在处理...",
+                    initial_download_notification_text_for_media_group(
+                        updates,
+                        max_download_size,
+                        use_local_api,
+                    ),
                 )
                 .await
             }
@@ -1396,13 +1479,18 @@ async fn merge_media_group_updates(
                 continue;
             }
 
-            match telegram_get_file_info(
+            match telegram_get_file_info_with_heartbeat(
                 token,
                 client,
                 &file_id,
                 api_base_url,
                 use_local_api,
                 file_size,
+                notify_msg_id.map(|message_id| DownloadWaitNotification {
+                    chat_id,
+                    message_id,
+                    waiting_text: "📥 正在下载视频，请稍候...",
+                }),
             )
             .await
             {
@@ -1413,7 +1501,7 @@ async fn merge_media_group_updates(
                             client,
                             &file_info,
                             download_dir,
-                            progress_callback,
+                            None,
                             chat_id,
                             notify_msg_id,
                         )
@@ -1593,13 +1681,18 @@ async fn merge_media_group_updates(
                 continue;
             }
 
-            match telegram_get_file_info(
+            match telegram_get_file_info_with_heartbeat(
                 token,
                 client,
                 &file_id,
                 api_base_url,
                 use_local_api,
                 file_size,
+                notify_msg_id.map(|message_id| DownloadWaitNotification {
+                    chat_id,
+                    message_id,
+                    waiting_text: "📥 正在下载视频，请稍候...",
+                }),
             )
             .await
             {
@@ -1610,7 +1703,11 @@ async fn merge_media_group_updates(
                             client,
                             &file_info,
                             download_dir,
-                            progress_callback,
+                            if should_emit_download_progress(&kind) {
+                                progress_callback
+                            } else {
+                                None
+                            },
                             chat_id,
                             notify_msg_id,
                         )
@@ -1737,7 +1834,7 @@ async fn merge_media_group_updates(
                             client,
                             &file_info,
                             download_dir,
-                            progress_callback,
+                            None,
                             chat_id,
                             notify_msg_id,
                         )
@@ -2113,6 +2210,62 @@ async fn telegram_get_file_info(
     }
 
     None
+}
+
+async fn telegram_get_file_info_with_heartbeat(
+    token: &str,
+    client: &reqwest::Client,
+    file_id: &str,
+    api_base_url: &str,
+    use_local_api: bool,
+    file_size: u64,
+    wait_notification: Option<DownloadWaitNotification>,
+) -> Option<FileInfo> {
+    let heartbeat = if should_emit_download_wait_heartbeat(file_size, use_local_api) {
+        wait_notification.map(|notification| {
+            let client = client.clone();
+            let api_base_url = api_base_url.to_string();
+            let token = token.to_string();
+            tokio::spawn(async move {
+                tokio::time::sleep(DOWNLOAD_WAIT_HEARTBEAT_INITIAL_DELAY).await;
+                let started_at = tokio::time::Instant::now();
+                loop {
+                    let waited = started_at.elapsed().as_secs() + DOWNLOAD_WAIT_HEARTBEAT_INITIAL_DELAY.as_secs();
+                    let text = format!(
+                        "{}\n大文件传输中，已等待 {waited} 秒",
+                        notification.waiting_text
+                    );
+                    let _ = telegram_edit_notification_raw(
+                        &client,
+                        &api_base_url,
+                        &token,
+                        notification.chat_id,
+                        notification.message_id,
+                        &text,
+                    )
+                    .await;
+                    tokio::time::sleep(DOWNLOAD_WAIT_HEARTBEAT_INTERVAL).await;
+                }
+            })
+        })
+    } else {
+        None
+    };
+
+    let result = telegram_get_file_info(
+        token,
+        client,
+        file_id,
+        api_base_url,
+        use_local_api,
+        file_size,
+    )
+    .await;
+
+    if let Some(handle) = heartbeat {
+        handle.abort();
+    }
+    result
 }
 
 /// Download a file from Telegram to local disk with progress reporting.
@@ -2523,13 +2676,18 @@ async fn parse_telegram_update(
             ));
             ChannelContent::Text(fallback_text())
         } else {
-            match telegram_get_file_info(
+            match telegram_get_file_info_with_heartbeat(
                 token,
                 client,
                 file_id,
                 api_base_url,
                 use_local_api,
                 file_size,
+                notify_msg_id.map(|message_id| DownloadWaitNotification {
+                    chat_id,
+                    message_id,
+                    waiting_text: "📥 正在下载视频，请稍候...",
+                }),
             )
             .await
             {
@@ -2539,7 +2697,7 @@ async fn parse_telegram_update(
                             client,
                             &file_info,
                             download_dir,
-                            progress_callback,
+                            None,
                             chat_id,
                             notify_msg_id,
                         )
@@ -2738,13 +2896,18 @@ async fn parse_telegram_update(
             ))
         } else {
             // Try to get file info first
-            match telegram_get_file_info(
+            match telegram_get_file_info_with_heartbeat(
                 token,
                 client,
                 file_id,
                 api_base_url,
                 use_local_api,
                 file_size,
+                notify_msg_id.map(|message_id| DownloadWaitNotification {
+                    chat_id,
+                    message_id,
+                    waiting_text: "📥 正在下载视频，请稍候...",
+                }),
             )
             .await
             {
@@ -2756,7 +2919,11 @@ async fn parse_telegram_update(
                             client,
                             &file_info,
                             download_dir,
-                            progress_callback,
+                            if is_video_document {
+                                progress_callback
+                            } else {
+                                None
+                            },
                             chat_id,
                             notify_msg_id,
                         )
@@ -5126,6 +5293,78 @@ mod tests {
             }
         );
         assert!(extract_download_notification_target(&update, &["999".to_string()]).is_none());
+    }
+
+    #[test]
+    fn test_should_emit_download_progress_only_for_video() {
+        assert!(!should_emit_download_progress(&MediaItemKind::Image));
+        assert!(!should_emit_download_progress(&MediaItemKind::Document));
+        assert!(should_emit_download_progress(&MediaItemKind::Video));
+    }
+
+    #[test]
+    fn test_initial_download_notification_text_for_message_prefers_video_wording() {
+        let update_message = serde_json::json!({
+            "message_id": 1,
+            "chat": { "id": 1, "type": "private" },
+            "video": {
+                "file_id": "video-1",
+                "file_size": 1024 * 1024 * 50
+            }
+        });
+        let photo_message = serde_json::json!({
+            "message_id": 2,
+            "chat": { "id": 1, "type": "private" },
+            "photo": [
+                { "file_id": "photo-1", "file_size": 1024 * 200 }
+            ]
+        });
+
+        assert_eq!(
+            initial_download_notification_text_for_message(
+                &update_message,
+                2 * 1024 * 1024 * 1024,
+                true,
+            ),
+            "📥 正在下载视频，请稍候..."
+        );
+        assert_eq!(
+            initial_download_notification_text_for_message(
+                &photo_message,
+                2 * 1024 * 1024 * 1024,
+                true,
+            ),
+            "收到媒体，正在处理..."
+        );
+    }
+
+    #[test]
+    fn test_initial_download_notification_text_for_media_group_prefers_video_wording() {
+        let updates = vec![
+            serde_json::json!({
+                "message": {
+                    "message_id": 1,
+                    "chat": { "id": 1, "type": "private" },
+                    "photo": [{ "file_id": "photo-1", "file_size": 1024 * 100 }]
+                }
+            }),
+            serde_json::json!({
+                "message": {
+                    "message_id": 2,
+                    "chat": { "id": 1, "type": "private" },
+                    "video": { "file_id": "video-1", "file_size": 1024 * 1024 * 500 }
+                }
+            }),
+        ];
+
+        assert_eq!(
+            initial_download_notification_text_for_media_group(
+                &updates,
+                2 * 1024 * 1024 * 1024,
+                true,
+            ),
+            "📥 正在下载视频，请稍候..."
+        );
     }
 
     #[test]

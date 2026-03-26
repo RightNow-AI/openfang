@@ -59,6 +59,24 @@ use tracing::{error, info, warn};
 
 use openfang_runtime::str_utils::safe_truncate_str;
 
+fn format_download_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        let mb = bytes as f64 / 1024.0 / 1024.0;
+        if mb >= 100.0 {
+            format!("{mb:.0}MB")
+        } else if mb >= 10.0 {
+            format!("{mb:.1}MB")
+        } else {
+            format!("{mb:.2}MB")
+        }
+    } else if bytes >= 1024 {
+        let kb = bytes as f64 / 1024.0;
+        format!("{kb:.0}KB")
+    } else {
+        format!("{bytes}B")
+    }
+}
+
 /// Wraps `OpenFangKernel` to implement `ChannelBridgeHandle`.
 pub struct KernelBridgeAdapter {
     kernel: Arc<OpenFangKernel>,
@@ -1275,11 +1293,12 @@ pub async fn start_channel_bridge_with_config(
                                     (info.percentage / 10.0).floor().clamp(0.0, 10.0) as usize;
                                 let empty = 10usize.saturating_sub(filled);
                                 let bar = format!("{}{}", "▓".repeat(filled), "░".repeat(empty));
-                                let downloaded_mb = info.downloaded_bytes / 1024 / 1024;
-                                let total_mb = info.total_bytes / 1024 / 1024;
                                 format!(
-                                    "📥 正在下载...\n{} {:.0}% · {}MB / {}MB",
-                                    bar, info.percentage, downloaded_mb, total_mb
+                                    "📥 正在下载...\n{} {:.0}% · {} / {}",
+                                    bar,
+                                    info.percentage,
+                                    format_download_size(info.downloaded_bytes),
+                                    format_download_size(info.total_bytes)
                                 )
                             } else {
                                 let size_bytes = if info.total_bytes > 0 {
@@ -1287,8 +1306,7 @@ pub async fn start_channel_bridge_with_config(
                                 } else {
                                     info.downloaded_bytes
                                 };
-                                let total_mb = size_bytes / 1024 / 1024;
-                                format!("✅ 下载完成 · {}MB", total_mb)
+                                format!("✅ 下载完成 · {}", format_download_size(size_bytes))
                             };
 
                             let mut metadata = serde_json::Map::new();
@@ -2150,5 +2168,13 @@ mod tests {
         std::env::remove_var(env_name);
 
         assert_eq!(resolved, Some("resolved-secret".to_string()));
+    }
+
+    #[test]
+    fn test_format_download_size_uses_kb_for_small_files() {
+        assert_eq!(super::format_download_size(0), "0B");
+        assert_eq!(super::format_download_size(512), "512B");
+        assert_eq!(super::format_download_size(98 * 1024), "98KB");
+        assert_eq!(super::format_download_size(28 * 1024 * 1024), "28.0MB");
     }
 }
