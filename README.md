@@ -26,6 +26,18 @@ Keep those boundaries explicit when you change code or docs:
 - general platform behavior belongs under `crates/` and `docs/`
 - project-specific behavior belongs under `projects/shipinbot/` and its own docs
 
+## Active shipinbot Path
+
+The only active `shipinbot` source tree for this repository is:
+
+```bash
+scripts/shipinbot-path.sh --path
+```
+
+Any standalone archived `shipinbot` copy outside `projects/shipinbot/` should
+be treated as reference only and should not be used as the default runtime or
+editing entrypoint.
+
 ## Quick Start
 
 ### Source Build
@@ -45,7 +57,7 @@ run as two host processes from the current checkout:
 cargo build -p openfang-cli
 target/debug/openfang start
 
-cd projects/shipinbot
+cd "$(scripts/shipinbot-path.sh --path)"
 ./scripts/start_media_web.sh
 ```
 

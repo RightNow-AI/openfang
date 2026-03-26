@@ -22,6 +22,9 @@ The Agent Operating System framework written in Rust.
 
 Video processing agent implementation demonstrating OpenFang integration.
 
+**Active local path:**
+- `scripts/shipinbot-path.sh --path`
+
 **Key files:**
 - `projects/shipinbot/scripts/openfang_clean_publish_bridge.py` - Python bridge for video workflows
 - `projects/shipinbot/openfang-hand/shipinfabu/HAND.toml` - Agent manifest (1759 lines)
@@ -54,6 +57,10 @@ cd ../..
 git add projects/shipinbot
 git commit -m "Update shipinbot submodule"
 ```
+
+If this machine also has a standalone archived `shipinbot` checkout outside
+`projects/shipinbot/`, treat it as a historical archive only. Do not use that
+archive path as the normal runtime or editing entry.
 
 ## Cross-Project Development
 
