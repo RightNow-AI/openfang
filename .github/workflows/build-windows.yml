@@ -1,0 +1,64 @@
+name: Build Windows Desktop
+
+on:
+  push:
+    branches:
+      - devops
+    paths:
+      - 'crates/openfang-desktop/**'
+      - '.github/workflows/build-windows.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'crates/openfang-desktop/**'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    name: Build Windows Desktop / ${{ matrix.target }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: x86_64
+          - target: aarch64-pc-windows-msvc
+            arch: aarch64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-desktop-${{ matrix.target }}
+
+      - name: Build and bundle Tauri desktop app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/openfang-desktop
+          args: "--target ${{ matrix.target }}"
+          releaseId: ${{ github.event.pull_request.number || github.sha }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop-${{ matrix.arch }}
+          path: crates/openfang-desktop/target/${{ matrix.target }}/release/bundle/*
