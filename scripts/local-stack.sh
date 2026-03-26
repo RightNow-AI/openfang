@@ -183,6 +183,30 @@ pid_command() {
   ps -p "$pid" -o command= 2>/dev/null | sed 's/^ *//'
 }
 
+list_openfang_daemon_pids() {
+  ps -Ao pid=,command= 2>/dev/null | python3 -c '
+import re
+import sys
+
+patterns = (
+    re.compile(r"(^|[ /])openfang(\.exe)?\s+start($|\s)"),
+    re.compile(r"\bcargo\s+run\b.*(?:\s-p\s+openfang-cli\b|\s--package\s+openfang-cli\b).*\s--\s+start($|\s)"),
+)
+
+for raw in sys.stdin:
+    line = raw.strip()
+    if not line:
+        continue
+    parts = line.split(None, 1)
+    if len(parts) != 2:
+        continue
+    pid, command = parts
+    normalized = " ".join(command.split())
+    if any(pattern.search(normalized) for pattern in patterns):
+        print(pid)
+'
+}
+
 telegram_local_api_mode() {
   python3 - "$OPENFANG_HOME" <<'PY'
 import sys
@@ -393,7 +417,7 @@ stop_by_pid_file() {
   local pid_file="$1"
   local name="$2"
   local pid
-  pid="$(resolve_pid "$pid_file")"
+  pid="$(resolve_pid "$pid_file" || true)"
   if pid_running "$pid"; then
     kill "$pid" 2>/dev/null || true
     echo "$name: sent TERM to pid=$pid"
@@ -402,24 +426,29 @@ stop_by_pid_file() {
 }
 
 stop_openfang() {
-  local binary pid
+  local binary pid stale_pid
   binary="$(resolve_openfang_bin)"
   if [[ "$(json_status "$OPENFANG_BASE_URL/api/health" 2>/dev/null || true)" == "ok" ]]; then
     "$binary" stop >/dev/null 2>&1 || true
   fi
   stop_by_pid_file "$OPENFANG_PID_FILE" "openfang"
   if ! wait_for_port_gone 4200 20; then
-    pid="$(pid_listener_on_port 4200)"
+    pid="$(pid_listener_on_port 4200 || true)"
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
     fi
   fi
+  while IFS= read -r stale_pid; do
+    [[ -n "$stale_pid" ]] || continue
+    kill "$stale_pid" 2>/dev/null || true
+  done < <(list_openfang_daemon_pids || true)
+  wait_for_port_gone 4200 20 || true
 }
 
 stop_media() {
   local pid cwd command
   stop_by_pid_file "$MEDIA_PID_FILE" "media-web"
-  pid="$(pid_listener_on_port 8000)"
+  pid="$(pid_listener_on_port 8000 || true)"
   if [[ -n "$pid" ]]; then
     cwd="$(pid_cwd "$pid")"
     command="$(pid_command "$pid")"
@@ -434,7 +463,7 @@ stop_telegram() {
   local port pid command
   port="$(telegram_local_api_port)"
   stop_by_pid_file "$TELEGRAM_PID_FILE" "telegram-local-api"
-  pid="$(pid_listener_on_port "$port")"
+  pid="$(pid_listener_on_port "$port" || true)"
   if [[ -n "$pid" ]]; then
     command="$(pid_command "$pid")"
     if [[ "$command" == *"telegram-bot-api"* ]]; then
