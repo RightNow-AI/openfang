@@ -1,6 +1,6 @@
 # LLM Providers Guide
 
-OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **20 providers**, **51 builtin models**, and **23 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
+OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **21 providers**, **59 builtin models**, and **30 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
 
 ---
 
@@ -549,9 +549,41 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 
 ---
 
+### 21. MiniMax
+
+| | |
+|---|---|
+| **Display Name** | MiniMax |
+| **Driver** | OpenAI-compatible |
+| **Env Var** | `MINIMAX_API_KEY` |
+| **Base URL** | `https://api.minimax.io/v1` |
+| **Key Required** | Yes |
+| **Free Tier** | No |
+| **Auth** | `Authorization: Bearer` header |
+| **Models** | 8 |
+
+**Available Models:**
+- `MiniMax-M2.7` (Frontier) — Latest flagship, 1M context, vision + tools
+- `MiniMax-M2.7-highspeed` (Smart) — Fast variant of M2.7
+- `minimax-text-01` (Smart) — 1M context text model
+- `MiniMax-M2.5` (Frontier) — Previous flagship, 1M context, vision + tools
+- `MiniMax-M2.5-highspeed` (Smart) — Fast variant of M2.5
+- `MiniMax-M2.1` (Smart) — 1M context text model
+- `abab6.5-chat` (Balanced) — 245K context
+- `abab7-chat` (Smart) — 524K context, vision
+
+**Setup:**
+1. Sign up at [platform.minimaxi.com](https://platform.minimaxi.com)
+2. Create an API key under API Keys
+3. `export MINIMAX_API_KEY="eyJ..."`
+
+**Notes:** MiniMax uses an OpenAI-compatible API at `api.minimax.io/v1`. For China mainland access, override the base URL via `[provider_urls] minimax = "https://api.minimaxi.com/v1"` in your config. Temperature must be in the range (0.0, 1.0].
+
+---
+
 ## Model Catalog
 
-The complete catalog of all 51 builtin models, sorted by provider. Pricing is per million tokens.
+The complete catalog of all 59 builtin models, sorted by provider. Pricing is per million tokens.
 
 | # | Model ID | Display Name | Provider | Tier | Context Window | Max Output | Input $/M | Output $/M | Tools | Vision |
 |---|----------|-------------|----------|------|---------------|------------|-----------|------------|-------|--------|
@@ -608,6 +640,14 @@ The complete catalog of all 51 builtin models, sorted by provider. Pricing is pe
 | 51 | `grok-2-mini` | Grok 2 Mini | xai | Fast | 131,072 | 32,768 | $0.30 | $0.50 | Yes | No |
 | 52 | `hf/meta-llama/Llama-3.3-70B-Instruct` | Llama 3.3 70B (HF) | huggingface | Balanced | 128,000 | 4,096 | $0.30 | $0.30 | No | No |
 | 53 | `replicate/meta-llama-3.3-70b-instruct` | Llama 3.3 70B (Replicate) | replicate | Balanced | 128,000 | 4,096 | $0.40 | $0.40 | No | No |
+| 54 | `MiniMax-M2.7` | MiniMax M2.7 | minimax | Frontier | 1,048,576 | 16,384 | $1.10 | $4.40 | Yes | Yes |
+| 55 | `MiniMax-M2.7-highspeed` | MiniMax M2.7 Highspeed | minimax | Smart | 1,048,576 | 16,384 | $0.80 | $3.20 | Yes | Yes |
+| 56 | `minimax-text-01` | MiniMax Text 01 | minimax | Smart | 1,048,576 | 16,384 | $1.00 | $3.00 | Yes | No |
+| 57 | `MiniMax-M2.5` | MiniMax M2.5 | minimax | Frontier | 1,048,576 | 16,384 | $1.10 | $4.40 | Yes | Yes |
+| 58 | `MiniMax-M2.5-highspeed` | MiniMax M2.5 Highspeed | minimax | Smart | 1,048,576 | 16,384 | $0.80 | $3.20 | Yes | Yes |
+| 59 | `MiniMax-M2.1` | MiniMax M2.1 | minimax | Smart | 1,048,576 | 16,384 | $1.00 | $3.00 | Yes | No |
+| 60 | `abab6.5-chat` | ABAB 6.5 Chat | minimax | Balanced | 245,760 | 8,192 | $0.50 | $1.50 | Yes | No |
+| 61 | `abab7-chat` | ABAB 7 Chat | minimax | Smart | 524,288 | 16,384 | $0.80 | $2.40 | Yes | Yes |
 
 **Model Tiers:**
 
@@ -621,13 +661,13 @@ The complete catalog of all 51 builtin models, sorted by provider. Pricing is pe
 
 **Notes:**
 - Local providers (Ollama, vLLM, LM Studio) auto-discover models at runtime. Any model you download and serve will be merged into the catalog with `Local` tier and zero cost.
-- The 46 entries above are the builtin models. The total of 51 referenced in the catalog includes runtime auto-discovered models that vary per installation.
+- The 54 entries above are the builtin models. The total of 59 referenced in the catalog includes runtime auto-discovered models that vary per installation.
 
 ---
 
 ## Model Aliases
 
-All 23 aliases resolve to canonical model IDs. Aliases are case-insensitive.
+All 30 aliases resolve to canonical model IDs. Aliases are case-insensitive.
 
 | Alias | Resolves To |
 |-------|------------|
@@ -654,6 +694,13 @@ All 23 aliases resolve to canonical model IDs. Aliases are case-insensitive.
 | `sonar` | `sonar-pro` |
 | `jamba` | `jamba-1.5-large` |
 | `command-r` | `command-r-plus` |
+| `minimax` | `MiniMax-M2.7` |
+| `minimax-m2.7` | `MiniMax-M2.7` |
+| `minimax-m2.7-highspeed` | `MiniMax-M2.7-highspeed` |
+| `minimax-highspeed` | `MiniMax-M2.7-highspeed` |
+| `minimax-m2.5` | `MiniMax-M2.5` |
+| `minimax-m2.5-highspeed` | `MiniMax-M2.5-highspeed` |
+| `minimax-m2.1` | `MiniMax-M2.1` |
 
 You can use aliases anywhere a model ID is accepted: in config files, REST API calls, chat commands, and the model routing configuration.
 
@@ -903,7 +950,7 @@ Returns a map of all alias-to-canonical-ID mappings.
 GET /api/providers
 ```
 
-Returns all 20 providers with auth status and model counts.
+Returns all 21 providers with auth status and model counts.
 
 **Response:**
 ```json
@@ -998,7 +1045,7 @@ Local:
 
 ### `/providers`
 
-Lists all 20 providers with their authentication status.
+Lists all 21 providers with their authentication status.
 
 ```
 /providers
