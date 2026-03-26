@@ -31,6 +31,7 @@ collector_knowledge_base.json
 predictions_database.json
 prediction_report_*.md
 BUILD_LOG.md
+/data/*.log
 
 # OS
 .DS_Store
