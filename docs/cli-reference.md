@@ -130,7 +130,7 @@ openfang start [--config <PATH>]
 **Output:**
 
 ```
-  OpenFang Agent OS v0.4.4
+  OpenFang Agent OS v<version>
 
   Starting daemon...
 

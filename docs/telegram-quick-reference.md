@@ -11,8 +11,7 @@ git submodule update --init --recursive third_party/telegram-bot-api
 export TELEGRAM_BOT_TOKEN="你的bot_token"
 export TELEGRAM_API_HASH="你的api_hash"
 
-# 2. 启动服务
-cd /Users/xiaomo/Desktop/openfang-upstream-fork
+# 2. 启动服务（在仓库根目录）
 target/release/openfang start
 ```
 

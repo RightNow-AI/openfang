@@ -1,10 +1,10 @@
 # Telegram 大文件下载功能 - 部署指南
 
-## 媒体组处理（v0.4.4+）
+## 媒体组处理
 
 ### 结构化媒体批次
 
-从 v0.4.4 开始，Telegram 媒体组（media group）会生成结构化的 `telegram_media_batch` metadata，而不是降级成文本链接。这使得下游 agent（如 `shipinfabu-hand`）可以：
+当前版本的 OpenFang 会把 Telegram 媒体组（media group）生成结构化的 `telegram_media_batch` metadata，而不是降级成文本链接。这使得下游 agent（如 `shipinfabu-hand`）可以：
 
 1. **精确了解批次内容**：知道有多少视频、多少图片、每个文件的大小和状态
 2. **选择性下载**：只下载需要的视频，而不是全部下载

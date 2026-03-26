@@ -463,7 +463,7 @@ docker compose logs -f openfang | grep -i telegram
 
 ### Root Cause
 
-**HTTP client timeout issue** (60% fixed):
+**HTTP client timeout issue**:
 - OpenAI driver (used by NVIDIA API) had no timeout configured
 - Requests would wait indefinitely for server response
 - NVIDIA API returns 504 Gateway Timeout after internal limit
@@ -489,19 +489,11 @@ client: reqwest::Client::builder()
 - Prevents indefinite blocking while allowing completion
 - Retry mechanism kicks in after timeout
 
-### Remaining Issues (40%)
+### Current Constraints
 
 1. **NVIDIA API server-side timeout**: Even with client timeout, NVIDIA may return 504 before 120s
 2. **Long conversation history**: 20+ messages increase token usage and inference time
 3. **User experience**: No progress updates during long waits
-
-### Detailed Documentation
-
-See [telegram-response-timeout-issue.md](telegram-response-timeout-issue.md) for:
-- Complete code flow analysis
-- Retry mechanism details
-- Future optimization plans
-- Diagnostic commands
 
 ### Quick Diagnosis
 

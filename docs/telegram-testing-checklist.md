@@ -34,7 +34,7 @@
 
 ### 1. 启动 OpenFang
 ```bash
-cd /Users/xiaomo/Desktop/openfang-upstream-fork
+# 在仓库根目录执行
 TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx target/release/openfang start
 ```
 
@@ -120,7 +120,7 @@ TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx target/release/openfang start
 **测试命令：**
 ```bash
 # 启动 shipinbot
-cd /Users/xiaomo/Desktop/openfang-upstream-fork/projects/shipinbot
+cd projects/shipinbot
 ./scripts/start_media_web.sh
 
 # 验证
@@ -230,7 +230,7 @@ WARN File xxx (565 MB) exceeds official Bot API 20MB limit...
 
 ### 测试环境
 - 操作系统：macOS / Linux / Windows
-- OpenFang 版本：v0.4.4
+- OpenFang 版本：____________________
 - telegram-bot-api 版本：9.5
 - 测试日期：____________________
 

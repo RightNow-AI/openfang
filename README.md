@@ -142,7 +142,7 @@ For shipinbot ownership and production procedures, continue with `projects/shipi
 
 ## Current Repository Facts
 
-- workspace members: 13 functional crates plus `xtask`
+- workspace members: 14 including `xtask`
 - agent templates: 30 under `agents/`
 - bundled Hands: 9 under `crates/openfang-hands/bundled/`
 - bundled skills: 60 under `crates/openfang-skills/bundled/`
