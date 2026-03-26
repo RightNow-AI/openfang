@@ -76,6 +76,23 @@ For the fastest local development loop, start the debug daemon instead:
 target/debug/openfang start
 ```
 
+If you are using this fork's integrated `shipinbot` workflow on the same
+machine, start the media service from the current checkout as a second host
+process:
+
+```bash
+cd projects/shipinbot
+./scripts/start_media_web.sh
+```
+
+For this fork, the fastest full local loop on macOS is usually:
+
+- `target/debug/openfang start` for OpenFang
+- `projects/shipinbot/scripts/start_media_web.sh` for the media service
+
+Do not default to `docker compose up --build` or a separate
+`~/shipinbot-runtime` copy unless you are explicitly testing those topologies.
+
 ## 6. Verify the Daemon
 
 ```bash
@@ -149,6 +166,14 @@ For repeated local edits on the same machine, the shortest restart loop is:
 target/debug/openfang stop
 cargo build -p openfang-cli
 target/debug/openfang start
+```
+
+If `projects/shipinbot` is part of the same local task, restart its service
+from the same checkout instead of switching to Docker or a runtime copy:
+
+```bash
+cd projects/shipinbot
+./scripts/start_media_web.sh
 ```
 
 Use `target/release/openfang` when you need release-like behavior, installation,

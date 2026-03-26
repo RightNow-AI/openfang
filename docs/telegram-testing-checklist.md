@@ -120,7 +120,7 @@ TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx target/release/openfang start
 **测试命令：**
 ```bash
 # 启动 shipinbot
-cd /Users/xiaomo/shipinbot-runtime
+cd /Users/xiaomo/Desktop/openfang-upstream-fork/projects/shipinbot
 ./scripts/start_media_web.sh
 
 # 验证

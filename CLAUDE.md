@@ -30,7 +30,7 @@ This repository contains **two integrated projects via Git submodule**:
 
 ### 2. shipinbot (`projects/shipinbot/`) - Python Video Agent
 - **Purpose**: Video watermark removal and publishing automation
-- **Location**: Git submodule pointing to `/Users/xiaomo/Desktop/shipinbot`
+- **Location**: Work on `projects/shipinbot/` from this checkout by default. Treat any external checkout path as implementation detail, not the default operational path.
 - **Key files**:
   - `projects/shipinbot/scripts/openfang_clean_publish_bridge.py` - Python CLI bridge (2733 lines)
     - `collect-telegram-batch` - Reads manifest, stages media files
@@ -63,7 +63,7 @@ When modifying Telegram media handling, **both codebases must stay synchronized*
 - `projects/shipinbot/scripts/openfang_clean_publish_bridge.py` - Manifest parsing and video download
 - `projects/shipinbot/openfang-hand/shipinfabu/HAND.toml` - Agent prompt and tool definitions
 
-**Important**: The submodule at `projects/shipinbot/` is a **link** to the original repository at `/Users/xiaomo/Desktop/shipinbot`. Changes in either location affect the same Git repository.
+**Important**: The submodule at `projects/shipinbot/` may share Git history with another checkout, but local development and deployment guidance in this fork should point at the current checkout first.
 
 ## Build & Verify Workflow
 After every feature implementation, run ALL THREE checks:
@@ -292,9 +292,9 @@ telegram = "-123456789"  # Negative number for groups
 **Important**: `projects/shipinbot/` is a Git submodule, not a copy.
 
 ### How It Works
-- `projects/shipinbot/` links to `/Users/xiaomo/Desktop/shipinbot` (original repo)
-- Changes in either location affect the same Git repository
-- OpenFang repo only stores a pointer (commit hash), not the actual files
+- `projects/shipinbot/` is a Git submodule in this checkout
+- use `projects/shipinbot/` as the default working path in docs, prompts, and commands
+- OpenFang repo stores the submodule pointer (commit hash), not a vendored copy
 
 ### Common Operations
 

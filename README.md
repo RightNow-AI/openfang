@@ -38,6 +38,22 @@ GROQ_API_KEY=your-key cargo run -p openfang-cli -- start
 
 Open the dashboard at `http://127.0.0.1:4200/`.
 
+For the fastest day-to-day local loop on the same Mac, this fork should usually
+run as two host processes from the current checkout:
+
+```bash
+cargo build -p openfang-cli
+target/debug/openfang start
+
+cd projects/shipinbot
+./scripts/start_media_web.sh
+```
+
+That host-host topology is the default maintainer baseline for this fork's
+integrated OpenFang + shipinbot development flow. Do not default to
+`docker compose up --build` or a separate `~/shipinbot-runtime` copy unless you
+are intentionally validating container topology or release parity.
+
 ### Install Release
 
 Release installers and CLI binaries are published from this fork.

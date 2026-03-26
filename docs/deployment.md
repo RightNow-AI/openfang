@@ -83,6 +83,35 @@ Prefer the debug daemon when the goal is "run the newest local code as quickly
 as possible". Switch back to `target/release/openfang` for final validation,
 install packaging, or release-like smoke tests.
 
+### Default Maintainer Baseline For This Fork
+
+If you are working on this fork's integrated OpenFang + `shipinbot` stack on
+the same machine, the default local deployment should be two host processes from
+the current checkout:
+
+```bash
+cargo build -p openfang-cli
+target/debug/openfang start
+
+cd projects/shipinbot
+./scripts/start_media_web.sh
+```
+
+Why this is the default local baseline:
+
+- it is the shortest rebuild/restart loop for Rust and Python changes together
+- it keeps one clear source of truth: the current checkout under `projects/shipinbot/`
+- it avoids path drift from a second local runtime copy such as `~/shipinbot-runtime`
+- it avoids the rebuild cost of `docker compose up --build` during normal local work
+
+Use Docker / Compose only when you are intentionally validating the container
+topology. Use release binaries or systemd only when you need release-parity or
+host-install verification.
+
+For hand activation or reconciliation, `python3 projects/shipinbot/scripts/sync_openfang_local_hands.py --force`
+is a maintenance tool, not the default way to boot local services. Do not use
+it as a substitute for starting the host media service from the current repo.
+
 ## 2. CLI Install Scripts
 
 The repository includes install scripts:

@@ -6,6 +6,12 @@
 
 通用的 Local Bot API Server 配置、启动和排障请先参考 [telegram-large-files.md](telegram-large-files.md)。本文只覆盖 shipinbot 场景下的目录约定和对接方式。
 
+先把关键事实说清楚：
+
+- `TELEGRAM_BOT_TOKEN` 只负责让 bot 收消息、回消息
+- 真正让媒体组里的大视频可以下载下来的，是 `api_id + api_hash + telegram-bot-api`
+- 对 shipinbot 这条链，Local Bot API Server 不是“可选加速器”，而是用来解锁 Telegram 官方 20MB 下载限制的关键组件
+
 ## 项目关系
 
 ```
@@ -49,6 +55,11 @@
 - 检测到视频 >20MB
 - 如果启用 Local Bot API Server：下载到本地
 - 如果未启用：显示"下载失败"并提示配置
+
+所以这里不是“体验差异”，而是“能力边界”：
+
+- 没有 Local Bot API：大于 20MB 的视频天然下不来
+- 有 Local Bot API：OpenFang 才能把大视频落到本地，再交给 shipinfabu / media service 继续处理
 
 **下载位置：**
 ```
@@ -152,7 +163,7 @@ default = "12"
 
 ```
 shipinfabu Hand 调用 bridge 脚本：
-python3 /Users/xiaomo/shipinbot-runtime/scripts/openfang_clean_publish_bridge.py \
+python3 /Users/xiaomo/Desktop/openfang-upstream-fork/projects/shipinbot/scripts/openfang_clean_publish_bridge.py \
   --source-video /tmp/openfang-telegram-downloads/AgACAgQAAxkBAAIBY2..._1710654321000.dat \
   --action submit
 ```
@@ -197,7 +208,41 @@ export MEDIA_PIPELINE_DB_SECRET="数据库密钥"
 
 ## 启动顺序
 
-### 容器化一体部署（推荐）
+### 宿主机本机联动（默认）
+
+对这份 fork 的日常本机开发、调试、回归，默认先用当前仓库里的宿主机双进程拓扑：
+
+- OpenFang：`target/debug/openfang start`
+- shipinbot：`projects/shipinbot/scripts/start_media_web.sh`
+
+### 1. 启动 shipinbot media-pipeline-service
+
+```bash
+cd /Users/xiaomo/Desktop/openfang-upstream-fork/projects/shipinbot
+./scripts/start_media_web.sh
+```
+
+验证：
+```bash
+curl http://127.0.0.1:8000/healthz
+```
+
+### 2. 启动 OpenFang
+
+```bash
+cd /Users/xiaomo/Desktop/openfang-upstream-fork
+cargo build -p openfang-cli
+TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx target/debug/openfang start
+```
+
+验证：
+```bash
+curl http://127.0.0.1:4200/api/health
+```
+
+只有在你明确要验证容器文件系统、网络拓扑或发布形态时，才切到下面的容器化方式。
+
+### 容器化一体部署（按需）
 
 如果 OpenFang、shipinbot 和 Telegram Local Bot API 都跑容器，不要再拆成三套各自猜路径的私有文件系统。当前仓库支持的生产口径是：
 
@@ -225,35 +270,6 @@ SHIPINFABU_LOCAL_MEDIA_INTAKE_DIR=/app/data/ingest
 ```
 
 这个拓扑下，`file:///var/lib/telegram-bot-api/...` 和 `/app/data/ingest/...` 才是真路径，不是容器内自我感动的假路径。
-
-### 1. 启动 shipinbot media-pipeline-service
-
-```bash
-cd /Users/xiaomo/shipinbot-runtime
-./scripts/start_media_web.sh
-```
-
-验证：
-```bash
-curl http://127.0.0.1:8000/healthz
-```
-
-### 2. 启动 OpenFang
-
-```bash
-cd /Users/xiaomo/Desktop/openfang-upstream-fork
-TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx openfang start
-```
-
-验证：
-```bash
-# 查看日志
-tail -f ~/.openfang/logs/openfang.log
-
-# 应该看到：
-# INFO Telegram Local Bot API Server started on port 8081
-# INFO Telegram Local Bot API mode enabled (supports files >20MB)
-```
 
 ## 测试流程
 
@@ -287,7 +303,7 @@ tail -f ~/.openfang/logs/openfang.log
 ls -lh /tmp/openfang-telegram-downloads/
 
 # 检查 shipinbot 是否能访问
-cd /Users/xiaomo/shipinbot-runtime
+cd /Users/xiaomo/Desktop/openfang-upstream-fork/projects/shipinbot
 .venv/bin/python scripts/openfang_clean_publish_bridge.py \
   --source-video /tmp/openfang-telegram-downloads/xxx.dat \
   --action validate
@@ -328,14 +344,14 @@ Error: Source video not in allowlist
 **解决方案：**
 1. 检查 shipinbot 配置：
    ```bash
-   cat /Users/xiaomo/shipinbot-runtime/config/project.yaml | grep allowlist
+   cat /Users/xiaomo/Desktop/openfang-upstream-fork/projects/shipinbot/config/project.yaml | grep allowlist
    ```
 
 2. 确保 `/tmp/openfang-telegram-downloads` 在白名单中
 
 3. 或者让 bridge 自动复制文件：
    ```toml
-   local_source_staging_dir = "/Users/xiaomo/shipinbot-runtime/data/ingest"
+   local_source_staging_dir = "/Users/xiaomo/Desktop/openfang-upstream-fork/projects/shipinbot/data/ingest"
    ```
 
 ### 问题 3：两个服务端口冲突
@@ -379,10 +395,9 @@ TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx openfang start
 ### 更新 shipinbot
 
 ```bash
-cd /Users/xiaomo/Desktop/shipinbot
-git pull
-python3 scripts/sync_openfang_local_hands.py
-./scripts/deploy_media_runtime.sh
+cd /Users/xiaomo/Desktop/openfang-upstream-fork/projects/shipinbot
+python3 scripts/sync_openfang_local_hands.py --force
+./scripts/start_media_web.sh
 ```
 
 ## 未来增强
