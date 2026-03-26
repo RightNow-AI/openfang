@@ -84,15 +84,40 @@ api_listen = "127.0.0.1:4200"
 
 ### Cause
 
-`~/.openfang/daemon.json` is stale.
+`~/.openfang/daemon.json` is stale, corrupt, or missing.
+
+The CLI does not trust that file blindly anymore:
+
+- it first probes the daemon URL recorded in `daemon.json`
+- if that fails, it falls back to `api_listen` from `~/.openfang/config.toml`
+- if the recorded PID is already dead, it removes stale `daemon.json` automatically
+
+So the real source of truth is always a successful `GET /api/health`, not the
+existence of the JSON file by itself.
 
 ### Fix
 
 ```bash
 openfang doctor --repair
+openfang status
+curl -s http://127.0.0.1:4200/api/health
 ```
 
-Or remove `daemon.json` manually after confirming the daemon is dead.
+If the daemon is still not reachable after repair:
+
+```bash
+lsof -nP -iTCP:4200 -sTCP:LISTEN
+ps aux | grep '[o]penfang start'
+```
+
+If you see leftover `openfang start` processes but nothing is actually
+listening on `4200`, kill the stale processes, then start one fresh daemon from
+the current checkout:
+
+```bash
+pkill -f '[o]penfang start'
+target/debug/openfang start
+```
 
 ## 5. `/api/health/detail` Returns 401 or 403
 

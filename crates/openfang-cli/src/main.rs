@@ -1114,14 +1114,82 @@ pub(crate) fn restrict_dir_permissions(path: &std::path::Path) {
 #[cfg(not(unix))]
 pub(crate) fn restrict_dir_permissions(_path: &std::path::Path) {}
 
-pub(crate) fn find_daemon() -> Option<String> {
-    let home_dir = cli_openfang_home();
-    let info = read_daemon_info(&home_dir)?;
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct DaemonDiscovery {
+    base_url: Option<String>,
+    stale_info_removed: bool,
+}
 
-    // Normalize listen address: replace 0.0.0.0 with 127.0.0.1 to avoid
-    // DNS/connectivity issues on macOS where 0.0.0.0 can hang.
-    let addr = info.listen_addr.replace("0.0.0.0", "127.0.0.1");
-    let url = format!("http://{addr}/api/health");
+pub(crate) fn find_daemon() -> Option<String> {
+    discover_daemon(&cli_openfang_home(), true).base_url
+}
+
+fn discover_daemon(home_dir: &std::path::Path, cleanup_stale: bool) -> DaemonDiscovery {
+    let daemon_info_path = home_dir.join("daemon.json");
+    let mut stale_info_removed = false;
+
+    if daemon_info_path.exists() {
+        match std::fs::read_to_string(&daemon_info_path) {
+            Ok(contents) => {
+                match serde_json::from_str::<openfang_api::server::DaemonInfo>(&contents) {
+                    Ok(info) => {
+                        if let Some(base_url) = probe_daemon_addr(&info.listen_addr) {
+                            return DaemonDiscovery {
+                                base_url: Some(base_url),
+                                stale_info_removed: false,
+                            };
+                        }
+
+                        if cleanup_stale && !is_process_alive(info.pid) {
+                            stale_info_removed = remove_stale_daemon_info(&daemon_info_path);
+                        }
+                    }
+                    Err(_) if cleanup_stale => {
+                        stale_info_removed = remove_stale_daemon_info(&daemon_info_path);
+                    }
+                    Err(_) => {}
+                }
+            }
+            Err(_) if cleanup_stale => {
+                stale_info_removed = remove_stale_daemon_info(&daemon_info_path);
+            }
+            Err(_) => {}
+        }
+    }
+
+    if let Some(listen_addr) = configured_api_listen(home_dir) {
+        if let Some(base_url) = probe_daemon_addr(&listen_addr) {
+            return DaemonDiscovery {
+                base_url: Some(base_url),
+                stale_info_removed,
+            };
+        }
+    }
+
+    DaemonDiscovery {
+        base_url: None,
+        stale_info_removed,
+    }
+}
+
+fn remove_stale_daemon_info(path: &std::path::Path) -> bool {
+    std::fs::remove_file(path).is_ok()
+}
+
+fn configured_api_listen(home_dir: &std::path::Path) -> Option<String> {
+    let config_path = home_dir.join("config.toml");
+    let contents = std::fs::read_to_string(config_path).ok()?;
+    let table = contents.parse::<toml::Value>().ok()?;
+    table
+        .get("api_listen")
+        .and_then(|value| value.as_str())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn probe_daemon_addr(addr: &str) -> Option<String> {
+    let normalized_addr = normalize_daemon_addr(addr);
+    let url = format!("http://{normalized_addr}/api/health");
 
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(1))
@@ -1130,9 +1198,44 @@ pub(crate) fn find_daemon() -> Option<String> {
         .ok()?;
     let resp = client.get(&url).send().ok()?;
     if resp.status().is_success() {
-        Some(format!("http://{addr}"))
+        Some(format!("http://{normalized_addr}"))
     } else {
         None
+    }
+}
+
+fn normalize_daemon_addr(addr: &str) -> String {
+    addr.replace("0.0.0.0", "127.0.0.1")
+}
+
+fn is_process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(windows)]
+    {
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|output| {
+                output.status.success() && {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    !stdout.contains("INFO:") && stdout.contains(&pid.to_string())
+                }
+            })
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
     }
 }
 
@@ -2290,7 +2393,8 @@ decay_rate = 0.05
         if !json {
             println!();
         }
-        let daemon_running = find_daemon();
+        let daemon_discovery = discover_daemon(&openfang_dir, repair);
+        let daemon_running = daemon_discovery.base_url.clone();
         if let Some(ref base) = daemon_running {
             if !json {
                 ui::check_ok(&format!("Daemon running at {base}"));
@@ -2328,19 +2432,19 @@ decay_rate = 0.05
 
         // --- Check 5: Stale daemon.json ---
         let daemon_json_path = openfang_dir.join("daemon.json");
-        if daemon_json_path.exists() && daemon_running.is_none() {
-            if repair {
-                let _ = std::fs::remove_file(&daemon_json_path);
-                if !json {
-                    ui::check_ok("Removed stale daemon.json");
-                }
-                repaired = true;
-            } else if !json {
+        if daemon_discovery.stale_info_removed {
+            if !json {
+                ui::check_ok("Removed stale daemon.json");
+            }
+            checks.push(serde_json::json!({"check": "stale_daemon_json", "status": "repaired"}));
+            repaired = true;
+        } else if daemon_json_path.exists() && daemon_running.is_none() {
+            if !json {
                 ui::check_warn(
                     "Stale daemon.json found (daemon not running). Run with --repair to clean up.",
                 );
             }
-            checks.push(serde_json::json!({"check": "stale_daemon_json", "status": if repair { "repaired" } else { "warn" }}));
+            checks.push(serde_json::json!({"check": "stale_daemon_json", "status": "warn"}));
         }
 
         // --- Check 6: Database file ---
@@ -6917,6 +7021,44 @@ fn remove_self_binary(exe_path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::pick_ollama_model_from_tags;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    fn spawn_fake_openfang_health_server(max_requests: usize) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut served = 0usize;
+
+            while served < max_requests && Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buf = [0u8; 1024];
+                        let _ = stream.read(&mut buf);
+                        let body = r#"{"status":"ok","version":"test"}"#;
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        served += 1;
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        (addr.to_string(), handle)
+    }
 
     // --- Doctor command unit tests ---
 
@@ -7052,6 +7194,70 @@ args = ["-y", "@modelcontextprotocol/server-github"]
         let clean_content = "This is a normal skill prompt with helpful instructions.";
         let warnings = openfang_skills::verify::SkillVerifier::scan_prompt_content(clean_content);
         assert!(warnings.is_empty(), "Clean content should have no warnings");
+    }
+
+    #[test]
+    fn test_discover_daemon_falls_back_to_configured_listener_when_daemon_json_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (addr, handle) = spawn_fake_openfang_health_server(1);
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            format!("api_listen = \"{addr}\"\n"),
+        )
+        .unwrap();
+
+        let discovery = crate::discover_daemon(tmp.path(), true);
+        assert_eq!(discovery.base_url, Some(format!("http://{addr}")));
+        assert!(!discovery.stale_info_removed);
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_discover_daemon_removes_stale_dead_pid_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon_path = tmp.path().join("daemon.json");
+        let info = openfang_api::server::DaemonInfo {
+            pid: 99999999,
+            listen_addr: "127.0.0.1:65534".to_string(),
+            started_at: "2024-01-01T00:00:00Z".to_string(),
+            version: "test".to_string(),
+            platform: "test".to_string(),
+        };
+        std::fs::write(&daemon_path, serde_json::to_string_pretty(&info).unwrap()).unwrap();
+
+        let discovery = crate::discover_daemon(tmp.path(), true);
+        assert_eq!(discovery.base_url, None);
+        assert!(discovery.stale_info_removed);
+        assert!(!daemon_path.exists());
+    }
+
+    #[test]
+    fn test_discover_daemon_ignores_stale_file_and_uses_live_configured_listener() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon_path = tmp.path().join("daemon.json");
+        let info = openfang_api::server::DaemonInfo {
+            pid: 99999999,
+            listen_addr: "127.0.0.1:65534".to_string(),
+            started_at: "2024-01-01T00:00:00Z".to_string(),
+            version: "test".to_string(),
+            platform: "test".to_string(),
+        };
+        std::fs::write(&daemon_path, serde_json::to_string_pretty(&info).unwrap()).unwrap();
+
+        let (addr, handle) = spawn_fake_openfang_health_server(1);
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            format!("api_listen = \"{addr}\"\n"),
+        )
+        .unwrap();
+
+        let discovery = crate::discover_daemon(tmp.path(), true);
+        assert_eq!(discovery.base_url, Some(format!("http://{addr}")));
+        assert!(discovery.stale_info_removed);
+        assert!(!daemon_path.exists());
+
+        handle.join().unwrap();
     }
 
     #[test]

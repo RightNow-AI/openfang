@@ -54,6 +54,22 @@ integrated OpenFang + shipinbot development flow. Do not default to
 `docker compose up --build` or a separate `~/shipinbot-runtime` copy unless you
 are intentionally validating container topology or release parity.
 
+For host-host troubleshooting, do not treat `~/.openfang/daemon.json` as the
+only source of truth. The CLI now probes the configured `api_listen` from
+`~/.openfang/config.toml` and only trusts a daemon that answers
+`GET /api/health`. If a dead PID leaves behind stale `daemon.json`, run:
+
+```bash
+openfang doctor --repair
+```
+
+For the integrated host-host stack in this fork, use one command to verify the
+runtime stays single-instance and clean:
+
+```bash
+scripts/check-host-stack.sh
+```
+
 ### Install Release
 
 Release installers and CLI binaries are published from this fork.
