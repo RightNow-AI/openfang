@@ -41,6 +41,14 @@ require_cmd() {
   fi
 }
 
+sync_bootstrap_workflows() {
+  local sync_script="$ROOT_DIR/scripts/sync_openfang_bootstrap_workflows.py"
+  if [[ ! -f "$sync_script" ]]; then
+    return 0
+  fi
+  python3 "$sync_script"
+}
+
 json_status() {
   local url="$1"
   curl -fsS -m 5 "$url" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))'
@@ -325,6 +333,7 @@ start_telegram() {
 
 start_openfang() {
   local binary pid
+  sync_bootstrap_workflows
   if [[ "$(json_status "$OPENFANG_BASE_URL/api/health" 2>/dev/null || true)" == "ok" ]]; then
     echo "openfang: already healthy"
     return 0

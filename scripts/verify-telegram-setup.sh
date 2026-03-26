@@ -51,6 +51,33 @@ print(value)
 PY
 }
 
+read_telegram_config() {
+    local config_file="$1"
+    python3 - "$config_file" <<'PY'
+import sys
+from pathlib import Path
+import tomllib
+
+config_path = Path(sys.argv[1]).expanduser()
+if not config_path.exists():
+    raise SystemExit(1)
+
+cfg = tomllib.loads(config_path.read_text(encoding="utf-8"))
+channels = cfg.get("channels") or {}
+telegram = channels.get("telegram") or {}
+
+fields = [
+    "true" if bool(telegram.get("use_local_api")) else "false",
+    "true" if bool(telegram.get("auto_start_local_api")) else "false",
+    str(telegram.get("api_url") or "").strip(),
+    str(telegram.get("telegram_api_id") or "").strip(),
+]
+
+for value in fields:
+    print(value)
+PY
+}
+
 # 1. 检查二进制文件
 echo "1. 检查二进制文件..."
 if [ -f "$HOME/.openfang/bin/telegram-bot-api" ]; then
@@ -95,6 +122,10 @@ fi
 
 CONFIG_FILE="$HOME/.openfang/config.toml"
 DEFAULT_PROVIDER_KEY_ENV=""
+TELEGRAM_USE_LOCAL_API="false"
+TELEGRAM_AUTO_START_LOCAL_API="false"
+TELEGRAM_API_URL=""
+TELEGRAM_API_ID=""
 
 # 3. 检查配置文件
 echo ""
@@ -102,27 +133,38 @@ echo "3. 检查配置文件..."
 if [ -f "$CONFIG_FILE" ]; then
     check_pass "配置文件存在"
 
+    TELEGRAM_CONFIG=()
+    while IFS= read -r line; do
+        TELEGRAM_CONFIG+=("$line")
+    done < <(read_telegram_config "$CONFIG_FILE" 2>/dev/null || true)
+
+    TELEGRAM_USE_LOCAL_API="${TELEGRAM_CONFIG[0]:-false}"
+    TELEGRAM_AUTO_START_LOCAL_API="${TELEGRAM_CONFIG[1]:-false}"
+    TELEGRAM_API_URL="${TELEGRAM_CONFIG[2]:-}"
+    TELEGRAM_API_ID="${TELEGRAM_CONFIG[3]:-}"
+
     if DEFAULT_PROVIDER_KEY_ENV="$(resolve_default_provider_key_env "$CONFIG_FILE" 2>/dev/null)"; then
         check_pass "default_model.api_key_env 已配置为 ${DEFAULT_PROVIDER_KEY_ENV}"
     else
         check_warn "未能从 default_model.api_key_env 解析默认模型密钥环境变量"
     fi
 
-    if grep -q "use_local_api = true" "$CONFIG_FILE"; then
+    if [ "$TELEGRAM_USE_LOCAL_API" = "true" ]; then
         check_pass "use_local_api = true"
     else
         check_warn "use_local_api 未设置为 true"
     fi
 
-    if grep -q "auto_start_local_api = true" "$CONFIG_FILE"; then
-        check_pass "auto_start_local_api = true"
+    if [ "$TELEGRAM_AUTO_START_LOCAL_API" = "true" ]; then
+        check_pass "auto_start_local_api = true（由 OpenFang 管理 telegram-bot-api）"
+    elif [ -n "$TELEGRAM_API_URL" ]; then
+        check_pass "auto_start_local_api = false（外部 Local API 模式，api_url=${TELEGRAM_API_URL}）"
     else
-        check_warn "auto_start_local_api 未设置为 true"
+        check_warn "auto_start_local_api = false 且未配置 api_url，需手动保证 Local API 端口可用"
     fi
 
-    if grep -q "telegram_api_id" "$CONFIG_FILE"; then
-        API_ID=$(grep "telegram_api_id" "$CONFIG_FILE" | head -1 | cut -d'"' -f2)
-        if [ "$API_ID" != "YOUR_API_ID" ] && [ -n "$API_ID" ]; then
+    if [ -n "$TELEGRAM_API_ID" ]; then
+        if [ "$TELEGRAM_API_ID" != "YOUR_API_ID" ]; then
             check_pass "telegram_api_id 已配置"
         else
             check_fail "telegram_api_id 未正确配置"

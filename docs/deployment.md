@@ -35,6 +35,27 @@ At runtime, OpenFang resolves credentials from the vault, `secrets.env`, `.env`,
 Operational scripts in this repository (`preflight-openfang.sh`, `backup-openfang.sh`, `restore-openfang.sh`) also support an external env file path via `OPENFANG_ENV_FILE`. If unset, they only auto-detect `/etc/openfang/env` when it matches the current `OPENFANG_HOME` (or the default systemd home `/var/lib/openfang`).
 Do not put `OPENFANG_LISTEN` or `OPENFANG_API_KEY` into `~/.openfang/.env` or `~/.openfang/secrets.env`; the daemon only honors those two overrides from the actual process environment (or an external env file that the supervisor exports into the process).
 
+## Default Choice Order For This Fork
+
+Pick the narrowest deployment path that matches the job:
+
+| Need | Use this first | Notes |
+|------|----------------|-------|
+| Same-machine full-stack development or maintenance | `scripts/local-stack.sh start` from the repo root | Default maintainer baseline for this fork's integrated OpenFang + `shipinbot` flow |
+| OpenFang-only local work | `target/debug/openfang start` | Fastest Rust iteration loop when you do not need the media service |
+| Integrated container validation or containerized host deployment | repo-root `docker-compose.yml` | Full stack: `openfang` + `media-pipeline-service` + optional `telegram-bot-api` |
+| shipinbot service-only container deployment | `projects/shipinbot/docker-compose.yml` | Only the media service; does not boot OpenFang |
+| Linux host deployment | `deploy/openfang.service` | systemd-managed daemon install |
+
+The two Compose files are intentionally different:
+
+- repo-root `docker-compose.yml` is the integrated full-stack topology for this fork
+- `projects/shipinbot/docker-compose.yml` is a service-only topology owned by the `shipinbot` project
+
+If you are editing both Rust and Python paths on the same machine, do not default
+to Docker just because Compose exists. Use `scripts/local-stack.sh start` unless
+you are intentionally validating container topology or release parity.
+
 ## 1. Local Source Build
 
 This is the most reliable path for maintainers.
@@ -140,6 +161,22 @@ This is useful for containerized hosts or isolation, but it is not the fastest
 iteration path for the newest local code on a maintainer Mac. If the goal is
 "edit code, rebuild, restart, test" on the same machine, prefer the local debug
 CLI + daemon flow above.
+
+### Service-only shipinbot Compose
+
+This repository also contains `projects/shipinbot/docker-compose.yml`.
+That file is not a second copy of the integrated stack. It only starts
+`media-pipeline-service` and is meant for service-only deployment or isolated
+validation of the shipinbot runtime.
+
+Use the service-only Compose file when all of the following are true:
+
+- you only want the media service container
+- OpenFang is managed separately on that machine
+- you do not need the integrated OpenFang + hand bootstrap container topology
+
+If you need the full stack in containers, stay at the repo root and use the
+repo-root `docker-compose.yml`.
 
 ### Integrated shipinfabu Stack
 

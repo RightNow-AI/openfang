@@ -48,6 +48,24 @@ Git history, and the parent repo stores the submodule pointer.
 
 ## Quick Start
 
+### Deployment Defaults
+
+Treat `docs/deployment.md` as the deployment source of truth for this fork.
+Use the smallest entrypoint that matches what you are actually doing:
+
+| Need | Default entrypoint | Scope |
+| --- | --- | --- |
+| Same-machine OpenFang + shipinbot development/maintenance | `scripts/local-stack.sh start` | Managed host-host stack from this checkout |
+| OpenFang-only local daemon work | `target/debug/openfang start` | Fast Rust edit/build/restart loop |
+| Integrated container topology | repo-root `docker-compose.yml` | OpenFang + shipinbot + optional Telegram Local Bot API |
+| shipinbot service-only container deployment | `projects/shipinbot/docker-compose.yml` | Only `media-pipeline-service` |
+| Linux host install | `deploy/openfang.service` | systemd-managed OpenFang daemon |
+
+Do not mix the two Compose files:
+
+- repo-root `docker-compose.yml` is the integrated full-stack container topology
+- `projects/shipinbot/docker-compose.yml` is the shipinbot service-only topology
+
 ### Source Build
 
 ```bash
@@ -63,6 +81,15 @@ run as one managed host-host stack from the current checkout:
 
 ```bash
 scripts/local-stack.sh start
+```
+
+That entrypoint now also syncs repo-managed OpenFang bootstrap workflows from
+`openfang-workflows/` into `~/.openfang/workflows/` before the daemon starts.
+If you only want to refresh workflow definitions without touching the runtime,
+run:
+
+```bash
+python3 scripts/sync_openfang_bootstrap_workflows.py
 ```
 
 That host-host topology is the default maintainer baseline for this fork's

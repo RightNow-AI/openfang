@@ -1,0 +1,19 @@
+{
+  "id": "6c9c7b0f-4a5f-4dfb-9ca2-5de2d06ef9a8",
+  "name": "shipinfabu-duty-health-check",
+  "description": "Repo-managed bootstrap workflow that runs the shipinfabu duty-mode health check without creating clean-publish jobs.",
+  "steps": [
+    {
+      "name": "duty_health_check",
+      "agent": {
+        "name": "shipinfabu-hand"
+      },
+      "prompt_template": "Enter duty mode. Run exactly one helper bridge health-check against the current shipinfabu runtime. Do not create, retry, or mutate any clean-publish business job. Return a concise operator report with: 1) overall health, 2) failing components if any, 3) immediate next action. Extra context: {{input}}",
+      "mode": "sequential",
+      "timeout_secs": 180,
+      "error_mode": "fail",
+      "output_var": null
+    }
+  ],
+  "created_at": "2026-03-27T00:00:00Z"
+}

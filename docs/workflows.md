@@ -14,6 +14,19 @@ Use workflows when you need to:
 
 The implementation lives in `openfang-kernel/src/workflow.rs`. The workflow engine is decoupled from the kernel through closures -- it never directly owns or references the kernel, making it testable in isolation.
 
+On boot, OpenFang auto-loads workflow JSON files from `~/.openfang/workflows`
+unless `workflows_dir` overrides that path. In this repository, repo-managed
+bootstrap workflows live under `openfang-workflows/`; sync them into the runtime
+directory with:
+
+```bash
+python3 scripts/sync_openfang_bootstrap_workflows.py
+```
+
+`scripts/local-stack.sh start` runs that sync automatically before starting the
+daemon, so the managed host-host stack always picks up the repo's bootstrap
+workflow definitions on the next boot.
+
 ---
 
 ## Core Types
