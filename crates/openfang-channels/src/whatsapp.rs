@@ -23,6 +23,8 @@ const MAX_MESSAGE_LEN: usize = 4096;
 /// Mode is selected automatically: if `gateway_url` is set (from `WHATSAPP_WEB_GATEWAY_URL`),
 /// the adapter uses Web mode. Otherwise it falls back to Cloud API mode.
 pub struct WhatsAppAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// WhatsApp Business phone number ID (Cloud API mode).
     phone_number_id: String,
     /// SECURITY: Access token is zeroized on drop.
@@ -45,6 +47,7 @@ pub struct WhatsAppAdapter {
 impl WhatsAppAdapter {
     /// Create a new WhatsApp Cloud API adapter.
     pub fn new(
+        id: String,
         phone_number_id: String,
         access_token: String,
         verify_token: String,
@@ -53,6 +56,7 @@ impl WhatsAppAdapter {
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             phone_number_id,
             access_token: Zeroizing::new(access_token),
             verify_token: Zeroizing::new(verify_token),
@@ -176,6 +180,10 @@ impl WhatsAppAdapter {
 
 #[async_trait]
 impl ChannelAdapter for WhatsAppAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "whatsapp"
     }

@@ -1662,7 +1662,7 @@ pub struct TelegramConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the bot token (NOT the token itself).
     pub bot_token_env: String,
     /// Telegram user IDs allowed to interact (empty = allow all).
@@ -1690,7 +1690,7 @@ impl Default for TelegramConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             bot_token_env: "TELEGRAM_BOT_TOKEN".to_string(),
             allowed_users: vec![],
             default_agent: None,
@@ -1711,7 +1711,7 @@ pub struct DiscordConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the bot token (NOT the token itself).
     pub bot_token_env: String,
     /// Guild (server) IDs allowed to interact (empty = allow all).
@@ -1741,7 +1741,7 @@ impl Default for DiscordConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             bot_token_env: "DISCORD_BOT_TOKEN".to_string(),
             allowed_guilds: vec![],
             allowed_users: vec![],
@@ -1763,7 +1763,7 @@ pub struct SlackConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the app-level token (xapp-) for Socket Mode.
     pub app_token_env: String,
     /// Env var name holding the bot token (xoxb-) for REST API.
@@ -1791,7 +1791,7 @@ impl Default for SlackConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             app_token_env: "SLACK_APP_TOKEN".to_string(),
             bot_token_env: "SLACK_BOT_TOKEN".to_string(),
             allowed_channels: vec![],
@@ -1813,7 +1813,7 @@ pub struct WhatsAppConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the access token (Cloud API mode).
     pub access_token_env: String,
     /// Env var name holding the webhook verify token (Cloud API mode).
@@ -1839,7 +1839,7 @@ impl Default for WhatsAppConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             access_token_env: "WHATSAPP_ACCESS_TOKEN".to_string(),
             verify_token_env: "WHATSAPP_VERIFY_TOKEN".to_string(),
             phone_number_id: String::new(),
@@ -1861,7 +1861,7 @@ pub struct SignalConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// URL of the signal-cli REST API (e.g., "http://localhost:8080").
     pub api_url: String,
     /// Registered phone number.
@@ -1880,7 +1880,7 @@ impl Default for SignalConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             api_url: "http://localhost:8080".to_string(),
             phone_number: String::new(),
             allowed_users: vec![],
@@ -1899,7 +1899,7 @@ pub struct MatrixConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Matrix homeserver URL (e.g., `"https://matrix.org"`).
     pub homeserver_url: String,
     /// Bot user ID (e.g., "@openfang:matrix.org").
@@ -1923,7 +1923,7 @@ impl Default for MatrixConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             homeserver_url: "https://matrix.org".to_string(),
             user_id: String::new(),
             access_token_env: "MATRIX_ACCESS_TOKEN".to_string(),
@@ -1944,7 +1944,7 @@ pub struct EmailConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// IMAP server host.
     pub imap_host: String,
     /// IMAP port (993 for TLS).
@@ -1976,7 +1976,7 @@ impl Default for EmailConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             imap_host: String::new(),
             imap_port: 993,
             smtp_host: String::new(),
@@ -2001,7 +2001,7 @@ pub struct TeamsConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Azure Bot App ID.
     pub app_id: String,
     /// Env var name holding the app password.
@@ -2022,7 +2022,7 @@ impl Default for TeamsConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             app_id: String::new(),
             app_password_env: "TEAMS_APP_PASSWORD".to_string(),
             webhook_port: 3978,
@@ -2042,7 +2042,7 @@ pub struct MattermostConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Mattermost server URL (e.g., `"https://mattermost.example.com"`).
     pub server_url: String,
     /// Env var name holding the bot token.
@@ -2061,7 +2061,7 @@ impl Default for MattermostConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             server_url: String::new(),
             token_env: "MATTERMOST_TOKEN".to_string(),
             allowed_channels: vec![],
@@ -2080,7 +2080,7 @@ pub struct IrcConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// IRC server hostname.
     pub server: String,
     /// IRC server port.
@@ -2105,7 +2105,7 @@ impl Default for IrcConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             server: "irc.libera.chat".to_string(),
             port: 6667,
             nick: "openfang".to_string(),
@@ -2127,7 +2127,7 @@ pub struct GoogleChatConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the service account JSON key.
     pub service_account_env: String,
     /// Space IDs to listen in.
@@ -2146,7 +2146,7 @@ impl Default for GoogleChatConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             service_account_env: "GOOGLE_CHAT_SERVICE_ACCOUNT".to_string(),
             space_ids: vec![],
             webhook_port: 8444,
@@ -2165,7 +2165,7 @@ pub struct TwitchConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the OAuth token.
     pub oauth_token_env: String,
     /// Twitch channels to join (without #).
@@ -2184,7 +2184,7 @@ impl Default for TwitchConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             oauth_token_env: "TWITCH_OAUTH_TOKEN".to_string(),
             channels: vec![],
             nick: "openfang".to_string(),
@@ -2203,7 +2203,7 @@ pub struct RocketChatConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Rocket.Chat server URL.
     pub server_url: String,
     /// Env var name holding the auth token.
@@ -2224,7 +2224,7 @@ impl Default for RocketChatConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             server_url: String::new(),
             token_env: "ROCKETCHAT_TOKEN".to_string(),
             user_id: String::new(),
@@ -2244,7 +2244,7 @@ pub struct ZulipConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Zulip server URL.
     pub server_url: String,
     /// Bot email address.
@@ -2265,7 +2265,7 @@ impl Default for ZulipConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             server_url: String::new(),
             bot_email: String::new(),
             api_key_env: "ZULIP_API_KEY".to_string(),
@@ -2285,7 +2285,7 @@ pub struct XmppConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// JID (e.g., "bot@jabber.org").
     pub jid: String,
     /// Env var name holding the password.
@@ -2308,7 +2308,7 @@ impl Default for XmppConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             jid: String::new(),
             password_env: "XMPP_PASSWORD".to_string(),
             server: String::new(),
@@ -2331,7 +2331,7 @@ pub struct LineConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the channel secret.
     pub channel_secret_env: String,
     /// Env var name holding the channel access token.
@@ -2349,7 +2349,7 @@ impl Default for LineConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             channel_secret_env: "LINE_CHANNEL_SECRET".to_string(),
             access_token_env: "LINE_CHANNEL_ACCESS_TOKEN".to_string(),
             webhook_port: 8450,
@@ -2368,7 +2368,7 @@ pub struct ViberConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the auth token.
     pub auth_token_env: String,
     /// Webhook URL for receiving messages.
@@ -2386,7 +2386,7 @@ impl Default for ViberConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             auth_token_env: "VIBER_AUTH_TOKEN".to_string(),
             webhook_url: String::new(),
             webhook_port: 8451,
@@ -2405,7 +2405,7 @@ pub struct MessengerConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the page access token.
     pub page_token_env: String,
     /// Env var name holding the webhook verify token.
@@ -2423,7 +2423,7 @@ impl Default for MessengerConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             page_token_env: "MESSENGER_PAGE_TOKEN".to_string(),
             verify_token_env: "MESSENGER_VERIFY_TOKEN".to_string(),
             webhook_port: 8452,
@@ -2442,7 +2442,7 @@ pub struct RedditConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Reddit app client ID.
     pub client_id: String,
     /// Env var name holding the client secret.
@@ -2465,7 +2465,7 @@ impl Default for RedditConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             client_id: String::new(),
             client_secret_env: "REDDIT_CLIENT_SECRET".to_string(),
             username: String::new(),
@@ -2486,7 +2486,7 @@ pub struct MastodonConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Mastodon instance URL (e.g., `"https://mastodon.social"`).
     pub instance_url: String,
     /// Env var name holding the access token.
@@ -2502,7 +2502,7 @@ impl Default for MastodonConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             instance_url: String::new(),
             access_token_env: "MASTODON_ACCESS_TOKEN".to_string(),
             default_agent: None,
@@ -2520,7 +2520,7 @@ pub struct BlueskyConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Bluesky identifier (handle or DID).
     pub identifier: String,
     /// Env var name holding the app password.
@@ -2538,7 +2538,7 @@ impl Default for BlueskyConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             identifier: String::new(),
             app_password_env: "BLUESKY_APP_PASSWORD".to_string(),
             service_url: "https://bsky.social".to_string(),
@@ -2571,7 +2571,7 @@ pub struct FeishuConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Feishu app ID.
     pub app_id: String,
     /// Env var name holding the app secret.
@@ -2602,7 +2602,7 @@ impl Default for FeishuConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             app_id: String::new(),
             app_secret_env: "FEISHU_APP_SECRET".to_string(),
             mode: FeishuMode::Websocket,
@@ -2627,7 +2627,7 @@ pub struct WeComConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// WeCom corp ID.
     pub corp_id: String,
     /// WeCom application agent ID.
@@ -2651,7 +2651,7 @@ impl Default for WeComConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             corp_id: String::new(),
             agent_id: String::new(),
             secret_env: "WECOM_SECRET".to_string(),
@@ -2673,7 +2673,7 @@ pub struct RevoltConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the bot token.
     pub bot_token_env: String,
     /// Revolt API URL.
@@ -2689,7 +2689,7 @@ impl Default for RevoltConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             bot_token_env: "REVOLT_BOT_TOKEN".to_string(),
             api_url: "https://api.revolt.chat".to_string(),
             default_agent: None,
@@ -2709,7 +2709,7 @@ pub struct NextcloudConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Nextcloud server URL.
     pub server_url: String,
     /// Env var name holding the auth token.
@@ -2728,7 +2728,7 @@ impl Default for NextcloudConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             server_url: String::new(),
             token_env: "NEXTCLOUD_TOKEN".to_string(),
             allowed_rooms: vec![],
@@ -2747,7 +2747,7 @@ pub struct GuildedConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the bot token.
     pub bot_token_env: String,
     /// Server IDs to listen in (empty = all).
@@ -2764,7 +2764,7 @@ impl Default for GuildedConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             bot_token_env: "GUILDED_BOT_TOKEN".to_string(),
             server_ids: vec![],
             default_agent: None,
@@ -2782,7 +2782,7 @@ pub struct KeybaseConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Keybase username.
     pub username: String,
     /// Env var name holding the paper key.
@@ -2801,7 +2801,7 @@ impl Default for KeybaseConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             username: String::new(),
             paperkey_env: "KEYBASE_PAPERKEY".to_string(),
             allowed_teams: vec![],
@@ -2820,7 +2820,7 @@ pub struct ThreemaConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Threema Gateway ID.
     pub threema_id: String,
     /// Env var name holding the API secret.
@@ -2838,7 +2838,7 @@ impl Default for ThreemaConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             threema_id: String::new(),
             secret_env: "THREEMA_SECRET".to_string(),
             webhook_port: 8454,
@@ -2857,7 +2857,7 @@ pub struct NostrConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the private key (nsec or hex).
     pub private_key_env: String,
     /// Relay URLs to connect to.
@@ -2874,7 +2874,7 @@ impl Default for NostrConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             private_key_env: "NOSTR_PRIVATE_KEY".to_string(),
             relays: vec!["wss://relay.damus.io".to_string()],
             default_agent: None,
@@ -2892,7 +2892,7 @@ pub struct WebexConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the bot token.
     pub bot_token_env: String,
     /// Room IDs to listen in (empty = all).
@@ -2909,7 +2909,7 @@ impl Default for WebexConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             bot_token_env: "WEBEX_BOT_TOKEN".to_string(),
             allowed_rooms: vec![],
             default_agent: None,
@@ -2927,7 +2927,7 @@ pub struct PumbleConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the bot token.
     pub bot_token_env: String,
     /// Port for the incoming webhook.
@@ -2943,7 +2943,7 @@ impl Default for PumbleConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             bot_token_env: "PUMBLE_BOT_TOKEN".to_string(),
             webhook_port: 8455,
             default_agent: None,
@@ -2961,7 +2961,7 @@ pub struct FlockConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the bot token.
     pub bot_token_env: String,
     /// Port for the incoming webhook.
@@ -2977,7 +2977,7 @@ impl Default for FlockConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             bot_token_env: "FLOCK_BOT_TOKEN".to_string(),
             webhook_port: 8456,
             default_agent: None,
@@ -2995,7 +2995,7 @@ pub struct TwistConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the API token.
     pub token_env: String,
     /// Workspace ID.
@@ -3014,7 +3014,7 @@ impl Default for TwistConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             token_env: "TWIST_TOKEN".to_string(),
             workspace_id: String::new(),
             allowed_channels: vec![],
@@ -3035,7 +3035,7 @@ pub struct MumbleConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Mumble server hostname.
     pub host: String,
     /// Mumble server port.
@@ -3057,7 +3057,7 @@ impl Default for MumbleConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             host: String::new(),
             port: 64738,
             username: "openfang".to_string(),
@@ -3078,7 +3078,7 @@ pub struct DingTalkConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the webhook access token.
     pub access_token_env: String,
     /// Env var name holding the signing secret.
@@ -3096,7 +3096,7 @@ impl Default for DingTalkConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             access_token_env: "DINGTALK_ACCESS_TOKEN".to_string(),
             secret_env: "DINGTALK_SECRET".to_string(),
             webhook_port: 8457,
@@ -3119,7 +3119,7 @@ pub struct DingTalkStreamConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var holding the App Key (client_id).
     pub app_key_env: String,
     /// Env var holding the App Secret (client_secret).
@@ -3137,7 +3137,7 @@ impl Default for DingTalkStreamConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             app_key_env: "DINGTALK_APP_KEY".to_string(),
             app_secret_env: "DINGTALK_APP_SECRET".to_string(),
             robot_code_env: "DINGTALK_ROBOT_CODE".to_string(),
@@ -3156,7 +3156,7 @@ pub struct DiscourseConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Discourse base URL.
     pub base_url: String,
     /// Env var name holding the API key.
@@ -3177,7 +3177,7 @@ impl Default for DiscourseConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             base_url: String::new(),
             api_key_env: "DISCOURSE_API_KEY".to_string(),
             api_username: "system".to_string(),
@@ -3197,7 +3197,7 @@ pub struct GitterConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the auth token.
     pub token_env: String,
     /// Room ID to listen in.
@@ -3213,7 +3213,7 @@ impl Default for GitterConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             token_env: "GITTER_TOKEN".to_string(),
             room_id: String::new(),
             default_agent: None,
@@ -3231,7 +3231,7 @@ pub struct NtfyConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// ntfy server URL.
     pub server_url: String,
     /// Topic to subscribe/publish to.
@@ -3249,7 +3249,7 @@ impl Default for NtfyConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             server_url: "https://ntfy.sh".to_string(),
             topic: String::new(),
             token_env: "NTFY_TOKEN".to_string(),
@@ -3268,7 +3268,7 @@ pub struct GotifyConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Gotify server URL.
     pub server_url: String,
     /// Env var name holding the app token (for sending).
@@ -3286,7 +3286,7 @@ impl Default for GotifyConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             server_url: String::new(),
             app_token_env: "GOTIFY_APP_TOKEN".to_string(),
             client_token_env: "GOTIFY_CLIENT_TOKEN".to_string(),
@@ -3305,7 +3305,7 @@ pub struct WebhookConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the HMAC signing secret.
     pub secret_env: String,
     /// Port to listen for incoming webhooks.
@@ -3323,7 +3323,7 @@ impl Default for WebhookConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             secret_env: "WEBHOOK_SECRET".to_string(),
             listen_port: 8460,
             callback_url: None,
@@ -3342,7 +3342,7 @@ pub struct LinkedInConfig {
     pub name: Option<String>,
     /// Icon (emoji or URL) for this channel configuration.
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Env var name holding the OAuth2 access token.
     pub access_token_env: String,
     /// Organization ID for messaging.
@@ -3358,7 +3358,7 @@ impl Default for LinkedInConfig {
     fn default() -> Self {
         Self {
             name: None,
-            id: None,
+            id: String::new(),
             access_token_env: "LINKEDIN_ACCESS_TOKEN".to_string(),
             organization_id: String::new(),
             default_agent: None,

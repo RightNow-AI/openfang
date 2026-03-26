@@ -33,6 +33,8 @@ const POLL_INTERVAL_SECS: u64 = 5;
 /// (threads) and sends replies via the comments/add endpoint. Supports
 /// workspace-level and channel-level filtering.
 pub struct TwistAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: OAuth2 token is zeroized on drop.
     token: Zeroizing<String>,
     /// Twist workspace ID.
@@ -52,12 +54,14 @@ impl TwistAdapter {
     /// Create a new Twist adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `token` - OAuth2 Bearer token for API authentication.
     /// * `workspace_id` - Twist workspace ID to operate in.
     /// * `allowed_channels` - Channel IDs to poll (empty = discover all).
-    pub fn new(token: String, workspace_id: String, allowed_channels: Vec<String>) -> Self {
+    pub fn new(id: String, token: String, workspace_id: String, allowed_channels: Vec<String>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             token: Zeroizing::new(token),
             workspace_id,
             allowed_channels,
@@ -256,6 +260,10 @@ impl TwistAdapter {
 
 #[async_trait]
 impl ChannelAdapter for TwistAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "twist"
     }

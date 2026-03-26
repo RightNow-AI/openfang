@@ -30,6 +30,8 @@ const MAX_MESSAGE_LEN: usize = 4096;
 /// and sends outbound messages via the Flock `chat.sendMessage` endpoint.
 /// Supports channel-receive and app-install event types.
 pub struct FlockAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Bot token is zeroized on drop.
     bot_token: Zeroizing<String>,
     /// Port for the inbound webhook HTTP listener.
@@ -45,11 +47,13 @@ impl FlockAdapter {
     /// Create a new Flock adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `bot_token` - Flock Bot token for API authentication.
     /// * `webhook_port` - Local port to bind the webhook listener on.
-    pub fn new(bot_token: String, webhook_port: u16) -> Self {
+    pub fn new(id: String, bot_token: String, webhook_port: u16) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             bot_token: Zeroizing::new(bot_token),
             webhook_port,
             client: reqwest::Client::new(),
@@ -232,6 +236,10 @@ fn parse_flock_event(event: &serde_json::Value, own_user_id: &str) -> Option<Cha
 
 #[async_trait]
 impl ChannelAdapter for FlockAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "flock"
     }

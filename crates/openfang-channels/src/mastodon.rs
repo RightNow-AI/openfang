@@ -34,6 +34,8 @@ const MAX_BACKOFF_SECS: u64 = 60;
 /// Mastodon streaming user endpoint. Outbound replies are posted as new
 /// statuses with `in_reply_to_id` set to the original status ID.
 pub struct MastodonAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Mastodon instance URL (e.g., `"https://mastodon.social"`).
     instance_url: String,
     /// SECURITY: Access token (OAuth2 bearer token), zeroized on drop.
@@ -51,12 +53,14 @@ impl MastodonAdapter {
     /// Create a new Mastodon adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `instance_url` - Base URL of the Mastodon instance (no trailing slash).
     /// * `access_token` - OAuth2 access token with `read` and `write` scopes.
-    pub fn new(instance_url: String, access_token: String) -> Self {
+    pub fn new(id: String, instance_url: String, access_token: String) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let instance_url = instance_url.trim_end_matches('/').to_string();
         Self {
+            id,
             instance_url,
             access_token: Zeroizing::new(access_token),
             client: reqwest::Client::new(),
@@ -305,6 +309,10 @@ fn strip_html_tags(html: &str) -> String {
 
 #[async_trait]
 impl ChannelAdapter for MastodonAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "mastodon"
     }

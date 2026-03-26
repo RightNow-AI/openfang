@@ -23,6 +23,8 @@ const POLL_TIMEOUT_SECS: u64 = 60;
 
 /// Zulip channel adapter using REST API with event queue long-polling.
 pub struct ZulipAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Zulip server URL (e.g., `"https://myorg.zulipchat.com"`).
     server_url: String,
     /// Bot email address for HTTP Basic auth.
@@ -44,11 +46,13 @@ impl ZulipAdapter {
     /// Create a new Zulip adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `server_url` - Base URL of the Zulip server.
     /// * `bot_email` - Email address of the Zulip bot.
     /// * `api_key` - API key for the bot.
     /// * `streams` - Stream names to subscribe to (empty = all public streams).
     pub fn new(
+        id: String,
         server_url: String,
         bot_email: String,
         api_key: String,
@@ -57,6 +61,7 @@ impl ZulipAdapter {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let server_url = server_url.trim_end_matches('/').to_string();
         Self {
+            id,
             server_url,
             bot_email,
             api_key: Zeroizing::new(api_key),
@@ -179,6 +184,10 @@ impl ZulipAdapter {
 
 #[async_trait]
 impl ChannelAdapter for ZulipAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "zulip"
     }

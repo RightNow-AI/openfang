@@ -23,6 +23,8 @@ const MAX_MESSAGE_LEN: usize = 4096;
 
 /// Rocket.Chat channel adapter using REST API with long-polling.
 pub struct RocketChatAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Rocket.Chat server URL (e.g., `"https://chat.example.com"`).
     server_url: String,
     /// SECURITY: Auth token is zeroized on drop.
@@ -44,11 +46,13 @@ impl RocketChatAdapter {
     /// Create a new Rocket.Chat adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `server_url` - Base URL of the Rocket.Chat instance.
     /// * `token` - Personal access token for authentication.
     /// * `user_id` - User ID associated with the token.
     /// * `allowed_channels` - Room IDs to listen on (empty = discover from server).
     pub fn new(
+        id: String,
         server_url: String,
         token: String,
         user_id: String,
@@ -57,6 +61,7 @@ impl RocketChatAdapter {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let server_url = server_url.trim_end_matches('/').to_string();
         Self {
+            id,
             server_url,
             token: Zeroizing::new(token),
             user_id,
@@ -131,6 +136,10 @@ impl RocketChatAdapter {
 
 #[async_trait]
 impl ChannelAdapter for RocketChatAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "rocketchat"
     }

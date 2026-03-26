@@ -29,6 +29,8 @@ const MAX_MESSAGE_LEN: usize = 500;
 /// Connects to Twitch chat via the IRC protocol and bridges messages to the
 /// OpenFang channel system. Supports multiple channels simultaneously.
 pub struct TwitchAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: OAuth token is zeroized on drop.
     oauth_token: Zeroizing<String>,
     /// Twitch channels to join (without the '#' prefix).
@@ -44,12 +46,14 @@ impl TwitchAdapter {
     /// Create a new Twitch adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `oauth_token` - Twitch OAuth token (without the "oauth:" prefix; it will be added).
     /// * `channels` - Channel names to join (without '#' prefix).
     /// * `nick` - Bot's IRC nickname (must match the token owner's Twitch username).
-    pub fn new(oauth_token: String, channels: Vec<String>, nick: String) -> Self {
+    pub fn new(id: String, oauth_token: String, channels: Vec<String>, nick: String) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             oauth_token: Zeroizing::new(oauth_token),
             channels,
             nick,
@@ -104,6 +108,10 @@ fn parse_privmsg(line: &str) -> Option<(String, String, String)> {
 
 #[async_trait]
 impl ChannelAdapter for TwitchAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "twitch"
     }

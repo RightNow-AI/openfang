@@ -31,6 +31,8 @@ const POLL_INTERVAL_SECS: u64 = 3;
 /// via the same REST API. Supports multiple room tokens for simultaneous
 /// monitoring.
 pub struct NextcloudAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Nextcloud server URL (e.g., `"https://cloud.example.com"`).
     server_url: String,
     /// SECURITY: Authentication token is zeroized on drop.
@@ -50,13 +52,15 @@ impl NextcloudAdapter {
     /// Create a new Nextcloud Talk adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `server_url` - Base URL of the Nextcloud instance.
     /// * `token` - Authentication token (app password or OAuth2 token).
     /// * `allowed_rooms` - Room tokens to listen on (empty = discover joined rooms).
-    pub fn new(server_url: String, token: String, allowed_rooms: Vec<String>) -> Self {
+    pub fn new(id: String, server_url: String, token: String, allowed_rooms: Vec<String>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let server_url = server_url.trim_end_matches('/').to_string();
         Self {
+            id,
             server_url,
             token: Zeroizing::new(token),
             allowed_rooms,
@@ -160,6 +164,10 @@ impl NextcloudAdapter {
 
 #[async_trait]
 impl ChannelAdapter for NextcloudAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "nextcloud"
     }

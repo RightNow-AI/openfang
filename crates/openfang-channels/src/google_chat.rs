@@ -27,6 +27,8 @@ const TOKEN_REFRESH_MARGIN_SECS: u64 = 300;
 /// Outbound messages are sent via the Google Chat REST API using an OAuth2 access
 /// token obtained from a service account JWT.
 pub struct GoogleChatAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Service account key JSON is zeroized on drop.
     service_account_key: Zeroizing<String>,
     /// Space IDs to listen to (e.g., "spaces/AAAA").
@@ -46,12 +48,14 @@ impl GoogleChatAdapter {
     /// Create a new Google Chat adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `service_account_key` - JSON content of the Google service account key file.
     /// * `space_ids` - Google Chat space IDs to interact with.
     /// * `webhook_port` - Local port to bind the inbound webhook listener on.
-    pub fn new(service_account_key: String, space_ids: Vec<String>, webhook_port: u16) -> Self {
+    pub fn new(id: String, service_account_key: String, space_ids: Vec<String>, webhook_port: u16) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             service_account_key: Zeroizing::new(service_account_key),
             space_ids,
             webhook_port,
@@ -140,6 +144,10 @@ impl GoogleChatAdapter {
 
 #[async_trait]
 impl ChannelAdapter for GoogleChatAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "google_chat"
     }

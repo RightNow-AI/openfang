@@ -218,6 +218,10 @@ pub use openfang_types::config::{DmPolicy, GroupPolicy, OutputFormat};
 /// platform-specific messages into `ChannelMessage` events and sending responses back.
 #[async_trait]
 pub trait ChannelAdapter: Send + Sync {
+    /// Get the unique ID of this adapter.
+    /// This is used to identify the adapter in the kernel.
+    fn id(&self) -> &str;
+
     /// Human-readable name of this adapter.
     fn name(&self) -> &str;
 

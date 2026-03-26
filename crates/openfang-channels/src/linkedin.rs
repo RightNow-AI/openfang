@@ -28,6 +28,8 @@ const LINKEDIN_API_BASE: &str = "https://api.linkedin.com/v2";
 /// and sends replies via the same API. Requires a valid OAuth2 access token
 /// with `r_organization_social` and `w_organization_social` scopes.
 pub struct LinkedInAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: OAuth2 access token is zeroized on drop.
     access_token: Zeroizing<String>,
     /// LinkedIn organization URN (e.g., "urn:li:organization:12345").
@@ -45,9 +47,10 @@ impl LinkedInAdapter {
     /// Create a new LinkedIn adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `access_token` - OAuth2 Bearer token with messaging permissions.
     /// * `organization_id` - LinkedIn organization URN or numeric ID.
-    pub fn new(access_token: String, organization_id: String) -> Self {
+    pub fn new(id: String, access_token: String, organization_id: String) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         // Normalize organization_id to URN format
         let organization_id = if organization_id.starts_with("urn:") {
@@ -56,6 +59,7 @@ impl LinkedInAdapter {
             format!("urn:li:organization:{}", organization_id)
         };
         Self {
+            id,
             access_token: Zeroizing::new(access_token),
             organization_id,
             client: reqwest::Client::new(),
@@ -214,6 +218,10 @@ impl LinkedInAdapter {
 
 #[async_trait]
 impl ChannelAdapter for LinkedInAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "linkedin"
     }

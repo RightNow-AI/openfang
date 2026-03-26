@@ -34,6 +34,8 @@ const MAX_MESSAGE_LEN: usize = 7439;
 /// notifications and fetches full message content via the REST API. Outbound
 /// messages are sent directly via the REST API.
 pub struct WebexAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Bot token is zeroized on drop.
     bot_token: Zeroizing<String>,
     /// Room IDs to listen on (empty = all rooms the bot is in).
@@ -51,11 +53,13 @@ impl WebexAdapter {
     /// Create a new Webex adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `bot_token` - Webex Bot access token.
     /// * `allowed_rooms` - Room IDs to filter events for (empty = all).
-    pub fn new(bot_token: String, allowed_rooms: Vec<String>) -> Self {
+    pub fn new(id: String, bot_token: String, allowed_rooms: Vec<String>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             bot_token: Zeroizing::new(bot_token),
             allowed_rooms,
             client: reqwest::Client::new(),
@@ -230,6 +234,10 @@ impl WebexAdapter {
 
 #[async_trait]
 impl ChannelAdapter for WebexAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "webex"
     }

@@ -29,6 +29,8 @@ const DEFAULT_API_URL: &str = "https://api.telegram.org";
 
 /// Telegram Bot API adapter using long-polling.
 pub struct TelegramAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Bot token is zeroized on drop to prevent memory disclosure.
     token: Zeroizing<String>,
     client: reqwest::Client,
@@ -46,10 +48,12 @@ pub struct TelegramAdapter {
 impl TelegramAdapter {
     /// Create a new Telegram adapter.
     ///
+    /// `id` is the unique identifier for this adapter instance.
     /// `token` is the raw bot token (read from env by the caller).
     /// `allowed_users` is the list of Telegram user IDs allowed to interact (empty = allow all).
     /// `api_url` overrides the Telegram Bot API base URL (for proxies/mirrors).
     pub fn new(
+        id: String,
         token: String,
         allowed_users: Vec<String>,
         poll_interval: Duration,
@@ -61,6 +65,7 @@ impl TelegramAdapter {
             .trim_end_matches('/')
             .to_string();
         Self {
+            id,
             token: Zeroizing::new(token),
             client: reqwest::Client::new(),
             allowed_users,
@@ -397,6 +402,10 @@ impl TelegramAdapter {
 
 #[async_trait]
 impl ChannelAdapter for TelegramAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "telegram"
     }

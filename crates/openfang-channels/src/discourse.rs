@@ -26,6 +26,8 @@ const MAX_MESSAGE_LEN: usize = 32000;
 /// Polls the Discourse `/posts.json` endpoint for new posts and creates
 /// replies via `POST /posts.json`. Filters posts by category if configured.
 pub struct DiscourseAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Base URL of the Discourse instance (e.g., `"https://forum.example.com"`).
     base_url: String,
     /// SECURITY: API key is zeroized on drop.
@@ -47,11 +49,13 @@ impl DiscourseAdapter {
     /// Create a new Discourse adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `base_url` - Base URL of the Discourse instance.
     /// * `api_key` - Discourse API key (admin or user-scoped).
     /// * `api_username` - Username for the API key (usually "system" or a bot account).
     /// * `categories` - Category slugs to listen to (empty = all).
     pub fn new(
+        id: String,
         base_url: String,
         api_key: String,
         api_username: String,
@@ -60,6 +64,7 @@ impl DiscourseAdapter {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let base_url = base_url.trim_end_matches('/').to_string();
         Self {
+            id,
             base_url,
             api_key: Zeroizing::new(api_key),
             api_username,
@@ -165,6 +170,10 @@ impl DiscourseAdapter {
 
 #[async_trait]
 impl ChannelAdapter for DiscourseAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "discourse"
     }

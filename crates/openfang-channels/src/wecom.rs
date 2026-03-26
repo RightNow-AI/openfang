@@ -187,6 +187,8 @@ fn wecom_success_response() -> axum::response::Response {
 
 /// WeCom adapter.
 pub struct WeComAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// WeCom corp ID.
     corp_id: String,
     /// WeCom application agent ID.
@@ -210,9 +212,16 @@ pub struct WeComAdapter {
 
 impl WeComAdapter {
     /// Create a new WeCom adapter.
-    pub fn new(corp_id: String, agent_id: String, secret: String, webhook_port: u16) -> Self {
+    pub fn new(
+        id: String,
+        corp_id: String,
+        agent_id: String,
+        secret: String,
+        webhook_port: u16,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             corp_id,
             agent_id,
             secret: Zeroizing::new(secret),
@@ -228,6 +237,7 @@ impl WeComAdapter {
 
     /// Create a new WeCom adapter with callback verification.
     pub fn with_verification(
+        id: String,
         corp_id: String,
         agent_id: String,
         secret: String,
@@ -235,7 +245,7 @@ impl WeComAdapter {
         encoding_aes_key: Option<String>,
         token: Option<String>,
     ) -> Self {
-        let mut adapter = Self::new(corp_id, agent_id, secret, webhook_port);
+        let mut adapter = Self::new(id, corp_id, agent_id, secret, webhook_port);
         adapter.encoding_aes_key = encoding_aes_key;
         adapter.token = token;
         adapter
@@ -337,6 +347,10 @@ impl WeComAdapter {
 
 #[async_trait]
 impl ChannelAdapter for WeComAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "wecom"
     }

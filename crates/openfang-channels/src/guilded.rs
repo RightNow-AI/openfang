@@ -33,6 +33,8 @@ const MAX_MESSAGE_LEN: usize = 4000;
 /// Connects to the Guilded WebSocket gateway for real-time message events and
 /// sends replies via the REST API. Supports filtering by server (guild) IDs.
 pub struct GuildedAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Bot token is zeroized on drop.
     bot_token: Zeroizing<String>,
     /// Server (guild) IDs to listen on (empty = all servers the bot is in).
@@ -48,11 +50,13 @@ impl GuildedAdapter {
     /// Create a new Guilded adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `bot_token` - Guilded bot authentication token.
     /// * `server_ids` - Server IDs to filter events for (empty = all).
-    pub fn new(bot_token: String, server_ids: Vec<String>) -> Self {
+    pub fn new(id: String, bot_token: String, server_ids: Vec<String>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             bot_token: Zeroizing::new(bot_token),
             server_ids,
             client: reqwest::Client::new(),
@@ -121,6 +125,10 @@ impl GuildedAdapter {
 
 #[async_trait]
 impl ChannelAdapter for GuildedAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "guilded"
     }

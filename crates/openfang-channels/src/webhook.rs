@@ -50,6 +50,8 @@ const MAX_MESSAGE_LEN: usize = 65535;
 /// If `callback_url` is set, messages are POSTed there with the same signature
 /// scheme.
 pub struct WebhookAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Shared secret for HMAC-SHA256 signatures (zeroized on drop).
     secret: Zeroizing<String>,
     /// Port to listen on for incoming webhooks.
@@ -67,12 +69,14 @@ impl WebhookAdapter {
     /// Create a new generic webhook adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `secret` - Shared secret for HMAC-SHA256 signature verification.
     /// * `listen_port` - Port to listen for incoming webhook POST requests.
     /// * `callback_url` - Optional URL to POST outbound messages to.
-    pub fn new(secret: String, listen_port: u16, callback_url: Option<String>) -> Self {
+    pub fn new(id: String, secret: String, listen_port: u16, callback_url: Option<String>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             secret: Zeroizing::new(secret),
             listen_port,
             callback_url,
@@ -166,6 +170,10 @@ impl WebhookAdapter {
 
 #[async_trait]
 impl ChannelAdapter for WebhookAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "webhook"
     }

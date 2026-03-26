@@ -6,8 +6,8 @@
 use crate::formatter;
 use crate::router::AgentRouter;
 use crate::types::{
-    default_phase_emoji, AgentPhase, ChannelAdapter, ChannelContent, ChannelMessage, ChannelUser,
-    LifecycleReaction,
+    default_phase_emoji, AgentPhase, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType,
+    ChannelUser, LifecycleReaction,
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -407,7 +407,7 @@ async fn send_response(
     thread_id: Option<&str>,
     output_format: OutputFormat,
 ) {
-    let formatted = if adapter.name() == "wecom" {
+    let formatted = if adapter.channel_type() == ChannelType::Custom("wecom".to_owned()) {
         formatter::format_for_wecom(&text, output_format)
     } else {
         formatter::format_for_channel(&text, output_format)

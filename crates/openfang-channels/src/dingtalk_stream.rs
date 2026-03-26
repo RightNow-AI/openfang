@@ -31,6 +31,7 @@ const MAX_MESSAGE_LEN: usize = 20000;
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
 pub struct DingTalkStreamAdapter {
+    id: String,
     app_key: String,
     app_secret: String,
     robot_code: String,
@@ -41,9 +42,10 @@ pub struct DingTalkStreamAdapter {
 }
 
 impl DingTalkStreamAdapter {
-    pub fn new(app_key: String, app_secret: String, robot_code: String) -> Self {
+    pub fn new(id: String, app_key: String, app_secret: String, robot_code: String) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             app_key,
             app_secret,
             robot_code,
@@ -152,6 +154,10 @@ impl DingTalkStreamAdapter {
 
 #[async_trait]
 impl ChannelAdapter for DingTalkStreamAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "dingtalk_stream"
     }

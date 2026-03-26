@@ -20,6 +20,8 @@ const MAX_MESSAGE_LEN: usize = 4096;
 
 /// Matrix channel adapter using the Client-Server API.
 pub struct MatrixAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Matrix homeserver URL (e.g., `"https://matrix.org"`).
     homeserver_url: String,
     /// Bot's user ID (e.g., "@openfang:matrix.org").
@@ -42,6 +44,7 @@ pub struct MatrixAdapter {
 impl MatrixAdapter {
     /// Create a new Matrix adapter.
     pub fn new(
+        id: String,
         homeserver_url: String,
         user_id: String,
         access_token: String,
@@ -50,6 +53,7 @@ impl MatrixAdapter {
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             homeserver_url,
             user_id,
             access_token: Zeroizing::new(access_token),
@@ -200,6 +204,10 @@ async fn initial_sync(
 
 #[async_trait]
 impl ChannelAdapter for MatrixAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "matrix"
     }

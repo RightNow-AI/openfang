@@ -33,6 +33,8 @@ const KEYBASE_API_URL: &str = "http://127.0.0.1:5222/api";
 /// Interfaces with the Keybase Chat API to send and receive messages. Supports
 /// filtering by team names for team-based conversations.
 pub struct KeybaseAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Keybase username for authentication.
     username: String,
     /// SECURITY: Paper key is zeroized on drop.
@@ -53,12 +55,14 @@ impl KeybaseAdapter {
     /// Create a new Keybase adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `username` - Keybase username.
     /// * `paperkey` - Paper key for authentication.
     /// * `allowed_teams` - Team names to filter conversations (empty = all).
-    pub fn new(username: String, paperkey: String, allowed_teams: Vec<String>) -> Self {
+    pub fn new(id: String, username: String, paperkey: String, allowed_teams: Vec<String>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             username,
             paperkey: Zeroizing::new(paperkey),
             allowed_teams,
@@ -193,6 +197,10 @@ impl KeybaseAdapter {
 
 #[async_trait]
 impl ChannelAdapter for KeybaseAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "keybase"
     }

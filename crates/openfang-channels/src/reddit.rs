@@ -44,6 +44,8 @@ const USER_AGENT: &str = "openfang:v1.0.0 (by /u/openfang-bot)";
 /// Outbound messages are sent as comment replies via the Reddit API.
 /// OAuth2 password grant is used for authentication (script-type app).
 pub struct RedditAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Reddit OAuth2 client ID (from the app settings page).
     client_id: String,
     /// SECURITY: Reddit OAuth2 client secret, zeroized on drop.
@@ -69,12 +71,14 @@ impl RedditAdapter {
     /// Create a new Reddit adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `client_id` - Reddit OAuth2 app client ID.
     /// * `client_secret` - Reddit OAuth2 app client secret.
     /// * `username` - Reddit account username.
     /// * `password` - Reddit account password.
     /// * `subreddits` - Subreddits to monitor for new comments.
     pub fn new(
+        id: String,
         client_id: String,
         client_secret: String,
         username: String,
@@ -91,6 +95,7 @@ impl RedditAdapter {
             .unwrap_or_else(|_| reqwest::Client::new());
 
         Self {
+            id,
             client_id,
             client_secret: Zeroizing::new(client_secret),
             username,
@@ -308,6 +313,10 @@ fn parse_reddit_comment(comment: &serde_json::Value, own_username: &str) -> Opti
 
 #[async_trait]
 impl ChannelAdapter for RedditAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "reddit"
     }

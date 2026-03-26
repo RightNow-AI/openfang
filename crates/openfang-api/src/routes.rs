@@ -2792,6 +2792,8 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> impl IntoRespo
     let mut channels = Vec::new();
     let mut configured_count = 0u32;
 
+    let kernel = state.kernel.clone();
+
     for meta in CHANNEL_REGISTRY {
         let config_list = get_channel_configs(&live_channels, meta.name);
         let has_configs = !config_list.is_empty();
@@ -2824,21 +2826,22 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> impl IntoRespo
                     .get("name")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty());
-                let icon_override = config_val
-                    .get("icon")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty());
                 let id = config_val.get("id").unwrap_or_default();
 
                 if id == meta.name {
                     continue;
                 }
 
+                let connected = kernel
+                    .channel_adapters
+                    .contains_key(id.as_str().unwrap_or_default());
+
                 channels.push(serde_json::json!({
                     "id": id,
                     "name": meta.name,
                     "display_name": name_override.unwrap_or(&meta.display_name),
-                    "icon": icon_override.unwrap_or(&meta.icon),
+                    "connected": connected,
+                    "icon": meta.icon,
                     "description": meta.description,
                     "category": meta.category,
                     "difficulty": meta.difficulty,
@@ -2890,7 +2893,7 @@ pub async fn configure_channel(
     let id = fields
         .get("id")
         .and_then(|v| v.as_str().map(|s| s.to_owned()))
-        .unwrap_or(uuid::Uuid::new_v4().to_string());
+        .unwrap_or(uuid::Uuid::new_v4().to_string().replace("-", ""));
     let robot_name = fields
         .get("name")
         .and_then(|v| v.as_str())

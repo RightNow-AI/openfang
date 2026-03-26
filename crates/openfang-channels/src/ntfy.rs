@@ -26,6 +26,8 @@ const DEFAULT_SERVER_URL: &str = "https://ntfy.sh";
 /// Subscribes to notifications via SSE and publishes replies as new
 /// notifications. Supports authentication for protected topics.
 pub struct NtfyAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// ntfy server URL (default: `"https://ntfy.sh"`).
     server_url: String,
     /// Topic name to subscribe and publish to.
@@ -43,10 +45,11 @@ impl NtfyAdapter {
     /// Create a new ntfy adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `server_url` - ntfy server URL (empty = default `"https://ntfy.sh"`).
     /// * `topic` - Topic name to subscribe/publish to.
     /// * `token` - Bearer token for authentication (empty = no auth).
-    pub fn new(server_url: String, topic: String, token: String) -> Self {
+    pub fn new(id: String, server_url: String, topic: String, token: String) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let server_url = if server_url.is_empty() {
             DEFAULT_SERVER_URL.to_string()
@@ -54,6 +57,7 @@ impl NtfyAdapter {
             server_url.trim_end_matches('/').to_string()
         };
         Self {
+            id,
             server_url,
             topic,
             token: Zeroizing::new(token),
@@ -139,6 +143,10 @@ impl NtfyAdapter {
 
 #[async_trait]
 impl ChannelAdapter for NtfyAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "ntfy"
     }

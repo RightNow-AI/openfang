@@ -34,6 +34,8 @@ const TOKEN_REFRESH_BUFFER_SECS: u64 = 300;
 /// Outbound messages are sent via the Bot Framework v3 REST API using a
 /// cached OAuth2 bearer token (client credentials flow).
 pub struct TeamsAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Bot Framework App ID (also called "Microsoft App ID").
     app_id: String,
     /// SECURITY: App password is zeroized on drop to prevent memory disclosure.
@@ -54,11 +56,13 @@ pub struct TeamsAdapter {
 impl TeamsAdapter {
     /// Create a new Teams adapter.
     ///
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `app_id` — Bot Framework application ID.
     /// * `app_password` — Bot Framework application password (client secret).
     /// * `webhook_port` — Local port for the inbound webhook HTTP server.
     /// * `allowed_tenants` — Azure AD tenant IDs to accept (empty = accept all).
     pub fn new(
+        id: String,
         app_id: String,
         app_password: String,
         webhook_port: u16,
@@ -66,6 +70,7 @@ impl TeamsAdapter {
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             app_id,
             app_password: Zeroizing::new(app_password),
             webhook_port,
@@ -271,6 +276,10 @@ fn parse_teams_activity(
 
 #[async_trait]
 impl ChannelAdapter for TeamsAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "teams"
     }

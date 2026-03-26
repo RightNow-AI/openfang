@@ -26,6 +26,8 @@ const DINGTALK_SEND_URL: &str = "https://oapi.dingtalk.com/robot/send";
 /// Uses a webhook listener to receive incoming messages from DingTalk
 /// conversations and posts replies via the signed Robot Send API.
 pub struct DingTalkAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Robot access token is zeroized on drop.
     access_token: Zeroizing<String>,
     /// SECURITY: Signing secret for HMAC-SHA256 verification.
@@ -43,12 +45,14 @@ impl DingTalkAdapter {
     /// Create a new DingTalk Robot adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `access_token` - Robot access token from DingTalk.
     /// * `secret` - Signing secret for request verification.
     /// * `webhook_port` - Local port to listen for DingTalk callbacks.
-    pub fn new(access_token: String, secret: String, webhook_port: u16) -> Self {
+    pub fn new(id: String, access_token: String, secret: String, webhook_port: u16) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             access_token: Zeroizing::new(access_token),
             secret: Zeroizing::new(secret),
             webhook_port,
@@ -126,6 +130,10 @@ impl DingTalkAdapter {
 
 #[async_trait]
 impl ChannelAdapter for DingTalkAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "dingtalk"
     }

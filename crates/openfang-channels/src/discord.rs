@@ -35,6 +35,8 @@ mod opcode {
 
 /// Discord Gateway adapter using WebSocket.
 pub struct DiscordAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Bot token is zeroized on drop to prevent memory disclosure.
     token: Zeroizing<String>,
     client: reqwest::Client,
@@ -54,6 +56,7 @@ pub struct DiscordAdapter {
 
 impl DiscordAdapter {
     pub fn new(
+        id: String,
         token: String,
         allowed_guilds: Vec<String>,
         allowed_users: Vec<String>,
@@ -62,6 +65,7 @@ impl DiscordAdapter {
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             token: Zeroizing::new(token),
             client: reqwest::Client::new(),
             allowed_guilds,
@@ -137,6 +141,10 @@ impl DiscordAdapter {
 
 #[async_trait]
 impl ChannelAdapter for DiscordAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "discord"
     }

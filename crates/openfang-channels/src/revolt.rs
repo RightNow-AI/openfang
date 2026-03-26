@@ -40,6 +40,8 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 20;
 /// Bonfire gateway. Outbound messages are sent via the REST API.
 /// The adapter handles automatic reconnection with exponential backoff.
 pub struct RevoltAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Bot token is zeroized on drop to prevent memory disclosure.
     bot_token: Zeroizing<String>,
     /// Revolt API URL (default: `"https://api.revolt.chat"`).
@@ -61,9 +63,11 @@ impl RevoltAdapter {
     /// Create a new Revolt adapter with default API and WebSocket URLs.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `bot_token` - Revolt bot token for authentication.
-    pub fn new(bot_token: String) -> Self {
+    pub fn new(id: String, bot_token: String) -> Self {
         Self::with_urls(
+            id,
             bot_token,
             DEFAULT_API_URL.to_string(),
             DEFAULT_WS_URL.to_string(),
@@ -71,11 +75,12 @@ impl RevoltAdapter {
     }
 
     /// Create a new Revolt adapter with custom API and WebSocket URLs.
-    pub fn with_urls(bot_token: String, api_url: String, ws_url: String) -> Self {
+    pub fn with_urls(id: String, bot_token: String, api_url: String, ws_url: String) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let api_url = api_url.trim_end_matches('/').to_string();
         let ws_url = ws_url.trim_end_matches('/').to_string();
         Self {
+            id,
             bot_token: Zeroizing::new(bot_token),
             api_url,
             ws_url,
@@ -88,8 +93,8 @@ impl RevoltAdapter {
     }
 
     /// Create a new Revolt adapter with channel restrictions.
-    pub fn with_channels(bot_token: String, allowed_channels: Vec<String>) -> Self {
-        let mut adapter = Self::new(bot_token);
+    pub fn with_channels(id: String, bot_token: String, allowed_channels: Vec<String>) -> Self {
+        let mut adapter = Self::new(id, bot_token);
         adapter.allowed_channels = allowed_channels;
         adapter
     }
@@ -293,6 +298,10 @@ fn parse_revolt_message(
 
 #[async_trait]
 impl ChannelAdapter for RevoltAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "revolt"
     }

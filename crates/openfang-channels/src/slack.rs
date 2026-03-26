@@ -24,6 +24,8 @@ const SLACK_MSG_LIMIT: usize = 3000;
 
 /// Slack Socket Mode adapter.
 pub struct SlackAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Tokens are zeroized on drop to prevent memory disclosure.
     app_token: Zeroizing<String>,
     bot_token: Zeroizing<String>,
@@ -45,6 +47,7 @@ pub struct SlackAdapter {
 
 impl SlackAdapter {
     pub fn new(
+        id: String,
         app_token: String,
         bot_token: String,
         allowed_channels: Vec<String>,
@@ -54,6 +57,7 @@ impl SlackAdapter {
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             app_token: Zeroizing::new(app_token),
             bot_token: Zeroizing::new(bot_token),
             client: reqwest::Client::new(),
@@ -135,6 +139,10 @@ impl SlackAdapter {
 
 #[async_trait]
 impl ChannelAdapter for SlackAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "slack"
     }

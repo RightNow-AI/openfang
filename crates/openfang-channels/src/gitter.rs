@@ -27,6 +27,8 @@ const GITTER_API_URL: &str = "https://api.gitter.im/v1/rooms";
 /// Receives messages via the Gitter Streaming API (newline-delimited JSON)
 /// and sends replies via the REST API.
 pub struct GitterAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Bearer token is zeroized on drop.
     token: Zeroizing<String>,
     /// Gitter room ID to listen on.
@@ -42,11 +44,13 @@ impl GitterAdapter {
     /// Create a new Gitter adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `token` - Gitter personal access token.
     /// * `room_id` - Gitter room ID to listen on and send to.
-    pub fn new(token: String, room_id: String) -> Self {
+    pub fn new(id: String, token: String, room_id: String) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             token: Zeroizing::new(token),
             room_id,
             client: reqwest::Client::new(),
@@ -148,6 +152,10 @@ impl GitterAdapter {
 
 #[async_trait]
 impl ChannelAdapter for GitterAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "gitter"
     }

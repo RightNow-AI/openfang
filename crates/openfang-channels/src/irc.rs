@@ -37,6 +37,8 @@ const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 /// Connects to an IRC server, authenticates with NICK/USER (and optional PASS),
 /// joins configured channels, and listens for PRIVMSG events.
 pub struct IrcAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// IRC server hostname (e.g., "irc.libera.chat").
     server: String,
     /// IRC server port (typically 6667 for plaintext, 6697 for TLS).
@@ -61,6 +63,7 @@ pub struct IrcAdapter {
 impl IrcAdapter {
     /// Create a new IRC adapter.
     ///
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `server` — IRC server hostname.
     /// * `port` — IRC server port (6667 for plaintext).
     /// * `nick` — Bot's IRC nickname.
@@ -68,6 +71,7 @@ impl IrcAdapter {
     /// * `channels` — IRC channels to join (must start with `#`).
     /// * `use_tls` — Reserved for future TLS support (currently ignored).
     pub fn new(
+        id: String,
         server: String,
         port: u16,
         nick: String,
@@ -77,6 +81,7 @@ impl IrcAdapter {
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             server,
             port,
             nick,
@@ -219,6 +224,10 @@ fn parse_privmsg(line: &IrcLine, bot_nick: &str) -> Option<ChannelMessage> {
 
 #[async_trait]
 impl ChannelAdapter for IrcAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "irc"
     }

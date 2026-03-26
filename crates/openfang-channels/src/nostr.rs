@@ -29,6 +29,8 @@ const MAX_MESSAGE_LEN: usize = 4096;
 /// by publishing signed events. The private key is used for signing events
 /// and deriving the public key for subscriptions.
 pub struct NostrAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Private key (hex-encoded nsec or raw hex) is zeroized on drop.
     private_key: Zeroizing<String>,
     /// List of relay WebSocket URLs to connect to.
@@ -44,11 +46,13 @@ impl NostrAdapter {
     /// Create a new Nostr adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `private_key` - Hex-encoded private key for signing events.
     /// * `relays` - WebSocket URLs of Nostr relays to connect to.
-    pub fn new(private_key: String, relays: Vec<String>) -> Self {
+    pub fn new(id: String, private_key: String, relays: Vec<String>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             private_key: Zeroizing::new(private_key),
             relays,
             shutdown_tx: Arc::new(shutdown_tx),
@@ -152,6 +156,10 @@ impl NostrAdapter {
 
 #[async_trait]
 impl ChannelAdapter for NostrAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "nostr"
     }

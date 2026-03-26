@@ -44,6 +44,8 @@ struct ReplyCtx {
 
 /// Email channel adapter using IMAP for receiving and SMTP for sending.
 pub struct EmailAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// IMAP server host.
     imap_host: String,
     /// IMAP port (993 for TLS).
@@ -73,6 +75,7 @@ impl EmailAdapter {
     /// Create a new email adapter.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        id: String,
         imap_host: String,
         imap_port: u16,
         smtp_host: String,
@@ -85,6 +88,7 @@ impl EmailAdapter {
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             imap_host,
             imap_port,
             smtp_host,
@@ -306,6 +310,10 @@ fn fetch_unseen_emails(
 
 #[async_trait]
 impl ChannelAdapter for EmailAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "email"
     }

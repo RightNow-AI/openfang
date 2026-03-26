@@ -39,6 +39,8 @@ const DEFAULT_SENDER_NAME: &str = "OpenFang";
 /// Outbound messages are sent via the Viber send_message REST API with the
 /// `X-Viber-Auth-Token` header for authentication.
 pub struct ViberAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Auth token is zeroized on drop to prevent memory disclosure.
     auth_token: Zeroizing<String>,
     /// Public webhook URL that Viber will POST events to.
@@ -60,13 +62,15 @@ impl ViberAdapter {
     /// Create a new Viber adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `auth_token` - Viber bot authentication token.
     /// * `webhook_url` - Public URL where Viber will send webhook events.
     /// * `webhook_port` - Local port for the inbound webhook HTTP server.
-    pub fn new(auth_token: String, webhook_url: String, webhook_port: u16) -> Self {
+    pub fn new(id: String, auth_token: String, webhook_url: String, webhook_port: u16) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let webhook_url = webhook_url.trim_end_matches('/').to_string();
         Self {
+            id,
             auth_token: Zeroizing::new(auth_token),
             webhook_url,
             webhook_port,
@@ -80,13 +84,14 @@ impl ViberAdapter {
 
     /// Create a new Viber adapter with a custom sender name and avatar.
     pub fn with_sender(
+        id: String,
         auth_token: String,
         webhook_url: String,
         webhook_port: u16,
         sender_name: String,
         sender_avatar: Option<String>,
     ) -> Self {
-        let mut adapter = Self::new(auth_token, webhook_url, webhook_port);
+        let mut adapter = Self::new(id, auth_token, webhook_url, webhook_port);
         adapter.sender_name = sender_name;
         adapter.sender_avatar = sender_avatar;
         adapter
@@ -299,6 +304,10 @@ fn parse_viber_event(event: &serde_json::Value) -> Option<ChannelMessage> {
 
 #[async_trait]
 impl ChannelAdapter for ViberAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "viber"
     }

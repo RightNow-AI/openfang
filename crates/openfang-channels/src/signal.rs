@@ -18,6 +18,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Signal adapter via signal-cli REST API.
 pub struct SignalAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// URL of signal-cli REST API (e.g., "http://localhost:8080").
     api_url: String,
     /// Registered phone number.
@@ -33,9 +35,10 @@ pub struct SignalAdapter {
 
 impl SignalAdapter {
     /// Create a new Signal adapter.
-    pub fn new(api_url: String, phone_number: String, allowed_users: Vec<String>) -> Self {
+    pub fn new(id: String, api_url: String, phone_number: String, allowed_users: Vec<String>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             api_url,
             phone_number,
             client: reqwest::Client::new(),
@@ -93,6 +96,10 @@ impl SignalAdapter {
 
 #[async_trait]
 impl ChannelAdapter for SignalAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "signal"
     }

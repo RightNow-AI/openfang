@@ -35,6 +35,8 @@ const MSG_TYPE_TEXT_MESSAGE: u16 = 11;
 /// (no voice). The protocol uses a 6-byte header: 2-byte big-endian message
 /// type followed by 4-byte big-endian payload length.
 pub struct MumbleAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Mumble server hostname or IP.
     host: String,
     /// TCP port (default: 64738).
@@ -56,12 +58,14 @@ impl MumbleAdapter {
     /// Create a new Mumble text-chat adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `host` - Hostname or IP of the Mumble server.
     /// * `port` - TCP port (0 = use default 64738).
     /// * `password` - Server password (empty string if none).
     /// * `username` - Username for authentication.
     /// * `channel_name` - Mumble channel to join.
     pub fn new(
+        id: String,
         host: String,
         port: u16,
         password: String,
@@ -71,6 +75,7 @@ impl MumbleAdapter {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let port = if port == 0 { DEFAULT_PORT } else { port };
         Self {
+            id,
             host,
             port,
             password: Zeroizing::new(password),
@@ -272,6 +277,10 @@ impl MumbleAdapter {
 
 #[async_trait]
 impl ChannelAdapter for MumbleAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "mumble"
     }

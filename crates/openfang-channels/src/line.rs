@@ -39,6 +39,8 @@ const MAX_MESSAGE_LEN: usize = 5000;
 ///
 /// Outbound messages are sent via the push message API with a bearer token.
 pub struct LineAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Channel secret for webhook signature verification, zeroized on drop.
     channel_secret: Zeroizing<String>,
     /// SECURITY: Channel access token for outbound API calls, zeroized on drop.
@@ -56,12 +58,19 @@ impl LineAdapter {
     /// Create a new LINE adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `channel_secret` - Channel secret for HMAC-SHA256 signature verification.
     /// * `access_token` - Long-lived channel access token for sending messages.
     /// * `webhook_port` - Local port for the inbound webhook HTTP server.
-    pub fn new(channel_secret: String, access_token: String, webhook_port: u16) -> Self {
+    pub fn new(
+        id: String,
+        channel_secret: String,
+        access_token: String,
+        webhook_port: u16,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             channel_secret: Zeroizing::new(channel_secret),
             access_token: Zeroizing::new(access_token),
             webhook_port,
@@ -328,6 +337,10 @@ fn parse_line_event(event: &serde_json::Value) -> Option<ChannelMessage> {
 
 #[async_trait]
 impl ChannelAdapter for LineAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "line"
     }
@@ -373,6 +386,7 @@ impl ChannelAdapter for LineAdapter {
 
                             // Create a temporary adapter-like verifier
                             let adapter = LineAdapter {
+                                id: String::new(),
                                 channel_secret: secret.as_ref().clone(),
                                 access_token: Zeroizing::new(String::new()),
                                 webhook_port: 0,
@@ -500,6 +514,7 @@ mod tests {
     #[test]
     fn test_line_adapter_creation() {
         let adapter = LineAdapter::new(
+            "test_id".to_string(),
             "channel-secret-123".to_string(),
             "access-token-456".to_string(),
             8080,
@@ -514,7 +529,12 @@ mod tests {
 
     #[test]
     fn test_line_adapter_both_tokens() {
-        let adapter = LineAdapter::new("secret".to_string(), "token".to_string(), 9000);
+        let adapter = LineAdapter::new(
+            "test_id".to_string(),
+            "secret".to_string(),
+            "token".to_string(),
+            9000,
+        );
         // Verify both secrets are stored as Zeroizing
         assert_eq!(adapter.channel_secret.as_str(), "secret");
         assert_eq!(adapter.access_token.as_str(), "token");

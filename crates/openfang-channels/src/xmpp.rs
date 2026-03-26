@@ -23,6 +23,8 @@ use zeroize::Zeroizing;
 /// Holds all configuration needed for a full XMPP client but defers actual
 /// connection to when the `tokio-xmpp` dependency is added.
 pub struct XmppAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// JID (Jabber ID) of the bot (e.g., "bot@example.com").
     jid: String,
     /// SECURITY: Password is zeroized on drop.
@@ -44,12 +46,14 @@ impl XmppAdapter {
     /// Create a new XMPP adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `jid` - Full JID of the bot (user@domain).
     /// * `password` - XMPP account password.
     /// * `server` - Server hostname (may differ from JID domain).
     /// * `port` - Server port (typically 5222).
     /// * `rooms` - MUC room JIDs to auto-join.
     pub fn new(
+        id: String,
         jid: String,
         password: String,
         server: String,
@@ -58,6 +62,7 @@ impl XmppAdapter {
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             jid,
             password: Zeroizing::new(password),
             server,
@@ -89,6 +94,10 @@ impl XmppAdapter {
 
 #[async_trait]
 impl ChannelAdapter for XmppAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "xmpp"
     }

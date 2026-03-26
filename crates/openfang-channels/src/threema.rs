@@ -29,6 +29,8 @@ const MAX_MESSAGE_LEN: usize = 3500;
 /// Listens for inbound messages via a configurable HTTP webhook server and sends
 /// outbound messages via the Threema Gateway `send_simple` endpoint.
 pub struct ThreemaAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Threema Gateway ID (8-character alphanumeric, starts with '*').
     threema_id: String,
     /// SECURITY: API secret is zeroized on drop.
@@ -46,12 +48,14 @@ impl ThreemaAdapter {
     /// Create a new Threema Gateway adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `threema_id` - Threema Gateway ID (e.g., "*MYGATEW").
     /// * `secret` - API secret for the Gateway ID.
     /// * `webhook_port` - Local port to bind the inbound webhook listener on.
-    pub fn new(threema_id: String, secret: String, webhook_port: u16) -> Self {
+    pub fn new(id: String, threema_id: String, secret: String, webhook_port: u16) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             threema_id,
             secret: Zeroizing::new(secret),
             webhook_port,
@@ -176,6 +180,10 @@ fn parse_threema_webhook(
 
 #[async_trait]
 impl ChannelAdapter for ThreemaAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "threema"
     }

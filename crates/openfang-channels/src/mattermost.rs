@@ -28,6 +28,8 @@ const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 /// Inbound messages arrive via WebSocket events (`posted`).
 /// Outbound messages are sent via `POST /api/v4/posts`.
 pub struct MattermostAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Mattermost server URL (e.g., `"https://mattermost.example.com"`).
     server_url: String,
     /// SECURITY: Auth token is zeroized on drop to prevent memory disclosure.
@@ -46,12 +48,14 @@ pub struct MattermostAdapter {
 impl MattermostAdapter {
     /// Create a new Mattermost adapter.
     ///
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `server_url` — Base Mattermost server URL (no trailing slash).
     /// * `token` — Personal access token or bot token.
     /// * `allowed_channels` — Channel IDs to listen on (empty = all).
-    pub fn new(server_url: String, token: String, allowed_channels: Vec<String>) -> Self {
+    pub fn new(id: String, server_url: String, token: String, allowed_channels: Vec<String>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             server_url: server_url.trim_end_matches('/').to_string(),
             token: Zeroizing::new(token),
             allowed_channels,
@@ -228,6 +232,10 @@ fn parse_mattermost_event(
 
 #[async_trait]
 impl ChannelAdapter for MattermostAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "mattermost"
     }

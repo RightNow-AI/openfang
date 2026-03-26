@@ -33,6 +33,8 @@ const MAX_MESSAGE_LEN: usize = 2000;
 /// Outbound messages are sent via the Messenger Send API using
 /// the page access token for authentication.
 pub struct MessengerAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// SECURITY: Page access token for the Send API, zeroized on drop.
     page_token: Zeroizing<String>,
     /// SECURITY: Verify token for webhook registration, zeroized on drop.
@@ -50,12 +52,14 @@ impl MessengerAdapter {
     /// Create a new Messenger adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `page_token` - Facebook page access token for the Send API.
     /// * `verify_token` - Token used to verify the webhook during Facebook's setup.
     /// * `webhook_port` - Local port for the inbound webhook HTTP server.
-    pub fn new(page_token: String, verify_token: String, webhook_port: u16) -> Self {
+    pub fn new(id: String, page_token: String, verify_token: String, webhook_port: u16) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
+            id,
             page_token: Zeroizing::new(page_token),
             verify_token: Zeroizing::new(verify_token),
             webhook_port,
@@ -256,6 +260,10 @@ fn parse_messenger_entry(entry: &serde_json::Value) -> Vec<ChannelMessage> {
 
 #[async_trait]
 impl ChannelAdapter for MessengerAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "messenger"
     }

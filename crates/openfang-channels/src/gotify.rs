@@ -26,6 +26,8 @@ const MAX_MESSAGE_LEN: usize = 65535;
 /// client token and sends messages via the REST API (`/message`) using an
 /// app token.
 pub struct GotifyAdapter {
+    /// Unique identifier for this adapter instance.
+    id: String,
     /// Gotify server URL (e.g., `"https://gotify.example.com"`).
     server_url: String,
     /// SECURITY: App token for sending messages (zeroized on drop).
@@ -43,13 +45,15 @@ impl GotifyAdapter {
     /// Create a new Gotify adapter.
     ///
     /// # Arguments
+    /// * `id` - Unique identifier for this adapter instance.
     /// * `server_url` - Base URL of the Gotify server.
     /// * `app_token` - Token for an application (used to send messages).
     /// * `client_token` - Token for a client (used to receive messages via WebSocket).
-    pub fn new(server_url: String, app_token: String, client_token: String) -> Self {
+    pub fn new(id: String, server_url: String, app_token: String, client_token: String) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let server_url = server_url.trim_end_matches('/').to_string();
         Self {
+            id,
             server_url,
             app_token: Zeroizing::new(app_token),
             client_token: Zeroizing::new(client_token),
@@ -144,6 +148,10 @@ impl GotifyAdapter {
 
 #[async_trait]
 impl ChannelAdapter for GotifyAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         "gotify"
     }
