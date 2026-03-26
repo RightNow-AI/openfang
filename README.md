@@ -38,6 +38,14 @@ Any standalone archived `shipinbot` copy outside `projects/shipinbot/` should
 be treated as reference only and should not be used as the default runtime or
 editing entrypoint.
 
+This is the main difference from the old split mode:
+
+- current mode: one active source tree under `projects/shipinbot/`, shared with the OpenFang checkout
+- old split mode: a separate standalone `shipinbot` checkout used as the default editing/runtime entry
+
+Git is still two-layered in the current mode: `projects/shipinbot/` has its own
+Git history, and the parent repo stores the submodule pointer.
+
 ## Quick Start
 
 ### Source Build
@@ -80,6 +88,13 @@ runtime stays single-instance and clean:
 
 ```bash
 scripts/check-host-stack.sh
+```
+
+If you modify `projects/shipinbot/`, prefer the helper below from the parent
+repo root instead of manually doing the two-step commit every time:
+
+```bash
+scripts/shipinbot-commit.sh "fix: <what changed>"
 ```
 
 ### Install Release

@@ -25,6 +25,9 @@ Video processing agent implementation demonstrating OpenFang integration.
 **Active local path:**
 - `scripts/shipinbot-path.sh --path`
 
+**Preferred submit flow from the parent repo root:**
+- `scripts/shipinbot-commit.sh "fix: <what changed>"`
+
 **Key files:**
 - `projects/shipinbot/scripts/openfang_clean_publish_bridge.py` - Python bridge for video workflows
 - `projects/shipinbot/openfang-hand/shipinfabu/HAND.toml` - Agent manifest (1759 lines)
@@ -58,9 +61,32 @@ git add projects/shipinbot
 git commit -m "Update shipinbot submodule"
 ```
 
+Preferred helper:
+
+```bash
+scripts/shipinbot-commit.sh "fix: <what changed>"
+```
+
+Equivalent manual flow:
+
+```bash
+cd projects/shipinbot
+git add <files>
+git commit -m "Update shipinbot code"
+git push origin main
+cd ../..
+git add projects/shipinbot
+git commit -m "Update shipinbot submodule"
+git push origin main
+```
+
 If this machine also has a standalone archived `shipinbot` checkout outside
 `projects/shipinbot/`, treat it as a historical archive only. Do not use that
 archive path as the normal runtime or editing entry.
+
+That is the key difference from the old split mode: keep one active runtime and
+editing tree, archive the old standalone copy, and let the parent repo manage
+only the submodule pointer.
 
 ## Cross-Project Development
 

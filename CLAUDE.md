@@ -295,6 +295,7 @@ telegram = "-123456789"  # Negative number for groups
 - `projects/shipinbot/` is a Git submodule in this checkout
 - use `projects/shipinbot/` as the default working path in docs, prompts, and commands
 - OpenFang repo stores the submodule pointer (commit hash), not a vendored copy
+- if an archived standalone `shipinbot` checkout exists elsewhere on disk, treat it as reference only
 
 ### Common Operations
 
@@ -307,7 +308,12 @@ git add projects/shipinbot
 git commit -m "Update shipinbot submodule"
 ```
 
-**Commit changes in submodule**:
+**Preferred commit flow**:
+```bash
+scripts/shipinbot-commit.sh "fix: <what changed>"
+```
+
+**Equivalent manual flow**:
 ```bash
 cd projects/shipinbot
 git add <files>
@@ -316,6 +322,7 @@ git push origin main
 cd ../..
 git add projects/shipinbot
 git commit -m "Update submodule pointer"
+git push origin main
 ```
 
 **Clone this repo elsewhere**:
