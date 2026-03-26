@@ -3,6 +3,8 @@
 
 set -e
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
 echo "=== Telegram Local API 部署验证 ==="
 echo ""
 
@@ -249,7 +251,7 @@ echo -e "${GREEN}✅ 所有检查通过！${NC}"
 echo ""
 echo "下一步："
 echo "1. 启动 OpenFang："
-echo "   cd <repo-root>"
+echo "   cd $REPO_ROOT"
 echo "   cargo build --release -p openfang-cli"
 echo "   TELEGRAM_BOT_TOKEN=xxx TELEGRAM_API_HASH=xxx ${DEFAULT_PROVIDER_KEY_ENV:-GROQ_API_KEY}=xxx target/release/openfang start"
 echo ""

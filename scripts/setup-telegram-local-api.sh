@@ -3,6 +3,8 @@
 
 set -e
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
 echo "=== Telegram Local API 配置向导 ==="
 echo ""
 
@@ -114,7 +116,7 @@ echo "   export TELEGRAM_BOT_TOKEN='你的bot_token'"
 echo "   export TELEGRAM_API_HASH='你的api_hash'"
 echo ""
 echo "2. 启动 OpenFang："
-echo "   cd <repo-root>"
+echo "   cd $REPO_ROOT"
 echo "   target/release/openfang start"
 echo ""
 echo "3. 测试大文件下载："
