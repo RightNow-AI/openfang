@@ -84,14 +84,32 @@ import re
 import sys
 
 count = 0
-patterns = (
-    re.compile(r"(^|[ /])openfang(\.exe)?\s+start($|\s)"),
-    re.compile(r"\bcargo\s+run\b.*(?:\s-p\s+openfang-cli\b|\s--package\s+openfang-cli\b).*\s--\s+start($|\s)"),
-)
+binary_pattern = re.compile(r"(^|[ /])openfang(\.exe)?$")
 
 for raw in sys.stdin:
-    command = " ".join(raw.split())
-    if any(pattern.search(command) for pattern in patterns):
+    tokens = raw.split()
+    if not tokens:
+        continue
+    binary_index = next(
+        (index for index, token in enumerate(tokens) if binary_pattern.search(token)),
+        None,
+    )
+    if binary_index is not None and "start" in tokens[binary_index + 1:]:
+        count += 1
+        continue
+    if tokens[0] == "cargo" and "run" in tokens:
+        if any(token in {"-p", "--package"} for token in tokens) and "openfang-cli" in tokens:
+            if "--" in tokens:
+                separator_index = tokens.index("--")
+                if "start" in tokens[separator_index + 1:]:
+                    count += 1
+                    continue
+        command = " ".join(tokens)
+        if re.search(r"\bcargo\s+run\b.*(?:\s-p\s+openfang-cli\b|\s--package\s+openfang-cli\b).*\s--\s+start($|\s)", command):
+            count += 1
+            continue
+    command = " ".join(tokens)
+    if re.search(r"(^|[ /])openfang(\.exe)?\s+start($|\s)", command):
         count += 1
 
 print(count)

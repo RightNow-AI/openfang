@@ -165,7 +165,10 @@ import os
 import stat
 import sys
 from pathlib import Path
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 PLACEHOLDER_API_KEYS = {
     "",
@@ -600,7 +603,7 @@ from pathlib import Path
 try:
     import tomllib
 except ModuleNotFoundError:
-    raise SystemExit(1)
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 PY
