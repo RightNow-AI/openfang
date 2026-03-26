@@ -296,6 +296,7 @@ telegram = "-123456789"  # Negative number for groups
 - use `projects/shipinbot/` as the default working path in docs, prompts, and commands
 - OpenFang repo stores the submodule pointer (commit hash), not a vendored copy
 - if an archived standalone `shipinbot` checkout exists elsewhere on disk, treat it as reference only
+- for day-to-day local runtime management, prefer `scripts/local-stack.sh` from the parent repo root
 
 ### Common Operations
 

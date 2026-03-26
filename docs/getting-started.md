@@ -77,18 +77,16 @@ target/debug/openfang start
 ```
 
 If you are using this fork's integrated `shipinbot` workflow on the same
-machine, start the media service from the current checkout as a second host
-process:
+machine, the preferred local entrypoint is the parent repo stack script:
 
 ```bash
-cd projects/shipinbot
-./scripts/start_media_web.sh
+scripts/local-stack.sh start
 ```
 
 For this fork, the fastest full local loop on macOS is usually:
 
-- `target/debug/openfang start` for OpenFang
-- `projects/shipinbot/scripts/start_media_web.sh` for the media service
+- `scripts/local-stack.sh start` to launch the managed host-host stack
+- `scripts/local-stack.sh status` to verify health and single-instance state
 
 Do not default to `docker compose up --build` or a separate
 `~/shipinbot-runtime` copy unless you are explicitly testing those topologies.

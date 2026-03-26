@@ -59,20 +59,24 @@ GROQ_API_KEY=your-key cargo run -p openfang-cli -- start
 Open the dashboard at `http://127.0.0.1:4200/`.
 
 For the fastest day-to-day local loop on the same Mac, this fork should usually
-run as two host processes from the current checkout:
+run as one managed host-host stack from the current checkout:
 
 ```bash
-cargo build -p openfang-cli
-target/debug/openfang start
-
-cd "$(scripts/shipinbot-path.sh --path)"
-./scripts/start_media_web.sh
+scripts/local-stack.sh start
 ```
 
 That host-host topology is the default maintainer baseline for this fork's
 integrated OpenFang + shipinbot development flow. Do not default to
 `docker compose up --build` or a separate `~/shipinbot-runtime` copy unless you
 are intentionally validating container topology or release parity.
+
+Useful stack commands from the parent repo root:
+
+```bash
+scripts/local-stack.sh status
+scripts/local-stack.sh stop
+scripts/local-stack.sh logs
+```
 
 For host-host troubleshooting, do not treat `~/.openfang/daemon.json` as the
 only source of truth. The CLI now probes the configured `api_listen` from
