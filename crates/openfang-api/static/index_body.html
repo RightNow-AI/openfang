@@ -1155,28 +1155,26 @@
                     <div class="form-group">
                       <label>Provider</label>
                       <select class="form-select" x-model="spawnForm.provider">
-                        <optgroup label="Cloud">
-                          <option value="anthropic">Anthropic</option>
-                          <option value="openai">OpenAI</option>
-                          <option value="gemini">Google Gemini</option>
-                          <option value="groq">Groq</option>
-                          <option value="deepseek">DeepSeek</option>
-                          <option value="openrouter">OpenRouter</option>
-                          <option value="mistral">Mistral</option>
-                          <option value="xai">xAI</option>
-                          <option value="together">Together</option>
-                          <option value="fireworks">Fireworks</option>
-                          <option value="cerebras">Cerebras</option>
-                          <option value="sambanova">SambaNova</option>
-                          <option value="azure">Azure OpenAI</option>
-                          <option value="nvidia">NVIDIA NIM</option>
-                        </optgroup>
-                        <optgroup label="Local">
-                          <option value="ollama">Ollama</option>
-                          <option value="lmstudio">LM Studio</option>
-                          <option value="vllm">vLLM</option>
-                          <option value="lemonade">Lemonade</option>
-                        </optgroup>
+                        <template x-if="spawnProvidersLoading">
+                          <option disabled>Loading providers…</option>
+                        </template>
+                        <template x-if="!spawnProvidersLoading && spawnProviders.length === 0">
+                          <option disabled>No providers available</option>
+                        </template>
+                        <template x-if="!spawnProvidersLoading && spawnProviders.filter(p => !p.is_local).length > 0">
+                          <optgroup label="Cloud">
+                            <template x-for="p in spawnProviders.filter(p => !p.is_local)" :key="p.id">
+                              <option :value="p.id" x-text="p.display_name"></option>
+                            </template>
+                          </optgroup>
+                        </template>
+                        <template x-if="!spawnProvidersLoading && spawnProviders.filter(p => p.is_local).length > 0">
+                          <optgroup label="Local">
+                            <template x-for="p in spawnProviders.filter(p => p.is_local)" :key="p.id">
+                              <option :value="p.id" x-text="p.display_name"></option>
+                            </template>
+                          </optgroup>
+                        </template>
                       </select>
                     </div>
                     <div class="form-group">
@@ -1342,7 +1340,7 @@
 
         <!-- Tab: List -->
         <template x-if="wfTab === 'list'">
-        <div x-data="workflowsPage">
+        <div x-data="workflowsPage" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden">
         <div class="page-body" x-init="loadWorkflows()">
           <div x-show="loading" class="loading-state"><div class="spinner"></div><span>Loading workflows...</span></div>
           <div x-show="!loading && loadError" class="error-state">
@@ -3471,8 +3469,8 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                               <select class="form-select" style="width:180px"
                                 :value="configValues[section] && configValues[section][field.name]"
                                 @change="configValues[section] = configValues[section] || {}; configValues[section][field.name] = $event.target.value; markConfigDirty(section, field.name)">
-                                <template x-for="opt in field.options" :key="opt">
-                                  <option :value="opt" x-text="opt" :selected="configValues[section] && configValues[section][field.name] === opt"></option>
+                                <template x-for="opt in field.options" :key="typeof opt === 'object' ? opt.id : opt">
+                                  <option :value="typeof opt === 'object' ? opt.id : opt" x-text="typeof opt === 'object' ? (opt.name || opt.display_name || opt.id) : opt" :selected="configValues[section] && configValues[section][field.name] === (typeof opt === 'object' ? opt.id : opt)"></option>
                                 </template>
                               </select>
                             </template>

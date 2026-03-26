@@ -8,7 +8,7 @@ use crate::context_budget::{apply_context_guard, truncate_tool_result_dynamic, C
 use crate::context_overflow::{recover_from_overflow, RecoveryStage};
 use crate::embedding::EmbeddingDriver;
 use crate::kernel_handle::KernelHandle;
-use crate::llm_driver::{CompletionRequest, LlmDriver, LlmError, StreamEvent};
+use crate::llm_driver::{CompletionRequest, DriverConfig, LlmDriver, LlmError, StreamEvent};
 use crate::llm_errors;
 use crate::loop_guard::{LoopGuard, LoopGuardConfig, LoopGuardVerdict};
 use crate::mcp::McpConnection;
@@ -17,7 +17,7 @@ use crate::web_search::WebToolsContext;
 use openfang_memory::session::Session;
 use openfang_memory::MemorySubstrate;
 use openfang_skills::registry::SkillRegistry;
-use openfang_types::agent::AgentManifest;
+use openfang_types::agent::{AgentManifest, FallbackModel};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::{Memory, MemoryFilter, MemorySource};
 use openfang_types::message::{
@@ -383,7 +383,7 @@ pub async fn run_agent_loop(
 
         // Call LLM with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
-        let mut response = call_with_retry(&*driver, request, Some(provider_name), None).await?;
+        let mut response = call_with_retry(&*driver, request, Some(provider_name), None, &manifest.fallback_models).await?;
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
@@ -920,11 +920,15 @@ pub async fn run_agent_loop(
 ///
 /// Uses the `llm_errors` classifier for smart error handling and the
 /// `ProviderCooldown` circuit breaker to prevent request storms.
+///
+/// When the primary model returns a `ModelNotFound` error and `fallback_models`
+/// is non-empty, each fallback is tried in order before propagating the error.
 async fn call_with_retry(
     driver: &dyn LlmDriver,
     request: CompletionRequest,
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
+    fallback_models: &[FallbackModel],
 ) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
@@ -1013,6 +1017,73 @@ async fn call_with_retry(
                     cooldown.record_failure(provider, classified.is_billing);
                 }
 
+                // --- ModelNotFound fallback chain (issue #845) ---
+                // If the primary model was not found and fallback models are
+                // configured, try each fallback before giving up.
+                if classified.category == llm_errors::LlmErrorCategory::ModelNotFound
+                    && !fallback_models.is_empty()
+                {
+                    warn!(
+                        "Primary model not found, trying {} fallback model(s)",
+                        fallback_models.len()
+                    );
+                    for (fb_idx, fb) in fallback_models.iter().enumerate() {
+                        let api_key = fb
+                            .api_key_env
+                            .as_deref()
+                            .and_then(|env_name| std::env::var(env_name).ok());
+                        let fb_config = DriverConfig {
+                            provider: fb.provider.clone(),
+                            api_key,
+                            base_url: fb.base_url.clone(),
+                            skip_permissions: true,
+                        };
+                        let fb_driver = match crate::drivers::create_driver(&fb_config) {
+                            Ok(d) => d,
+                            Err(driver_err) => {
+                                warn!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    error = %driver_err,
+                                    "Failed to create fallback driver, skipping"
+                                );
+                                continue;
+                            }
+                        };
+                        let mut fb_request = request.clone();
+                        fb_request.model = fb.model.clone();
+                        warn!(
+                            fallback_index = fb_idx,
+                            provider = %fb.provider,
+                            model = %fb.model,
+                            "Trying fallback model"
+                        );
+                        match fb_driver.complete(fb_request).await {
+                            Ok(response) => {
+                                info!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    "Fallback model succeeded"
+                                );
+                                return Ok(response);
+                            }
+                            Err(fb_err) => {
+                                warn!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    error = %fb_err,
+                                    "Fallback model failed"
+                                );
+                            }
+                        }
+                    }
+                    // All fallbacks exhausted — fall through to return the
+                    // original ModelNotFound error below.
+                }
+
                 // Include raw error detail so dashboard users can debug
                 let user_msg = if classified.category == llm_errors::LlmErrorCategory::Format {
                     format!("{} — raw: {}", classified.sanitized_message, raw_error)
@@ -1032,12 +1103,16 @@ async fn call_with_retry(
 /// Call an LLM driver in streaming mode with automatic retry on rate-limit and overload errors.
 ///
 /// Uses the `llm_errors` classifier and `ProviderCooldown` circuit breaker.
+///
+/// When the primary model returns a `ModelNotFound` error and `fallback_models`
+/// is non-empty, each fallback is tried in order before propagating the error.
 async fn stream_with_retry(
     driver: &dyn LlmDriver,
     request: CompletionRequest,
     tx: mpsc::Sender<StreamEvent>,
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
+    fallback_models: &[FallbackModel],
 ) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
@@ -1125,6 +1200,69 @@ async fn stream_with_retry(
 
                 if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                     cooldown.record_failure(provider, classified.is_billing);
+                }
+
+                // --- ModelNotFound fallback chain (issue #845) ---
+                if classified.category == llm_errors::LlmErrorCategory::ModelNotFound
+                    && !fallback_models.is_empty()
+                {
+                    warn!(
+                        "Primary model not found (stream), trying {} fallback model(s)",
+                        fallback_models.len()
+                    );
+                    for (fb_idx, fb) in fallback_models.iter().enumerate() {
+                        let api_key = fb
+                            .api_key_env
+                            .as_deref()
+                            .and_then(|env_name| std::env::var(env_name).ok());
+                        let fb_config = DriverConfig {
+                            provider: fb.provider.clone(),
+                            api_key,
+                            base_url: fb.base_url.clone(),
+                            skip_permissions: true,
+                        };
+                        let fb_driver = match crate::drivers::create_driver(&fb_config) {
+                            Ok(d) => d,
+                            Err(driver_err) => {
+                                warn!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    error = %driver_err,
+                                    "Failed to create fallback stream driver, skipping"
+                                );
+                                continue;
+                            }
+                        };
+                        let mut fb_request = request.clone();
+                        fb_request.model = fb.model.clone();
+                        warn!(
+                            fallback_index = fb_idx,
+                            provider = %fb.provider,
+                            model = %fb.model,
+                            "Trying fallback model (stream)"
+                        );
+                        match fb_driver.stream(fb_request, tx.clone()).await {
+                            Ok(response) => {
+                                info!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    "Fallback model succeeded (stream)"
+                                );
+                                return Ok(response);
+                            }
+                            Err(fb_err) => {
+                                warn!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    error = %fb_err,
+                                    "Fallback model failed (stream)"
+                                );
+                            }
+                        }
+                    }
                 }
 
                 let user_msg = if classified.category == llm_errors::LlmErrorCategory::Format {
@@ -1406,6 +1544,7 @@ pub async fn run_agent_loop_streaming(
             stream_tx.clone(),
             Some(provider_name),
             None,
+            &manifest.fallback_models,
         )
         .await?;
 

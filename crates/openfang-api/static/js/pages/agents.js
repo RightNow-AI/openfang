@@ -40,6 +40,8 @@ function agentsPage() {
     },
 
     // -- Multi-step wizard state --
+    spawnProviders: [],       // populated from /api/providers on wizard open
+    spawnProvidersLoading: false,
     spawnStep: 1,
     spawnIdentity: { emoji: '', color: '#FF5C00', archetype: '' },
     selectedPreset: '',
@@ -407,14 +409,22 @@ function agentsPage() {
       this.spawnForm.model = 'llama-3.3-70b-versatile';
       this.spawnForm.systemPrompt = 'You are a helpful assistant.';
       this.spawnForm.profile = 'full';
+      // Fetch status defaults and dynamic provider list concurrently
+      this.spawnProvidersLoading = true;
       try {
-        var res = await fetch('/api/status');
-        if (res.ok) {
-          var status = await res.json();
-          if (status.default_provider) this.spawnForm.provider = status.default_provider;
-          if (status.default_model) this.spawnForm.model = status.default_model;
-        }
-      } catch(e) { /* keep hardcoded defaults */ }
+        var results = await Promise.all([
+          OpenFangAPI.get('/api/status').catch(function() { return {}; }),
+          OpenFangAPI.get('/api/providers').catch(function() { return { providers: [] }; })
+        ]);
+        var status = results[0];
+        var provData = results[1];
+        if (status.default_provider) this.spawnForm.provider = status.default_provider;
+        if (status.default_model) this.spawnForm.model = status.default_model;
+        this.spawnProviders = provData.providers || [];
+      } catch(e) {
+        this.spawnProviders = [];
+      }
+      this.spawnProvidersLoading = false;
     },
 
     nextStep() {
