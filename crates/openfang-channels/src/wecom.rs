@@ -6,7 +6,8 @@
 //! The token is cached and refreshed automatically.
 
 use crate::types::{
-    split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
+    split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelStatus, ChannelType,
+    ChannelUser,
 };
 use async_trait::async_trait;
 use axum::response::IntoResponse;
@@ -595,6 +596,13 @@ impl ChannelAdapter for WeComAdapter {
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
+    }
+
+    fn status(&self) -> ChannelStatus {
+        ChannelStatus {
+            connected: !self.shutdown_tx.is_closed(),
+            ..Default::default()
+        }
     }
 }
 

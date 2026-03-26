@@ -11,7 +11,8 @@
 //! 4. Outbound: POST /v1.0/robot/oToMessages/batchSend
 
 use crate::types::{
-    split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
+    split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelStatus, ChannelType,
+    ChannelUser,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -285,6 +286,13 @@ impl ChannelAdapter for DingTalkStreamAdapter {
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
+    }
+
+    fn status(&self) -> ChannelStatus {
+        ChannelStatus {
+            connected: !self.shutdown_tx.is_closed(),
+            ..Default::default()
+        }
     }
 }
 

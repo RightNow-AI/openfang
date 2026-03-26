@@ -2828,13 +2828,10 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> impl IntoRespo
                     .filter(|s| !s.is_empty());
                 let id = config_val.get("id").unwrap_or_default();
 
-                if id == meta.name {
-                    continue;
-                }
-
-                let connected = kernel
-                    .channel_adapters
-                    .contains_key(id.as_str().unwrap_or_default());
+                let connected = match kernel.channel_adapters.get(id.as_str().unwrap_or_default()) {
+                    Some(adapter) => adapter.value().status().connected,
+                    None => false,
+                };
 
                 channels.push(serde_json::json!({
                     "id": id,

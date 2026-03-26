@@ -14,7 +14,8 @@
 //! - WebSocket mode: Long connection receives events (no public IP required)
 
 use crate::types::{
-    split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
+    split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelStatus, ChannelType,
+    ChannelUser,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -1360,6 +1361,13 @@ impl ChannelAdapter for FeishuAdapter {
         }
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
+    }
+
+    fn status(&self) -> ChannelStatus {
+        ChannelStatus {
+            connected: !self.shutdown_tx.is_closed(),
+            ..Default::default()
+        }
     }
 
     async fn send(
