@@ -52,7 +52,7 @@ export class AgentResource {
   list(): Promise<unknown[]>;
   get(id: string): Promise<unknown>;
   create(
-    opts: AgentCreateOpts,
+    opts: AgentCreateOpts
   ): Promise<{ id: string; [key: string]: unknown }>;
   delete(id: string): Promise<unknown>;
   stop(id: string): Promise<unknown>;
@@ -64,7 +64,7 @@ export class AgentResource {
   stream(
     id: string,
     text: string,
-    opts?: MessageOpts,
+    opts?: MessageOpts
   ): AsyncGenerator<StreamEvent>;
   session(id: string): Promise<unknown>;
   resetSession(id: string): Promise<unknown>;
@@ -108,7 +108,7 @@ export class SkillResource {
 export class ChannelResource {
   list(): Promise<unknown[]>;
   configure(name: string, config: Record<string, unknown>): Promise<unknown>;
-  remove(name: string): Promise<unknown>;
+  remove(name: string, id: number): Promise<unknown>;
   test(name: string): Promise<unknown>;
 }
 
