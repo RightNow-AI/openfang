@@ -2912,27 +2912,26 @@ pub async fn configure_channel(
             .get(field_def.key)
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if value.is_empty() {
-            continue;
-        }
 
         if let Some(env_var) = field_def.env_var {
             let env_var = format!("{}_{}", id, env_var);
-            // Secret field — write to secrets.env and set in process
-            if let Err(e) = write_secret_env(&secrets_path, &env_var, value) {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": format!("Failed to write secret: {e}")})),
-                );
-            }
-            // SAFETY: We are the only writer; this is a single-threaded config operation
-            unsafe {
-                std::env::set_var(&env_var, value);
+            if !value.is_empty() {
+                // Secret field — write to secrets.env and set in process
+                if let Err(e) = write_secret_env(&secrets_path, &env_var, value) {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": format!("Failed to write secret: {e}")})),
+                    );
+                }
+                // SAFETY: We are the only writer; this is a single-threaded config operation
+                unsafe {
+                    std::env::set_var(&env_var, value);
+                }
             }
             // Also write the env var NAME to config.toml so the channel section
             // is not empty and the kernel knows which env var to read.
             config_fields.insert(field_def.key.to_string(), (env_var, FieldType::Text));
-        } else {
+        } else if !value.is_empty() {
             // Config field — collect for TOML write with type info
             config_fields.insert(
                 field_def.key.to_string(),
