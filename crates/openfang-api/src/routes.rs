@@ -4003,7 +4003,10 @@ pub async fn clawhub_browse(
     let page: u32 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
 
     // Check cache (120s TTL)
-    let cache_key = format!("browse:{}:{}:{}:{}", category, page_size, sort_by, order);
+    let cache_key = format!(
+        "browse:{}:{}:{}:{}:{}",
+        category, page_size, sort_by, order, page
+    );
     if let Some(entry) = state.clawhub_cache.get(&cache_key) {
         if entry.0.elapsed().as_secs() < 120 {
             return (StatusCode::OK, Json(entry.1.clone()));
