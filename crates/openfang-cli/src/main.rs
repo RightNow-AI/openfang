@@ -2410,11 +2410,14 @@ decay_rate = 0.05
                 if !json {
                     ui::provider_status(name, env_var, true);
                 }
-            } else if !json {
-                ui::check_warn(&format!("{name} ({env_var}) - key rejected (401/403)"));
+            } else {
+                if !json {
+                    ui::check_fail(&format!("{name} ({env_var}) - key rejected (401/403)"));
+                }
+                all_ok = false;
             }
             any_key_set = true;
-            checks.push(serde_json::json!({"check": "provider", "name": name, "env_var": env_var, "status": if valid { "ok" } else { "warn" }, "live_test": !valid}));
+            checks.push(serde_json::json!({"check": "provider", "name": name, "env_var": env_var, "status": if valid { "ok" } else { "fail" }, "live_test": !valid}));
         } else {
             if !json {
                 ui::provider_status(name, env_var, false);
@@ -2917,7 +2920,9 @@ decay_rate = 0.05
         println!();
         if all_ok {
             ui::success("All checks passed! OpenFang is ready.");
-            ui::hint("Start the daemon: openfang start");
+            if find_daemon().is_none() {
+                ui::hint("Start the daemon: openfang start");
+            }
         } else if repaired {
             ui::success("Repairs applied. Re-run `openfang doctor` to verify.");
         } else {

@@ -1780,6 +1780,7 @@ pub async fn run_agent_loop_streaming(
                     let preview: String = final_content.chars().take(300).collect();
                     if stream_tx
                         .send(StreamEvent::ToolExecutionResult {
+                            id: tool_call.id.clone(),
                             name: tool_call.name.clone(),
                             result_preview: preview,
                             is_error: result.is_error,

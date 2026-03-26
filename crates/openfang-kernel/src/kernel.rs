@@ -3302,9 +3302,10 @@ impl OpenFangKernel {
             }),
             // Autonomous hands must run in Continuous mode so the background loop picks them up.
             // Reactive (default) only fires on incoming messages, so autonomous hands would be inert.
+            // Default to 3600s (1 hour) to avoid wasting credits — see issue #848.
             schedule: if def.agent.max_iterations.is_some() {
                 ScheduleMode::Continuous {
-                    check_interval_secs: 60,
+                    check_interval_secs: 3600,
                 }
             } else {
                 ScheduleMode::default()

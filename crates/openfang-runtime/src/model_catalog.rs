@@ -1549,34 +1549,6 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "llama-3.2-3b-preview".into(),
-            display_name: "Llama 3.2 3B".into(),
-            provider: "groq".into(),
-            tier: ModelTier::Fast,
-            context_window: 128_000,
-            max_output_tokens: 8_192,
-            input_cost_per_m: 0.06,
-            output_cost_per_m: 0.06,
-            supports_tools: true,
-            supports_vision: false,
-            supports_streaming: true,
-            aliases: vec![],
-        },
-        ModelCatalogEntry {
-            id: "llama-3.2-1b-preview".into(),
-            display_name: "Llama 3.2 1B".into(),
-            provider: "groq".into(),
-            tier: ModelTier::Fast,
-            context_window: 128_000,
-            max_output_tokens: 8_192,
-            input_cost_per_m: 0.04,
-            output_cost_per_m: 0.04,
-            supports_tools: true,
-            supports_vision: false,
-            supports_streaming: true,
-            aliases: vec![],
-        },
-        ModelCatalogEntry {
             id: "mixtral-8x7b-32768".into(),
             display_name: "Mixtral 8x7B".into(),
             provider: "groq".into(),
@@ -1589,20 +1561,6 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_vision: false,
             supports_streaming: true,
             aliases: vec!["mixtral".into()],
-        },
-        ModelCatalogEntry {
-            id: "gemma2-9b-it".into(),
-            display_name: "Gemma 2 9B".into(),
-            provider: "groq".into(),
-            tier: ModelTier::Fast,
-            context_window: 8_192,
-            max_output_tokens: 4_096,
-            input_cost_per_m: 0.02,
-            output_cost_per_m: 0.02,
-            supports_tools: false,
-            supports_vision: false,
-            supports_streaming: true,
-            aliases: vec![],
         },
         ModelCatalogEntry {
             id: "qwen-qwq-32b".into(),
@@ -3924,7 +3882,7 @@ mod tests {
         let anthropic = catalog.get_provider("anthropic").unwrap();
         assert_eq!(anthropic.model_count, 7);
         let groq = catalog.get_provider("groq").unwrap();
-        assert_eq!(groq.model_count, 10);
+        assert_eq!(groq.model_count, 7);
     }
 
     #[test]

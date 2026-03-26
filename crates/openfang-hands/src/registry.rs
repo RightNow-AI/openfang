@@ -379,7 +379,12 @@ impl HandRegistry {
     pub fn readiness(&self, hand_id: &str) -> Option<HandReadiness> {
         let reqs = self.check_requirements(hand_id).ok()?;
 
-        let requirements_met = reqs.iter().all(|(_, ok)| *ok);
+        // Only non-optional requirements gate readiness.
+        // Optional requirements (e.g. chromium for browser hand) are nice-to-have;
+        // missing them results in "degraded" status but not "requirements not met".
+        let requirements_met = reqs
+            .iter()
+            .all(|(req, ok)| *ok || req.optional);
 
         // A hand is active if at least one instance is in Active status.
         let active = self
@@ -424,10 +429,13 @@ impl Default for HandRegistry {
 fn check_requirement(req: &HandRequirement) -> bool {
     match req.requirement_type {
         RequirementType::Binary => {
-            // Special handling for python3: must actually run the command and verify
-            // the output contains "Python 3", because Windows ships a python3.exe
-            // Store shim that exists on PATH but doesn't actually work.
-            if req.check_value == "python3" {
+            // Special handling for python3 / python: must actually run the command
+            // and verify the output contains "Python 3", because:
+            //  - Windows ships a python3.exe Store shim that doesn't actually work
+            //  - Most modern Linux distros only ship "python3", not "python"
+            //  - Some Docker images only have "python" pointing to Python 3
+            // Matches the detection logic in python_runtime.rs find_python_interpreter().
+            if req.check_value == "python3" || req.check_value == "python" {
                 return check_python3_available();
             }
             // Check if binary exists on PATH.
@@ -838,17 +846,26 @@ mod tests {
         let reg = HandRegistry::new();
         reg.load_bundled();
 
-        // Browser hand requires python3 + chromium. Activate it — if either
-        // requirement is unmet on this machine, it will show as degraded.
+        // Browser hand requires python3 (non-optional) + chromium (optional).
+        // requirements_met only reflects non-optional requirements.
+        // degraded = active + any requirement (including optional) unsatisfied.
         let instance = reg.activate("browser", HashMap::new()).unwrap();
         let r = reg.readiness("browser").unwrap();
         assert!(r.active);
 
-        // If any requirement is not satisfied, degraded should be true
-        if !r.requirements_met {
-            assert!(r.degraded);
+        // Check individual requirements
+        let reqs = reg.check_requirements("browser").unwrap();
+        let python_met = reqs.iter().any(|(req, ok)| req.key == "python3" && *ok);
+        let chromium_met = reqs.iter().any(|(req, ok)| req.key == "chromium" && *ok);
+
+        // requirements_met only gates on non-optional (python3)
+        assert_eq!(r.requirements_met, python_met);
+
+        // degraded = active + any requirement unsatisfied
+        if python_met && chromium_met {
+            assert!(!r.degraded); // all met, not degraded
         } else {
-            assert!(!r.degraded);
+            assert!(r.degraded); // something is missing, degraded
         }
 
         reg.deactivate(instance.instance_id).unwrap();
