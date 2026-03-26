@@ -4,7 +4,8 @@
 //! The official Telegram Bot API has a 20MB limit on getFile, but the local server supports up to 2GB.
 //!
 //! Architecture:
-//! - Downloads telegram-bot-api binary on first use (or uses system-installed version)
+//! - Uses a preinstalled telegram-bot-api binary from `~/.openfang/bin`, system PATH, or
+//!   `~/.openfang/telegram-local-api/`
 //! - Spawns as a managed child process with auto-restart on crash
 //! - Lifecycle tied to OpenFang kernel (starts/stops with daemon)
 
@@ -27,6 +28,16 @@ fn local_api_dir() -> PathBuf {
     openfang_home().join("telegram-local-api")
 }
 
+#[cfg(windows)]
+fn telegram_bot_api_binary_name() -> &'static str {
+    "telegram-bot-api.exe"
+}
+
+#[cfg(not(windows))]
+fn telegram_bot_api_binary_name() -> &'static str {
+    "telegram-bot-api"
+}
+
 /// Configuration for Local Bot API Server.
 #[derive(Debug, Clone)]
 pub struct LocalApiConfig {
@@ -43,7 +54,9 @@ pub struct LocalApiConfig {
 /// Check if telegram-bot-api binary exists in system PATH or local installation.
 async fn find_telegram_bot_api_binary() -> Option<PathBuf> {
     // Check OpenFang bin directory first
-    let openfang_bin = openfang_home().join("bin").join("telegram-bot-api");
+    let openfang_bin = openfang_home()
+        .join("bin")
+        .join(telegram_bot_api_binary_name());
     if openfang_bin.exists() {
         info!(
             "Found telegram-bot-api in OpenFang bin: {}",
@@ -78,10 +91,7 @@ async fn find_telegram_bot_api_binary() -> Option<PathBuf> {
     }
 
     // Check local installation
-    #[cfg(windows)]
-    let local_bin = local_api_dir().join("telegram-bot-api.exe");
-    #[cfg(not(windows))]
-    let local_bin = local_api_dir().join("telegram-bot-api");
+    let local_bin = local_api_dir().join(telegram_bot_api_binary_name());
     if local_bin.exists() {
         info!(
             "Found telegram-bot-api in local installation: {}",
@@ -116,12 +126,15 @@ async fn ensure_telegram_bot_api_installed() -> Result<PathBuf, String> {
          cmake -DCMAKE_BUILD_TYPE=Release ..\n\
          cmake --build . --target install\n\
          \n\
-         Option 3 - System package manager:\n\
+         Option 3 - Place the binary where OpenFang can find it:\n\
+         cp telegram-bot-api ~/.openfang/bin/\n\
+         \n\
+         Option 4 - System package manager:\n\
          # Arch Linux\n\
          yay -S telegram-bot-api\n\
          \n\
          # macOS\n\
-         brew install telegram-bot-api"
+         install manually under ~/.openfang/bin or use Docker"
         .to_string())
 }
 
@@ -350,11 +363,35 @@ async fn wait_for_local_api_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_find_binary() {
         // This test will pass if telegram-bot-api is installed, otherwise skip
         let result = find_telegram_bot_api_binary().await;
         println!("Binary search result: {:?}", result);
+    }
+
+    #[test]
+    fn test_binary_name_matches_platform() {
+        #[cfg(windows)]
+        assert_eq!(telegram_bot_api_binary_name(), "telegram-bot-api.exe");
+
+        #[cfg(not(windows))]
+        assert_eq!(telegram_bot_api_binary_name(), "telegram-bot-api");
+    }
+
+    #[test]
+    fn test_local_api_dir_uses_openfang_home() {
+        let temp = tempdir().unwrap();
+        let original = std::env::var_os("OPENFANG_HOME");
+
+        std::env::set_var("OPENFANG_HOME", temp.path());
+        assert_eq!(local_api_dir(), temp.path().join("telegram-local-api"));
+
+        match original {
+            Some(value) => std::env::set_var("OPENFANG_HOME", value),
+            None => std::env::remove_var("OPENFANG_HOME"),
+        }
     }
 }

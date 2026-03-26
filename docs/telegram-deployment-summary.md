@@ -6,6 +6,14 @@
 **版本：** OpenFang v0.4.4
 **功能：** Telegram 大文件下载（支持最大 2GB）
 
+这项能力的关键点不是只配一个 bot token，而是下面这组组合同时成立：
+
+- `TELEGRAM_BOT_TOKEN`：负责机器人收发消息
+- `telegram_api_id + TELEGRAM_API_HASH`：负责启用 Telegram Developer API / Local Bot API 能力
+- `telegram-bot-api`：负责真正绕过官方 20MB 下载限制
+
+对本仓库的 Telegram 媒体组工作流来说，这个自建 Local Bot API Server 是主链路依赖，不是附加优化。
+
 ---
 
 ## ✅ 已完成的工作
@@ -13,6 +21,8 @@
 ### 1. 核心功能实现
 
 #### Local Bot API Server 集成
+- ✅ 明确支持绕过 Telegram 官方 Bot API 的 20MB 下载限制
+- ✅ 可支撑媒体组和大视频下载主链
 - ✅ 创建 `telegram_local_api.rs` 模块
 - ✅ 进程管理：自动启动、监控、崩溃重启（最多3次）
 - ✅ 生命周期绑定：与 OpenFang 同步启动/停止
@@ -86,15 +96,20 @@
 
 ### 4. 自动化脚本
 
-创建了 2 个实用脚本：
+创建了 3 个实用脚本：
 
-1. **setup-telegram-local-api.sh** - 配置向导
+1. **install-telegram-local-api.sh** - 编译安装脚本
+   - 从仓库内 `third_party/telegram-bot-api` 源码构建
+   - 自动补齐缺失的嵌套 `td` 子模块
+   - 安装到 `~/.openfang/bin/telegram-bot-api`
+
+2. **setup-telegram-local-api.sh** - 配置向导
    - 交互式配置
    - 自动备份
    - 环境检查
    - 下一步提示
 
-2. **verify-telegram-setup.sh** - 部署验证
+3. **verify-telegram-setup.sh** - 部署验证
    - 7 大类检查
    - 彩色输出
    - 详细诊断
@@ -130,6 +145,7 @@ docs/telegram-implementation-summary.md             # 实现总结
 docs/telegram-testing-checklist.md                  # 测试清单
 docs/telegram-config-example.toml                   # 配置示例
 scripts/setup-telegram-local-api.sh                 # 配置脚本
+scripts/install-telegram-local-api.sh               # 编译安装脚本
 scripts/verify-telegram-setup.sh                    # 验证脚本
 ~/.openfang/bin/telegram-bot-api                    # 二进制文件
 ```
@@ -159,6 +175,8 @@ README.md                                            # 功能说明
 
 ```bash
 cd /Users/xiaomo/Desktop/openfang-upstream-fork
+git submodule update --init --recursive third_party/telegram-bot-api
+./scripts/install-telegram-local-api.sh
 ./scripts/setup-telegram-local-api.sh
 ```
 

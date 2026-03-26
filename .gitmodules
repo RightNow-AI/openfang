@@ -1,3 +1,6 @@
 [submodule "projects/shipinbot"]
 	path = projects/shipinbot
 	url = https://github.com/tytsxai/media-pipeline-service.git
+[submodule "third_party/telegram-bot-api"]
+	path = third_party/telegram-bot-api
+	url = https://github.com/tdlib/telegram-bot-api.git

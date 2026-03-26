@@ -206,6 +206,7 @@ DOCS=(
     "docs/telegram-shipinbot-integration.md"
     "docs/telegram-implementation-summary.md"
     "docs/telegram-testing-checklist.md"
+    "scripts/install-telegram-local-api.sh"
     "scripts/setup-telegram-local-api.sh"
 )
 

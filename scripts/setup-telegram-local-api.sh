@@ -7,12 +7,15 @@ echo "=== Telegram Local API 配置向导 ==="
 echo ""
 
 # 检查二进制文件
-if [ ! -f "$HOME/.openfang/bin/telegram-bot-api" ]; then
-    echo "❌ 错误：telegram-bot-api 二进制文件未找到"
+if [ ! -x "$HOME/.openfang/bin/telegram-bot-api" ]; then
+    echo "❌ 错误：telegram-bot-api 二进制文件未找到或不可执行"
     echo "   位置：$HOME/.openfang/bin/telegram-bot-api"
     echo ""
-    echo "请先安装 telegram-bot-api："
-    echo "  参考文档：docs/telegram-large-files.md"
+    echo "请先从仓库内 third_party 源码安装："
+    echo "  ./scripts/install-telegram-local-api.sh"
+    echo ""
+    echo "如果 third_party 子模块还没拉下来，先执行："
+    echo "  git submodule update --init --recursive third_party/telegram-bot-api"
     exit 1
 fi
 

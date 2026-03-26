@@ -1,5 +1,13 @@
 # OpenFang Telegram 大文件下载配置示例
 
+# 关键前提：
+# - TELEGRAM_BOT_TOKEN 只负责机器人收发消息
+# - 真正要绕过 Telegram 官方 Bot API 的 20MB 下载限制，还必须配好：
+#   1) telegram_api_id
+#   2) TELEGRAM_API_HASH
+#   3) telegram-bot-api
+# - 对本仓库的媒体组 / 大视频工作流，这个自建 Local Bot API Server 是主链路依赖，不是可选优化
+
 # 方式 1：自动启动 Local Bot API Server（推荐）
 # OpenFang 会自动管理 Local API Server 进程
 
@@ -25,6 +33,9 @@ dm_policy = "respond"
 group_policy = "all"
 
 # 启动命令：
+# 在此之前，建议先准备：
+# git submodule update --init --recursive third_party/telegram-bot-api
+# ./scripts/install-telegram-local-api.sh
 # export TELEGRAM_API_HASH="your_api_hash_here"
 # TELEGRAM_BOT_TOKEN=xxx openfang start
 

@@ -3,6 +3,10 @@
 ## 🚀 一键启动
 
 ```bash
+# 0. 首次准备 third_party 源码并安装 telegram-bot-api
+git submodule update --init --recursive third_party/telegram-bot-api
+./scripts/install-telegram-local-api.sh
+
 # 1. 设置环境变量（首次）
 export TELEGRAM_BOT_TOKEN="你的bot_token"
 export TELEGRAM_API_HASH="你的api_hash"
@@ -11,6 +15,15 @@ export TELEGRAM_API_HASH="你的api_hash"
 cd /Users/xiaomo/Desktop/openfang-upstream-fork
 target/release/openfang start
 ```
+
+## 核心前提
+
+- `TELEGRAM_BOT_TOKEN` 只负责机器人收发消息
+- 要真正绕过 Telegram 官方 Bot API 的 20MB 下载限制，必须再配：
+  - `telegram_api_id`
+  - `TELEGRAM_API_HASH`
+  - `telegram-bot-api`
+- 对本仓库的媒体组工作流，这个自建 Local Bot API Server 是主链路依赖，不是可选装饰
 
 ## ⚙️ 配置检查
 
@@ -57,6 +70,7 @@ telegram_api_hash_env = "TELEGRAM_API_HASH"
 | `docs/telegram-deployment-guide.md` | 完整部署指南 |
 | `docs/telegram-testing-checklist.md` | 测试清单 |
 | `docs/telegram-deployment-summary.md` | 功能总结 |
+| `scripts/install-telegram-local-api.sh` | 从仓库内 third_party 源码编译并安装二进制 |
 | `scripts/setup-telegram-local-api.sh` | 配置向导 |
 | `scripts/verify-telegram-setup.sh` | 部署验证 |
 
@@ -107,5 +121,6 @@ cat docs/telegram-deployment-guide.md
 
 运行配置向导：
 ```bash
+./scripts/install-telegram-local-api.sh
 ./scripts/setup-telegram-local-api.sh
 ```
