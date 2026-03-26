@@ -442,6 +442,7 @@ mod tests {
     #[test]
     fn test_viber_adapter_creation() {
         let adapter = ViberAdapter::new(
+            "viber-1".to_string(),
             "auth-token-123".to_string(),
             "https://example.com/viber/webhook".to_string(),
             8443,
@@ -457,6 +458,7 @@ mod tests {
     #[test]
     fn test_viber_url_normalization() {
         let adapter = ViberAdapter::new(
+            "viber-2".to_string(),
             "tok".to_string(),
             "https://example.com/viber/webhook/".to_string(),
             8443,
@@ -467,6 +469,7 @@ mod tests {
     #[test]
     fn test_viber_with_sender() {
         let adapter = ViberAdapter::with_sender(
+            "viber-3".to_string(),
             "tok".to_string(),
             "https://example.com".to_string(),
             8443,
@@ -483,6 +486,7 @@ mod tests {
     #[test]
     fn test_viber_auth_header() {
         let adapter = ViberAdapter::new(
+            "viber-4".to_string(),
             "my-viber-token".to_string(),
             "https://example.com".to_string(),
             8443,

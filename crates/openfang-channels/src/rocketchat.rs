@@ -398,6 +398,7 @@ mod tests {
     #[test]
     fn test_rocketchat_adapter_creation() {
         let adapter = RocketChatAdapter::new(
+            "rocketchat-1".to_string(),
             "https://chat.example.com".to_string(),
             "test-token".to_string(),
             "user123".to_string(),
@@ -413,6 +414,7 @@ mod tests {
     #[test]
     fn test_rocketchat_server_url_normalization() {
         let adapter = RocketChatAdapter::new(
+            "rocketchat-2".to_string(),
             "https://chat.example.com/".to_string(),
             "tok".to_string(),
             "uid".to_string(),
@@ -424,6 +426,7 @@ mod tests {
     #[test]
     fn test_rocketchat_allowed_channels() {
         let adapter = RocketChatAdapter::new(
+            "rocketchat-3".to_string(),
             "https://chat.example.com".to_string(),
             "tok".to_string(),
             "uid".to_string(),
@@ -433,6 +436,7 @@ mod tests {
         assert!(!adapter.is_allowed_channel("room2"));
 
         let open = RocketChatAdapter::new(
+            "rocketchat-4".to_string(),
             "https://chat.example.com".to_string(),
             "tok".to_string(),
             "uid".to_string(),
@@ -444,6 +448,7 @@ mod tests {
     #[test]
     fn test_rocketchat_auth_headers() {
         let adapter = RocketChatAdapter::new(
+            "rocketchat-5".to_string(),
             "https://chat.example.com".to_string(),
             "my-token".to_string(),
             "user-42".to_string(),

@@ -522,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_revolt_adapter_creation() {
-        let adapter = RevoltAdapter::new("bot-token-123".to_string());
+        let adapter = RevoltAdapter::new("revolt-1".to_string(), "bot-token-123".to_string());
         assert_eq!(adapter.name(), "revolt");
         assert_eq!(
             adapter.channel_type(),
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_revolt_default_urls() {
-        let adapter = RevoltAdapter::new("tok".to_string());
+        let adapter = RevoltAdapter::new("revolt-2".to_string(), "tok".to_string());
         assert_eq!(adapter.api_url, "https://api.revolt.chat");
         assert_eq!(adapter.ws_url, "wss://ws.revolt.chat");
     }
@@ -540,6 +540,7 @@ mod tests {
     #[test]
     fn test_revolt_custom_urls() {
         let adapter = RevoltAdapter::with_urls(
+            "revolt-3".to_string(),
             "tok".to_string(),
             "https://api.revolt.example.com/".to_string(),
             "wss://ws.revolt.example.com/".to_string(),
@@ -551,6 +552,7 @@ mod tests {
     #[test]
     fn test_revolt_with_channels() {
         let adapter = RevoltAdapter::with_channels(
+            "revolt-4".to_string(),
             "tok".to_string(),
             vec!["ch1".to_string(), "ch2".to_string()],
         );
@@ -561,13 +563,13 @@ mod tests {
 
     #[test]
     fn test_revolt_empty_channels_allows_all() {
-        let adapter = RevoltAdapter::new("tok".to_string());
+        let adapter = RevoltAdapter::new("revolt-5".to_string(), "tok".to_string());
         assert!(adapter.is_allowed_channel("any-channel"));
     }
 
     #[test]
     fn test_revolt_auth_header() {
-        let adapter = RevoltAdapter::new("my-revolt-token".to_string());
+        let adapter = RevoltAdapter::new("revolt-6".to_string(), "my-revolt-token".to_string());
         let builder = adapter.client.get("https://example.com");
         let builder = adapter.auth_header(builder);
         let request = builder.build().unwrap();

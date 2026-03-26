@@ -467,6 +467,7 @@ mod tests {
     #[test]
     fn test_keybase_adapter_creation() {
         let adapter = KeybaseAdapter::new(
+            "keybase-1".to_string(),
             "testuser".to_string(),
             "paper-key-phrase".to_string(),
             vec!["myteam".to_string()],
@@ -481,6 +482,7 @@ mod tests {
     #[test]
     fn test_keybase_allowed_teams() {
         let adapter = KeybaseAdapter::new(
+            "keybase-2".to_string(),
             "user".to_string(),
             "paperkey".to_string(),
             vec!["team-a".to_string(), "team-b".to_string()],
@@ -489,13 +491,19 @@ mod tests {
         assert!(adapter.is_allowed_team("team-b"));
         assert!(!adapter.is_allowed_team("team-c"));
 
-        let open = KeybaseAdapter::new("user".to_string(), "paperkey".to_string(), vec![]);
+        let open = KeybaseAdapter::new(
+            "keybase-3".to_string(),
+            "user".to_string(),
+            "paperkey".to_string(),
+            vec![],
+        );
         assert!(open.is_allowed_team("any-team"));
     }
 
     #[test]
     fn test_keybase_paperkey_zeroized() {
         let adapter = KeybaseAdapter::new(
+            "keybase-4".to_string(),
             "user".to_string(),
             "my secret paper key".to_string(),
             vec![],
@@ -505,7 +513,12 @@ mod tests {
 
     #[test]
     fn test_keybase_auth_payload() {
-        let adapter = KeybaseAdapter::new("myuser".to_string(), "my-paper-key".to_string(), vec![]);
+        let adapter = KeybaseAdapter::new(
+            "keybase-5".to_string(),
+            "myuser".to_string(),
+            "my-paper-key".to_string(),
+            vec![],
+        );
         let payload = adapter.auth_payload();
         assert_eq!(payload["username"], "myuser");
         assert_eq!(payload["paperkey"], "my-paper-key");
@@ -513,7 +526,12 @@ mod tests {
 
     #[test]
     fn test_keybase_username_stored() {
-        let adapter = KeybaseAdapter::new("alice".to_string(), "key".to_string(), vec![]);
+        let adapter = KeybaseAdapter::new(
+            "keybase-6".to_string(),
+            "alice".to_string(),
+            "key".to_string(),
+            vec![],
+        );
         assert_eq!(adapter.username, "alice");
     }
 }

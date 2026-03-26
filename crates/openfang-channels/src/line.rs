@@ -514,7 +514,7 @@ mod tests {
     #[test]
     fn test_line_adapter_creation() {
         let adapter = LineAdapter::new(
-            "test_id".to_string(),
+            "line-1".to_string(),
             "channel-secret-123".to_string(),
             "access-token-456".to_string(),
             8080,
@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn test_line_adapter_both_tokens() {
         let adapter = LineAdapter::new(
-            "test_id".to_string(),
+            "line-2".to_string(),
             "secret".to_string(),
             "token".to_string(),
             9000,

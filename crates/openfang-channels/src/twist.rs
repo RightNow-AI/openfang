@@ -58,7 +58,12 @@ impl TwistAdapter {
     /// * `token` - OAuth2 Bearer token for API authentication.
     /// * `workspace_id` - Twist workspace ID to operate in.
     /// * `allowed_channels` - Channel IDs to poll (empty = discover all).
-    pub fn new(id: String, token: String, workspace_id: String, allowed_channels: Vec<String>) -> Self {
+    pub fn new(
+        id: String,
+        token: String,
+        workspace_id: String,
+        allowed_channels: Vec<String>,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             id,
@@ -558,6 +563,7 @@ mod tests {
     #[test]
     fn test_twist_adapter_creation() {
         let adapter = TwistAdapter::new(
+            "twist-1".to_string(),
             "test-token".to_string(),
             "12345".to_string(),
             vec!["ch1".to_string()],
@@ -571,20 +577,30 @@ mod tests {
 
     #[test]
     fn test_twist_token_zeroized() {
-        let adapter =
-            TwistAdapter::new("secret-twist-token".to_string(), "ws1".to_string(), vec![]);
+        let adapter = TwistAdapter::new(
+            "twist-2".to_string(),
+            "secret-twist-token".to_string(),
+            "ws1".to_string(),
+            vec![],
+        );
         assert_eq!(adapter.token.as_str(), "secret-twist-token");
     }
 
     #[test]
     fn test_twist_workspace_id() {
-        let adapter = TwistAdapter::new("tok".to_string(), "workspace-99".to_string(), vec![]);
+        let adapter = TwistAdapter::new(
+            "twist-3".to_string(),
+            "tok".to_string(),
+            "workspace-99".to_string(),
+            vec![],
+        );
         assert_eq!(adapter.workspace_id, "workspace-99");
     }
 
     #[test]
     fn test_twist_allowed_channels() {
         let adapter = TwistAdapter::new(
+            "twist-4".to_string(),
             "tok".to_string(),
             "ws1".to_string(),
             vec!["ch-1".to_string(), "ch-2".to_string()],
@@ -593,7 +609,12 @@ mod tests {
         assert!(adapter.is_allowed_channel("ch-2"));
         assert!(!adapter.is_allowed_channel("ch-3"));
 
-        let open = TwistAdapter::new("tok".to_string(), "ws1".to_string(), vec![]);
+        let open = TwistAdapter::new(
+            "twist-5".to_string(),
+            "tok".to_string(),
+            "ws1".to_string(),
+            vec![],
+        );
         assert!(open.is_allowed_channel("any-channel"));
     }
 

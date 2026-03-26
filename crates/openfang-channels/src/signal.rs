@@ -35,7 +35,12 @@ pub struct SignalAdapter {
 
 impl SignalAdapter {
     /// Create a new Signal adapter.
-    pub fn new(id: String, api_url: String, phone_number: String, allowed_users: Vec<String>) -> Self {
+    pub fn new(
+        id: String,
+        api_url: String,
+        phone_number: String,
+        allowed_users: Vec<String>,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             id,
@@ -252,6 +257,7 @@ mod tests {
     #[test]
     fn test_signal_adapter_creation() {
         let adapter = SignalAdapter::new(
+            "signal-1".to_string(),
             "http://localhost:8080".to_string(),
             "+1234567890".to_string(),
             vec![],
@@ -263,6 +269,7 @@ mod tests {
     #[test]
     fn test_signal_allowed_check() {
         let adapter = SignalAdapter::new(
+            "signal-2".to_string(),
             "http://localhost:8080".to_string(),
             "+1234567890".to_string(),
             vec!["+9876543210".to_string()],

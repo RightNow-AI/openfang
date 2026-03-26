@@ -357,7 +357,12 @@ mod tests {
 
     #[test]
     fn test_ntfy_adapter_creation() {
-        let adapter = NtfyAdapter::new("".to_string(), "my-topic".to_string(), "".to_string());
+        let adapter = NtfyAdapter::new(
+            "ntfy-1".to_string(),
+            "".to_string(),
+            "my-topic".to_string(),
+            "".to_string(),
+        );
         assert_eq!(adapter.name(), "ntfy");
         assert_eq!(
             adapter.channel_type(),
@@ -369,6 +374,7 @@ mod tests {
     #[test]
     fn test_ntfy_custom_server_url() {
         let adapter = NtfyAdapter::new(
+            "ntfy-2".to_string(),
             "https://ntfy.internal.corp/".to_string(),
             "alerts".to_string(),
             "token-123".to_string(),
@@ -380,6 +386,7 @@ mod tests {
     #[test]
     fn test_ntfy_auth_request_with_token() {
         let adapter = NtfyAdapter::new(
+            "ntfy-3".to_string(),
             "".to_string(),
             "test".to_string(),
             "my-bearer-token".to_string(),
@@ -392,7 +399,12 @@ mod tests {
 
     #[test]
     fn test_ntfy_auth_request_without_token() {
-        let adapter = NtfyAdapter::new("".to_string(), "test".to_string(), "".to_string());
+        let adapter = NtfyAdapter::new(
+            "ntfy-4".to_string(),
+            "".to_string(),
+            "test".to_string(),
+            "".to_string(),
+        );
         let builder = adapter.client.get("https://ntfy.sh/test");
         let builder = adapter.auth_request(builder);
         let request = builder.build().unwrap();

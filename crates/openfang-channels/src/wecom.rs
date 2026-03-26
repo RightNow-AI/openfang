@@ -605,6 +605,7 @@ mod tests {
     #[test]
     fn test_adapter_name() {
         let adapter = WeComAdapter::new(
+            "wecom-1".to_string(),
             "corp_id".to_string(),
             "agent_id".to_string(),
             "secret".to_string(),
@@ -616,6 +617,7 @@ mod tests {
     #[test]
     fn test_adapter_channel_type() {
         let adapter = WeComAdapter::new(
+            "wecom-2".to_string(),
             "corp_id".to_string(),
             "agent_id".to_string(),
             "secret".to_string(),
@@ -630,12 +632,13 @@ mod tests {
     #[test]
     fn test_adapter_with_verification() {
         let adapter = WeComAdapter::with_verification(
+            "wecom-3".to_string(),
             "corp_id".to_string(),
             "agent_id".to_string(),
             "secret".to_string(),
             8080,
-            Some("encoding_aes_key".to_string()),
             Some("token".to_string()),
+            Some("encoding_aes_key".to_string()),
         );
         assert_eq!(adapter.name(), "wecom");
     }

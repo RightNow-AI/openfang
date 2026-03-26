@@ -524,6 +524,7 @@ mod tests {
     #[test]
     fn test_email_adapter_creation() {
         let adapter = EmailAdapter::new(
+            "email-1".to_string(),
             "imap.gmail.com".to_string(),
             993,
             "smtp.gmail.com".to_string(),
@@ -541,6 +542,7 @@ mod tests {
     #[test]
     fn test_allowed_senders() {
         let adapter = EmailAdapter::new(
+            "email-2".to_string(),
             "imap.example.com".to_string(),
             993,
             "smtp.example.com".to_string(),
@@ -555,6 +557,7 @@ mod tests {
         assert!(!adapter.is_allowed_sender("random@other.com"));
 
         let open = EmailAdapter::new(
+            "email-3".to_string(),
             "imap.example.com".to_string(),
             993,
             "smtp.example.com".to_string(),

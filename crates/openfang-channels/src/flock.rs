@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn test_flock_adapter_creation() {
-        let adapter = FlockAdapter::new("test-bot-token".to_string(), 8181);
+        let adapter = FlockAdapter::new("flock-1".to_string(), "test-bot-token".to_string(), 8181);
         assert_eq!(adapter.name(), "flock");
         assert_eq!(
             adapter.channel_type(),
@@ -361,13 +361,17 @@ mod tests {
 
     #[test]
     fn test_flock_token_zeroized() {
-        let adapter = FlockAdapter::new("secret-flock-token".to_string(), 8181);
+        let adapter = FlockAdapter::new(
+            "flock-2".to_string(),
+            "secret-flock-token".to_string(),
+            8181,
+        );
         assert_eq!(adapter.bot_token.as_str(), "secret-flock-token");
     }
 
     #[test]
     fn test_flock_webhook_port() {
-        let adapter = FlockAdapter::new("token".to_string(), 7777);
+        let adapter = FlockAdapter::new("flock-3".to_string(), "token".to_string(), 7777);
         assert_eq!(adapter.webhook_port, 7777);
     }
 

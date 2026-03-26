@@ -568,6 +568,7 @@ mod tests {
     #[test]
     fn test_bluesky_adapter_creation() {
         let adapter = BlueskyAdapter::new(
+            "bluesky-1".to_string(),
             "alice.bsky.social".to_string(),
             "app-password-123".to_string(),
         );
@@ -580,13 +581,18 @@ mod tests {
 
     #[test]
     fn test_bluesky_default_service_url() {
-        let adapter = BlueskyAdapter::new("alice.bsky.social".to_string(), "pwd".to_string());
+        let adapter = BlueskyAdapter::new(
+            "bluesky-2".to_string(),
+            "alice.bsky.social".to_string(),
+            "pwd".to_string(),
+        );
         assert_eq!(adapter.service_url, "https://bsky.social");
     }
 
     #[test]
     fn test_bluesky_custom_service_url() {
         let adapter = BlueskyAdapter::with_service_url(
+            "bluesky-3".to_string(),
             "alice.example.com".to_string(),
             "pwd".to_string(),
             "https://pds.example.com/".to_string(),
@@ -596,7 +602,11 @@ mod tests {
 
     #[test]
     fn test_bluesky_identifier_stored() {
-        let adapter = BlueskyAdapter::new("did:plc:abc123".to_string(), "pwd".to_string());
+        let adapter = BlueskyAdapter::new(
+            "bluesky-4".to_string(),
+            "did:plc:abc123".to_string(),
+            "pwd".to_string(),
+        );
         assert_eq!(adapter.identifier, "did:plc:abc123");
     }
 

@@ -343,6 +343,7 @@ mod tests {
     #[test]
     fn test_gotify_adapter_creation() {
         let adapter = GotifyAdapter::new(
+            "gotify-1".to_string(),
             "https://gotify.example.com".to_string(),
             "app-token".to_string(),
             "client-token".to_string(),
@@ -357,6 +358,7 @@ mod tests {
     #[test]
     fn test_gotify_url_normalization() {
         let adapter = GotifyAdapter::new(
+            "gotify-2".to_string(),
             "https://gotify.example.com/".to_string(),
             "app".to_string(),
             "client".to_string(),
@@ -367,6 +369,7 @@ mod tests {
     #[test]
     fn test_gotify_ws_url_https() {
         let adapter = GotifyAdapter::new(
+            "gotify-3".to_string(),
             "https://gotify.example.com".to_string(),
             "app".to_string(),
             "client-tok".to_string(),
@@ -379,6 +382,7 @@ mod tests {
     #[test]
     fn test_gotify_ws_url_http() {
         let adapter = GotifyAdapter::new(
+            "gotify-4".to_string(),
             "http://localhost:8080".to_string(),
             "app".to_string(),
             "client-tok".to_string(),

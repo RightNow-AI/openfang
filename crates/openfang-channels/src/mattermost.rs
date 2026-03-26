@@ -484,6 +484,7 @@ mod tests {
     #[test]
     fn test_mattermost_adapter_creation() {
         let adapter = MattermostAdapter::new(
+            "mattermost-1".to_string(),
             "https://mattermost.example.com".to_string(),
             "test-token".to_string(),
             vec![],
@@ -495,6 +496,7 @@ mod tests {
     #[test]
     fn test_mattermost_ws_url_https() {
         let adapter = MattermostAdapter::new(
+            "mattermost-2".to_string(),
             "https://mm.example.com".to_string(),
             "token".to_string(),
             vec![],
@@ -505,6 +507,7 @@ mod tests {
     #[test]
     fn test_mattermost_ws_url_http() {
         let adapter = MattermostAdapter::new(
+            "mattermost-3".to_string(),
             "http://localhost:8065".to_string(),
             "token".to_string(),
             vec![],
@@ -515,6 +518,7 @@ mod tests {
     #[test]
     fn test_mattermost_ws_url_trailing_slash() {
         let adapter = MattermostAdapter::new(
+            "mattermost-4".to_string(),
             "https://mm.example.com/".to_string(),
             "token".to_string(),
             vec![],
@@ -526,6 +530,7 @@ mod tests {
     #[test]
     fn test_mattermost_allowed_channels() {
         let adapter = MattermostAdapter::new(
+            "mattermost-5".to_string(),
             "https://mm.example.com".to_string(),
             "token".to_string(),
             vec!["ch1".to_string(), "ch2".to_string()],
@@ -535,6 +540,7 @@ mod tests {
         assert!(!adapter.is_allowed_channel("ch3"));
 
         let open = MattermostAdapter::new(
+            "mattermost-6".to_string(),
             "https://mm.example.com".to_string(),
             "token".to_string(),
             vec![],

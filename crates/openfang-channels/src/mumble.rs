@@ -528,6 +528,7 @@ mod tests {
     #[test]
     fn test_mumble_adapter_creation() {
         let adapter = MumbleAdapter::new(
+            "mumble-1".to_string(),
             "mumble.example.com".to_string(),
             0,
             "secret".to_string(),
@@ -545,6 +546,7 @@ mod tests {
     #[test]
     fn test_mumble_custom_port() {
         let adapter = MumbleAdapter::new(
+            "mumble-2".to_string(),
             "localhost".to_string(),
             12345,
             "".to_string(),

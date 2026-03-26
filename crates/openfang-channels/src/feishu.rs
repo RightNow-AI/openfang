@@ -1397,7 +1397,7 @@ mod tests {
     #[test]
     fn test_feishu_adapter_creation() {
         let adapter = FeishuAdapter::new(
-            "test_id".to_string(),
+            "feishu-1".to_string(),
             "cli_abc123".to_string(),
             "app-secret-456".to_string(),
             9000,
@@ -1414,7 +1414,7 @@ mod tests {
     #[test]
     fn test_lark_region_adapter() {
         let adapter = FeishuAdapter::with_config(
-            "test_id".to_string(),
+            "feishu-2".to_string(),
             "cli_abc123".to_string(),
             "secret".to_string(),
             9100,
@@ -1808,7 +1808,7 @@ mod tests {
     #[test]
     fn test_feishu_websocket_adapter_creation() {
         let adapter = FeishuAdapter::new_websocket(
-            "test_id".to_string(),
+            "feishu-3".to_string(),
             "cli_abc123".to_string(),
             "app-secret-456".to_string(),
         );
@@ -1820,7 +1820,7 @@ mod tests {
     #[test]
     fn test_connection_mode_default_is_webhook() {
         let adapter = FeishuAdapter::new(
-            "test_id".to_string(),
+            "feishu-4".to_string(),
             "cli_abc123".to_string(),
             "secret".to_string(),
             9000,

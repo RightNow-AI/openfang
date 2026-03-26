@@ -714,6 +714,7 @@ mod tests {
     #[test]
     fn test_slack_adapter_creation() {
         let adapter = SlackAdapter::new(
+            "slack-1".to_string(),
             "xapp-test".to_string(),
             "xoxb-test".to_string(),
             vec!["C123".to_string()],
@@ -728,6 +729,7 @@ mod tests {
     #[test]
     fn test_slack_adapter_unfurl_links_enabled() {
         let adapter = SlackAdapter::new(
+            "slack-2".to_string(),
             "xapp-test".to_string(),
             "xoxb-test".to_string(),
             vec![],
@@ -741,6 +743,7 @@ mod tests {
     #[test]
     fn test_slack_adapter_unfurl_links_disabled() {
         let adapter = SlackAdapter::new(
+            "slack-3".to_string(),
             "xapp-test".to_string(),
             "xoxb-test".to_string(),
             vec![],

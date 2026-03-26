@@ -489,7 +489,11 @@ mod tests {
 
     #[test]
     fn test_webex_adapter_creation() {
-        let adapter = WebexAdapter::new("test-bot-token".to_string(), vec!["room1".to_string()]);
+        let adapter = WebexAdapter::new(
+            "webex-1".to_string(),
+            "test-bot-token".to_string(),
+            vec!["room1".to_string()],
+        );
         assert_eq!(adapter.name(), "webex");
         assert_eq!(
             adapter.channel_type(),
@@ -500,6 +504,7 @@ mod tests {
     #[test]
     fn test_webex_allowed_rooms() {
         let adapter = WebexAdapter::new(
+            "webex-2".to_string(),
             "tok".to_string(),
             vec!["room-a".to_string(), "room-b".to_string()],
         );
@@ -507,13 +512,17 @@ mod tests {
         assert!(adapter.is_allowed_room("room-b"));
         assert!(!adapter.is_allowed_room("room-c"));
 
-        let open = WebexAdapter::new("tok".to_string(), vec![]);
+        let open = WebexAdapter::new("webex-3".to_string(), "tok".to_string(), vec![]);
         assert!(open.is_allowed_room("any-room"));
     }
 
     #[test]
     fn test_webex_token_zeroized() {
-        let adapter = WebexAdapter::new("my-secret-bot-token".to_string(), vec![]);
+        let adapter = WebexAdapter::new(
+            "webex-4".to_string(),
+            "my-secret-bot-token".to_string(),
+            vec![],
+        );
         assert_eq!(adapter.bot_token.as_str(), "my-secret-bot-token");
     }
 

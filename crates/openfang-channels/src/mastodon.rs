@@ -551,6 +551,7 @@ mod tests {
     #[test]
     fn test_mastodon_adapter_creation() {
         let adapter = MastodonAdapter::new(
+            "mastodon-1".to_string(),
             "https://mastodon.social".to_string(),
             "access-token-123".to_string(),
         );
@@ -564,14 +565,14 @@ mod tests {
     #[test]
     fn test_mastodon_url_normalization() {
         let adapter =
-            MastodonAdapter::new("https://mastodon.social/".to_string(), "tok".to_string());
+            MastodonAdapter::new("mastodon-2".to_string(), "https://mastodon.social/".to_string(), "tok".to_string());
         assert_eq!(adapter.instance_url, "https://mastodon.social");
     }
 
     #[test]
     fn test_mastodon_custom_instance() {
         let adapter =
-            MastodonAdapter::new("https://infosec.exchange".to_string(), "tok".to_string());
+            MastodonAdapter::new("mastodon-3".to_string(), "https://infosec.exchange".to_string(), "tok".to_string());
         assert_eq!(adapter.instance_url, "https://infosec.exchange");
     }
 

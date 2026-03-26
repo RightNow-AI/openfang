@@ -414,6 +414,7 @@ mod tests {
     #[test]
     fn test_discourse_adapter_creation() {
         let adapter = DiscourseAdapter::new(
+            "discourse-1".to_string(),
             "https://forum.example.com".to_string(),
             "api-key-123".to_string(),
             "system".to_string(),
@@ -429,6 +430,7 @@ mod tests {
     #[test]
     fn test_discourse_url_normalization() {
         let adapter = DiscourseAdapter::new(
+            "discourse-2".to_string(),
             "https://forum.example.com/".to_string(),
             "key".to_string(),
             "bot".to_string(),
@@ -440,6 +442,7 @@ mod tests {
     #[test]
     fn test_discourse_category_filter() {
         let adapter = DiscourseAdapter::new(
+            "discourse-3".to_string(),
             "https://forum.example.com".to_string(),
             "key".to_string(),
             "bot".to_string(),
@@ -453,6 +456,7 @@ mod tests {
     #[test]
     fn test_discourse_category_filter_empty_allows_all() {
         let adapter = DiscourseAdapter::new(
+            "discourse-4".to_string(),
             "https://forum.example.com".to_string(),
             "key".to_string(),
             "bot".to_string(),
@@ -464,6 +468,7 @@ mod tests {
     #[test]
     fn test_discourse_auth_headers() {
         let adapter = DiscourseAdapter::new(
+            "discourse-5".to_string(),
             "https://forum.example.com".to_string(),
             "my-api-key".to_string(),
             "bot-user".to_string(),

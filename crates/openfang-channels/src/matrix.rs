@@ -466,6 +466,7 @@ mod tests {
     #[test]
     fn test_matrix_adapter_creation() {
         let adapter = MatrixAdapter::new(
+            "matrix-1".to_string(),
             "https://matrix.org".to_string(),
             "@bot:matrix.org".to_string(),
             "access_token".to_string(),
@@ -478,6 +479,7 @@ mod tests {
     #[test]
     fn test_matrix_allowed_rooms() {
         let adapter = MatrixAdapter::new(
+            "matrix-2".to_string(),
             "https://matrix.org".to_string(),
             "@bot:matrix.org".to_string(),
             "token".to_string(),
@@ -488,6 +490,7 @@ mod tests {
         assert!(!adapter.is_allowed_room("!room2:matrix.org"));
 
         let open = MatrixAdapter::new(
+            "matrix-3".to_string(),
             "https://matrix.org".to_string(),
             "@bot:matrix.org".to_string(),
             "token".to_string(),

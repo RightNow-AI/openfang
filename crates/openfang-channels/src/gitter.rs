@@ -364,7 +364,11 @@ mod tests {
 
     #[test]
     fn test_gitter_adapter_creation() {
-        let adapter = GitterAdapter::new("test-token".to_string(), "abc123room".to_string());
+        let adapter = GitterAdapter::new(
+            "gitter-1".to_string(),
+            "test-token".to_string(),
+            "abc123room".to_string(),
+        );
         assert_eq!(adapter.name(), "gitter");
         assert_eq!(
             adapter.channel_type(),
@@ -374,7 +378,11 @@ mod tests {
 
     #[test]
     fn test_gitter_room_id() {
-        let adapter = GitterAdapter::new("tok".to_string(), "my-room-id".to_string());
+        let adapter = GitterAdapter::new(
+            "gitter-2".to_string(),
+            "tok".to_string(),
+            "my-room-id".to_string(),
+        );
         assert_eq!(adapter.room_id, "my-room-id");
     }
 

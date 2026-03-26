@@ -341,8 +341,12 @@ mod tests {
 
     #[test]
     fn test_dingtalk_adapter_creation() {
-        let adapter =
-            DingTalkAdapter::new("test-token".to_string(), "test-secret".to_string(), 8080);
+        let adapter = DingTalkAdapter::new(
+            "dingtalk-1".to_string(),
+            "test-token".to_string(),
+            "test-secret".to_string(),
+            8080,
+        );
         assert_eq!(adapter.name(), "dingtalk");
         assert_eq!(
             adapter.channel_type(),
@@ -424,7 +428,12 @@ mod tests {
 
     #[test]
     fn test_dingtalk_send_url_contains_token_and_sign() {
-        let adapter = DingTalkAdapter::new("my-token".to_string(), "my-secret".to_string(), 8080);
+        let adapter = DingTalkAdapter::new(
+            "dingtalk-2".to_string(),
+            "my-token".to_string(),
+            "my-secret".to_string(),
+            8080,
+        );
         let url = adapter.build_send_url();
         assert!(url.contains("access_token=my-token"));
         assert!(url.contains("timestamp="));

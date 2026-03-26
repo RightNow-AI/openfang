@@ -375,7 +375,8 @@ mod tests {
 
     #[test]
     fn test_pumble_adapter_creation() {
-        let adapter = PumbleAdapter::new("test-bot-token".to_string(), 8080);
+        let adapter =
+            PumbleAdapter::new("pumble-1".to_string(), "test-bot-token".to_string(), 8080);
         assert_eq!(adapter.name(), "pumble");
         assert_eq!(
             adapter.channel_type(),
@@ -385,13 +386,17 @@ mod tests {
 
     #[test]
     fn test_pumble_token_zeroized() {
-        let adapter = PumbleAdapter::new("secret-pumble-token".to_string(), 8080);
+        let adapter = PumbleAdapter::new(
+            "pumble-1".to_string(),
+            "secret-pumble-token".to_string(),
+            8080,
+        );
         assert_eq!(adapter.bot_token.as_str(), "secret-pumble-token");
     }
 
     #[test]
     fn test_pumble_webhook_port() {
-        let adapter = PumbleAdapter::new("token".to_string(), 9999);
+        let adapter = PumbleAdapter::new("pumble-2".to_string(), "token".to_string(), 9999);
         assert_eq!(adapter.webhook_port, 9999);
     }
 

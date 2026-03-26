@@ -448,6 +448,7 @@ mod tests {
     #[test]
     fn test_nextcloud_adapter_creation() {
         let adapter = NextcloudAdapter::new(
+            "nextcloud-1".to_string(),
             "https://cloud.example.com".to_string(),
             "test-token".to_string(),
             vec!["room1".to_string()],
@@ -462,6 +463,7 @@ mod tests {
     #[test]
     fn test_nextcloud_server_url_normalization() {
         let adapter = NextcloudAdapter::new(
+            "nextcloud-2".to_string(),
             "https://cloud.example.com/".to_string(),
             "tok".to_string(),
             vec![],
@@ -472,6 +474,7 @@ mod tests {
     #[test]
     fn test_nextcloud_allowed_rooms() {
         let adapter = NextcloudAdapter::new(
+            "nextcloud-3".to_string(),
             "https://cloud.example.com".to_string(),
             "tok".to_string(),
             vec!["room1".to_string(), "room2".to_string()],
@@ -481,6 +484,7 @@ mod tests {
         assert!(!adapter.is_allowed_room("room3"));
 
         let open = NextcloudAdapter::new(
+            "nextcloud-4".to_string(),
             "https://cloud.example.com".to_string(),
             "tok".to_string(),
             vec![],
@@ -491,6 +495,7 @@ mod tests {
     #[test]
     fn test_nextcloud_ocs_headers() {
         let adapter = NextcloudAdapter::new(
+            "nextcloud-5".to_string(),
             "https://cloud.example.com".to_string(),
             "my-token".to_string(),
             vec![],
@@ -508,6 +513,7 @@ mod tests {
     #[test]
     fn test_nextcloud_token_zeroized() {
         let adapter = NextcloudAdapter::new(
+            "nextcloud-6".to_string(),
             "https://cloud.example.com".to_string(),
             "secret-token-value".to_string(),
             vec![],

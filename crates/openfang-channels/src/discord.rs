@@ -900,6 +900,7 @@ mod tests {
     #[test]
     fn test_discord_adapter_creation() {
         let adapter = DiscordAdapter::new(
+            "discord-1".to_string(),
             "test-token".to_string(),
             vec!["123".to_string(), "456".to_string()],
             vec![],

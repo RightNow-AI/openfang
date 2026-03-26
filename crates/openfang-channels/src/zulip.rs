@@ -488,6 +488,7 @@ mod tests {
     #[test]
     fn test_zulip_adapter_creation() {
         let adapter = ZulipAdapter::new(
+            "zulip-1".to_string(),
             "https://myorg.zulipchat.com".to_string(),
             "bot@myorg.zulipchat.com".to_string(),
             "test-api-key".to_string(),
@@ -503,6 +504,7 @@ mod tests {
     #[test]
     fn test_zulip_server_url_normalization() {
         let adapter = ZulipAdapter::new(
+            "zulip-2".to_string(),
             "https://myorg.zulipchat.com/".to_string(),
             "bot@example.com".to_string(),
             "key".to_string(),
@@ -514,6 +516,7 @@ mod tests {
     #[test]
     fn test_zulip_allowed_streams() {
         let adapter = ZulipAdapter::new(
+            "zulip-3".to_string(),
             "https://zulip.example.com".to_string(),
             "bot@example.com".to_string(),
             "key".to_string(),
@@ -524,6 +527,7 @@ mod tests {
         assert!(!adapter.is_allowed_stream("random"));
 
         let open = ZulipAdapter::new(
+            "zulip-4".to_string(),
             "https://zulip.example.com".to_string(),
             "bot@example.com".to_string(),
             "key".to_string(),
@@ -535,6 +539,7 @@ mod tests {
     #[test]
     fn test_zulip_bot_email_stored() {
         let adapter = ZulipAdapter::new(
+            "zulip-5".to_string(),
             "https://zulip.example.com".to_string(),
             "mybot@zulip.example.com".to_string(),
             "secret-key".to_string(),
@@ -546,6 +551,7 @@ mod tests {
     #[test]
     fn test_zulip_api_key_zeroized() {
         let adapter = ZulipAdapter::new(
+            "zulip-6".to_string(),
             "https://zulip.example.com".to_string(),
             "bot@example.com".to_string(),
             "my-secret-api-key".to_string(),

@@ -25,6 +25,7 @@ use tokio::sync::{mpsc, watch};
 // ---------------------------------------------------------------------------
 
 struct MockAdapter {
+    id: String,
     name: String,
     channel_type: ChannelType,
     /// Receiver consumed by start() — wrapped as a Stream.
@@ -42,6 +43,7 @@ impl MockAdapter {
         let (shutdown_tx, _shutdown_rx) = watch::channel(false);
 
         let adapter = Arc::new(Self {
+            id: name.to_string(),
             name: name.to_string(),
             channel_type,
             rx: Mutex::new(Some(rx)),
@@ -59,6 +61,10 @@ impl MockAdapter {
 
 #[async_trait]
 impl ChannelAdapter for MockAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn name(&self) -> &str {
         &self.name
     }

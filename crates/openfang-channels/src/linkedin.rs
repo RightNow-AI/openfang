@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_linkedin_adapter_creation() {
-        let adapter = LinkedInAdapter::new("test-token".to_string(), "12345".to_string());
+        let adapter = LinkedInAdapter::new("linkedin-1".to_string(), "test-token".to_string(), "12345".to_string());
         assert_eq!(adapter.name(), "linkedin");
         assert_eq!(
             adapter.channel_type(),
@@ -411,23 +411,23 @@ mod tests {
 
     #[test]
     fn test_linkedin_organization_id_normalization() {
-        let adapter = LinkedInAdapter::new("tok".to_string(), "12345".to_string());
+        let adapter = LinkedInAdapter::new("linkedin-2".to_string(), "tok".to_string(), "12345".to_string());
         assert_eq!(adapter.organization_id, "urn:li:organization:12345");
 
         let adapter2 =
-            LinkedInAdapter::new("tok".to_string(), "urn:li:organization:67890".to_string());
+            LinkedInAdapter::new("linkedin-3".to_string(), "tok".to_string(), "urn:li:organization:67890".to_string());
         assert_eq!(adapter2.organization_id, "urn:li:organization:67890");
     }
 
     #[test]
     fn test_linkedin_org_numeric_id() {
-        let adapter = LinkedInAdapter::new("tok".to_string(), "12345".to_string());
+        let adapter = LinkedInAdapter::new("linkedin-4".to_string(), "tok".to_string(), "12345".to_string());
         assert_eq!(adapter.org_numeric_id(), "12345");
     }
 
     #[test]
     fn test_linkedin_auth_headers() {
-        let adapter = LinkedInAdapter::new("my-oauth-token".to_string(), "12345".to_string());
+        let adapter = LinkedInAdapter::new("linkedin-5".to_string(), "my-oauth-token".to_string(), "12345".to_string());
         let builder = adapter.client.get("https://api.linkedin.com/v2/me");
         let builder = adapter.auth_request(builder);
         let request = builder.build().unwrap();

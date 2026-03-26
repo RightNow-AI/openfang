@@ -419,6 +419,7 @@ mod tests {
     #[test]
     fn test_teams_adapter_creation() {
         let adapter = TeamsAdapter::new(
+            "teams-1".to_string(),
             "app-id-123".to_string(),
             "app-password".to_string(),
             3978,
@@ -431,6 +432,7 @@ mod tests {
     #[test]
     fn test_teams_allowed_tenants() {
         let adapter = TeamsAdapter::new(
+            "teams-2".to_string(),
             "app-id".to_string(),
             "password".to_string(),
             3978,
@@ -439,7 +441,13 @@ mod tests {
         assert!(adapter.is_allowed_tenant("tenant-abc"));
         assert!(!adapter.is_allowed_tenant("tenant-xyz"));
 
-        let open = TeamsAdapter::new("app-id".to_string(), "password".to_string(), 3978, vec![]);
+        let open = TeamsAdapter::new(
+            "teams-3".to_string(),
+            "app-id".to_string(),
+            "password".to_string(),
+            3978,
+            vec![],
+        );
         assert!(open.is_allowed_tenant("any-tenant"));
     }
 

@@ -361,8 +361,11 @@ mod tests {
 
     #[test]
     fn test_guilded_adapter_creation() {
-        let adapter =
-            GuildedAdapter::new("test-bot-token".to_string(), vec!["server1".to_string()]);
+        let adapter = GuildedAdapter::new(
+            "guilded-1".to_string(),
+            "test-bot-token".to_string(),
+            vec!["server1".to_string()],
+        );
         assert_eq!(adapter.name(), "guilded");
         assert_eq!(
             adapter.channel_type(),
@@ -373,6 +376,7 @@ mod tests {
     #[test]
     fn test_guilded_allowed_servers() {
         let adapter = GuildedAdapter::new(
+            "guilded-2".to_string(),
             "tok".to_string(),
             vec!["srv-1".to_string(), "srv-2".to_string()],
         );
@@ -380,13 +384,17 @@ mod tests {
         assert!(adapter.is_allowed_server("srv-2"));
         assert!(!adapter.is_allowed_server("srv-3"));
 
-        let open = GuildedAdapter::new("tok".to_string(), vec![]);
+        let open = GuildedAdapter::new("guilded-3".to_string(), "tok".to_string(), vec![]);
         assert!(open.is_allowed_server("any-server"));
     }
 
     #[test]
     fn test_guilded_token_zeroized() {
-        let adapter = GuildedAdapter::new("secret-bot-token".to_string(), vec![]);
+        let adapter = GuildedAdapter::new(
+            "guilded-4".to_string(),
+            "secret-bot-token".to_string(),
+            vec![],
+        );
         assert_eq!(adapter.bot_token.as_str(), "secret-bot-token");
     }
 

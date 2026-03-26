@@ -354,6 +354,7 @@ mod tests {
     #[test]
     fn test_whatsapp_adapter_creation() {
         let adapter = WhatsAppAdapter::new(
+            "whatsapp-1".to_string(),
             "12345".to_string(),
             "access_token".to_string(),
             "verify_token".to_string(),
@@ -367,6 +368,7 @@ mod tests {
     #[test]
     fn test_allowed_users_check() {
         let adapter = WhatsAppAdapter::new(
+            "whatsapp-2".to_string(),
             "12345".to_string(),
             "token".to_string(),
             "verify".to_string(),
@@ -377,6 +379,7 @@ mod tests {
         assert!(!adapter.is_allowed("+9999999999"));
 
         let open = WhatsAppAdapter::new(
+            "whatsapp-3".to_string(),
             "12345".to_string(),
             "token".to_string(),
             "verify".to_string(),

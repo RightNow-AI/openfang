@@ -438,6 +438,7 @@ mod tests {
     #[test]
     fn test_nostr_adapter_creation() {
         let adapter = NostrAdapter::new(
+            "nostr-1".to_string(),
             "deadbeef".repeat(8),
             vec!["wss://relay.damus.io".to_string()],
         );
@@ -451,20 +452,24 @@ mod tests {
     #[test]
     fn test_nostr_private_key_zeroized() {
         let key = "a".repeat(64);
-        let adapter = NostrAdapter::new(key.clone(), vec!["wss://relay.example.com".to_string()]);
+        let adapter = NostrAdapter::new(
+            "nostr-2".to_string(),
+            key.clone(),
+            vec!["wss://relay.example.com".to_string()],
+        );
         assert_eq!(adapter.private_key.as_str(), key);
     }
 
     #[test]
     fn test_nostr_derive_pubkey() {
-        let adapter = NostrAdapter::new("deadbeef".repeat(8), vec![]);
+        let adapter = NostrAdapter::new("nostr-3".to_string(), "deadbeef".repeat(8), vec![]);
         let pubkey = adapter.derive_pubkey();
         assert_eq!(pubkey.len(), 64);
     }
 
     #[test]
     fn test_nostr_build_subscription() {
-        let adapter = NostrAdapter::new("abc123".to_string(), vec![]);
+        let adapter = NostrAdapter::new("nostr-4".to_string(), "abc123".to_string(), vec![]);
         let pubkey = adapter.derive_pubkey();
         let sub = adapter.build_subscription(&pubkey);
         assert!(sub.contains("REQ"));
@@ -474,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_nostr_build_event() {
-        let adapter = NostrAdapter::new("abc123".to_string(), vec![]);
+        let adapter = NostrAdapter::new("nostr-5".to_string(), "abc123".to_string(), vec![]);
         let event = adapter.build_event("recipient_pubkey_hex", "Hello Nostr!");
         assert!(event.contains("EVENT"));
         assert!(event.contains("Hello Nostr!"));
@@ -484,6 +489,7 @@ mod tests {
     #[test]
     fn test_nostr_multiple_relays() {
         let adapter = NostrAdapter::new(
+            "nostr-6".to_string(),
             "key".to_string(),
             vec![
                 "wss://relay1.example.com".to_string(),

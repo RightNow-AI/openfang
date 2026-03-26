@@ -150,6 +150,7 @@ mod tests {
     #[test]
     fn test_xmpp_adapter_creation() {
         let adapter = XmppAdapter::new(
+            "xmpp-1".to_string(),
             "bot@example.com".to_string(),
             "secret-password".to_string(),
             "xmpp.example.com".to_string(),
@@ -166,6 +167,7 @@ mod tests {
     #[test]
     fn test_xmpp_bare_jid() {
         let adapter = XmppAdapter::new(
+            "xmpp-2".to_string(),
             "bot@example.com/resource".to_string(),
             "pass".to_string(),
             "xmpp.example.com".to_string(),
@@ -175,6 +177,7 @@ mod tests {
         assert_eq!(adapter.bare_jid(), "bot@example.com");
 
         let adapter_no_resource = XmppAdapter::new(
+            "xmpp-3".to_string(),
             "bot@example.com".to_string(),
             "pass".to_string(),
             "xmpp.example.com".to_string(),
@@ -187,6 +190,7 @@ mod tests {
     #[test]
     fn test_xmpp_endpoint() {
         let adapter = XmppAdapter::new(
+            "xmpp-4".to_string(),
             "bot@example.com".to_string(),
             "pass".to_string(),
             "xmpp.example.com".to_string(),
@@ -203,6 +207,7 @@ mod tests {
             "room2@conference.example.com".to_string(),
         ];
         let adapter = XmppAdapter::new(
+            "xmpp-5".to_string(),
             "bot@example.com".to_string(),
             "pass".to_string(),
             "xmpp.example.com".to_string(),
@@ -215,6 +220,7 @@ mod tests {
     #[tokio::test]
     async fn test_xmpp_start_returns_error() {
         let adapter = XmppAdapter::new(
+            "xmpp-6".to_string(),
             "bot@example.com".to_string(),
             "pass".to_string(),
             "xmpp.example.com".to_string(),
@@ -230,6 +236,7 @@ mod tests {
     #[tokio::test]
     async fn test_xmpp_send_returns_error() {
         let adapter = XmppAdapter::new(
+            "xmpp-7".to_string(),
             "bot@example.com".to_string(),
             "pass".to_string(),
             "xmpp.example.com".to_string(),
@@ -250,6 +257,7 @@ mod tests {
     #[test]
     fn test_xmpp_password_zeroized() {
         let adapter = XmppAdapter::new(
+            "xmpp-8".to_string(),
             "bot@example.com".to_string(),
             "my-secret-pass".to_string(),
             "xmpp.example.com".to_string(),
@@ -263,6 +271,7 @@ mod tests {
     #[test]
     fn test_xmpp_custom_port() {
         let adapter = XmppAdapter::new(
+            "xmpp-9".to_string(),
             "bot@example.com".to_string(),
             "pass".to_string(),
             "xmpp.example.com".to_string(),

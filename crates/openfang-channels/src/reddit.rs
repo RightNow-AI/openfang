@@ -540,6 +540,7 @@ mod tests {
     #[test]
     fn test_reddit_adapter_creation() {
         let adapter = RedditAdapter::new(
+            "reddit-1".to_string(),
             "client-id".to_string(),
             "client-secret".to_string(),
             "bot-user".to_string(),
@@ -556,6 +557,7 @@ mod tests {
     #[test]
     fn test_reddit_subreddit_list() {
         let adapter = RedditAdapter::new(
+            "reddit-2".to_string(),
             "cid".to_string(),
             "csec".to_string(),
             "usr".to_string(),
@@ -576,6 +578,7 @@ mod tests {
     #[test]
     fn test_reddit_secrets_zeroized() {
         let adapter = RedditAdapter::new(
+            "reddit-3".to_string(),
             "cid".to_string(),
             "secret-value".to_string(),
             "usr".to_string(),

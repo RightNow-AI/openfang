@@ -575,7 +575,12 @@ mod tests {
 
     #[test]
     fn adapter_creation() {
-        let a = DingTalkStreamAdapter::new("k".into(), "s".into(), "r".into());
+        let a = DingTalkStreamAdapter::new(
+            "dingtalk_stream-1".into(),
+            "k".into(),
+            "s".into(),
+            "r".into(),
+        );
         assert_eq!(a.name(), "dingtalk_stream");
         assert_eq!(
             a.channel_type(),

@@ -382,6 +382,7 @@ mod tests {
     #[test]
     fn test_webhook_adapter_creation() {
         let adapter = WebhookAdapter::new(
+            "webhook-1".to_string(),
             "my-secret".to_string(),
             9000,
             Some("https://example.com/callback".to_string()),
@@ -396,7 +397,8 @@ mod tests {
 
     #[test]
     fn test_webhook_no_callback() {
-        let adapter = WebhookAdapter::new("secret".to_string(), 9000, None);
+        let adapter =
+            WebhookAdapter::new("webhook-2".to_string(), "secret".to_string(), 9000, None);
         assert!(!adapter.has_callback());
     }
 

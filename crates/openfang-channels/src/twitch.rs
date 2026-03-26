@@ -331,6 +331,7 @@ mod tests {
     #[test]
     fn test_twitch_adapter_creation() {
         let adapter = TwitchAdapter::new(
+            "twitch-1".to_string(),
             "test-oauth-token".to_string(),
             vec!["testchannel".to_string()],
             "openfang_bot".to_string(),
@@ -344,13 +345,23 @@ mod tests {
 
     #[test]
     fn test_twitch_pass_string_with_prefix() {
-        let adapter = TwitchAdapter::new("oauth:abc123".to_string(), vec![], "bot".to_string());
+        let adapter = TwitchAdapter::new(
+            "twitch-2".to_string(),
+            "oauth:abc123".to_string(),
+            vec![],
+            "bot".to_string(),
+        );
         assert_eq!(adapter.pass_string(), "PASS oauth:abc123\r\n");
     }
 
     #[test]
     fn test_twitch_pass_string_without_prefix() {
-        let adapter = TwitchAdapter::new("abc123".to_string(), vec![], "bot".to_string());
+        let adapter = TwitchAdapter::new(
+            "twitch-3".to_string(),
+            "abc123".to_string(),
+            vec![],
+            "bot".to_string(),
+        );
         assert_eq!(adapter.pass_string(), "PASS oauth:abc123\r\n");
     }
 

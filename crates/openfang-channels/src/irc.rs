@@ -468,6 +468,7 @@ mod tests {
     #[test]
     fn test_irc_adapter_creation() {
         let adapter = IrcAdapter::new(
+            "irc-1".to_string(),
             "irc.libera.chat".to_string(),
             6667,
             "openfang".to_string(),
@@ -485,6 +486,7 @@ mod tests {
     #[test]
     fn test_irc_addr() {
         let adapter = IrcAdapter::new(
+            "irc-2".to_string(),
             "irc.libera.chat".to_string(),
             6667,
             "bot".to_string(),
@@ -498,6 +500,7 @@ mod tests {
     #[test]
     fn test_irc_addr_custom_port() {
         let adapter = IrcAdapter::new(
+            "irc-3".to_string(),
             "localhost".to_string(),
             6697,
             "bot".to_string(),

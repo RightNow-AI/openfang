@@ -440,6 +440,7 @@ mod tests {
     #[test]
     fn test_messenger_adapter_creation() {
         let adapter = MessengerAdapter::new(
+            "messenger-1".to_string(),
             "page-token-123".to_string(),
             "verify-token-456".to_string(),
             8080,
@@ -454,7 +455,7 @@ mod tests {
 
     #[test]
     fn test_messenger_both_tokens() {
-        let adapter = MessengerAdapter::new("page-tok".to_string(), "verify-tok".to_string(), 9000);
+        let adapter = MessengerAdapter::new("messenger-2".to_string(), "page-tok".to_string(), "verify-tok".to_string(), 9000);
         assert_eq!(adapter.page_token.as_str(), "page-tok");
         assert_eq!(adapter.verify_token.as_str(), "verify-tok");
     }

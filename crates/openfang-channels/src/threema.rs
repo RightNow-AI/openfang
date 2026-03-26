@@ -352,7 +352,12 @@ mod tests {
 
     #[test]
     fn test_threema_adapter_creation() {
-        let adapter = ThreemaAdapter::new("*MYGATEW".to_string(), "test-secret".to_string(), 8443);
+        let adapter = ThreemaAdapter::new(
+            "threema-1".to_string(),
+            "*MYGATEW".to_string(),
+            "test-secret".to_string(),
+            8443,
+        );
         assert_eq!(adapter.name(), "threema");
         assert_eq!(
             adapter.channel_type(),
@@ -362,14 +367,23 @@ mod tests {
 
     #[test]
     fn test_threema_secret_zeroized() {
-        let adapter =
-            ThreemaAdapter::new("*MYID123".to_string(), "super-secret-key".to_string(), 8443);
+        let adapter = ThreemaAdapter::new(
+            "threema-2".to_string(),
+            "*MYID123".to_string(),
+            "super-secret-key".to_string(),
+            8443,
+        );
         assert_eq!(adapter.secret.as_str(), "super-secret-key");
     }
 
     #[test]
     fn test_threema_webhook_port() {
-        let adapter = ThreemaAdapter::new("*TEST".to_string(), "secret".to_string(), 9090);
+        let adapter = ThreemaAdapter::new(
+            "threema-3".to_string(),
+            "*TEST".to_string(),
+            "secret".to_string(),
+            9090,
+        );
         assert_eq!(adapter.webhook_port, 9090);
     }
 

@@ -369,6 +369,7 @@ mod tests {
     #[test]
     fn test_google_chat_adapter_creation() {
         let adapter = GoogleChatAdapter::new(
+            "google_chat-1".to_string(),
             r#"{"access_token":"test-token","project_id":"test"}"#.to_string(),
             vec!["spaces/AAAA".to_string()],
             8090,
@@ -383,6 +384,7 @@ mod tests {
     #[test]
     fn test_google_chat_allowed_spaces() {
         let adapter = GoogleChatAdapter::new(
+            "google_chat-2".to_string(),
             r#"{"access_token":"tok"}"#.to_string(),
             vec!["spaces/AAAA".to_string()],
             8090,
@@ -390,13 +392,14 @@ mod tests {
         assert!(adapter.is_allowed_space("spaces/AAAA"));
         assert!(!adapter.is_allowed_space("spaces/BBBB"));
 
-        let open = GoogleChatAdapter::new(r#"{"access_token":"tok"}"#.to_string(), vec![], 8090);
+        let open = GoogleChatAdapter::new("google_chat-3".to_string(), r#"{"access_token":"tok"}"#.to_string(), vec![], 8090);
         assert!(open.is_allowed_space("spaces/anything"));
     }
 
     #[tokio::test]
     async fn test_google_chat_token_caching() {
         let adapter = GoogleChatAdapter::new(
+            "google_chat-4".to_string(),
             r#"{"access_token":"cached-tok","project_id":"p"}"#.to_string(),
             vec![],
             8091,
@@ -413,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_google_chat_invalid_key() {
-        let adapter = GoogleChatAdapter::new("not-json".to_string(), vec![], 8092);
+        let adapter = GoogleChatAdapter::new("google_chat-5".to_string(), "not-json".to_string(), vec![], 8092);
         // Can't call async get_access_token in sync test, but verify construction works
         assert_eq!(adapter.webhook_port, 8092);
     }
