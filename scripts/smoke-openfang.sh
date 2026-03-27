@@ -92,8 +92,10 @@ require_json_status() {
   local expected="$3"
   local body
 
-  body="$(curl_with_auth "${url}")"
-  python3 - "${body}" "${description}" "${expected}" <<'PY'
+  if ! body="$(curl_with_auth "${url}")"; then
+    return 1
+  fi
+  if ! python3 - "${body}" "${description}" "${expected}" <<'PY'
 import json
 import sys
 
@@ -105,6 +107,9 @@ if status != expected:
         f"{description} returned unexpected status: {status!r} (expected {expected!r})"
     )
 PY
+  then
+    return 1
+  fi
   echo "ok  ${description}"
 }
 
@@ -117,8 +122,10 @@ check_audit_verify() {
   local url="$1"
   local body
 
-  body="$(curl_with_auth "${url}")"
-  python3 - "${body}" <<'PY'
+  if ! body="$(curl_with_auth "${url}")"; then
+    return 1
+  fi
+  if ! python3 - "${body}" <<'PY'
 import json
 import sys
 
@@ -134,6 +141,9 @@ if entries == 0 or warning:
         file=sys.stderr,
     )
 PY
+  then
+    return 1
+  fi
 }
 
 check_required_metrics() {
