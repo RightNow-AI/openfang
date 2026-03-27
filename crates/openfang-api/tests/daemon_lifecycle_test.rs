@@ -9,6 +9,7 @@ use openfang_api::routes::{self, AppState};
 use openfang_api::server::{read_daemon_info, DaemonInfo};
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::cors::CorsLayer;
@@ -112,6 +113,7 @@ async fn test_full_daemon_lifecycle() {
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
+        secrets_state: tokio::sync::RwLock::new(HashMap::new()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
@@ -237,6 +239,7 @@ async fn test_server_immediate_responsiveness() {
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
+        secrets_state: tokio::sync::RwLock::new(HashMap::new()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),

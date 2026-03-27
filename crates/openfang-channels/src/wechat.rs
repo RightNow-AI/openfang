@@ -46,6 +46,22 @@ struct SyncData {
     get_updates_buf: String,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct WeChatBootstrapState {
+    pub bot_token: Option<String>,
+    pub account_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WeChatAdapterSettings {
+    pub bot_token_env: String,
+    pub account_id_env: String,
+    pub user_id_env: String,
+    pub api_base_url: Option<String>,
+    pub cdn_base_url: Option<String>,
+    pub state_dir: Option<String>,
+}
+
 #[derive(Debug, Default)]
 struct AdapterRuntimeState {
     connected: bool,
@@ -77,22 +93,23 @@ pub struct WeChatAdapter {
 
 impl WeChatAdapter {
     pub fn new(
-        bot_token_env: String,
-        account_id_env: String,
-        user_id_env: String,
+        settings: WeChatAdapterSettings,
+        bootstrap_state: WeChatBootstrapState,
         allowed_users: Vec<String>,
-        api_base_url: Option<String>,
-        cdn_base_url: Option<String>,
-        state_dir: Option<String>,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let adapter = Self {
-            bot_token_env,
-            account_id_env,
-            user_id_env,
-            api_base_url: api_base_url.unwrap_or_else(|| DEFAULT_API_BASE_URL.to_string()),
-            _cdn_base_url: cdn_base_url.unwrap_or_else(|| DEFAULT_CDN_BASE_URL.to_string()),
-            state_dir: state_dir
+            bot_token_env: settings.bot_token_env,
+            account_id_env: settings.account_id_env,
+            user_id_env: settings.user_id_env,
+            api_base_url: settings
+                .api_base_url
+                .unwrap_or_else(|| DEFAULT_API_BASE_URL.to_string()),
+            _cdn_base_url: settings
+                .cdn_base_url
+                .unwrap_or_else(|| DEFAULT_CDN_BASE_URL.to_string()),
+            state_dir: settings
+                .state_dir
                 .map(PathBuf::from)
                 .unwrap_or_else(default_state_dir),
             allowed_users,
@@ -105,7 +122,7 @@ impl WeChatAdapter {
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         };
-        adapter.load_persisted_state();
+        adapter.load_persisted_state(bootstrap_state);
         adapter
     }
 
@@ -129,21 +146,22 @@ impl WeChatAdapter {
         }
     }
 
-    fn load_persisted_state(&self) {
-        if let Ok(token) = std::env::var(&self.bot_token_env).map(|value| value.trim().to_string()) {
-            if !token.is_empty() {
-                if let Ok(mut guard) = self.bot_token.write() {
-                    *guard = Some(token);
-                }
+    fn load_persisted_state(&self, bootstrap_state: WeChatBootstrapState) {
+        if let Some(token) = bootstrap_state
+            .bot_token
+            .filter(|value| !value.trim().is_empty())
+        {
+            if let Ok(mut guard) = self.bot_token.write() {
+                *guard = Some(token.trim().to_string());
             }
         }
-        if let Ok(account_id) =
-            std::env::var(&self.account_id_env).map(|value| value.trim().to_string())
+
+        if let Some(account_id) = bootstrap_state
+            .account_id
+            .filter(|value| !value.trim().is_empty())
         {
-            if !account_id.is_empty() {
-                if let Ok(mut guard) = self.account_id.write() {
-                    *guard = Some(account_id);
-                }
+            if let Ok(mut guard) = self.account_id.write() {
+                *guard = Some(account_id.trim().to_string());
             }
         }
 
@@ -157,7 +175,13 @@ impl WeChatAdapter {
                         }
                     }
                 }
-                if self.account_id.read().ok().and_then(|guard| guard.clone()).is_none() {
+                if self
+                    .account_id
+                    .read()
+                    .ok()
+                    .and_then(|guard| guard.clone())
+                    .is_none()
+                {
                     if let Some(account_id) = account.account_id {
                         if let Ok(mut account_guard) = self.account_id.write() {
                             *account_guard = Some(account_id);
@@ -188,7 +212,7 @@ impl WeChatAdapter {
             saved_at: Some(Utc::now().to_rfc3339()),
         };
         if let Ok(serialized) = serde_json::to_string_pretty(&data) {
-            let _ = std::fs::write(self.state_dir.join("account.json"), serialized);
+            let _ = write_restricted_file(&self.state_dir.join("account.json"), &serialized);
         }
     }
 
@@ -696,6 +720,16 @@ fn default_state_dir() -> PathBuf {
         .join("wechat")
 }
 
+fn write_restricted_file(path: &Path, content: &str) -> std::io::Result<()> {
+    std::fs::write(path, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 fn build_base_info() -> serde_json::Value {
     serde_json::json!({
         "channel_version": env!("CARGO_PKG_VERSION")
@@ -793,13 +827,16 @@ mod tests {
     #[test]
     fn wechat_defaults_to_custom_channel_type() {
         let adapter = WeChatAdapter::new(
-            "WECHAT_BOT_TOKEN".to_string(),
-            "WECHAT_ACCOUNT_ID".to_string(),
-            "WECHAT_USER_ID".to_string(),
+            WeChatAdapterSettings {
+                bot_token_env: "WECHAT_BOT_TOKEN".to_string(),
+                account_id_env: "WECHAT_ACCOUNT_ID".to_string(),
+                user_id_env: "WECHAT_USER_ID".to_string(),
+                api_base_url: None,
+                cdn_base_url: None,
+                state_dir: None,
+            },
+            WeChatBootstrapState::default(),
             vec![],
-            None,
-            None,
-            None,
         );
         assert_eq!(
             adapter.channel_type(),

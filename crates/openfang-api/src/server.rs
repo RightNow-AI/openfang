@@ -38,20 +38,28 @@ pub async fn build_router(
     kernel: Arc<OpenFangKernel>,
     listen_addr: SocketAddr,
 ) -> (Router<()>, Arc<AppState>) {
-    // Start channel bridges (Telegram, etc.)
-    let bridge = channel_bridge::start_channel_bridge(kernel.clone()).await;
-
     let channels_config = kernel.config.channels.clone();
+    let runtime_secrets = channel_bridge::load_runtime_secrets(&kernel.config.home_dir);
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
         started_at: Instant::now(),
         peer_registry: kernel.peer_registry.get().map(|r| Arc::new(r.clone())),
-        bridge_manager: tokio::sync::Mutex::new(bridge),
+        bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(channels_config),
+        secrets_state: tokio::sync::RwLock::new(runtime_secrets),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
     });
+    let secret_snapshot = state.secrets_state.read().await.clone();
+    let bridge = channel_bridge::start_channel_bridge_with_config(
+        kernel.clone(),
+        &kernel.config.channels,
+        &secret_snapshot,
+    )
+    .await
+    .0;
+    *state.bridge_manager.lock().await = bridge;
 
     // CORS: allow localhost origins by default. If API key is set, the API
     // is protected anyway. For development, permissive CORS is convenient.

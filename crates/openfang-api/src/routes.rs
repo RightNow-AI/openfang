@@ -32,6 +32,8 @@ pub struct AppState {
     pub bridge_manager: tokio::sync::Mutex<Option<openfang_channels::bridge::BridgeManager>>,
     /// Live channel config — updated on every hot-reload so list_channels() reflects reality.
     pub channels_config: tokio::sync::RwLock<openfang_types::config::ChannelsConfig>,
+    /// 运行期密钥状态，作为渠道配置热更新时的单一真相来源。
+    pub secrets_state: tokio::sync::RwLock<HashMap<String, String>>,
     /// Notify handle to trigger graceful HTTP server shutdown from the API.
     pub shutdown_notify: Arc<tokio::sync::Notify>,
     /// ClawHub response cache — prevents 429 rate limiting on rapid dashboard refreshes.
@@ -364,7 +366,11 @@ pub async fn send_message(
     // (not as a separate session message which the LLM may not process).
     let content_blocks = if !req.attachments.is_empty() {
         let image_blocks = resolve_attachments(&req.attachments);
-        if image_blocks.is_empty() { None } else { Some(image_blocks) }
+        if image_blocks.is_empty() {
+            None
+        } else {
+            Some(image_blocks)
+        }
     } else {
         None
     };
@@ -2518,11 +2524,18 @@ fn wechat_state_dir(config: &openfang_types::config::WeChatConfig) -> std::path:
         .unwrap_or_else(|| openfang_kernel::config::openfang_home().join("wechat"))
 }
 
-fn wechat_has_saved_credentials(config: &openfang_types::config::WeChatConfig) -> bool {
-    if std::env::var(&config.bot_token_env)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
-    {
+fn secret_value(secrets: &HashMap<String, String>, key: &str) -> Option<String> {
+    secrets
+        .get(key)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn wechat_has_saved_credentials(
+    config: &openfang_types::config::WeChatConfig,
+    secrets: &HashMap<String, String>,
+) -> bool {
+    if secret_value(secrets, &config.bot_token_env).is_some() {
         return true;
     }
 
@@ -2546,12 +2559,13 @@ fn wechat_has_saved_credentials(config: &openfang_types::config::WeChatConfig) -
 fn channel_has_token(
     config: &openfang_types::config::ChannelsConfig,
     meta: &ChannelMeta,
+    secrets: &HashMap<String, String>,
 ) -> bool {
     if meta.name == "wechat" {
         return config
             .wechat
             .as_ref()
-            .map(wechat_has_saved_credentials)
+            .map(|wechat| wechat_has_saved_credentials(wechat, secrets))
             .unwrap_or(false);
     }
 
@@ -2560,7 +2574,7 @@ fn channel_has_token(
         .filter(|f| f.required && f.env_var.is_some())
         .all(|f| {
             f.env_var
-                .map(|ev| std::env::var(ev).map(|v| !v.is_empty()).unwrap_or(false))
+                .map(|ev| secret_value(secrets, ev).is_some())
                 .unwrap_or(true)
         })
 }
@@ -2570,6 +2584,7 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> impl IntoRespo
     // Read the live channels config (updated on every hot-reload) instead of the
     // stale boot-time kernel.config, so newly configured channels show correctly.
     let live_channels = state.channels_config.read().await;
+    let secrets = state.secrets_state.read().await;
     let mut channels = Vec::new();
     let mut configured_count = 0u32;
 
@@ -2579,7 +2594,7 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> impl IntoRespo
             configured_count += 1;
         }
 
-        let has_token = channel_has_token(&live_channels, meta);
+        let has_token = channel_has_token(&live_channels, meta, &secrets);
         let connected = state
             .kernel
             .channel_adapters
@@ -2661,17 +2676,18 @@ pub async fn configure_channel(
         }
 
         if let Some(env_var) = field_def.env_var {
-            // Secret field — write to secrets.env and set in process
+            // Secret field — write to secrets.env and mirror into app-level state.
             if let Err(e) = write_secret_env(&secrets_path, env_var, value) {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({"error": format!("Failed to write secret: {e}")})),
                 );
             }
-            // SAFETY: We are the only writer; this is a single-threaded config operation
-            unsafe {
-                std::env::set_var(env_var, value);
-            }
+            state
+                .secrets_state
+                .write()
+                .await
+                .insert(env_var.to_string(), value.to_string());
             // Also write the env var NAME to config.toml so the channel section
             // is not empty and the kernel knows which env var to read.
             config_fields.insert(
@@ -2697,13 +2713,14 @@ pub async fn configure_channel(
 
     let fresh_config = openfang_kernel::config::load_config(Some(&config_path));
     *state.channels_config.write().await = fresh_config.channels.clone();
+    let secrets_snapshot = state.secrets_state.read().await.clone();
 
     if name == "wechat"
         && fresh_config
             .channels
             .wechat
             .as_ref()
-            .map(|cfg| !wechat_has_saved_credentials(cfg))
+            .map(|cfg| !wechat_has_saved_credentials(cfg, &secrets_snapshot))
             .unwrap_or(true)
     {
         return (
@@ -2775,10 +2792,7 @@ pub async fn remove_channel(
     for field_def in meta.fields {
         if let Some(env_var) = field_def.env_var {
             let _ = remove_secret_env(&secrets_path, env_var);
-            // SAFETY: Single-threaded config operation
-            unsafe {
-                std::env::remove_var(env_var);
-            }
+            state.secrets_state.write().await.remove(env_var);
         }
     }
 
@@ -2795,10 +2809,7 @@ pub async fn remove_channel(
                 config.user_id_env.as_str(),
             ] {
                 let _ = remove_secret_env(&secrets_path, env_var);
-                // SAFETY: Single-threaded config operation
-                unsafe {
-                    std::env::remove_var(env_var);
-                }
+                state.secrets_state.write().await.remove(env_var);
             }
 
             let account_path = wechat_state_dir(&config).join("account.json");
@@ -2845,6 +2856,7 @@ pub async fn remove_channel(
 /// (for Telegram). When provided, sends a real test message to verify the bot can
 /// post to that channel.
 pub async fn test_channel(
+    State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
     raw_body: axum::body::Bytes,
 ) -> impl IntoResponse {
@@ -2859,11 +2871,12 @@ pub async fn test_channel(
     };
 
     // Check all required env vars are set
+    let secrets = state.secrets_state.read().await;
     let mut missing = Vec::new();
     for field_def in meta.fields {
         if field_def.required {
             if let Some(env_var) = field_def.env_var {
-                if std::env::var(env_var).map(|v| v.is_empty()).unwrap_or(true) {
+                if secret_value(&secrets, env_var).is_none() {
                     missing.push(env_var);
                 }
             }
@@ -2893,7 +2906,7 @@ pub async fn test_channel(
         .map(|s| s.to_string());
 
     if let Some(target_id) = target {
-        match send_channel_test_message(&name, &target_id).await {
+        match send_channel_test_message(&name, &target_id, &secrets).await {
             Ok(()) => {
                 return (
                     StatusCode::OK,
@@ -2925,14 +2938,18 @@ pub async fn test_channel(
 }
 
 /// Send a real test message to a specific channel/chat on the given platform.
-async fn send_channel_test_message(channel_name: &str, target_id: &str) -> Result<(), String> {
+async fn send_channel_test_message(
+    channel_name: &str,
+    target_id: &str,
+    secrets: &HashMap<String, String>,
+) -> Result<(), String> {
     let client = reqwest::Client::new();
     let test_msg = "OpenFang test message — your channel is connected!";
 
     match channel_name {
         "discord" => {
-            let token = std::env::var("DISCORD_BOT_TOKEN")
-                .map_err(|_| "DISCORD_BOT_TOKEN not set".to_string())?;
+            let token = secret_value(secrets, "DISCORD_BOT_TOKEN")
+                .ok_or_else(|| "DISCORD_BOT_TOKEN not set".to_string())?;
             let url = format!("https://discord.com/api/v10/channels/{target_id}/messages");
             let resp = client
                 .post(&url)
@@ -2947,8 +2964,8 @@ async fn send_channel_test_message(channel_name: &str, target_id: &str) -> Resul
             }
         }
         "telegram" => {
-            let token = std::env::var("TELEGRAM_BOT_TOKEN")
-                .map_err(|_| "TELEGRAM_BOT_TOKEN not set".to_string())?;
+            let token = secret_value(secrets, "TELEGRAM_BOT_TOKEN")
+                .ok_or_else(|| "TELEGRAM_BOT_TOKEN not set".to_string())?;
             let url = format!("https://api.telegram.org/bot{token}/sendMessage");
             let resp = client
                 .post(&url)
@@ -2962,8 +2979,8 @@ async fn send_channel_test_message(channel_name: &str, target_id: &str) -> Resul
             }
         }
         "slack" => {
-            let token = std::env::var("SLACK_BOT_TOKEN")
-                .map_err(|_| "SLACK_BOT_TOKEN not set".to_string())?;
+            let token = secret_value(secrets, "SLACK_BOT_TOKEN")
+                .ok_or_else(|| "SLACK_BOT_TOKEN not set".to_string())?;
             let url = "https://slack.com/api/chat.postMessage";
             let resp = client
                 .post(url)
@@ -3036,11 +3053,21 @@ fn persist_wechat_account_state(
         "user_id": user_id,
         "saved_at": chrono::Utc::now().to_rfc3339(),
     });
-    std::fs::write(
+    write_restricted_file(
         state_dir.join("account.json"),
         serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())
+}
+
+fn write_restricted_file(path: std::path::PathBuf, content: String) -> Result<(), std::io::Error> {
+    std::fs::write(&path, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 fn render_qr_data_url(data: &str) -> Option<String> {
@@ -3076,13 +3103,15 @@ pub async fn wechat_qr_start(State(state): State<Arc<AppState>>) -> impl IntoRes
         }));
     };
 
-    if wechat_has_saved_credentials(&config) {
+    let secrets = state.secrets_state.read().await;
+    if wechat_has_saved_credentials(&config, &secrets) {
         return Json(serde_json::json!({
             "available": true,
             "connected": true,
             "message": "WeChat credentials already exist. Reload the channel if needed."
         }));
     }
+    drop(secrets);
 
     let api_base_url = config
         .api_base_url
@@ -3284,8 +3313,10 @@ pub async fn wechat_qr_status(
                     }))
                 }
             };
-            let account_id =
-                match payload.get("ilink_bot_id").and_then(serde_json::Value::as_str) {
+            let account_id = match payload
+                .get("ilink_bot_id")
+                .and_then(serde_json::Value::as_str)
+            {
                 Some(value) if !value.is_empty() => value.to_string(),
                 _ => {
                     return Json(serde_json::json!({
@@ -3324,11 +3355,13 @@ pub async fn wechat_qr_status(
                 );
             }
 
-            std::env::set_var(&flow.bot_token_env, &bot_token);
-            std::env::set_var(&flow.account_id_env, &account_id);
+            let mut secrets = state.secrets_state.write().await;
+            secrets.insert(flow.bot_token_env.clone(), bot_token.clone());
+            secrets.insert(flow.account_id_env.clone(), account_id.clone());
             if let Some(ref user_id) = user_id {
-                std::env::set_var(&flow.user_id_env, user_id);
+                secrets.insert(flow.user_id_env.clone(), user_id.clone());
             }
+            drop(secrets);
 
             let _ = persist_wechat_account_state(
                 &flow.state_dir,
