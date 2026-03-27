@@ -1073,9 +1073,25 @@ async fn dispatch_message(
     // (which expire typing after ~5s) keep showing it during long LLM calls.
     let typing_task = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
 
+    // Prepend sender context so the agent knows who is speaking.
+    // In group spaces this is essential for multi-user conversations.
+    let sender_name = &message.sender.display_name;
+    let sender_email = message
+        .metadata
+        .get("sender_email")
+        .and_then(|v| v.as_str());
+    let prefixed_text = if !sender_name.is_empty() {
+        match sender_email {
+            Some(email) => format!("[From: {sender_name} <{email}>] {forwarded_text}"),
+            None => format!("[From: {sender_name}] {forwarded_text}"),
+        }
+    } else {
+        forwarded_text.clone()
+    };
+
     // Send to agent and relay response
     let result = handle
-        .send_message_with_metadata(agent_id, &forwarded_text, metadata_map.as_ref())
+        .send_message_with_metadata(agent_id, &prefixed_text, metadata_map.as_ref())
         .await;
 
     // Stop the typing refresh now that we have a response
@@ -2230,10 +2246,12 @@ mod tests {
 
         assert_eq!(
             mock.last_forwarded.lock().unwrap().as_deref(),
-            Some("hello")
+            Some("[From: user] hello")
         );
         let sent = adapter.sent_texts.lock().await.clone();
-        assert!(sent.iter().any(|text| text.contains("Echo: hello")));
+        assert!(sent
+            .iter()
+            .any(|text| text.contains("Echo: [From: user] hello")));
     }
 
     #[test]
@@ -2651,12 +2669,12 @@ mod tests {
 
         assert_eq!(
             mock.last_forwarded.lock().unwrap().clone(),
-            Some("收到 Telegram 媒体批次：1 个视频。".to_string())
+            Some("[From: user] 收到 Telegram 媒体批次：1 个视频。".to_string())
         );
         let sent = adapter.sent_texts.lock().await.clone();
         assert!(sent
             .iter()
-            .any(|text| text.contains("Echo: 收到 Telegram 媒体批次：1 个视频。")));
+            .any(|text| text.contains("Echo: [From: user] 收到 Telegram 媒体批次：1 个视频。")));
         assert!(!sent.iter().any(|text| text.contains("Bridge error:")));
     }
 

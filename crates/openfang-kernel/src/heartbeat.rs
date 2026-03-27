@@ -154,6 +154,12 @@ pub fn recovery_action(
     }
 }
 
+/// Grace period (seconds): if an agent's `last_active` is within this window
+/// of `created_at`, it has never genuinely processed a message and should not
+/// be flagged as unresponsive.  This covers the small gap between registration
+/// and the initial `set_state(Running)` call.
+const IDLE_GRACE_SECS: i64 = 10;
+
 /// Check all autonomous running agents and crashed agents and return heartbeat status.
 ///
 /// This is a pure function — it doesn't start a background task.
@@ -184,6 +190,18 @@ pub fn check_agents(registry: &AgentRegistry, config: &HeartbeatConfig) -> Vec<H
         let unresponsive = if entry_ref.state == AgentState::Crashed {
             true
         } else if entry_ref.manifest.autonomous.is_some() {
+            let never_active =
+                (entry_ref.last_active - entry_ref.created_at).num_seconds() <= IDLE_GRACE_SECS;
+
+            if never_active {
+                debug!(
+                    agent = %entry_ref.name,
+                    inactive_secs,
+                    "Skipping idle autonomous agent that has never processed a message"
+                );
+                continue;
+            }
+
             inactive_secs > timeout_secs
         } else {
             false
@@ -300,6 +318,156 @@ pub fn summarize(statuses: &[HeartbeatStatus]) -> HeartbeatSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
+    use openfang_types::agent::*;
+    use std::collections::HashMap;
+
+    /// Helper: build a minimal AgentEntry for heartbeat tests.
+    fn make_entry(
+        name: &str,
+        state: AgentState,
+        created_at: chrono::DateTime<Utc>,
+        last_active: chrono::DateTime<Utc>,
+    ) -> AgentEntry {
+        AgentEntry {
+            id: AgentId::new(),
+            name: name.to_string(),
+            manifest: AgentManifest {
+                name: name.to_string(),
+                version: "0.1.0".to_string(),
+                description: "test".to_string(),
+                author: "test".to_string(),
+                module: "test".to_string(),
+                schedule: ScheduleMode::default(),
+                model: ModelConfig::default(),
+                fallback_models: vec![],
+                resources: ResourceQuota::default(),
+                priority: Priority::default(),
+                capabilities: ManifestCapabilities::default(),
+                profile: None,
+                tools: HashMap::new(),
+                skills: vec![],
+                mcp_servers: vec![],
+                metadata: HashMap::new(),
+                tags: vec![],
+                routing: None,
+                autonomous: None,
+                pinned_model: None,
+                workspace: None,
+                generate_identity_files: true,
+                exec_policy: None,
+                tool_allowlist: vec![],
+                tool_blocklist: vec![],
+            },
+            state,
+            mode: AgentMode::default(),
+            created_at,
+            last_active,
+            parent: None,
+            children: vec![],
+            session_id: SessionId::new(),
+            tags: vec![],
+            identity: Default::default(),
+            onboarding_completed: false,
+            onboarding_completed_at: None,
+        }
+    }
+
+    #[test]
+    fn test_idle_agent_skipped_by_heartbeat() {
+        // An agent spawned 5 minutes ago that has never processed a message
+        // (last_active == created_at). It should NOT appear in heartbeat
+        // statuses because it was never genuinely active.
+        let registry = crate::registry::AgentRegistry::new();
+        let five_min_ago = Utc::now() - Duration::seconds(300);
+        let mut idle_agent = make_entry(
+            "idle-agent",
+            AgentState::Running,
+            five_min_ago,
+            five_min_ago,
+        );
+        idle_agent.manifest.autonomous = Some(openfang_types::agent::AutonomousConfig::default());
+        registry.register(idle_agent).unwrap();
+
+        let config = HeartbeatConfig::default(); // timeout = 180s
+        let statuses = check_agents(&registry, &config);
+
+        // The idle agent should be skipped entirely
+        assert!(
+            statuses.is_empty(),
+            "idle agent should be skipped by heartbeat"
+        );
+    }
+
+    #[test]
+    fn test_active_agent_detected_unresponsive() {
+        // An agent that WAS active (last_active >> created_at) but has gone
+        // silent for longer than the timeout — should be flagged unresponsive.
+        let registry = crate::registry::AgentRegistry::new();
+        let ten_min_ago = Utc::now() - Duration::seconds(600);
+        let five_min_ago = Utc::now() - Duration::seconds(300);
+        let mut active_agent = make_entry(
+            "active-agent",
+            AgentState::Running,
+            ten_min_ago,
+            five_min_ago,
+        );
+        active_agent.manifest.autonomous =
+            Some(openfang_types::agent::AutonomousConfig::default());
+        registry.register(active_agent).unwrap();
+
+        let config = HeartbeatConfig::default(); // timeout = 180s, inactive = ~300s
+        let statuses = check_agents(&registry, &config);
+
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            statuses[0].unresponsive,
+            "active agent past timeout should be unresponsive"
+        );
+    }
+
+    #[test]
+    fn test_active_agent_within_timeout_is_ok() {
+        // An agent that has been active recently (within timeout).
+        let registry = crate::registry::AgentRegistry::new();
+        let ten_min_ago = Utc::now() - Duration::seconds(600);
+        let just_now = Utc::now() - Duration::seconds(10);
+        let healthy_agent = make_entry("healthy-agent", AgentState::Running, ten_min_ago, just_now);
+        registry.register(healthy_agent).unwrap();
+
+        let config = HeartbeatConfig::default(); // timeout = 180s
+        let statuses = check_agents(&registry, &config);
+
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            !statuses[0].unresponsive,
+            "recently active agent should not be unresponsive"
+        );
+    }
+
+    #[test]
+    fn test_crashed_agent_not_skipped_even_if_idle() {
+        // A crashed agent should still appear in statuses for recovery,
+        // even if it was never genuinely active.
+        let registry = crate::registry::AgentRegistry::new();
+        let five_min_ago = Utc::now() - Duration::seconds(300);
+        let crashed_agent = make_entry(
+            "crashed-idle",
+            AgentState::Crashed,
+            five_min_ago,
+            five_min_ago,
+        );
+        registry.register(crashed_agent).unwrap();
+
+        let config = HeartbeatConfig::default();
+        let statuses = check_agents(&registry, &config);
+
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            statuses[0].unresponsive,
+            "crashed agent should be marked unresponsive"
+        );
+    }
 
     #[test]
     fn test_quiet_hours_parsing() {
@@ -405,6 +573,55 @@ mod tests {
             .expect("status should exist");
         assert_eq!(status.state, AgentState::Running);
         assert!(!status.unresponsive);
+    }
+
+    #[test]
+    fn test_never_active_autonomous_agent_is_skipped() {
+        let reg = AgentRegistry::new();
+        let manifest = openfang_types::agent::AgentManifest {
+            name: "idle-autonomous".to_string(),
+            autonomous: Some(openfang_types::agent::AutonomousConfig {
+                quiet_hours: None,
+                max_iterations: 50,
+                max_restarts: 10,
+                heartbeat_interval_secs: 30,
+                heartbeat_channel: None,
+            }),
+            ..Default::default()
+        };
+
+        let created_at = Utc::now() - chrono::Duration::hours(4);
+        let entry = openfang_types::agent::AgentEntry {
+            id: openfang_types::agent::AgentId::new(),
+            name: manifest.name.clone(),
+            manifest,
+            state: AgentState::Running,
+            mode: openfang_types::agent::AgentMode::Full,
+            created_at,
+            last_active: created_at + chrono::Duration::seconds(1),
+            parent: None,
+            children: Vec::new(),
+            session_id: openfang_types::agent::SessionId::new(),
+            tags: Vec::new(),
+            identity: Default::default(),
+            onboarding_completed: false,
+            onboarding_completed_at: None,
+        };
+        reg.register(entry).unwrap();
+
+        let statuses = check_agents(&reg, &HeartbeatConfig::default());
+        assert!(statuses.is_empty());
+    }
+
+    #[test]
+    fn test_heartbeat_config_custom_timeout() {
+        let config = HeartbeatConfig {
+            default_timeout_secs: 600,
+            ..HeartbeatConfig::default()
+        };
+        assert_eq!(config.default_timeout_secs, 600);
+        assert_eq!(config.check_interval_secs, DEFAULT_CHECK_INTERVAL_SECS);
+        assert_eq!(config.max_recovery_attempts, DEFAULT_MAX_RECOVERY_ATTEMPTS);
     }
 
     #[test]

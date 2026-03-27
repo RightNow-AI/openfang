@@ -328,24 +328,51 @@ impl McpConnection {
                     .await
                     .map_err(|e| format!("Failed to flush stdin: {e}"))?;
 
-                // Read response line
-                let mut line = String::new();
-                let timeout = tokio::time::Duration::from_secs(self.config.timeout_secs);
-                match tokio::time::timeout(timeout, stdout.read_line(&mut line)).await {
-                    Ok(Ok(0)) => return Err("MCP server closed connection".to_string()),
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => return Err(format!("Failed to read MCP response: {e}")),
-                    Err(_) => return Err("MCP request timed out".to_string()),
+                // Read response lines until we find one matching our request ID.
+                // MCP servers may send notifications or log lines before the
+                // actual response.
+                let timeout_dur = tokio::time::Duration::from_secs(self.config.timeout_secs);
+                let deadline = tokio::time::Instant::now() + timeout_dur;
+
+                loop {
+                    let mut line = String::new();
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() {
+                        return Err("MCP request timed out".to_string());
+                    }
+                    match tokio::time::timeout(remaining, stdout.read_line(&mut line)).await {
+                        Ok(Ok(0)) => return Err("MCP server closed connection".to_string()),
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => return Err(format!("Failed to read MCP response: {e}")),
+                        Err(_) => return Err("MCP request timed out".to_string()),
+                    }
+
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    // Try to parse as JSON-RPC response
+                    let parsed: Result<JsonRpcResponse, _> = serde_json::from_str(trimmed);
+                    match parsed {
+                        Ok(response) if response.id == Some(id) => {
+                            if let Some(err) = response.error {
+                                return Err(format!("{err}"));
+                            }
+                            return Ok(response.result);
+                        }
+                        Ok(_other) => {
+                            // Response for a different ID or notification — skip
+                            debug!("MCP: skipping non-matching response line");
+                            continue;
+                        }
+                        Err(_) => {
+                            // Not valid JSON-RPC — skip (could be a log line)
+                            debug!("MCP: skipping non-JSON line from server");
+                            continue;
+                        }
+                    }
                 }
-
-                let response: JsonRpcResponse = serde_json::from_str(line.trim())
-                    .map_err(|e| format!("Invalid MCP JSON-RPC response: {e}"))?;
-
-                if let Some(err) = response.error {
-                    return Err(format!("{err}"));
-                }
-
-                Ok(response.result)
             }
             McpTransportHandle::Sse { client, url } => {
                 let response = client
@@ -365,7 +392,25 @@ impl McpConnection {
                     .await
                     .map_err(|e| format!("Failed to read SSE response: {e}"))?;
 
-                let rpc_response: JsonRpcResponse = serde_json::from_str(&body)
+                // Handle Streamable HTTP MCP responses that use SSE framing
+                // (e.g. "event: message\ndata: {...}\n\n"). Extract the JSON
+                // from the last `data:` line if the body looks like SSE.
+                let json_body = if body.trim_start().starts_with("event:")
+                    || body.trim_start().starts_with("data:")
+                {
+                    body.lines()
+                        .filter_map(|line| {
+                            line.strip_prefix("data: ")
+                                .or_else(|| line.strip_prefix("data:"))
+                        })
+                        .rfind(|s| !s.is_empty())
+                        .unwrap_or(&body)
+                        .to_string()
+                } else {
+                    body
+                };
+
+                let rpc_response: JsonRpcResponse = serde_json::from_str(&json_body)
                     .map_err(|e| format!("Invalid MCP SSE JSON-RPC response: {e}"))?;
 
                 if let Some(err) = rpc_response.error {

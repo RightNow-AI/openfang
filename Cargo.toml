@@ -84,7 +84,7 @@ url = "2"
 wasmtime = "41"
 
 # HTTP server (for API daemon)
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "compression-br"] }
 
@@ -138,7 +138,7 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 # Email (SMTP + IMAP)
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
 imap = "2"
-native-tls = "0.2"
+native-tls = { version = "0.2", features = ["vendored"] }
 mailparse = "0.16"
 
 # OpenSSL (vendored = statically compiled, no runtime libssl dependency on Linux)

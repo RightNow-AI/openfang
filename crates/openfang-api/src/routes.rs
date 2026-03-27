@@ -1,7 +1,7 @@
 //! Route handlers for the OpenFang API.
 
 use crate::types::*;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
@@ -40,6 +40,9 @@ pub struct AppState {
     /// Avoids blocking the `/api/providers` endpoint on TCP timeouts to
     /// unreachable local services. 60-second TTL.
     pub provider_probe_cache: openfang_runtime::provider_health::ProbeCache,
+    /// Thread-safe mutable budget config. Updated via PUT /api/budget.
+    /// Initialized from `kernel.config.budget` at startup.
+    pub budget_config: Arc<tokio::sync::RwLock<openfang_types::config::BudgetConfig>>,
 }
 
 static CONFIG_IO_LOCK: LazyLock<std::sync::Mutex<()>> = LazyLock::new(|| std::sync::Mutex::new(()));
@@ -858,6 +861,7 @@ model = "test-model"
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             clawhub_cache: DashMap::new(),
             provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+            budget_config: Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone())),
         });
 
         let response = delete_session(State(state), Path(active_session_id.0.to_string()))
@@ -931,6 +935,7 @@ model = "test-model"
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             clawhub_cache: DashMap::new(),
             provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+            budget_config: Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone())),
         });
 
         let response = patch_agent_config(
@@ -1012,6 +1017,7 @@ model = "test-model"
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             clawhub_cache: DashMap::new(),
             provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+            budget_config: Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone())),
         });
 
         let response = patch_agent_config(
@@ -3891,15 +3897,21 @@ pub async fn list_templates() -> impl IntoResponse {
                         .to_string_lossy()
                         .to_string();
 
-                    let description = std::fs::read_to_string(&manifest_path)
-                        .ok()
-                        .and_then(|content| toml::from_str::<AgentManifest>(&content).ok())
+                    let manifest_content = std::fs::read_to_string(&manifest_path).ok();
+                    let description = manifest_content
+                        .as_ref()
+                        .and_then(|content| toml::from_str::<AgentManifest>(content).ok())
                         .map(|m| m.description)
                         .unwrap_or_default();
+
+                    // Add category based on template name
+                    let category = get_template_category(&name);
 
                     templates.push(serde_json::json!({
                         "name": name,
                         "description": description,
+                        "category": category,
+                        "manifest_toml": manifest_content.unwrap_or_default(),
                     }));
                 }
             }
@@ -3910,6 +3922,24 @@ pub async fn list_templates() -> impl IntoResponse {
         "templates": templates,
         "total": templates.len(),
     }))
+}
+
+fn get_template_category(name: &str) -> &str {
+    match name {
+        "hello-world" | "assistant" => "General",
+        "researcher" | "analyst" => "Research",
+        "coder" | "debugger" | "devops-lead" => "Development",
+        "writer" | "doc-writer" => "Writing",
+        "ops" | "planner" => "Operations",
+        "architect" | "security-auditor" => "Development",
+        "code-reviewer" | "data-scientist" | "test-engineer" => "Development",
+        "legal-assistant" | "email-assistant" | "social-media" => "Business",
+        "customer-support" | "sales-assistant" | "recruiter" => "Business",
+        "meeting-assistant" => "Business",
+        "translator" | "tutor" | "health-tracker" => "General",
+        "personal-finance" | "travel-planner" | "home-automation" => "General",
+        _ => "General",
+    }
 }
 
 /// GET /api/templates/:name — Get template details.
@@ -10798,16 +10828,14 @@ pub fn start_upload_janitor() {
 
 /// POST /api/agents/{id}/upload — Upload a file attachment.
 ///
-/// Accepts raw body bytes. The client must set:
-/// - `Content-Type` header (e.g., `image/png`, `text/plain`, `application/pdf`)
-/// - `X-Filename` header (original filename)
+/// Accepts multipart/form-data. The client must include a file field with:
+/// - `Content-Type` field (e.g., `image/png`, `text/plain`, `application/pdf`)
+/// - `filename` attribute (original filename)
 pub async fn upload_file(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
+    mut multipart: Multipart,
 ) -> impl IntoResponse {
-    // Validate agent ID format
     let _agent_id: AgentId = match id.parse() {
         Ok(id) => id,
         Err(_) => {
@@ -10824,12 +10852,62 @@ pub async fn upload_file(
         );
     }
 
-    // Extract content type
-    let content_type = headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("application/octet-stream")
-        .to_string();
+    let mut file_data: Option<(Option<String>, String, axum::body::Bytes)> = None;
+    let mut filename_from_field: Option<String> = None;
+
+    while let Some(field) = multipart.next_field().await.transpose() {
+        let field = match field {
+            Ok(f) => f,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("Failed to read field: {}", e)})),
+                );
+            }
+        };
+
+        let field_name = field.name().unwrap_or("").to_string();
+
+        match field_name.as_str() {
+            "file" => {
+                let filename_attr = field.file_name().map(|s| s.to_string());
+                let content_type = field
+                    .content_type()
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
+                let bytes = match field.bytes().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(
+                                serde_json::json!({"error": format!("Failed to read file: {}", e)}),
+                            ),
+                        );
+                    }
+                };
+                file_data = Some((filename_attr, content_type, bytes));
+            }
+            "filename" => {
+                filename_from_field = field.text().await.ok();
+            }
+            _ => {}
+        }
+    }
+
+    let (filename_attr, content_type, body) = match file_data {
+        Some(data) => data,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "No file provided"})),
+            );
+        }
+    };
+
+    let filename = filename_from_field
+        .or(filename_attr)
+        .unwrap_or_else(|| "upload".to_string());
 
     if !is_allowed_content_type(&content_type) {
         return (
@@ -10847,13 +10925,6 @@ pub async fn upload_file(
             ),
         );
     }
-
-    // Extract filename from header
-    let filename = headers
-        .get("X-Filename")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("upload")
-        .to_string();
 
     // Validate size
     if body.len() > MAX_UPLOAD_SIZE {

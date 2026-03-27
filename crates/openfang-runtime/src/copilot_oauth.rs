@@ -144,6 +144,6 @@ mod tests {
     fn test_constants() {
         assert!(GITHUB_DEVICE_CODE_URL.starts_with("https://"));
         assert!(GITHUB_TOKEN_URL.starts_with("https://"));
-        assert!(!COPILOT_CLIENT_ID.is_empty());
+        assert_ne!(COPILOT_CLIENT_ID, "");
     }
 }

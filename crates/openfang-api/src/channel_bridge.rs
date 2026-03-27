@@ -53,8 +53,8 @@ use openfang_channels::webhook::WebhookAdapter;
 use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_types::agent::AgentId;
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
@@ -2192,6 +2192,7 @@ mod tests {
             ..KernelConfig::default()
         })
         .unwrap();
+        let budget_config = Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone()));
 
         let state = Arc::new(AppState {
             kernel: Arc::new(kernel),
@@ -2204,6 +2205,7 @@ mod tests {
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             clawhub_cache: dashmap::DashMap::new(),
             provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+            budget_config,
         });
 
         let err = super::reload_channels_from_disk(&state).await.unwrap_err();

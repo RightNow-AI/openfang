@@ -142,7 +142,11 @@ struct DownloadWaitNotification {
     waiting_text: &'static str,
 }
 
-fn message_has_video_download(message: &serde_json::Value, max_download_size: u64, use_local_api: bool) -> bool {
+fn message_has_video_download(
+    message: &serde_json::Value,
+    max_download_size: u64,
+    use_local_api: bool,
+) -> bool {
     if let Some(video) = message.get("video") {
         let file_size = video
             .get("file_size")
@@ -189,9 +193,11 @@ fn initial_download_notification_text_for_media_group(
     max_download_size: u64,
     use_local_api: bool,
 ) -> &'static str {
-    if updates.iter().filter_map(telegram_message).any(|message| {
-        message_has_video_download(message, max_download_size, use_local_api)
-    }) {
+    if updates
+        .iter()
+        .filter_map(telegram_message)
+        .any(|message| message_has_video_download(message, max_download_size, use_local_api))
+    {
         "📥 正在下载视频，请稍候..."
     } else {
         "收到媒体，正在处理..."
@@ -2230,7 +2236,8 @@ async fn telegram_get_file_info_with_heartbeat(
                 tokio::time::sleep(DOWNLOAD_WAIT_HEARTBEAT_INITIAL_DELAY).await;
                 let started_at = tokio::time::Instant::now();
                 loop {
-                    let waited = started_at.elapsed().as_secs() + DOWNLOAD_WAIT_HEARTBEAT_INITIAL_DELAY.as_secs();
+                    let waited = started_at.elapsed().as_secs()
+                        + DOWNLOAD_WAIT_HEARTBEAT_INITIAL_DELAY.as_secs();
                     let text = format!(
                         "{}\n大文件传输中，已等待 {waited} 秒",
                         notification.waiting_text

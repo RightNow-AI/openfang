@@ -304,4 +304,9 @@ mod tests {
         assert_eq!(parsed.auth_status, AuthStatus::Configured);
         assert_eq!(parsed.model_count, 3);
     }
+    #[test]
+    fn test_azure_openai_base_url_empty() {
+        // Azure requires user-supplied URL, so the constant must be empty.
+        assert_eq!(AZURE_OPENAI_BASE_URL, "");
+    }
 }

@@ -1160,6 +1160,30 @@ pub struct KernelConfig {
     /// Defaults to `~/.openfang/workflows`. Set to empty string to disable.
     #[serde(default)]
     pub workflows_dir: Option<PathBuf>,
+    /// Heartbeat monitor settings.
+    #[serde(default)]
+    pub heartbeat: HeartbeatSettings,
+}
+
+/// Heartbeat monitor settings exposed in `[heartbeat]` config section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatSettings {
+    /// Seconds of inactivity before a reactive agent is marked as unresponsive.
+    /// Default: 180. Set higher to prevent idle hands from being marked as crashed.
+    #[serde(default = "default_heartbeat_timeout")]
+    pub default_timeout_secs: u64,
+}
+
+fn default_heartbeat_timeout() -> u64 {
+    180
+}
+
+impl Default for HeartbeatSettings {
+    fn default() -> Self {
+        Self {
+            default_timeout_secs: default_heartbeat_timeout(),
+        }
+    }
 }
 
 /// Dashboard authentication (username/password login).
@@ -1370,6 +1394,7 @@ impl Default for KernelConfig {
             oauth: OAuthConfig::default(),
             auth: AuthConfig::default(),
             workflows_dir: None,
+            heartbeat: HeartbeatSettings::default(),
         }
     }
 }
@@ -3920,5 +3945,37 @@ mod tests {
             config.provider_api_keys.get("azure").unwrap(),
             "AZURE_OPENAI_KEY"
         );
+    }
+    #[test]
+    fn test_heartbeat_settings_default() {
+        let settings = HeartbeatSettings::default();
+        assert_eq!(settings.default_timeout_secs, 180);
+    }
+
+    #[test]
+    fn test_heartbeat_settings_deserialization() {
+        let toml_str = r#"default_timeout_secs = 600"#;
+        let settings: HeartbeatSettings = toml::from_str(toml_str).unwrap();
+        assert_eq!(settings.default_timeout_secs, 600);
+    }
+
+    #[test]
+    fn test_heartbeat_settings_omitted_uses_default() {
+        // When [heartbeat] section is omitted entirely, KernelConfig should use defaults
+        let toml_str = r#"
+            log_level = "debug"
+        "#;
+        let config: KernelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.heartbeat.default_timeout_secs, 180);
+    }
+
+    #[test]
+    fn test_heartbeat_settings_in_kernel_config() {
+        let toml_str = r#"
+            [heartbeat]
+            default_timeout_secs = 300
+        "#;
+        let config: KernelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.heartbeat.default_timeout_secs, 300);
     }
 }

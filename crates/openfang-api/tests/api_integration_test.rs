@@ -108,13 +108,16 @@ async fn start_test_server_with_config(config: KernelConfig, tmp: tempfile::Temp
     kernel.set_self_handle();
 
     let state = Arc::new(AppState {
-        kernel,
+        kernel: kernel.clone(),
         started_at: Instant::now(),
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        budget_config: Arc::new(tokio::sync::RwLock::new(
+            kernel.config.budget.clone(),
+        )),
     });
 
     let app = Router::new()
@@ -2082,13 +2085,16 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
     kernel.set_self_handle();
 
     let state = Arc::new(AppState {
-        kernel,
+        kernel: kernel.clone(),
         started_at: Instant::now(),
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        budget_config: Arc::new(tokio::sync::RwLock::new(
+            kernel.config.budget.clone(),
+        )),
     });
 
     let api_key = state.kernel.config.api_key.trim().to_string();
@@ -2222,13 +2228,16 @@ async fn start_test_server_with_session_auth(username: &str, password: &str) -> 
     kernel.set_self_handle();
 
     let state = Arc::new(AppState {
-        kernel,
+        kernel: kernel.clone(),
         started_at: Instant::now(),
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        budget_config: Arc::new(tokio::sync::RwLock::new(
+            kernel.config.budget.clone(),
+        )),
     });
 
     let api_key = state.kernel.config.api_key.trim().to_string();

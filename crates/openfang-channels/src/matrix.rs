@@ -219,7 +219,11 @@ impl ChannelAdapter for MatrixAdapter {
         let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
         let homeserver = self.homeserver_url.clone();
         let access_token = self.access_token.clone();
-        let user_id = self.user_id.clone();
+        // Use the validated user ID from /whoami instead of the config value.
+        // Matrix server delegation or casing differences can cause self.user_id
+        // to not match the sender field in timeline events, making the bot
+        // process its own replies in an infinite loop (see #757).
+        let user_id = validated_user;
         let allowed_rooms = self.allowed_rooms.clone();
         let client = self.client.clone();
         let since_token = Arc::clone(&self.since_token);
@@ -236,6 +240,11 @@ impl ChannelAdapter for MatrixAdapter {
 
         tokio::spawn(async move {
             let mut backoff = Duration::from_secs(1);
+            // Track recently seen event IDs to prevent duplicate processing
+            // on sync token races or reconnects.
+            let mut seen_events: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            const MAX_SEEN: usize = 500;
 
             loop {
                 // Build /sync URL
@@ -326,6 +335,21 @@ impl ChannelAdapter for MatrixAdapter {
                                     continue; // Skip own messages
                                 }
 
+                                // Dedup: skip events we've already processed.
+                                let event_id_str =
+                                    event["event_id"].as_str().unwrap_or("").to_string();
+                                if !event_id_str.is_empty() {
+                                    if seen_events.contains(&event_id_str) {
+                                        debug!("Matrix: skipping duplicate event {event_id_str}");
+                                        continue;
+                                    }
+                                    seen_events.insert(event_id_str.clone());
+                                    // Prevent unbounded growth
+                                    if seen_events.len() > MAX_SEEN {
+                                        seen_events.clear();
+                                    }
+                                }
+
                                 let content = event["content"]["body"].as_str().unwrap_or("");
                                 if content.is_empty() {
                                     continue;
@@ -346,7 +370,34 @@ impl ChannelAdapter for MatrixAdapter {
                                     ChannelContent::Text(content.to_string())
                                 };
 
-                                let event_id = event["event_id"].as_str().unwrap_or("").to_string();
+                                // FIX #2: Detect @mentions in message text.
+                                let mut metadata = HashMap::new();
+                                if content.contains(&user_id) {
+                                    metadata.insert(
+                                        "was_mentioned".to_string(),
+                                        serde_json::json!(true),
+                                    );
+                                }
+
+                                // FIX #3: Determine if room is a DM (2 members) or group.
+                                let is_group = get_room_member_count(
+                                    &client,
+                                    &homeserver,
+                                    access_token.as_str(),
+                                    room_id,
+                                )
+                                .await
+                                .map(|count| count > 2)
+                                .unwrap_or(true);
+
+                                // For DMs, auto-set was_mentioned so dm_policy works.
+                                if !is_group {
+                                    metadata.insert(
+                                        "was_mentioned".to_string(),
+                                        serde_json::json!(true),
+                                    );
+                                    metadata.insert("is_dm".to_string(), serde_json::json!(true));
+                                }
 
                                 // FIX #2: Detect @mentions in message text.
                                 let mut metadata = HashMap::new();
@@ -379,7 +430,7 @@ impl ChannelAdapter for MatrixAdapter {
 
                                 let channel_msg = ChannelMessage {
                                     channel: ChannelType::Matrix,
-                                    platform_message_id: event_id,
+                                    platform_message_id: event_id_str,
                                     sender: ChannelUser {
                                         platform_id: room_id.clone(),
                                         display_name: sender.to_string(),

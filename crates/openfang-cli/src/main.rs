@@ -835,9 +835,13 @@ fn init_tracing_stderr() {
         tracing_subscriber::fmt()
             .json()
             .with_env_filter(filter)
+            .with_writer(std::io::stderr)
             .init();
     } else {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
     }
 }
 
@@ -875,6 +879,21 @@ fn init_tracing_file() {
                 .with_writer(std::io::sink)
                 .init();
         }
+    }
+}
+
+/// Write `msg` to stdout, silently exiting with code 0 on BrokenPipe.
+/// Use this instead of `println!` for machine-readable (JSON) output that is
+/// commonly piped into other tools.
+fn write_stdout_safe(msg: &str) {
+    let out = std::io::stdout();
+    let mut lock = out.lock();
+    if let Err(e) = writeln!(lock, "{}", msg) {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        eprintln!("error: failed writing to stdout: {e}");
+        std::process::exit(1);
     }
 }
 
@@ -2278,18 +2297,14 @@ fn cmd_doctor(json: bool, repair: bool) {
                             ui::check_ok(".env file (permissions fixed to 0600)");
                         }
                         repaired = true;
-                    } else {
-                        if !json {
-                            ui::check_warn(&format!(
-                                ".env file has loose permissions ({:o}), should be 0600",
-                                mode
-                            ));
-                        }
+                    } else if !json {
+                        ui::check_warn(&format!(
+                            ".env file has loose permissions ({:o}), should be 0600",
+                            mode
+                        ));
                     }
-                } else {
-                    if !json {
-                        ui::check_ok(".env file");
-                    }
+                } else if !json {
+                    ui::check_ok(".env file");
                 }
             }
             #[cfg(not(unix))]
@@ -2578,11 +2593,14 @@ decay_rate = 0.05
                 if !json {
                     ui::provider_status(name, env_var, true);
                 }
-            } else if !json {
-                ui::check_warn(&format!("{name} ({env_var}) - key rejected (401/403)"));
+            } else {
+                if !json {
+                    ui::check_fail(&format!("{name} ({env_var}) - key rejected (401/403)"));
+                }
+                all_ok = false;
             }
             any_key_set = true;
-            checks.push(serde_json::json!({"check": "provider", "name": name, "env_var": env_var, "status": if valid { "ok" } else { "warn" }, "live_test": !valid}));
+            checks.push(serde_json::json!({"check": "provider", "name": name, "env_var": env_var, "status": if valid { "ok" } else { "fail" }, "live_test": !valid}));
         } else {
             if !json {
                 ui::provider_status(name, env_var, false);
@@ -2882,8 +2900,15 @@ decay_rate = 0.05
                 }
             }
         }
-        if injection_warnings > 0 {
-            checks.push(serde_json::json!({"check": "skill_injection_scan", "status": "warn", "warnings": injection_warnings}));
+        let blocked = skill_reg.blocked_count();
+        if injection_warnings > 0 || blocked > 0 {
+            let total_warnings = injection_warnings + blocked;
+            if blocked > 0 && !json {
+                ui::check_warn(&format!(
+                    "{blocked} workspace skill(s) were blocked for critical prompt injection"
+                ));
+            }
+            checks.push(serde_json::json!({"check": "skill_injection_scan", "status": "warn", "warnings": total_warnings, "blocked": blocked}));
         } else {
             if !json {
                 ui::check_ok("All skills pass prompt injection scan");
@@ -3153,19 +3178,20 @@ decay_rate = 0.05
     }
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
+        write_stdout_safe(
+            &serde_json::to_string_pretty(&serde_json::json!({
                 "all_ok": all_ok,
                 "checks": checks,
             }))
-            .unwrap_or_default()
+            .unwrap_or_default(),
         );
     } else {
         println!();
         if all_ok {
             ui::success("All checks passed! OpenFang is ready.");
-            ui::hint("Start the daemon: openfang start");
+            if find_daemon().is_none() {
+                ui::hint("Start the daemon: openfang start");
+            }
         } else if repaired {
             ui::success("Repairs applied. Re-run `openfang doctor` to verify.");
         } else {
@@ -3757,6 +3783,83 @@ fn cmd_skill_install(source: &str) {
 
         let dest = skills_dir.join(&manifest.skill.name);
         copy_dir_recursive(&source_path, &dest);
+        println!(
+            "Installed skill: {} v{}",
+            manifest.skill.name, manifest.skill.version
+        );
+    } else if source.starts_with("https://")
+        || source.starts_with("http://")
+        || source.starts_with("git@")
+    {
+        // Git URL install — clone to temp dir then install from there
+        ui::step(&format!("Cloning skill from {source}..."));
+        let tmp_dir = tempfile::tempdir().unwrap_or_else(|e| {
+            eprintln!("Failed to create temp directory: {e}");
+            std::process::exit(1);
+        });
+        let clone_path = tmp_dir.path().join("skill");
+        let status = std::process::Command::new("git")
+            .args([
+                "clone",
+                "--depth",
+                "1",
+                source,
+                clone_path.to_str().unwrap(),
+            ])
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(_) => {
+                eprintln!("Failed to clone repository: {source}");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("Failed to run git: {e}");
+                ui::hint("Make sure git is installed and available on your PATH.");
+                std::process::exit(1);
+            }
+        }
+
+        // Reuse the local directory install logic on the cloned repo
+        let manifest_path = clone_path.join("skill.toml");
+        if !manifest_path.exists() {
+            if openfang_skills::openclaw_compat::detect_openclaw_skill(&clone_path) {
+                println!("Detected OpenClaw skill format. Converting...");
+                match openfang_skills::openclaw_compat::convert_openclaw_skill(&clone_path) {
+                    Ok(manifest) => {
+                        let dest = skills_dir.join(&manifest.skill.name);
+                        copy_dir_recursive(&clone_path, &dest);
+                        if let Err(e) = openfang_skills::openclaw_compat::write_openfang_manifest(
+                            &dest, &manifest,
+                        ) {
+                            eprintln!("Failed to write manifest: {e}");
+                            std::process::exit(1);
+                        }
+                        println!("Installed OpenClaw skill: {}", manifest.skill.name);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to convert OpenClaw skill: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                return;
+            }
+            eprintln!("No skill.toml found in cloned repository: {source}");
+            std::process::exit(1);
+        }
+
+        let toml_str = std::fs::read_to_string(&manifest_path).unwrap_or_else(|e| {
+            eprintln!("Error reading skill.toml: {e}");
+            std::process::exit(1);
+        });
+        let manifest: openfang_skills::SkillManifest =
+            toml::from_str(&toml_str).unwrap_or_else(|e| {
+                eprintln!("Error parsing skill.toml: {e}");
+                std::process::exit(1);
+            });
+
+        let dest = skills_dir.join(&manifest.skill.name);
+        copy_dir_recursive(&clone_path, &dest);
         println!(
             "Installed skill: {} v{}",
             manifest.skill.name, manifest.skill.version

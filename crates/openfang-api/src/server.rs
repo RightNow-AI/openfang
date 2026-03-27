@@ -59,6 +59,7 @@ pub async fn build_router(
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        budget_config: Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone())),
     });
 
     // CORS: allow localhost origins by default. If API key is set, the API
@@ -1371,6 +1372,6 @@ mod tests {
             .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))));
 
         let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

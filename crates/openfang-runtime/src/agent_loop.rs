@@ -9,7 +9,7 @@ use crate::context_overflow::{recover_from_overflow, RecoveryStage};
 use crate::embedding::EmbeddingDriver;
 use crate::kernel_handle::KernelHandle;
 use crate::llm_driver::{
-    CompletionRequest, LlmDriver, LlmError, StreamEvent, STREAM_CONSUMER_DISCONNECTED,
+    CompletionRequest, DriverConfig, LlmDriver, LlmError, StreamEvent, STREAM_CONSUMER_DISCONNECTED,
 };
 use crate::llm_errors;
 use crate::loop_guard::{LoopGuard, LoopGuardConfig, LoopGuardVerdict};
@@ -19,7 +19,7 @@ use crate::web_search::WebToolsContext;
 use openfang_memory::session::Session;
 use openfang_memory::MemorySubstrate;
 use openfang_skills::registry::SkillRegistry;
-use openfang_types::agent::AgentManifest;
+use openfang_types::agent::{AgentManifest, FallbackModel};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::{Memory, MemoryFilter, MemorySource};
 use openfang_types::message::{
@@ -422,8 +422,14 @@ pub async fn run_agent_loop(
 
         // Call LLM with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
-        let (mut response, call_provider_latency_ms) =
-            call_with_retry(&*driver, request, Some(provider_name), None).await?;
+        let (mut response, call_provider_latency_ms) = call_with_retry(
+            &*driver,
+            request,
+            Some(provider_name),
+            None,
+            &manifest.fallback_models,
+        )
+        .await?;
         record_provider_latency(&mut provider_latency_ms, call_provider_latency_ms);
 
         total_usage.input_tokens += response.usage.input_tokens;
@@ -680,7 +686,7 @@ pub async fn run_agent_loop(
 
                 // Execute each tool call with loop guard, timeout, and truncation
                 let mut tool_result_blocks = Vec::new();
-                for tool_call in &response.tool_calls {
+                for tool_call in deduplicate_tool_calls(&response) {
                     // Loop guard check
                     let verdict = loop_guard.check(&tool_call.name, &tool_call.input);
                     match &verdict {
@@ -974,11 +980,15 @@ pub async fn run_agent_loop(
 ///
 /// Uses the `llm_errors` classifier for smart error handling and the
 /// `ProviderCooldown` circuit breaker to prevent request storms.
+///
+/// When the primary model returns a `ModelNotFound` error and `fallback_models`
+/// is non-empty, each fallback is tried in order before propagating the error.
 async fn call_with_retry(
     driver: &dyn LlmDriver,
     request: CompletionRequest,
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
+    fallback_models: &[FallbackModel],
 ) -> OpenFangResult<(crate::llm_driver::CompletionResponse, u64)> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
@@ -1068,6 +1078,77 @@ async fn call_with_retry(
                     cooldown.record_failure(provider, classified.is_billing);
                 }
 
+                // --- ModelNotFound fallback chain (issue #845) ---
+                // If the primary model was not found and fallback models are
+                // configured, try each fallback before giving up.
+                if classified.category == llm_errors::LlmErrorCategory::ModelNotFound
+                    && !fallback_models.is_empty()
+                {
+                    warn!(
+                        "Primary model not found, trying {} fallback model(s)",
+                        fallback_models.len()
+                    );
+                    for (fb_idx, fb) in fallback_models.iter().enumerate() {
+                        let api_key = fb
+                            .api_key_env
+                            .as_deref()
+                            .and_then(|env_name| std::env::var(env_name).ok());
+                        let fb_config = DriverConfig {
+                            provider: fb.provider.clone(),
+                            api_key,
+                            base_url: fb.base_url.clone(),
+                            skip_permissions: true,
+                        };
+                        let fb_driver = match crate::drivers::create_driver(&fb_config) {
+                            Ok(d) => d,
+                            Err(driver_err) => {
+                                warn!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    error = %driver_err,
+                                    "Failed to create fallback driver, skipping"
+                                );
+                                continue;
+                            }
+                        };
+                        let mut fb_request = request.clone();
+                        fb_request.model = fb.model.clone();
+                        warn!(
+                            fallback_index = fb_idx,
+                            provider = %fb.provider,
+                            model = %fb.model,
+                            "Trying fallback model"
+                        );
+                        let fallback_started_at = Instant::now();
+                        match fb_driver.complete(fb_request).await {
+                            Ok(response) => {
+                                info!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    "Fallback model succeeded"
+                                );
+                                return Ok((
+                                    response,
+                                    fallback_started_at.elapsed().as_millis() as u64,
+                                ));
+                            }
+                            Err(fb_err) => {
+                                warn!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    error = %fb_err,
+                                    "Fallback model failed"
+                                );
+                            }
+                        }
+                    }
+                    // All fallbacks exhausted — fall through to return the
+                    // original ModelNotFound error below.
+                }
+
                 // Include raw error detail so dashboard users can debug
                 let user_msg = if classified.category == llm_errors::LlmErrorCategory::Format {
                     format!("{} — raw: {}", classified.sanitized_message, raw_error)
@@ -1087,6 +1168,9 @@ async fn call_with_retry(
 /// Call an LLM driver in streaming mode with automatic retry on rate-limit and overload errors.
 ///
 /// Uses the `llm_errors` classifier and `ProviderCooldown` circuit breaker.
+///
+/// When the primary model returns a `ModelNotFound` error and `fallback_models`
+/// is non-empty, each fallback is tried in order before propagating the error.
 async fn stream_with_retry(
     driver: &dyn LlmDriver,
     request: CompletionRequest,
@@ -1094,6 +1178,7 @@ async fn stream_with_retry(
     response_started_at: Instant,
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
+    fallback_models: &[FallbackModel],
 ) -> OpenFangResult<(crate::llm_driver::CompletionResponse, StreamCallMetrics)> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
@@ -1221,6 +1306,79 @@ async fn stream_with_retry(
 
                 if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                     cooldown.record_failure(provider, classified.is_billing);
+                }
+
+                // --- ModelNotFound fallback chain (issue #845) ---
+                if classified.category == llm_errors::LlmErrorCategory::ModelNotFound
+                    && !fallback_models.is_empty()
+                {
+                    warn!(
+                        "Primary model not found (stream), trying {} fallback model(s)",
+                        fallback_models.len()
+                    );
+                    for (fb_idx, fb) in fallback_models.iter().enumerate() {
+                        let api_key = fb
+                            .api_key_env
+                            .as_deref()
+                            .and_then(|env_name| std::env::var(env_name).ok());
+                        let fb_config = DriverConfig {
+                            provider: fb.provider.clone(),
+                            api_key,
+                            base_url: fb.base_url.clone(),
+                            skip_permissions: true,
+                        };
+                        let fb_driver = match crate::drivers::create_driver(&fb_config) {
+                            Ok(d) => d,
+                            Err(driver_err) => {
+                                warn!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    error = %driver_err,
+                                    "Failed to create fallback stream driver, skipping"
+                                );
+                                continue;
+                            }
+                        };
+                        let mut fb_request = request.clone();
+                        fb_request.model = fb.model.clone();
+                        warn!(
+                            fallback_index = fb_idx,
+                            provider = %fb.provider,
+                            model = %fb.model,
+                            "Trying fallback model (stream)"
+                        );
+                        let fallback_started_at = Instant::now();
+                        match fb_driver.stream(fb_request, tx.clone()).await {
+                            Ok(response) => {
+                                info!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    "Fallback model succeeded (stream)"
+                                );
+                                return Ok((
+                                    response,
+                                    StreamCallMetrics {
+                                        first_token_latency_ms: None,
+                                        provider_latency_ms: fallback_started_at
+                                            .elapsed()
+                                            .as_millis()
+                                            as u64,
+                                    },
+                                ));
+                            }
+                            Err(fb_err) => {
+                                warn!(
+                                    fallback_index = fb_idx,
+                                    provider = %fb.provider,
+                                    model = %fb.model,
+                                    error = %fb_err,
+                                    "Fallback model failed (stream)"
+                                );
+                            }
+                        }
+                    }
                 }
 
                 let user_msg = if classified.category == llm_errors::LlmErrorCategory::Format {
@@ -1517,6 +1675,7 @@ pub async fn run_agent_loop_streaming(
             stream_started_at,
             Some(provider_name),
             None,
+            &manifest.fallback_models,
         )
         .await?;
         record_provider_latency(&mut provider_latency_ms, call_metrics.provider_latency_ms);
@@ -1764,7 +1923,7 @@ pub async fn run_agent_loop_streaming(
 
                 // Execute each tool call with loop guard, timeout, and truncation
                 let mut tool_result_blocks = Vec::new();
-                for tool_call in &response.tool_calls {
+                for tool_call in deduplicate_tool_calls(&response) {
                     // Loop guard check
                     let verdict = loop_guard.check(&tool_call.name, &tool_call.input);
                     match &verdict {
@@ -1916,6 +2075,7 @@ pub async fn run_agent_loop_streaming(
                     let preview: String = final_content.chars().take(300).collect();
                     if stream_tx
                         .send(StreamEvent::ToolExecutionResult {
+                            id: tool_call.id.clone(),
                             name: tool_call.name.clone(),
                             result_preview: preview,
                             is_error: result.is_error,
@@ -2874,6 +3034,20 @@ fn try_parse_bare_json_tool_call(
     }
 
     parse_json_tool_call_object(&text[..end], tool_names)
+}
+
+/// Deduplicate tool calls from the response.
+/// Returns a reference to the deduplicated tool calls.
+pub fn deduplicate_tool_calls(response: &crate::llm_driver::CompletionResponse) -> Vec<&ToolCall> {
+    let mut hash_set = std::collections::HashSet::new();
+    let mut deduplicated = Vec::new();
+    for tool_call in &response.tool_calls {
+        let hash = LoopGuard::compute_hash(&tool_call.name, &tool_call.input);
+        if hash_set.insert(hash) {
+            deduplicated.push(tool_call);
+        }
+    }
+    deduplicated
 }
 
 #[cfg(test)]
