@@ -1228,9 +1228,16 @@ fn daemon_health_responds(addr: &str) -> bool {
 
     let connect_timeout = std::time::Duration::from_millis(500);
     let io_timeout = Some(std::time::Duration::from_millis(750));
-    let sock_addr = match addr.parse::<std::net::SocketAddr>() {
-        Ok(sock_addr) => sock_addr,
-        Err(_) => return daemon_health_responds_via_http(addr, connect_timeout, io_timeout),
+    let sock_addr = if let Some(port) = addr.strip_prefix("localhost:") {
+        match format!("127.0.0.1:{port}").parse::<std::net::SocketAddr>() {
+            Ok(sock_addr) => sock_addr,
+            Err(_) => return daemon_health_responds_via_http(addr, connect_timeout, io_timeout),
+        }
+    } else {
+        match addr.parse::<std::net::SocketAddr>() {
+            Ok(sock_addr) => sock_addr,
+            Err(_) => return daemon_health_responds_via_http(addr, connect_timeout, io_timeout),
+        }
     };
     let mut stream = match std::net::TcpStream::connect_timeout(&sock_addr, connect_timeout) {
         Ok(stream) => stream,

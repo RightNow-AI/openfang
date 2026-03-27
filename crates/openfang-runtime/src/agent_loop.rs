@@ -3187,7 +3187,7 @@ mod tests {
             thinking: None,
         };
 
-        let (response, _latency_ms) = call_with_retry(&driver, request, None, None)
+        let (response, _latency_ms) = call_with_retry(&driver, request, None, None, &[])
             .await
             .expect("transient timeout should recover");
 
@@ -3266,7 +3266,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         let (response, _metrics) =
-            stream_with_retry(&driver, request, tx, Instant::now(), None, None)
+            stream_with_retry(&driver, request, tx, Instant::now(), None, None, &[])
                 .await
                 .expect("transient stream timeout should recover");
 
@@ -3321,7 +3321,7 @@ mod tests {
         };
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
 
-        let err = stream_with_retry(&driver, request, tx, Instant::now(), None, None)
+        let err = stream_with_retry(&driver, request, tx, Instant::now(), None, None, &[])
             .await
             .expect_err("partial output should suppress automatic retry");
 
