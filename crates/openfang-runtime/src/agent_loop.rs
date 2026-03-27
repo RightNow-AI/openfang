@@ -86,6 +86,13 @@ fn phantom_action_detected(text: &str) -> bool {
     has_action && has_channel
 }
 
+/// Returns true when the agent response text indicates an intentional silent completion.
+/// Matches `NO_REPLY` (exact) and `[SILENT]` (case-insensitive).
+fn is_silent_token(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed == "NO_REPLY" || trimmed.eq_ignore_ascii_case("[silent]")
+}
+
 /// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
 const TOOL_ERROR_GUIDANCE: &str =
     "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. If your next steps depend on a failed tool, either retry with a materially different approach or explain the failure to the user and stop. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
@@ -463,8 +470,9 @@ pub async fn run_agent_loop(
                     crate::reply_directives::parse_directives(&text);
                 let text = cleaned_text;
 
-                // NO_REPLY: agent intentionally chose not to reply
-                if text.trim() == "NO_REPLY" || parsed_directives.silent {
+                // NO_REPLY / [SILENT]: agent intentionally chose not to reply.
+                // [SILENT] must not be stored literally — it reinforces silence in future turns.
+                if is_silent_token(&text) || parsed_directives.silent {
                     debug!(agent = %manifest.name, "Agent chose NO_REPLY/silent — silent completion");
                     session
                         .messages
@@ -1641,8 +1649,9 @@ pub async fn run_agent_loop_streaming(
                     crate::reply_directives::parse_directives(&text);
                 let text = cleaned_text_s;
 
-                // NO_REPLY: agent intentionally chose not to reply
-                if text.trim() == "NO_REPLY" || parsed_directives_s.silent {
+                // NO_REPLY / [SILENT]: agent intentionally chose not to reply.
+                // [SILENT] must not be stored literally — it reinforces silence in future turns.
+                if is_silent_token(&text) || parsed_directives_s.silent {
                     debug!(agent = %manifest.name, "Agent chose NO_REPLY/silent (streaming) — silent completion");
                     session
                         .messages
@@ -4647,5 +4656,37 @@ mod tests {
             events.push(ev);
         }
         assert!(!events.is_empty(), "Should have received stream events");
+    }
+
+    #[test]
+    fn test_silent_detection_uppercase() {
+        assert!(is_silent_token("[SILENT]"));
+    }
+
+    #[test]
+    fn test_silent_detection_lowercase() {
+        assert!(is_silent_token("[silent]"));
+    }
+
+    #[test]
+    fn test_silent_detection_mixed_case() {
+        assert!(is_silent_token("[Silent]"));
+    }
+
+    #[test]
+    fn test_silent_detection_with_whitespace() {
+        assert!(is_silent_token("  [SILENT]  "));
+    }
+
+    #[test]
+    fn test_silent_detection_no_reply() {
+        assert!(is_silent_token("NO_REPLY"));
+    }
+
+    #[test]
+    fn test_silent_detection_rejects_normal_text() {
+        assert!(!is_silent_token("Hello, how can I help?"));
+        assert!(!is_silent_token("SILENT"));
+        assert!(!is_silent_token(""));
     }
 }
