@@ -329,9 +329,17 @@ pub struct WorkItem {
     pub retry_count: u32,
     /// Maximum number of automatic retries before the item stays `Failed`.
     #[serde(default)]
-    pub max_retries: u32,    /// Parent work item ID for subagent delegation chains.
+    pub max_retries: u32,
+    /// Parent work item ID for subagent delegation chains.
     #[serde(default)]
-    pub parent_id: Option<String>,}
+    pub parent_id: Option<String>,
+    /// Stable run identifier used for durable run-scoped artifacts.
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Stable workspace identifier used for durable workspace-scoped artifacts.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+}
 
 fn default_priority() -> u8 {
     128
@@ -436,6 +444,12 @@ pub struct CreateWorkItemRequest {
     /// Parent work item ID to chain this as a subagent child.
     #[serde(default)]
     pub parent_id: Option<String>,
+    /// Stable run identifier used for durable run-scoped artifacts.
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Stable workspace identifier used for durable workspace-scoped artifacts.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// Body for `POST /api/work/{id}/run`.

@@ -6,7 +6,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 
 /// Current schema version.
-const SCHEMA_VERSION: u32 = 16;
+const SCHEMA_VERSION: u32 = 17;
 
 /// Run all migrations to bring the database up to date.
 pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -74,6 +74,10 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
 
     if current_version < 16 {
         migrate_v16(conn)?;
+    }
+
+    if current_version < 17 {
+        migrate_v17(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -687,6 +691,42 @@ fn migrate_v16(conn: &Connection) -> Result<(), rusqlite::Error> {
         VALUES (16, datetime('now'), 'Add autoresearch tables: control_plane, experiments, validated_patterns');
         ",
     )?;
+    Ok(())
+}
+
+/// Version 17: Add durable run/workspace linkage to work_items.
+fn migrate_v17(conn: &Connection) -> Result<(), rusqlite::Error> {
+    if !column_exists(conn, "work_items", "run_id") {
+        conn.execute_batch("ALTER TABLE work_items ADD COLUMN run_id TEXT;")?;
+    }
+    if !column_exists(conn, "work_items", "workspace_id") {
+        conn.execute_batch("ALTER TABLE work_items ADD COLUMN workspace_id TEXT;")?;
+    }
+
+    conn.execute_batch(
+        "
+        UPDATE work_items
+        SET run_id = id
+        WHERE run_id IS NULL OR run_id = '';
+
+        UPDATE work_items
+        SET workspace_id = assigned_agent_name
+        WHERE (workspace_id IS NULL OR workspace_id = '')
+          AND assigned_agent_name IS NOT NULL
+          AND assigned_agent_name != '';
+
+        CREATE INDEX IF NOT EXISTS idx_work_items_run
+            ON work_items(run_id)
+            WHERE run_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_work_items_workspace
+            ON work_items(workspace_id)
+            WHERE workspace_id IS NOT NULL;
+
+        INSERT OR IGNORE INTO migrations (version, applied_at, description)
+        VALUES (17, datetime('now'), 'Add run_id and workspace_id to work_items');
+        ",
+    )?;
+
     Ok(())
 }
 

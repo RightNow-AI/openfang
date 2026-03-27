@@ -22,10 +22,11 @@
 
 use std::str::FromStr;
 use std::sync::Arc;
+use std::{ffi::OsStr, path::{Path, PathBuf}};
 
 use chrono::Utc;
 use openfang_memory::work_item::TransitionExtra;
-use openfang_types::agent::AgentId;
+use openfang_types::agent::{AgentId, AgentManifest};
 use openfang_types::execution::{
     ActionResult, AdapterSelection, BlockReason, ExecutionBudget, ExecutionEventKind,
     ExecutionObjective, ExecutionReport, ExecutionStatus, VerificationMethod, VerificationResult,
@@ -33,8 +34,42 @@ use openfang_types::execution::{
 use openfang_types::planning::ExecutionPath;
 use openfang_types::tool_contract::AdapterKind;
 use openfang_types::work_item::{WorkEvent, WorkItem, WorkSource, WorkStatus, WorkType};
+use serde::{Deserialize, Serialize};
+use tokio::fs;
+use uuid::Uuid;
 
 use crate::kernel::OpenFangKernel;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredArtifactRecord {
+    artifact_id: String,
+    scope_kind: String,
+    scope_id: String,
+    kind: String,
+    title: String,
+    content_type: String,
+    byte_size: Option<u64>,
+    created_at: String,
+    download_path: String,
+    metadata_path: String,
+    producer_kind: String,
+    producer_id: String,
+    workspace_id: Option<String>,
+    run_id: Option<String>,
+    work_item_id: Option<String>,
+    agent_id: Option<String>,
+    tags: Vec<String>,
+    checksum_sha256: Option<String>,
+    storage_path: String,
+    filename: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct StoredArtifactIndex {
+    artifacts: Vec<StoredArtifactRecord>,
+}
+
+const ARTIFACT_INDEX_FILE: &str = ".artifacts.json";
 
 // ────────────────────────────────────────────────────────────────────────────
 // WorkItemExecutor
@@ -180,7 +215,9 @@ impl WorkItemExecutor {
         };
 
         // Confirm the agent exists in the registry.
-        if self.kernel.registry.get(agent_id).is_none() {
+        let agent_entry = match self.kernel.registry.get(agent_id) {
+            Some(entry) => entry,
+            None => {
             self.emit_event(
                 &item,
                 ExecutionEventKind::PermissionDenied,
@@ -209,7 +246,28 @@ impl WorkItemExecutor {
                 started_at,
                 finished_at: Utc::now(),
             };
-        }
+            }
+        };
+
+        let durable_workspace_root = durable_workspace_root(&agent_entry.manifest, &self.kernel);
+        let workspace_lease = match self
+            .kernel
+            .lease_run_workspace(
+                Some(agent_id),
+                &agent_entry.name,
+                durable_workspace_root.clone(),
+                Some(&item.id),
+                Some("work-item"),
+            )
+            .await
+        {
+            Ok(lease) => Some(lease),
+            Err(error) => {
+                warnings.push(format!("run workspace lease failed: {error}"));
+                None
+            }
+        };
+        let leased_workspace_root = workspace_lease.as_ref().map(|lease| lease.root.clone());
 
         // ── Step 6: Execute one bounded action ──────────────────────────────
         let prompt = build_execution_prompt(&item, &objective);
@@ -228,7 +286,14 @@ impl WorkItemExecutor {
 
         let loop_result = self
             .kernel
-            .send_message_with_handle(agent_id, &prompt, None, None, None)
+            .send_message_with_handle_in_workspace(
+                agent_id,
+                &prompt,
+                None,
+                None,
+                None,
+                leased_workspace_root.clone(),
+            )
             .await;
 
         let action_finished_at = Utc::now();
@@ -289,6 +354,34 @@ impl WorkItemExecutor {
 
         // ── Step 7: Verify result ────────────────────────────────────────────
         let verification = verify_result(&action_result, &objective.verification_method);
+        let workspace_id = durable_workspace_root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(str::to_string);
+        let _ = self.kernel.memory.work_items().set_run_context(
+            work_item_id,
+            Some(work_item_id),
+            workspace_id.as_deref(),
+        );
+        let artifact_refs = if let Some(run_workspace) = leased_workspace_root.as_ref() {
+            match collect_artifacts(
+                run_workspace,
+                &item,
+                agent_id_str,
+                &agent_entry.name,
+                workspace_id.as_deref(),
+            )
+            .await
+            {
+                Ok(records) => records.into_iter().map(|artifact| artifact.artifact_id).collect(),
+                Err(error) => {
+                    warnings.push(format!("artifact capture failed: {error}"));
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
 
         if verification.passed {
             self.emit_event(
@@ -345,7 +438,7 @@ impl WorkItemExecutor {
                 status: ExecutionStatus::Completed,
                 block_reason: None,
                 result_summary: "execution completed and verified".to_string(),
-                artifact_refs: vec![],
+                artifact_refs,
                 retry_count: item.retry_count,
                 retry_scheduled: false,
                 delegated_to: None,
@@ -393,7 +486,7 @@ impl WorkItemExecutor {
                 status: ExecutionStatus::RetryScheduled,
                 block_reason: None,
                 result_summary: format!("retry scheduled ({new_retry_count}/{max_retries})"),
-                artifact_refs: vec![],
+                artifact_refs,
                 retry_count: new_retry_count,
                 retry_scheduled: true,
                 delegated_to: None,
@@ -440,7 +533,7 @@ impl WorkItemExecutor {
                         status: ExecutionStatus::DelegatedToSubagent,
                         block_reason: None,
                         result_summary: format!("delegated to child work item {child_id}"),
-                        artifact_refs: vec![],
+                        artifact_refs,
                         retry_count: item.retry_count,
                         retry_scheduled: false,
                         delegated_to: Some(child_id),
@@ -497,7 +590,7 @@ impl WorkItemExecutor {
             status: ExecutionStatus::Failed,
             block_reason: None,
             result_summary: format!("failed after {new_retry_count} attempt(s): {failure_reason}"),
-            artifact_refs: vec![],
+            artifact_refs,
             retry_count: new_retry_count,
             retry_scheduled: false,
             delegated_to: None,
@@ -584,12 +677,110 @@ impl WorkItemExecutor {
             idempotency_key: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            run_id: Some(child_id.clone()),
+            workspace_id: parent.workspace_id.clone(),
         };
 
         match self.kernel.memory.work_items().create(&child) {
             Ok(created) => Some(created.id),
             Err(_) => None,
         }
+    }
+}
+
+fn durable_workspace_root(manifest: &AgentManifest, kernel: &OpenFangKernel) -> PathBuf {
+    manifest
+        .workspace
+        .clone()
+        .unwrap_or_else(|| kernel.config.effective_workspaces_dir().join(&manifest.name))
+}
+
+async fn collect_artifacts(
+    run_workspace: &Path,
+    item: &WorkItem,
+    agent_id: &str,
+    agent_name: &str,
+    workspace_id: Option<&str>,
+) -> Result<Vec<StoredArtifactRecord>, String> {
+    let mut entries = fs::read_dir(run_workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut artifacts = Vec::new();
+
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let path = entry.path();
+        if path.file_name() == Some(OsStr::new(ARTIFACT_INDEX_FILE)) {
+            continue;
+        }
+
+        let metadata = fs::metadata(&path)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let filename = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("artifact")
+            .to_string();
+        let extension = path.extension().and_then(|value| value.to_str());
+        let artifact_id = format!("art_{}", Uuid::new_v4().simple());
+
+        let (kind, content_type) = classify_artifact(extension);
+        artifacts.push(StoredArtifactRecord {
+            artifact_id: artifact_id.clone(),
+            scope_kind: "work_item".to_string(),
+            scope_id: item.id.clone(),
+            kind: kind.to_string(),
+            title: filename.clone(),
+            content_type: content_type.to_string(),
+            byte_size: Some(metadata.len()),
+            created_at: Utc::now().to_rfc3339(),
+            download_path: format!("/api/artifacts/{artifact_id}"),
+            metadata_path: format!("/api/artifacts/{artifact_id}/metadata"),
+            producer_kind: "work_executor".to_string(),
+            producer_id: "execute-work-item".to_string(),
+            workspace_id: workspace_id.map(str::to_string),
+            run_id: Some(item.id.clone()),
+            work_item_id: Some(item.id.clone()),
+            agent_id: Some(agent_id.to_string()),
+            tags: vec![agent_name.to_string()],
+            checksum_sha256: None,
+            storage_path: path.to_string_lossy().to_string(),
+            filename,
+        });
+    }
+
+    let index = StoredArtifactIndex {
+        artifacts: artifacts.clone(),
+    };
+    let index_path = run_workspace.join(ARTIFACT_INDEX_FILE);
+    let content = serde_json::to_string_pretty(&index).map_err(|error| error.to_string())?;
+    fs::write(index_path, content)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(artifacts)
+}
+
+fn classify_artifact(extension: Option<&str>) -> (&'static str, &'static str) {
+    match extension.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "md" | "markdown" => ("markdown", "text/markdown"),
+        "json" => ("json", "application/json"),
+        "txt" | "log" => ("text", "text/plain; charset=utf-8"),
+        "png" => ("image", "image/png"),
+        "jpg" | "jpeg" => ("image", "image/jpeg"),
+        "gif" => ("image", "image/gif"),
+        "webp" => ("image", "image/webp"),
+        "wav" => ("audio", "audio/wav"),
+        "mp3" => ("audio", "audio/mpeg"),
+        _ => ("binary", "application/octet-stream"),
     }
 }
 

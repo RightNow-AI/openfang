@@ -1,5 +1,5 @@
 'use client';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { workApi } from '../../../lib/work-api';
 import { getPlanningData, startPlanningRound } from '../../../lib/planning-api';
@@ -76,7 +76,7 @@ function blockReasonLabel(br) {
 function ExecutionPanel({ report }) {
   if (!report) return null;
   const {
-    execution_path, adapter_selection, objective, action_result,
+    execution_path, adapter_selection, action_result,
     verification, status, block_reason, result_summary, artifact_refs,
     retry_count, retry_scheduled, delegated_to, cost_usd, warnings,
     events_emitted, started_at, finished_at,
@@ -281,6 +281,97 @@ function Field({ label, value }) {
   );
 }
 
+function formatByteSize(byteSize) {
+  if (!Number.isFinite(byteSize) || byteSize <= 0) return null;
+  if (byteSize < 1024) return `${byteSize} B`;
+  if (byteSize < 1024 * 1024) return `${(byteSize / 1024).toFixed(1)} KB`;
+  return `${(byteSize / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function normalizeArtifactRecord(artifact) {
+  if (!artifact || typeof artifact !== 'object') return null;
+
+  return {
+    artifactId: artifact.artifactId ?? artifact.artifact_id ?? null,
+    title: artifact.title ?? artifact.filename ?? 'Artifact',
+    kind: artifact.kind ?? null,
+    contentType: artifact.contentType ?? artifact.content_type ?? null,
+    byteSize: artifact.byteSize ?? artifact.byte_size ?? null,
+    createdAt: artifact.createdAt ?? artifact.created_at ?? null,
+    downloadPath: artifact.downloadPath ?? artifact.download_path ?? null,
+  };
+}
+
+function RunArtifactsPanel({ artifacts, loading, error }) {
+  if (loading) {
+    return (
+      <div className="card" style={{ marginTop: 12 }} data-cy="work-detail-artifacts">
+        <h3 style={{ marginTop: 0 }}>Run artifacts</h3>
+        <div className="text-dim text-sm">Loading durable artifacts…</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="card" style={{ marginTop: 12, borderColor: 'var(--warn-muted)' }} data-cy="work-detail-artifacts-error">
+        <h3 style={{ marginTop: 0, color: 'var(--warn)' }}>Run artifacts</h3>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{error}</div>
+      </div>
+    );
+  }
+
+  if (!artifacts?.length) {
+    return null;
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 12 }} data-cy="work-detail-artifacts">
+      <h3 style={{ marginTop: 0 }}>Run artifacts</h3>
+      <p style={{ marginTop: 0, fontSize: 12, color: 'var(--text-muted)' }}>
+        Durable files captured for this run.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {artifacts.map((artifact, index) => {
+          const href = artifact.artifactId
+            ? `/api/artifacts/${encodeURIComponent(artifact.artifactId)}`
+            : artifact.downloadPath || null;
+          const createdLabel = artifact.createdAt ? fmtDate(artifact.createdAt) : null;
+          const byteSizeLabel = formatByteSize(artifact.byteSize);
+
+          return (
+            <div
+              key={artifact.artifactId || `${artifact.title}-${index}`}
+              style={{ border: '1px solid var(--border-light)', borderRadius: 10, padding: '12px 14px' }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', wordBreak: 'break-word' }}>
+                    {artifact.title}
+                  </div>
+                  {artifact.kind && (
+                    <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      {artifact.kind}
+                    </div>
+                  )}
+                </div>
+                {href && (
+                  <a href={href} className="btn btn-ghost btn-sm">Download</a>
+                )}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+                {artifact.contentType ? <span>{artifact.contentType}</span> : null}
+                {byteSizeLabel ? <span>{byteSizeLabel}</span> : null}
+                {createdLabel ? <span>{createdLabel}</span> : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function WorkDetailClient({ initialItem, initialEvents, initialChildren, id }) {
   const [item, setItem] = useState(initialItem);
   const [events, setEvents] = useState(initialEvents ?? []);
@@ -294,6 +385,60 @@ export default function WorkDetailClient({ initialItem, initialEvents, initialCh
   const [planningRound, setPlanningRound] = useState(null);
   const [planningLoading, setPlanningLoading] = useState(false);
   const [planningError, setPlanningError] = useState('');
+  const [runArtifacts, setRunArtifacts] = useState([]);
+  const [artifactLoading, setArtifactLoading] = useState(false);
+  const [artifactError, setArtifactError] = useState('');
+
+  useEffect(() => {
+    const workspaceId = item?.workspace_id;
+    const runId = item?.run_id;
+
+    if (!workspaceId || !runId) {
+      setRunArtifacts([]);
+      setArtifactError('');
+      setArtifactLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadArtifacts() {
+      setArtifactLoading(true);
+      setArtifactError('');
+      try {
+        const response = await fetch(
+          `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/artifacts`,
+          { cache: 'no-store' }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data?.error || 'Could not load run artifacts.');
+        }
+
+        if (!cancelled) {
+          const artifacts = Array.isArray(data?.artifacts)
+            ? data.artifacts.map(normalizeArtifactRecord).filter(Boolean)
+            : [];
+          setRunArtifacts(artifacts);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setRunArtifacts([]);
+          setArtifactError(e.message || 'Could not load run artifacts.');
+        }
+      }
+
+      if (!cancelled) {
+        setArtifactLoading(false);
+      }
+    }
+
+    loadArtifacts();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [item?.run_id, item?.workspace_id]);
 
   const refreshPlanning = useCallback(async () => {
     setPlanningLoading(true);
@@ -489,6 +634,12 @@ export default function WorkDetailClient({ initialItem, initialEvents, initialCh
               <ExecutionPanel report={executionReport} />
             )}
 
+            <RunArtifactsPanel
+              artifacts={runArtifacts}
+              loading={artifactLoading}
+              error={artifactError}
+            />
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
               {/* Left: details */}
               <div className="card">
@@ -499,6 +650,8 @@ export default function WorkDetailClient({ initialItem, initialEvents, initialCh
                 <Field label="Priority"     value={item.priority} />
                 <Field label="Assigned To"  value={item.assigned_agent_name || item.assigned_agent_id} />
                 <Field label="Created By"   value={item.created_by} />
+                <Field label="Run ID"       value={item.run_id} />
+                <Field label="Workspace"    value={item.workspace_id} />
                 <Field label="Created"      value={fmtDate(item.created_at)} />
                 <Field label="Started"      value={fmtDate(item.started_at)} />
                 <Field label="Completed"    value={fmtDate(item.completed_at)} />

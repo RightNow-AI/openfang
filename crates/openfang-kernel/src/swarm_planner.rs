@@ -627,6 +627,8 @@ mod tests {
             retry_count: 0,
             max_retries: 3,
             parent_id: None,
+            run_id: Some(id.to_string()),
+            workspace_id: None,
         }
     }
 
@@ -815,6 +817,8 @@ mod tests {
             id: child_id.clone(),
             title: "[sub] test".into(),
             parent_id: Some(item.id.clone()),
+            run_id: Some(child_id.clone()),
+            workspace_id: None,
             created_by: Some(format!("parent:{}", item.id)),
             source: openfang_types::work_item::WorkSource::AgentSpawned,
             description: String::new(),

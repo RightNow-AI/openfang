@@ -69,13 +69,15 @@ impl WorkItemStore {
                 assigned_agent_id, assigned_agent_name, result, error, iterations, priority,
                 scheduled_at, started_at, completed_at, deadline, requires_approval,
                 approved_by, approved_at, approval_note, payload, tags, created_by,
-                idempotency_key, created_at, updated_at, retry_count, max_retries, parent_id
+                idempotency_key, created_at, updated_at, retry_count, max_retries, parent_id,
+                run_id, workspace_id
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16, ?17, ?18,
                 ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25, ?26, ?27, ?28, ?29, ?30
+                ?25, ?26, ?27, ?28, ?29, ?30,
+                ?31, ?32
             )",
             rusqlite::params![
                 item.id,
@@ -108,6 +110,8 @@ impl WorkItemStore {
                 item.retry_count as i64,
                 item.max_retries as i64,
                 item.parent_id,
+                item.run_id,
+                item.workspace_id,
             ],
         )
         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
@@ -133,6 +137,31 @@ impl WorkItemStore {
         drop(conn);
         self.get_by_id(&item.id)?
             .ok_or_else(|| OpenFangError::Internal("item missing after insert".into()))
+    }
+
+    /// Persist durable execution linkage for a work item.
+    pub fn set_run_context(
+        &self,
+        id: &str,
+        run_id: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> OpenFangResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+
+        conn.execute(
+            "UPDATE work_items
+             SET run_id = ?2,
+                 workspace_id = ?3,
+                 updated_at = ?4
+             WHERE id = ?1",
+            rusqlite::params![id, run_id, workspace_id, Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        Ok(())
     }
 
     /// Transition a work item to a new status, updating related fields.
@@ -338,7 +367,8 @@ impl WorkItemStore {
                         assigned_agent_id, assigned_agent_name, result, error, iterations, priority,
                         scheduled_at, started_at, completed_at, deadline, requires_approval,
                         approved_by, approved_at, approval_note, payload, tags, created_by,
-                        idempotency_key, created_at, updated_at, retry_count, max_retries, parent_id
+                    idempotency_key, created_at, updated_at, retry_count, max_retries, parent_id,
+                    run_id, workspace_id
                  FROM work_items WHERE id = ?1",
             )
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
@@ -417,7 +447,8 @@ impl WorkItemStore {
                     assigned_agent_id, assigned_agent_name, result, error, iterations, priority,
                     scheduled_at, started_at, completed_at, deadline, requires_approval,
                     approved_by, approved_at, approval_note, payload, tags, created_by,
-                    idempotency_key, created_at, updated_at, retry_count, max_retries, parent_id
+                    idempotency_key, created_at, updated_at, retry_count, max_retries, parent_id,
+                    run_id, workspace_id
              FROM work_items
              {where_clause}
              ORDER BY priority DESC, created_at ASC
@@ -651,6 +682,8 @@ fn row_to_work_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkItem> {
         retry_count: row.get::<_, i64>(27).unwrap_or(0) as u32,
         max_retries: row.get::<_, i64>(28).unwrap_or(0) as u32,
         parent_id: row.get(29)?,
+        run_id: row.get(30)?,
+        workspace_id: row.get(31)?,
     })
 }
 
@@ -676,8 +709,9 @@ mod tests {
 
     fn sample_item(title: &str) -> WorkItem {
         let now = Utc::now();
+        let id = uuid::Uuid::new_v4().to_string();
         WorkItem {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: id.clone(),
             title: title.to_string(),
             description: "test description".into(),
             work_type: WorkType::AgentTask,
@@ -707,6 +741,8 @@ mod tests {
             retry_count: 0,
             max_retries: 0,
             parent_id: None,
+            run_id: Some(id),
+            workspace_id: Some("test-workspace".into()),
         }
     }
 
@@ -719,6 +755,23 @@ mod tests {
         let loaded = store.get_by_id(&id).unwrap().unwrap();
         assert_eq!(loaded.title, "Create test");
         assert_eq!(loaded.status, WorkStatus::Pending);
+        assert_eq!(loaded.workspace_id.as_deref(), Some("test-workspace"));
+    }
+
+    #[test]
+    fn test_set_run_context() {
+        let store = make_store();
+        let item = sample_item("run-context");
+        let id = item.id.clone();
+        store.create(&item).unwrap();
+
+        store
+            .set_run_context(&id, Some("run-123"), Some("workspace-123"))
+            .unwrap();
+
+        let loaded = store.get_by_id(&id).unwrap().unwrap();
+        assert_eq!(loaded.run_id.as_deref(), Some("run-123"));
+        assert_eq!(loaded.workspace_id.as_deref(), Some("workspace-123"));
     }
 
     #[test]
