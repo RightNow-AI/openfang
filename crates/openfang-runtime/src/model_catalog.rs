@@ -108,13 +108,57 @@ impl ModelCatalog {
     }
 
     /// Find a model by its canonical ID, display name, or alias.
+    ///
+    /// When multiple models match case-insensitively (e.g. a builtin `qwen3-30b-a3b`
+    /// and a custom `Qwen3-30B-A3B`), user-defined entries (Custom or Local tier)
+    /// take priority. This ensures models from `custom_models.json` or dynamically
+    /// discovered local models are not shadowed by builtins that happen to share the
+    /// same lowercased name (#856).
     pub fn find_model(&self, id_or_alias: &str) -> Option<&ModelCatalogEntry> {
         let lower = id_or_alias.to_lowercase();
-        // Direct ID match first
-        if let Some(entry) = self.models.iter().find(|m| m.id.to_lowercase() == lower) {
+
+        // Single scan: prefer user-defined models (Custom/Local tier) over builtins.
+        //
+        // Priority order:
+        //   1. User-defined entry with exact-case ID match
+        //   2. User-defined entry with case-insensitive ID match
+        //   3. Builtin entry with exact-case ID match
+        //   4. Builtin entry with case-insensitive ID match
+        //
+        // This ensures that custom models from custom_models.json and dynamically
+        // discovered local models are never shadowed by builtins that share the same
+        // lowercased name, regardless of how the caller cased the search term.
+        let mut user_ci: Option<&ModelCatalogEntry> = None;
+        let mut builtin_exact: Option<&ModelCatalogEntry> = None;
+        let mut builtin_ci: Option<&ModelCatalogEntry> = None;
+
+        for m in &self.models {
+            if m.id.to_lowercase() != lower {
+                continue;
+            }
+            let is_user_defined = m.tier == ModelTier::Custom || m.tier == ModelTier::Local;
+            let is_exact = m.id == id_or_alias;
+
+            match (is_user_defined, is_exact) {
+                (true, true) => return Some(m), // Best possible: user-defined + exact
+                (true, false) if user_ci.is_none() => user_ci = Some(m),
+                (false, true) if builtin_exact.is_none() => builtin_exact = Some(m),
+                (false, false) if builtin_ci.is_none() => builtin_ci = Some(m),
+                _ => {}
+            }
+        }
+
+        if let Some(entry) = user_ci {
             return Some(entry);
         }
-        // Display-name match for dashboard/UI payloads that send labels.
+        if let Some(entry) = builtin_exact {
+            return Some(entry);
+        }
+        if let Some(entry) = builtin_ci {
+            return Some(entry);
+        }
+
+        // 3. Display-name match for dashboard/UI payloads that send labels.
         if let Some(entry) = self
             .models
             .iter()
@@ -122,7 +166,7 @@ impl ModelCatalog {
         {
             return Some(entry);
         }
-        // Alias resolution
+        // 4. Alias resolution
         if let Some(canonical) = self.aliases.get(&lower) {
             return self.models.iter().find(|m| m.id == *canonical);
         }
@@ -291,6 +335,10 @@ impl ModelCatalog {
     ///
     /// Returns `true` if the model was added, `false` if a model with the same
     /// ID **and** provider already exists (case-insensitive).
+    ///
+    /// The entry's tier is forced to [`ModelTier::Custom`] so that user-defined
+    /// models are always preferred over builtins with the same lowercased name
+    /// (see `find_model` priority logic, #856).
     pub fn add_custom_model(&mut self, entry: ModelCatalogEntry) -> bool {
         let lower_id = entry.id.to_lowercase();
         let lower_provider = entry.provider.to_lowercase();
@@ -302,6 +350,8 @@ impl ModelCatalog {
             return false;
         }
         let provider = entry.provider.clone();
+        let mut entry = entry;
+        entry.tier = ModelTier::Custom;
         self.models.push(entry);
 
         // Update provider model count
@@ -4205,5 +4255,93 @@ mod tests {
         assert_eq!(entry.tier, ModelTier::Smart);
         assert!(entry.supports_tools);
         assert!(entry.supports_vision);
+    }
+
+    /// Regression test for #856: custom models with case-sensitive names must not be
+    /// shadowed by builtin models that share the same lowercased ID.
+    ///
+    /// When a user deploys `Qwen3-30B-A3B` via vLLM and adds it to custom_models.json,
+    /// find_model should return the custom entry (provider "vllm"), not the builtin
+    /// entry (provider "qwen") whose id is `qwen3-30b-a3b`.
+    #[test]
+    fn test_custom_model_not_shadowed_by_builtin_856() {
+        let mut catalog = ModelCatalog::new();
+
+        // Verify the builtin exists first
+        let builtin = catalog.find_model("qwen3-30b-a3b").unwrap();
+        assert_eq!(builtin.provider, "qwen");
+
+        // Add a custom model with a case-sensitive name on a different provider
+        let added = catalog.add_custom_model(ModelCatalogEntry {
+            id: "Qwen3-30B-A3B".into(),
+            display_name: "Qwen3 30B (Local vLLM)".into(),
+            provider: "vllm".into(),
+            tier: ModelTier::Balanced, // user might not set tier explicitly
+            context_window: 32_768,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        });
+        assert!(added, "custom model should be added (different provider)");
+
+        // add_custom_model should force Custom tier
+        let custom = catalog
+            .list_models()
+            .iter()
+            .find(|m| m.id == "Qwen3-30B-A3B")
+            .unwrap();
+        assert_eq!(custom.tier, ModelTier::Custom);
+
+        // Exact-case lookup must find the custom entry, not the builtin
+        let found = catalog.find_model("Qwen3-30B-A3B").unwrap();
+        assert_eq!(found.id, "Qwen3-30B-A3B");
+        assert_eq!(found.provider, "vllm");
+        assert_eq!(found.tier, ModelTier::Custom);
+
+        // Lowercase lookup: builtin "qwen3-30b-a3b" (tier Fast) gets an exact-case match,
+        // but the custom "Qwen3-30B-A3B" (tier Custom) gets a case-insensitive match.
+        // With our fix, the user-defined entry (Custom tier) wins even when there's
+        // an exact-case builtin match, because user-defined entries always take priority.
+        let lower_found = catalog.find_model("qwen3-30b-a3b").unwrap();
+        assert_eq!(lower_found.provider, "vllm");
+        assert_eq!(lower_found.tier, ModelTier::Custom);
+    }
+
+    /// Verify that find_model's exact-case match takes priority over case-insensitive.
+    #[test]
+    fn test_find_model_exact_case_priority() {
+        let catalog = ModelCatalog::new();
+        // MiniMax-M2.5 exists as a builtin with exact case "MiniMax-M2.5"
+        let entry = catalog.find_model("MiniMax-M2.5").unwrap();
+        assert_eq!(entry.id, "MiniMax-M2.5");
+        assert_eq!(entry.provider, "minimax");
+
+        // Case-insensitive still works
+        let lower = catalog.find_model("minimax-m2.5").unwrap();
+        assert_eq!(lower.id, "MiniMax-M2.5");
+    }
+
+    /// Verify that dynamically discovered local models (Local tier) are preferred
+    /// over builtins in case-insensitive lookups.
+    #[test]
+    fn test_discovered_local_model_preferred() {
+        let mut catalog = ModelCatalog::new();
+
+        // merge_discovered_models adds models with Local tier
+        catalog.merge_discovered_models("ollama", &["Custom-Model-7B".to_string()]);
+
+        // Verify it was added
+        let found = catalog.find_model("Custom-Model-7B").unwrap();
+        assert_eq!(found.tier, ModelTier::Local);
+        assert_eq!(found.provider, "ollama");
+
+        // Case-insensitive lookup should prefer the Local-tier entry
+        let lower = catalog.find_model("custom-model-7b").unwrap();
+        assert_eq!(lower.tier, ModelTier::Local);
+        assert_eq!(lower.provider, "ollama");
     }
 }

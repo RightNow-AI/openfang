@@ -622,8 +622,12 @@ function chatPage() {
             this.scrollToBottom();
             this._resetTypingTimeout();
           } else if (data.level) {
-            var lastThink = this.messages[this.messages.length - 1];
-            if (lastThink && lastThink.thinking) lastThink.text = 'Thinking (' + data.level + ')...';
+            var thinkIdx = this.messages.length - 1;
+            var lastThink = thinkIdx >= 0 ? this.messages[thinkIdx] : null;
+            if (lastThink && lastThink.thinking) {
+              lastThink.text = 'Thinking (' + data.level + ')...';
+              this.messages.splice(thinkIdx, 1, lastThink);
+            }
           }
           break;
 
@@ -636,9 +640,11 @@ function chatPage() {
             }
             this._resetTypingTimeout();
           } else if (data.state === 'tool') {
-            var typingMsg = this.messages.length ? this.messages[this.messages.length - 1] : null;
+            var toolTypIdx = this.messages.length - 1;
+            var typingMsg = toolTypIdx >= 0 ? this.messages[toolTypIdx] : null;
             if (typingMsg && (typingMsg.thinking || typingMsg.streaming)) {
               typingMsg.text = 'Using ' + (data.tool || 'tool') + '...';
+              this.messages.splice(toolTypIdx, 1, typingMsg);
             }
             this._resetTypingTimeout();
           } else if (data.state === 'stop') {
@@ -648,7 +654,8 @@ function chatPage() {
 
         case 'phase':
           // Show tool/phase progress so the user sees the agent is working
-          var phaseMsg = this.messages.length ? this.messages[this.messages.length - 1] : null;
+          var phaseIdx = this.messages.length - 1;
+          var phaseMsg = phaseIdx >= 0 ? this.messages[phaseIdx] : null;
           if (phaseMsg && (phaseMsg.thinking || phaseMsg.streaming)) {
             // Skip phases that have no user-meaningful display text — "streaming"
             // and "done" are lifecycle signals, not status to show in the chat bubble.
@@ -664,6 +671,7 @@ function chatPage() {
               if (!phaseMsg._reasoning) phaseMsg._reasoning = '';
               phaseMsg._reasoning += (data.detail || '') + '\n';
               phaseMsg.text = '<details><summary>Reasoning...</summary>\n\n' + phaseMsg._reasoning + '</details>';
+              this.messages.splice(phaseIdx, 1, phaseMsg);
             } else if (phaseMsg.thinking) {
               // Only update text on messages still in thinking state (not yet
               // receiving streamed content) to avoid overwriting accumulated text.
@@ -676,13 +684,15 @@ function chatPage() {
                 phaseDetail = data.detail || 'Working...';
               }
               phaseMsg.text = phaseDetail;
+              this.messages.splice(phaseIdx, 1, phaseMsg);
             }
           }
           this.scrollToBottom();
           break;
 
         case 'text_delta':
-          var last = this.messages.length ? this.messages[this.messages.length - 1] : null;
+          var lastIdx = this.messages.length - 1;
+          var last = lastIdx >= 0 ? this.messages[lastIdx] : null;
           if (last && last.streaming) {
             if (last.thinking) { last.text = ''; last.thinking = false; }
             // If we already detected a text-based tool call, skip further text
@@ -711,6 +721,10 @@ function chatPage() {
               }
             }
             this.tokenCount = Math.round(last.text.length / 4);
+            // Force Alpine reactivity: splice-in-place so x-for re-renders
+            // this item. Direct property mutation on array elements may not
+            // trigger DOM updates from async WebSocket callbacks.
+            this.messages.splice(lastIdx, 1, last);
           } else {
             this.messages.push({ id: ++msgId, role: 'agent', text: data.content, meta: '', streaming: true, tools: [] });
           }
@@ -718,17 +732,20 @@ function chatPage() {
           break;
 
         case 'tool_start':
-          var lastMsg = this.messages.length ? this.messages[this.messages.length - 1] : null;
+          var tsIdx = this.messages.length - 1;
+          var lastMsg = tsIdx >= 0 ? this.messages[tsIdx] : null;
           if (lastMsg && lastMsg.streaming) {
             if (!lastMsg.tools) lastMsg.tools = [];
             lastMsg.tools.push({ id: data.tool + '-' + Date.now(), name: data.tool, running: true, expanded: true, input: '', result: '', is_error: false });
+            this.messages.splice(tsIdx, 1, lastMsg);
           }
           this.scrollToBottom();
           break;
 
         case 'tool_end':
           // Tool call parsed by LLM — update tool card with input params
-          var lastMsg2 = this.messages.length ? this.messages[this.messages.length - 1] : null;
+          var teIdx = this.messages.length - 1;
+          var lastMsg2 = teIdx >= 0 ? this.messages[teIdx] : null;
           if (lastMsg2 && lastMsg2.tools) {
             for (var ti = lastMsg2.tools.length - 1; ti >= 0; ti--) {
               if (lastMsg2.tools[ti].name === data.tool && lastMsg2.tools[ti].running) {
@@ -736,12 +753,14 @@ function chatPage() {
                 break;
               }
             }
+            this.messages.splice(teIdx, 1, lastMsg2);
           }
           break;
 
         case 'tool_result':
           // Tool execution completed — update tool card with result
-          var lastMsg3 = this.messages.length ? this.messages[this.messages.length - 1] : null;
+          var trIdx = this.messages.length - 1;
+          var lastMsg3 = trIdx >= 0 ? this.messages[trIdx] : null;
           if (lastMsg3 && lastMsg3.tools) {
             for (var ri = lastMsg3.tools.length - 1; ri >= 0; ri--) {
               if (lastMsg3.tools[ri].name === data.tool && lastMsg3.tools[ri].running) {
@@ -770,6 +789,7 @@ function chatPage() {
                 break;
               }
             }
+            this.messages.splice(trIdx, 1, lastMsg3);
           }
           this.scrollToBottom();
           break;

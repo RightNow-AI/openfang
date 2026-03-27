@@ -653,7 +653,20 @@ impl LlmDriver for GeminiDriver {
                 return Err(LlmError::Api { status, message });
             }
 
-            // Parse SSE stream
+            // Parse SSE stream — process line-by-line like the OpenAI driver.
+            //
+            // Gemini's `streamGenerateContent?alt=sse` endpoint sends
+            // standard SSE: each event is a `data: {...}` line followed by
+            // a blank line.  The previous implementation looked for `\n\n`
+            // as the event delimiter, but many HTTP responses use `\r\n`
+            // line endings, so the actual delimiter is `\r\n\r\n` which
+            // `find("\n\n")` never matches — causing the entire stream to
+            // be silently buffered without extracting any events (zero
+            // TextDelta emissions → empty response → infinite retry loop).
+            //
+            // Fix: process the buffer one line at a time (splitting on
+            // `\n` and stripping trailing `\r`).  A `data:` line is
+            // parsed immediately.  Empty/blank lines are simply skipped.
             let mut buffer = String::new();
             let mut text_content = String::new();
             // Thought signature for accumulated text content (last one wins)
@@ -662,22 +675,32 @@ impl LlmDriver for GeminiDriver {
             let mut fn_calls: Vec<(String, serde_json::Value, Option<String>)> = Vec::new();
             let mut finish_reason: Option<String> = None;
             let mut usage = TokenUsage::default();
+            let mut chunk_count: u32 = 0;
+            let mut sse_line_count: u32 = 0;
 
             let mut byte_stream = resp.bytes_stream();
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
+                chunk_count += 1;
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-                // Process complete SSE events (delimited by \n\n or \r\n\r\n)
-                while let Some(pos) = buffer.find("\n\n") {
-                    let event_text = buffer[..pos].to_string();
-                    buffer = buffer[pos + 2..].to_string();
+                // Process complete lines (handle both \r\n and \n endings)
+                while let Some(pos) = buffer.find('\n') {
+                    let line = buffer[..pos].trim_end().to_string();
+                    buffer = buffer[pos + 1..].to_string();
 
-                    // Extract the data line (handle both "data: " and "data:" formats)
-                    let data = event_text
-                        .lines()
-                        .find_map(|line| line.strip_prefix("data:").map(|d| d.trim_start()))
-                        .unwrap_or("");
+                    // Skip empty lines and SSE comments
+                    if line.is_empty() || line.starts_with(':') {
+                        continue;
+                    }
+
+                    sse_line_count += 1;
+
+                    // Extract the data payload (handle both "data: " and "data:" formats)
+                    let data = match line.strip_prefix("data:") {
+                        Some(d) => d.trim_start(),
+                        None => continue,
+                    };
 
                     if data.is_empty() {
                         continue;
@@ -685,7 +708,14 @@ impl LlmDriver for GeminiDriver {
 
                     let json: GeminiResponse = match serde_json::from_str(data) {
                         Ok(v) => v,
-                        Err(_) => continue,
+                        Err(e) => {
+                            debug!(
+                                error = %e,
+                                data_preview = &data[..data.len().min(200)],
+                                "Failed to parse Gemini SSE data line"
+                            );
+                            continue;
+                        }
                     };
 
                     // Extract usage from each chunk (last one wins)
@@ -766,6 +796,121 @@ impl LlmDriver for GeminiDriver {
                         }
                     }
                 }
+            }
+
+            // Process any remaining data left in the buffer after the stream
+            // ends (e.g. final chunk not terminated by a newline).
+            let remaining = buffer.trim();
+            if !remaining.is_empty() {
+                if let Some(data) = remaining.strip_prefix("data:") {
+                    let data = data.trim();
+                    if !data.is_empty() {
+                        if let Ok(json) = serde_json::from_str::<GeminiResponse>(data) {
+                            if let Some(ref u) = json.usage_metadata {
+                                usage.input_tokens = u.prompt_token_count;
+                                usage.output_tokens = u.candidates_token_count;
+                            }
+                            for candidate in &json.candidates {
+                                if let Some(fr) = &candidate.finish_reason {
+                                    finish_reason = Some(fr.clone());
+                                }
+                                if let Some(ref content) = candidate.content {
+                                    for part in &content.parts {
+                                        match part {
+                                            GeminiPart::Text {
+                                                text,
+                                                thought_signature,
+                                            } => {
+                                                if !text.is_empty() {
+                                                    text_content.push_str(text);
+                                                    let _ = tx
+                                                        .send(StreamEvent::TextDelta {
+                                                            text: text.clone(),
+                                                        })
+                                                        .await;
+                                                }
+                                                if thought_signature.is_some() {
+                                                    text_thought_sig = thought_signature.clone();
+                                                }
+                                            }
+                                            GeminiPart::FunctionCall {
+                                                function_call,
+                                                thought_signature,
+                                            } => {
+                                                let id = format!(
+                                                    "call_{}",
+                                                    uuid::Uuid::new_v4().simple()
+                                                );
+                                                let _ = tx
+                                                    .send(StreamEvent::ToolUseStart {
+                                                        id: id.clone(),
+                                                        name: function_call.name.clone(),
+                                                    })
+                                                    .await;
+                                                let args_str =
+                                                    serde_json::to_string(&function_call.args)
+                                                        .unwrap_or_default();
+                                                let _ = tx
+                                                    .send(StreamEvent::ToolInputDelta {
+                                                        text: args_str,
+                                                    })
+                                                    .await;
+                                                let _ = tx
+                                                    .send(StreamEvent::ToolUseEnd {
+                                                        id,
+                                                        name: function_call.name.clone(),
+                                                        input: function_call.args.clone(),
+                                                    })
+                                                    .await;
+                                                fn_calls.push((
+                                                    function_call.name.clone(),
+                                                    function_call.args.clone(),
+                                                    thought_signature.clone(),
+                                                ));
+                                            }
+                                            GeminiPart::Thought { ref text, .. } => {
+                                                if !text.is_empty() {
+                                                    let _ = tx
+                                                        .send(StreamEvent::ThinkingDelta {
+                                                            text: text.clone(),
+                                                        })
+                                                        .await;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Log stream summary for diagnostics (mirrors OpenAI driver)
+            let is_empty_stream = text_content.is_empty()
+                && fn_calls.is_empty()
+                && usage.input_tokens == 0
+                && usage.output_tokens == 0;
+            if is_empty_stream {
+                warn!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    finish = ?finish_reason,
+                    buffer_remaining = buffer.len(),
+                    "Gemini SSE stream returned empty: 0 content, 0 tokens — likely a silently failed request"
+                );
+            } else {
+                debug!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    text_len = text_content.len(),
+                    tool_count = fn_calls.len(),
+                    finish = ?finish_reason,
+                    input_tokens = usage.input_tokens,
+                    output_tokens = usage.output_tokens,
+                    "Gemini SSE stream completed"
+                );
             }
 
             // Build final response
