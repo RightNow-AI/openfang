@@ -3510,6 +3510,7 @@ fn cmd_skill_install(source: &str) {
                             std::process::exit(1);
                         }
                         println!("Installed OpenClaw skill: {}", manifest.skill.name);
+                        notify_daemon_skill_reload();
                     }
                     Err(e) => {
                         eprintln!("Failed to convert OpenClaw skill: {e}");
@@ -3539,6 +3540,7 @@ fn cmd_skill_install(source: &str) {
             "Installed skill: {} v{}",
             manifest.skill.name, manifest.skill.version
         );
+        notify_daemon_skill_reload();
     } else if source.starts_with("https://")
         || source.starts_with("http://")
         || source.starts_with("git@")
@@ -3588,6 +3590,7 @@ fn cmd_skill_install(source: &str) {
                             std::process::exit(1);
                         }
                         println!("Installed OpenClaw skill: {}", manifest.skill.name);
+                        notify_daemon_skill_reload();
                     }
                     Err(e) => {
                         eprintln!("Failed to convert OpenClaw skill: {e}");
@@ -3616,6 +3619,7 @@ fn cmd_skill_install(source: &str) {
             "Installed skill: {} v{}",
             manifest.skill.name, manifest.skill.version
         );
+        notify_daemon_skill_reload();
     } else {
         // Remote install from FangHub
         println!("Installing {source} from FangHub...");
@@ -3624,12 +3628,34 @@ fn cmd_skill_install(source: &str) {
             openfang_skills::marketplace::MarketplaceConfig::default(),
         );
         match rt.block_on(client.install(source, &skills_dir)) {
-            Ok(version) => println!("Installed {source} {version}"),
+            Ok(version) => {
+                println!("Installed {source} {version}");
+                notify_daemon_skill_reload();
+            }
             Err(e) => {
                 eprintln!("Failed to install skill: {e}");
                 std::process::exit(1);
             }
         }
+    }
+}
+
+/// Notify the running daemon to hot-reload its skill registry after a CLI install.
+///
+/// If the daemon is not running, this is a no-op with a hint to the user.
+fn notify_daemon_skill_reload() {
+    if let Some(base) = find_daemon() {
+        let client = daemon_client();
+        match client.post(format!("{base}/api/skills/reload")).send() {
+            Ok(resp) if resp.status().is_success() => {
+                ui::step("Daemon notified — skill registry reloaded.");
+            }
+            _ => {
+                ui::check_warn("Could not notify daemon. Restart with: openfang restart");
+            }
+        }
+    } else {
+        ui::hint("Start the daemon to make this skill available to agents: openfang start");
     }
 }
 

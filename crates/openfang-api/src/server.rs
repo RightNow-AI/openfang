@@ -345,6 +345,10 @@ pub async fn build_router(
             axum::routing::post(routes::uninstall_skill),
         )
         .route(
+            "/api/skills/reload",
+            axum::routing::post(routes::reload_skills),
+        )
+        .route(
             "/api/marketplace/search",
             axum::routing::get(routes::marketplace_search),
         )

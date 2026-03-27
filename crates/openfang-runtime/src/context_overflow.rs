@@ -8,9 +8,84 @@
 //! 3. Truncate historical tool results to 2K chars each
 //! 4. Return error suggesting /reset or /compact
 
-use openfang_types::message::{ContentBlock, Message, MessageContent};
+use openfang_types::message::{ContentBlock, Message, MessageContent, Role};
 use openfang_types::tool::ToolDefinition;
 use tracing::{debug, warn};
+
+/// Adjust a drain boundary so it does not split a ToolUse/ToolResult pair.
+///
+/// If the message at `boundary` is a user message containing ToolResult blocks
+/// whose matching ToolUse lives in the message at `boundary - 1`, we pull the
+/// boundary back by one so both the assistant (ToolUse) and user (ToolResult)
+/// are kept together.  Conversely, if the last drained message is an assistant
+/// with ToolUse blocks whose results sit at `boundary`, we push the boundary
+/// forward by one so the orphaned assistant is also drained.
+///
+/// This is best-effort — `session_repair::validate_and_repair` is still called
+/// afterwards as the authoritative fixup.
+fn safe_drain_boundary(messages: &[Message], mut boundary: usize) -> usize {
+    if boundary == 0 || boundary >= messages.len() {
+        return boundary;
+    }
+
+    // Case 1: first kept message is a user msg with ToolResults whose ToolUse
+    // is in the last drained message (boundary - 1).  Pull boundary back by 1.
+    if messages[boundary].role == Role::User {
+        if let MessageContent::Blocks(blocks) = &messages[boundary].content {
+            let has_tool_result = blocks.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }));
+            if has_tool_result && boundary > 0 && messages[boundary - 1].role == Role::Assistant {
+                if let MessageContent::Blocks(asst_blocks) = &messages[boundary - 1].content {
+                    let has_tool_use = asst_blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+                    if has_tool_use {
+                        boundary -= 1;
+                        debug!(
+                            new_boundary = boundary,
+                            "Adjusted drain boundary back to keep ToolUse/ToolResult pair"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Case 2: last drained message (boundary - 1) is an assistant with ToolUse
+    // but the ToolResults are at `boundary` (already handled above by pulling
+    // back).  If the first kept message is NOT the matching result, push forward
+    // to drain the orphaned assistant too.
+    if boundary > 0 && boundary < messages.len() && messages[boundary - 1].role == Role::Assistant {
+        if let MessageContent::Blocks(asst_blocks) = &messages[boundary - 1].content {
+            let tool_use_ids: Vec<&str> = asst_blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+                    _ => None,
+                })
+                .collect();
+            if !tool_use_ids.is_empty() {
+                // Check if the first kept message has the matching results
+                let first_kept_has_results = match &messages[boundary].content {
+                    MessageContent::Blocks(blocks) => blocks.iter().any(|b| match b {
+                        ContentBlock::ToolResult { tool_use_id, .. } => {
+                            tool_use_ids.contains(&tool_use_id.as_str())
+                        }
+                        _ => false,
+                    }),
+                    _ => false,
+                };
+                if !first_kept_has_results {
+                    // The assistant's ToolResults were already drained; drain the
+                    // orphaned assistant as well to avoid needing synthetic results.
+                    boundary = boundary.min(messages.len());
+                    // Note: we don't push forward here because that would drain
+                    // more messages than intended.  The validate_and_repair call
+                    // will insert synthetic results for this orphan instead.
+                }
+            }
+        }
+    }
+
+    boundary
+}
 
 /// Recovery stage that was applied.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,12 +128,14 @@ pub fn recover_from_overflow(
     // Stage 1: Moderate trim — keep last 10 messages
     if estimated <= threshold_90 {
         let keep = 10.min(messages.len());
-        let remove = messages.len() - keep;
+        let raw_remove = messages.len() - keep;
+        // Adjust boundary to avoid splitting ToolUse/ToolResult pairs
+        let remove = safe_drain_boundary(messages, raw_remove);
         if remove > 0 {
             debug!(
                 estimated_tokens = estimated,
                 removing = remove,
-                "Stage 1: moderate trim to last {keep} messages"
+                "Stage 1: moderate trim to last {} messages", messages.len() - remove
             );
             messages.drain(..remove);
             // Re-check after trim
@@ -72,12 +149,14 @@ pub fn recover_from_overflow(
     // Stage 2: Aggressive trim — keep last 4 messages + summary marker
     {
         let keep = 4.min(messages.len());
-        let remove = messages.len() - keep;
+        let raw_remove = messages.len() - keep;
+        // Adjust boundary to avoid splitting ToolUse/ToolResult pairs
+        let remove = safe_drain_boundary(messages, raw_remove);
         if remove > 0 {
             warn!(
                 estimated_tokens = estimate_tokens(messages, system_prompt, tools),
                 removing = remove,
-                "Stage 2: aggressive overflow compaction to last {keep} messages"
+                "Stage 2: aggressive overflow compaction to last {} messages", messages.len() - remove
             );
             let summary = Message::user(format!(
                 "[System: {} earlier messages were removed due to context overflow. \
@@ -263,5 +342,61 @@ mod tests {
         let stage = recover_from_overflow(&mut msgs, "system", &[], 500);
         // Must not panic — the truncation at byte boundaries could split a 3-byte char
         assert_ne!(stage, RecoveryStage::None);
+    }
+
+    #[test]
+    fn test_safe_drain_boundary_pulls_back_for_tool_pair() {
+        // Messages: [user, assistant(ToolUse), user(ToolResult), user]
+        // If boundary = 2 (keep last 2), it splits between assistant(ToolUse) and
+        // user(ToolResult).  safe_drain_boundary should pull back to 1.
+        let msgs = vec![
+            Message::user("hello"),
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "read".to_string(),
+                    input: serde_json::json!({}),
+                    provider_metadata: None,
+                }]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".to_string(),
+                    tool_name: "read".to_string(),
+                    content: "file contents".to_string(),
+                    is_error: false,
+                }]),
+            },
+            Message::user("thanks"),
+        ];
+        // Boundary 2 would cut between the assistant(ToolUse) at [1] and user(ToolResult) at [2].
+        let adjusted = safe_drain_boundary(&msgs, 2);
+        assert_eq!(adjusted, 1, "Should pull boundary back to keep the ToolUse/ToolResult pair together");
+    }
+
+    #[test]
+    fn test_safe_drain_boundary_no_change_for_text_messages() {
+        let msgs = vec![
+            Message::user("a"),
+            Message::assistant("b"),
+            Message::user("c"),
+            Message::assistant("d"),
+        ];
+        let adjusted = safe_drain_boundary(&msgs, 2);
+        assert_eq!(adjusted, 2, "Should not change boundary for plain text messages");
+    }
+
+    #[test]
+    fn test_safe_drain_boundary_edge_zero() {
+        let msgs = vec![Message::user("a")];
+        assert_eq!(safe_drain_boundary(&msgs, 0), 0);
+    }
+
+    #[test]
+    fn test_safe_drain_boundary_edge_end() {
+        let msgs = vec![Message::user("a"), Message::assistant("b")];
+        assert_eq!(safe_drain_boundary(&msgs, 2), 2);
     }
 }

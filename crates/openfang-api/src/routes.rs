@@ -4103,6 +4103,15 @@ pub async fn uninstall_skill(
     }
 }
 
+/// POST /api/skills/reload — Hot-reload the skill registry from disk.
+///
+/// Called by the CLI after `openfang skill install` to notify the running
+/// daemon that new skill files were added to the skills directory (#752).
+pub async fn reload_skills(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    state.kernel.reload_skills();
+    Json(serde_json::json!({"status": "reloaded"}))
+}
+
 /// GET /api/marketplace/search — Search the FangHub marketplace.
 pub async fn marketplace_search(
     Query(params): Query<HashMap<String, String>>,
@@ -4421,6 +4430,9 @@ pub async fn clawhub_install(
 
     match client.install(&req.slug, &skills_dir).await {
         Ok(result) => {
+            // Hot-reload so agents see the new skill immediately (#752)
+            state.kernel.reload_skills();
+
             let warnings: Vec<serde_json::Value> = result
                 .warnings
                 .iter()
