@@ -420,6 +420,12 @@ pub async fn run_agent_loop(
             cb(LoopPhase::Thinking);
         }
 
+        // Stamp last_active before the (potentially long) LLM call so the
+        // heartbeat monitor doesn't flag us as unresponsive mid-iteration.
+        if let Some(k) = &kernel {
+            k.touch_agent(&agent_id_str);
+        }
+
         // Call LLM with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
         let (mut response, call_provider_latency_ms) = call_with_retry(

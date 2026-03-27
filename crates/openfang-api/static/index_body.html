@@ -201,7 +201,7 @@
   <!-- Main Content -->
   <main class="main-content">
     <!-- Mobile menu button -->
-    <button class="mobile-menu-btn btn btn-ghost" @click="mobileMenuOpen = !mobileMenuOpen" style="position:fixed;top:8px;left:8px;z-index:98;padding:6px 10px">
+    <button class="mobile-menu-btn btn btn-ghost" @click="mobileMenuOpen = !mobileMenuOpen">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
 
@@ -4312,7 +4312,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
       <div x-data="logsPage" @page-leave.window="destroy()">
         <div class="page-header">
           <h2>Logs</h2>
-          <div class="flex gap-2 items-center" x-show="tab === 'live'">
+          <div class="flex gap-2 items-center flex-wrap" x-show="tab === 'live'">
             <!-- Connection status indicator -->
             <span class="live-indicator" :class="connectionClass">
               <span class="live-dot"></span>
@@ -4988,7 +4988,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
         <div class="page-body" x-init="loadData()">
           <div x-show="loading" class="loading-state"><div class="spinner"></div><span>Loading runtime info...</span></div>
           <div x-show="!loading">
-            <div class="grid grid-cols-4" style="gap:16px;margin-bottom:24px">
+            <div class="grid grid-cols-4 gap-4 mb-6">
               <div class="card stat-card">
                 <div class="stat-label">Uptime</div>
                 <div class="stat-value" x-text="uptime"></div>
