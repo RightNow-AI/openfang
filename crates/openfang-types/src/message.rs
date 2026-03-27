@@ -142,8 +142,10 @@ impl MessageContent {
                     ContentBlock::Text { text, .. } => text.len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
                     ContentBlock::Thinking { thinking } => thinking.len(),
-                    ContentBlock::ToolUse { .. }
-                    | ContentBlock::Image { .. }
+                    ContentBlock::ToolUse { name, input, .. } => {
+                        name.len() + input.to_string().len()
+                    }
+                    ContentBlock::Image { .. }
                     | ContentBlock::Unknown => 0,
                 })
                 .sum(),
