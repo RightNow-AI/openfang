@@ -59,6 +59,8 @@ pub struct PromptContext {
     pub sender_id: Option<String>,
     /// Sender display name.
     pub sender_name: Option<String>,
+    /// Per-channel system prompt injected for this turn (appended, not replacing).
+    pub channel_system_prompt: Option<String>,
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -158,6 +160,15 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
             build_sender_section(ctx.sender_name.as_deref(), ctx.sender_id.as_deref())
         {
             sections.push(sender_line);
+        }
+    }
+
+    // Section 9.2 — Channel Instructions (per-channel system prompt, appended)
+    if !ctx.is_subagent {
+        if let Some(ref channel_prompt) = ctx.channel_system_prompt {
+            if !channel_prompt.trim().is_empty() {
+                sections.push(format!("## Channel Instructions\n{channel_prompt}"));
+            }
         }
     }
 

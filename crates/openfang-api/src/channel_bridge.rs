@@ -111,6 +111,23 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         Ok(result.response)
     }
 
+    async fn send_message_with_channel_prompt(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        channel_prompt: &str,
+    ) -> Result<String, String> {
+        let result = self
+            .kernel
+            .send_message_with_channel_prompt(agent_id, message, channel_prompt)
+            .await
+            .map_err(|e| format!("{e}"))?;
+        if result.silent {
+            return Ok(String::new());
+        }
+        Ok(result.response)
+    }
+
     async fn find_agent_by_name(&self, name: &str) -> Result<Option<AgentId>, String> {
         Ok(self.kernel.registry.find_by_name(name).map(|e| e.id))
     }
