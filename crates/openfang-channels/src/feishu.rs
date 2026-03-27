@@ -1792,10 +1792,8 @@ mod tests {
 
     #[test]
     fn test_feishu_websocket_adapter_creation() {
-        let adapter = FeishuAdapter::new_websocket(
-            "cli_abc123".to_string(),
-            "app-secret-456".to_string(),
-        );
+        let adapter =
+            FeishuAdapter::new_websocket("cli_abc123".to_string(), "app-secret-456".to_string());
         assert_eq!(adapter.name(), "feishu");
         assert_eq!(adapter.connection_mode, FeishuConnectionMode::WebSocket);
         assert_eq!(adapter.webhook_port, 0); // not used in WS mode
@@ -1803,8 +1801,7 @@ mod tests {
 
     #[test]
     fn test_connection_mode_default_is_webhook() {
-        let adapter =
-            FeishuAdapter::new("cli_abc123".to_string(), "secret".to_string(), 9000);
+        let adapter = FeishuAdapter::new("cli_abc123".to_string(), "secret".to_string(), 9000);
         assert_eq!(adapter.connection_mode, FeishuConnectionMode::Webhook);
     }
 
@@ -1836,14 +1833,32 @@ mod tests {
     #[test]
     fn test_combine_payload_multi_part() {
         let headers_seq0 = vec![
-            FeishuWsHeader { key: "sum".to_string(), value: "2".to_string() },
-            FeishuWsHeader { key: "seq".to_string(), value: "0".to_string() },
-            FeishuWsHeader { key: "message_id".to_string(), value: "msg1".to_string() },
+            FeishuWsHeader {
+                key: "sum".to_string(),
+                value: "2".to_string(),
+            },
+            FeishuWsHeader {
+                key: "seq".to_string(),
+                value: "0".to_string(),
+            },
+            FeishuWsHeader {
+                key: "message_id".to_string(),
+                value: "msg1".to_string(),
+            },
         ];
         let headers_seq1 = vec![
-            FeishuWsHeader { key: "sum".to_string(), value: "2".to_string() },
-            FeishuWsHeader { key: "seq".to_string(), value: "1".to_string() },
-            FeishuWsHeader { key: "message_id".to_string(), value: "msg1".to_string() },
+            FeishuWsHeader {
+                key: "sum".to_string(),
+                value: "2".to_string(),
+            },
+            FeishuWsHeader {
+                key: "seq".to_string(),
+                value: "1".to_string(),
+            },
+            FeishuWsHeader {
+                key: "message_id".to_string(),
+                value: "msg1".to_string(),
+            },
         ];
         let mut parts = HashMap::new();
         // First part — not yet complete
@@ -1856,10 +1871,14 @@ mod tests {
 
     #[test]
     fn test_ws_header_lookup() {
-        let headers = vec![
-            FeishuWsHeader { key: "service_id".to_string(), value: "svc_123".to_string() },
-        ];
-        assert_eq!(ws_header(&headers, "service_id"), Some("svc_123".to_string()));
+        let headers = vec![FeishuWsHeader {
+            key: "service_id".to_string(),
+            value: "svc_123".to_string(),
+        }];
+        assert_eq!(
+            ws_header(&headers, "service_id"),
+            Some("svc_123".to_string())
+        );
         assert_eq!(ws_header(&headers, "missing"), None);
     }
 
@@ -1881,8 +1900,14 @@ mod tests {
             service: 1,
             method: 2,
             headers: vec![
-                FeishuWsHeader { key: "log_id".to_string(), value: "log_abc".to_string() },
-                FeishuWsHeader { key: "type".to_string(), value: "event".to_string() },
+                FeishuWsHeader {
+                    key: "log_id".to_string(),
+                    value: "log_abc".to_string(),
+                },
+                FeishuWsHeader {
+                    key: "type".to_string(),
+                    value: "event".to_string(),
+                },
             ],
             payload: Some(vec![]),
             payload_encoding: None,

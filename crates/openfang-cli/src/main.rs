@@ -886,7 +886,6 @@ fn write_stdout_safe(msg: &str) {
 }
 
 fn main() {
-
     // Load ~/.openfang/.env into process environment (system env takes priority).
     dotenv::load_dotenv();
 

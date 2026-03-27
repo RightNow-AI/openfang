@@ -169,7 +169,8 @@ pub fn check_agents(registry: &AgentRegistry, config: &HeartbeatConfig) -> Vec<H
         // Periodic / Hand agents with long schedule intervals (e.g. 3600s) are
         // also covered: they sit idle between ticks and their `last_active` stays
         // near `created_at` until the first tick fires.
-        let never_active = (entry_ref.last_active - entry_ref.created_at).num_seconds() <= IDLE_GRACE_SECS;
+        let never_active =
+            (entry_ref.last_active - entry_ref.created_at).num_seconds() <= IDLE_GRACE_SECS;
 
         if never_active && entry_ref.state == AgentState::Running {
             debug!(
@@ -299,7 +300,12 @@ mod tests {
     use std::collections::HashMap;
 
     /// Helper: build a minimal AgentEntry for heartbeat tests.
-    fn make_entry(name: &str, state: AgentState, created_at: chrono::DateTime<Utc>, last_active: chrono::DateTime<Utc>) -> AgentEntry {
+    fn make_entry(
+        name: &str,
+        state: AgentState,
+        created_at: chrono::DateTime<Utc>,
+        last_active: chrono::DateTime<Utc>,
+    ) -> AgentEntry {
         AgentEntry {
             id: AgentId::new(),
             name: name.to_string(),
@@ -351,14 +357,22 @@ mod tests {
         // statuses because it was never genuinely active.
         let registry = crate::registry::AgentRegistry::new();
         let five_min_ago = Utc::now() - Duration::seconds(300);
-        let idle_agent = make_entry("idle-agent", AgentState::Running, five_min_ago, five_min_ago);
+        let idle_agent = make_entry(
+            "idle-agent",
+            AgentState::Running,
+            five_min_ago,
+            five_min_ago,
+        );
         registry.register(idle_agent).unwrap();
 
         let config = HeartbeatConfig::default(); // timeout = 180s
         let statuses = check_agents(&registry, &config);
 
         // The idle agent should be skipped entirely
-        assert!(statuses.is_empty(), "idle agent should be skipped by heartbeat");
+        assert!(
+            statuses.is_empty(),
+            "idle agent should be skipped by heartbeat"
+        );
     }
 
     #[test]
@@ -368,14 +382,22 @@ mod tests {
         let registry = crate::registry::AgentRegistry::new();
         let ten_min_ago = Utc::now() - Duration::seconds(600);
         let five_min_ago = Utc::now() - Duration::seconds(300);
-        let active_agent = make_entry("active-agent", AgentState::Running, ten_min_ago, five_min_ago);
+        let active_agent = make_entry(
+            "active-agent",
+            AgentState::Running,
+            ten_min_ago,
+            five_min_ago,
+        );
         registry.register(active_agent).unwrap();
 
         let config = HeartbeatConfig::default(); // timeout = 180s, inactive = ~300s
         let statuses = check_agents(&registry, &config);
 
         assert_eq!(statuses.len(), 1);
-        assert!(statuses[0].unresponsive, "active agent past timeout should be unresponsive");
+        assert!(
+            statuses[0].unresponsive,
+            "active agent past timeout should be unresponsive"
+        );
     }
 
     #[test]
@@ -391,7 +413,10 @@ mod tests {
         let statuses = check_agents(&registry, &config);
 
         assert_eq!(statuses.len(), 1);
-        assert!(!statuses[0].unresponsive, "recently active agent should not be unresponsive");
+        assert!(
+            !statuses[0].unresponsive,
+            "recently active agent should not be unresponsive"
+        );
     }
 
     #[test]
@@ -400,14 +425,22 @@ mod tests {
         // even if it was never genuinely active.
         let registry = crate::registry::AgentRegistry::new();
         let five_min_ago = Utc::now() - Duration::seconds(300);
-        let crashed_agent = make_entry("crashed-idle", AgentState::Crashed, five_min_ago, five_min_ago);
+        let crashed_agent = make_entry(
+            "crashed-idle",
+            AgentState::Crashed,
+            five_min_ago,
+            five_min_ago,
+        );
         registry.register(crashed_agent).unwrap();
 
         let config = HeartbeatConfig::default();
         let statuses = check_agents(&registry, &config);
 
         assert_eq!(statuses.len(), 1);
-        assert!(statuses[0].unresponsive, "crashed agent should be marked unresponsive");
+        assert!(
+            statuses[0].unresponsive,
+            "crashed agent should be marked unresponsive"
+        );
     }
 
     #[test]

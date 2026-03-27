@@ -495,7 +495,10 @@ async fn test_bridge_manager_lifecycle() {
     assert_eq!(sent.len(), 5, "Expected 5 responses, got {}", sent.len());
 
     for (i, (_, text)) in sent.iter().enumerate() {
-        assert!(text.contains(&format!("message {i}")), "Expected 'message {i}' in: {text}");
+        assert!(
+            text.contains(&format!("message {i}")),
+            "Expected 'message {i}' in: {text}"
+        );
     }
 
     // Stop — should complete without hanging
@@ -544,11 +547,19 @@ async fn test_bridge_multiple_adapters() {
 
     let tg_sent = tg_ref.get_sent();
     assert_eq!(tg_sent.len(), 1);
-    assert!(tg_sent[0].1.contains("from telegram"), "Expected 'from telegram' in: {}", tg_sent[0].1);
+    assert!(
+        tg_sent[0].1.contains("from telegram"),
+        "Expected 'from telegram' in: {}",
+        tg_sent[0].1
+    );
 
     let dc_sent = dc_ref.get_sent();
     assert_eq!(dc_sent.len(), 1);
-    assert!(dc_sent[0].1.contains("from discord"), "Expected 'from discord' in: {}", dc_sent[0].1);
+    assert!(
+        dc_sent[0].1.contains("from discord"),
+        "Expected 'from discord' in: {}",
+        dc_sent[0].1
+    );
 
     manager.stop().await;
 }

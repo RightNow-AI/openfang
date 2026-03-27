@@ -545,15 +545,11 @@ impl LlmDriver for ClaudeCodeDriver {
                                             .join("")
                                     })
                                     .unwrap_or_default();
-                                let text_chunk =
-                                    if !chunk.is_empty() { chunk } else { nested };
+                                let text_chunk = if !chunk.is_empty() { chunk } else { nested };
                                 if !text_chunk.is_empty() {
                                     full_text.push_str(&text_chunk);
-                                    let _ = tx
-                                        .send(StreamEvent::TextDelta {
-                                            text: text_chunk,
-                                        })
-                                        .await;
+                                    let _ =
+                                        tx.send(StreamEvent::TextDelta { text: text_chunk }).await;
                                 }
                             }
                             "result" | "done" | "complete" => {

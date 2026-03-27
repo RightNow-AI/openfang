@@ -681,9 +681,8 @@ impl LlmDriver for OpenAIDriver {
 
             if let Some(calls) = choice.message.tool_calls {
                 for call in calls {
-                    let input: serde_json::Value =
-                        serde_json::from_str(&call.function.arguments)
-                            .unwrap_or_else(|_| serde_json::json!({}));
+                    let input: serde_json::Value = serde_json::from_str(&call.function.arguments)
+                        .unwrap_or_else(|_| serde_json::json!({}));
                     content.push(ContentBlock::ToolUse {
                         id: call.id.clone(),
                         name: call.function.name.clone(),
@@ -1150,7 +1149,10 @@ impl LlmDriver for OpenAIDriver {
                         }
 
                         // Reasoning/thinking content delta (DeepSeek-R1, Qwen3 via LM Studio/Ollama)
-                        if let Some(reasoning) = delta["reasoning_content"].as_str().or_else(|| delta["reasoning"].as_str()) {
+                        if let Some(reasoning) = delta["reasoning_content"]
+                            .as_str()
+                            .or_else(|| delta["reasoning"].as_str())
+                        {
                             if !reasoning.is_empty() {
                                 reasoning_content.push_str(reasoning);
                                 let _ = tx
@@ -1315,8 +1317,8 @@ impl LlmDriver for OpenAIDriver {
             }
 
             for (id, name, arguments) in &tool_accum {
-                let input: serde_json::Value = serde_json::from_str(arguments)
-                    .unwrap_or_else(|_| serde_json::json!({}));
+                let input: serde_json::Value =
+                    serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::json!({}));
                 content.push(ContentBlock::ToolUse {
                     id: id.clone(),
                     name: name.clone(),

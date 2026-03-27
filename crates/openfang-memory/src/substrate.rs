@@ -43,7 +43,11 @@ impl MemorySubstrate {
     /// When `memory_config.backend == "http"` and `http_url`/`http_token_env` are set,
     /// the semantic store routes `remember`/`recall` to the memory-api gateway.
     /// All other stores (KV, knowledge graph, sessions) remain local SQLite.
-    pub fn open(db_path: &Path, decay_rate: f32, memory_config: &MemoryConfig) -> OpenFangResult<Self> {
+    pub fn open(
+        db_path: &Path,
+        decay_rate: f32,
+        memory_config: &MemoryConfig,
+    ) -> OpenFangResult<Self> {
         let conn = Connection::open(db_path).map_err(|e| OpenFangError::Memory(e.to_string()))?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
@@ -70,13 +74,17 @@ impl MemorySubstrate {
     ) -> SemanticStore {
         #[cfg(feature = "http-memory")]
         if memory_config.backend == "http" {
-            if let (Some(url), Some(token_env)) = (&memory_config.http_url, &memory_config.http_token_env) {
+            if let (Some(url), Some(token_env)) =
+                (&memory_config.http_url, &memory_config.http_token_env)
+            {
                 match crate::http_client::MemoryApiClient::new(url, token_env) {
                     Ok(client) => {
                         // Best-effort health check on startup
                         match client.health_check() {
                             Ok(()) => info!(url = %url, "HTTP memory backend connected"),
-                            Err(e) => warn!(url = %url, error = %e, "HTTP memory backend health check failed, will retry on use"),
+                            Err(e) => {
+                                warn!(url = %url, error = %e, "HTTP memory backend health check failed, will retry on use")
+                            }
                         }
                         return SemanticStore::new_with_http(conn, client);
                     }

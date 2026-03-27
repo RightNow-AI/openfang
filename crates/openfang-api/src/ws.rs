@@ -1003,7 +1003,9 @@ fn map_stream_event(event: &StreamEvent, verbose: VerboseLevel) -> Option<serde_
             "id": id,
             "tool": name,
         })),
-        StreamEvent::ToolUseEnd { id, name, input, .. } if name == "canvas_present" => {
+        StreamEvent::ToolUseEnd {
+            id, name, input, ..
+        } if name == "canvas_present" => {
             let html = input.get("html").and_then(|v| v.as_str()).unwrap_or("");
             let title = input
                 .get("title")
@@ -1017,7 +1019,9 @@ fn map_stream_event(event: &StreamEvent, verbose: VerboseLevel) -> Option<serde_
                 "title": title,
             }))
         }
-        StreamEvent::ToolUseEnd { id, name, input, .. } => match verbose {
+        StreamEvent::ToolUseEnd {
+            id, name, input, ..
+        } => match verbose {
             VerboseLevel::Off => None,
             VerboseLevel::On => {
                 let input_preview: String = serde_json::to_string(input)

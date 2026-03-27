@@ -163,14 +163,7 @@ impl SemanticStore {
             }
             Err(e) => {
                 warn!(error = %e, "HTTP memory store failed, falling back to SQLite");
-                self.remember_sqlite(
-                    agent_id,
-                    content,
-                    source,
-                    scope,
-                    metadata.clone(),
-                    None,
-                )
+                self.remember_sqlite(agent_id, content, source, scope, metadata.clone(), None)
             }
         }
     }
@@ -446,17 +439,13 @@ impl SemanticStore {
                 let created_at = r
                     .created_at
                     .map(|ms| {
-                        chrono::DateTime::from_timestamp_millis(ms as i64)
-                            .unwrap_or_else(|| Utc::now())
+                        chrono::DateTime::from_timestamp_millis(ms as i64).unwrap_or_else(Utc::now)
                     })
-                    .unwrap_or_else(|| Utc::now());
+                    .unwrap_or_else(Utc::now);
 
                 MemoryFragment {
                     id: MemoryId::new(),
-                    agent_id: filter
-                        .as_ref()
-                        .and_then(|f| f.agent_id)
-                        .unwrap_or_else(AgentId::new),
+                    agent_id: filter.as_ref().and_then(|f| f.agent_id).unwrap_or_default(),
                     content: r.content,
                     embedding: None,
                     metadata: HashMap::new(),
@@ -470,7 +459,10 @@ impl SemanticStore {
             })
             .collect();
 
-        debug!(count = fragments.len(), "Recalled memories via HTTP backend");
+        debug!(
+            count = fragments.len(),
+            "Recalled memories via HTTP backend"
+        );
         Ok(fragments)
     }
 }

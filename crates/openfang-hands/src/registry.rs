@@ -382,9 +382,7 @@ impl HandRegistry {
         // Only non-optional requirements gate readiness.
         // Optional requirements (e.g. chromium for browser hand) are nice-to-have;
         // missing them results in "degraded" status but not "requirements not met".
-        let requirements_met = reqs
-            .iter()
-            .all(|(req, ok)| *ok || req.optional);
+        let requirements_met = reqs.iter().all(|(req, ok)| *ok || req.optional);
 
         // A hand is active if at least one instance is in Active status.
         let active = self

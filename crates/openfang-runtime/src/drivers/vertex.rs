@@ -449,7 +449,10 @@ fn convert_response(resp: VertexResponse) -> Result<CompletionResponse, LlmError
         for part in vertex_content.parts {
             match part {
                 VertexPart::Text { text } => {
-                    content.push(ContentBlock::Text { text, provider_metadata: None });
+                    content.push(ContentBlock::Text {
+                        text,
+                        provider_metadata: None,
+                    });
                 }
                 VertexPart::FunctionCall { function_call } => {
                     tool_calls.push(ToolCall {

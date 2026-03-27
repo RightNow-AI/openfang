@@ -166,7 +166,7 @@ mod tests {
         assert!(def.tools.contains(&"event_publish".to_string()));
         assert!(!def.settings.is_empty());
         assert!(!def.dashboard.metrics.is_empty());
-        assert_eq!(def.agent.max_iterations, Some(80));
+        assert_eq!(def.agent.max_iterations, Some(25));
     }
 
     #[test]
@@ -315,38 +315,112 @@ mod tests {
         assert_eq!(def.category, crate::HandCategory::Security);
         assert!(def.skill_content.is_some());
         // Required env vars
-        assert!(!def.requires.is_empty(), "infisical-sync must declare env var requirements");
+        assert!(
+            !def.requires.is_empty(),
+            "infisical-sync must declare env var requirements"
+        );
         let req_keys: Vec<&str> = def.requires.iter().map(|r| r.key.as_str()).collect();
-        assert!(req_keys.contains(&"INFISICAL_URL"), "must require INFISICAL_URL");
-        assert!(req_keys.contains(&"INFISICAL_CLIENT_ID"), "must require INFISICAL_CLIENT_ID");
-        assert!(req_keys.contains(&"INFISICAL_CLIENT_SECRET"), "must require INFISICAL_CLIENT_SECRET");
+        assert!(
+            req_keys.contains(&"INFISICAL_URL"),
+            "must require INFISICAL_URL"
+        );
+        assert!(
+            req_keys.contains(&"INFISICAL_CLIENT_ID"),
+            "must require INFISICAL_CLIENT_ID"
+        );
+        assert!(
+            req_keys.contains(&"INFISICAL_CLIENT_SECRET"),
+            "must require INFISICAL_CLIENT_SECRET"
+        );
         // Einstein scheduling tools
-        assert!(def.tools.contains(&"schedule_create".to_string()), "must have schedule_create");
-        assert!(def.tools.contains(&"schedule_list".to_string()), "must have schedule_list");
-        assert!(def.tools.contains(&"schedule_delete".to_string()), "must have schedule_delete");
+        assert!(
+            def.tools.contains(&"schedule_create".to_string()),
+            "must have schedule_create"
+        );
+        assert!(
+            def.tools.contains(&"schedule_list".to_string()),
+            "must have schedule_list"
+        );
+        assert!(
+            def.tools.contains(&"schedule_delete".to_string()),
+            "must have schedule_delete"
+        );
         // Memory tools
-        assert!(def.tools.contains(&"memory_store".to_string()), "must have memory_store");
-        assert!(def.tools.contains(&"memory_recall".to_string()), "must have memory_recall");
+        assert!(
+            def.tools.contains(&"memory_store".to_string()),
+            "must have memory_store"
+        );
+        assert!(
+            def.tools.contains(&"memory_recall".to_string()),
+            "must have memory_recall"
+        );
         // Knowledge graph tools
-        assert!(def.tools.contains(&"knowledge_add_entity".to_string()), "must have knowledge_add_entity");
-        assert!(def.tools.contains(&"knowledge_add_relation".to_string()), "must have knowledge_add_relation");
-        assert!(def.tools.contains(&"knowledge_query".to_string()), "must have knowledge_query");
+        assert!(
+            def.tools.contains(&"knowledge_add_entity".to_string()),
+            "must have knowledge_add_entity"
+        );
+        assert!(
+            def.tools.contains(&"knowledge_add_relation".to_string()),
+            "must have knowledge_add_relation"
+        );
+        assert!(
+            def.tools.contains(&"knowledge_query".to_string()),
+            "must have knowledge_query"
+        );
         // Event bus
-        assert!(def.tools.contains(&"event_publish".to_string()), "must have event_publish");
+        assert!(
+            def.tools.contains(&"event_publish".to_string()),
+            "must have event_publish"
+        );
         // Infisical-specific tools
-        assert!(def.tools.contains(&"shell_exec".to_string()), "must have shell_exec");
-        assert!(def.tools.contains(&"vault_set".to_string()), "must have vault_set");
-        assert!(def.tools.contains(&"vault_get".to_string()), "must have vault_get");
-        assert!(def.tools.contains(&"vault_list".to_string()), "must have vault_list");
-        assert!(def.tools.contains(&"vault_delete".to_string()), "must have vault_delete");
+        assert!(
+            def.tools.contains(&"shell_exec".to_string()),
+            "must have shell_exec"
+        );
+        assert!(
+            def.tools.contains(&"vault_set".to_string()),
+            "must have vault_set"
+        );
+        assert!(
+            def.tools.contains(&"vault_get".to_string()),
+            "must have vault_get"
+        );
+        assert!(
+            def.tools.contains(&"vault_list".to_string()),
+            "must have vault_list"
+        );
+        assert!(
+            def.tools.contains(&"vault_delete".to_string()),
+            "must have vault_delete"
+        );
         // Dashboard
-        assert!(!def.dashboard.metrics.is_empty(), "must have dashboard metrics");
-        let metric_keys: Vec<&str> = def.dashboard.metrics.iter().map(|m| m.memory_key.as_str()).collect();
-        assert!(metric_keys.contains(&"infisical_sync_secrets_count"), "must have secrets_count metric");
-        assert!(metric_keys.contains(&"infisical_sync_last_sync"), "must have last_sync metric");
+        assert!(
+            !def.dashboard.metrics.is_empty(),
+            "must have dashboard metrics"
+        );
+        let metric_keys: Vec<&str> = def
+            .dashboard
+            .metrics
+            .iter()
+            .map(|m| m.memory_key.as_str())
+            .collect();
+        assert!(
+            metric_keys.contains(&"infisical_sync_secrets_count"),
+            "must have secrets_count metric"
+        );
+        assert!(
+            metric_keys.contains(&"infisical_sync_last_sync"),
+            "must have last_sync metric"
+        );
         // Agent config
-        assert!(!def.agent.system_prompt.is_empty(), "must have system_prompt");
-        assert!(def.agent.temperature < 0.2, "security hand should use low temperature");
+        assert!(
+            !def.agent.system_prompt.is_empty(),
+            "must have system_prompt"
+        );
+        assert!(
+            def.agent.temperature < 0.2,
+            "security hand should use low temperature"
+        );
     }
 
     #[test]

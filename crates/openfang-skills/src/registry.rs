@@ -636,7 +636,12 @@ input_schema = { type = "object" }
         registry.load_all().unwrap();
         assert_eq!(registry.count(), 1);
         assert_eq!(
-            registry.get("shared-skill").unwrap().manifest.skill.description,
+            registry
+                .get("shared-skill")
+                .unwrap()
+                .manifest
+                .skill
+                .description,
             "Global version"
         );
 
@@ -645,9 +650,18 @@ input_schema = { type = "object" }
         snapshot.load_workspace_skills(ws_dir.path()).unwrap();
 
         // The workspace version must override the global version
-        assert_eq!(snapshot.count(), 1, "Duplicate should be overwritten, not added");
         assert_eq!(
-            snapshot.get("shared-skill").unwrap().manifest.skill.description,
+            snapshot.count(),
+            1,
+            "Duplicate should be overwritten, not added"
+        );
+        assert_eq!(
+            snapshot
+                .get("shared-skill")
+                .unwrap()
+                .manifest
+                .skill
+                .description,
             "Workspace override version",
             "Workspace skill must override global skill (#808)"
         );

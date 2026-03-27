@@ -1835,7 +1835,10 @@ impl OpenFangKernel {
                 granted_tools: tools.iter().map(|t| t.name.clone()).collect(),
                 recalled_memories: vec![],
                 skill_summary: Self::build_skill_summary_from(&skill_snapshot, &manifest.skills),
-                skill_prompt_context: Self::collect_prompt_context_from(&skill_snapshot, &manifest.skills),
+                skill_prompt_context: Self::collect_prompt_context_from(
+                    &skill_snapshot,
+                    &manifest.skills,
+                ),
                 mcp_summary: if mcp_tool_count > 0 {
                     self.build_mcp_summary(&manifest.mcp_servers)
                 } else {
@@ -2393,7 +2396,10 @@ impl OpenFangKernel {
                 granted_tools: tools.iter().map(|t| t.name.clone()).collect(),
                 recalled_memories: vec![], // Recalled in agent_loop, not here
                 skill_summary: Self::build_skill_summary_from(&skill_snapshot, &manifest.skills),
-                skill_prompt_context: Self::collect_prompt_context_from(&skill_snapshot, &manifest.skills),
+                skill_prompt_context: Self::collect_prompt_context_from(
+                    &skill_snapshot,
+                    &manifest.skills,
+                ),
                 mcp_summary: if mcp_tool_count > 0 {
                     self.build_mcp_summary(&manifest.mcp_servers)
                 } else {
@@ -5180,10 +5186,18 @@ impl OpenFangKernel {
             .unwrap_or_default();
 
         if !tool_allowlist.is_empty() {
-            all_tools.retain(|t| tool_allowlist.iter().any(|a| a.to_lowercase() == t.name.to_lowercase()));
+            all_tools.retain(|t| {
+                tool_allowlist
+                    .iter()
+                    .any(|a| a.to_lowercase() == t.name.to_lowercase())
+            });
         }
         if !tool_blocklist.is_empty() {
-            all_tools.retain(|t| !tool_blocklist.iter().any(|b| b.to_lowercase() == t.name.to_lowercase()));
+            all_tools.retain(|t| {
+                !tool_blocklist
+                    .iter()
+                    .any(|b| b.to_lowercase() == t.name.to_lowercase())
+            });
         }
 
         // Step 5: Remove shell_exec if exec_policy denies it.
