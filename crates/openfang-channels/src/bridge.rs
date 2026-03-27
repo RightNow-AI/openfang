@@ -121,6 +121,19 @@ pub trait ChannelBridgeHandle: Send + Sync {
         self.send_message(agent_id, &text).await
     }
 
+    /// Send a message with a per-channel system prompt appended for this turn.
+    ///
+    /// Default implementation ignores the channel prompt and falls back to `send_message()`.
+    async fn send_message_with_channel_prompt(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        channel_prompt: &str,
+    ) -> Result<String, String> {
+        let _ = channel_prompt;
+        self.send_message(agent_id, message).await
+    }
+
     /// Find an agent by name, returning its ID.
     async fn find_agent_by_name(&self, name: &str) -> Result<Option<AgentId>, String>;
 
@@ -964,8 +977,16 @@ async fn dispatch_message(
         text.clone()
     };
 
-    // Send to agent and relay response
-    let result = handle.send_message(agent_id, &prefixed_text).await;
+    // Send to agent and relay response (with optional per-channel system prompt)
+    let result = if let Some(ref channel_prompt) =
+        overrides.as_ref().and_then(|o| o.system_prompt.clone())
+    {
+        handle
+            .send_message_with_channel_prompt(agent_id, &prefixed_text, channel_prompt)
+            .await
+    } else {
+        handle.send_message(agent_id, &prefixed_text).await
+    };
 
     // Stop the typing refresh now that we have a response
     typing_task.abort();

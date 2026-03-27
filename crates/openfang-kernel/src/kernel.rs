@@ -1540,6 +1540,56 @@ impl OpenFangKernel {
         sender_id: Option<String>,
         sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
+        self.send_message_inner(
+            agent_id,
+            message,
+            kernel_handle,
+            content_blocks,
+            sender_id,
+            sender_name,
+            None,
+        )
+        .await
+    }
+
+    /// Send a message with a per-channel system prompt appended for this turn only.
+    ///
+    /// The channel prompt is threaded through to the prompt builder via function
+    /// parameters, avoiding global state and the associated race conditions.
+    pub async fn send_message_with_channel_prompt(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        channel_prompt: &str,
+    ) -> KernelResult<AgentLoopResult> {
+        let handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+        self.send_message_inner(
+            agent_id,
+            message,
+            handle,
+            None,
+            None,
+            None,
+            Some(channel_prompt.to_string()),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_message_inner(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+        channel_system_prompt: Option<String>,
+    ) -> KernelResult<AgentLoopResult> {
         // Acquire per-agent lock to serialize concurrent messages for the same agent.
         // This prevents session corruption when multiple messages arrive in quick
         // succession (e.g. rapid voice messages via Telegram). Messages for different
@@ -1576,6 +1626,7 @@ impl OpenFangKernel {
                 content_blocks,
                 sender_id,
                 sender_name,
+                channel_system_prompt,
             )
             .await
         };
@@ -1828,6 +1879,7 @@ impl OpenFangKernel {
                 })
                 .collect();
 
+            // Streaming path does not currently support per-channel system prompts.
             let prompt_ctx = openfang_runtime::prompt_builder::PromptContext {
                 agent_name: manifest.name.clone(),
                 agent_description: manifest.description.clone(),
@@ -1903,6 +1955,7 @@ impl OpenFangKernel {
                 ),
                 sender_id,
                 sender_name,
+                channel_system_prompt: None,
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -2259,6 +2312,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        channel_system_prompt: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2464,6 +2518,7 @@ impl OpenFangKernel {
                 ),
                 sender_id,
                 sender_name,
+                channel_system_prompt: channel_system_prompt.clone(),
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);

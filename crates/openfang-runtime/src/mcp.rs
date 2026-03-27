@@ -1,20 +1,16 @@
 //! MCP (Model Context Protocol) client — connect to external MCP servers.
 //!
-//! Uses the official `rmcp` SDK for protocol handling.  Supports:
-//! - **stdio**: subprocess with JSON-RPC over stdin/stdout
-//! - **sse**: deprecated HTTP+SSE transport (protocol version 2024-11-05)
-//! - **http**: Streamable HTTP transport (protocol version 2025-03-26+)
+//! MCP uses JSON-RPC 2.0 over stdio or HTTP+SSE. This module lets OpenFang
+//! agents use tools from any MCP server (100+ available: GitHub, filesystem,
+//! databases, APIs, etc.).
 //!
 //! All MCP tools are namespaced with `mcp_{server}_{tool}` to prevent collisions.
 
-use http::{HeaderName, HeaderValue};
 use openfang_types::tool::ToolDefinition;
-use rmcp::model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation};
-use rmcp::service::RunningService;
-use rmcp::{RoleClient, ServiceExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, info};
 
 // ---------------------------------------------------------------------------
@@ -34,12 +30,6 @@ pub struct McpServerConfig {
     /// Environment variables to pass through to the subprocess (sandboxed).
     #[serde(default)]
     pub env: Vec<String>,
-    /// Extra HTTP headers to send with every SSE / Streamable-HTTP request.
-    /// Each entry is `"Header-Name: value"`.  Useful for authentication
-    /// (`Authorization: Bearer <token>`), API keys (`X-Api-Key: ...`),
-    /// or any custom headers required by a remote MCP server.
-    #[serde(default)]
-    pub headers: Vec<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -56,14 +46,8 @@ pub enum McpTransport {
         #[serde(default)]
         args: Vec<String>,
     },
-    /// Deprecated HTTP+SSE transport (protocol version 2024-11-05).
-    /// Uses POST for sending and SSE for receiving.
+    /// HTTP Server-Sent Events.
     Sse { url: String },
-    /// Streamable HTTP transport (MCP 2025-03-26+).
-    /// Single endpoint, client MUST send Accept: application/json, text/event-stream.
-    /// Server responds with either JSON or SSE stream.
-    /// Supports Mcp-Session-Id for session management.
-    Http { url: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -80,9 +64,59 @@ pub struct McpConnection {
     /// Needed because `normalize_name` replaces hyphens with underscores,
     /// but the server expects the original name (e.g. "list-connections").
     original_names: HashMap<String, String>,
-    /// The rmcp client handle — type-erased because the concrete type
-    /// depends on which transport was used (stdio vs HTTP).
-    client: RunningService<RoleClient, ClientInfo>,
+    /// Transport handle for sending requests.
+    transport: McpTransportHandle,
+    /// Next JSON-RPC request ID.
+    next_id: u64,
+}
+
+/// Transport handle — abstraction over stdio subprocess or HTTP.
+enum McpTransportHandle {
+    Stdio {
+        child: Box<tokio::process::Child>,
+        stdin: tokio::process::ChildStdin,
+        stdout: BufReader<tokio::process::ChildStdout>,
+    },
+    Sse {
+        client: reqwest::Client,
+        url: String,
+    },
+}
+
+/// JSON-RPC 2.0 request.
+#[derive(Serialize)]
+struct JsonRpcRequest {
+    jsonrpc: &'static str,
+    id: u64,
+    method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<serde_json::Value>,
+}
+
+/// JSON-RPC 2.0 response.
+#[derive(Deserialize)]
+struct JsonRpcResponse {
+    #[allow(dead_code)]
+    jsonrpc: String,
+    #[allow(dead_code)]
+    id: Option<u64>,
+    result: Option<serde_json::Value>,
+    error: Option<JsonRpcError>,
+}
+
+/// JSON-RPC 2.0 error object.
+#[derive(Debug, Deserialize)]
+pub struct JsonRpcError {
+    pub code: i64,
+    pub message: String,
+    #[allow(dead_code)]
+    pub data: Option<serde_json::Value>,
+}
+
+impl std::fmt::Display for JsonRpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JSON-RPC error {}: {}", self.code, self.message)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -92,17 +126,13 @@ pub struct McpConnection {
 impl McpConnection {
     /// Connect to an MCP server, perform handshake, and discover tools.
     pub async fn connect(config: McpServerConfig) -> Result<Self, String> {
-        let client_info = ClientInfo::new(
-            ClientCapabilities::default(),
-            Implementation::new("openfang", env!("CARGO_PKG_VERSION")),
-        );
-
-        let client = match &config.transport {
+        let transport = match &config.transport {
             McpTransport::Stdio { command, args } => {
-                Self::connect_stdio(command, args, &config.env, client_info).await?
+                Self::connect_stdio(command, args, &config.env).await?
             }
-            McpTransport::Sse { url } | McpTransport::Http { url } => {
-                Self::connect_http(url, &config.headers, client_info).await?
+            McpTransport::Sse { url } => {
+                // SSRF check: reject private/localhost URLs unless explicitly configured
+                Self::connect_sse(url).await?
             }
         };
 
@@ -110,8 +140,12 @@ impl McpConnection {
             config,
             tools: Vec::new(),
             original_names: HashMap::new(),
-            client,
+            transport,
+            next_id: 1,
         };
+
+        // Initialize handshake
+        conn.initialize().await?;
 
         // Discover tools
         conn.discover_tools().await?;
@@ -125,34 +159,76 @@ impl McpConnection {
         Ok(conn)
     }
 
+    /// Send the MCP `initialize` handshake.
+    async fn initialize(&mut self) -> Result<(), String> {
+        let params = serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "openfang",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        });
+
+        let response = self.send_request("initialize", Some(params)).await?;
+
+        if let Some(result) = response {
+            debug!(
+                server = %self.config.name,
+                server_info = %result,
+                "MCP initialize response"
+            );
+        }
+
+        // Send initialized notification (no response expected)
+        self.send_notification("notifications/initialized", None)
+            .await?;
+
+        Ok(())
+    }
+
     /// Discover available tools via `tools/list`.
     async fn discover_tools(&mut self) -> Result<(), String> {
-        let tools = self
-            .client
-            .list_all_tools()
-            .await
-            .map_err(|e| format!("Failed to list MCP tools: {e}"))?;
+        let response = self.send_request("tools/list", None).await?;
 
-        let server_name = &self.config.name;
-        for tool in &tools {
-            let raw_name = &tool.name;
-            let description = tool.description.as_deref().unwrap_or("");
+        if let Some(result) = response {
+            if let Some(tools_array) = result.get("tools").and_then(|t| t.as_array()) {
+                let server_name = &self.config.name;
+                for tool in tools_array {
+                    let raw_name = tool["name"].as_str().unwrap_or("unnamed");
+                    let description = tool["description"].as_str().unwrap_or("");
+                    let input_schema = tool
+                        .get("inputSchema")
+                        .cloned()
+                        .and_then(|v| {
+                            // Ensure input_schema is a JSON object. MCP servers may
+                            // return it as a string, null, or omit it entirely.
+                            match &v {
+                                serde_json::Value::Object(_) => Some(v),
+                                serde_json::Value::String(s) => {
+                                    serde_json::from_str::<serde_json::Value>(s)
+                                        .ok()
+                                        .filter(|p| p.is_object())
+                                }
+                                _ => None,
+                            }
+                        })
+                        .unwrap_or(serde_json::json!({"type": "object"}));
 
-            let input_schema = serde_json::to_value(&tool.input_schema)
-                .unwrap_or(serde_json::json!({"type": "object"}));
+                    // Namespace: mcp_{server}_{tool}
+                    let namespaced = format_mcp_tool_name(server_name, raw_name);
 
-            // Namespace: mcp_{server}_{tool}
-            let namespaced = format_mcp_tool_name(server_name, raw_name);
+                    // Store original name so we can send it back to the server
+                    self.original_names
+                        .insert(namespaced.clone(), raw_name.to_string());
 
-            // Store original name so we can send it back to the server
-            self.original_names
-                .insert(namespaced.clone(), raw_name.to_string());
-
-            self.tools.push(ToolDefinition {
-                name: namespaced,
-                description: format!("[MCP:{server_name}] {description}"),
-                input_schema,
-            });
+                    self.tools.push(ToolDefinition {
+                        name: namespaced,
+                        description: format!("[MCP:{server_name}] {description}"),
+                        input_schema,
+                    });
+                }
+            }
         }
 
         Ok(())
@@ -167,38 +243,40 @@ impl McpConnection {
         arguments: &serde_json::Value,
     ) -> Result<String, String> {
         // Look up the original tool name from the server (preserves hyphens etc.)
-        let raw_name: String = self
+        let raw_name = self
             .original_names
             .get(name)
-            .cloned()
-            .or_else(|| strip_mcp_prefix(&self.config.name, name).map(|s| s.to_string()))
-            .unwrap_or_else(|| name.to_string());
+            .map(|s| s.as_str())
+            .or_else(|| strip_mcp_prefix(&self.config.name, name))
+            .unwrap_or(name);
 
-        let args = arguments.as_object().cloned().unwrap_or_default();
+        let params = serde_json::json!({
+            "name": raw_name,
+            "arguments": arguments,
+        });
 
-        debug!(tool = %raw_name, server = %self.config.name, "MCP tool call");
+        let response = self.send_request("tools/call", Some(params)).await?;
 
-        let params = CallToolRequestParams::new(raw_name).with_arguments(args);
-
-        let result = self
-            .client
-            .call_tool(params)
-            .await
-            .map_err(|e| format!("MCP tool call failed: {e}"))?;
-
-        // Extract text content from the response.
-        // `Content` is `Annotated<RawContent>` which Derefs to `RawContent`.
-        let texts: Vec<&str> = result
-            .content
-            .iter()
-            .filter_map(|item| item.as_text().map(|tc| tc.text.as_str()))
-            .collect();
-
-        if texts.is_empty() {
-            // Fallback: serialize the entire result
-            Ok(serde_json::to_string(&result).unwrap_or_default())
-        } else {
-            Ok(texts.join("\n"))
+        match response {
+            Some(result) => {
+                // Extract text content from the response
+                if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
+                    let texts: Vec<&str> = content
+                        .iter()
+                        .filter_map(|item| {
+                            if item["type"].as_str() == Some("text") {
+                                item["text"].as_str()
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    Ok(texts.join("\n"))
+                } else {
+                    Ok(result.to_string())
+                }
+            }
+            None => Err("No result from MCP tools/call".to_string()),
         }
     }
 
@@ -212,124 +290,299 @@ impl McpConnection {
         &self.config.name
     }
 
-    // -- Transport constructors -----------------------------------------------
+    // --- Transport helpers ---
 
-    /// Connect using stdio transport (subprocess).
+    async fn send_request(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id,
+            method: method.to_string(),
+            params,
+        };
+
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| format!("Failed to serialize request: {e}"))?;
+
+        debug!(method, id, "MCP request");
+
+        match &mut self.transport {
+            McpTransportHandle::Stdio { stdin, stdout, .. } => {
+                // Write request + newline
+                stdin
+                    .write_all(request_json.as_bytes())
+                    .await
+                    .map_err(|e| format!("Failed to write to MCP stdin: {e}"))?;
+                stdin
+                    .write_all(b"\n")
+                    .await
+                    .map_err(|e| format!("Failed to write newline: {e}"))?;
+                stdin
+                    .flush()
+                    .await
+                    .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+
+                // Read response lines until we find one matching our request ID.
+                // MCP servers may send notifications or log lines before the
+                // actual response.
+                let timeout_dur = tokio::time::Duration::from_secs(self.config.timeout_secs);
+                let deadline = tokio::time::Instant::now() + timeout_dur;
+
+                loop {
+                    let mut line = String::new();
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() {
+                        return Err("MCP request timed out".to_string());
+                    }
+                    match tokio::time::timeout(remaining, stdout.read_line(&mut line)).await {
+                        Ok(Ok(0)) => return Err("MCP server closed connection".to_string()),
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => return Err(format!("Failed to read MCP response: {e}")),
+                        Err(_) => return Err("MCP request timed out".to_string()),
+                    }
+
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    // Try to parse as JSON-RPC response
+                    let parsed: Result<JsonRpcResponse, _> = serde_json::from_str(trimmed);
+                    match parsed {
+                        Ok(response) if response.id == Some(id) => {
+                            if let Some(err) = response.error {
+                                return Err(format!("{err}"));
+                            }
+                            return Ok(response.result);
+                        }
+                        Ok(_other) => {
+                            // Response for a different ID or notification — skip
+                            debug!("MCP: skipping non-matching response line");
+                            continue;
+                        }
+                        Err(_) => {
+                            // Not valid JSON-RPC — skip (could be a log line)
+                            debug!("MCP: skipping non-JSON line from server");
+                            continue;
+                        }
+                    }
+                }
+            }
+            McpTransportHandle::Sse { client, url } => {
+                let response = client
+                    .post(url.as_str())
+                    .json(&request)
+                    .timeout(std::time::Duration::from_secs(self.config.timeout_secs))
+                    .send()
+                    .await
+                    .map_err(|e| format!("MCP SSE request failed: {e}"))?;
+
+                if !response.status().is_success() {
+                    return Err(format!("MCP SSE returned {}", response.status()));
+                }
+
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|e| format!("Failed to read SSE response: {e}"))?;
+
+                // Handle Streamable HTTP MCP responses that use SSE framing
+                // (e.g. "event: message\ndata: {...}\n\n"). Extract the JSON
+                // from the last `data:` line if the body looks like SSE.
+                let json_body = if body.trim_start().starts_with("event:")
+                    || body.trim_start().starts_with("data:")
+                {
+                    body.lines()
+                        .filter_map(|line| {
+                            line.strip_prefix("data: ")
+                                .or_else(|| line.strip_prefix("data:"))
+                                .filter(|s| !s.is_empty())
+                        })
+                        .next_back()
+                        .unwrap_or(&body)
+                        .to_string()
+                } else {
+                    body
+                };
+
+                let rpc_response: JsonRpcResponse = serde_json::from_str(&json_body)
+                    .map_err(|e| format!("Invalid MCP SSE JSON-RPC response: {e}"))?;
+
+                if let Some(err) = rpc_response.error {
+                    return Err(format!("{err}"));
+                }
+
+                Ok(rpc_response.result)
+            }
+        }
+    }
+
+    async fn send_notification(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        let notification = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params.unwrap_or(serde_json::json!({})),
+        });
+
+        let json = serde_json::to_string(&notification)
+            .map_err(|e| format!("Failed to serialize notification: {e}"))?;
+
+        match &mut self.transport {
+            McpTransportHandle::Stdio { stdin, .. } => {
+                stdin
+                    .write_all(json.as_bytes())
+                    .await
+                    .map_err(|e| format!("Write notification: {e}"))?;
+                stdin
+                    .write_all(b"\n")
+                    .await
+                    .map_err(|e| format!("Write newline: {e}"))?;
+                stdin.flush().await.map_err(|e| format!("Flush: {e}"))?;
+            }
+            McpTransportHandle::Sse { client, url } => {
+                let _ = client.post(url.as_str()).json(&notification).send().await;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn connect_stdio(
         command: &str,
         args: &[String],
         env_whitelist: &[String],
-        client_info: ClientInfo,
-    ) -> Result<RunningService<RoleClient, ClientInfo>, String> {
-        use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
-        use tokio::process::Command;
-
+    ) -> Result<McpTransportHandle, String> {
         // Validate command path (no path traversal)
         if command.contains("..") {
             return Err("MCP command path contains '..': rejected".to_string());
         }
 
-        let cmd_str = command.to_string();
-        let args_vec: Vec<String> = args.to_vec();
-        let env_list: Vec<String> = env_whitelist.to_vec();
-
-        let transport = TokioChildProcess::new(Command::new(&cmd_str).configure(move |cmd| {
-            for arg in &args_vec {
-                cmd.arg(arg);
-            }
-            // Sandbox: clear environment, only pass whitelisted vars
-            cmd.env_clear();
-            for var_name in &env_list {
-                if let Ok(val) = std::env::var(var_name) {
-                    cmd.env(var_name, val);
+        // On Windows, npm/npx install as .cmd batch wrappers. Detect and adapt.
+        let resolved_command: String = if cfg!(windows) {
+            // If the user already specified .cmd/.bat, use as-is
+            if command.ends_with(".cmd") || command.ends_with(".bat") {
+                command.to_string()
+            } else {
+                // Check if the .cmd variant exists on PATH
+                let cmd_variant = format!("{command}.cmd");
+                let has_cmd = std::env::var("PATH")
+                    .unwrap_or_default()
+                    .split(';')
+                    .any(|dir| std::path::Path::new(dir).join(&cmd_variant).exists());
+                if has_cmd {
+                    cmd_variant
+                } else {
+                    command.to_string()
                 }
             }
-            // Always pass PATH for binary resolution
-            if let Ok(path) = std::env::var("PATH") {
-                cmd.env("PATH", path);
-            }
-            // On Windows, npm/node need extra vars
-            if cfg!(windows) {
-                for var in &[
-                    "APPDATA",
-                    "LOCALAPPDATA",
-                    "USERPROFILE",
-                    "SystemRoot",
-                    "TEMP",
-                    "TMP",
-                    "HOME",
-                    "HOMEDRIVE",
-                    "HOMEPATH",
-                ] {
-                    if let Ok(val) = std::env::var(var) {
-                        cmd.env(var, val);
-                    }
-                }
-            }
-        }))
-        .map_err(|e| format!("Failed to spawn MCP server '{cmd_str}': {e}"))?;
-
-        let client = client_info
-            .serve(transport)
-            .await
-            .map_err(|e| format!("MCP stdio handshake failed: {e}"))?;
-
-        Ok(client)
-    }
-
-    /// Connect using Streamable HTTP transport (or SSE fallback via the same endpoint).
-    ///
-    /// The `rmcp` SDK's `StreamableHttpClientTransport` handles the full
-    /// Streamable HTTP protocol: Accept headers, Mcp-Session-Id tracking,
-    /// SSE stream parsing, and content-type negotiation.
-    async fn connect_http(
-        url: &str,
-        headers: &[String],
-        client_info: ClientInfo,
-    ) -> Result<RunningService<RoleClient, ClientInfo>, String> {
-        use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-        use rmcp::transport::StreamableHttpClientTransport;
-
-        Self::check_ssrf(url)?;
-
-        // Parse custom headers (e.g., "Authorization: Bearer <token>").
-        let mut custom_headers: HashMap<HeaderName, HeaderValue> = HashMap::new();
-        for header_str in headers {
-            if let Some((name, value)) = header_str.split_once(':') {
-                let name = name.trim();
-                let value = value.trim();
-                if let (Ok(hn), Ok(hv)) = (
-                    HeaderName::from_bytes(name.as_bytes()),
-                    HeaderValue::from_str(value),
-                ) {
-                    custom_headers.insert(hn, hv);
-                }
-            }
-        }
-
-        let config = StreamableHttpClientTransportConfig {
-            uri: Arc::from(url),
-            custom_headers,
-            ..Default::default()
+        } else {
+            command.to_string()
         };
 
-        let transport = StreamableHttpClientTransport::from_config(config);
+        let mut cmd = tokio::process::Command::new(&resolved_command);
+        cmd.args(args);
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
 
-        let client = client_info
-            .serve(transport)
-            .await
-            .map_err(|e| format!("MCP HTTP connection failed: {e}"))?;
+        // Sandbox: clear environment, only pass whitelisted vars
+        cmd.env_clear();
+        for var_name in env_whitelist {
+            if let Ok(val) = std::env::var(var_name) {
+                cmd.env(var_name, val);
+            }
+        }
+        // Always pass PATH for binary resolution
+        if let Ok(path) = std::env::var("PATH") {
+            cmd.env("PATH", path);
+        }
+        // On Windows, npm/node need APPDATA, USERPROFILE, LOCALAPPDATA, and SystemRoot
+        if cfg!(windows) {
+            for var in &[
+                "APPDATA",
+                "LOCALAPPDATA",
+                "USERPROFILE",
+                "SystemRoot",
+                "TEMP",
+                "TMP",
+                "HOME",
+                "HOMEDRIVE",
+                "HOMEPATH",
+            ] {
+                if let Ok(val) = std::env::var(var) {
+                    cmd.env(var, val);
+                }
+            }
+        }
 
-        Ok(client)
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn MCP server '{resolved_command}': {e}"))?;
+
+        // Log stderr in background for debugging MCP server issues
+        if let Some(stderr) = child.stderr.take() {
+            let cmd_name = resolved_command.clone();
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let reader = tokio::io::BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::debug!(mcp_server = %cmd_name, "stderr: {line}");
+                }
+            });
+        }
+
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or("Failed to capture MCP server stdin")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("Failed to capture MCP server stdout")?;
+
+        Ok(McpTransportHandle::Stdio {
+            child: Box::new(child),
+            stdin,
+            stdout: BufReader::new(stdout),
+        })
     }
 
-    /// Basic SSRF check: reject obviously private/metadata URLs.
-    fn check_ssrf(url: &str) -> Result<(), String> {
+    async fn connect_sse(url: &str) -> Result<McpTransportHandle, String> {
+        // Basic SSRF check: reject obviously private URLs
         let lower = url.to_lowercase();
         if lower.contains("169.254.169.254") || lower.contains("metadata.google") {
-            return Err("SSRF: MCP URL targets metadata endpoint".to_string());
+            return Err("SSRF: MCP SSE URL targets metadata endpoint".to_string());
         }
-        Ok(())
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+        Ok(McpTransportHandle::Sse {
+            client,
+            url: url.to_string(),
+        })
+    }
+}
+
+impl Drop for McpConnection {
+    fn drop(&mut self) {
+        if let McpTransportHandle::Stdio { ref mut child, .. } = self.transport {
+            // Best-effort kill of the subprocess
+            let _ = child.start_kill();
+        }
     }
 }
 
@@ -420,12 +673,16 @@ mod tests {
 
     #[test]
     fn test_hyphenated_tool_name_preserved() {
+        // Tool names with hyphens get normalized to underscores for namespacing,
+        // but original_names map preserves the original for call_tool dispatch.
         let namespaced = format_mcp_tool_name("sqlcl", "list-connections");
         assert_eq!(namespaced, "mcp_sqlcl_list_connections");
 
+        // Simulate what discover_tools does
         let mut original_names = HashMap::new();
         original_names.insert(namespaced.clone(), "list-connections".to_string());
 
+        // call_tool should resolve to original hyphenated name
         let raw = original_names
             .get(&namespaced)
             .map(|s| s.as_str())
@@ -444,21 +701,25 @@ mod tests {
 
     #[test]
     fn test_extract_mcp_server_from_known_with_hyphens() {
+        // Server "bocha-search" normalized to "bocha_search" in tool prefix
         let servers = vec!["bocha-search", "github"];
         let tool = "mcp_bocha_search_bocha_web_search";
         assert_eq!(
             extract_mcp_server_from_known(tool, &servers),
             Some("bocha-search")
         );
+        // Simple server name still works
         assert_eq!(
             extract_mcp_server_from_known("mcp_github_create_issue", &servers),
             Some("github")
         );
+        // Non-MCP tool returns None
         assert_eq!(extract_mcp_server_from_known("file_read", &servers), None);
     }
 
     #[test]
     fn test_extract_mcp_server_from_known_longest_match() {
+        // "my-api" and "my-api-v2" — should match the longer one
         let servers = vec!["my-api", "my-api-v2"];
         assert_eq!(
             extract_mcp_server_from_known("mcp_my_api_v2_get_users", &servers),
@@ -468,6 +729,60 @@ mod tests {
             extract_mcp_server_from_known("mcp_my_api_list_items", &servers),
             Some("my-api")
         );
+    }
+
+    #[test]
+    fn test_mcp_jsonrpc_initialize() {
+        // Verify the initialize request structure
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize".to_string(),
+            params: Some(serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "openfang",
+                    "version": "0.1.0"
+                }
+            })),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("initialize"));
+        assert!(json.contains("protocolVersion"));
+        assert!(json.contains("openfang"));
+    }
+
+    #[test]
+    fn test_mcp_jsonrpc_tools_list() {
+        // Simulate a tools/list response
+        let response_json = r#"{
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "tools": [
+                    {
+                        "name": "create_issue",
+                        "description": "Create a GitHub issue",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "body": {"type": "string"}
+                            },
+                            "required": ["title"]
+                        }
+                    }
+                ]
+            }
+        }"#;
+
+        let response: JsonRpcResponse = serde_json::from_str(response_json).unwrap();
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"].as_str().unwrap(), "create_issue");
     }
 
     #[test]
@@ -483,7 +798,6 @@ mod tests {
             },
             timeout_secs: 30,
             env: vec!["GITHUB_PERSONAL_ACCESS_TOKEN".to_string()],
-            headers: vec![],
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -508,32 +822,12 @@ mod tests {
             },
             timeout_secs: 60,
             env: vec![],
-            headers: vec![],
         };
         let json = serde_json::to_string(&sse_config).unwrap();
         let back: McpServerConfig = serde_json::from_str(&json).unwrap();
         match back.transport {
             McpTransport::Sse { url } => assert_eq!(url, "https://example.com/mcp"),
             _ => panic!("Expected SSE transport"),
-        }
-
-        // HTTP (Streamable HTTP) variant
-        let http_config = McpServerConfig {
-            name: "atlassian".to_string(),
-            transport: McpTransport::Http {
-                url: "https://mcp.atlassian.com/v1/mcp".to_string(),
-            },
-            timeout_secs: 120,
-            env: vec![],
-            headers: vec!["Authorization: Bearer test-token-456".to_string()],
-        };
-        let json = serde_json::to_string(&http_config).unwrap();
-        let back: McpServerConfig = serde_json::from_str(&json).unwrap();
-        match back.transport {
-            McpTransport::Http { url } => {
-                assert_eq!(url, "https://mcp.atlassian.com/v1/mcp")
-            }
-            _ => panic!("Expected Http transport"),
         }
     }
 }
