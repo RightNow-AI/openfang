@@ -173,8 +173,8 @@ For systemd-style deployments using `/etc/openfang/env`, include:
 ```bash
 OPENFANG_ENV_FILE=/etc/openfang/env scripts/backup-openfang.sh
 OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_PREFLIGHT_OFFLINE=1 scripts/preflight-openfang.sh --offline
-OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_STRICT_PRODUCTION=1 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
-OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
+OPENFANG_ENV_FILE=/etc/openfang/env OPENFANG_STRICT_PRODUCTION=1 scripts/preflight-openfang.sh
+OPENFANG_ENV_FILE=/etc/openfang/env scripts/smoke-openfang.sh
 ```
 
 After those file-based validations, run the stateful smoke that actually spawns an agent, exercises its budget, and then kills it so the runtime path your customers hit is really exercised:
@@ -183,12 +183,14 @@ After those file-based validations, run the stateful smoke that actually spawns 
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/live-api-smoke-openfang.sh
 ```
 
+For systemd hosts, `OPENFANG_ENV_FILE=/etc/openfang/env scripts/live-api-smoke-openfang.sh` and `OPENFANG_ENV_FILE=/etc/openfang/env scripts/provider-canary-openfang.sh` now reuse the installed machine-auth source and effective listen address.
+
 Keep `/etc/openfang/env` readable by the `openfang` service user as well as root. `0640 root:openfang` is the supported baseline so `ExecStartPre` preflight and host-side operator scripts can read the same file.
 Strict preflight accepts that external env baseline while still requiring owner-only permissions for the rest of the runtime secret files.
 
 Pass criteria:
 - backup succeeds while the daemon is stopped, or live backup is explicitly opted into
-- `BACKUP.txt` records the binary fingerprint you will actually roll back to; if the deploy binary is not on `PATH`, set `OPENFANG_BINARY_PATH` or run the backup from the source checkout that contains `target/release|debug/openfang`
+- `BACKUP.txt` records the binary fingerprint you will actually roll back to; if the deploy binary is not on `PATH`, set `OPENFANG_BINARY_PATH` or run the backup from the source checkout that contains `target/release|debug/openfang` so `openfang_git_sha` can also be recovered from Git when the binary version string is too coarse
 - offline preflight validates config resolution, config-include dependencies, sensitive file permissions, state-file integrity, writable runtime paths, and SQLite quick-check
 - live preflight validates runtime reachability and checks `/api/health/detail` readiness when the provided auth context can access protected endpoints
 - `scripts/smoke-openfang.sh` validates the public dashboard shell and the alert-backed metric families before cutover

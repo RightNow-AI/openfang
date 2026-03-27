@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/openfang-env-common.sh
+source "${SCRIPT_DIR}/openfang-env-common.sh"
+
 usage() {
   cat <<'EOF'
 Usage: smoke-openfang.sh [base-url]
@@ -10,6 +14,8 @@ Run a small smoke test against a running OpenFang daemon.
 Environment:
   OPENFANG_BASE_URL  Base URL override (default: http://127.0.0.1:4200)
   OPENFANG_API_KEY   Bearer token used for protected operational endpoints
+  OPENFANG_ENV_FILE  Optional external env file (for example /etc/openfang/env)
+                     Used to resolve OPENFANG_API_KEY/OPENFANG_LISTEN/OPENFANG_BASE_URL
   OPENFANG_STRICT_PRODUCTION  Set to 1/true/yes/on to require a machine API key
 EOF
 }
@@ -28,9 +34,10 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-BASE_URL="${1:-${OPENFANG_BASE_URL:-http://127.0.0.1:4200}}"
-API_KEY="${OPENFANG_API_KEY:-}"
-STRICT_PRODUCTION="${OPENFANG_STRICT_PRODUCTION:-0}"
+EXTERNAL_ENV_FILE="$(openfang_resolve_external_env_file "${OPENFANG_HOME:-$HOME/.openfang}")"
+BASE_URL="$(openfang_resolve_base_url "${1:-}" "${EXTERNAL_ENV_FILE}" "http://127.0.0.1:4200")"
+API_KEY="$(openfang_resolve_runtime_value "OPENFANG_API_KEY" "${EXTERNAL_ENV_FILE}")"
+STRICT_PRODUCTION="$(openfang_resolve_runtime_value "OPENFANG_STRICT_PRODUCTION" "${EXTERNAL_ENV_FILE}" "0")"
 
 if ! command -v curl >/dev/null 2>&1; then
   echo "curl is required for smoke-openfang.sh" >&2

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/openfang-env-common.sh
+source "${SCRIPT_DIR}/openfang-env-common.sh"
+
 usage() {
   cat <<'EOF'
 Usage: provider-canary-openfang.sh [base-url]
@@ -10,6 +14,8 @@ Run a real provider canary against a running OpenFang daemon.
 Environment:
   OPENFANG_BASE_URL           Base URL override (default: http://127.0.0.1:4200)
   OPENFANG_API_KEY            Bearer token for protected endpoints
+  OPENFANG_ENV_FILE           Optional external env file (for example /etc/openfang/env)
+                              Used to resolve OPENFANG_API_KEY/OPENFANG_LISTEN/OPENFANG_BASE_URL
   OPENFANG_CANARY_AGENT_ID    Existing agent ID to reuse (optional)
   OPENFANG_CANARY_PROVIDER    Provider for a temporary canary agent (required if no agent id)
   OPENFANG_CANARY_MODEL       Model for a temporary canary agent (required if no agent id)
@@ -23,8 +29,9 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-BASE_URL="${1:-${OPENFANG_BASE_URL:-http://127.0.0.1:4200}}"
-API_KEY="${OPENFANG_API_KEY:-}"
+EXTERNAL_ENV_FILE="$(openfang_resolve_external_env_file "${OPENFANG_HOME:-$HOME/.openfang}")"
+BASE_URL="$(openfang_resolve_base_url "${1:-}" "${EXTERNAL_ENV_FILE}" "http://127.0.0.1:4200")"
+API_KEY="$(openfang_resolve_runtime_value "OPENFANG_API_KEY" "${EXTERNAL_ENV_FILE}")"
 CANARY_AGENT_ID="${OPENFANG_CANARY_AGENT_ID:-}"
 CANARY_PROVIDER="${OPENFANG_CANARY_PROVIDER:-}"
 CANARY_MODEL="${OPENFANG_CANARY_MODEL:-}"

@@ -197,6 +197,13 @@ If you are validating the shipped systemd unit, install the canonical host asset
 sudo scripts/install-systemd-openfang.sh --binary target/release/openfang
 ```
 
+Then prefer:
+
+```bash
+OPENFANG_ENV_FILE=/etc/openfang/env scripts/smoke-openfang.sh
+OPENFANG_ENV_FILE=/etc/openfang/env scripts/live-api-smoke-openfang.sh
+```
+
 ### Provider path
 
 Before calling the release healthy, run one real provider-backed canary and keep the output:

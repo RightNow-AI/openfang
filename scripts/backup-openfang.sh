@@ -124,6 +124,30 @@ capture_openfang_metadata() {
     return 1
   }
 
+  find_git_repo_root() {
+    local start="${1:-}"
+    [[ -n "${start}" ]] || return 1
+
+    if [[ -f "${start}" ]]; then
+      start="$(dirname "${start}")"
+    fi
+
+    if ! start="$(cd "${start}" 2>/dev/null && pwd -P)"; then
+      return 1
+    fi
+
+    while [[ -n "${start}" ]]; do
+      if git -C "${start}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        printf '%s\n' "${start}"
+        return 0
+      fi
+      [[ "${start}" == "/" ]] && break
+      start="$(dirname "${start}")"
+    done
+
+    return 1
+  }
+
   sha256_file() {
     local path="$1"
     local digest=""
@@ -164,6 +188,40 @@ PY
     return 1
   }
 
+  detect_git_sha() {
+    local binary="$1"
+    local version="$2"
+    local repo_root=""
+    local repo_sha=""
+    local version_sha=""
+
+    version_sha="$(printf '%s\n' "${version}" | grep -oE '[0-9a-f]{7,40}' | head -n 1 || true)"
+    if [[ -n "${version_sha}" ]]; then
+      printf '%s\n' "${version_sha}"
+      return 0
+    fi
+
+    repo_root="$(find_git_repo_root "${binary}" || true)"
+    if [[ -n "${repo_root}" ]]; then
+      repo_sha="$(git -C "${repo_root}" rev-parse HEAD 2>/dev/null || true)"
+      if [[ -n "${repo_sha}" ]]; then
+        printf '%s\n' "${repo_sha}"
+        return 0
+      fi
+    fi
+
+    repo_root="$(find_git_repo_root "${SCRIPT_DIR}/.." || true)"
+    if [[ -n "${repo_root}" ]]; then
+      repo_sha="$(git -C "${repo_root}" rev-parse HEAD 2>/dev/null || true)"
+      if [[ -n "${repo_sha}" ]]; then
+        printf '%s\n' "${repo_sha}"
+        return 0
+      fi
+    fi
+
+    return 1
+  }
+
   local binary version sha git_sha
   binary="$(detect_openfang_binary || true)"
   if [[ -z "${binary}" ]]; then
@@ -172,7 +230,7 @@ PY
   fi
   version="$("${binary}" --version 2>/dev/null | head -n 1 || true)"
   sha="$(sha256_file "${binary}" 2>/dev/null || true)"
-  git_sha="$(printf '%s\n' "${version}" | grep -oE '[0-9a-f]{7,}' | head -n 1)"
+  git_sha="$(detect_git_sha "${binary}" "${version}" || true)"
   printf '%s|%s|%s|%s' "${binary}" "${version}" "${sha}" "${git_sha}"
 }
 

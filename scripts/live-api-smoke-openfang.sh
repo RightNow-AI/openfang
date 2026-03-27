@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/openfang-env-common.sh
+source "${SCRIPT_DIR}/openfang-env-common.sh"
+
 usage() {
   cat <<'EOF'
 Usage: live-api-smoke-openfang.sh [base-url]
@@ -12,6 +16,8 @@ can be touched without a dashboard session.
 Environment:
   OPENFANG_BASE_URL          Base URL override (default: http://127.0.0.1:4200)
   OPENFANG_API_KEY           Bearer token used for protected endpoints (mandatory)
+  OPENFANG_ENV_FILE          Optional external env file (for example /etc/openfang/env)
+                             Used to resolve OPENFANG_API_KEY/OPENFANG_LISTEN/OPENFANG_BASE_URL
   OPENFANG_CANARY_PROVIDER   Optional provider id for a provider-backed smoke agent
   OPENFANG_CANARY_MODEL      Optional model id for provider-backed smoke
   OPENFANG_CANARY_API_KEY_ENV Optional api_key_env recorded in provider-backed smoke manifest
@@ -26,8 +32,9 @@ if [[ "${1:-""}" == "-h" || "${1:-""}" == "--help" ]]; then
   exit 0
 fi
 
-BASE_URL="${1:-${OPENFANG_BASE_URL:-http://127.0.0.1:4200}}"
-API_KEY="${OPENFANG_API_KEY:-}"
+EXTERNAL_ENV_FILE="$(openfang_resolve_external_env_file "${OPENFANG_HOME:-$HOME/.openfang}")"
+BASE_URL="$(openfang_resolve_base_url "${1:-}" "${EXTERNAL_ENV_FILE}" "http://127.0.0.1:4200")"
+API_KEY="$(openfang_resolve_runtime_value "OPENFANG_API_KEY" "${EXTERNAL_ENV_FILE}")"
 CANARY_PROVIDER="${OPENFANG_CANARY_PROVIDER:-}"
 CANARY_MODEL="${OPENFANG_CANARY_MODEL:-}"
 CANARY_API_KEY_ENV="${OPENFANG_CANARY_API_KEY_ENV:-}"

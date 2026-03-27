@@ -101,6 +101,8 @@ For a bundled smoke check:
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
 ```
 
+For systemd hosts, `OPENFANG_ENV_FILE=/etc/openfang/env scripts/smoke-openfang.sh` reuses the installed machine-auth source.
+
 For the stateful agent lifecycle and budget path:
 
 ```bash
@@ -116,6 +118,8 @@ OPENFANG_CANARY_MODEL=llama-3.3-70b-versatile \
 OPENFANG_CANARY_API_KEY_ENV=GROQ_API_KEY \
 scripts/provider-canary-openfang.sh
 ```
+
+Those three scripts also honor `OPENFANG_ENV_FILE=/etc/openfang/env` for machine auth and listen-address resolution when you are validating a systemd install.
 
 ## 5. Restart Safely
 

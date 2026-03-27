@@ -102,6 +102,7 @@ DATA_DIR="/var/lib/openfang/data"
 
 HELPER_SCRIPTS=(
   backup-openfang.sh
+  openfang-env-common.sh
   preflight-openfang.sh
   restore-openfang.sh
   smoke-openfang.sh

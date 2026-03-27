@@ -696,6 +696,8 @@ echo
 echo "== Backup Tooling =="
 for script in \
   backup-openfang.sh \
+  live-api-smoke-openfang.sh \
+  openfang-env-common.sh \
   preflight-openfang.sh \
   provider-canary-openfang.sh \
   restore-openfang.sh \

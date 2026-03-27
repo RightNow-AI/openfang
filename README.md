@@ -159,10 +159,12 @@ Then run runtime preflight with a running daemon:
 scripts/preflight-openfang.sh
 ```
 
-For systemd-style deployments that keep service env in `/etc/openfang/env`, point preflight/backup/restore tooling at the same source:
+For systemd-style deployments that keep service env in `/etc/openfang/env`, point the operational scripts at the same source:
 
 ```bash
 OPENFANG_ENV_FILE=/etc/openfang/env scripts/preflight-openfang.sh
+OPENFANG_ENV_FILE=/etc/openfang/env scripts/smoke-openfang.sh
+OPENFANG_ENV_FILE=/etc/openfang/env scripts/live-api-smoke-openfang.sh
 ```
 
 If you only need file-level checks without a live daemon, use:

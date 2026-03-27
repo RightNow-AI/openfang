@@ -278,6 +278,7 @@ OPENFANG_STRICT_PRODUCTION=1 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/prefli
 These operational scripts are repository artifacts and are typically run from the host (or CI runner) that has this repo checked out. Do not assume they exist inside the runtime container image.
 `scripts/smoke-openfang.sh` now fails if `/api/metrics` is reachable but missing the operational metric families that the bundled Prometheus rules and runbooks depend on.
 `scripts/preflight-openfang.sh` is strict by default and fails if the live API is unreachable or if `/api/health/detail` reports a degraded node. Use `--offline` (or `OPENFANG_PREFLIGHT_OFFLINE=1`) only for intentional file-only checks.
+For systemd hosts, these three scripts also honor `OPENFANG_ENV_FILE=/etc/openfang/env` for API-key and listen-address resolution, so you can validate the installed service without manually re-exporting the machine key.
 
 If this node is supposed to serve real provider-backed responses, also run a real canary and the stateful live smoke:
 
