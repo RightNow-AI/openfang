@@ -447,6 +447,7 @@ openfang hand install "$PWD/openfang-hand/shipinfabu"
   - `copy.strict_mode` 固定为 `true`
 - `copy_provider=hive_grok_gateway` 时走服务默认成人文案 AI 链路
 - `copy_provider=hive_grok_gateway` 时，服务会先拿 Hive 第一版，再做一次本地二次精修，重点压标题、段落节奏、口语感和发布感
+- 内置标题生成口径固定为 22 到 28 个汉字，默认瞄准 25 字，严格不要超过 28 字；生成、自检、预览复核都按这条口径执行
 - 需要 AI 参与的文案审核、一致性复核时，也优先继续走同一套 Hive 链路，不要临时换模型家族
 - 真正负责“生成文案”的是服务端 `copywriter` 和提示词模板；Hand 负责把任务送进这条固定链路，companion skill `clean-publish-copy-qc` 负责审核和汇报口径，不要再额外拆第二套生成规则
 - 用户本轮没明确说“只要草稿”或“不要发布”时，默认继续正式发布链；不要把“用户没提发布”误判成草稿链
@@ -524,7 +525,7 @@ openfang hand install "$PWD/openfang-hand/shipinfabu"
 - 当前生产设计固定是“单主 Hand + companion skills”，不要把下面这些 companion skill 当成第二只主 Hand。
 - 这个 Hand 会搭配三个内部 companion skill 一起工作：
   - `clean-publish-intake-clarify`：负责收件分批、素材角色确认和澄清门槛
-  - `clean-publish-copy-qc`：负责文案长度、二次校验、预览验收和发布前复核
+  - `clean-publish-copy-qc`：负责文案长度、二次校验、预览验收和发布前复核，默认继续遵守标题 22 到 28 个汉字、严格不超过 28 字的口径
   - `publishhub-browser-ops`：负责 PublishHub 登录页、草稿页、帖子页、编辑器的浏览器巡检、截图取证和人工接管前预检
 - 用户不需要单独调用它；只要安装并激活 `shipinfabu`，质检规则就会跟着生效。
 - 用户侧仍然只需要和 `shipinfabu` 对话。

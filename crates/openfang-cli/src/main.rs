@@ -1208,19 +1208,105 @@ fn configured_api_listen(home_dir: &std::path::Path) -> Option<String> {
 
 fn probe_daemon_addr(addr: &str) -> Option<String> {
     let normalized_addr = normalize_daemon_addr(addr);
-    let url = format!("http://{normalized_addr}/api/health");
 
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(1))
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-        .ok()?;
-    let resp = client.get(&url).send().ok()?;
-    if resp.status().is_success() {
-        Some(format!("http://{normalized_addr}"))
-    } else {
-        None
+    // Daemon discovery is local-only and sits on the startup path, so keep the
+    // probe simple and resilient to proxy env or brief startup races.
+    for attempt in 0..3 {
+        if daemon_health_responds(&normalized_addr) {
+            return Some(format!("http://{normalized_addr}"));
+        }
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
+
+    None
+}
+
+fn daemon_health_responds(addr: &str) -> bool {
+    use std::io::{Read, Write};
+
+    let connect_timeout = std::time::Duration::from_millis(500);
+    let io_timeout = Some(std::time::Duration::from_millis(750));
+    let sock_addr = match addr.parse::<std::net::SocketAddr>() {
+        Ok(sock_addr) => sock_addr,
+        Err(_) => return daemon_health_responds_via_http(addr, connect_timeout, io_timeout),
+    };
+    let mut stream = match std::net::TcpStream::connect_timeout(&sock_addr, connect_timeout) {
+        Ok(stream) => stream,
+        Err(_) => return false,
+    };
+
+    let _ = stream.set_read_timeout(io_timeout);
+    let _ = stream.set_write_timeout(io_timeout);
+
+    let host_header = sock_addr.to_string();
+    let request =
+        format!("GET /api/health HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+
+    let mut parts = response.splitn(2, "\r\n\r\n");
+    let headers = parts.next().unwrap_or_default();
+    let body = parts.next().unwrap_or_default();
+
+    if !(headers.starts_with("HTTP/1.1 200") || headers.starts_with("HTTP/1.0 200")) {
+        return false;
+    }
+
+    is_openfang_health_payload(body)
+}
+
+fn daemon_health_responds_via_http(
+    addr: &str,
+    connect_timeout: std::time::Duration,
+    io_timeout: Option<std::time::Duration>,
+) -> bool {
+    let timeout = io_timeout.unwrap_or(connect_timeout);
+    let client = match reqwest::blocking::Client::builder()
+        .no_proxy()
+        .connect_timeout(connect_timeout)
+        .timeout(timeout)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    let url = format!("http://{addr}/api/health");
+    let response = match client.get(&url).send() {
+        Ok(response) => response,
+        Err(_) => return false,
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    let body = match response.text() {
+        Ok(body) => body,
+        Err(_) => return false,
+    };
+    is_openfang_health_payload(&body)
+}
+
+fn is_openfang_health_payload(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .map(|payload| {
+            payload
+                .get("status")
+                .and_then(|value| value.as_str())
+                .is_some()
+                && payload
+                    .get("version")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+        })
+        .unwrap_or(false)
 }
 
 fn normalize_daemon_addr(addr: &str) -> String {
@@ -7126,15 +7212,24 @@ mod tests {
     use super::pick_ollama_model_from_tags;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
 
-    fn spawn_fake_openfang_health_server(max_requests: usize) -> (String, thread::JoinHandle<()>) {
+    fn spawn_fake_http_server(
+        max_requests: usize,
+        content_type: &str,
+        body: &str,
+    ) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let body = body.to_string();
+        let content_type = content_type.to_string();
 
         let handle = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
             let deadline = Instant::now() + Duration::from_secs(3);
             let mut served = 0usize;
 
@@ -7143,9 +7238,8 @@ mod tests {
                     Ok((mut stream, _)) => {
                         let mut buf = [0u8; 1024];
                         let _ = stream.read(&mut buf);
-                        let body = r#"{"status":"ok","version":"test"}"#;
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             body.len(),
                             body
                         );
@@ -7160,7 +7254,57 @@ mod tests {
             }
         });
 
+        ready_rx.recv().unwrap();
         (addr.to_string(), handle)
+    }
+
+    fn spawn_fake_openfang_health_server(max_requests: usize) -> (String, thread::JoinHandle<()>) {
+        spawn_fake_http_server(
+            max_requests,
+            "application/json",
+            r#"{"status":"ok","version":"test"}"#,
+        )
+    }
+
+    fn spawn_fake_non_openfang_health_server(
+        max_requests: usize,
+    ) -> (String, thread::JoinHandle<()>) {
+        spawn_fake_http_server(max_requests, "application/json", r#"{"status":"ok"}"#)
+    }
+
+    #[test]
+    fn test_discover_daemon_accepts_localhost_configured_listener() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (addr, handle) = spawn_fake_openfang_health_server(1);
+        let localhost_addr = addr.replacen("127.0.0.1", "localhost", 1);
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            format!("api_listen = \"{localhost_addr}\"\n"),
+        )
+        .unwrap();
+
+        let discovery = crate::discover_daemon(tmp.path(), true);
+        assert_eq!(discovery.base_url, Some(format!("http://{localhost_addr}")));
+        assert!(!discovery.stale_info_removed);
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_discover_daemon_rejects_non_openfang_configured_listener() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (addr, handle) = spawn_fake_non_openfang_health_server(1);
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            format!("api_listen = \"{addr}\"\n"),
+        )
+        .unwrap();
+
+        let discovery = crate::discover_daemon(tmp.path(), true);
+        assert_eq!(discovery.base_url, None);
+        assert!(!discovery.stale_info_removed);
+
+        handle.join().unwrap();
     }
 
     // --- Doctor command unit tests ---

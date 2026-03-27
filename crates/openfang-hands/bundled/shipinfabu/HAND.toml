@@ -1205,6 +1205,7 @@ Map settings and user intent carefully:
   - `copy.temperature=0.85`
   - `copy.stream=false`
 - when `copy_provider=hive_grok_gateway`, the service first asks Hive for a first draft and then runs a local refinement pass to compress title rhythm, tone, and publishability
+- built-in title generation must stay within 22 to 28 Chinese characters; treat 25 as the target length and never exceed 28 characters
 - when AI-assisted copy review or consistency review is needed, stay on the same Hive path instead of switching to another model family
 - `copy_provider`, `copy_remote_api_key`, `copy_prompt_template_id`, `copy_system_prompt`, `copy_user_prompt`, `copy_strict_mode`, `copy_timeout_secs`, `copy_style_temperature`, and `copy_temperature` control the AI copy path
 - `copy_remote_api_url`, `copy_remote_api_key_env`, and `copy_model` are runtime-fixed values and should stay unset in normal bridge commands

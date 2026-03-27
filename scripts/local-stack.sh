@@ -161,11 +161,41 @@ pid_running() {
   [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
 }
 
+spawn_detached_with_log() {
+  local log_path="$1"
+  shift
+  python3 - "$log_path" "$@" <<'PY'
+import subprocess
+import sys
+
+log_path = sys.argv[1]
+argv = sys.argv[2:]
+with open(log_path, "ab", buffering=0) as log:
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=log,
+        start_new_session=True,
+    )
+print(proc.pid)
+PY
+}
+
 cleanup_pid_file() {
   local pid_file="$1"
   if [[ -f "$pid_file" ]]; then
     rm -f "$pid_file"
   fi
+}
+
+stop_pid_or_session() {
+  local pid="$1"
+  [[ -n "$pid" ]] || return 0
+  # New detached services are launched as session leaders, so terminate the whole
+  # process group first. This avoids leaking child processes behind wrappers such
+  # as `uv run` or Python launchers. Fall back to the single PID for older runs.
+  kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
 }
 
 pid_listener_on_port() {
@@ -338,16 +368,22 @@ start_telegram() {
     echo "失败：telegram local api 缺少 api_id 或 $api_hash_env" >&2
     return 1
   fi
-  nohup "$binary" \
-    --api-id "$api_id" \
-    --api-hash "$api_hash" \
-    --local \
-    --http-port "$port" \
-    --dir "$OPENFANG_HOME/telegram-local-api-data" \
-    >"$TELEGRAM_LOG" 2>&1 < /dev/null &
-  pid=$!
+  pid="$(spawn_detached_with_log \
+    "$TELEGRAM_LOG" \
+    "$binary" \
+    "--api-id" "$api_id" \
+    "--api-hash" "$api_hash" \
+    "--local" \
+    "--http-port" "$port" \
+    "--dir" "$OPENFANG_HOME/telegram-local-api-data")"
+  if [[ -z "$pid" ]]; then
+    echo "失败：telegram-local-api 启动命令未返回 PID" >&2
+    return 1
+  fi
   echo "$pid" > "$TELEGRAM_PID_FILE"
   if ! wait_for_port_listener "$port" 20; then
+    stop_pid_or_session "$pid"
+    cleanup_pid_file "$TELEGRAM_PID_FILE"
     echo "失败：telegram-local-api 未在端口 $port 就绪" >&2
     tail -n 40 "$TELEGRAM_LOG" >&2 || true
     return 1
@@ -369,10 +405,17 @@ start_openfang() {
   fi
   binary="$(resolve_openfang_bin)"
   load_runtime_env
-  nohup "$binary" start >"$OPENFANG_LOG" 2>&1 < /dev/null &
-  pid=$!
+  # Do not use `nohup ... &` here: on macOS the daemon can still die with the
+  # parent shell. Launch it as a detached session and manage that session PID.
+  pid="$(spawn_detached_with_log "$OPENFANG_LOG" "$binary" "start")"
+  if [[ -z "$pid" ]]; then
+    echo "失败：OpenFang daemon 启动命令未返回 PID" >&2
+    return 1
+  fi
   echo "$pid" > "$OPENFANG_PID_FILE"
   if ! wait_for_http_ok_or_exit "$OPENFANG_BASE_URL/api/health" "$pid" 40; then
+    stop_pid_or_session "$pid"
+    cleanup_pid_file "$OPENFANG_PID_FILE"
     echo "失败：OpenFang API 未就绪" >&2
     tail -n 60 "$OPENFANG_LOG" >&2 || true
     return 1
@@ -394,18 +437,43 @@ start_media() {
     return 1
   fi
   if [[ -x "$cli_bin" ]]; then
-    nohup "$cli_bin" web --host 127.0.0.1 --port 8000 --config "$config_path" >"$MEDIA_LOG" 2>&1 < /dev/null &
+    pid="$(spawn_detached_with_log \
+      "$MEDIA_LOG" \
+      "$cli_bin" \
+      "web" \
+      "--host" "127.0.0.1" \
+      "--port" "8000" \
+      "--config" "$config_path")"
   elif [[ -x "$python_bin" ]]; then
-    nohup "$python_bin" "$SUBMODULE_DIR/scripts/run_media_web.py" --host 127.0.0.1 --port 8000 --config "$config_path" >"$MEDIA_LOG" 2>&1 < /dev/null &
+    pid="$(spawn_detached_with_log \
+      "$MEDIA_LOG" \
+      "$python_bin" \
+      "$SUBMODULE_DIR/scripts/run_media_web.py" \
+      "--host" "127.0.0.1" \
+      "--port" "8000" \
+      "--config" "$config_path")"
   elif command -v uv >/dev/null 2>&1; then
-    nohup uv run video-watermark web --host 127.0.0.1 --port 8000 --config "$config_path" >"$MEDIA_LOG" 2>&1 < /dev/null &
+    pid="$(spawn_detached_with_log \
+      "$MEDIA_LOG" \
+      "uv" \
+      "run" \
+      "video-watermark" \
+      "web" \
+      "--host" "127.0.0.1" \
+      "--port" "8000" \
+      "--config" "$config_path")"
   else
     echo "失败：既没找到 media CLI，也没找到 Python launcher，也没找到 uv。" >&2
     return 1
   fi
-  pid=$!
+  if [[ -z "$pid" ]]; then
+    echo "失败：shipinbot 媒体服务启动命令未返回 PID" >&2
+    return 1
+  fi
   echo "$pid" > "$MEDIA_PID_FILE"
   if ! wait_for_http_ok_or_exit "$MEDIA_BASE_URL/healthz" "$pid" 40; then
+    stop_pid_or_session "$pid"
+    cleanup_pid_file "$MEDIA_PID_FILE"
     echo "失败：shipinbot 媒体服务未就绪" >&2
     tail -n 60 "$MEDIA_LOG" >&2 || true
     return 1
@@ -419,7 +487,7 @@ stop_by_pid_file() {
   local pid
   pid="$(resolve_pid "$pid_file" || true)"
   if pid_running "$pid"; then
-    kill "$pid" 2>/dev/null || true
+    stop_pid_or_session "$pid"
     echo "$name: sent TERM to pid=$pid"
   fi
   cleanup_pid_file "$pid_file"
@@ -435,12 +503,12 @@ stop_openfang() {
   if ! wait_for_port_gone 4200 20; then
     pid="$(pid_listener_on_port 4200 || true)"
     if [[ -n "$pid" ]]; then
-      kill "$pid" 2>/dev/null || true
+      stop_pid_or_session "$pid"
     fi
   fi
   while IFS= read -r stale_pid; do
     [[ -n "$stale_pid" ]] || continue
-    kill "$stale_pid" 2>/dev/null || true
+    stop_pid_or_session "$stale_pid"
   done < <(list_openfang_daemon_pids || true)
   wait_for_port_gone 4200 20 || true
 }
@@ -453,7 +521,7 @@ stop_media() {
     cwd="$(pid_cwd "$pid")"
     command="$(pid_command "$pid")"
     if [[ "$cwd" == "$SUBMODULE_DIR" ]] || [[ "$command" == *"video-watermark web"* ]] || [[ "$command" == *"run_media_web.py"* ]]; then
-      kill "$pid" 2>/dev/null || true
+      stop_pid_or_session "$pid"
     fi
   fi
   wait_for_port_gone 8000 20 || true
@@ -467,7 +535,7 @@ stop_telegram() {
   if [[ -n "$pid" ]]; then
     command="$(pid_command "$pid")"
     if [[ "$command" == *"telegram-bot-api"* ]]; then
-      kill "$pid" 2>/dev/null || true
+      stop_pid_or_session "$pid"
     fi
   fi
   wait_for_port_gone "$port" 20 || true
