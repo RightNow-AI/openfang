@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 use tracing::{debug, error, info, warn};
 use url::Url;
 
@@ -468,8 +469,9 @@ impl BridgeManager {
     /// begin processing immediately. Per-agent serialization (to prevent session
     /// corruption) is handled by the kernel's `agent_msg_locks`.
     ///
-    /// A semaphore limits concurrent dispatch tasks to prevent unbounded memory
-    /// growth under burst traffic.
+    /// A bounded JoinSet limits concurrent dispatch tasks. Once the cap is hit,
+    /// the adapter stream naturally backpressures instead of spawning an
+    /// unbounded number of parked tasks.
     pub async fn start_adapter(
         &mut self,
         adapter: Arc<dyn ChannelAdapter>,
@@ -482,31 +484,41 @@ impl BridgeManager {
         let adapter_clone = adapter.clone();
         let mut shutdown = self.shutdown_rx.clone();
 
-        // Limit concurrent dispatch tasks to prevent unbounded growth.
-        // 32 is generous — most setups have 1-5 concurrent users.
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
-
         let task = tokio::spawn(async move {
             let mut stream = std::pin::pin!(stream);
+            let mut in_flight = JoinSet::new();
             loop {
                 tokio::select! {
+                    joined = in_flight.join_next(), if !in_flight.is_empty() => {
+                        if let Some(Err(err)) = joined {
+                            warn!(
+                                adapter = %adapter_clone.name(),
+                                error = %err,
+                                "Channel dispatch task panicked"
+                            );
+                        }
+                    }
                     msg = stream.next() => {
                         match msg {
                             Some(message) => {
+                                if in_flight.len() >= 32 {
+                                    if let Some(Err(err)) = in_flight.join_next().await {
+                                        warn!(
+                                            adapter = %adapter_clone.name(),
+                                            error = %err,
+                                            "Channel dispatch task panicked"
+                                        );
+                                    }
+                                }
+
                                 // Spawn each dispatch as a concurrent task so the stream
-                                // loop is never blocked by slow LLM calls. The kernel's
-                                // per-agent lock ensures session integrity.
+                                // loop remains responsive up to the bounded in-flight
+                                // limit. The kernel's per-agent lock ensures session integrity.
                                 let handle = handle.clone();
                                 let router = router.clone();
                                 let adapter = adapter_clone.clone();
                                 let rate_limiter = rate_limiter.clone();
-                                let sem = semaphore.clone();
-                                tokio::spawn(async move {
-                                    // Acquire semaphore permit (blocks if 32 tasks are in flight).
-                                    let _permit = match sem.acquire().await {
-                                        Ok(p) => p,
-                                        Err(_) => return, // semaphore closed — shutting down
-                                    };
+                                in_flight.spawn(async move {
                                     dispatch_message(
                                         &message,
                                         &handle,
@@ -529,6 +541,16 @@ impl BridgeManager {
                             break;
                         }
                     }
+                }
+            }
+
+            while let Some(joined) = in_flight.join_next().await {
+                if let Err(err) = joined {
+                    warn!(
+                        adapter = %adapter_clone.name(),
+                        error = %err,
+                        "Channel dispatch task panicked during shutdown"
+                    );
                 }
             }
         });
@@ -1275,6 +1297,15 @@ fn sanitize_agent_error(raw: &str) -> String {
 
     if lower.contains("timeout") || lower.contains("timed out") || lower.contains("deadline") {
         return "Request timed out, please try again.".to_string();
+    }
+
+    if lower.contains("error sending request for url")
+        || lower.contains("failed to connect")
+        || lower.contains("connection refused")
+        || lower.contains("dns")
+        || lower.contains("network error")
+    {
+        return "The AI service is temporarily unreachable, please try again shortly.".to_string();
     }
 
     if lower.contains("model not found") || lower.contains("model_not_found") {
@@ -2746,6 +2777,17 @@ mod tests {
         assert_eq!(
             media_type_from_url("https://api.telegram.org/file/bot123/photos/file_42"),
             "image/jpeg"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_agent_error_maps_upstream_connect_failures() {
+        let message = sanitize_agent_error(
+            "LLM driver error: Request failed: HTTP error: error sending request for url (https://integrate.api.nvidia.com/v1/chat/completions)",
+        );
+        assert_eq!(
+            message,
+            "The AI service is temporarily unreachable, please try again shortly."
         );
     }
 }

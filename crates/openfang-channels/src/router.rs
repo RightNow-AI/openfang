@@ -179,12 +179,15 @@ impl AgentRouter {
     }
 
     pub fn refresh_default_for_agent(&self, agent_name: &str, new_agent_id: AgentId) -> bool {
+        // Keep the lock order consistent with the setters to avoid deadlocking
+        // when route refresh races with dashboard updates.
+        let mut default_agent = self.default_agent.lock().unwrap_or_else(|e| e.into_inner());
         let default_name = self
             .default_agent_name
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if default_name.as_deref() == Some(agent_name) {
-            *self.default_agent.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_agent_id);
+            *default_agent = Some(new_agent_id);
             true
         } else {
             false

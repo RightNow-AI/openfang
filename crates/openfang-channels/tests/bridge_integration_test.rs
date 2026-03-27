@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 // ---------------------------------------------------------------------------
 // Mock Adapter — injects test messages, captures sent responses
@@ -146,6 +146,47 @@ impl ChannelBridgeHandle for MockHandle {
 
     async fn list_agents(&self) -> Result<Vec<(AgentId, String)>, String> {
         Ok(self.agents.lock().unwrap().clone())
+    }
+
+    async fn spawn_agent_by_name(&self, _manifest_name: &str) -> Result<AgentId, String> {
+        Err("mock: spawn not implemented".to_string())
+    }
+}
+
+struct SlowHandle {
+    agent_id: AgentId,
+    started_tx: Mutex<Option<oneshot::Sender<()>>>,
+    finished: Arc<AtomicUsize>,
+}
+
+impl SlowHandle {
+    fn new(agent_id: AgentId, started_tx: oneshot::Sender<()>, finished: Arc<AtomicUsize>) -> Self {
+        Self {
+            agent_id,
+            started_tx: Mutex::new(Some(started_tx)),
+            finished,
+        }
+    }
+}
+
+#[async_trait]
+impl ChannelBridgeHandle for SlowHandle {
+    async fn send_message(&self, agent_id: AgentId, _message: &str) -> Result<String, String> {
+        assert_eq!(agent_id, self.agent_id);
+        if let Some(tx) = self.started_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+        self.finished.store(1, Ordering::SeqCst);
+        Ok("slow response".to_string())
+    }
+
+    async fn find_agent_by_name(&self, name: &str) -> Result<Option<AgentId>, String> {
+        Ok((name == "slow-bot").then_some(self.agent_id))
+    }
+
+    async fn list_agents(&self) -> Result<Vec<(AgentId, String)>, String> {
+        Ok(vec![(self.agent_id, "slow-bot".to_string())])
     }
 
     async fn spawn_agent_by_name(&self, _manifest_name: &str) -> Result<AgentId, String> {
@@ -539,6 +580,33 @@ async fn test_bridge_manager_stop_calls_adapter_stop() {
     manager.stop().await;
 
     assert_eq!(adapter_ref.stop_call_count(), 1);
+}
+
+#[tokio::test]
+async fn test_bridge_manager_stop_waits_for_in_flight_dispatches() {
+    let agent_id = AgentId::new();
+    let (started_tx, started_rx) = oneshot::channel();
+    let finished = Arc::new(AtomicUsize::new(0));
+    let handle = Arc::new(SlowHandle::new(agent_id, started_tx, finished.clone()));
+    let router = Arc::new(AgentRouter::new());
+    router.set_user_default("user1".to_string(), agent_id);
+
+    let (adapter, tx) = MockAdapter::new("slow-stop", ChannelType::Telegram);
+
+    let mut manager = BridgeManager::new(handle, router);
+    manager.start_adapter(adapter).await.unwrap();
+
+    tx.send(make_text_msg(ChannelType::Telegram, "user1", "hello"))
+        .await
+        .unwrap();
+    tokio::time::timeout(tokio::time::Duration::from_secs(1), started_rx)
+        .await
+        .unwrap()
+        .unwrap();
+
+    manager.stop().await;
+
+    assert_eq!(finished.load(Ordering::SeqCst), 1);
 }
 
 /// Test multiple adapters running simultaneously in the same BridgeManager.

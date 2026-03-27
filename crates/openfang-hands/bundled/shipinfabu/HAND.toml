@@ -1286,6 +1286,8 @@ When the outcome is borderline, prefer `quality_risk` over overclaiming success.
    - The current explicit user message is the only task source.
    - If this turn is a scheduled health-duty / health-check request, switch to `duty mode`, call `health-check`, write `current_health.json`, and stop there.
    - Never consume stale request artifacts or hidden files as a task entry.
+   - If the current turn is just idle small talk or operator questions such as `你好`, `介绍自己`, `介绍你的功能`, `告诉我你的记忆`, or other non-task chat, answer directly from the current visible state and memory, then stay `idle`.
+   - In that idle small-talk branch, do not ask for the user's preferred name or any other profile trivia unless the user explicitly asks you to remember how to address them.
    - If there is no explicit user task:
      - when control state is `job_submitted` or `polling`, you may only do bounded status inspection / polling for the real existing job
      - otherwise stay `idle` and do not create or mutate a job

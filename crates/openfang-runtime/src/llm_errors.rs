@@ -218,6 +218,7 @@ const TIMEOUT_PATTERNS: &[&str] = &[
     "connection refused",
     "network error",
     "fetch failed",
+    "error sending request for url",
 ];
 
 // ---------------------------------------------------------------------------
@@ -738,6 +739,13 @@ mod tests {
 
         let e = classify_error("deadline exceeded while waiting for response", None);
         assert_eq!(e.category, LlmErrorCategory::Timeout);
+
+        let e = classify_error(
+            "HTTP error: error sending request for url (https://integrate.api.nvidia.com/v1/chat/completions)",
+            None,
+        );
+        assert_eq!(e.category, LlmErrorCategory::Timeout);
+        assert!(e.is_retryable);
     }
 
     #[test]

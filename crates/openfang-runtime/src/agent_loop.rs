@@ -1080,6 +1080,21 @@ async fn call_with_retry(
                     classified.sanitized_message
                 );
 
+                if classified.is_retryable && attempt < MAX_RETRIES {
+                    let delay = classified
+                        .suggested_delay_ms
+                        .unwrap_or(BASE_RETRY_DELAY_MS * 2u64.pow(attempt));
+                    warn!(
+                        attempt,
+                        delay_ms = delay,
+                        category = ?classified.category,
+                        "Transient LLM error, retrying after delay"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    last_error = Some(classified.sanitized_message.clone());
+                    continue;
+                }
+
                 if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                     cooldown.record_failure(provider, classified.is_billing);
                 }
@@ -1171,6 +1186,16 @@ async fn call_with_retry(
     ))
 }
 
+async fn await_stream_forwarder(
+    forwarder: tokio::task::JoinHandle<OpenFangResult<(Option<u64>, bool)>>,
+) -> OpenFangResult<(Option<u64>, bool)> {
+    match forwarder.await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(OpenFangError::ShuttingDown),
+    }
+}
+
 /// Call an LLM driver in streaming mode with automatic retry on rate-limit and overload errors.
 ///
 /// Uses the `llm_errors` classifier and `ProviderCooldown` circuit breaker.
@@ -1218,6 +1243,7 @@ async fn stream_with_retry(
         let client_tx = tx.clone();
         let forwarder = tokio::spawn(async move {
             let mut first_token_latency_ms = None;
+            let mut forwarded_any = false;
             while let Some(event) = proxy_rx.recv().await {
                 if first_token_latency_ms.is_none()
                     && matches!(&event, StreamEvent::TextDelta { text } if !text.is_empty())
@@ -1227,18 +1253,15 @@ async fn stream_with_retry(
                 if client_tx.send(event).await.is_err() {
                     return Err(OpenFangError::ShuttingDown);
                 }
+                forwarded_any = true;
             }
-            Ok(first_token_latency_ms)
+            Ok((first_token_latency_ms, forwarded_any))
         });
 
         match driver.stream(request.clone(), proxy_tx).await {
             Ok(response) => {
                 let provider_latency_ms = started_at.elapsed().as_millis() as u64;
-                let first_token_latency_ms = match forwarder.await {
-                    Ok(Ok(first_token_latency_ms)) => first_token_latency_ms,
-                    Ok(Err(e)) => return Err(e),
-                    Err(_) => return Err(OpenFangError::ShuttingDown),
-                };
+                let (first_token_latency_ms, _) = await_stream_forwarder(forwarder).await?;
                 if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                     cooldown.record_success(provider);
                 }
@@ -1251,47 +1274,67 @@ async fn stream_with_retry(
                 ));
             }
             Err(LlmError::RateLimited { retry_after_ms }) => {
-                let _ = forwarder.await;
+                let (_, forwarded_any) = await_stream_forwarder(forwarder).await?;
+                if !forwarded_any && attempt < MAX_RETRIES {
+                    let delay =
+                        std::cmp::max(retry_after_ms, BASE_RETRY_DELAY_MS * 2u64.pow(attempt));
+                    warn!(
+                        attempt,
+                        delay_ms = delay,
+                        "Rate limited (stream), retrying after delay"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    last_error = Some("Rate limited".to_string());
+                    continue;
+                }
+                if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
+                    cooldown.record_failure(provider, false);
+                }
+                if forwarded_any {
+                    return Err(OpenFangError::LlmDriver(
+                        "Stream interrupted after partial response. Please retry.".to_string(),
+                    ));
+                }
                 if attempt == MAX_RETRIES {
-                    if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
-                        cooldown.record_failure(provider, false);
-                    }
                     return Err(OpenFangError::LlmDriver(format!(
                         "Rate limited after {} retries",
                         MAX_RETRIES
                     )));
                 }
-                let delay = std::cmp::max(retry_after_ms, BASE_RETRY_DELAY_MS * 2u64.pow(attempt));
-                warn!(
-                    attempt,
-                    delay_ms = delay,
-                    "Rate limited (stream), retrying after delay"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                last_error = Some("Rate limited".to_string());
+                unreachable!("non-partial rate-limit retries should continue above");
             }
             Err(LlmError::Overloaded { retry_after_ms }) => {
-                let _ = forwarder.await;
+                let (_, forwarded_any) = await_stream_forwarder(forwarder).await?;
+                if !forwarded_any && attempt < MAX_RETRIES {
+                    let delay =
+                        std::cmp::max(retry_after_ms, BASE_RETRY_DELAY_MS * 2u64.pow(attempt));
+                    warn!(
+                        attempt,
+                        delay_ms = delay,
+                        "Model overloaded (stream), retrying after delay"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    last_error = Some("Overloaded".to_string());
+                    continue;
+                }
+                if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
+                    cooldown.record_failure(provider, false);
+                }
+                if forwarded_any {
+                    return Err(OpenFangError::LlmDriver(
+                        "Stream interrupted after partial response. Please retry.".to_string(),
+                    ));
+                }
                 if attempt == MAX_RETRIES {
-                    if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
-                        cooldown.record_failure(provider, false);
-                    }
                     return Err(OpenFangError::LlmDriver(format!(
                         "Model overloaded after {} retries",
                         MAX_RETRIES
                     )));
                 }
-                let delay = std::cmp::max(retry_after_ms, BASE_RETRY_DELAY_MS * 2u64.pow(attempt));
-                warn!(
-                    attempt,
-                    delay_ms = delay,
-                    "Model overloaded (stream), retrying after delay"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                last_error = Some("Overloaded".to_string());
+                unreachable!("non-partial overload retries should continue above");
             }
             Err(e) => {
-                let _ = forwarder.await;
+                let (_, forwarded_any) = await_stream_forwarder(forwarder).await?;
                 if matches!(&e, LlmError::Http(message) if message == STREAM_CONSUMER_DISCONNECTED)
                 {
                     return Err(OpenFangError::ShuttingDown);
@@ -1310,11 +1353,32 @@ async fn stream_with_retry(
                     classified.sanitized_message
                 );
 
+                if classified.is_retryable && !forwarded_any && attempt < MAX_RETRIES {
+                    let delay = classified
+                        .suggested_delay_ms
+                        .unwrap_or(BASE_RETRY_DELAY_MS * 2u64.pow(attempt));
+                    warn!(
+                        attempt,
+                        delay_ms = delay,
+                        category = ?classified.category,
+                        "Transient LLM stream error, retrying after delay"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    last_error = Some(classified.sanitized_message.clone());
+                    continue;
+                }
+
                 if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                     cooldown.record_failure(provider, classified.is_billing);
                 }
 
                 // --- ModelNotFound fallback chain (issue #845) ---
+                if forwarded_any {
+                    return Err(OpenFangError::LlmDriver(
+                        "Stream interrupted after partial response. Please retry.".to_string(),
+                    ));
+                }
+
                 if classified.category == llm_errors::LlmErrorCategory::ModelNotFound
                     && !fallback_models.is_empty()
                 {
@@ -3074,6 +3138,198 @@ mod tests {
     fn test_retry_constants() {
         assert_eq!(MAX_RETRIES, 3);
         assert_eq!(BASE_RETRY_DELAY_MS, 1000);
+    }
+
+    #[tokio::test]
+    async fn test_call_with_retry_retries_transient_timeout_errors() {
+        struct TimeoutThenNormalDriver {
+            calls: AtomicU32,
+        }
+
+        #[async_trait]
+        impl LlmDriver for TimeoutThenNormalDriver {
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    return Err(LlmError::Http(
+                        "error sending request for url (https://integrate.api.nvidia.com/v1/chat/completions)"
+                            .to_string(),
+                    ));
+                }
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "recovered after timeout".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 3,
+                        output_tokens: 4,
+                    },
+                })
+            }
+        }
+
+        let driver = TimeoutThenNormalDriver {
+            calls: AtomicU32::new(0),
+        };
+        let request = CompletionRequest {
+            model: "demo".to_string(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: 128,
+            temperature: 0.2,
+            system: None,
+            thinking: None,
+        };
+
+        let (response, _latency_ms) = call_with_retry(&driver, request, None, None)
+            .await
+            .expect("transient timeout should recover");
+
+        assert_eq!(response.text(), "recovered after timeout");
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_retry_retries_transient_timeout_errors() {
+        struct TimeoutThenNormalStreamDriver {
+            calls: AtomicU32,
+        }
+
+        #[async_trait]
+        impl LlmDriver for TimeoutThenNormalStreamDriver {
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                unreachable!("stream() is used in this test");
+            }
+
+            async fn stream(
+                &self,
+                _request: CompletionRequest,
+                tx: tokio::sync::mpsc::Sender<StreamEvent>,
+            ) -> Result<CompletionResponse, LlmError> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    return Err(LlmError::Http(
+                        "error sending request for url (https://integrate.api.nvidia.com/v1/chat/completions)"
+                            .to_string(),
+                    ));
+                }
+                tx.send(StreamEvent::TextDelta {
+                    text: "recovered stream".to_string(),
+                })
+                .await
+                .map_err(|_| LlmError::Http(STREAM_CONSUMER_DISCONNECTED.to_string()))?;
+                tx.send(StreamEvent::ContentComplete {
+                    stop_reason: StopReason::EndTurn,
+                    usage: TokenUsage {
+                        input_tokens: 5,
+                        output_tokens: 2,
+                    },
+                })
+                .await
+                .map_err(|_| LlmError::Http(STREAM_CONSUMER_DISCONNECTED.to_string()))?;
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "recovered stream".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 5,
+                        output_tokens: 2,
+                    },
+                })
+            }
+        }
+
+        let driver = TimeoutThenNormalStreamDriver {
+            calls: AtomicU32::new(0),
+        };
+        let request = CompletionRequest {
+            model: "demo".to_string(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: 128,
+            temperature: 0.2,
+            system: None,
+            thinking: None,
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let (response, _metrics) =
+            stream_with_retry(&driver, request, tx, Instant::now(), None, None)
+                .await
+                .expect("transient stream timeout should recover");
+
+        assert_eq!(response.text(), "recovered stream");
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_retry_does_not_retry_after_partial_output() {
+        struct PartialThenTimeoutStreamDriver {
+            calls: AtomicU32,
+        }
+
+        #[async_trait]
+        impl LlmDriver for PartialThenTimeoutStreamDriver {
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                unreachable!("stream() is used in this test");
+            }
+
+            async fn stream(
+                &self,
+                _request: CompletionRequest,
+                tx: tokio::sync::mpsc::Sender<StreamEvent>,
+            ) -> Result<CompletionResponse, LlmError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                tx.send(StreamEvent::TextDelta {
+                    text: "partial output".to_string(),
+                })
+                .await
+                .map_err(|_| LlmError::Http(STREAM_CONSUMER_DISCONNECTED.to_string()))?;
+                Err(LlmError::Http(
+                    "error sending request for url (https://integrate.api.nvidia.com/v1/chat/completions)"
+                        .to_string(),
+                ))
+            }
+        }
+
+        let driver = PartialThenTimeoutStreamDriver {
+            calls: AtomicU32::new(0),
+        };
+        let request = CompletionRequest {
+            model: "demo".to_string(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: 128,
+            temperature: 0.2,
+            system: None,
+            thinking: None,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+        let err = stream_with_retry(&driver, request, tx, Instant::now(), None, None)
+            .await
+            .expect_err("partial output should suppress automatic retry");
+
+        assert!(
+            matches!(rx.recv().await, Some(StreamEvent::TextDelta { text }) if text == "partial output")
+        );
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 1);
+        assert!(format!("{err}").contains("partial response"));
     }
 
     #[test]
