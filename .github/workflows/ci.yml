@@ -301,12 +301,40 @@ jobs:
       - name: Syntax check operational scripts
         run: |
           bash -n scripts/backup-openfang.sh
+          bash -n scripts/install-systemd-openfang.sh
           bash -n scripts/live-api-smoke-openfang.sh
           bash -n scripts/preflight-openfang.sh
           bash -n scripts/provider-canary-openfang.sh
           bash -n scripts/restore-openfang.sh
           bash -n scripts/smoke-openfang.sh
           python3 -m py_compile scripts/healthcheck-openfang.py
+      - name: Stage systemd install assets
+        run: |
+          tmpdir="$RUNNER_TEMP/systemd-install-stage"
+          rm -rf "$tmpdir"
+          mkdir -p "$tmpdir"
+          cat > "$RUNNER_TEMP/openfang-stage-binary" <<'EOF'
+          #!/usr/bin/env bash
+          echo "openfang 0.0.0 (stage-test)"
+          EOF
+          chmod +x "$RUNNER_TEMP/openfang-stage-binary"
+          bash scripts/install-systemd-openfang.sh \
+            --binary "$RUNNER_TEMP/openfang-stage-binary" \
+            --destdir "$tmpdir"
+          test -x "$tmpdir/usr/local/bin/openfang"
+          test -x "$tmpdir/usr/local/lib/openfang/preflight-openfang.sh"
+          test -x "$tmpdir/usr/local/lib/openfang/backup-openfang.sh"
+          test -x "$tmpdir/usr/local/lib/openfang/restore-openfang.sh"
+          test -x "$tmpdir/usr/local/lib/openfang/smoke-openfang.sh"
+          test -x "$tmpdir/usr/local/lib/openfang/live-api-smoke-openfang.sh"
+          test -x "$tmpdir/usr/local/lib/openfang/provider-canary-openfang.sh"
+          test -x "$tmpdir/usr/local/lib/openfang/healthcheck-openfang.py"
+          test -f "$tmpdir/etc/systemd/system/openfang.service"
+          test -f "$tmpdir/etc/systemd/system/openfang-backup.service"
+          test -f "$tmpdir/etc/systemd/system/openfang-backup.timer"
+          test -f "$tmpdir/etc/openfang/env"
+          test -f "$tmpdir/var/lib/openfang/config.toml"
+          grep -q '^OPENFANG_API_KEY=change-me$' "$tmpdir/etc/openfang/env"
       - name: Healthcheck strict mode fails closed without authenticated readiness
         run: |
           tmpdir="$RUNNER_TEMP/healthcheck-strict"

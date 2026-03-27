@@ -314,21 +314,24 @@ It assumes:
 ### Recommended Layout
 
 ```bash
-sudo useradd --system --home /var/lib/openfang --shell /usr/sbin/nologin openfang
-sudo install -m 0700 -d -o openfang -g openfang /var/lib/openfang
-sudo install -d /etc/openfang
-sudo install -d /usr/local/lib/openfang
-sudo install -m 0644 deploy/openfang.service /etc/systemd/system/openfang.service
-sudo install -m 0755 scripts/preflight-openfang.sh /usr/local/lib/openfang/preflight-openfang.sh
-sudo install -m 0640 -o root -g openfang /dev/null /etc/openfang/env
+sudo scripts/install-systemd-openfang.sh --binary target/release/openfang
 ```
 
-Create `/etc/openfang/env` with at least:
+That installer creates the `openfang` service account when needed and stages:
+
+- `/usr/local/bin/openfang`
+- `/usr/local/lib/openfang/{backup,preflight,restore,smoke,live-api-smoke,provider-canary,healthcheck}`
+- `/etc/systemd/system/openfang.service`
+- `/etc/systemd/system/openfang-backup.{service,timer}`
+- `/etc/openfang/env` from `deploy/openfang.env.example` if missing
+- `/var/lib/openfang/config.toml` from `openfang.toml.example` if missing
+
+Then edit `/etc/openfang/env` with at least:
 
 ```bash
 OPENFANG_HOME=/var/lib/openfang
 OPENFANG_API_KEY=<generate-a-real-random-key>
-GROQ_API_KEY=replace-me
+ANTHROPIC_API_KEY=replace-me
 ```
 
 Generate the API key with something like:
@@ -349,6 +352,14 @@ The unit now enforces a two-stage fail-closed gate in strict production mode:
 - post-start gate (`ExecStartPost`): retries live authenticated readiness verification for up to 30 attempts (2s interval each) using `/usr/local/lib/openfang/preflight-openfang.sh` without `--offline`
 Strict mode treats the helper itself as mandatory in both stages: if `/usr/local/lib/openfang/preflight-openfang.sh` is missing while `OPENFANG_STRICT_PRODUCTION=1`, the unit fails rather than silently skipping deeper validation.
 
+If you want the installer to reload systemd and start the host after you finish editing `/etc/openfang/env`, run:
+
+```bash
+sudo scripts/install-systemd-openfang.sh --binary target/release/openfang --enable
+```
+
+`--enable` fails closed: it runs `/usr/local/lib/openfang/preflight-openfang.sh --offline` in strict mode first and refuses to start the unit until the installed env/config baseline passes.
+
 ### Scheduled Backups (systemd)
 
 This repository now ships minimal backup scheduling assets:
@@ -359,10 +370,7 @@ This repository now ships minimal backup scheduling assets:
 Install and enable them on Linux hosts that use systemd:
 
 ```bash
-sudo install -d /usr/local/lib/openfang
-sudo install -m 0755 scripts/backup-openfang.sh /usr/local/lib/openfang/backup-openfang.sh
-sudo install -m 0644 deploy/openfang-backup.service /etc/systemd/system/openfang-backup.service
-sudo install -m 0644 deploy/openfang-backup.timer /etc/systemd/system/openfang-backup.timer
+sudo scripts/install-systemd-openfang.sh --binary target/release/openfang
 sudo systemctl daemon-reload
 sudo systemctl enable --now openfang-backup.timer
 sudo systemctl list-timers openfang-backup.timer

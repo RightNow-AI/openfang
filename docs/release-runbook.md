@@ -191,11 +191,10 @@ OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/smoke-openfang.sh
 OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/live-api-smoke-openfang.sh
 ```
 
-If you are validating the shipped systemd unit, install the strict preflight helper before enabling the unit:
+If you are validating the shipped systemd unit, install the canonical host assets first:
 
 ```bash
-sudo install -d /usr/local/lib/openfang
-sudo install -m 0755 scripts/preflight-openfang.sh /usr/local/lib/openfang/preflight-openfang.sh
+sudo scripts/install-systemd-openfang.sh --binary target/release/openfang
 ```
 
 ### Provider path

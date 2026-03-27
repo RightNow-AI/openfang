@@ -3,7 +3,7 @@
 This document is the current production-ready assessment for the OpenFang platform in this repository.
 It is intentionally narrow: it focuses on whether the existing product can be deployed and operated safely, not on future roadmap work or large refactors.
 
-Assessment date: 2026-03-23
+Assessment date: 2026-03-27
 
 ## Current Status
 
@@ -67,6 +67,7 @@ Meaning:
   - `promtool check` for the bundled Prometheus artifacts
   - stateful `scripts/live-api-smoke-openfang.sh` validation in daemon smoke and release provider-canary flows
   - scheduled-backup deployment assets (`deploy/openfang-backup.service`, `deploy/openfang-backup.timer`)
+- Linux host installs now have a single repo-owned installer entrypoint (`scripts/install-systemd-openfang.sh`) that stages the binary, ops helpers, systemd units, backup timer assets, and baseline env/config templates together instead of relying on a manual copy checklist
 
 ## Evidence Handling
 

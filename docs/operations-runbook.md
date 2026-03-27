@@ -257,6 +257,12 @@ Back up the runtime home before upgrades or invasive changes.
 scripts/backup-openfang.sh
 ```
 
+For Linux hosts installed via `scripts/install-systemd-openfang.sh`, the same helper is also staged at:
+
+```bash
+/usr/local/lib/openfang/backup-openfang.sh
+```
+
 For long-running production nodes, treat scheduled backups as mandatory, not optional. The repository ships:
 
 - `deploy/openfang-backup.service`
@@ -265,10 +271,7 @@ For long-running production nodes, treat scheduled backups as mandatory, not opt
 Expected host install:
 
 ```bash
-sudo install -d /usr/local/lib/openfang
-sudo install -m 0755 scripts/backup-openfang.sh /usr/local/lib/openfang/backup-openfang.sh
-sudo install -m 0644 deploy/openfang-backup.service /etc/systemd/system/openfang-backup.service
-sudo install -m 0644 deploy/openfang-backup.timer /etc/systemd/system/openfang-backup.timer
+sudo scripts/install-systemd-openfang.sh --binary target/release/openfang
 sudo systemctl daemon-reload
 sudo systemctl enable --now openfang-backup.timer
 ```
@@ -302,6 +305,12 @@ OPENFANG_API_KEY="$OPENFANG_API_KEY" scripts/preflight-openfang.sh
 scripts/restore-openfang.sh "$HOME/openfang-backups/openfang-<timestamp>" --yes
 ```
 
+On Linux hosts installed via `scripts/install-systemd-openfang.sh`, the installed helper path is:
+
+```bash
+/usr/local/lib/openfang/restore-openfang.sh "$HOME/openfang-backups/openfang-<timestamp>" --yes
+```
+
 The restore script now refuses to run if `daemon.json` points to a responding API. Stop the daemon first; if the file is stale, verify the API is really down and then re-run the restore.
 It also refuses manifest-less backup directories by default; set `OPENFANG_ALLOW_LEGACY_RESTORE=1` only for an older backup you have already verified out of band.
 It also rejects empty/malformed backup directories before deleting managed runtime state and re-hardens restored secrets/config file permissions.
@@ -322,6 +331,15 @@ After restore:
 7. if provider-backed traffic matters, run `scripts/provider-canary-openfang.sh`
 8. verify state-dependent features such as agents, hands, workflows, or channels
 9. delete the preserved rollback tree only after those checks pass
+
+If the host was installed with `scripts/install-systemd-openfang.sh`, the installed helper directory also contains:
+
+- `/usr/local/lib/openfang/preflight-openfang.sh`
+- `/usr/local/lib/openfang/smoke-openfang.sh`
+- `/usr/local/lib/openfang/live-api-smoke-openfang.sh`
+- `/usr/local/lib/openfang/provider-canary-openfang.sh`
+
+That lets operators run backup, restore, smoke, and rollback drills without keeping a source checkout on the production machine.
 
 ## 9. Upgrade and Rollback
 
