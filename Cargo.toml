@@ -114,7 +114,7 @@ rand = "0.8"
 zeroize = { version = "1", features = ["derive"] }
 
 # Rate limiting
-governor = "0.8"
+governor = "0.10"
 
 # Interactive CLI
 ratatui = "0.29"
