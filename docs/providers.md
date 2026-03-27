@@ -1,6 +1,6 @@
 # LLM Providers Guide
 
-OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **21 providers**, **59 builtin models**, and **30 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
+OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **21 providers**, **61 builtin models**, and **30 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
 
 ---
 
@@ -583,7 +583,7 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 
 ## Model Catalog
 
-The complete catalog of all 59 builtin models, sorted by provider. Pricing is per million tokens.
+The complete catalog of all 61 builtin models, sorted by provider. Pricing is per million tokens.
 
 | # | Model ID | Display Name | Provider | Tier | Context Window | Max Output | Input $/M | Output $/M | Tools | Vision |
 |---|----------|-------------|----------|------|---------------|------------|-----------|------------|-------|--------|
@@ -661,7 +661,7 @@ The complete catalog of all 59 builtin models, sorted by provider. Pricing is pe
 
 **Notes:**
 - Local providers (Ollama, vLLM, LM Studio) auto-discover models at runtime. Any model you download and serve will be merged into the catalog with `Local` tier and zero cost.
-- The 54 entries above are the builtin models. The total of 59 referenced in the catalog includes runtime auto-discovered models that vary per installation.
+- The 61 entries above are the builtin models. Local providers (Ollama, vLLM, LM Studio) auto-discover additional models at runtime that vary per installation.
 
 ---
 
