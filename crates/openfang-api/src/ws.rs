@@ -12,6 +12,7 @@
 //! Server → Client: `{"type":"silent_complete"}` (agent chose NO_REPLY)
 //! Server → Client: `{"type":"canvas","canvas_id":"...","html":"...","title":"..."}`
 
+use crate::channel_bridge::clear_agent_transient_task_state;
 use crate::routes::AppState;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{ConnectInfo, Path, State, WebSocketUpgrade};
@@ -869,7 +870,17 @@ async fn handle_command(
     match cmd {
         "new" | "reset" => match state.kernel.reset_session(agent_id) {
             Ok(()) => {
-                serde_json::json!({"type": "command_result", "command": cmd, "message": "Session reset. Chat history cleared."})
+                let message = match clear_agent_transient_task_state(&state.kernel, agent_id) {
+                    Ok(true) => {
+                        "Session reset. Chat history cleared. Transient task state cleared."
+                            .to_string()
+                    }
+                    Ok(false) => "Session reset. Chat history cleared.".to_string(),
+                    Err(e) => format!(
+                        "Session reset. Chat history cleared. Warning: failed to clear transient task state: {e}"
+                    ),
+                };
+                serde_json::json!({"type": "command_result", "command": cmd, "message": message})
             }
             Err(e) => serde_json::json!({"type": "error", "content": format!("Reset failed: {e}")}),
         },

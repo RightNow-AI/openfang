@@ -53,11 +53,21 @@ use openfang_channels::webhook::WebhookAdapter;
 use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_types::agent::AgentId;
+use std::path::Path;
+use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
 use openfang_runtime::str_utils::safe_truncate_str;
+
+const SHIPINFABU_AGENT_NAME: &str = "shipinfabu-hand";
+const SHIPINFABU_TRANSIENT_STATE_FILES: &[&str] = &[
+    "current_batch.json",
+    "current_task.json",
+    "current_state.json",
+    "current_job_id.txt",
+];
 
 fn format_download_size(bytes: u64) -> String {
     if bytes >= 1024 * 1024 {
@@ -734,7 +744,12 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         self.kernel
             .reset_session(agent_id)
             .map_err(|e| format!("{e}"))?;
-        Ok("Session reset. Chat history cleared.".to_string())
+        let cleared = clear_agent_transient_task_state(&self.kernel, agent_id)?;
+        if cleared {
+            Ok("Session reset. Chat history cleared. Transient task state cleared.".to_string())
+        } else {
+            Ok("Session reset. Chat history cleared.".to_string())
+        }
     }
 
     async fn compact_session(&self, agent_id: AgentId) -> Result<String, String> {
@@ -1028,6 +1043,50 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         }
         msg
     }
+}
+
+fn clear_transient_task_state_for_workspace(
+    agent_name: &str,
+    workspace_dir: &Path,
+) -> Result<bool, String> {
+    if agent_name != SHIPINFABU_AGENT_NAME {
+        return Ok(false);
+    }
+    let mut cleared = false;
+    for relative in SHIPINFABU_TRANSIENT_STATE_FILES {
+        let path = workspace_dir.join(relative);
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                cleared = true;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(format!(
+                    "failed to clear transient task state {}: {}",
+                    path.display(),
+                    err
+                ));
+            }
+        }
+    }
+    Ok(cleared)
+}
+
+pub(crate) fn clear_agent_transient_task_state(
+    kernel: &OpenFangKernel,
+    agent_id: AgentId,
+) -> Result<bool, String> {
+    let entry = match kernel.registry.get(agent_id) {
+        Some(entry) => entry,
+        None => return Ok(false),
+    };
+    let agent_name = entry.manifest.name.clone();
+    let workspace_dir = entry
+        .manifest
+        .workspace
+        .clone()
+        .unwrap_or_else(|| kernel.config.effective_workspaces_dir().join(&agent_name));
+    clear_transient_task_state_for_workspace(&agent_name, &workspace_dir)
 }
 
 /// Parse a trigger pattern string from chat into a `TriggerPattern`.
@@ -2070,6 +2129,7 @@ mod tests {
     use crate::routes::AppState;
     use openfang_kernel::OpenFangKernel;
     use openfang_types::config::{ChannelsConfig, KernelConfig, TelegramConfig};
+    use std::fs;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -2176,5 +2236,30 @@ mod tests {
         assert_eq!(super::format_download_size(512), "512B");
         assert_eq!(super::format_download_size(98 * 1024), "98KB");
         assert_eq!(super::format_download_size(28 * 1024 * 1024), "28.0MB");
+    }
+
+    #[test]
+    fn test_clear_agent_transient_task_state_removes_shipinfabu_workspace_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_dir = tmp.path().join(super::SHIPINFABU_AGENT_NAME);
+        fs::create_dir_all(&workspace_dir).unwrap();
+        for file_name in super::SHIPINFABU_TRANSIENT_STATE_FILES {
+            fs::write(workspace_dir.join(file_name), "stale").unwrap();
+        }
+
+        let cleared = super::clear_transient_task_state_for_workspace(
+            super::SHIPINFABU_AGENT_NAME,
+            &workspace_dir,
+        )
+        .unwrap();
+
+        assert!(cleared);
+        for file_name in super::SHIPINFABU_TRANSIENT_STATE_FILES {
+            assert!(
+                !workspace_dir.join(file_name).exists(),
+                "expected {} to be removed",
+                file_name
+            );
+        }
     }
 }
