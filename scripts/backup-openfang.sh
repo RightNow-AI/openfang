@@ -210,15 +210,6 @@ PY
       fi
     fi
 
-    repo_root="$(find_git_repo_root "${SCRIPT_DIR}/.." || true)"
-    if [[ -n "${repo_root}" ]]; then
-      repo_sha="$(git -C "${repo_root}" rev-parse HEAD 2>/dev/null || true)"
-      if [[ -n "${repo_sha}" ]]; then
-        printf '%s\n' "${repo_sha}"
-        return 0
-      fi
-    fi
-
     return 1
   }
 

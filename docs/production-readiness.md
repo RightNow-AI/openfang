@@ -52,7 +52,7 @@ Meaning:
 
 ### Backup, restore, and rollback
 
-- backups now record `openfang_binary`, `openfang_version`, `openfang_binary_sha256`, and `openfang_git_sha` in `BACKUP.txt`, with Git checkout fallback when the binary version string does not carry a commit
+- backups now record `openfang_binary`, `openfang_version`, `openfang_binary_sha256`, and `openfang_git_sha` in `BACKUP.txt`; when the version string does not carry a commit, `openfang_git_sha` is only recorded if it can be resolved from the binary's own checkout
 - backup metadata hashing now falls back cleanly on macOS and other environments without `sha256sum`
 - restore now preserves the staged rollback tree after a successful file restore so operators can still revert quickly while post-restore smoke and preflight are running
 - this makes restore evidence materially better for rollback and binary/state matching
