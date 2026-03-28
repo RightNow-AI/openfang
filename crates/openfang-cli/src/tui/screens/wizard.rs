@@ -106,7 +106,7 @@ const PROVIDERS: &[ProviderInfo] = &[
     },
     ProviderInfo {
         name: "volcengine_coding",
-        display: "Volcano Engine (Coding)",
+        display: "Volcano Engine (Coding Plan)",
         env_var: "VOLCENGINE_API_KEY",
         default_model: "ark-code-latest",
         needs_key: true,
@@ -121,7 +121,7 @@ const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
         name: "cohere",
         display: "Cohere",
-        env_var: "CO_API_KEY",
+        env_var: "COHERE_API_KEY",
         default_model: "command-a",
         needs_key: true,
     },

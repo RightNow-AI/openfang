@@ -2,7 +2,8 @@
 //!
 //! Contains drivers for Anthropic Claude, Google Gemini, OpenAI-compatible APIs, and more.
 //! Supports: Anthropic, Gemini, OpenAI, Groq, OpenRouter, DeepSeek, Together,
-//! Mistral, Fireworks, Ollama, vLLM, Chutes.ai, and any OpenAI-compatible endpoint.
+//! Mistral, Fireworks, Ollama, vLLM, Chutes.ai, volcengine (Doubao / Ark),
+//! and any OpenAI-compatible endpoint.
 
 pub mod anthropic;
 pub mod claude_code;
@@ -197,6 +198,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "QIANFAN_API_KEY",
             key_required: true,
         }),
+        // "doubao" is also a model alias in builtin_aliases; here it acts as a provider alias
         "volcengine" | "doubao" => Some(ProviderDefaults {
             base_url: VOLCENGINE_BASE_URL,
             api_key_env: "VOLCENGINE_API_KEY",
@@ -260,6 +262,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
 /// - `xai` — xAI (Grok)
 /// - `replicate` — Replicate
 /// - `chutes` — Chutes.ai (serverless open-source model inference)
+/// - `volcengine` — Volcano Engine (Doubao/Ark)
 /// - Any custom provider with `base_url` set uses OpenAI-compatible format
 pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmError> {
     let provider = config.provider.as_str();
@@ -508,8 +511,8 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
         ("gemini", "gemini-2.5-flash", "GEMINI_API_KEY"),
         ("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY"),
         ("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY"),
-        ("volcengine_coding", "ark-code-latest", "VOLCENGINE_API_KEY"),
         ("volcengine", "doubao-seed-1-6-251015", "VOLCENGINE_API_KEY"),
+        ("volcengine_coding", "ark-code-latest", "VOLCENGINE_API_KEY"),
         (
             "openrouter",
             "openrouter/google/gemini-2.5-flash",

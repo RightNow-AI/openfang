@@ -69,18 +69,18 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
-        name: "volcengine_coding",
-        display: "Volcano Engine Coding Plan",
-        env_var: "VOLCENGINE_API_KEY",
-        default_model: "ark-code-latest",
-        needs_key: true,
-        hint: "",
-    },
-    ProviderInfo {
         name: "volcengine",
         display: "Volcano Engine",
         env_var: "VOLCENGINE_API_KEY",
         default_model: "doubao-seed-1-6-251015",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "volcengine_coding",
+        display: "Volcano Engine (Coding Plan)",
+        env_var: "VOLCENGINE_API_KEY",
+        default_model: "ark-code-latest",
         needs_key: true,
         hint: "",
     },
@@ -159,7 +159,7 @@ const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
         name: "qwen",
         display: "Qwen (Alibaba)",
-        env_var: "QWEN_API_KEY",
+        env_var: "DASHSCOPE_API_KEY",
         default_model: "qwen-plus",
         needs_key: true,
         hint: "",
@@ -167,7 +167,7 @@ const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
         name: "huggingface",
         display: "Hugging Face",
-        env_var: "HUGGINGFACE_API_KEY",
+        env_var: "HF_API_KEY",
         default_model: "meta-llama/Llama-3.3-70B-Instruct",
         needs_key: true,
         hint: "",
@@ -183,7 +183,7 @@ const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
         name: "replicate",
         display: "Replicate",
-        env_var: "REPLICATE_API_KEY",
+        env_var: "REPLICATE_API_TOKEN",
         default_model: "meta/meta-llama-3-70b-instruct",
         needs_key: true,
         hint: "",

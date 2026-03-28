@@ -3620,6 +3620,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_vision: false,
             supports_streaming: true,
             // "doubao" also maps to the volcengine provider in provider_defaults() — intentional dual alias
+            // Also matched as a provider alias in provider_defaults() — keep in sync
             aliases: vec!["doubao".into(), "doubao-pro".into()],
         },
         ModelCatalogEntry {
