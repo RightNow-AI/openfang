@@ -3536,11 +3536,12 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // Third-party models available via Ark marketplace.
-        // The "ark/" prefix is kept as an alias for catalog lookups but is NOT
-        // forwarded to the Ark API — the API expects bare model names.
+        // The "ark/" prefix is the canonical ID for these Ark marketplace models to avoid
+        // collisions with native provider entries (minimax, zhipu, moonshot).
+        // The bare model name is kept as an alias only where no collision exists.
         // Pricing not publicly documented for Ark-routed third-party models; set to 0.0
         ModelCatalogEntry {
-            id: "minimax-m2.5".into(),
+            id: "ark/minimax-m2.5".into(),
             display_name: "MiniMax M2.5 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
@@ -3551,10 +3552,11 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec!["ark/minimax-m2.5".into()],
+            // "minimax-m2.5" NOT added as alias — already canonical on the minimax provider entry
+            aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "glm-4.7".into(),
+            id: "ark/glm-4.7".into(),
             display_name: "GLM 4.7 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Balanced,
@@ -3565,10 +3567,11 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec!["ark/glm-4.7".into()],
+            // "glm-4.7" NOT added as alias — already canonical on the zhipu provider entry
+            aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "deepseek-v3.2".into(),
+            id: "ark/deepseek-v3.2".into(),
             display_name: "DeepSeek V3.2 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
@@ -3579,10 +3582,11 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec!["ark/deepseek-v3.2".into()],
+            // "deepseek-v3.2" kept as alias — no collision with other providers
+            aliases: vec!["deepseek-v3.2".into()],
         },
         ModelCatalogEntry {
-            id: "kimi-k2.5".into(),
+            id: "ark/kimi-k2.5".into(),
             display_name: "Kimi K2.5 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
@@ -3593,7 +3597,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec!["ark/kimi-k2.5".into()],
+            // "kimi-k2.5" NOT added as alias — already canonical on the moonshot provider entry
+            aliases: vec![],
         },
 
         // ══════════════════════════════════════════════════════════════
@@ -4672,25 +4677,33 @@ mod tests {
     #[test]
     fn test_ark_alias_resolution() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.resolve_alias("ark/minimax-m2.5"), Some("minimax-m2.5"));
-        assert_eq!(catalog.resolve_alias("ark/glm-4.7"), Some("glm-4.7"));
-        assert_eq!(catalog.resolve_alias("ark/deepseek-v3.2"), Some("deepseek-v3.2"));
-        assert_eq!(catalog.resolve_alias("ark/kimi-k2.5"), Some("kimi-k2.5"));
-        // find_model via ark/ alias should return the entry with the bare model id.
-        // minimax-m2.5 is unique to volcengine_coding via Ark marketplace.
+        // ark/ IDs are now canonical — resolve_alias returns the id itself (no alias mapping needed)
+        // deepseek-v3.2 is still an alias pointing to ark/deepseek-v3.2
+        assert_eq!(catalog.resolve_alias("deepseek-v3.2"), Some("ark/deepseek-v3.2"));
+        // find_model via ark/ canonical ID returns the volcengine_coding entry directly.
         let m25 = catalog.find_model("ark/minimax-m2.5").unwrap();
-        assert_eq!(m25.id, "minimax-m2.5");
+        assert_eq!(m25.id, "ark/minimax-m2.5");
         assert_eq!(m25.provider, "volcengine_coding");
-        // glm-4.7 and kimi-k2.5 share their id with zhipu/moonshot models;
-        // find_model returns the first catalog entry (non-Ark provider) for those ids.
+        // glm-4.7 canonical ID now belongs to ark entry; zhipu entry is unaffected.
         let glm = catalog.find_model("ark/glm-4.7").unwrap();
-        assert_eq!(glm.id, "glm-4.7");
-        // deepseek-v3.2 exists only under volcengine_coding in the Ark section.
+        assert_eq!(glm.id, "ark/glm-4.7");
+        assert_eq!(glm.provider, "volcengine_coding");
+        // deepseek-v3.2 exists only under volcengine_coding; bare alias still resolves.
         let ds = catalog.find_model("ark/deepseek-v3.2").unwrap();
-        assert_eq!(ds.id, "deepseek-v3.2");
+        assert_eq!(ds.id, "ark/deepseek-v3.2");
         assert_eq!(ds.provider, "volcengine_coding");
+        let ds_alias = catalog.find_model("deepseek-v3.2").unwrap();
+        assert_eq!(ds_alias.id, "ark/deepseek-v3.2");
         let kimi = catalog.find_model("ark/kimi-k2.5").unwrap();
-        assert_eq!(kimi.id, "kimi-k2.5");
+        assert_eq!(kimi.id, "ark/kimi-k2.5");
+        assert_eq!(kimi.provider, "volcengine_coding");
+        // Native provider entries are unaffected by the ark/ rename
+        let minimax_native = catalog.find_model("minimax-m2.5").unwrap();
+        assert_eq!(minimax_native.provider, "minimax");
+        let glm_native = catalog.find_model("glm-4.7").unwrap();
+        assert_eq!(glm_native.provider, "zhipu");
+        let kimi_native = catalog.find_model("kimi-k2.5").unwrap();
+        assert_eq!(kimi_native.provider, "moonshot");
     }
 
     #[test]
