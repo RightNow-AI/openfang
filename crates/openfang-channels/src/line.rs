@@ -108,7 +108,7 @@ impl LineAdapter {
             diff |= a ^ b;
         }
         if diff != 0 {
-            let computed = base64::engine::general_purpose::STANDARD.encode(&result);
+            let computed = base64::engine::general_purpose::STANDARD.encode(result);
             // Log first/last 4 chars of each signature for debugging without leaking full HMAC
             let comp_redacted = format!(
                 "{}...{}",
