@@ -21,7 +21,16 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function translateUi(text) {
+  if (window.OpenFangI18n && typeof window.OpenFangI18n.translateText === 'function') {
+    return window.OpenFangI18n.translateText(text);
+  }
+  return text;
+}
+
 function renderMarkdown(text) {
+  var html;
+  var copyLabel;
   if (!text) return '';
   if (typeof marked !== 'undefined') {
     // Protect LaTeX blocks from marked.js mangling (underscores, backslashes, etc.)
@@ -52,13 +61,14 @@ function renderMarkdown(text) {
       return '\x00LATEX' + idx + '\x00';
     });
 
-    var html = marked.parse(protected_);
+    html = marked.parse(protected_);
+    copyLabel = translateUi('Copy');
     // Restore LaTeX blocks
     for (var i = 0; i < latexBlocks.length; i++) {
       html = html.replace('\x00LATEX' + i + '\x00', latexBlocks[i]);
     }
     // Add copy buttons to code blocks
-    html = html.replace(/<pre><code/g, '<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><code');
+    html = html.replace(/<pre><code/g, '<pre><button class="copy-btn" onclick="copyCode(this)">' + copyLabel + '</button><code');
     // Open external links in new tab
     html = html.replace(/<a\s+href="(https?:\/\/[^"]*)"(?![^>]*target=)([^>]*)>/gi, '<a href="$1" target="_blank" rel="noopener"$2>');
     return html;
@@ -70,9 +80,9 @@ function copyCode(btn) {
   var code = btn.nextElementSibling;
   if (code) {
     navigator.clipboard.writeText(code.textContent).then(function() {
-      btn.textContent = 'Copied!';
+      btn.textContent = translateUi('Copied!');
       btn.classList.add('copied');
-      setTimeout(function() { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+      setTimeout(function() { btn.textContent = translateUi('Copy'); btn.classList.remove('copied'); }, 1500);
     });
   }
 }
@@ -149,8 +159,9 @@ document.addEventListener('alpine:init', function() {
     },
 
     async refreshAgents() {
+      var agents;
       try {
-        var agents = await OpenFangAPI.get('/api/agents');
+        agents = await OpenFangAPI.get('/api/agents');
         this.agents = Array.isArray(agents) ? agents : [];
         this.agentCount = this.agents.length;
       } catch(e) { /* silent */ }
@@ -174,8 +185,9 @@ document.addEventListener('alpine:init', function() {
     },
 
     async checkStatus() {
+      var s;
       try {
-        var s = await OpenFangAPI.get('/api/status');
+        s = await OpenFangAPI.get('/api/status');
         this.connected = true;
         this.booting = false;
         this.lastError = '';
@@ -189,11 +201,14 @@ document.addEventListener('alpine:init', function() {
     },
 
     async checkOnboarding() {
+      var config;
+      var apiKey;
+      var noKey;
       if (localStorage.getItem('openfang-onboarded')) return;
       try {
-        var config = await OpenFangAPI.get('/api/config');
-        var apiKey = config && config.api_key;
-        var noKey = !apiKey || apiKey === 'not set' || apiKey === '';
+        config = await OpenFangAPI.get('/api/config');
+        apiKey = config && config.api_key;
+        noKey = !apiKey || apiKey === 'not set' || apiKey === '';
         if (noKey && this.agentCount === 0) {
           this.showOnboarding = true;
         }
@@ -287,6 +302,7 @@ document.addEventListener('alpine:init', function() {
 function app() {
   return {
     page: 'agents',
+    locale: (window.OpenFangI18n && typeof window.OpenFangI18n.getLocale === 'function') ? window.OpenFangI18n.getLocale() : 'en',
     themeMode: localStorage.getItem('openfang-theme-mode') || 'system',
     theme: (() => {
       var mode = localStorage.getItem('openfang-theme-mode') || 'system';
@@ -398,6 +414,15 @@ function app() {
       var modes = ['light', 'system', 'dark'];
       var next = modes[(modes.indexOf(this.themeMode) + 1) % modes.length];
       this.setTheme(next);
+    },
+
+    toggleLocale() {
+      var next;
+      if (!window.OpenFangI18n || typeof window.OpenFangI18n.setLocale !== 'function') return;
+      next = this.locale === 'zh-CN' ? 'en' : 'zh-CN';
+      window.OpenFangI18n.setLocale(next);
+      this.locale = next;
+      window.dispatchEvent(new CustomEvent('openfang-locale-change', { detail: { locale: next } }));
     },
 
     toggleSidebar() {

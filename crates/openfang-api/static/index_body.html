@@ -41,8 +41,9 @@
       </div>
       <div class="theme-switcher">
         <button class="theme-opt" :class="{ active: themeMode === 'light' }" @click="setTheme('light')" title="Light">&#9788;</button>
-        <button class="theme-opt" :class="{ active: themeMode === 'system' }" @click="setTheme('system')" title="System">&#9675;</button>
+        <button class="theme-opt" :class="{ active: themeMode === 'system' }" @click="setTheme('system')" title="Follow System">&#9675;</button>
         <button class="theme-opt" :class="{ active: themeMode === 'dark' }" @click="setTheme('dark')" title="Dark">&#9790;</button>
+        <button class="theme-opt locale-opt" @click="toggleLocale()" title="Language" x-text="locale === 'zh-CN' ? '中文' : 'EN'">EN</button>
       </div>
     </div>
 
@@ -1241,7 +1242,7 @@
                     <div class="card" style="margin-bottom:16px">
                       <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
                         <div style="width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:22px" :style="'background:' + spawnIdentity.color + '22; border:2px solid ' + spawnIdentity.color">
-                          <span x-text="spawnIdentity.emoji || '\u{1F916}'"></span>
+                          <span x-text="spawnIdentity.emoji || '\uD83E\uDD16'"></span>
                         </div>
                         <div>
                           <div class="font-bold" style="font-size:15px" x-text="spawnForm.name || 'Unnamed'"></div>
@@ -1400,7 +1401,7 @@
                 <div class="form-group"><label>Description</label><input class="form-input" x-model="newWf.description" placeholder="What does this workflow do?"></div>
                 <div class="mb-4">
                   <div class="form-group" style="margin:0"><label>Steps</label></div>
-                  <div class="text-xs text-dim mb-2">Each step runs an agent. Use <code style="color:var(--accent)">{{input}}</code> in prompts to pass the previous step's output.</div>
+                  <div class="text-xs text-dim mb-2">Each step runs an agent. Use <code style="color:var(--accent)">&#123;&#123;input&#125;&#125;</code> in prompts to pass the previous step's output.</div>
                   <template x-for="(step, i) in newWf.steps" :key="i">
                     <div class="card mt-2" style="padding:10px">
                       <div class="flex gap-2 items-center">
@@ -1415,7 +1416,7 @@
                         </select>
                         <button class="btn btn-danger btn-sm" @click="newWf.steps.splice(i,1)">&times;</button>
                       </div>
-                      <input class="form-input mt-2" x-model="step.prompt" placeholder="Prompt template (use {{input}})">
+                      <input class="form-input mt-2" x-model="step.prompt" placeholder="Prompt template (use &#123;&#123;input&#125;&#125;)">
                     </div>
                   </template>
                   <button class="btn btn-ghost btn-sm mt-2" @click="newWf.steps.push({name:'',agent_name:'',mode:'sequential',prompt:'{{input}}'})">+ Add Step</button>
@@ -1573,7 +1574,7 @@
                       </div>
                       <div class="form-group">
                         <label class="text-xs">Prompt Template</label>
-                        <textarea class="form-textarea" x-model="selectedNode.config.prompt" @input="applyNodeEdit()" style="font-size:11px;min-height:60px" placeholder="{{input}}"></textarea>
+                        <textarea class="form-textarea" x-model="selectedNode.config.prompt" @input="applyNodeEdit()" style="font-size:11px;min-height:60px" placeholder="&#123;&#123;input&#125;&#125;"></textarea>
                       </div>
                       <div class="form-group">
                         <label class="text-xs">Model (optional)</label>
@@ -2440,7 +2441,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   </div>
                   <div class="card-meta" x-text="qs.description"></div>
                   <div class="flex justify-end mt-2">
-                    <button class="btn btn-ghost btn-sm" @click="createDemoSkill(qs)" :disabled="isSkillInstalledByName(qs.name)" x-text="isSkillInstalledByName(qs.name) ? 'Created' : 'Create Skill'"></button>
+                    <button class="btn btn-ghost btn-sm" @click="createDemoSkill(qs)" :disabled="isSkillInstalledByName(qs.name)" x-text="isSkillInstalledByName(qs.name) ? 'Created Skill' : 'Create Skill'"></button>
                   </div>
                 </div>
               </template>
@@ -3666,7 +3667,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             </div>
             <div class="empty-state" x-show="!peers.length">
               <h4>No peers connected</h4>
-              <p class="hint">Add a <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">[network]</code> section to config.toml with <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">shared_secret</code> and peer addresses.</p>
+              <p class="hint">在 <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">[network]</code> 配置段中设置 <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">shared_secret</code> 和节点地址。</p>
             </div>
             </div>
 
@@ -5061,3 +5062,5 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
 <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){});}</script>
+</body>
+</html>
