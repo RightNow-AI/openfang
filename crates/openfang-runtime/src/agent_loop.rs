@@ -117,7 +117,7 @@ pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
         model.to_string()
     };
     // Strip ark/ prefix only for Volcano Engine providers (Ark marketplace models)
-    if (provider == "volcengine_coding" || provider == "volcengine")
+    if (provider == "volcengine_coding" || provider == "volcengine" || provider == "doubao")
         && result.starts_with("ark/")
     {
         result = result["ark/".len()..].to_string();
@@ -3035,6 +3035,24 @@ mod tests {
         assert_eq!(
             strip_provider_prefix("ark/doubao-seed-code", "volcengine_coding"),
             "doubao-seed-code"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_ark_volcengine() {
+        // Should strip ark/ for volcengine
+        assert_eq!(
+            strip_provider_prefix("ark/doubao-seed-code", "volcengine"),
+            "doubao-seed-code"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_ark_doubao() {
+        // Should strip ark/ for doubao provider alias
+        assert_eq!(
+            strip_provider_prefix("ark/some-model", "doubao"),
+            "some-model"
         );
     }
 

@@ -74,7 +74,7 @@ const PROVIDERS: &[ProviderInfo] = &[
         env_var: "VOLCENGINE_API_KEY",
         default_model: "doubao-seed-1-6-251015",
         needs_key: true,
-        hint: "ByteDance Ark platform",
+        hint: "cn-beijing; override base_url for other regions",
     },
     ProviderInfo {
         name: "volcengine_coding",
@@ -82,7 +82,7 @@ const PROVIDERS: &[ProviderInfo] = &[
         env_var: "VOLCENGINE_API_KEY",
         default_model: "ark-code-latest",
         needs_key: true,
-        hint: "ByteDance Ark — coding models",
+        hint: "ByteDance Ark — coding models (cn-beijing)",
     },
     ProviderInfo {
         name: "openrouter",
