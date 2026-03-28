@@ -3535,10 +3535,12 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec![],
         },
-        // Third-party models available via Ark marketplace
+        // Third-party models available via Ark marketplace.
+        // IDs are prefixed with "ark/" to avoid collision with the same models
+        // registered under their native providers (minimax, zhipu, moonshot).
         ModelCatalogEntry {
-            id: "minimax-m2.5".into(),
-            display_name: "MiniMax M2.5".into(),
+            id: "ark/minimax-m2.5".into(),
+            display_name: "MiniMax M2.5 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
             context_window: 200_000,
@@ -3551,8 +3553,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "glm-4.7".into(),
-            display_name: "GLM 4.7".into(),
+            id: "ark/glm-4.7".into(),
+            display_name: "GLM 4.7 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Balanced,
             context_window: 200_000,
@@ -3579,8 +3581,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "kimi-k2.5".into(),
-            display_name: "Kimi K2.5".into(),
+            id: "ark/kimi-k2.5".into(),
+            display_name: "Kimi K2.5 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
             context_window: 262_144,
@@ -3596,6 +3598,14 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         // ══════════════════════════════════════════════════════════════
         // Volcano Engine / Doubao (4)
         // ══════════════════════════════════════════════════════════════
+        //
+        // NOTE on separators: the volcengine provider uses hyphen-only IDs
+        // (e.g. "doubao-seed-2-0-lite") because the Ark /api/v3 endpoint uses
+        // endpoint-access-point names that don't contain dots. The
+        // volcengine_coding entries above use dot notation
+        // (e.g. "doubao-seed-2.0-lite") which is the model version string used
+        // by the /api/coding/v3 endpoint. These are different endpoint paths
+        // and the IDs must not be unified.
         ModelCatalogEntry {
             id: "doubao-seed-1-6-251015".into(),
             display_name: "Doubao Seed 1.6 Pro".into(),
