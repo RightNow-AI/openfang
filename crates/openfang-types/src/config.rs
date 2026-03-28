@@ -1152,6 +1152,12 @@ pub struct CompactionTomlConfig {
     pub continuous_interval: usize,
     /// Number of recent messages to keep verbatim.
     pub keep_recent: usize,
+    /// Gap (seconds) between messages that triggers immediate compaction + context
+    /// refresh before dispatching. 0 = disabled. Default: 900 (15 minutes).
+    pub session_gap_secs: u64,
+    /// Maximum lookback (seconds) for context source queries. Caps the time window
+    /// so a 3-day absence doesn't dump 3 days of events. Default: 86400 (24 hours).
+    pub max_lookback_secs: u64,
     /// Hands to query for contextual summaries after compaction.
     pub context_sources: Vec<CompactionContextSource>,
 }
@@ -1159,8 +1165,10 @@ pub struct CompactionTomlConfig {
 impl Default for CompactionTomlConfig {
     fn default() -> Self {
         Self {
-            continuous_interval: 0, // disabled by default
+            continuous_interval: 0,
             keep_recent: 6,
+            session_gap_secs: 900,    // 15 minutes
+            max_lookback_secs: 86400, // 24 hours
             context_sources: Vec::new(),
         }
     }

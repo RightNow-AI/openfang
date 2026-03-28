@@ -160,6 +160,8 @@ pub struct OpenFangKernel {
     /// messages via Telegram). Different agents can still run in parallel.
     /// Per-agent exchange counter for continuous compaction.
     exchange_counters: dashmap::DashMap<AgentId, std::sync::atomic::AtomicUsize>,
+    /// Per-agent last message timestamp for session gap detection.
+    pub last_message_at: dashmap::DashMap<AgentId, std::time::Instant>,
     agent_msg_locks: dashmap::DashMap<AgentId, Arc<tokio::sync::Mutex<()>>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
@@ -1087,6 +1089,7 @@ impl OpenFangKernel {
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
             exchange_counters: dashmap::DashMap::new(),
+            last_message_at: dashmap::DashMap::new(),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
         };

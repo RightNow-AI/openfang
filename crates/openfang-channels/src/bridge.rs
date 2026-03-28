@@ -236,6 +236,14 @@ pub trait ChannelBridgeHandle: Send + Sync {
         // Default: no tracking
     }
 
+    /// Check if a session gap occurred since the last message to this agent.
+    /// If gap > threshold, triggers compaction + context source queries.
+    /// Returns an optional context preamble to prepend to the user's message.
+    async fn check_session_gap(&self, _agent_id: AgentId) -> Option<String> {
+        None
+    }
+
+
     /// Check if auto-reply is enabled and the message should trigger one.
     /// Returns Some(reply_text) if auto-reply fires, None otherwise.
     async fn check_auto_reply(&self, _agent_id: AgentId, _message: &str) -> Option<String> {
@@ -963,6 +971,16 @@ async fn dispatch_message(
     } else {
         text.clone()
     };
+
+    // Session gap detection: if the user hasn't interacted for a while,
+    // trigger compaction + context refresh before dispatching.
+    // The preamble (if any) is prepended so the agent sees it before the user's message.
+    let prefixed_text = if let Some(preamble) = handle.check_session_gap(agent_id).await {
+        format!("[Session context]: {preamble}\n\n{prefixed_text}")
+    } else {
+        prefixed_text
+    };
+
 
     // Send to agent and relay response
     let result = handle.send_message(agent_id, &prefixed_text).await;

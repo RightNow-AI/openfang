@@ -880,6 +880,106 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         }
     }
 
+    async fn check_session_gap(&self, agent_id: AgentId) -> Option<String> {
+        let gap_threshold = self.kernel.config.compaction.session_gap_secs;
+        if gap_threshold == 0 {
+            // Update timestamp even if gap detection is disabled
+            self.kernel
+                .last_message_at
+                .insert(agent_id, std::time::Instant::now());
+            return None;
+        }
+
+        let now = std::time::Instant::now();
+        let gap_secs = self
+            .kernel
+            .last_message_at
+            .get(&agent_id)
+            .map(|t| now.duration_since(*t).as_secs())
+            .unwrap_or(u64::MAX); // First message ever = treat as long gap
+
+        // Update timestamp
+        self.kernel.last_message_at.insert(agent_id, now);
+
+        if gap_secs < gap_threshold {
+            return None; // Short gap — continue normally
+        }
+
+        tracing::info!(
+            agent = %agent_id,
+            gap_secs = gap_secs,
+            "Session gap detected, running compaction + context refresh"
+        );
+
+        // Run compaction first
+        if let Err(e) = self.kernel.compact_agent_session(agent_id).await {
+            tracing::warn!(
+                agent = %agent_id,
+                error = %e,
+                "Session gap compaction failed"
+            );
+        }
+
+        // Query context sources with bounded lookback
+        let context_sources = &self.kernel.config.compaction.context_sources;
+        if context_sources.is_empty() {
+            return None;
+        }
+
+        let max_lookback = self.kernel.config.compaction.max_lookback_secs;
+        let lookback_secs = gap_secs.min(max_lookback);
+        let since = chrono::Utc::now() - chrono::Duration::seconds(lookback_secs as i64);
+
+        let mut parts = Vec::new();
+        for source in context_sources {
+            let query = format!(
+                "{}\nSummarize anything relevant since {}.",
+                source.prompt,
+                since.format("%Y-%m-%d %H:%M %Z"),
+            );
+
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                openfang_runtime::kernel_handle::KernelHandle::send_to_agent(
+                    self.kernel.as_ref(),
+                    &source.hand,
+                    &query,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(summary)) if !summary.trim().is_empty() => {
+                    tracing::info!(
+                        hand = %source.hand,
+                        summary_len = summary.len(),
+                        "Session gap context source responded"
+                    );
+                    parts.push(format!("{}: {}", source.hand, summary));
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        hand = %source.hand,
+                        error = %e,
+                        "Session gap context source failed"
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        hand = %source.hand,
+                        "Session gap context source timed out"
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n"))
+        }
+    }
+
     async fn check_auto_reply(&self, agent_id: AgentId, message: &str) -> Option<String> {
         // Check if auto-reply should fire for this message
         let channel_type = "bridge"; // Generic; the bridge layer handles specifics
