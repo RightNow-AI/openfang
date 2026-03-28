@@ -109,13 +109,18 @@ fn append_tool_error_guidance(tool_result_blocks: &mut Vec<ContentBlock>) {
 pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
     let slash_prefix = format!("{}/", provider);
     let colon_prefix = format!("{}:", provider);
-    if model.starts_with(&slash_prefix) {
+    let mut result = if model.starts_with(&slash_prefix) {
         model[slash_prefix.len()..].to_string()
     } else if model.starts_with(&colon_prefix) {
         model[colon_prefix.len()..].to_string()
     } else {
         model.to_string()
+    };
+    // Strip ark/ prefix for volcengine_coding endpoint (Ark marketplace models)
+    if result.starts_with("ark/") {
+        result = result["ark/".len()..].to_string();
     }
+    result
 }
 
 /// Default context window size (tokens) for token-based trimming.

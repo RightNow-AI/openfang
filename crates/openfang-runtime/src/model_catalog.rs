@@ -4668,4 +4668,39 @@ mod tests {
         assert_eq!(found.provider, "custom_provider");
         assert_eq!(found.id, "My-Custom-LLM");
     }
+
+    #[test]
+    fn test_ark_alias_resolution() {
+        let catalog = ModelCatalog::new();
+        assert_eq!(catalog.resolve_alias("ark/minimax-m2.5"), Some("minimax-m2.5"));
+        assert_eq!(catalog.resolve_alias("ark/glm-4.7"), Some("glm-4.7"));
+        assert_eq!(catalog.resolve_alias("ark/deepseek-v3.2"), Some("deepseek-v3.2"));
+        assert_eq!(catalog.resolve_alias("ark/kimi-k2.5"), Some("kimi-k2.5"));
+        // find_model via ark/ alias should return the entry with the bare model id.
+        // minimax-m2.5 is unique to volcengine_coding via Ark marketplace.
+        let m25 = catalog.find_model("ark/minimax-m2.5").unwrap();
+        assert_eq!(m25.id, "minimax-m2.5");
+        assert_eq!(m25.provider, "volcengine_coding");
+        // glm-4.7 and kimi-k2.5 share their id with zhipu/moonshot models;
+        // find_model returns the first catalog entry (non-Ark provider) for those ids.
+        let glm = catalog.find_model("ark/glm-4.7").unwrap();
+        assert_eq!(glm.id, "glm-4.7");
+        // deepseek-v3.2 exists only under volcengine_coding in the Ark section.
+        let ds = catalog.find_model("ark/deepseek-v3.2").unwrap();
+        assert_eq!(ds.id, "deepseek-v3.2");
+        assert_eq!(ds.provider, "volcengine_coding");
+        let kimi = catalog.find_model("ark/kimi-k2.5").unwrap();
+        assert_eq!(kimi.id, "kimi-k2.5");
+    }
+
+    #[test]
+    fn test_doubao_alias_resolves_to_volcengine_model() {
+        let catalog = ModelCatalog::new();
+        // "doubao" alias should resolve to the model ID
+        let resolved = catalog.resolve_alias("doubao");
+        assert_eq!(resolved, Some("doubao-seed-1-6-251015"));
+        // The model should belong to the volcengine provider
+        let model = catalog.find_model("doubao-seed-1-6-251015").unwrap();
+        assert_eq!(model.provider, "volcengine");
+    }
 }
