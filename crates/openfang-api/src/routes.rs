@@ -17,6 +17,24 @@ use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
+use tokio::sync::broadcast;
+
+/// Messages sent through agent MPMC channels for WebSocket delivery.
+#[derive(Debug, Clone)]
+pub enum AgentChannelMessage {
+    /// User message from channel (type = "user")
+    User {
+        content: String,
+        sender: String,
+    },
+    /// Model response message (type = "Text")
+    Text {
+        content: String,
+    },
+    Error {
+        content: String,
+    },
+}
 
 /// Shared application state.
 ///
@@ -43,6 +61,9 @@ pub struct AppState {
     /// Thread-safe mutable budget config. Updated via PUT /api/budget.
     /// Initialized from `kernel.config.budget` at startup.
     pub budget_config: Arc<tokio::sync::RwLock<openfang_types::config::BudgetConfig>>,
+    /// Global MPMC channels for agent-to-WebSocket message delivery.
+    /// Key: agent_id, Value: (tx, rx) channel pair for pushing messages to WebSocket.
+    pub agent_channels: crate::channel_bridge::AgentChannels,
 }
 
 /// POST /api/agents — Spawn a new agent.
@@ -152,6 +173,9 @@ pub async fn spawn_agent(
             if let Some(ref mgr) = *state.bridge_manager.lock().await {
                 mgr.router().register_agent(name.clone(), id);
             }
+            // Create MPMC channel for this agent
+            let (tx, _rx) = broadcast::channel::<AgentChannelMessage>(10);
+            state.agent_channels.insert(id, tx);
             (
                 StatusCode::CREATED,
                 Json(serde_json::json!(SpawnResponse {
@@ -696,6 +720,10 @@ pub async fn restart_agent(
         .kernel
         .registry
         .set_state(agent_id, openfang_types::agent::AgentState::Running);
+
+    // Create or recreate MPMC channel for this agent
+    let (tx, _rx) = broadcast::channel::<AgentChannelMessage>(100);
+    state.agent_channels.insert(agent_id, tx);
 
     tracing::info!(
         agent = %agent_name,
@@ -9755,6 +9783,10 @@ pub async fn clone_agent(
     if let Some(ref mgr) = *state.bridge_manager.lock().await {
         mgr.router().register_agent(req.new_name.clone(), new_id);
     }
+
+    // Create MPMC channel for the cloned agent
+    let (tx, _rx) = broadcast::channel::<AgentChannelMessage>(100);
+    state.agent_channels.insert(new_id, tx);
 
     (
         StatusCode::CREATED,

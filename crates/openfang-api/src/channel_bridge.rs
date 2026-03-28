@@ -42,7 +42,9 @@ use openfang_channels::threema::ThreemaAdapter;
 use openfang_channels::twist::TwistAdapter;
 use openfang_channels::webex::WebexAdapter;
 // Wave 5
+use crate::routes::AgentChannelMessage;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use openfang_channels::dingtalk::DingTalkAdapter;
 use openfang_channels::dingtalk_stream::DingTalkStreamAdapter;
 use openfang_channels::discourse::DiscourseAdapter;
@@ -57,29 +59,39 @@ use openfang_kernel::OpenFangKernel;
 use openfang_types::agent::AgentId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
 use openfang_runtime::str_utils::safe_truncate_str;
+
+pub type AgentChannels = Arc<DashMap<AgentId, broadcast::Sender<AgentChannelMessage>>>;
 
 /// Wraps `OpenFangKernel` to implement `ChannelBridgeHandle`.
 pub struct KernelBridgeAdapter {
     kernel: Arc<OpenFangKernel>,
     started_at: Instant,
+    agent_channels: AgentChannels,
 }
 
 #[async_trait]
 impl ChannelBridgeHandle for KernelBridgeAdapter {
     async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String> {
-        let result = self
-            .kernel
-            .send_message(agent_id, message)
-            .await
-            .map_err(|e| format!("{e}"))?;
-        // Silent/NO_REPLY responses should not be forwarded to channels
-        if result.silent {
-            return Ok(String::new());
+        match self.kernel.send_message(agent_id, message).await {
+            Ok(result) => {
+                self.forward_response_to_ws(agent_id, &result.response)
+                    .await?;
+                // Silent/NO_REPLY responses should not be forwarded to channels
+                if result.silent {
+                    return Ok(String::new());
+                }
+                Ok(result.response)
+            }
+            Err(e) => {
+                let err = format!("{e}");
+                self.forward_response_to_ws(agent_id, &err).await?;
+                Err(err)
+            }
         }
-        Ok(result.response)
     }
 
     async fn send_message_with_blocks(
@@ -101,12 +113,22 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         } else {
             text
         };
-        let result = self
+        match self
             .kernel
             .send_message_with_blocks(agent_id, &text, blocks)
             .await
-            .map_err(|e| format!("{e}"))?;
-        Ok(result.response)
+        {
+            Ok(result) => {
+                self.forward_response_to_ws(agent_id, &result.response)
+                    .await?;
+                return Ok(result.response);
+            }
+            Err(e) => {
+                let err = format!("{e}");
+                self.forward_response_to_ws(agent_id, &err).await?;
+                return Err(err);
+            }
+        }
     }
 
     async fn find_agent_by_name(&self, name: &str) -> Result<Option<AgentId>, String> {
@@ -978,6 +1000,32 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         }
         msg
     }
+
+    async fn forward_to_ws(
+        &self,
+        agent_id: AgentId,
+        sender_name: &str,
+        content: &str,
+    ) -> Result<(), String> {
+        tracing::trace!("forward_to_ws {agent_id:?} - {sender_name} - {content:?}");
+        if let Some(tx) = self.agent_channels.get(&agent_id) {
+            let _ = tx.send(AgentChannelMessage::User {
+                content: content.to_string(),
+                sender: sender_name.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn forward_response_to_ws(&self, agent_id: AgentId, content: &str) -> Result<(), String> {
+        tracing::trace!("forward_response_to_ws {agent_id:?} - {content:?}");
+        if let Some(tx) = self.agent_channels.get(&agent_id) {
+            let _ = tx.send(AgentChannelMessage::Text {
+                content: content.to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Parse a trigger pattern string from chat into a `TriggerPattern`.
@@ -1055,9 +1103,14 @@ fn read_token(env_var_or_token: &str, adapter_name: &str) -> Option<String> {
 ///
 /// Returns `Some(BridgeManager)` if any channels were configured and started,
 /// or `None` if no channels are configured.
-pub async fn start_channel_bridge(kernel: Arc<OpenFangKernel>) -> Option<BridgeManager> {
+pub async fn start_channel_bridge(
+    kernel: Arc<OpenFangKernel>,
+    agent_channels: AgentChannels,
+) -> Option<BridgeManager> {
     let channels = kernel.config.channels.clone();
-    let (bridge, _names) = start_channel_bridge_with_config(kernel, &channels).await;
+    let agent_channels_clone = agent_channels.clone();
+    let (bridge, _names) =
+        start_channel_bridge_with_config(kernel, &channels, agent_channels_clone).await;
     bridge
 }
 
@@ -1067,6 +1120,7 @@ pub async fn start_channel_bridge(kernel: Arc<OpenFangKernel>) -> Option<BridgeM
 pub async fn start_channel_bridge_with_config(
     kernel: Arc<OpenFangKernel>,
     config: &openfang_types::config::ChannelsConfig,
+    agent_channels: AgentChannels,
 ) -> (Option<BridgeManager>, Vec<String>) {
     let has_any = !config.telegram.is_empty()
         || !config.discord.is_empty()
@@ -1117,6 +1171,7 @@ pub async fn start_channel_bridge_with_config(
     let handle = KernelBridgeAdapter {
         kernel: kernel.clone(),
         started_at: Instant::now(),
+        agent_channels: agent_channels.clone(),
     };
 
     // Collect all adapters to start
@@ -1830,6 +1885,7 @@ pub async fn start_channel_bridge_with_config(
     let bridge_handle: Arc<dyn ChannelBridgeHandle> = Arc::new(KernelBridgeAdapter {
         kernel: kernel.clone(),
         started_at: Instant::now(),
+        agent_channels: agent_channels.clone(),
     });
     let router = Arc::new(router);
     let mut manager = BridgeManager::new(bridge_handle, router);
@@ -1913,8 +1969,12 @@ pub async fn reload_channels_from_disk(
     *state.channels_config.write().await = fresh_config.channels.clone();
 
     // Start new bridge with fresh channel config
-    let (new_bridge, started) =
-        start_channel_bridge_with_config(state.kernel.clone(), &fresh_config.channels).await;
+    let (new_bridge, started) = start_channel_bridge_with_config(
+        state.kernel.clone(),
+        &fresh_config.channels,
+        state.agent_channels.clone(),
+    )
+    .await;
 
     // Store the new bridge
     *state.bridge_manager.lock().await = new_bridge;

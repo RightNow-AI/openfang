@@ -3,7 +3,7 @@
  * @Email              : 307253927@qq.com
  * @Date               : 2026-03-09 09:16:01
  * @LastEditors        : Felix
- * @LastEditTime       : 2026-03-25 17:06:28
+ * @LastEditTime       : 2026-03-27 19:30:03
  */
 //! OpenFang daemon server — boots the kernel and serves the HTTP API.
 
@@ -16,6 +16,7 @@ use crate::uni_skill;
 use crate::webchat;
 use crate::ws;
 use axum::Router;
+use dashmap::DashMap;
 use openfang_kernel::OpenFangKernel;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -48,8 +49,12 @@ pub async fn build_router(
     listen_addr: SocketAddr,
     webchat_enabled: bool,
 ) -> (Router<()>, Arc<AppState>) {
+    // Create shared agent_channels for WebSocket message forwarding
+    let agent_channels: crate::channel_bridge::AgentChannels = Arc::new(DashMap::new());
+
     // Start channel bridges (Telegram, etc.)
-    let bridge = channel_bridge::start_channel_bridge(kernel.clone()).await;
+    let bridge =
+        channel_bridge::start_channel_bridge(kernel.clone(), Arc::clone(&agent_channels)).await;
 
     let channels_config = kernel.config.channels.clone();
     let state = Arc::new(AppState {
@@ -62,7 +67,14 @@ pub async fn build_router(
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone())),
+        agent_channels,
     });
+
+    // Initialize channels for existing agents
+    for agent_entry in state.kernel.registry.list() {
+        let (tx, _rx) = tokio::sync::broadcast::channel::<routes::AgentChannelMessage>(100);
+        state.agent_channels.insert(agent_entry.id, tx);
+    }
 
     // CORS: allow localhost origins by default. If API key is set, the API
     // is protected anyway. For development, permissive CORS is convenient.

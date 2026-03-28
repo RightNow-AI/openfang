@@ -12,6 +12,7 @@
 //! Server → Client: `{"type":"silent_complete"}` (agent chose NO_REPLY)
 //! Server → Client: `{"type":"canvas","canvas_id":"...","html":"...","title":"..."}`
 
+use crate::routes::AgentChannelMessage;
 use crate::routes::AppState;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{ConnectInfo, Path, State, WebSocketUpgrade};
@@ -246,6 +247,54 @@ async fn handle_agent_ws(
     )
     .await;
 
+    // Spawn task: listen to agent MPMC channel and forward to WebSocket
+    let sender_for_channel = Arc::clone(&sender);
+    let channel_listener_handle = if let Some(tx) = state.agent_channels.get(&agent_id) {
+        let mut rx = tx.value().subscribe();
+        Some(tokio::spawn(async move {
+            while let Ok(ref msg) = rx.recv().await {
+                tracing::debug!("Received message from channel {}: {:?}", agent_id, msg);
+                let json_msg = match msg {
+                    AgentChannelMessage::User { content, sender } => {
+                        serde_json::json!({
+                            "type": "user",
+                            "content": content,
+                            "sender": sender,
+                        })
+                    }
+                    AgentChannelMessage::Text { content } => {
+                        serde_json::json!({
+                            "type": "response",
+                            "content": content,
+                        })
+                    }
+                    AgentChannelMessage::Error { content } => {
+                        serde_json::json!({
+                            "type": "error",
+                            "content": content,
+                        })
+                    }
+                };
+                if let Err(err) = send_json(&sender_for_channel, &json_msg).await {
+                    tracing::warn!("sync ws message error: {err:?}");
+                }
+                if let AgentChannelMessage::User { .. } = msg {
+                    let _ = send_json(
+                        &sender_for_channel,
+                        &serde_json::json!({
+                            "type": "typing",
+                            "state": "start"
+                        }),
+                    )
+                    .await;
+                }
+            }
+        }))
+    } else {
+        tracing::debug!("Agent_channels not found: {:?}", agent_id);
+        None
+    };
+
     // Spawn background task: periodic agent list updates with change detection
     let sender_clone = Arc::clone(&sender);
     let state_clone = Arc::clone(&state);
@@ -386,6 +435,9 @@ async fn handle_agent_ws(
     }
 
     // Cleanup
+    if let Some(handle) = channel_listener_handle {
+        handle.abort();
+    }
     update_handle.abort();
     info!(agent_id = %id_str, "WebSocket disconnected");
 }

@@ -215,6 +215,24 @@ pub trait ChannelBridgeHandle: Send + Sync {
         "Budget information not available.".to_string()
     }
 
+    /// Forward channel message to WebSocket (if connected).
+    /// Returns Ok if sent or no WebSocket connection exists.
+    #[allow(unused_variables)]
+    async fn forward_to_ws(
+        &self,
+        agent_id: AgentId,
+        sender_name: &str,
+        content: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Forward agent response to WebSocket (if connected).
+    #[allow(unused_variables)]
+    async fn forward_response_to_ws(&self, agent_id: AgentId, content: &str) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Show OFP peer network status.
     async fn peers_text(&self) -> String {
         "Peer network not available.".to_string()
@@ -554,6 +572,46 @@ async fn dispatch_message(
         None
     };
 
+    // Route to agent (standard path)
+    let agent_id = router.resolve(
+        &message.channel,
+        &message.sender.platform_id,
+        message.sender.openfang_user.as_deref(),
+    );
+
+    let agent_id = match agent_id {
+        Some(id) => id,
+        None => {
+            // Fallback: try "assistant" agent, then first available agent
+            let fallback = handle.find_agent_by_name("默认助手").await.ok().flatten();
+            let fallback = match fallback {
+                Some(id) => Some(id),
+                None => handle
+                    .list_agents()
+                    .await
+                    .ok()
+                    .and_then(|agents| agents.first().map(|(id, _)| *id)),
+            };
+            match fallback {
+                Some(id) => {
+                    // Auto-set this as the user's default so future messages route directly
+                    router.set_user_default(message.sender.platform_id.clone(), id);
+                    id
+                }
+                None => {
+                    send_response(
+                        adapter,
+                        &message.sender,
+                        "No agents available. Start the dashboard at http://127.0.0.1:4200 to create one.".to_string(),
+                        thread_id,
+                        output_format,
+                    ).await;
+                    return;
+                }
+            }
+        }
+    };
+
     // --- DM/Group policy check ---
     if let Some(ref ov) = overrides {
         if message.is_group {
@@ -739,14 +797,8 @@ async fn dispatch_message(
                 .authorize_channel_user(ct_str, sender_user_id(message), "chat")
                 .await
             {
-                send_response(
-                    adapter,
-                    &message.sender,
-                    format!("Access denied: {denied}"),
-                    thread_id,
-                    output_format,
-                )
-                .await;
+                let result = format!("Access denied: {denied}");
+                send_response(adapter, &message.sender, result, thread_id, output_format).await;
                 return;
             }
             let _ = adapter.send_typing(&message.sender).await;
@@ -800,59 +852,13 @@ async fn dispatch_message(
         }
     }
 
-    // Route to agent (standard path)
-    let agent_id = router.resolve(
-        &message.channel,
-        &message.sender.platform_id,
-        message.sender.openfang_user.as_deref(),
-    );
-
-    let agent_id = match agent_id {
-        Some(id) => id,
-        None => {
-            // Fallback: try "assistant" agent, then first available agent
-            let fallback = handle.find_agent_by_name("assistant").await.ok().flatten();
-            let fallback = match fallback {
-                Some(id) => Some(id),
-                None => handle
-                    .list_agents()
-                    .await
-                    .ok()
-                    .and_then(|agents| agents.first().map(|(id, _)| *id)),
-            };
-            match fallback {
-                Some(id) => {
-                    // Auto-set this as the user's default so future messages route directly
-                    router.set_user_default(message.sender.platform_id.clone(), id);
-                    id
-                }
-                None => {
-                    send_response(
-                        adapter,
-                        &message.sender,
-                        "No agents available. Start the dashboard at http://127.0.0.1:4200 to create one.".to_string(),
-                        thread_id,
-                        output_format,
-                    ).await;
-                    return;
-                }
-            }
-        }
-    };
-
     // RBAC: authorize the user before forwarding to agent
     if let Err(denied) = handle
         .authorize_channel_user(ct_str, sender_user_id(message), "chat")
         .await
     {
-        send_response(
-            adapter,
-            &message.sender,
-            format!("Access denied: {denied}"),
-            thread_id,
-            output_format,
-        )
-        .await;
+        let combined = format!("Access denied: {denied}");
+        send_response(adapter, &message.sender, combined, thread_id, output_format).await;
         return;
     }
 
@@ -906,6 +912,7 @@ async fn dispatch_message(
         text.clone()
     };
 
+    let _ = handle.forward_to_ws(agent_id, sender_name, &text).await;
     // Send to agent and relay response
     let result = handle.send_message(agent_id, &prefixed_text).await;
 
@@ -1280,14 +1287,8 @@ async fn dispatch_with_blocks(
         .authorize_channel_user(ct_str, sender_user_id(message), "chat")
         .await
     {
-        send_response(
-            adapter,
-            &message.sender,
-            format!("Access denied: {denied}"),
-            thread_id,
-            output_format,
-        )
-        .await;
+        let msg = format!("Access denied: {denied}");
+        send_response(adapter, &message.sender, msg, thread_id, output_format).await;
         return;
     }
 
