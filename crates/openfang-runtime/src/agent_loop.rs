@@ -116,7 +116,11 @@ pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
     } else {
         model.to_string()
     };
-    // Strip ark/ prefix only for Volcano Engine providers (Ark marketplace models)
+    // Strip "ark/" catalog namespace prefix before sending to Ark API.
+    // "ark/" is used internally to disambiguate Ark marketplace models from
+    // native provider models with the same name (e.g. ark/minimax-m2.5 vs
+    // minimax provider's minimax-m2.5). The Ark API endpoint expects the bare
+    // model name (e.g. "minimax-m2.5"), not the namespaced form.
     if (provider == "volcengine_coding" || provider == "volcengine" || provider == "doubao")
         && result.starts_with("ark/")
     {
@@ -3030,8 +3034,8 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_provider_prefix_ark_volcengine_coding() {
-        // Should strip ark/ for volcengine_coding
+    fn test_strip_ark_catalog_prefix_for_volcengine_coding() {
+        // ark/ is catalog-only; Ark API expects bare name
         assert_eq!(
             strip_provider_prefix("ark/doubao-seed-code", "volcengine_coding"),
             "doubao-seed-code"
