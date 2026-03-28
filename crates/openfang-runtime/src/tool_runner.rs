@@ -23,7 +23,7 @@ const DEFAULT_ASYNC_TIMEOUT_SECS: u64 = 30;
 
 /// In-flight async agent tasks, keyed by a caller-chosen task ID.
 static ASYNC_TASKS: std::sync::LazyLock<dashmap::DashMap<String, tokio::task::JoinHandle<()>>> =
-    std::sync::LazyLock::new(|| dashmap::DashMap::new());
+    std::sync::LazyLock::new(dashmap::DashMap::new);
 
 /// Check if a tool name refers to a shell execution tool.
 ///
