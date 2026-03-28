@@ -1672,6 +1672,7 @@ impl OpenFangKernel {
                         if msg_count > compaction_config.keep_recent
                             && count % compaction_config.continuous_interval == 0
                         {
+                            let context_sources = compaction_config.context_sources.clone();
                             let self_clone = self.self_handle.get().and_then(|w| w.upgrade());
                             if let Some(kernel) = self_clone {
                                 tokio::spawn(async move {
@@ -1680,10 +1681,78 @@ impl OpenFangKernel {
                                         exchange_count = count,
                                         "Continuous compaction triggered (non-streaming)"
                                     );
+
+                                    // Run standard compaction
                                     if let Err(e) = kernel.compact_agent_session(agent_id).await {
                                         warn!(
                                             agent_id = %agent_id,
                                             "Continuous compaction failed: {e}"
+                                        );
+                                        return;
+                                    }
+
+                                    // Query context sources
+                                    if context_sources.is_empty() {
+                                        return;
+                                    }
+
+                                    let now = chrono::Utc::now();
+                                    let mut context_parts = Vec::new();
+
+                                    for source in &context_sources {
+                                        let query = format!(
+                                            "{}\nTime window: up to {}",
+                                            source.prompt,
+                                            now.format("%Y-%m-%d %H:%M %Z"),
+                                        );
+
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_secs(30),
+                                            openfang_runtime::kernel_handle::KernelHandle::send_to_agent(
+                                                kernel.as_ref(),
+                                                &source.hand,
+                                                &query,
+                                            ),
+                                        )
+                                        .await
+                                        {
+                                            Ok(Ok(summary)) if !summary.trim().is_empty() => {
+                                                info!(
+                                                    hand = %source.hand,
+                                                    summary_len = summary.len(),
+                                                    "Context source responded (non-streaming)"
+                                                );
+                                                context_parts.push(format!(
+                                                    "[{}]: {}",
+                                                    source.hand, summary
+                                                ));
+                                            }
+                                            Ok(Err(e)) => {
+                                                warn!(hand = %source.hand, error = %e, "Context source query failed");
+                                            }
+                                            Err(_) => {
+                                                warn!(hand = %source.hand, "Context source query timed out");
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+
+                                    if !context_parts.is_empty() {
+                                        let context_block = context_parts.join("\n\n");
+                                        info!(
+                                            agent_id = %agent_id,
+                                            sources = context_parts.len(),
+                                            "Contextual summaries gathered (non-streaming)"
+                                        );
+                                        let memory_key =
+                                            format!("session_context_{}", now.timestamp());
+                                        let _ = openfang_runtime::kernel_handle::KernelHandle::memory_store(
+                                            kernel.as_ref(),
+                                            &memory_key,
+                                            serde_json::json!({
+                                                "timestamp": now.to_rfc3339(),
+                                                "context": context_block,
+                                            }),
                                         );
                                     }
                                 });
