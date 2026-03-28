@@ -122,6 +122,7 @@ pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
     // native provider models with the same name (e.g. ark/minimax-m2.5 vs
     // minimax provider's minimax-m2.5). The Ark API endpoint expects the bare
     // model name (e.g. "minimax-m2.5"), not the namespaced form.
+    // Strip ark/ prefix only for Volcano Engine providers (Ark marketplace models)
     if (provider == "volcengine_coding" || provider == "volcengine" || provider == "doubao")
         && result.starts_with("ark/")
     {
