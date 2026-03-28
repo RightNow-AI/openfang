@@ -3467,7 +3467,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
             id: "ark-code-latest".into(),
-            display_name: "ark-code-latest".into(),
+            display_name: "Ark Code (Latest)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
             context_window: 131_072,
@@ -3509,7 +3509,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         },
         ModelCatalogEntry {
             id: "doubao-seed-2.0-lite".into(),
-            display_name: "Doubao Seed 2.0 Lite".into(),
+            display_name: "Doubao Seed 2.0 Lite (Ark Coding)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Fast,
             context_window: 262_144,
@@ -3538,6 +3538,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         // Third-party models available via Ark marketplace.
         // IDs are prefixed with "ark/" to avoid collision with the same models
         // registered under their native providers (minimax, zhipu, moonshot).
+        // Pricing not publicly documented for Ark-routed third-party models; set to 0.0
         ModelCatalogEntry {
             id: "ark/minimax-m2.5".into(),
             display_name: "MiniMax M2.5 (via Ark)".into(),
@@ -3618,6 +3619,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
+            // "doubao" also maps to the volcengine provider in provider_defaults() — intentional dual alias
             aliases: vec!["doubao".into(), "doubao-pro".into()],
         },
         ModelCatalogEntry {
@@ -3648,6 +3650,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec!["doubao-mini".into()],
         },
+        // Standard plan (/api/v3) variant; see volcengine_coding for the coding-plan endpoint
         ModelCatalogEntry {
             id: "doubao-seed-code".into(),
             display_name: "Doubao Seed Code".into(),
