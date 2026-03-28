@@ -5,6 +5,7 @@
 //! Mistral, Fireworks, Ollama, vLLM, Chutes.ai, and any OpenAI-compatible endpoint.
 
 pub mod anthropic;
+pub mod bedrock;
 pub mod claude_code;
 pub mod copilot;
 pub mod fallback;
@@ -15,14 +16,15 @@ pub mod vertex;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
-    AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
-    COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
-    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL,
+    CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL,
+    GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL,
+    LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL,
+    NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL,
+    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -233,6 +235,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "GOOGLE_APPLICATION_CREDENTIALS",
             key_required: false, // Uses OAuth service account, not API key
         }),
+        "bedrock" | "aws-bedrock" => Some(ProviderDefaults {
+            base_url: BEDROCK_BASE_URL,
+            api_key_env: "AWS_ACCESS_KEY_ID",
+            key_required: true,
+        }),
         _ => None,
     }
 }
@@ -426,6 +433,35 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         return Ok(Arc::new(anthropic::AnthropicDriver::new(api_key, base_url)));
     }
 
+    // AWS Bedrock — uses Converse API with SigV4 auth
+    if provider == "bedrock" || provider == "aws-bedrock" {
+        let access_key_id = config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok())
+            .ok_or_else(|| {
+                LlmError::MissingApiKey(
+                    "Set AWS_ACCESS_KEY_ID environment variable for AWS Bedrock".to_string(),
+                )
+            })?;
+        let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").map_err(|_| {
+            LlmError::MissingApiKey(
+                "Set AWS_SECRET_ACCESS_KEY environment variable for AWS Bedrock".to_string(),
+            )
+        })?;
+        let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| BEDROCK_BASE_URL.to_string());
+        return Ok(Arc::new(bedrock::BedrockDriver::new(
+            access_key_id,
+            secret_access_key,
+            session_token,
+            base_url,
+        )));
+    }
+
     // All other providers use OpenAI-compatible format
     if let Some(defaults) = provider_defaults(provider) {
         let api_key = config
@@ -489,7 +525,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             "Unknown provider '{}'. Supported: anthropic, gemini, openai, azure, groq, openrouter, \
              deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, perplexity, \
              cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot, \
-             chutes, venice, nvidia, codex, claude-code. Or set base_url for a custom OpenAI-compatible endpoint.",
+             chutes, venice, nvidia, codex, claude-code, bedrock. Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
         ),
     })
@@ -591,6 +627,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "claude-code",
         "qwen-code",
         "azure",
+        "bedrock",
     ]
 }
 
@@ -695,7 +732,8 @@ mod tests {
         assert!(providers.contains(&"claude-code"));
         assert!(providers.contains(&"qwen-code"));
         assert!(providers.contains(&"azure"));
-        assert_eq!(providers.len(), 37);
+        assert!(providers.contains(&"bedrock"));
+        assert_eq!(providers.len(), 38);
     }
 
     #[test]
@@ -726,6 +764,26 @@ mod tests {
         let d = provider_defaults("cerebras").unwrap();
         assert_eq!(d.base_url, "https://api.cerebras.ai/v1");
         assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_bedrock() {
+        let d = provider_defaults("bedrock").unwrap();
+        assert_eq!(
+            d.base_url,
+            "https://bedrock-runtime.us-east-1.amazonaws.com"
+        );
+        assert_eq!(d.api_key_env, "AWS_ACCESS_KEY_ID");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_aws_bedrock_alias() {
+        let d = provider_defaults("aws-bedrock").unwrap();
+        assert_eq!(
+            d.base_url,
+            "https://bedrock-runtime.us-east-1.amazonaws.com"
+        );
     }
 
     #[test]
