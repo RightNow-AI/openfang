@@ -3955,11 +3955,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-api"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "async-trait",
  "axum",
@@ -3999,11 +3995,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-channels"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "aes",
  "async-trait",
@@ -4042,11 +4034,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-cli"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "clap",
  "clap_complete",
@@ -4074,11 +4062,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-desktop"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "axum",
  "open",
@@ -4104,11 +4088,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-extensions"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -4136,11 +4116,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-hands"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "chrono",
  "dashmap",
@@ -4157,11 +4133,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-kernel"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "async-trait",
  "chrono",
@@ -4199,11 +4171,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-memory"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "async-trait",
  "chrono",
@@ -4223,11 +4191,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-migrate"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -4246,11 +4210,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-runtime"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4286,11 +4246,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-skills"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "chrono",
  "hex",
@@ -4313,11 +4269,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-types"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "async-trait",
  "chrono",
@@ -4336,11 +4288,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-wire"
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 dependencies = [
  "async-trait",
  "chrono",
@@ -9377,15 +9325,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-<<<<<<< HEAD
-<<<<<<< HEAD
-version = "0.5.1"
-=======
 version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
-=======
-version = "0.5.2"
->>>>>>> 829ad93 (add alibaba coding plan as provider)
 
 [[package]]
 name = "yoke"

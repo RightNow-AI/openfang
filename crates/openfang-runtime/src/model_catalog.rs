@@ -4,25 +4,16 @@
 //! with alias resolution, auth status detection, and pricing lookups.
 
 use openfang_types::model_catalog::{
-<<<<<<< HEAD
-    AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
-    AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
-    DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-=======
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL,
     ALIBABA_CODING_PLAN_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL,
     CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL,
     GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
     KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL,
-    MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
-    OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
->>>>>>> 829ad93 (add alibaba coding plan as provider)
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
-    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL,
+    TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -4335,13 +4326,9 @@ mod tests {
         assert_eq!(models.len(), 8);
 
         // Test qwen3.5-plus — flagship model with 1M context and vision
-<<<<<<< HEAD
         let qwen35 = catalog
             .find_model("alibaba-coding-plan/qwen3.5-plus")
             .unwrap();
-=======
-        let qwen35 = catalog.find_model("alibaba-coding-plan/qwen3.5-plus").unwrap();
->>>>>>> 829ad93 (add alibaba coding plan as provider)
         assert_eq!(qwen35.display_name, "Qwen 3.5 Plus (Alibaba Coding Plan)");
         assert_eq!(qwen35.tier, ModelTier::Smart);
         assert_eq!(qwen35.context_window, 1_000_000);
@@ -4354,26 +4341,18 @@ mod tests {
         assert!((qwen35.output_cost_per_m).abs() < f64::EPSILON);
 
         // Test qwen3-max-2026-01-23 — frontier model
-<<<<<<< HEAD
         let qwen3max = catalog
             .find_model("alibaba-coding-plan/qwen3-max-2026-01-23")
             .unwrap();
-=======
-        let qwen3max = catalog.find_model("alibaba-coding-plan/qwen3-max-2026-01-23").unwrap();
->>>>>>> 829ad93 (add alibaba coding plan as provider)
         assert_eq!(qwen3max.tier, ModelTier::Frontier);
         assert_eq!(qwen3max.context_window, 262_144);
         assert!(!qwen3max.supports_vision);
         assert!(qwen3max.supports_tools);
 
         // Test qwen3-coder-plus — coding model with 1M context
-<<<<<<< HEAD
         let qwen3coder = catalog
             .find_model("alibaba-coding-plan/qwen3-coder-plus")
             .unwrap();
-=======
-        let qwen3coder = catalog.find_model("alibaba-coding-plan/qwen3-coder-plus").unwrap();
->>>>>>> 829ad93 (add alibaba coding plan as provider)
         assert_eq!(qwen3coder.context_window, 1_000_000);
         assert!(!qwen3coder.supports_vision);
         assert!(qwen3coder.supports_tools);
@@ -4404,13 +4383,9 @@ mod tests {
         assert!(kimi.supports_tools);
 
         // Test MiniMax-M2.5 via Coding Plan
-<<<<<<< HEAD
         let minimax = catalog
             .find_model("alibaba-coding-plan/MiniMax-M2.5")
             .unwrap();
-=======
-        let minimax = catalog.find_model("alibaba-coding-plan/MiniMax-M2.5").unwrap();
->>>>>>> 829ad93 (add alibaba coding plan as provider)
         assert_eq!(minimax.display_name, "MiniMax M2.5 (Alibaba Coding Plan)");
         assert_eq!(minimax.context_window, 204_800);
         assert_eq!(minimax.max_output_tokens, 32_768);
