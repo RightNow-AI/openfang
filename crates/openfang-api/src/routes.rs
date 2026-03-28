@@ -579,7 +579,8 @@ pub async fn get_agent_session(
                                         msg.get_mut("tools").and_then(|v| v.as_array_mut())
                                     {
                                         if let Some(tool_obj) = tools_arr.get_mut(tool_idx) {
-                                            tool_obj["result"] = serde_json::Value::String(result.clone());
+                                            tool_obj["result"] =
+                                                serde_json::Value::String(result.clone());
                                             tool_obj["is_error"] =
                                                 serde_json::Value::Bool(*is_error);
                                         }

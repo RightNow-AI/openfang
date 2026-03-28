@@ -2889,20 +2889,16 @@ impl OpenFangKernel {
         model: &str,
         explicit_provider: Option<&str>,
     ) -> KernelResult<()> {
-        let catalog_entry = self
-            .model_catalog
-            .read()
-            .ok()
-            .and_then(|catalog| {
-                // When the caller specifies a provider, use provider-aware lookup
-                // so we resolve the model on the correct provider — not a builtin
-                // from a different provider that happens to share the same name (#833).
-                if let Some(ep) = explicit_provider {
-                    catalog.find_model_for_provider(model, ep).cloned()
-                } else {
-                    catalog.find_model(model).cloned()
-                }
-            });
+        let catalog_entry = self.model_catalog.read().ok().and_then(|catalog| {
+            // When the caller specifies a provider, use provider-aware lookup
+            // so we resolve the model on the correct provider — not a builtin
+            // from a different provider that happens to share the same name (#833).
+            if let Some(ep) = explicit_provider {
+                catalog.find_model_for_provider(model, ep).cloned()
+            } else {
+                catalog.find_model(model).cloned()
+            }
+        });
         let provider = if let Some(ep) = explicit_provider {
             // User explicitly set the provider — use it as-is
             Some(ep.to_string())
