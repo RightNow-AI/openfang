@@ -1421,16 +1421,16 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
         ("gemini", "GEMINI_API_KEY", "gemini-2.5-flash", "Gemini"),
         ("deepseek", "DEEPSEEK_API_KEY", "deepseek-chat", "DeepSeek"),
         (
-            "volcengine_coding",
-            "VOLCENGINE_API_KEY",
-            "ark-code-latest",
-            "Volcano Engine Coding Plan",
-        ),
-        (
             "volcengine",
             "VOLCENGINE_API_KEY",
             "doubao-seed-1-6-251015",
             "Volcano Engine",
+        ),
+        (
+            "volcengine_coding",
+            "VOLCENGINE_API_KEY",
+            "ark-code-latest",
+            "Volcano Engine Coding Plan",
         ),
         (
             "anthropic",

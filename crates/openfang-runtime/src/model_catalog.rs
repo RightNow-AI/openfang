@@ -3536,11 +3536,11 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // Third-party models available via Ark marketplace.
-        // IDs are prefixed with "ark/" to avoid collision with the same models
-        // registered under their native providers (minimax, zhipu, moonshot).
+        // The "ark/" prefix is kept as an alias for catalog lookups but is NOT
+        // forwarded to the Ark API — the API expects bare model names.
         // Pricing not publicly documented for Ark-routed third-party models; set to 0.0
         ModelCatalogEntry {
-            id: "ark/minimax-m2.5".into(),
+            id: "minimax-m2.5".into(),
             display_name: "MiniMax M2.5 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
@@ -3551,10 +3551,10 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec![],
+            aliases: vec!["ark/minimax-m2.5".into()],
         },
         ModelCatalogEntry {
-            id: "ark/glm-4.7".into(),
+            id: "glm-4.7".into(),
             display_name: "GLM 4.7 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Balanced,
@@ -3565,11 +3565,11 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec![],
+            aliases: vec!["ark/glm-4.7".into()],
         },
         ModelCatalogEntry {
             id: "deepseek-v3.2".into(),
-            display_name: "DeepSeek V3.2".into(),
+            display_name: "DeepSeek V3.2 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
             context_window: 131_072,
@@ -3579,10 +3579,10 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec![],
+            aliases: vec!["ark/deepseek-v3.2".into()],
         },
         ModelCatalogEntry {
-            id: "ark/kimi-k2.5".into(),
+            id: "kimi-k2.5".into(),
             display_name: "Kimi K2.5 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
@@ -3593,7 +3593,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec![],
+            aliases: vec!["ark/kimi-k2.5".into()],
         },
 
         // ══════════════════════════════════════════════════════════════
