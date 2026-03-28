@@ -1646,6 +1646,52 @@ impl OpenFangKernel {
                     "ok",
                 );
 
+                // Continuous compaction: increment exchange counter and check
+                {
+                    let compaction_config = &self.config.compaction;
+                    if compaction_config.continuous_interval > 0 {
+                        let counter = self
+                            .exchange_counters
+                            .entry(agent_id)
+                            .or_insert_with(|| std::sync::atomic::AtomicUsize::new(0));
+                        let count = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+
+                        // Check message count from the registry entry's session
+                        let msg_count = self
+                            .registry
+                            .get(agent_id)
+                            .and_then(|e| {
+                                self.memory
+                                    .get_session(e.session_id)
+                                    .ok()
+                                    .flatten()
+                                    .map(|s| s.messages.len())
+                            })
+                            .unwrap_or(0);
+
+                        if msg_count > compaction_config.keep_recent
+                            && count % compaction_config.continuous_interval == 0
+                        {
+                            let self_clone = self.self_handle.get().and_then(|w| w.upgrade());
+                            if let Some(kernel) = self_clone {
+                                tokio::spawn(async move {
+                                    info!(
+                                        agent_id = %agent_id,
+                                        exchange_count = count,
+                                        "Continuous compaction triggered (non-streaming)"
+                                    );
+                                    if let Err(e) = kernel.compact_agent_session(agent_id).await {
+                                        warn!(
+                                            agent_id = %agent_id,
+                                            "Continuous compaction failed: {e}"
+                                        );
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+
                 Ok(result)
             }
             Err(e) => {
