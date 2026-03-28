@@ -238,6 +238,31 @@ pub trait KernelHandle: Send + Sync {
         Err("Channel file data send not available".to_string())
     }
 
+    /// Get the channel callback context for an agent (if one is active).
+    fn get_channel_context(
+        &self,
+        agent_id: &str,
+    ) -> Option<openfang_types::ChannelCallbackContext> {
+        let _ = agent_id;
+        None
+    }
+
+    /// Store a channel callback context for an agent.
+    fn set_channel_context(&self, agent_id: &str, context: openfang_types::ChannelCallbackContext) {
+        let _ = (agent_id, context);
+    }
+
+    /// Inject an async callback result into a channel, bypassing the normal agent loop.
+    async fn inject_async_callback(
+        &self,
+        context: openfang_types::ChannelCallbackContext,
+        hand_name: &str,
+        result_text: &str,
+    ) -> Result<(), String> {
+        let _ = (context, hand_name, result_text);
+        Err("Async callback injection not available".to_string())
+    }
+
     /// Refresh an agent's last_active timestamp without changing any other state.
     /// Called by the agent loop before long LLM calls to prevent heartbeat false-positives.
     fn touch_agent(&self, agent_id: &str) {

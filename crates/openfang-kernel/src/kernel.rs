@@ -155,6 +155,9 @@ pub struct OpenFangKernel {
     /// Hot-reloadable default model override (set via config hot-reload, read at agent spawn).
     pub default_model_override:
         std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
+    /// Active channel callback contexts for async agent delegation.
+    /// Keyed by agent UUID string. Set by the channel bridge before each message.
+    pub active_channel_contexts: dashmap::DashMap<String, openfang_types::ChannelCallbackContext>,
     /// Per-agent message locks — serializes LLM calls for the same agent to prevent
     /// session corruption when multiple messages arrive concurrently (e.g. rapid voice
     /// messages via Telegram). Different agents can still run in parallel.
@@ -1047,6 +1050,7 @@ impl OpenFangKernel {
             whatsapp_gateway_pid: Arc::new(std::sync::Mutex::new(None)),
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
+            active_channel_contexts: dashmap::DashMap::new(),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
         };
@@ -2889,20 +2893,16 @@ impl OpenFangKernel {
         model: &str,
         explicit_provider: Option<&str>,
     ) -> KernelResult<()> {
-        let catalog_entry = self
-            .model_catalog
-            .read()
-            .ok()
-            .and_then(|catalog| {
-                // When the caller specifies a provider, use provider-aware lookup
-                // so we resolve the model on the correct provider — not a builtin
-                // from a different provider that happens to share the same name (#833).
-                if let Some(ep) = explicit_provider {
-                    catalog.find_model_for_provider(model, ep).cloned()
-                } else {
-                    catalog.find_model(model).cloned()
-                }
-            });
+        let catalog_entry = self.model_catalog.read().ok().and_then(|catalog| {
+            // When the caller specifies a provider, use provider-aware lookup
+            // so we resolve the model on the correct provider — not a builtin
+            // from a different provider that happens to share the same name (#833).
+            if let Some(ep) = explicit_provider {
+                catalog.find_model_for_provider(model, ep).cloned()
+            } else {
+                catalog.find_model(model).cloned()
+            }
+        });
         let provider = if let Some(ep) = explicit_provider {
             // User explicitly set the provider — use it as-is
             Some(ep.to_string())
@@ -5902,6 +5902,49 @@ impl KernelHandle for OpenFangKernel {
                 tools: e.manifest.capabilities.tools.clone(),
             })
             .collect()
+    }
+
+    fn get_channel_context(
+        &self,
+        agent_id: &str,
+    ) -> Option<openfang_types::ChannelCallbackContext> {
+        self.active_channel_contexts
+            .get(agent_id)
+            .map(|r| r.value().clone())
+    }
+
+    fn set_channel_context(&self, agent_id: &str, context: openfang_types::ChannelCallbackContext) {
+        self.active_channel_contexts
+            .insert(agent_id.to_string(), context);
+    }
+
+    async fn inject_async_callback(
+        &self,
+        context: openfang_types::ChannelCallbackContext,
+        hand_name: &str,
+        result_text: &str,
+    ) -> Result<(), String> {
+        // Build callback message and send it to the caller agent
+        let callback_msg =
+            format!("{hand_name} wrote: {result_text}\n\n(Present these findings to the user.)");
+        let agent_id: AgentId = context
+            .agent_id
+            .parse()
+            .map_err(|_| "Invalid agent ID in callback context".to_string())?;
+        let result = self
+            .send_message(agent_id, &callback_msg)
+            .await
+            .map_err(|e| format!("Callback send_message failed: {e}"))?;
+
+        // Deliver the agent's response to the originating channel
+        self.send_channel_message(
+            &context.channel_type,
+            &context.reply_to_platform_id,
+            &result.response,
+            context.thread_id.as_deref(),
+        )
+        .await
+        .map(|_| ())
     }
 
     fn touch_agent(&self, agent_id: &str) {

@@ -236,6 +236,16 @@ pub trait ChannelBridgeHandle: Send + Sync {
         // Default: no tracking
     }
 
+    /// Store channel callback context for an agent so async tool results
+    /// can be delivered back to the originating channel.
+    fn set_channel_context(
+        &self,
+        _agent_id: AgentId,
+        _context: openfang_types::ChannelCallbackContext,
+    ) {
+        // Default: no-op
+    }
+
     /// Check if auto-reply is enabled and the message should trigger one.
     /// Returns Some(reply_text) if auto-reply fires, None otherwise.
     async fn check_auto_reply(&self, _agent_id: AgentId, _message: &str) -> Option<String> {
@@ -963,6 +973,18 @@ async fn dispatch_message(
     } else {
         text.clone()
     };
+
+    // Store channel context so async tools can deliver results back here
+    handle.set_channel_context(
+        agent_id,
+        openfang_types::ChannelCallbackContext {
+            channel_type: adapter.name().to_string(),
+            reply_to_platform_id: message.sender.platform_id.clone(),
+            reply_to_display_name: message.sender.display_name.clone(),
+            thread_id: thread_id.map(String::from),
+            agent_id: agent_id.0.to_string(),
+        },
+    );
 
     // Send to agent and relay response
     let result = handle.send_message(agent_id, &prefixed_text).await;

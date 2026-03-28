@@ -49,8 +49,8 @@ use openfang_channels::discourse::DiscourseAdapter;
 use openfang_channels::gitter::GitterAdapter;
 use openfang_channels::gotify::GotifyAdapter;
 use openfang_channels::linkedin::LinkedInAdapter;
-use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::mqtt::MqttAdapter;
+use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_channels::wecom::WeComAdapter;
@@ -878,6 +878,16 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                 .memory
                 .structured_set(agent_id, "delivery.last_channel", kv_val);
         }
+    }
+
+    fn set_channel_context(
+        &self,
+        agent_id: AgentId,
+        context: openfang_types::ChannelCallbackContext,
+    ) {
+        self.kernel
+            .active_channel_contexts
+            .insert(agent_id.0.to_string(), context);
     }
 
     async fn check_auto_reply(&self, agent_id: AgentId, message: &str) -> Option<String> {

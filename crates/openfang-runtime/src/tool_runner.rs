@@ -18,6 +18,13 @@ use tracing::{debug, warn};
 /// Maximum inter-agent call depth to prevent infinite recursion (A->B->C->...).
 const MAX_AGENT_CALL_DEPTH: u32 = 5;
 
+/// Default timeout for async agent delegation (seconds).
+const DEFAULT_ASYNC_TIMEOUT_SECS: u64 = 30;
+
+/// In-flight async agent tasks, keyed by a caller-chosen task ID.
+static ASYNC_TASKS: std::sync::LazyLock<dashmap::DashMap<String, tokio::task::JoinHandle<()>>> =
+    std::sync::LazyLock::new(|| dashmap::DashMap::new());
+
 /// Check if a tool name refers to a shell execution tool.
 ///
 /// Used to determine whether exec_policy settings should bypass the approval gate.
@@ -293,6 +300,8 @@ pub async fn execute_tool(
 
         // Inter-agent tools (require kernel handle)
         "agent_send" => tool_agent_send(input, kernel).await,
+        "agent_send_async" => tool_agent_send_async(input, kernel, caller_agent_id).await,
+        "agent_cancel" => tool_agent_cancel(input),
         "agent_spawn" => tool_agent_spawn(input, kernel, caller_agent_id).await,
         "agent_list" => tool_agent_list(kernel),
         "agent_kill" => tool_agent_kill(input, kernel),
@@ -654,6 +663,31 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "message": { "type": "string", "description": "The message to send to the agent" }
                 },
                 "required": ["agent_id", "message"]
+            }),
+        },
+        ToolDefinition {
+            name: "agent_send_async".to_string(),
+            description: "Delegate a task to another agent asynchronously. The result is delivered back to the channel when ready, so you can continue your conversation immediately. Use for tasks that may take a while (research, long computations, etc.).".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": { "type": "string", "description": "The target agent's UUID or name" },
+                    "message": { "type": "string", "description": "The task/message to send to the agent" },
+                    "task_id": { "type": "string", "description": "A unique ID for this task (for cancellation). Auto-generated if omitted." },
+                    "timeout_seconds": { "type": "integer", "description": "Timeout in seconds (default: 30)" }
+                },
+                "required": ["agent_id", "message"]
+            }),
+        },
+        ToolDefinition {
+            name: "agent_cancel".to_string(),
+            description: "Cancel a previously started async agent task by its task ID.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "description": "The task ID to cancel" }
+                },
+                "required": ["task_id"]
             }),
         },
         ToolDefinition {
@@ -1646,6 +1680,96 @@ async fn tool_agent_send(
             kh.send_to_agent(agent_id, message).await
         })
         .await
+}
+
+async fn tool_agent_send_async(
+    input: &serde_json::Value,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
+) -> Result<String, String> {
+    let kh = require_kernel(kernel)?.clone();
+    let agent_id = input["agent_id"]
+        .as_str()
+        .ok_or("Missing 'agent_id' parameter")?
+        .to_string();
+    let message = input["message"]
+        .as_str()
+        .ok_or("Missing 'message' parameter")?
+        .to_string();
+    let task_id = input["task_id"]
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let timeout_secs = input["timeout_seconds"]
+        .as_u64()
+        .unwrap_or(DEFAULT_ASYNC_TIMEOUT_SECS);
+
+    // Resolve the target agent's friendly name for the callback message
+    let target_name = {
+        let agents = kh.list_agents();
+        agents
+            .iter()
+            .find(|a| a.id == agent_id || a.name.eq_ignore_ascii_case(&agent_id))
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| agent_id.clone())
+    };
+
+    // Capture the caller's channel context so we can deliver results later
+    let caller_id = caller_agent_id
+        .ok_or("agent_send_async requires a caller agent ID")?
+        .to_string();
+    let channel_ctx = kh.get_channel_context(&caller_id);
+
+    let tid = task_id.clone();
+    let target_name_for_callback = target_name.clone();
+    let handle = tokio::spawn(async move {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            kh.send_to_agent(&agent_id, &message),
+        )
+        .await;
+
+        let result_text = match result {
+            Ok(Ok(text)) => text,
+            Ok(Err(e)) => format!("Error: {e}"),
+            Err(_) => format!("Timed out after {timeout_secs}s"),
+        };
+
+        // Deliver via channel callback if we have context
+        if let Some(ctx) = channel_ctx {
+            let _ = kh
+                .inject_async_callback(ctx, &target_name_for_callback, &result_text)
+                .await;
+        } else {
+            tracing::warn!(
+                task_id = %tid,
+                "async agent task completed but no channel context — result dropped"
+            );
+        }
+
+        // Clean up the task handle
+        ASYNC_TASKS.remove(&tid);
+    });
+
+    ASYNC_TASKS.insert(task_id.clone(), handle);
+
+    Ok(format!(
+        "Task delegated to {target_name} (task_id: {task_id}). \
+         Results will be delivered to the channel when ready."
+    ))
+}
+
+fn tool_agent_cancel(input: &serde_json::Value) -> Result<String, String> {
+    let task_id = input["task_id"]
+        .as_str()
+        .ok_or("Missing 'task_id' parameter")?;
+
+    if let Some((_, handle)) = ASYNC_TASKS.remove(task_id) {
+        handle.abort();
+        Ok(format!("Task {task_id} cancelled."))
+    } else {
+        Err(format!("No active task with ID '{task_id}'."))
+    }
 }
 
 async fn tool_agent_spawn(
