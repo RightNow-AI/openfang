@@ -32,7 +32,7 @@ const PROVIDER_ENV_VARS: &[(&str, &str)] = &[
 
 fn detect_provider() -> Option<(&'static str, &'static str)> {
     for &(var, name) in PROVIDER_ENV_VARS {
-        if std::env::var(var).is_ok() {
+        if std::env::var(var).ok().filter(|v| !v.is_empty()).is_some() {
             return Some((name, var));
         }
     }

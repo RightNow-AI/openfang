@@ -3522,8 +3522,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "doubao-seed-code".into(),
-            display_name: "Doubao Seed Code".into(),
+            id: "doubao-seed-code-ark".into(),
+            display_name: "Doubao Seed Code (Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
             context_window: 262_144,
@@ -3535,6 +3535,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec![],
         },
+        // Third-party models available via Ark marketplace
         ModelCatalogEntry {
             id: "minimax-m2.5".into(),
             display_name: "MiniMax M2.5".into(),

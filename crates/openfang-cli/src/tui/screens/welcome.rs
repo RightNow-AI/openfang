@@ -48,7 +48,7 @@ const PROVIDER_ENV_VARS: &[(&str, &str)] = &[
 /// Returns (provider_name, env_var_name) for the first detected key, or None.
 fn detect_provider() -> Option<(&'static str, &'static str)> {
     for &(var, name) in PROVIDER_ENV_VARS {
-        if std::env::var(var).is_ok() {
+        if std::env::var(var).ok().filter(|v| !v.is_empty()).is_some() {
             return Some((name, var));
         }
     }
