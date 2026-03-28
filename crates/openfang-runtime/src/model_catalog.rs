@@ -4751,6 +4751,7 @@ mod tests {
         assert!(entry.supports_vision);
     }
 
+<<<<<<< HEAD
     /// Regression test for #856: custom models with case-sensitive names must not be
     /// shadowed by builtin models that share the same lowercased ID.
     ///
@@ -4961,6 +4962,30 @@ mod tests {
         assert_eq!(glm_native.provider, "zhipu");
         let kimi_native = catalog.find_model("kimi-k2.5").unwrap();
         assert_eq!(kimi_native.provider, "moonshot");
+=======
+    #[test]
+    fn test_ark_alias_resolution() {
+        let catalog = ModelCatalog::new();
+        assert_eq!(catalog.resolve_alias("ark/minimax-m2.5"), Some("minimax-m2.5"));
+        assert_eq!(catalog.resolve_alias("ark/glm-4.7"), Some("glm-4.7"));
+        assert_eq!(catalog.resolve_alias("ark/deepseek-v3.2"), Some("deepseek-v3.2"));
+        assert_eq!(catalog.resolve_alias("ark/kimi-k2.5"), Some("kimi-k2.5"));
+        // find_model via ark/ alias should return the entry with the bare model id.
+        // minimax-m2.5 is unique to volcengine_coding via Ark marketplace.
+        let m25 = catalog.find_model("ark/minimax-m2.5").unwrap();
+        assert_eq!(m25.id, "minimax-m2.5");
+        assert_eq!(m25.provider, "volcengine_coding");
+        // glm-4.7 and kimi-k2.5 share their id with zhipu/moonshot models;
+        // find_model returns the first catalog entry (non-Ark provider) for those ids.
+        let glm = catalog.find_model("ark/glm-4.7").unwrap();
+        assert_eq!(glm.id, "glm-4.7");
+        // deepseek-v3.2 exists only under volcengine_coding in the Ark section.
+        let ds = catalog.find_model("ark/deepseek-v3.2").unwrap();
+        assert_eq!(ds.id, "deepseek-v3.2");
+        assert_eq!(ds.provider, "volcengine_coding");
+        let kimi = catalog.find_model("ark/kimi-k2.5").unwrap();
+        assert_eq!(kimi.id, "kimi-k2.5");
+>>>>>>> f37c972 (fix(volcengine): strip ark/ prefix before sending model id to Ark API)
     }
 
     #[test]
