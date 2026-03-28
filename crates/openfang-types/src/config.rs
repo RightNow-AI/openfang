@@ -1130,6 +1130,40 @@ pub struct KernelConfig {
     /// Heartbeat monitor settings.
     #[serde(default)]
     pub heartbeat: HeartbeatSettings,
+    /// Compaction configuration (continuous compaction with contextual hand summaries).
+    #[serde(default)]
+    pub compaction: CompactionTomlConfig,
+}
+
+/// A context source queried during continuous compaction to enrich summaries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionContextSource {
+    /// Hand (agent name) to query for context.
+    pub hand: String,
+    /// Prompt to send to the hand.
+    pub prompt: String,
+}
+
+/// Configuration for continuous compaction with optional contextual hand summaries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionTomlConfig {
+    /// Trigger continuous compaction every N exchanges. 0 = disabled.
+    pub continuous_interval: usize,
+    /// Number of recent messages to keep verbatim.
+    pub keep_recent: usize,
+    /// Hands to query for contextual summaries after compaction.
+    pub context_sources: Vec<CompactionContextSource>,
+}
+
+impl Default for CompactionTomlConfig {
+    fn default() -> Self {
+        Self {
+            continuous_interval: 0, // disabled by default
+            keep_recent: 6,
+            context_sources: Vec::new(),
+        }
+    }
 }
 
 /// Heartbeat monitor settings exposed in `[heartbeat]` config section.
@@ -1367,6 +1401,7 @@ impl Default for KernelConfig {
             auth: AuthConfig::default(),
             workflows_dir: None,
             heartbeat: HeartbeatSettings::default(),
+            compaction: CompactionTomlConfig::default(),
         }
     }
 }

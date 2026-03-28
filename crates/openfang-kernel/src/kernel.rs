@@ -158,6 +158,8 @@ pub struct OpenFangKernel {
     /// Per-agent message locks — serializes LLM calls for the same agent to prevent
     /// session corruption when multiple messages arrive concurrently (e.g. rapid voice
     /// messages via Telegram). Different agents can still run in parallel.
+    /// Per-agent exchange counter for continuous compaction.
+    exchange_counters: dashmap::DashMap<AgentId, std::sync::atomic::AtomicUsize>,
     agent_msg_locks: dashmap::DashMap<AgentId, Arc<tokio::sync::Mutex<()>>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
@@ -1084,6 +1086,7 @@ impl OpenFangKernel {
             whatsapp_gateway_pid: Arc::new(std::sync::Mutex::new(None)),
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
+            exchange_counters: dashmap::DashMap::new(),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
         };
@@ -2124,6 +2127,112 @@ impl OpenFangKernel {
                                     warn!(agent_id = %agent_id, "Post-loop compaction failed: {e}");
                                 }
                             });
+                        }
+                    }
+
+                    // Continuous compaction: compact every N exchanges with optional hand context
+                    {
+                        let compaction_config = &kernel_clone.config.compaction;
+                        if compaction_config.continuous_interval > 0 {
+                            let counter = kernel_clone
+                                .exchange_counters
+                                .entry(agent_id)
+                                .or_insert_with(|| std::sync::atomic::AtomicUsize::new(0));
+                            let count =
+                                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+
+                            let msg_count = session.messages.len();
+
+                            if msg_count > compaction_config.keep_recent
+                                && count % compaction_config.continuous_interval == 0
+                            {
+                                let kc = kernel_clone.clone();
+                                tokio::spawn(async move {
+                                    info!(
+                                        agent_id = %agent_id,
+                                        exchange_count = count,
+                                        "Continuous compaction triggered"
+                                    );
+
+                                    // First, run standard compaction
+                                    if let Err(e) = kc.compact_agent_session(agent_id).await {
+                                        warn!(
+                                            agent_id = %agent_id,
+                                            "Continuous compaction failed: {e}"
+                                        );
+                                        return;
+                                    }
+
+                                    // Then, query context sources and append to the summary
+                                    let context_sources = &kc.config.compaction.context_sources;
+                                    if context_sources.is_empty() {
+                                        return;
+                                    }
+
+                                    let now = chrono::Utc::now();
+                                    let mut context_parts = Vec::new();
+
+                                    for source in context_sources {
+                                        let query = format!(
+                                            "{}\nTime window: up to {}",
+                                            source.prompt,
+                                            now.format("%Y-%m-%d %H:%M %Z"),
+                                        );
+
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_secs(30),
+                                            kc.send_to_agent(&source.hand, &query),
+                                        )
+                                        .await
+                                        {
+                                            Ok(Ok(summary)) if !summary.trim().is_empty() => {
+                                                info!(
+                                                    hand = %source.hand,
+                                                    summary_len = summary.len(),
+                                                    "Context source responded"
+                                                );
+                                                context_parts.push(format!(
+                                                    "[{}]: {}",
+                                                    source.hand, summary
+                                                ));
+                                            }
+                                            Ok(Err(e)) => {
+                                                warn!(
+                                                    hand = %source.hand,
+                                                    error = %e,
+                                                    "Context source query failed"
+                                                );
+                                            }
+                                            Err(_) => {
+                                                warn!(
+                                                    hand = %source.hand,
+                                                    "Context source query timed out"
+                                                );
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+
+                                    if !context_parts.is_empty() {
+                                        let context_block = context_parts.join("\n\n");
+                                        info!(
+                                            agent_id = %agent_id,
+                                            sources = context_parts.len(),
+                                            "Contextual summaries appended to session"
+                                        );
+                                        // Store in memory for long-term recall
+                                        let memory_key =
+                                            format!("session_context_{}", now.timestamp());
+                                        let _ = kc.memory_store(
+                                            &memory_key,
+                                            serde_json::json!({
+                                                "timestamp": now.to_rfc3339(),
+                                                "context": context_block,
+                                            }),
+                                        );
+                                    }
+                                });
+                            }
                         }
                     }
 

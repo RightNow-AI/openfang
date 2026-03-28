@@ -44,6 +44,8 @@ pub struct CompactionConfig {
     pub token_threshold_ratio: f64,
     /// Model context window size in tokens.
     pub context_window_tokens: usize,
+    /// Trigger continuous compaction every N exchanges. 0 = disabled.
+    pub continuous_interval: usize,
 }
 
 impl Default for CompactionConfig {
@@ -60,6 +62,7 @@ impl Default for CompactionConfig {
             max_retries: 3,
             token_threshold_ratio: 0.7,
             context_window_tokens: 200_000,
+            continuous_interval: 0,
         }
     }
 }
@@ -126,6 +129,17 @@ pub fn estimate_token_count(
 pub fn needs_compaction_by_tokens(estimated_tokens: usize, config: &CompactionConfig) -> bool {
     let threshold = (config.context_window_tokens as f64 * config.token_threshold_ratio) as usize;
     estimated_tokens > threshold
+}
+
+/// Check if continuous compaction should trigger.
+pub fn needs_continuous_compaction(
+    exchange_count: usize,
+    session_message_count: usize,
+    config: &CompactionConfig,
+) -> bool {
+    config.continuous_interval > 0
+        && session_message_count > config.keep_recent
+        && exchange_count % config.continuous_interval == 0
 }
 
 // ---------------------------------------------------------------------------
