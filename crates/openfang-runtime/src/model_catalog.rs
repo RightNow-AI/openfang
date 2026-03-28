@@ -3690,7 +3690,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         // The bare model name is kept as an alias only where no collision exists.
         // Pricing not publicly documented for Ark-routed third-party models; set to 0.0
         ModelCatalogEntry {
-            id: "ark/minimax-m2.5".into(),
+            id: "minimax-m2.5".into(),
             display_name: "MiniMax M2.5 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
@@ -3705,7 +3705,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         ModelCatalogEntry {
-            id: "ark/glm-4.7".into(),
+            id: "glm-4.7".into(),
             display_name: "GLM 4.7 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Balanced,
@@ -3735,7 +3735,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["deepseek-v3.2".into()],
         },
         ModelCatalogEntry {
-            id: "ark/kimi-k2.5".into(),
+            id: "kimi-k2.5".into(),
             display_name: "Kimi K2.5 (via Ark)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
