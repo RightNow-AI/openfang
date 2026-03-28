@@ -116,8 +116,10 @@ pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
     } else {
         model.to_string()
     };
-    // Strip ark/ prefix for volcengine_coding endpoint (Ark marketplace models)
-    if result.starts_with("ark/") {
+    // Strip ark/ prefix only for Volcano Engine providers (Ark marketplace models)
+    if (provider == "volcengine_coding" || provider == "volcengine")
+        && result.starts_with("ark/")
+    {
         result = result["ark/".len()..].to_string();
     }
     result
@@ -3025,6 +3027,24 @@ mod tests {
     #[test]
     fn test_max_history_messages() {
         assert_eq!(MAX_HISTORY_MESSAGES, 20);
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_ark_volcengine_coding() {
+        // Should strip ark/ for volcengine_coding
+        assert_eq!(
+            strip_provider_prefix("ark/doubao-seed-code", "volcengine_coding"),
+            "doubao-seed-code"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_ark_not_stripped_for_other_providers() {
+        // Must NOT strip ark/ for non-volcengine providers
+        assert_eq!(
+            strip_provider_prefix("ark/some-model", "openai"),
+            "ark/some-model"
+        );
     }
 
     // --- Integration tests for empty response guards ---
