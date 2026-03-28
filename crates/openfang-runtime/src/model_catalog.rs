@@ -3616,7 +3616,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
             id: "ark-code-latest".into(),
-            display_name: "ark-code-latest".into(),
+            display_name: "Ark Code (Latest)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
             context_window: 131_072,
