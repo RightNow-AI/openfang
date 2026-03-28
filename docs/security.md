@@ -1072,6 +1072,40 @@ The `host_shell_exec` function uses `Command::new(command).args(&args)` which
 does **not** invoke a shell.  Each argument is passed directly to the
 process, preventing shell injection via metacharacters like `;`, `|`, `&&`.
 
+### 13.5 Programmatic Tool Calling (PTC) Subprocess
+
+**Source:** `openfang-runtime/src/ptc/executor.rs`
+
+When PTC is enabled (`ptc.enabled = true`), the agent sends LLM-generated
+Python code to a `python3` subprocess via `execute_python()`.
+
+**Sandboxing applied:**
+
+- **Environment stripping:** `sandbox_command()` is called before spawning,
+  so the Python process only sees `PATH`, `HOME`, `TMPDIR`, `LANG`, `TERM`,
+  and any agent-specific `hand_allowed_env` vars.  API keys and credentials
+  are **not** inherited.
+- **Timeout enforcement:** The subprocess is killed after the configured
+  timeout (default 120s, max 600s).  `kill_on_drop` ensures cleanup if the
+  future is cancelled.
+- **Working directory:** Set to the agent's workspace root when available.
+
+**No command allowlisting:** Unlike the `shell_exec` tool (Section 13.4),
+PTC does **not** apply exec policy allowlisting or shell metacharacter
+filtering.  This is by design -- PTC's purpose is to execute arbitrary
+Python code written by the LLM, which cannot be meaningfully restricted
+by a command allowlist.
+
+**Implications:**
+
+- LLM-generated Python can perform any operation the OS user permits:
+  filesystem access, network calls, spawning child processes.
+- In containerized deployments (Kubernetes, Docker), the blast radius is
+  constrained by the container's security context (dropped capabilities,
+  read-only rootfs, network policies, resource limits).
+- PTC is **opt-in** (disabled by default) for this reason.  Operators should
+  ensure their container security posture is appropriate before enabling it.
+
 ---
 
 ## 14. Prompt Injection Scanner
@@ -1489,4 +1523,5 @@ defaults) will be inherited.
 | Information leakage from health endpoint | Redacted public endpoint (Section 17) |
 | Timing attacks on HMAC verification | subtle::ConstantTimeEq (Section 9.2) |
 | Shell injection via metacharacters | Command::new (no shell) + env_clear (Section 13.4) |
+| PTC secret leakage to LLM-generated code | env_clear() + opt-in + container isolation (Section 13.5) |
 | DNS rebinding for SSRF bypass | Resolved IP check, not hostname check (Section 7.3) |
