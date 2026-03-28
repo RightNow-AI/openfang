@@ -159,7 +159,7 @@ struct SendMsgBody<'a> {
     #[serde(rename = "chat_type")]
     chat_type: u8, // 1=single, 2=group
     msgtype: &'a str,
-    stream: StreamContentSer<'a>,
+    markdown: StreamContentSer<'a>,
 }
 
 /// Outbound message to send via WebSocket.
@@ -167,6 +167,7 @@ struct SendMsgBody<'a> {
 enum OutboundMsg {
     Respond {
         req_id: String,
+        stream_id: String,
         text: String,
     },
     Send {
@@ -200,6 +201,7 @@ pub struct WeComStreamAdapter {
 #[derive(Clone)]
 struct PendingReply {
     req_id: String,
+    stream_id: String,
 }
 
 impl WeComStreamAdapter {
@@ -447,14 +449,15 @@ impl ChannelAdapter for WeComStreamAdapter {
             );
             if let Some(reply) = pending.get(&platform_id_lower) {
                 info!(
-                    "WeCom Stream: found pending reply for user {} (lower: {}), req_id: {}",
-                    user.platform_id, platform_id_lower, reply.req_id
+                    "WeCom Stream: found pending reply for user {} (lower: {}), req_id: {}, stream_id: {}",
+                    user.platform_id, platform_id_lower, reply.req_id, reply.stream_id
                 );
                 let chunks = split_message(text, MAX_MESSAGE_LEN);
                 for chunk in &chunks {
                     self.outbound_tx
                         .send(OutboundMsg::Respond {
                             req_id: reply.req_id.clone(),
+                            stream_id: reply.stream_id.clone(),
                             text: chunk.to_string(),
                         })
                         .await?;
@@ -523,10 +526,12 @@ where
     S: SinkExt<Message> + Unpin,
     <S as futures::Sink<Message>>::Error: std::fmt::Display + std::error::Error + 'static,
 {
-    let stream_id = Uuid::new_v4().to_string();
-
     let frame = match msg {
-        OutboundMsg::Respond { req_id, text } => WsFrame {
+        OutboundMsg::Respond {
+            req_id,
+            stream_id,
+            text,
+        } => WsFrame {
             cmd: "aibot_respond_msg".to_string(),
             headers: WsHeaders { req_id },
             body: serde_json::to_value(RespondMsgBody {
@@ -553,11 +558,11 @@ where
             body: serde_json::to_value(SendMsgBody {
                 chatid: &chatid,
                 chat_type,
-                msgtype: "stream",
-                stream: StreamContentSer {
-                    id: &stream_id,
-                    finish: true,
+                msgtype: "markdown",
+                markdown: StreamContentSer {
                     content: &text,
+                    finish: true,
+                    id: "",
                 },
             })
             .unwrap_or_default(),
@@ -642,8 +647,9 @@ async fn handle_frame(
             );
 
             // Store pending reply info (use lowercase userid for case-insensitive matching)
-            if !req_id.is_empty() && !chatid.is_empty() && !userid.is_empty() {
+            if !req_id.is_empty() && !userid.is_empty() {
                 let userid_lower = userid.to_lowercase();
+                let stream_id = Uuid::new_v4().to_string().replace("-", "");
                 let mut pending = pending_replies.lock().await;
                 // Keep only recent pending replies to avoid memory leak
                 if pending.len() > 100 {
@@ -653,23 +659,30 @@ async fn handle_frame(
                     userid_lower.clone(),
                     PendingReply {
                         req_id: req_id.clone(),
+                        stream_id: stream_id.clone(),
                     },
                 );
                 info!(
-                    "WeCom Stream: stored pending reply for userid: {} (lower: {}), req_id: {}",
-                    userid, userid_lower, req_id
+                    "WeCom Stream: stored pending reply for userid: {} (lower: {}), req_id: {}, stream_id: {}",
+                    userid, userid_lower, req_id, stream_id
                 );
             }
 
             // Store chat info for active send (use lowercase userid for case-insensitive matching)
-            if !userid.is_empty() && !chatid.is_empty() {
+            if !userid.is_empty() {
                 let userid_lower = userid.to_lowercase();
                 let chat_type_num = if chattype == "group" { 2 } else { 1 };
+                // 单聊时使用 userid 作为 chatid，群聊时使用返回的 chatid
+                let actual_chatid = if chattype == "group" {
+                    chatid.clone()
+                } else {
+                    userid.to_string()
+                };
                 let mut info = chat_info.lock().await;
-                info.insert(userid_lower.clone(), (chatid.clone(), chat_type_num));
+                info.insert(userid_lower.clone(), (actual_chatid.clone(), chat_type_num));
                 info!(
                     "WeCom Stream: stored chat info for userid: {} (lower: {}), chatid: {}, chat_type: {}",
-                    userid, userid_lower, chatid, chat_type_num
+                    userid, userid_lower, actual_chatid, chat_type_num
                 );
             }
 
@@ -694,10 +707,13 @@ async fn handle_frame(
                         };
 
                         let mut meta = HashMap::new();
-                        meta.insert(
-                            "chatid".to_string(),
-                            serde_json::Value::String(chatid.clone()),
-                        );
+                        // 单聊时使用 userid 作为 chatid，群聊时使用返回的 chatid
+                        let meta_chatid = if chattype == "group" {
+                            chatid.clone()
+                        } else {
+                            userid.to_string()
+                        };
+                        meta.insert("chatid".to_string(), serde_json::Value::String(meta_chatid));
                         meta.insert("req_id".to_string(), serde_json::Value::String(req_id));
 
                         let msg = ChannelMessage {
@@ -733,16 +749,22 @@ async fn handle_frame(
             };
 
             let userid = body.from.as_ref().map(|f| f.userid.as_str()).unwrap_or("");
-            let chatid = body.chatid.clone();
+            let _chatid = body.chatid.clone();
 
             // Handle enter_agent event (user starts conversation)
             if body.eventtype == "enter_agent" && !userid.is_empty() {
-                // Store chat info
+                // Store chat info - enter_agent is single chat, use userid as chatid
                 let chat_type_num = 1; // single chat
+                let actual_chatid = userid.to_string();
+                let userid_lower = userid.to_lowercase();
                 {
                     let mut info = chat_info.lock().await;
-                    info.insert(userid.to_string(), (chatid.clone(), chat_type_num));
+                    info.insert(userid_lower.clone(), (actual_chatid.clone(), chat_type_num));
                 }
+                info!(
+                    "WeCom Stream: enter_agent, stored chat info for userid: {} (lower: {}), chatid: {}",
+                    userid, userid_lower, actual_chatid
+                );
 
                 let msg = ChannelMessage {
                     channel: ChannelType::Custom("wecom_stream".to_string()),
