@@ -1,6 +1,6 @@
 # LLM Providers Guide
 
-OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **20 providers**, **51 builtin models**, and **23 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
+OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **21 providers**, **61 builtin models**, and **24 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
 
 ---
 
@@ -549,9 +549,47 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 
 ---
 
+### 21. Alibaba DashScope Coding Plan (International)
+
+| | |
+|---|---|
+| **Display Name** | DashScope Coding Plan (Intl) |
+| **Driver** | OpenAI-compatible |
+| **Env Var** | `ALIBABA_CODING_PLAN_API_KEY` |
+| **Base URL** | `https://coding-intl.dashscope.aliyuncs.com/v1` |
+| **Key Required** | Yes |
+| **Free Tier** | No (subscription-based) |
+| **Auth** | `Authorization: Bearer` header |
+| **Models** | 8 |
+
+**Available Models:**
+- `alibaba-coding-plan/qwen3.5-plus` (Smart) — 1M context, vision ✅
+- `alibaba-coding-plan/qwen3-max-2026-01-23` (Frontier) — 262K context
+- `alibaba-coding-plan/qwen3-coder-plus` (Smart) — 1M context, coding optimized
+- `alibaba-coding-plan/qwen3-coder-next` (Frontier) — 262K context
+- `alibaba-coding-plan/glm-5` (Frontier) — Zhipu GLM-5, 202K context
+- `alibaba-coding-plan/glm-4.7` (Smart) — Zhipu GLM-4.7, 202K context
+- `alibaba-coding-plan/kimi-k2.5` (Smart) — Moonshot Kimi, 262K context, vision ✅
+- `alibaba-coding-plan/MiniMax-M2.5` (Smart) — 204K context
+
+**Setup:**
+1. Go to [Alibaba Cloud Model Studio Coding Plan](https://modelstudio.console.alibabacloud.com/ap-southeast-1/?tab=globalset#/efm/coding_plan)
+2. Subscribe to the Pro plan ($50/month)
+3. Copy your plan-specific API key (format: `sk-sp-xxxxx`)
+4. `export ALIBABA_CODING_PLAN_API_KEY="sk-sp-..."`
+
+**Important Notes:**
+- **Subscription-based pricing**: $50/month Pro plan with quota limits (90,000 requests/month, 45,000/week, 6,000 per 5 hours). Per-token costs are $0 — actual cost is the fixed monthly fee.
+- **API Key format**: Must use plan-specific key starting with `sk-sp-`. Regular Model Studio keys (`sk-xxxxx`) will not work.
+- **Base URL**: Must use the Coding Plan endpoint (`coding-intl.dashscope.aliyuncs.com`). The general Model Studio URL will fail.
+- **Multi-provider access**: Single subscription provides access to models from Qwen (Alibaba), GLM (Zhipu), Kimi (Moonshot), and MiniMax.
+- **Vision support**: qwen3.5-plus and kimi-k2.5 support image understanding.
+
+---
+
 ## Model Catalog
 
-The complete catalog of all 51 builtin models, sorted by provider. Pricing is per million tokens.
+The complete catalog of all 61 builtin models, sorted by provider. Pricing is per million tokens.
 
 | # | Model ID | Display Name | Provider | Tier | Context Window | Max Output | Input $/M | Output $/M | Tools | Vision |
 |---|----------|-------------|----------|------|---------------|------------|-----------|------------|-------|--------|
@@ -608,6 +646,14 @@ The complete catalog of all 51 builtin models, sorted by provider. Pricing is pe
 | 51 | `grok-2-mini` | Grok 2 Mini | xai | Fast | 131,072 | 32,768 | $0.30 | $0.50 | Yes | No |
 | 52 | `hf/meta-llama/Llama-3.3-70B-Instruct` | Llama 3.3 70B (HF) | huggingface | Balanced | 128,000 | 4,096 | $0.30 | $0.30 | No | No |
 | 53 | `replicate/meta-llama-3.3-70b-instruct` | Llama 3.3 70B (Replicate) | replicate | Balanced | 128,000 | 4,096 | $0.40 | $0.40 | No | No |
+| 54 | `alibaba-coding-plan/qwen3.5-plus` | Qwen 3.5 Plus (Coding Plan) | alibaba_coding_plan | Smart | 1,000,000 | 65,536 | $0.00 | $0.00 | Yes | Yes |
+| 55 | `alibaba-coding-plan/qwen3-max-2026-01-23` | Qwen 3 Max 2026-01-23 (Coding Plan) | alibaba_coding_plan | Frontier | 262,144 | 65,536 | $0.00 | $0.00 | Yes | No |
+| 56 | `alibaba-coding-plan/qwen3-coder-plus` | Qwen 3 Coder Plus (Coding Plan) | alibaba_coding_plan | Smart | 1,000,000 | 65,536 | $0.00 | $0.00 | Yes | No |
+| 57 | `alibaba-coding-plan/qwen3-coder-next` | Qwen 3 Coder Next (Coding Plan) | alibaba_coding_plan | Frontier | 262,144 | 65,536 | $0.00 | $0.00 | Yes | No |
+| 58 | `alibaba-coding-plan/glm-5` | GLM-5 (Coding Plan) | alibaba_coding_plan | Frontier | 202,752 | 32,768 | $0.00 | $0.00 | Yes | No |
+| 59 | `alibaba-coding-plan/glm-4.7` | GLM-4.7 (Coding Plan) | alibaba_coding_plan | Smart | 202,752 | 32,768 | $0.00 | $0.00 | Yes | No |
+| 60 | `alibaba-coding-plan/kimi-k2.5` | Kimi K2.5 (Coding Plan) | alibaba_coding_plan | Smart | 262,144 | 32,768 | $0.00 | $0.00 | Yes | Yes |
+| 61 | `alibaba-coding-plan/MiniMax-M2.5` | MiniMax M2.5 (Coding Plan) | alibaba_coding_plan | Smart | 204,800 | 32,768 | $0.00 | $0.00 | Yes | No |
 
 **Model Tiers:**
 
@@ -621,13 +667,13 @@ The complete catalog of all 51 builtin models, sorted by provider. Pricing is pe
 
 **Notes:**
 - Local providers (Ollama, vLLM, LM Studio) auto-discover models at runtime. Any model you download and serve will be merged into the catalog with `Local` tier and zero cost.
-- The 46 entries above are the builtin models. The total of 51 referenced in the catalog includes runtime auto-discovered models that vary per installation.
+- The 61 entries above are the builtin models. The total may vary per installation due to runtime auto-discovered models from local providers.
 
 ---
 
 ## Model Aliases
 
-All 23 aliases resolve to canonical model IDs. Aliases are case-insensitive.
+All 24 aliases resolve to canonical model IDs. Aliases are case-insensitive.
 
 | Alias | Resolves To |
 |-------|------------|
@@ -654,6 +700,7 @@ All 23 aliases resolve to canonical model IDs. Aliases are case-insensitive.
 | `sonar` | `sonar-pro` |
 | `jamba` | `jamba-1.5-large` |
 | `command-r` | `command-r-plus` |
+| `alibaba-coding-plan` | `alibaba-coding-plan/qwen3.5-plus` |
 
 You can use aliases anywhere a model ID is accepted: in config files, REST API calls, chat commands, and the model routing configuration.
 
@@ -778,6 +825,7 @@ The `MeteringEngine` first checks the **model catalog** for exact pricing. If th
 | `*replicate*` | $0.40 | $0.40 |
 | `*llama*` / `*mixtral*` | $0.05 | $0.10 |
 | `*qwen*` | $0.20 | $0.60 |
+| `*alibaba_coding_plan*` | $0.00 | $0.00 **(subscription)** |
 | `mistral-large*` | $2.00 | $6.00 |
 | `*mistral*` (other) | $0.10 | $0.30 |
 | `command-r-plus` | $2.50 | $10.00 |
@@ -903,7 +951,7 @@ Returns a map of all alias-to-canonical-ID mappings.
 GET /api/providers
 ```
 
-Returns all 20 providers with auth status and model counts.
+Returns all 21 providers with auth status and model counts.
 
 **Response:**
 ```json
@@ -998,7 +1046,7 @@ Local:
 
 ### `/providers`
 
-Lists all 20 providers with their authentication status.
+Lists all 21 providers with their authentication status.
 
 ```
 /providers
@@ -1006,7 +1054,7 @@ Lists all 20 providers with their authentication status.
 
 Example output:
 ```
-LLM Providers (20):
+LLM Providers (21):
 
   Anthropic          ANTHROPIC_API_KEY       Configured    3 models
   OpenAI             OPENAI_API_KEY          Missing       6 models
@@ -1047,6 +1095,7 @@ Quick reference for all provider environment variables:
 | Hugging Face | `HF_API_KEY` | Yes |
 | xAI | `XAI_API_KEY` | Yes |
 | Replicate | `REPLICATE_API_TOKEN` | Yes |
+| Alibaba DashScope Coding Plan | `ALIBABA_CODING_PLAN_API_KEY` | Yes |
 
 ---
 

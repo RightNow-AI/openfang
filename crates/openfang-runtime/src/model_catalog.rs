@@ -765,12 +765,21 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::Missing,
             model_count: 0,
         },
-        // ── Chinese providers (5) ────────────────────────────────────
+        // ── Chinese providers (6) ────────────────────────────────────
         ProviderInfo {
             id: "qwen".into(),
             display_name: "Qwen (Alibaba)".into(),
             api_key_env: "DASHSCOPE_API_KEY".into(),
             base_url: QWEN_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
+            id: "alibaba_coding_plan".into(),
+            display_name: "Alibaba Coding Plan (Intl)".into(),
+            api_key_env: "ALIBABA_CODING_PLAN_API_KEY".into(),
+            base_url: ALIBABA_CODING_PLAN_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -979,6 +988,8 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("minimax-highspeed", "MiniMax-M2.5-highspeed"),
         ("minimax-m2.1", "MiniMax-M2.1"),
         ("codegeex", "codegeex-4"),
+        // Alibaba Coding Plan aliases
+        ("alibaba-coding-plan", "alibaba-coding-plan/qwen3.5-plus"),
         // Codex aliases
         ("codex", "codex/gpt-5.4"),
         ("codex-5.4", "codex/gpt-5.4"),
@@ -3193,6 +3204,131 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["abab7".into()],
         },
         // ══════════════════════════════════════════════════════════════
+        // Alibaba Coding Plan International (8)
+        // All pricing set to $0 — actual cost is fixed monthly subscription.
+        // Provides multi-provider access: Qwen, Zhipu GLM, Moonshot Kimi, MiniMax.
+        // See: https://www.alibabacloud.com/help/en/model-studio/coding-plan
+        // ══════════════════════════════════════════════════════════════
+        // ── Qwen models (4) ──────────────────────────────────────────
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/qwen3.5-plus".into(),
+            display_name: "Qwen 3.5 Plus (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Smart,
+            context_window: 1_000_000,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/qwen3-max-2026-01-23".into(),
+            display_name: "Qwen 3 Max 2026-01-23 (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Frontier,
+            context_window: 262_144,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/qwen3-coder-plus".into(),
+            display_name: "Qwen 3 Coder Plus (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Smart,
+            context_window: 1_000_000,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["qwen3-coder".into()],
+        },
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/qwen3-coder-next".into(),
+            display_name: "Qwen 3 Coder Next (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Frontier,
+            context_window: 262_144,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ── Zhipu / GLM via Coding Plan (2) ─────────────────────────
+        // API receives "glm-5" / "glm-4.7" after prefix stripping
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/glm-5".into(),
+            display_name: "GLM-5 (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Frontier,
+            context_window: 202_752,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/glm-4.7".into(),
+            display_name: "GLM-4.7 (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Smart,
+            context_window: 202_752,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ── Moonshot / Kimi via Coding Plan (1) ─────────────────────
+        // API receives "kimi-k2.5" after prefix stripping
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/kimi-k2.5".into(),
+            display_name: "Kimi K2.5 (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ── MiniMax via Coding Plan (1) ──────────────────────────────
+        // API receives "MiniMax-M2.5" after prefix stripping
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/MiniMax-M2.5".into(),
+            display_name: "MiniMax M2.5 (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Smart,
+            context_window: 204_800,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ══════════════════════════════════════════════════════════════
         // Zhipu AI / GLM (6)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
@@ -3905,7 +4041,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 41);
+        assert_eq!(catalog.list_providers().len(), 42);
     }
 
     #[test]
@@ -4137,6 +4273,10 @@ mod tests {
         assert!(catalog.get_provider("moonshot").is_some());
         assert!(catalog.get_provider("qianfan").is_some());
         assert!(catalog.get_provider("bedrock").is_some());
+        // Alibaba Coding Plan provider
+        assert!(catalog.get_provider("alibaba_coding_plan").is_some());
+        let provider = catalog.get_provider("alibaba_coding_plan").unwrap();
+        assert_eq!(provider.api_key_env, "ALIBABA_CODING_PLAN_API_KEY");
     }
 
     #[test]
@@ -4174,6 +4314,95 @@ mod tests {
         let abab7 = catalog.find_model("abab7-chat").unwrap();
         assert_eq!(abab7.provider, "minimax");
         assert!(abab7.supports_vision);
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_models() {
+        let catalog = ModelCatalog::new();
+
+        // Test all 8 models are present
+        let models = catalog.models_by_provider("alibaba_coding_plan");
+        assert_eq!(models.len(), 8);
+
+        // Test qwen3.5-plus — flagship model with 1M context and vision
+        let qwen35 = catalog
+            .find_model("alibaba-coding-plan/qwen3.5-plus")
+            .unwrap();
+        assert_eq!(qwen35.display_name, "Qwen 3.5 Plus (Alibaba Coding Plan)");
+        assert_eq!(qwen35.tier, ModelTier::Smart);
+        assert_eq!(qwen35.context_window, 1_000_000);
+        assert_eq!(qwen35.max_output_tokens, 65_536);
+        assert!(qwen35.supports_tools);
+        assert!(qwen35.supports_vision);
+        assert!(qwen35.supports_streaming);
+        // Subscription-based pricing
+        assert!((qwen35.input_cost_per_m).abs() < f64::EPSILON);
+        assert!((qwen35.output_cost_per_m).abs() < f64::EPSILON);
+
+        // Test qwen3-max-2026-01-23 — frontier model
+        let qwen3max = catalog
+            .find_model("alibaba-coding-plan/qwen3-max-2026-01-23")
+            .unwrap();
+        assert_eq!(qwen3max.tier, ModelTier::Frontier);
+        assert_eq!(qwen3max.context_window, 262_144);
+        assert!(!qwen3max.supports_vision);
+        assert!(qwen3max.supports_tools);
+
+        // Test qwen3-coder-plus — coding model with 1M context
+        let qwen3coder = catalog
+            .find_model("alibaba-coding-plan/qwen3-coder-plus")
+            .unwrap();
+        assert_eq!(qwen3coder.context_window, 1_000_000);
+        assert!(!qwen3coder.supports_vision);
+        assert!(qwen3coder.supports_tools);
+
+        // Test qwen3-coder-alias
+        let qwen3coder_alias = catalog.find_model("qwen3-coder").unwrap();
+        assert_eq!(qwen3coder_alias.id, "alibaba-coding-plan/qwen3-coder-plus");
+
+        // Test glm-5 — Zhipu model via Coding Plan
+        let glm5 = catalog.find_model("alibaba-coding-plan/glm-5").unwrap();
+        assert_eq!(glm5.display_name, "GLM-5 (Alibaba Coding Plan)");
+        assert_eq!(glm5.tier, ModelTier::Frontier);
+        assert_eq!(glm5.context_window, 202_752);
+        assert_eq!(glm5.max_output_tokens, 32_768);
+        assert!(glm5.supports_tools);
+        assert!(!glm5.supports_vision);
+
+        // Test glm-4.7
+        let glm47 = catalog.find_model("alibaba-coding-plan/glm-4.7").unwrap();
+        assert_eq!(glm47.tier, ModelTier::Smart);
+        assert_eq!(glm47.context_window, 202_752);
+
+        // Test kimi-k2.5 — Moonshot model with vision support
+        let kimi = catalog.find_model("alibaba-coding-plan/kimi-k2.5").unwrap();
+        assert_eq!(kimi.display_name, "Kimi K2.5 (Alibaba Coding Plan)");
+        assert_eq!(kimi.context_window, 262_144);
+        assert!(kimi.supports_vision);
+        assert!(kimi.supports_tools);
+
+        // Test MiniMax-M2.5 via Coding Plan
+        let minimax = catalog
+            .find_model("alibaba-coding-plan/MiniMax-M2.5")
+            .unwrap();
+        assert_eq!(minimax.display_name, "MiniMax M2.5 (Alibaba Coding Plan)");
+        assert_eq!(minimax.context_window, 204_800);
+        assert_eq!(minimax.max_output_tokens, 32_768);
+        assert!(minimax.supports_tools);
+        assert!(!minimax.supports_vision);
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_aliases() {
+        let catalog = ModelCatalog::new();
+
+        // Test alibaba-coding-plan alias resolves to qwen3.5-plus
+        let alias1 = catalog.find_model("alibaba-coding-plan").unwrap();
+        assert_eq!(alias1.id, "alibaba-coding-plan/qwen3.5-plus");
+
+        // Test case-insensitive alias resolution
+        let alias_lower = catalog.find_model("Alibaba-Coding-Plan").unwrap();
+        assert_eq!(alias_lower.id, "alibaba-coding-plan/qwen3.5-plus");
     }
 
     #[test]
