@@ -537,7 +537,6 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
         ("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY"),
         ("volcengine", "doubao-seed-1-6-251015", "VOLCENGINE_API_KEY"),
         ("volcengine_coding", "ark-code-latest", "VOLCENGINE_API_KEY"),
-        ("volcengine", "doubao-seed-1-6-251015", "VOLCENGINE_API_KEY"),
         (
             "openrouter",
             "openrouter/google/gemini-2.5-flash",

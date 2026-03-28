@@ -85,6 +85,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "ByteDance Ark — coding models (cn-beijing)",
     },
     ProviderInfo {
+        name: "volcengine_coding",
+        display: "Volcano Engine (Coding Plan)",
+        env_var: "VOLCENGINE_API_KEY",
+        default_model: "ark-code-latest",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
         name: "openrouter",
         display: "OpenRouter",
         env_var: "OPENROUTER_API_KEY",
