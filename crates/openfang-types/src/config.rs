@@ -973,7 +973,8 @@ impl Default for ThinkingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PtcConfig {
-    /// Whether PTC is enabled globally (default: true).
+    /// Whether PTC is enabled globally (default: false).
+    /// PTC shells out to a Python subprocess, so it is opt-in.
     /// Per-agent override via `ptc_enabled` in agent manifests.
     pub enabled: bool,
     /// Timeout for Python subprocess execution in seconds (default: 120).
@@ -985,7 +986,7 @@ pub struct PtcConfig {
 impl Default for PtcConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             timeout_secs: 120,
             max_stdout_bytes: 100_000,
         }

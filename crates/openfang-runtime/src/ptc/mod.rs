@@ -38,7 +38,8 @@ pub use tool_classifier::{classify_tools, PtcMode};
 /// Configuration for Programmatic Tool Calling.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PtcConfig {
-    /// Whether PTC is enabled (global default: true).
+    /// Whether PTC is enabled (global default: false).
+    /// PTC shells out to a Python subprocess, so it is opt-in.
     pub enabled: bool,
     /// Timeout for Python subprocess execution in seconds.
     pub timeout_secs: u64,
@@ -49,7 +50,7 @@ pub struct PtcConfig {
 impl Default for PtcConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             timeout_secs: 120,
             max_stdout_bytes: 100_000,
         }
@@ -163,6 +164,7 @@ pub async fn run_execute_code(
     ipc_port: u16,
     config: &PtcConfig,
     workspace_root: Option<&Path>,
+    allowed_env: &[String],
 ) -> String {
     // Generate the full SDK preamble + wrap user code
     let sdk = generate_python_sdk(ptc_tools, ipc_port);
@@ -175,7 +177,7 @@ pub async fn run_execute_code(
         "Executing PTC code"
     );
 
-    let result = execute_python(&full_script, timeout_secs, workspace_root).await;
+    let result = execute_python(&full_script, timeout_secs, workspace_root, allowed_env).await;
 
     // Combine stdout and stderr for the response
     let mut parts: Vec<String> = Vec::new();

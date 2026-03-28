@@ -51,6 +51,7 @@ pub struct PythonResult {
 /// Execute a Python script in a subprocess.
 ///
 /// The script is passed via `-c` flag. The process runs with:
+/// - Environment sandboxed (secrets stripped, only safe vars inherited)
 /// - `PYTHONUNBUFFERED=1` to prevent output buffering
 /// - `cwd` set to the workspace root (if provided)
 ///
@@ -59,6 +60,7 @@ pub async fn execute_python(
     script: &str,
     timeout_secs: u64,
     workspace_root: Option<&Path>,
+    allowed_env: &[String],
 ) -> PythonResult {
     use tokio::io::AsyncReadExt;
     use tokio::process::Command;
@@ -71,7 +73,12 @@ pub async fn execute_python(
         cmd.current_dir(root);
     }
 
-    // Environment: unbuffered Python + inherit parent
+    // SECURITY: Strip environment to prevent credential leakage into
+    // LLM-generated Python code. Only safe vars (PATH, HOME, etc.) and
+    // explicitly allowed vars from hand_allowed_env are inherited.
+    crate::subprocess_sandbox::sandbox_command(&mut cmd, allowed_env);
+
+    // Unbuffered Python output (set after sandbox_command which calls env_clear)
     cmd.env("PYTHONUNBUFFERED", "1");
 
     // Spawn with piped stdio
@@ -148,21 +155,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_simple_python() {
-        let result = execute_python("print('hello world')", 10, None).await;
+        let result = execute_python("print('hello world')", 10, None, &[]).await;
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout.trim(), "hello world");
     }
 
     #[tokio::test]
     async fn test_execute_python_error() {
-        let result = execute_python("raise ValueError('test error')", 10, None).await;
+        let result = execute_python("raise ValueError('test error')", 10, None, &[]).await;
         assert_ne!(result.exit_code, 0);
         assert!(result.stderr.contains("ValueError"));
     }
 
     #[tokio::test]
     async fn test_execute_python_timeout() {
-        let result = execute_python("import time; time.sleep(60)", 1, None).await;
+        let result = execute_python("import time; time.sleep(60)", 1, None, &[]).await;
         assert_ne!(result.exit_code, 0);
         assert!(result.stderr.contains("timed out") || result.exit_code != 0);
     }
