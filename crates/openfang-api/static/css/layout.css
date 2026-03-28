@@ -34,7 +34,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   min-height: 60px;
+}
+
+.sidebar-header-text {
+  min-width: 0;
 }
 
 .sidebar-logo {

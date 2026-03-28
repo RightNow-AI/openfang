@@ -3,6 +3,12 @@
 
 function chatPage() {
   var msgId = 0;
+  function isZhLocale() {
+    return !!(window.OpenFangI18n &&
+      typeof window.OpenFangI18n.getLocale === 'function' &&
+      window.OpenFangI18n.getLocale() === 'zh-CN');
+  }
+  var zh = isZhLocale();
   return {
     currentAgent: null,
     messages: [],
@@ -29,7 +35,25 @@ function chatPage() {
     _audioChunks: [],
     recordingTime: 0,
     _recordingTimer: null,
-    slashCommands: [
+    slashCommands: zh ? [
+      { cmd: '/help', desc: '显示可用命令' },
+      { cmd: '/agents', desc: '切换到代理页面' },
+      { cmd: '/new', desc: '重置会话（清空历史）' },
+      { cmd: '/compact', desc: '触发 LLM 会话压缩' },
+      { cmd: '/model', desc: '显示或切换模型（/model [name]）' },
+      { cmd: '/stop', desc: '取消当前代理运行' },
+      { cmd: '/usage', desc: '显示会话 Token 用量与成本' },
+      { cmd: '/think', desc: '切换扩展思考（/think [on|off|stream]）' },
+      { cmd: '/context', desc: '显示上下文窗口用量与压力' },
+      { cmd: '/verbose', desc: '切换工具详情级别（/verbose [off|on|full]）' },
+      { cmd: '/queue', desc: '查看代理是否正在处理' },
+      { cmd: '/status', desc: '显示系统状态' },
+      { cmd: '/clear', desc: '清空聊天显示' },
+      { cmd: '/exit', desc: '断开与代理的连接' },
+      { cmd: '/budget', desc: '显示支出限制与当前成本' },
+      { cmd: '/peers', desc: '显示 OFP 节点网络状态' },
+      { cmd: '/a2a', desc: '列出已发现的外部 A2A 代理' }
+    ] : [
       { cmd: '/help', desc: 'Show available commands' },
       { cmd: '/agents', desc: 'Switch to Agents page' },
       { cmd: '/new', desc: 'Reset session (clear history)' },
@@ -52,7 +76,9 @@ function chatPage() {
 
     // ── Tip Bar ──
     tipIndex: 0,
-    tips: ['Type / for commands', '/think on for reasoning', 'Ctrl+Shift+F for focus mode', 'Drag files to attach', '/model to switch models', '/context to check usage', '/verbose off to hide tool details'],
+    tips: zh ?
+      ['输入 / 查看命令', '/think on 开启扩展推理', 'Ctrl+Shift+F 切换专注模式', '拖拽文件即可附加', '/model 切换模型', '/context 查看上下文占用', '/verbose off 隐藏工具细节'] :
+      ['Type / for commands', '/think on for reasoning', 'Ctrl+Shift+F for focus mode', 'Drag files to attach', '/model to switch models', '/context to check usage', '/verbose off to hide tool details'],
     tipTimer: null,
     get currentTip() {
       if (localStorage.getItem('of-tips-off') === 'true') return '';
@@ -275,7 +301,10 @@ function chatPage() {
           break;
         case '/status':
           OpenFangAPI.get('/api/status').then(function(s) {
-            self.messages.push({ id: ++msgId, role: 'system', text: '**System Status**\n- Agents: ' + (s.agent_count || 0) + '\n- Uptime: ' + (s.uptime_seconds || 0) + 's\n- Version: ' + (s.version || '?'), meta: '', tools: [] });
+            var text = zh
+              ? '**系统状态**\n- 代理数：' + (s.agent_count || 0) + '\n- 运行时长：' + (s.uptime_seconds || 0) + ' 秒\n- 版本：' + (s.version || '?')
+              : '**System Status**\n- Agents: ' + (s.agent_count || 0) + '\n- Uptime: ' + (s.uptime_seconds || 0) + 's\n- Version: ' + (s.version || '?');
+            self.messages.push({ id: ++msgId, role: 'system', text: text, meta: '', tools: [] });
             self.scrollToBottom();
           }).catch(function() {});
           break;
@@ -318,9 +347,14 @@ function chatPage() {
           break;
         case '/peers':
           OpenFangAPI.get('/api/network/status').then(function(ns) {
-            self.messages.push({ id: ++msgId, role: 'system', text: '**OFP Network**\n' +
-              '- Status: ' + (ns.enabled ? 'Enabled' : 'Disabled') + '\n' +
-              '- Connected peers: ' + (ns.connected_peers||0) + ' / ' + (ns.total_peers||0), meta: '', tools: [] });
+            var text = zh
+              ? '**OFP 网络**\n' +
+                '- 状态：' + (ns.enabled ? '已启用' : '已禁用') + '\n' +
+                '- 已连接节点：' + (ns.connected_peers || 0) + ' / ' + (ns.total_peers || 0)
+              : '**OFP Network**\n' +
+                '- Status: ' + (ns.enabled ? 'Enabled' : 'Disabled') + '\n' +
+                '- Connected peers: ' + (ns.connected_peers || 0) + ' / ' + (ns.total_peers || 0);
+            self.messages.push({ id: ++msgId, role: 'system', text: text, meta: '', tools: [] });
             self.scrollToBottom();
           }).catch(function() {});
           break;
@@ -328,10 +362,10 @@ function chatPage() {
           OpenFangAPI.get('/api/a2a/agents').then(function(res) {
             var agents = res.agents || [];
             if (!agents.length) {
-              self.messages.push({ id: ++msgId, role: 'system', text: 'No external A2A agents discovered.', meta: '', tools: [] });
+              self.messages.push({ id: ++msgId, role: 'system', text: zh ? '尚未发现外部 A2A 代理。' : 'No external A2A agents discovered.', meta: '', tools: [] });
             } else {
               var lines = agents.map(function(a) { return '- **' + a.name + '** — ' + a.url; });
-              self.messages.push({ id: ++msgId, role: 'system', text: '**A2A Agents (' + agents.length + ')**\n' + lines.join('\n'), meta: '', tools: [] });
+              self.messages.push({ id: ++msgId, role: 'system', text: (zh ? '**A2A 代理（' + agents.length + '）**\n' : '**A2A Agents (' + agents.length + ')**\n') + lines.join('\n'), meta: '', tools: [] });
             }
             self.scrollToBottom();
           }).catch(function() {});
@@ -349,15 +383,25 @@ function chatPage() {
         this.messages.push({
           id: ++localMsgId,
           role: 'system',
-          text: '**Welcome to OpenFang Chat!**\n\n' +
-            '- Type `/` to see available commands\n' +
-            '- `/help` shows all commands\n' +
-            '- `/think on` enables extended reasoning\n' +
-            '- `/context` shows context window usage\n' +
-            '- `/verbose off` hides tool details\n' +
-            '- `Ctrl+Shift+F` toggles focus mode\n' +
-            '- Drag & drop files to attach them\n' +
-            '- `Ctrl+/` opens the command palette',
+          text: zh
+            ? '**欢迎使用 OpenFang 聊天！**\n\n' +
+              '- 输入 `/` 查看可用命令\n' +
+              '- `/help` 显示全部命令\n' +
+              '- `/think on` 启用扩展推理\n' +
+              '- `/context` 查看上下文窗口占用\n' +
+              '- `/verbose off` 隐藏工具细节\n' +
+              '- `Ctrl+Shift+F` 切换专注模式\n' +
+              '- 拖拽文件即可附加到对话中\n' +
+              '- `Ctrl+/` 打开命令面板'
+            : '**Welcome to OpenFang Chat!**\n\n' +
+              '- Type `/` to see available commands\n' +
+              '- `/help` shows all commands\n' +
+              '- `/think on` enables extended reasoning\n' +
+              '- `/context` shows context window usage\n' +
+              '- `/verbose off` hides tool details\n' +
+              '- `Ctrl+Shift+F` toggles focus mode\n' +
+              '- Drag & drop files to attach them\n' +
+              '- `Ctrl+/` opens the command palette',
           meta: '',
           tools: []
         });

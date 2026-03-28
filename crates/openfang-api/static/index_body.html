@@ -25,9 +25,9 @@
       </div>
       <div class="theme-switcher">
         <button class="theme-opt" :class="{ active: themeMode === 'light' }" @click="setTheme('light')" title="Light">&#9788;</button>
-        <button class="theme-opt" :class="{ active: themeMode === 'system' }" @click="setTheme('system')" title="System">&#9675;</button>
+        <button class="theme-opt" :class="{ active: themeMode === 'system' }" @click="setTheme('system')" title="Follow System">&#9675;</button>
         <button class="theme-opt" :class="{ active: themeMode === 'dark' }" @click="setTheme('dark')" title="Dark">&#9790;</button>
-        <button class="theme-opt" @click="toggleLocale()" title="Language" x-text="locale === 'zh-CN' ? '中文' : 'EN'"></button>
+        <button class="theme-opt locale-opt" @click="toggleLocale()" title="Language" x-text="locale === 'zh-CN' ? '中文' : 'EN'">EN</button>
       </div>
     </div>
 
@@ -2249,7 +2249,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   </div>
                   <div class="card-meta" x-text="qs.description"></div>
                   <div class="flex justify-end mt-2">
-                    <button class="btn btn-ghost btn-sm" @click="createDemoSkill(qs)" :disabled="isSkillInstalledByName(qs.name)" x-text="isSkillInstalledByName(qs.name) ? 'Created' : 'Create Skill'"></button>
+                    <button class="btn btn-ghost btn-sm" @click="createDemoSkill(qs)" :disabled="isSkillInstalledByName(qs.name)" x-text="isSkillInstalledByName(qs.name) ? 'Created Skill' : 'Create Skill'"></button>
                   </div>
                 </div>
               </template>
@@ -3231,7 +3231,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             </div>
             <div class="empty-state" x-show="!peers.length">
               <h4>No peers connected</h4>
-              <p class="hint">Add a <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">[network]</code> section to config.toml with <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">shared_secret</code> and peer addresses.</p>
+              <p class="hint">在 <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">[network]</code> 配置段中设置 <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">shared_secret</code> 和节点地址。</p>
             </div>
             </div>
 
@@ -3320,31 +3320,31 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <div class="stats-row" style="margin-bottom:16px">
                 <div class="stat-card" style="flex:1">
                   <div class="stat-label">Hourly</div>
-                  <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.hourly_spend || 0).toFixed(4)"></div>
-                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.hourly_limit)"></div>
-                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.hourly_limit > 0">
-                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.hourly_pct*100,100)+'%', background: pctColor(budgetData.hourly_pct)}"></div>
+                  <div class="stat-value" style="font-size:18px" x-text="'$' + (((budgetData && budgetData.hourly_spend) || 0).toFixed(4))"></div>
+                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData ? budgetData.hourly_limit : 0)"></div>
+                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData && budgetData.hourly_limit > 0">
+                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(((budgetData && budgetData.hourly_pct) || 0) * 100,100) + '%', background: pctColor((budgetData && budgetData.hourly_pct) || 0)}"></div>
                   </div>
                 </div>
                 <div class="stat-card" style="flex:1">
                   <div class="stat-label">Daily</div>
-                  <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.daily_spend || 0).toFixed(4)"></div>
-                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.daily_limit)"></div>
-                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.daily_limit > 0">
-                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.daily_pct*100,100)+'%', background: pctColor(budgetData.daily_pct)}"></div>
+                  <div class="stat-value" style="font-size:18px" x-text="'$' + (((budgetData && budgetData.daily_spend) || 0).toFixed(4))"></div>
+                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData ? budgetData.daily_limit : 0)"></div>
+                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData && budgetData.daily_limit > 0">
+                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(((budgetData && budgetData.daily_pct) || 0) * 100,100) + '%', background: pctColor((budgetData && budgetData.daily_pct) || 0)}"></div>
                   </div>
                 </div>
                 <div class="stat-card" style="flex:1">
                   <div class="stat-label">Monthly</div>
-                  <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.monthly_spend || 0).toFixed(4)"></div>
-                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.monthly_limit)"></div>
-                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.monthly_limit > 0">
-                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.monthly_pct*100,100)+'%', background: pctColor(budgetData.monthly_pct)}"></div>
+                  <div class="stat-value" style="font-size:18px" x-text="'$' + (((budgetData && budgetData.monthly_spend) || 0).toFixed(4))"></div>
+                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData ? budgetData.monthly_limit : 0)"></div>
+                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData && budgetData.monthly_limit > 0">
+                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(((budgetData && budgetData.monthly_pct) || 0) * 100,100) + '%', background: pctColor((budgetData && budgetData.monthly_pct) || 0)}"></div>
                   </div>
                 </div>
               </div>
-              <div class="text-xs text-dim mb-3" x-show="budgetData.alert_threshold > 0 && !editMode">
-                Alert threshold: <span x-text="(budgetData.alert_threshold * 100).toFixed(0) + '%'"></span> of any limit
+              <div class="text-xs text-dim mb-3" x-show="budgetData && budgetData.alert_threshold > 0 && !editMode">
+                Alert threshold: <span x-text="(((budgetData && budgetData.alert_threshold) || 0) * 100).toFixed(0) + '%'"></span> of any limit
               </div>
 
               <!-- Edit limits form -->
@@ -3440,12 +3440,12 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <div class="font-bold" style="font-size:14px">OpenClaw Workspace Found</div>
                   <span class="badge badge-connected">Ready to Migrate</span>
                 </div>
-                <div class="text-sm text-dim" style="font-family:monospace" x-text="scanResult.path"></div>
+                <div class="text-sm text-dim" style="font-family:monospace" x-text="scanResult ? scanResult.path : ''"></div>
               </div>
               <div class="stats-row mb-4">
-                <div class="stat-card"><div class="stat-value" x-text="scanResult.agents ? scanResult.agents.length : 0"></div><div class="stat-label">Agents</div></div>
-                <div class="stat-card"><div class="stat-value" x-text="scanResult.channels ? scanResult.channels.length : 0"></div><div class="stat-label">Channels</div></div>
-                <div class="stat-card"><div class="stat-value" x-text="scanResult.skills ? scanResult.skills.length : 0"></div><div class="stat-label">Skills</div></div>
+                <div class="stat-card"><div class="stat-value" x-text="scanResult && scanResult.agents ? scanResult.agents.length : 0"></div><div class="stat-label">Agents</div></div>
+                <div class="stat-card"><div class="stat-value" x-text="scanResult && scanResult.channels ? scanResult.channels.length : 0"></div><div class="stat-label">Channels</div></div>
+                <div class="stat-card"><div class="stat-value" x-text="scanResult && scanResult.skills ? scanResult.skills.length : 0"></div><div class="stat-label">Skills</div></div>
               </div>
               <div class="flex gap-2 mb-4">
                 <button class="btn btn-primary" @click="runMigration(false)" :disabled="migrating">
@@ -3458,15 +3458,15 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             </div>
 
             <div x-show="migStep === 'result' && migResult">
-              <div class="card mb-4" :style="'border-left:3px solid ' + (migResult.status === 'completed' ? 'var(--success, #22c55e)' : 'var(--error)')">
+              <div class="card mb-4" :style="'border-left:3px solid ' + ((migResult && migResult.status === 'completed') ? 'var(--success, #22c55e)' : 'var(--error)')">
                 <div class="flex justify-between items-center mb-2">
-                  <div class="font-bold" style="font-size:14px" x-text="migResult.dry_run ? 'Dry Run Complete' : 'Migration Complete!'"></div>
-                  <span class="badge" :class="migResult.status === 'completed' ? 'badge-connected' : 'badge-crashed'" x-text="migResult.status === 'completed' ? 'SUCCESS' : 'FAILED'"></span>
+                  <div class="font-bold" style="font-size:14px" x-text="migResult && migResult.dry_run ? 'Dry Run Complete' : 'Migration Complete!'"></div>
+                  <span class="badge" :class="migResult && migResult.status === 'completed' ? 'badge-connected' : 'badge-crashed'" x-text="migResult && migResult.status === 'completed' ? 'SUCCESS' : 'FAILED'"></span>
                 </div>
-                <div class="text-sm text-dim" x-show="migResult.error" style="color:var(--error)" x-text="migResult.error"></div>
+                <div class="text-sm text-dim" x-show="migResult && migResult.error" style="color:var(--error)" x-text="migResult ? migResult.error : ''"></div>
               </div>
               <div class="flex gap-2">
-                <button class="btn btn-primary" x-show="migResult.dry_run" @click="runMigration(false)" :disabled="migrating">Run Migration for Real</button>
+                <button class="btn btn-primary" x-show="migResult && migResult.dry_run" @click="runMigration(false)" :disabled="migrating">Run Migration for Real</button>
                 <button class="btn btn-ghost" @click="migStep = 'intro'; migResult = null; scanResult = null">Start New Migration</button>
               </div>
             </div>

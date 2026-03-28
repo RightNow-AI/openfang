@@ -1098,12 +1098,14 @@ mark.search-highlight {
   font-weight: 500;
 }
 
-/* Theme switcher — 3-mode pill (Light / System / Dark) */
+/* Theme switcher — theme + locale */
 .theme-switcher {
   display: inline-flex;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   overflow: hidden;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 .theme-opt {
   cursor: pointer;
@@ -1117,6 +1119,12 @@ mark.search-highlight {
 }
 .theme-opt:hover { color: var(--text-primary); background: var(--bg-hover); }
 .theme-opt.active { color: var(--accent); background: var(--accent-glow); }
+.theme-opt.locale-opt {
+  min-width: 34px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
 
 /* Utility */
 .flex { display: flex; }
