@@ -458,9 +458,10 @@ async fn summarize_messages(
         conversation_text = conversation_text[safe_start..].to_string();
     }
 
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
     let summarize_prompt = format!(
-        "Summarize the following conversation preserving key facts, decisions, user preferences, \
-         and important context. Be concise but thorough. Output only the summary, no preamble.\n\n\
+        "Current time: {now}\n\n\
+         Summarize the following conversation. Output only the summary, no preamble.\n\n\
          ---\n{conversation_text}---"
     );
 
@@ -477,8 +478,13 @@ async fn summarize_messages(
         max_tokens: config.max_summary_tokens,
         temperature: 0.3,
         system: Some(
-            "You are a conversation summarizer. Produce a concise summary that captures \
-             all key facts, decisions, and context from the conversation."
+            "You are a conversation summarizer. Produce a concise summary that:\n\
+             - Preserves key facts, decisions, user preferences, and ongoing tasks\n\
+             - Drops facts and events that are no longer relevant to current context\n\
+             - For calendar data: keep only events from the last 6h and next 24h\n\
+             - For email data: keep only notable unread emails, drop ads and promotions\n\
+             - Uses absolute dates/times (YYYY-MM-DD HH:MM), never relative\n\
+             - Is concise — only what's still relevant matters"
                 .to_string(),
         ),
         thinking: None,
