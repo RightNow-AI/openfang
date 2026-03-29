@@ -1089,7 +1089,11 @@ impl OpenFangKernel {
                                             || disk_manifest.tool_allowlist
                                                 != entry.manifest.tool_allowlist
                                             || disk_manifest.tool_blocklist
-                                                != entry.manifest.tool_blocklist;
+                                                != entry.manifest.tool_blocklist
+                                            || disk_manifest.skills
+                                                != entry.manifest.skills
+                                            || disk_manifest.mcp_servers
+                                                != entry.manifest.mcp_servers;
                                         if changed {
                                             info!(
                                                 agent = %name,
