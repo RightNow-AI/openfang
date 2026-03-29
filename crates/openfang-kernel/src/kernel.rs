@@ -6687,6 +6687,7 @@ mod tests {
             exec_policy: None,
             tool_allowlist: vec![],
             tool_blocklist: vec![],
+            max_history_messages: 20,
         };
         manifest.capabilities.tools = vec!["file_read".to_string(), "web_fetch".to_string()];
         manifest.capabilities.agent_spawn = true;
@@ -6724,6 +6725,7 @@ mod tests {
             exec_policy: None,
             tool_allowlist: vec![],
             tool_blocklist: vec![],
+            max_history_messages: 20,
         }
     }
 

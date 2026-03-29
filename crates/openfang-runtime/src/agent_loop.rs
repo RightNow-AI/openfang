@@ -62,8 +62,6 @@ fn tool_timeout_for(tool_name: &str) -> Duration {
 /// Raised from 3 to 5 to allow longer-form generation.
 const MAX_CONTINUATIONS: u32 = 5;
 
-/// Maximum message history size before auto-trimming to prevent context overflow.
-const MAX_HISTORY_MESSAGES: usize = 20;
 
 /// Detect when the LLM claims to have performed an action (sent, posted, emailed)
 /// without actually calling any tools. Prevents hallucinated completions.
@@ -336,8 +334,9 @@ pub async fn run_agent_loop(
     // Safety valve: trim excessively long message histories to prevent context overflow.
     // The full compaction system handles sophisticated summarization, but this prevents
     // the catastrophic case where 200+ messages cause instant context overflow.
-    if messages.len() > MAX_HISTORY_MESSAGES {
-        let trim_count = messages.len() - MAX_HISTORY_MESSAGES;
+    let max_history = manifest.max_history_messages;
+    if messages.len() > max_history {
+        let trim_count = messages.len() - max_history;
         warn!(
             agent = %manifest.name,
             total_messages = messages.len(),
@@ -1499,8 +1498,9 @@ pub async fn run_agent_loop_streaming(
     let final_response;
 
     // Safety valve: trim excessively long message histories to prevent context overflow.
-    if messages.len() > MAX_HISTORY_MESSAGES {
-        let trim_count = messages.len() - MAX_HISTORY_MESSAGES;
+    let max_history = manifest.max_history_messages;
+    if messages.len() > max_history {
+        let trim_count = messages.len() - max_history;
         warn!(
             agent = %manifest.name,
             total_messages = messages.len(),
@@ -3028,7 +3028,8 @@ mod tests {
 
     #[test]
     fn test_max_history_messages() {
-        assert_eq!(MAX_HISTORY_MESSAGES, 20);
+        let manifest = AgentManifest::default();
+        assert_eq!(manifest.max_history_messages, 20);
     }
 
     // --- Integration tests for empty response guards ---
@@ -3575,7 +3576,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_history_messages_constant() {
-        assert_eq!(MAX_HISTORY_MESSAGES, 20);
+        let manifest = AgentManifest::default();
+        assert_eq!(manifest.max_history_messages, 20);
     }
 
     #[tokio::test]

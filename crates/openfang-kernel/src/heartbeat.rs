@@ -335,6 +335,7 @@ mod tests {
                 exec_policy: None,
                 tool_allowlist: vec![],
                 tool_blocklist: vec![],
+                max_history_messages: 20,
             },
             state,
             mode: AgentMode::default(),

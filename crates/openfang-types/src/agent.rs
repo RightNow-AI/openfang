@@ -491,10 +491,19 @@ pub struct AgentManifest {
     /// Tool blocklist — these tools are excluded (applied after allowlist).
     #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
     pub tool_blocklist: Vec<String>,
+    /// Maximum number of conversation history messages sent to the LLM.
+    /// Shorter-memory workers can use a lower value; long-context orchestrators
+    /// can raise it. Defaults to 20.
+    #[serde(default = "default_max_history_messages")]
+    pub max_history_messages: usize,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_max_history_messages() -> usize {
+    20
 }
 
 impl Default for AgentManifest {
@@ -525,6 +534,7 @@ impl Default for AgentManifest {
             exec_policy: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            max_history_messages: default_max_history_messages(),
         }
     }
 }
@@ -782,6 +792,7 @@ mod tests {
             exec_policy: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            max_history_messages: 20,
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let deserialized: AgentManifest = serde_json::from_str(&json).unwrap();
@@ -1299,5 +1310,27 @@ memory_write = ["self.*"]
             manifest.capabilities.memory_write,
             vec!["self.*".to_string()]
         );
+    }
+
+    // ----- max_history_messages field tests -----
+
+    #[test]
+    fn test_manifest_max_history_messages_default() {
+        let manifest = AgentManifest::default();
+        assert_eq!(manifest.max_history_messages, 20);
+    }
+
+    #[test]
+    fn test_manifest_max_history_messages_deserialize_explicit() {
+        let json = r#"{"name":"test","max_history_messages":50}"#;
+        let manifest: AgentManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(manifest.max_history_messages, 50);
+    }
+
+    #[test]
+    fn test_manifest_max_history_messages_defaults_on_missing() {
+        let json = r#"{"name":"test"}"#;
+        let manifest: AgentManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(manifest.max_history_messages, 20);
     }
 }
