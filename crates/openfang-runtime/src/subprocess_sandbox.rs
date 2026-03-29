@@ -197,6 +197,73 @@ fn extract_all_commands(command: &str) -> Vec<&str> {
     commands
 }
 
+// ---------------------------------------------------------------------------
+// Shell wrapper bypass detection (issue #794)
+// ---------------------------------------------------------------------------
+
+/// Shell wrappers that can execute arbitrary commands via -Command/-c//C flags.
+/// When the outer command is one of these, we must also validate the inline script.
+const SHELL_WRAPPERS: &[&str] = &[
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "pwsh.exe",
+    "cmd",
+    "cmd.exe",
+    "bash",
+    "sh",
+    "zsh",
+];
+
+/// Extract the inline script from shell wrapper arguments, if present.
+///
+/// Recognises the following flag patterns:
+/// - PowerShell: `-Command <script>` or `-c <script>`
+/// - cmd.exe:    `/C <script>`
+/// - POSIX sh:   `-c <script>`
+///
+/// Returns `Some(script)` when a script argument is found, `None` otherwise.
+///
+/// The `command` parameter is the full command string (including the wrapper name).
+pub fn extract_shell_wrapper_script(command: &str) -> Option<String> {
+    let mut tokens = command.split_whitespace();
+
+    // Consume the wrapper binary name.
+    let wrapper = tokens.next()?;
+    let wrapper_base = wrapper
+        .rsplit('/')
+        .next()
+        .unwrap_or(wrapper)
+        .rsplit('\\')
+        .next()
+        .unwrap_or(wrapper)
+        .to_ascii_lowercase();
+
+    if !SHELL_WRAPPERS.contains(&wrapper_base.as_str()) {
+        return None;
+    }
+
+    // Walk remaining tokens looking for a script-introducing flag.
+    let remaining: Vec<&str> = tokens.collect();
+    let mut i = 0;
+    while i < remaining.len() {
+        let tok = remaining[i].to_ascii_lowercase();
+        let is_script_flag = matches!(
+            tok.as_str(),
+            "-command" | "-c" | "/c"
+        );
+        if is_script_flag {
+            // Everything after this flag is the inline script.
+            let script = remaining[i + 1..].join(" ");
+            if !script.is_empty() {
+                return Some(script);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Validate a shell command against the exec policy.
 ///
 /// Returns `Ok(())` if the command is allowed, `Err(reason)` if blocked.
@@ -220,6 +287,36 @@ pub fn validate_command_allowlist(command: &str, policy: &ExecPolicy) -> Result<
                     "Command blocked: contains {reason}. Shell metacharacters are not allowed in Allowlist mode."
                 ));
             }
+
+            // SECURITY: Shell wrapper bypass (issue #794).
+            // When the outer command is a known shell wrapper (powershell, cmd, bash, sh, zsh),
+            // extract the inline script from -Command/-c//C arguments and validate it too.
+            // This prevents `powershell -Command "Remove-Item -Recurse C:\important"` from
+            // bypassing the blocklist just because `powershell` is in allowed_commands.
+            if let Some(script) = extract_shell_wrapper_script(command) {
+                // Apply metacharacter check to the inline script.
+                if let Some(reason) = contains_shell_metacharacters(&script) {
+                    return Err(format!(
+                        "Shell wrapper script blocked: contains {reason}. Shell metacharacters are not allowed in Allowlist mode."
+                    ));
+                }
+                // Apply allowlist check to each command inside the inline script.
+                let script_commands = extract_all_commands(&script);
+                for base in &script_commands {
+                    if policy.safe_bins.iter().any(|sb| sb == base) {
+                        continue;
+                    }
+                    if policy.allowed_commands.iter().any(|ac| ac == base) {
+                        continue;
+                    }
+                    return Err(format!(
+                        "Shell wrapper script contains blocked command '{}'. \
+                        The command is not in exec_policy.allowed_commands or exec_policy.safe_bins.",
+                        base
+                    ));
+                }
+            }
+
             let base_commands = extract_all_commands(command);
             for base in &base_commands {
                 // Check safe_bins first
@@ -901,5 +998,123 @@ mod tests {
         let cmds = extract_all_commands(cmd);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0], "\u{4f60}\u{597d}");
+    }
+
+    // ── Shell wrapper bypass tests (issue #794) ──────────────────────────
+
+    #[test]
+    fn test_extract_shell_wrapper_script_powershell_command() {
+        let script = extract_shell_wrapper_script(
+            r"powershell -Command Remove-Item -Recurse -Force C:\important",
+        );
+        assert_eq!(
+            script,
+            Some("Remove-Item -Recurse -Force C:\\important".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_shell_wrapper_script_cmd_c() {
+        let script = extract_shell_wrapper_script("cmd /C del /F /Q C:\\file.txt");
+        assert_eq!(script, Some("del /F /Q C:\\file.txt".to_string()));
+    }
+
+    #[test]
+    fn test_extract_shell_wrapper_script_bash_c() {
+        let script = extract_shell_wrapper_script("bash -c rm -rf /tmp/data");
+        assert_eq!(script, Some("rm -rf /tmp/data".to_string()));
+    }
+
+    #[test]
+    fn test_extract_shell_wrapper_script_no_flag() {
+        // powershell without -Command should return None (no inline script to inspect)
+        let script = extract_shell_wrapper_script("powershell");
+        assert!(script.is_none());
+    }
+
+    #[test]
+    fn test_extract_shell_wrapper_script_non_wrapper() {
+        let script = extract_shell_wrapper_script("cargo build");
+        assert!(script.is_none());
+    }
+
+    #[test]
+    fn test_shell_wrapper_bypass_powershell_remove_item_blocked() {
+        // powershell is in allowed_commands but Remove-Item is not in safe_bins
+        let policy = ExecPolicy {
+            allowed_commands: vec!["powershell".to_string()],
+            ..ExecPolicy::default()
+        };
+        let result = validate_command_allowlist(
+            r"powershell -Command Remove-Item -Recurse -Force C:\important",
+            &policy,
+        );
+        assert!(
+            result.is_err(),
+            "Remove-Item inside powershell -Command must be blocked"
+        );
+    }
+
+    #[test]
+    fn test_shell_wrapper_bypass_cmd_del_blocked() {
+        // cmd is in allowed_commands but del is not
+        let policy = ExecPolicy {
+            allowed_commands: vec!["cmd".to_string()],
+            ..ExecPolicy::default()
+        };
+        let result = validate_command_allowlist("cmd /C del /F /Q important.txt", &policy);
+        assert!(
+            result.is_err(),
+            "del inside cmd /C must be blocked"
+        );
+    }
+
+    #[test]
+    fn test_shell_wrapper_bypass_powershell_safe_command_allowed() {
+        // powershell -Command Get-Process is non-destructive; Get-Process in allowed_commands
+        let policy = ExecPolicy {
+            allowed_commands: vec!["powershell".to_string(), "Get-Process".to_string()],
+            ..ExecPolicy::default()
+        };
+        let result = validate_command_allowlist("powershell -Command Get-Process", &policy);
+        assert!(
+            result.is_ok(),
+            "Get-Process inside powershell -Command should be allowed when in allowed_commands"
+        );
+    }
+
+    #[test]
+    fn test_shell_wrapper_direct_no_command_flag_allowed() {
+        // powershell without -Command (interactive launch) should still pass the wrapper check
+        let policy = ExecPolicy {
+            allowed_commands: vec!["powershell".to_string()],
+            ..ExecPolicy::default()
+        };
+        let result = validate_command_allowlist("powershell", &policy);
+        assert!(
+            result.is_ok(),
+            "powershell without -Command should not be blocked by the wrapper check"
+        );
+    }
+
+    #[test]
+    fn test_shell_wrapper_bypass_pwsh_blocked() {
+        let policy = ExecPolicy {
+            allowed_commands: vec!["pwsh".to_string()],
+            ..ExecPolicy::default()
+        };
+        let result =
+            validate_command_allowlist("pwsh -Command Remove-Item -Recurse /tmp/data", &policy);
+        assert!(result.is_err(), "Remove-Item inside pwsh -Command must be blocked");
+    }
+
+    #[test]
+    fn test_shell_wrapper_bypass_sh_rm_blocked() {
+        let policy = ExecPolicy {
+            allowed_commands: vec!["sh".to_string()],
+            ..ExecPolicy::default()
+        };
+        let result = validate_command_allowlist("sh -c rm -rf /home/user", &policy);
+        assert!(result.is_err(), "rm inside sh -c must be blocked");
     }
 }
