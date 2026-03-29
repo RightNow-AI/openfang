@@ -196,9 +196,23 @@ pub async fn agent_ws(
         }
     };
 
-    // Verify agent exists
-    if state.kernel.registry.get(agent_id).is_none() {
-        return axum::http::StatusCode::NOT_FOUND.into_response();
+    // Verify agent exists. The WS upgrade can race with agent spawn/registration,
+    // so retry for up to 3 seconds at 100ms intervals before giving up.
+    {
+        const RETRY_INTERVAL: Duration = Duration::from_millis(100);
+        const MAX_RETRIES: u32 = 30; // 30 * 100ms = 3 seconds
+        let mut found = false;
+        for _ in 0..MAX_RETRIES {
+            if state.kernel.registry.get(agent_id).is_some() {
+                found = true;
+                break;
+            }
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+        if !found {
+            warn!(agent_id = %agent_id, "WebSocket upgrade rejected: agent not found after 3s wait");
+            return axum::http::StatusCode::NOT_FOUND.into_response();
+        }
     }
 
     let id_str = id.clone();
