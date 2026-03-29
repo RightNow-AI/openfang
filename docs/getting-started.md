@@ -187,7 +187,7 @@ provider = "groq"
 model = "llama-3.3-70b-versatile"
 
 [capabilities]
-tools = ["file_read", "file_list", "web_fetch"]
+tools = ["file_read", "file_list", "web_fetch"]  # Or use wildcards: "mcp_*", "mcp_filesystem_*"
 memory_read = ["*"]
 memory_write = ["self.*"]
 ```

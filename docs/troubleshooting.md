@@ -318,7 +318,15 @@ Auto-compaction is enabled by default when the session reaches the threshold (co
 tools = ["file_read", "web_fetch", "shell_exec"]  # Must list each tool
 # OR
 # tools = ["*"]  # Grant all tools (use with caution)
+# OR use wildcards to match multiple tools:
+# tools = ["mcp_filesystem_*"]  # Grants all filesystem MCP tools
+# tools = ["mcp_*"]  # Grants all MCP tools (any server)
 ```
+
+**Note on MCP tools**: MCP tools are namespaced as `mcp_{server}_{tool}` (e.g., `mcp_filesystem_read_file`). Use wildcards to grant access without listing each tool:
+- `mcp_filesystem_*` - all filesystem server tools
+- `mcp_github_*` - all GitHub server tools  
+- `mcp_*` - all MCP tools from any server
 
 ### "Permission denied" errors in agent responses
 

@@ -106,6 +106,22 @@ Helper functions (exported from `openfang_runtime::mcp`):
 - `is_mcp_tool(name)` -- checks if a tool name starts with `mcp_`
 - `extract_mcp_server(tool_name)` -- extracts the server name from a namespaced tool
 
+#### Granting MCP Tool Access
+
+MCP tools are namespaced as `mcp_{server}_{tool}` and require explicit capability grants in the agent manifest. Use wildcards to grant access to all tools from a server:
+
+```toml
+[capabilities]
+# Grant all filesystem MCP tools
+tools = ["mcp_filesystem_*"]
+
+# Grant all MCP tools from any server
+tools = ["mcp_*"]
+
+# Grant specific MCP tools
+tools = ["mcp_github_create_issue", "mcp_github_search_repos"]
+```
+
 #### Auto-Connection on Kernel Boot
 
 When the kernel starts (`start_background_agents()`), it checks `config.mcp_servers`. If any are configured, it spawns a background task that calls `connect_mcp_servers()`. This method:

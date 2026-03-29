@@ -847,6 +847,7 @@ max_concurrent_tools = 5            # Max parallel tool executions
 tools = ["file_read", "file_write", "file_list", "shell_exec",
          "memory_store", "memory_recall", "web_fetch",
          "agent_send", "agent_list", "agent_spawn", "agent_kill"]
+         # Or use wildcards: "mcp_filesystem_*", "mcp_*" for MCP tools
 network = ["*"]                     # Network access patterns
 memory_read = ["*"]                 # Memory namespaces agent can read
 memory_write = ["self.*"]           # Memory namespaces agent can write

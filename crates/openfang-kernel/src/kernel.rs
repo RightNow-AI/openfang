@@ -502,6 +502,25 @@ fn gethostname() -> Option<String> {
     }
 }
 
+/// Check if a tool name matches a pattern, supporting exact matches and prefix wildcards (ending with *).
+/// Examples:
+///   "exact_tool" matches "exact_tool"
+///   "prefix_*" matches "prefix_anything"
+///   "*" matches everything
+pub(crate) fn tool_matches_pattern(pattern: &str, tool_name: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if pattern == tool_name {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        let prefix = prefix.strip_suffix('_').unwrap_or(prefix);
+        return tool_name.starts_with(prefix);
+    }
+    false
+}
+
 impl OpenFangKernel {
     /// Boot the kernel with configuration from the given path.
     pub fn boot(config_path: Option<&Path>) -> KernelResult<Self> {
@@ -5097,12 +5116,12 @@ impl OpenFangKernel {
             caps.iter().any(|c| matches!(c, Capability::ToolAll))
         });
 
-        let mut all_tools: Vec<ToolDefinition> = if !tools_unrestricted {
-            // Agent declares specific tools — only include matching builtins
-            all_builtins
-                .into_iter()
-                .filter(|t| declared_tools.iter().any(|d| d == &t.name))
-                .collect()
+         let mut all_tools: Vec<ToolDefinition> = if !tools_unrestricted {
+             // Agent declares specific tools — only include matching builtins
+             all_builtins
+                 .into_iter()
+                 .filter(|t| declared_tools.iter().any(|d| tool_matches_pattern(d, &t.name)))
+                 .collect()
         } else {
             // No specific tools declared — fall back to profile or all builtins
             match &tool_profile {
@@ -5112,7 +5131,7 @@ impl OpenFangKernel {
                     let allowed = profile.tools();
                     all_builtins
                         .into_iter()
-                        .filter(|t| allowed.iter().any(|a| a == "*" || a == &t.name))
+                         .filter(|t| allowed.iter().any(|a| a == "*" || tool_matches_pattern(a, &t.name)))
                         .collect()
                 }
                 _ if has_tool_all => all_builtins,
@@ -5141,11 +5160,11 @@ impl OpenFangKernel {
                 registry.tool_definitions_for_skills(&skill_allowlist)
             }
         };
-        for skill_tool in skill_tools {
-            // If agent declares specific tools, only include matching skill tools
-            if !tools_unrestricted && !declared_tools.iter().any(|d| d == &skill_tool.name) {
-                continue;
-            }
+         for skill_tool in skill_tools {
+             // If agent declares specific tools, only include matching skill tools
+             if !tools_unrestricted && !declared_tools.iter().any(|d| tool_matches_pattern(d, &skill_tool.name)) {
+                 continue;
+             }
             all_tools.push(ToolDefinition {
                 name: skill_tool.name.clone(),
                 description: skill_tool.description.clone(),
@@ -5173,13 +5192,13 @@ impl OpenFangKernel {
                     .cloned()
                     .collect()
             };
-            for t in mcp_candidates {
-                // If agent declares specific tools, only include matching MCP tools
-                if !tools_unrestricted && !declared_tools.iter().any(|d| d == &t.name) {
-                    continue;
-                }
-                all_tools.push(t);
-            }
+             for t in mcp_candidates {
+                 // If agent declares specific tools, only include matching MCP tools
+                 if !tools_unrestricted && !declared_tools.iter().any(|d| tool_matches_pattern(d, &t.name)) {
+                     continue;
+                 }
+                 all_tools.push(t);
+             }
         }
 
         // Step 4: Apply per-agent tool_allowlist/tool_blocklist overrides.
@@ -6843,5 +6862,78 @@ mod tests {
         );
 
         kernel.shutdown();
+    }
+
+    #[test]
+    fn test_tool_matches_pattern_exact() {
+        assert!(tool_matches_pattern("exact_tool", "exact_tool"));
+        assert!(!tool_matches_pattern("exact_tool", "different_tool"));
+    }
+
+    #[test]
+    fn test_tool_matches_pattern_prefix_wildcard() {
+        assert!(tool_matches_pattern("prefix_*", "prefix_anything"));
+        assert!(tool_matches_pattern("prefix_*", "prefix_"));
+        assert!(tool_matches_pattern("prefix_*", "prefix"));
+        assert!(!tool_matches_pattern("prefix_*", "different_prefix_"));
+        assert!(!tool_matches_pattern("prefix_*", "suffix_prefix"));
+    }
+
+    #[test]
+    fn test_tool_matches_pattern_star() {
+        assert!(tool_matches_pattern("*", "anything"));
+        assert!(tool_matches_pattern("*", ""));
+        assert!(tool_matches_pattern("*", "exact_tool"));
+        assert!(tool_matches_pattern("*", "prefix_*"));
+    }
+
+    #[test]
+    fn test_tool_matches_pattern_edge_cases() {
+        assert!(!tool_matches_pattern("", "nonempty"));
+        assert!(tool_matches_pattern("", ""));
+        assert!(!tool_matches_pattern("nomatch*", "prefix"));
+    }
+
+    #[test]
+    fn test_tool_matches_pattern_with_mcp_tools() {
+        let mcp_tools = vec![
+            ToolDefinition {
+                name: "mcp_filesystem_list_allowed_directories".to_string(),
+                description: "List allowed directories".to_string(),
+                input_schema: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "mcp_filesystem_read_file".to_string(),
+                description: "Read a file".to_string(),
+                input_schema: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "mcp_github_create_issue".to_string(),
+                description: "Create a GitHub issue".to_string(),
+                input_schema: serde_json::json!({}),
+            },
+        ];
+
+        #[allow(clippy::useless_vec)]
+        let caps = vec![Capability::ToolInvoke("mcp_filesystem_*".to_string())];
+
+        let available: Vec<ToolDefinition> = mcp_tools
+            .into_iter()
+            .filter(|t| {
+                caps.iter().any(|cap| {
+                    if let Capability::ToolInvoke(pattern) = cap {
+                        tool_matches_pattern(pattern, &t.name)
+                    } else {
+                        false
+                    }
+                })
+            })
+            .collect();
+
+        let tool_names: Vec<_> = available.iter().map(|t| t.name.as_str()).collect();
+
+        assert!(tool_names.contains(&"mcp_filesystem_list_allowed_directories"));
+        assert!(tool_names.contains(&"mcp_filesystem_read_file"));
+        assert!(!tool_names.contains(&"mcp_github_create_issue"));
     }
 }
