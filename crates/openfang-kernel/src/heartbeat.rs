@@ -12,7 +12,7 @@
 use crate::registry::AgentRegistry;
 use chrono::Utc;
 use dashmap::DashMap;
-use openfang_types::agent::{AgentId, AgentState};
+use openfang_types::agent::{AgentId, AgentState, ScheduleMode};
 use tracing::{debug, warn};
 
 /// Default heartbeat check interval (seconds).
@@ -132,6 +132,13 @@ impl Default for RecoveryTracker {
 /// and the initial `set_state(Running)` call.
 const IDLE_GRACE_SECS: i64 = 10;
 
+/// Returns true if the schedule mode requires continuous/proactive activity,
+/// meaning inactivity timeout applies. Reactive and one-shot (Periodic) agents
+/// sit idle by design and are exempt from the inactivity check.
+fn is_autonomous_schedule(mode: &ScheduleMode) -> bool {
+    matches!(mode, ScheduleMode::Continuous { .. } | ScheduleMode::Proactive { .. })
+}
+
 /// Check all running and crashed agents and return their heartbeat status.
 ///
 /// This is a pure function — it doesn't start a background task.
@@ -181,8 +188,19 @@ pub fn check_agents(registry: &AgentRegistry, config: &HeartbeatConfig) -> Vec<H
             continue;
         }
 
+        // --- Exempt non-autonomous agents from inactivity timeout (fix #904) ---
+        //
+        // Reactive and Periodic agents sit idle waiting for messages or schedule
+        // ticks.  Applying an inactivity timeout to them causes spurious supervisor
+        // shutdowns (~30 min after last message).  Only Continuous and Proactive
+        // agents loop autonomously and must be checked for inactivity.
+        //
+        // Crashed agents are ALWAYS considered unresponsive regardless of schedule.
+        let autonomous = is_autonomous_schedule(&entry_ref.manifest.schedule);
+        let timed_out = autonomous && inactive_secs > timeout_secs;
+
         // Crashed agents are always considered unresponsive
-        let unresponsive = entry_ref.state == AgentState::Crashed || inactive_secs > timeout_secs;
+        let unresponsive = entry_ref.state == AgentState::Crashed || timed_out;
 
         if unresponsive && entry_ref.state == AgentState::Running {
             warn!(
@@ -306,6 +324,17 @@ mod tests {
         created_at: chrono::DateTime<Utc>,
         last_active: chrono::DateTime<Utc>,
     ) -> AgentEntry {
+        make_entry_with_schedule(name, state, created_at, last_active, ScheduleMode::default())
+    }
+
+    /// Helper: build a minimal AgentEntry with an explicit schedule mode.
+    fn make_entry_with_schedule(
+        name: &str,
+        state: AgentState,
+        created_at: chrono::DateTime<Utc>,
+        last_active: chrono::DateTime<Utc>,
+        schedule: ScheduleMode,
+    ) -> AgentEntry {
         AgentEntry {
             id: AgentId::new(),
             name: name.to_string(),
@@ -315,7 +344,7 @@ mod tests {
                 description: "test".to_string(),
                 author: "test".to_string(),
                 module: "test".to_string(),
-                schedule: ScheduleMode::default(),
+                schedule,
                 model: ModelConfig::default(),
                 fallback_models: vec![],
                 resources: ResourceQuota::default(),
@@ -377,16 +406,18 @@ mod tests {
 
     #[test]
     fn test_active_agent_detected_unresponsive() {
-        // An agent that WAS active (last_active >> created_at) but has gone
-        // silent for longer than the timeout — should be flagged unresponsive.
+        // A Continuous (autonomous) agent that WAS active (last_active >> created_at)
+        // but has gone silent for longer than the timeout — should be flagged unresponsive.
+        // Reactive agents are exempt from inactivity timeout by design (fix #904).
         let registry = crate::registry::AgentRegistry::new();
         let ten_min_ago = Utc::now() - Duration::seconds(600);
         let five_min_ago = Utc::now() - Duration::seconds(300);
-        let active_agent = make_entry(
+        let active_agent = make_entry_with_schedule(
             "active-agent",
             AgentState::Running,
             ten_min_ago,
             five_min_ago,
+            ScheduleMode::Continuous { check_interval_secs: 60 },
         );
         registry.register(active_agent).unwrap();
 
@@ -541,5 +572,85 @@ mod tests {
 
         tracker.reset(agent_id);
         assert_eq!(tracker.failure_count(agent_id), 0);
+    }
+
+    // --- fix #904: non-autonomous agents exempt from inactivity timeout ---
+
+    #[test]
+    fn test_continuous_agent_past_timeout_is_unresponsive() {
+        // A Continuous (autonomous) agent that has gone silent for longer than
+        // the timeout must still be flagged unresponsive.
+        let registry = crate::registry::AgentRegistry::new();
+        let ten_min_ago = Utc::now() - Duration::seconds(600);
+        let five_min_ago = Utc::now() - Duration::seconds(300);
+        let entry = make_entry_with_schedule(
+            "continuous-silent",
+            AgentState::Running,
+            ten_min_ago,
+            five_min_ago,
+            ScheduleMode::Continuous { check_interval_secs: 60 },
+        );
+        registry.register(entry).unwrap();
+
+        let config = HeartbeatConfig::default(); // timeout = 180s, inactive = ~300s
+        let statuses = check_agents(&registry, &config);
+
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            statuses[0].unresponsive,
+            "continuous agent past timeout should be unresponsive"
+        );
+    }
+
+    #[test]
+    fn test_reactive_agent_idle_not_unresponsive() {
+        // A Reactive agent that last processed a message 10 minutes ago should
+        // NOT be flagged unresponsive — it is idle by design waiting for input.
+        let registry = crate::registry::AgentRegistry::new();
+        let twenty_min_ago = Utc::now() - Duration::seconds(1200);
+        let ten_min_ago = Utc::now() - Duration::seconds(600);
+        let entry = make_entry_with_schedule(
+            "reactive-idle",
+            AgentState::Running,
+            twenty_min_ago,
+            ten_min_ago,
+            ScheduleMode::Reactive,
+        );
+        registry.register(entry).unwrap();
+
+        let config = HeartbeatConfig::default(); // timeout = 180s, inactive = ~600s
+        let statuses = check_agents(&registry, &config);
+
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            !statuses[0].unresponsive,
+            "reactive idle agent should NOT be unresponsive"
+        );
+    }
+
+    #[test]
+    fn test_crashed_reactive_agent_is_unresponsive() {
+        // A Crashed Reactive agent must always be marked unresponsive for
+        // recovery, regardless of schedule mode.
+        let registry = crate::registry::AgentRegistry::new();
+        let twenty_min_ago = Utc::now() - Duration::seconds(1200);
+        let ten_min_ago = Utc::now() - Duration::seconds(600);
+        let entry = make_entry_with_schedule(
+            "reactive-crashed",
+            AgentState::Crashed,
+            twenty_min_ago,
+            ten_min_ago,
+            ScheduleMode::Reactive,
+        );
+        registry.register(entry).unwrap();
+
+        let config = HeartbeatConfig::default();
+        let statuses = check_agents(&registry, &config);
+
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            statuses[0].unresponsive,
+            "crashed agent must always be unresponsive regardless of schedule"
+        );
     }
 }
