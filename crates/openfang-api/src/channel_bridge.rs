@@ -930,44 +930,46 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         let lookback_secs = gap_secs.min(max_lookback);
         let since = chrono::Utc::now() - chrono::Duration::seconds(lookback_secs as i64);
 
-        let mut parts = Vec::new();
+        // Query all context sources in parallel for speed
+        let mut handles = Vec::new();
         for source in context_sources {
             let query = format!(
                 "{}\nSummarize anything relevant since {}.",
                 source.prompt,
                 since.format("%Y-%m-%d %H:%M %Z"),
             );
+            let kernel = self.kernel.clone();
+            let hand = source.hand.clone();
+            handles.push(tokio::spawn(async move {
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    openfang_runtime::kernel_handle::KernelHandle::send_to_agent(
+                        kernel.as_ref(),
+                        &hand,
+                        &query,
+                    ),
+                )
+                .await;
+                (hand, result)
+            }));
+        }
 
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                openfang_runtime::kernel_handle::KernelHandle::send_to_agent(
-                    self.kernel.as_ref(),
-                    &source.hand,
-                    &query,
-                ),
-            )
-            .await
-            {
-                Ok(Ok(summary)) if !summary.trim().is_empty() => {
+        let mut parts = Vec::new();
+        for handle in handles {
+            match handle.await {
+                Ok((hand, Ok(Ok(summary)))) if !summary.trim().is_empty() => {
                     tracing::info!(
-                        hand = %source.hand,
+                        hand = %hand,
                         summary_len = summary.len(),
                         "Session gap context source responded"
                     );
-                    parts.push(format!("{}: {}", source.hand, summary));
+                    parts.push(format!("{}: {}", hand, summary));
                 }
-                Ok(Err(e)) => {
-                    tracing::warn!(
-                        hand = %source.hand,
-                        error = %e,
-                        "Session gap context source failed"
-                    );
+                Ok((hand, Ok(Err(e)))) => {
+                    tracing::warn!(hand = %hand, error = %e, "Session gap context source failed");
                 }
-                Err(_) => {
-                    tracing::warn!(
-                        hand = %source.hand,
-                        "Session gap context source timed out"
-                    );
+                Ok((hand, Err(_))) => {
+                    tracing::warn!(hand = %hand, "Session gap context source timed out");
                 }
                 _ => {}
             }
