@@ -511,6 +511,8 @@ impl OpenFangKernel {
 
     /// Boot the kernel with an explicit configuration.
     pub fn boot_with_config(mut config: KernelConfig) -> KernelResult<Self> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         use openfang_types::config::KernelMode;
 
         // Env var overrides — useful for Docker where config.toml is baked in.
