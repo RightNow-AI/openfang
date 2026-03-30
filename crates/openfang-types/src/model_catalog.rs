@@ -308,6 +308,6 @@ mod tests {
     #[test]
     fn test_azure_openai_base_url_empty() {
         // Azure requires user-supplied URL, so the constant must be empty.
-        assert!(AZURE_OPENAI_BASE_URL.is_empty());
+        assert_eq!(AZURE_OPENAI_BASE_URL, "");
     }
 }

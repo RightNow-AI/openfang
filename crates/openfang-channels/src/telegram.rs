@@ -3,12 +3,14 @@
 //! Uses long-polling via `getUpdates` with exponential backoff on failures.
 //! No external Telegram crate — just `reqwest` for full control over error handling.
 
+use crate::bridge::channel_command_specs;
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
     LifecycleReaction,
 };
 use async_trait::async_trait;
 use futures::Stream;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,6 +28,12 @@ const LONG_POLL_TIMEOUT: u64 = 30;
 
 /// Default Telegram Bot API base URL.
 const DEFAULT_API_URL: &str = "https://api.telegram.org";
+
+#[derive(Serialize)]
+struct TelegramBotCommand<'a> {
+    command: &'a str,
+    description: &'a str,
+}
 
 /// Telegram Bot API adapter using long-polling.
 pub struct TelegramAdapter {
@@ -94,6 +102,36 @@ impl TelegramAdapter {
             .unwrap_or("unknown")
             .to_string();
         Ok(bot_name)
+    }
+
+    async fn register_bot_commands(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "{}/bot{}/setMyCommands",
+            self.api_base_url,
+            self.token.as_str()
+        );
+        let commands: Vec<TelegramBotCommand<'_>> = channel_command_specs()
+            .iter()
+            .map(|spec| TelegramBotCommand {
+                command: spec.name,
+                description: spec.desc,
+            })
+            .collect();
+        let resp: serde_json::Value = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "commands": commands }))
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if resp["ok"].as_bool() != Some(true) {
+            let desc = resp["description"].as_str().unwrap_or("unknown error");
+            return Err(format!("Telegram setMyCommands failed: {desc}").into());
+        }
+
+        Ok(())
     }
 
     /// Call `sendMessage` on the Telegram API.
@@ -436,6 +474,14 @@ impl ChannelAdapter for TelegramAdapter {
                 Ok(_) => info!("Telegram: cleared webhook, polling mode active"),
                 Err(e) => tracing::warn!("Telegram: deleteWebhook failed (non-fatal): {e}"),
             }
+        }
+
+        match self.register_bot_commands().await {
+            Ok(()) => info!(
+                "Telegram: registered {} bot commands",
+                channel_command_specs().len()
+            ),
+            Err(e) => warn!("Telegram: setMyCommands failed (non-fatal): {e}"),
         }
 
         let (tx, rx) = mpsc::channel::<ChannelMessage>(256);

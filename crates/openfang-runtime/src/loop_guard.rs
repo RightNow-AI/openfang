@@ -498,7 +498,7 @@ impl LoopGuard {
     }
 
     /// Compute a SHA-256 hash of the tool name and parameters.
-    fn compute_hash(tool_name: &str, params: &serde_json::Value) -> String {
+    pub fn compute_hash(tool_name: &str, params: &serde_json::Value) -> String {
         let mut hasher = Sha256::new();
         hasher.update(tool_name.as_bytes());
         hasher.update(b"|");

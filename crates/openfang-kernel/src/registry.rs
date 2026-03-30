@@ -256,6 +256,14 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Touch an agent — refresh last_active without changing any other state.
+    /// Used by the agent loop to prevent heartbeat false-positives during long LLM calls.
+    pub fn touch(&self, id: AgentId) {
+        if let Some(mut entry) = self.agents.get_mut(&id) {
+            entry.last_active = chrono::Utc::now();
+        }
+    }
+
     /// Update an agent's system prompt (hot-swap, takes effect on next message).
     pub fn update_system_prompt(&self, id: AgentId, new_prompt: String) -> OpenFangResult<()> {
         let mut entry = self

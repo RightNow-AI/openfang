@@ -562,7 +562,7 @@ impl OpenFangKernel {
             .clone()
             .unwrap_or_else(|| config.data_dir.join("openfang.db"));
         let memory = Arc::new(
-            MemorySubstrate::open(&db_path, config.memory.decay_rate)
+            MemorySubstrate::open(&db_path, config.memory.decay_rate, &config.memory)
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
         );
 
@@ -1132,9 +1132,13 @@ impl OpenFangKernel {
                         .scheduler
                         .register(agent_id, entry.manifest.resources.clone());
 
-                    // Re-register in the in-memory registry (set state back to Running)
+                    // Re-register in the in-memory registry (set state back to Running).
+                    // Reset last_active to now so the heartbeat monitor doesn't
+                    // immediately flag the agent as unresponsive due to stale
+                    // persisted timestamps from before the shutdown.
                     let mut restored_entry = entry;
                     restored_entry.state = AgentState::Running;
+                    restored_entry.last_active = chrono::Utc::now();
 
                     // Inherit kernel exec_policy for agents that lack one
                     if restored_entry.manifest.exec_policy.is_none() {
@@ -1751,8 +1755,6 @@ impl OpenFangKernel {
             by_messages || by_tokens || by_quota
         };
 
-        let tools = self.available_tools(agent_id);
-        let tools = entry.mode.filter_tools(tools);
         let driver = self.resolve_driver(&entry.manifest)?;
 
         // Look up model's actual context window from the catalog
@@ -1776,6 +1778,31 @@ impl OpenFangKernel {
                     .update_workspace(agent_id, manifest.workspace.clone());
             }
         }
+
+        // Build workspace-aware skill snapshot BEFORE tool list and prompt building.
+        // Loading order: bundled → global (~/.openfang/skills) → workspace skills.
+        // Each layer overrides duplicates from the previous layer. (#851, #808)
+        let skill_snapshot = {
+            let mut snapshot = self
+                .skill_registry
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .snapshot();
+            if let Some(ref workspace) = manifest.workspace {
+                let ws_skills = workspace.join("skills");
+                if ws_skills.exists() {
+                    if let Err(e) = snapshot.load_workspace_skills(&ws_skills) {
+                        warn!(agent_id = %agent_id, "Failed to load workspace skills (streaming): {e}");
+                    }
+                }
+            }
+            snapshot
+        };
+
+        // Use the workspace-aware snapshot for tool resolution so both global
+        // and workspace skill tools are visible to the LLM.
+        let tools = self.available_tools_with_registry(agent_id, Some(&skill_snapshot));
+        let tools = entry.mode.filter_tools(tools);
 
         // Build the structured system prompt via prompt_builder
         {
@@ -1807,8 +1834,11 @@ impl OpenFangKernel {
                 base_system_prompt: manifest.model.system_prompt.clone(),
                 granted_tools: tools.iter().map(|t| t.name.clone()).collect(),
                 recalled_memories: vec![],
-                skill_summary: self.build_skill_summary(&manifest.skills),
-                skill_prompt_context: self.collect_prompt_context(&manifest.skills),
+                skill_summary: Self::build_skill_summary_from(&skill_snapshot, &manifest.skills),
+                skill_prompt_context: Self::collect_prompt_context_from(
+                    &skill_snapshot,
+                    &manifest.skills,
+                ),
                 mcp_summary: if mcp_tool_count > 0 {
                     self.build_mcp_summary(&manifest.mcp_servers)
                 } else {
@@ -1918,21 +1948,8 @@ impl OpenFangKernel {
             }
 
             let messages_before = session.messages.len();
-            let mut skill_snapshot = kernel_clone
-                .skill_registry
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .snapshot();
-
-            // Load workspace-scoped skills (override global skills with same name)
-            if let Some(ref workspace) = manifest.workspace {
-                let ws_skills = workspace.join("skills");
-                if ws_skills.exists() {
-                    if let Err(e) = skill_snapshot.load_workspace_skills(&ws_skills) {
-                        warn!(agent_id = %agent_id, "Failed to load workspace skills (streaming): {e}");
-                    }
-                }
-            }
+            // skill_snapshot was built before the spawn and moved into this
+            // closure — it already contains bundled + global + workspace skills.
 
             // Create a phase callback that emits PhaseChange events to WS/SSE clients
             let phase_tx = tx.clone();
@@ -2027,19 +2044,24 @@ impl OpenFangKernel {
                     // Persist usage to database (same as non-streaming path)
                     let model = &manifest.model.model;
                     let cost = MeteringEngine::estimate_cost_with_catalog(
-                        &kernel_clone.model_catalog.read().unwrap_or_else(|e| e.into_inner()),
+                        &kernel_clone
+                            .model_catalog
+                            .read()
+                            .unwrap_or_else(|e| e.into_inner()),
                         model,
                         result.total_usage.input_tokens,
                         result.total_usage.output_tokens,
                     );
-                    let _ = kernel_clone.metering.record(&openfang_memory::usage::UsageRecord {
-                        agent_id,
-                        model: model.clone(),
-                        input_tokens: result.total_usage.input_tokens,
-                        output_tokens: result.total_usage.output_tokens,
-                        cost_usd: cost,
-                        tool_calls: result.iterations.saturating_sub(1),
-                    });
+                    let _ = kernel_clone
+                        .metering
+                        .record(&openfang_memory::usage::UsageRecord {
+                            agent_id,
+                            model: model.clone(),
+                            input_tokens: result.total_usage.input_tokens,
+                            output_tokens: result.total_usage.output_tokens,
+                            cost_usd: cost,
+                            tool_calls: result.iterations.saturating_sub(1),
+                        });
 
                     let _ = kernel_clone
                         .registry
@@ -2293,17 +2315,6 @@ impl OpenFangKernel {
 
         let messages_before = session.messages.len();
 
-        let tools = self.available_tools(agent_id);
-        let tools = entry.mode.filter_tools(tools);
-
-        info!(
-            agent = %entry.name,
-            agent_id = %agent_id,
-            tool_count = tools.len(),
-            tool_names = ?tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
-            "Tools selected for LLM request"
-        );
-
         // Apply model routing if configured (disabled in Stable mode)
         let mut manifest = entry.manifest.clone();
 
@@ -2320,6 +2331,39 @@ impl OpenFangKernel {
                     .update_workspace(agent_id, manifest.workspace.clone());
             }
         }
+
+        // Build workspace-aware skill snapshot BEFORE tool list and prompt building.
+        // Loading order: bundled → global (~/.openfang/skills) → workspace skills.
+        // Each layer overrides duplicates from the previous layer. (#851, #808)
+        let skill_snapshot = {
+            let mut snapshot = self
+                .skill_registry
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .snapshot();
+            if let Some(ref workspace) = manifest.workspace {
+                let ws_skills = workspace.join("skills");
+                if ws_skills.exists() {
+                    if let Err(e) = snapshot.load_workspace_skills(&ws_skills) {
+                        warn!(agent_id = %agent_id, "Failed to load workspace skills: {e}");
+                    }
+                }
+            }
+            snapshot
+        };
+
+        // Use the workspace-aware snapshot for tool resolution so both global
+        // and workspace skill tools are visible to the LLM.
+        let tools = self.available_tools_with_registry(agent_id, Some(&skill_snapshot));
+        let tools = entry.mode.filter_tools(tools);
+
+        info!(
+            agent = %entry.name,
+            agent_id = %agent_id,
+            tool_count = tools.len(),
+            tool_names = ?tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            "Tools selected for LLM request"
+        );
 
         // Build the structured system prompt via prompt_builder
         {
@@ -2351,8 +2395,11 @@ impl OpenFangKernel {
                 base_system_prompt: manifest.model.system_prompt.clone(),
                 granted_tools: tools.iter().map(|t| t.name.clone()).collect(),
                 recalled_memories: vec![], // Recalled in agent_loop, not here
-                skill_summary: self.build_skill_summary(&manifest.skills),
-                skill_prompt_context: self.collect_prompt_context(&manifest.skills),
+                skill_summary: Self::build_skill_summary_from(&skill_snapshot, &manifest.skills),
+                skill_prompt_context: Self::collect_prompt_context_from(
+                    &skill_snapshot,
+                    &manifest.skills,
+                ),
                 mcp_summary: if mcp_tool_count > 0 {
                     self.build_mcp_summary(&manifest.mcp_servers)
                 } else {
@@ -2485,22 +2532,8 @@ impl OpenFangKernel {
                 .map(|m| m.context_window as usize)
         });
 
-        // Snapshot skill registry before async call (RwLockReadGuard is !Send)
-        let mut skill_snapshot = self
-            .skill_registry
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .snapshot();
-
-        // Load workspace-scoped skills (override global skills with same name)
-        if let Some(ref workspace) = manifest.workspace {
-            let ws_skills = workspace.join("skills");
-            if ws_skills.exists() {
-                if let Err(e) = skill_snapshot.load_workspace_skills(&ws_skills) {
-                    warn!(agent_id = %agent_id, "Failed to load workspace skills: {e}");
-                }
-            }
-        }
+        // skill_snapshot was already built above (before tool list and prompt)
+        // with bundled + global + workspace skills. Reuse it for the agent loop.
 
         // Build link context from user message (auto-extract URLs for the agent)
         let message_with_links = if let Some(link_ctx) =
@@ -2860,7 +2893,16 @@ impl OpenFangKernel {
             .model_catalog
             .read()
             .ok()
-            .and_then(|catalog| catalog.find_model(model).cloned());
+            .and_then(|catalog| {
+                // When the caller specifies a provider, use provider-aware lookup
+                // so we resolve the model on the correct provider — not a builtin
+                // from a different provider that happens to share the same name (#833).
+                if let Some(ep) = explicit_provider {
+                    catalog.find_model_for_provider(model, ep).cloned()
+                } else {
+                    catalog.find_model(model).cloned()
+                }
+            });
         let provider = if let Some(ep) = explicit_provider {
             // User explicitly set the provider — use it as-is
             Some(ep.to_string())
@@ -3298,13 +3340,18 @@ impl OpenFangKernel {
             ],
             autonomous: def.agent.max_iterations.map(|max_iter| AutonomousConfig {
                 max_iterations: max_iter,
+                // Use the hand-declared heartbeat interval if provided.
+                // The kernel default (30s) is too aggressive for hands making long LLM calls;
+                // HAND.toml authors should set this to reflect expected call latency.
+                heartbeat_interval_secs: def.agent.heartbeat_interval_secs.unwrap_or(30),
                 ..Default::default()
             }),
             // Autonomous hands must run in Continuous mode so the background loop picks them up.
             // Reactive (default) only fires on incoming messages, so autonomous hands would be inert.
+            // Default to 3600s (1 hour) to avoid wasting credits — see issue #848.
             schedule: if def.agent.max_iterations.is_some() {
                 ScheduleMode::Continuous {
-                    check_interval_secs: 60,
+                    check_interval_secs: 3600,
                 }
             } else {
                 ScheduleMode::default()
@@ -4055,149 +4102,14 @@ impl OpenFangKernel {
 
                     let due = kernel.cron_scheduler.due_jobs();
                     for job in due {
-                        let job_id = job.id;
-                        let agent_id = job.agent_id;
                         let job_name = job.name.clone();
-
-                        match &job.action {
-                            openfang_types::scheduler::CronAction::SystemEvent { text } => {
-                                tracing::debug!(job = %job_name, "Cron: firing system event");
-                                let payload_bytes = serde_json::to_vec(&serde_json::json!({
-                                    "type": format!("cron.{}", job_name),
-                                    "text": text,
-                                    "job_id": job_id.to_string(),
-                                }))
-                                .unwrap_or_default();
-                                let event = Event::new(
-                                    AgentId::new(), // system-originated
-                                    EventTarget::Broadcast,
-                                    EventPayload::Custom(payload_bytes),
-                                );
-                                kernel.publish_event(event).await;
-                                kernel.cron_scheduler.record_success(job_id);
+                        tracing::debug!(job = %job_name, "Cron: firing scheduled job");
+                        match kernel.cron_run_job(&job).await {
+                            Ok(_) => {
+                                tracing::info!(job = %job_name, "Cron job completed successfully");
                             }
-                            openfang_types::scheduler::CronAction::AgentTurn {
-                                message,
-                                timeout_secs,
-                                ..
-                            } => {
-                                tracing::debug!(job = %job_name, agent = %agent_id, "Cron: firing agent turn");
-                                let timeout_s = timeout_secs.unwrap_or(120);
-                                let timeout = std::time::Duration::from_secs(timeout_s);
-                                let delivery = job.delivery.clone();
-                                let kh: std::sync::Arc<
-                                    dyn openfang_runtime::kernel_handle::KernelHandle,
-                                > = kernel.clone();
-                                match tokio::time::timeout(
-                                    timeout,
-                                    kernel.send_message_with_handle(
-                                        agent_id,
-                                        message,
-                                        Some(kh),
-                                        None,
-                                        None,
-                                    ),
-                                )
-                                .await
-                                {
-                                    Ok(Ok(result)) => {
-                                        match cron_deliver_response(
-                                            &kernel,
-                                            agent_id,
-                                            &result.response,
-                                            &delivery,
-                                        )
-                                        .await
-                                        {
-                                            Ok(()) => {
-                                                tracing::info!(job = %job_name, "Cron job completed successfully");
-                                                kernel.cron_scheduler.record_success(job_id);
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(job = %job_name, error = %e, "Cron job delivery failed");
-                                                kernel.cron_scheduler.record_failure(job_id, &e);
-                                            }
-                                        }
-                                    }
-                                    Ok(Err(e)) => {
-                                        let err_msg = format!("{e}");
-                                        tracing::warn!(job = %job_name, error = %err_msg, "Cron job failed");
-                                        kernel.cron_scheduler.record_failure(job_id, &err_msg);
-                                    }
-                                    Err(_) => {
-                                        tracing::warn!(job = %job_name, timeout_s, "Cron job timed out");
-                                        kernel.cron_scheduler.record_failure(
-                                            job_id,
-                                            &format!("timed out after {timeout_s}s"),
-                                        );
-                                    }
-                                }
-                            }
-                            openfang_types::scheduler::CronAction::WorkflowRun {
-                                workflow_id,
-                                input,
-                                timeout_secs,
-                            } => {
-                                tracing::debug!(job = %job_name, workflow = %workflow_id, "Cron: firing workflow run");
-                                let wf_input = input.clone().unwrap_or_default();
-                                let timeout_s = timeout_secs.unwrap_or(120);
-                                let timeout = std::time::Duration::from_secs(timeout_s);
-                                let delivery = job.delivery.clone();
-
-                                // Resolve workflow: try UUID first, then name
-                                let wf_id = match uuid::Uuid::parse_str(workflow_id) {
-                                    Ok(uuid) => crate::workflow::WorkflowId(uuid),
-                                    Err(_) => {
-                                        let all_wfs = kernel.workflows.list_workflows().await;
-                                        if let Some(wf) =
-                                            all_wfs.iter().find(|w| w.name == *workflow_id)
-                                        {
-                                            wf.id
-                                        } else {
-                                            let err_msg =
-                                                format!("workflow not found: {workflow_id}");
-                                            tracing::warn!(job = %job_name, %err_msg);
-                                            kernel.cron_scheduler.record_failure(job_id, &err_msg);
-                                            continue;
-                                        }
-                                    }
-                                };
-
-                                match tokio::time::timeout(
-                                    timeout,
-                                    kernel.run_workflow(wf_id, wf_input),
-                                )
-                                .await
-                                {
-                                    Ok(Ok((_run_id, output))) => {
-                                        match cron_deliver_response(
-                                            &kernel, agent_id, &output, &delivery,
-                                        )
-                                        .await
-                                        {
-                                            Ok(()) => {
-                                                tracing::info!(job = %job_name, "Cron workflow completed");
-                                                kernel.cron_scheduler.record_success(job_id);
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(job = %job_name, error = %e, "Cron workflow delivery failed");
-                                                kernel.cron_scheduler.record_failure(job_id, &e);
-                                            }
-                                        }
-                                    }
-                                    Ok(Err(e)) => {
-                                        let err_msg = format!("{e}");
-                                        tracing::warn!(job = %job_name, error = %err_msg, "Cron workflow failed");
-                                        kernel.cron_scheduler.record_failure(job_id, &err_msg);
-                                    }
-                                    Err(_) => {
-                                        tracing::warn!(job = %job_name, timeout_s, "Cron workflow timed out");
-                                        kernel.cron_scheduler.record_failure(
-                                            job_id,
-                                            &format!("workflow timed out after {timeout_s}s"),
-                                        );
-                                    }
-                                }
+                            Err(e) => {
+                                tracing::warn!(job = %job_name, error = %e, "Cron job failed");
                             }
                         }
                     }
@@ -4350,7 +4262,10 @@ impl OpenFangKernel {
         use crate::heartbeat::{check_agents, is_quiet_hours, HeartbeatConfig, RecoveryTracker};
 
         let kernel = Arc::clone(self);
-        let config = HeartbeatConfig::default();
+        let config = HeartbeatConfig {
+            default_timeout_secs: self.config.heartbeat.default_timeout_secs,
+            ..HeartbeatConfig::default()
+        };
         let interval_secs = config.check_interval_secs;
         let recovery_tracker = RecoveryTracker::new();
 
@@ -4734,26 +4649,44 @@ impl OpenFangKernel {
                 String,
             )> = vec![(primary.clone(), String::new())];
             for fb in &manifest.fallback_models {
+                // Resolve "default" provider/model to the kernel's configured defaults,
+                // mirroring the overlay logic for the primary model.
+                let dm = &self.config.default_model;
+                let fb_provider = if fb.provider.is_empty() || fb.provider == "default" {
+                    dm.provider.clone()
+                } else {
+                    fb.provider.clone()
+                };
+                let fb_model_name = if fb.model.is_empty() || fb.model == "default" {
+                    dm.model.clone()
+                } else {
+                    fb.model.clone()
+                };
+                let _ = &fb_model_name; // used below in strip_provider_prefix
+
                 let fb_api_key = if let Some(env) = &fb.api_key_env {
                     std::env::var(env).ok()
+                } else if fb_provider == dm.provider && !dm.api_key_env.is_empty() {
+                    std::env::var(&dm.api_key_env).ok()
                 } else {
                     // Resolve using provider_api_keys / convention for custom providers
-                    let env_var = self.config.resolve_api_key_env(&fb.provider);
+                    let env_var = self.config.resolve_api_key_env(&fb_provider);
                     std::env::var(&env_var).ok()
                 };
                 let config = DriverConfig {
-                    provider: fb.provider.clone(),
+                    provider: fb_provider.clone(),
                     api_key: fb_api_key,
                     base_url: fb
                         .base_url
                         .clone()
-                        .or_else(|| self.lookup_provider_url(&fb.provider)),
+                        .or_else(|| dm.base_url.clone())
+                        .or_else(|| self.lookup_provider_url(&fb_provider)),
                     skip_permissions: true,
                 };
                 match drivers::create_driver(&config) {
-                    Ok(d) => chain.push((d, strip_provider_prefix(&fb.model, &fb.provider))),
+                    Ok(d) => chain.push((d, strip_provider_prefix(&fb_model_name, &fb_provider))),
                     Err(e) => {
-                        warn!("Fallback driver '{}' failed to init: {e}", fb.provider);
+                        warn!("Fallback driver '{}' failed to init: {e}", fb_provider);
                     }
                 }
             }
@@ -4785,6 +4718,7 @@ impl OpenFangKernel {
                     args: args.clone(),
                 },
                 McpTransportEntry::Sse { url } => McpTransport::Sse { url: url.clone() },
+                McpTransportEntry::Http { url } => McpTransport::Http { url: url.clone() },
             };
 
             // Resolve env vars from vault/dotenv before passing to MCP subprocess.
@@ -4803,6 +4737,7 @@ impl OpenFangKernel {
                 transport,
                 timeout_secs: server_config.timeout_secs,
                 env: server_config.env.clone(),
+                headers: server_config.headers.clone(),
             };
 
             match McpConnection::connect(mcp_config).await {
@@ -4904,6 +4839,7 @@ impl OpenFangKernel {
                     args: args.clone(),
                 },
                 McpTransportEntry::Sse { url } => McpTransport::Sse { url: url.clone() },
+                McpTransportEntry::Http { url } => McpTransport::Http { url: url.clone() },
             };
 
             let mcp_config = McpServerConfig {
@@ -4911,6 +4847,7 @@ impl OpenFangKernel {
                 transport,
                 timeout_secs: server_config.timeout_secs,
                 env: server_config.env.clone(),
+                headers: server_config.headers.clone(),
             };
 
             self.extension_health.register(&server_config.name);
@@ -5022,6 +4959,7 @@ impl OpenFangKernel {
                 args: args.clone(),
             },
             McpTransportEntry::Sse { url } => McpTransport::Sse { url: url.clone() },
+            McpTransportEntry::Http { url } => McpTransport::Http { url: url.clone() },
         };
 
         let mcp_config = McpServerConfig {
@@ -5029,6 +4967,7 @@ impl OpenFangKernel {
             transport,
             timeout_secs: server_config.timeout_secs,
             env: server_config.env.clone(),
+            headers: server_config.headers.clone(),
         };
 
         match McpConnection::connect(mcp_config).await {
@@ -5099,7 +5038,31 @@ impl OpenFangKernel {
     /// If `capabilities.tools` is empty (or contains `"*"`), all tools are
     /// available (backwards compatible).
     fn available_tools(&self, agent_id: AgentId) -> Vec<ToolDefinition> {
-        let all_builtins = builtin_tool_definitions();
+        self.available_tools_with_registry(agent_id, None)
+    }
+
+    /// Build the list of tools available to an agent, optionally using a
+    /// workspace-aware skill registry snapshot instead of the global registry.
+    ///
+    /// When `skill_snapshot` is `Some`, skill-provided tools are read from that
+    /// snapshot (which already includes global + workspace skills with correct
+    /// override priority). When `None`, falls back to `self.skill_registry`
+    /// (global-only, for diagnostic/non-agent callers).
+    fn available_tools_with_registry(
+        &self,
+        agent_id: AgentId,
+        skill_snapshot: Option<&openfang_skills::registry::SkillRegistry>,
+    ) -> Vec<ToolDefinition> {
+        let all_builtins = if self.config.browser.enabled {
+            builtin_tool_definitions()
+        } else {
+            // When built-in browser is disabled (replaced by an external
+            // browser MCP server such as CamoFox), filter out browser_* tools.
+            builtin_tool_definitions()
+                .into_iter()
+                .filter(|t| !t.name.starts_with("browser_"))
+                .collect()
+        };
 
         // Look up agent entry for profile, skill/MCP allowlists, and declared tools
         let entry = self.registry.get(agent_id);
@@ -5159,7 +5122,15 @@ impl OpenFangKernel {
 
         // Step 2: Add skill-provided tools (filtered by agent's skill allowlist,
         // then by declared tools).
-        let skill_tools = {
+        // When a workspace-aware snapshot is provided, use it so that workspace
+        // skill overrides are reflected in the tool list sent to the LLM.
+        let skill_tools = if let Some(snapshot) = skill_snapshot {
+            if skill_allowlist.is_empty() {
+                snapshot.all_tool_definitions()
+            } else {
+                snapshot.tool_definitions_for_skills(&skill_allowlist)
+            }
+        } else {
             let registry = self
                 .skill_registry
                 .read()
@@ -5224,10 +5195,18 @@ impl OpenFangKernel {
             .unwrap_or_default();
 
         if !tool_allowlist.is_empty() {
-            all_tools.retain(|t| tool_allowlist.iter().any(|a| a == &t.name));
+            all_tools.retain(|t| {
+                tool_allowlist
+                    .iter()
+                    .any(|a| a.to_lowercase() == t.name.to_lowercase())
+            });
         }
         if !tool_blocklist.is_empty() {
-            all_tools.retain(|t| !tool_blocklist.iter().any(|b| b == &t.name));
+            all_tools.retain(|t| {
+                !tool_blocklist
+                    .iter()
+                    .any(|b| b.to_lowercase() == t.name.to_lowercase())
+            });
         }
 
         // Step 5: Remove shell_exec if exec_policy denies it.
@@ -5271,11 +5250,24 @@ impl OpenFangKernel {
 
     /// Build a compact skill summary for the system prompt so the agent knows
     /// what extra capabilities are installed.
+    ///
+    /// Falls back to the global registry. Prefer `build_skill_summary_from`
+    /// with a workspace-aware snapshot for agent execution paths.
+    #[allow(dead_code)]
     fn build_skill_summary(&self, skill_allowlist: &[String]) -> String {
         let registry = self
             .skill_registry
             .read()
             .unwrap_or_else(|e| e.into_inner());
+        Self::build_skill_summary_from(&registry, skill_allowlist)
+    }
+
+    /// Build a compact skill summary using the provided registry (which may
+    /// include workspace skill overrides).
+    fn build_skill_summary_from(
+        registry: &openfang_skills::registry::SkillRegistry,
+        skill_allowlist: &[String],
+    ) -> String {
         let skills: Vec<_> = registry
             .list()
             .into_iter()
@@ -5380,14 +5372,26 @@ impl OpenFangKernel {
 
     // inject_user_personalization() — logic moved to prompt_builder::build_user_section()
 
+    /// Collect prompt context from the global skill registry.
+    ///
+    /// Falls back to the global registry. Prefer `collect_prompt_context_from`
+    /// with a workspace-aware snapshot for agent execution paths.
     pub fn collect_prompt_context(&self, skill_allowlist: &[String]) -> String {
-        let mut context_parts = Vec::new();
-        for skill in self
+        let registry = self
             .skill_registry
             .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .list()
-        {
+            .unwrap_or_else(|e| e.into_inner());
+        Self::collect_prompt_context_from(&registry, skill_allowlist)
+    }
+
+    /// Collect prompt context using the provided registry (which may include
+    /// workspace skill overrides).
+    fn collect_prompt_context_from(
+        registry: &openfang_skills::registry::SkillRegistry,
+        skill_allowlist: &[String],
+    ) -> String {
+        let mut context_parts = Vec::new();
+        for skill in registry.list() {
             if skill.enabled
                 && (skill_allowlist.is_empty()
                     || skill_allowlist.contains(&skill.manifest.skill.name))
@@ -5423,6 +5427,131 @@ impl OpenFangKernel {
             }
         }
         context_parts.join("\n\n")
+    }
+
+    /// Execute a cron job on demand and deliver its result.
+    ///
+    /// This is the same logic used by the background cron tick loop, extracted
+    /// so the API can trigger a job immediately via `POST /api/cron/jobs/{id}/run`.
+    /// Records success/failure on the job's metadata just like the scheduler does.
+    pub async fn cron_run_job(
+        self: &Arc<Self>,
+        job: &openfang_types::scheduler::CronJob,
+    ) -> Result<String, String> {
+        use openfang_types::scheduler::CronAction;
+
+        let job_id = job.id;
+        let agent_id = job.agent_id;
+        let job_name = &job.name;
+
+        match &job.action {
+            CronAction::SystemEvent { text } => {
+                let payload_bytes = serde_json::to_vec(&serde_json::json!({
+                    "type": format!("cron.{}", job_name),
+                    "text": text,
+                    "job_id": job_id.to_string(),
+                }))
+                .unwrap_or_default();
+                let event = Event::new(
+                    AgentId::new(),
+                    EventTarget::Broadcast,
+                    EventPayload::Custom(payload_bytes),
+                );
+                self.publish_event(event).await;
+                self.cron_scheduler.record_success(job_id);
+                Ok("system event published".to_string())
+            }
+            CronAction::AgentTurn {
+                message,
+                timeout_secs,
+                ..
+            } => {
+                let timeout_s = timeout_secs.unwrap_or(120);
+                let timeout = std::time::Duration::from_secs(timeout_s);
+                let delivery = job.delivery.clone();
+                let kh: Arc<dyn KernelHandle> = self.clone();
+                match tokio::time::timeout(
+                    timeout,
+                    self.send_message_with_handle(agent_id, message, Some(kh), None, None),
+                )
+                .await
+                {
+                    Ok(Ok(result)) => {
+                        match cron_deliver_response(self, agent_id, &result.response, &delivery)
+                            .await
+                        {
+                            Ok(()) => {
+                                self.cron_scheduler.record_success(job_id);
+                                Ok(result.response)
+                            }
+                            Err(e) => {
+                                self.cron_scheduler.record_failure(job_id, &e);
+                                Err(e)
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        let err_msg = format!("{e}");
+                        self.cron_scheduler.record_failure(job_id, &err_msg);
+                        Err(err_msg)
+                    }
+                    Err(_) => {
+                        let err_msg = format!("timed out after {timeout_s}s");
+                        self.cron_scheduler.record_failure(job_id, &err_msg);
+                        Err(err_msg)
+                    }
+                }
+            }
+            CronAction::WorkflowRun {
+                workflow_id,
+                input,
+                timeout_secs,
+            } => {
+                let wf_input = input.clone().unwrap_or_default();
+                let timeout_s = timeout_secs.unwrap_or(120);
+                let timeout = std::time::Duration::from_secs(timeout_s);
+                let delivery = job.delivery.clone();
+
+                let wf_id = match uuid::Uuid::parse_str(workflow_id) {
+                    Ok(uuid) => crate::workflow::WorkflowId(uuid),
+                    Err(_) => {
+                        let all_wfs = self.workflows.list_workflows().await;
+                        if let Some(wf) = all_wfs.iter().find(|w| w.name == *workflow_id) {
+                            wf.id
+                        } else {
+                            let err_msg = format!("workflow not found: {workflow_id}");
+                            self.cron_scheduler.record_failure(job_id, &err_msg);
+                            return Err(err_msg);
+                        }
+                    }
+                };
+
+                match tokio::time::timeout(timeout, self.run_workflow(wf_id, wf_input)).await {
+                    Ok(Ok((_run_id, output))) => {
+                        match cron_deliver_response(self, agent_id, &output, &delivery).await {
+                            Ok(()) => {
+                                self.cron_scheduler.record_success(job_id);
+                                Ok(output)
+                            }
+                            Err(e) => {
+                                self.cron_scheduler.record_failure(job_id, &e);
+                                Err(e)
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        let err_msg = format!("{e}");
+                        self.cron_scheduler.record_failure(job_id, &err_msg);
+                        Err(err_msg)
+                    }
+                    Err(_) => {
+                        let err_msg = format!("workflow timed out after {timeout_s}s");
+                        self.cron_scheduler.record_failure(job_id, &err_msg);
+                        Err(err_msg)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -5773,6 +5902,12 @@ impl KernelHandle for OpenFangKernel {
                 tools: e.manifest.capabilities.tools.clone(),
             })
             .collect()
+    }
+
+    fn touch_agent(&self, agent_id: &str) {
+        if let Ok(id) = agent_id.parse::<AgentId>() {
+            self.registry.touch(id);
+        }
     }
 
     fn kill_agent(&self, agent_id: &str) -> Result<(), String> {

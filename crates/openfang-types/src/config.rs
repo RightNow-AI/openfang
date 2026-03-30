@@ -310,6 +310,10 @@ impl Default for WebFetchConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BrowserConfig {
+    /// Enable the built-in CDP browser tools (browser_navigate, browser_click,
+    /// etc.).  Set to `false` when using an external browser MCP server such as
+    /// CamoFox, which replaces these tools with its own set.
+    pub enabled: bool,
     /// Run browser in headless mode (no visible window).
     pub headless: bool,
     /// Viewport width in pixels.
@@ -329,6 +333,7 @@ pub struct BrowserConfig {
 impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             headless: true,
             viewport_width: 1280,
             viewport_height: 720,
@@ -1099,6 +1104,30 @@ pub struct KernelConfig {
     /// Defaults to `~/.openfang/workflows`. Set to empty string to disable.
     #[serde(default)]
     pub workflows_dir: Option<PathBuf>,
+    /// Heartbeat monitor settings.
+    #[serde(default)]
+    pub heartbeat: HeartbeatSettings,
+}
+
+/// Heartbeat monitor settings exposed in `[heartbeat]` config section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatSettings {
+    /// Seconds of inactivity before a reactive agent is marked as unresponsive.
+    /// Default: 180. Set higher to prevent idle hands from being marked as crashed.
+    #[serde(default = "default_heartbeat_timeout")]
+    pub default_timeout_secs: u64,
+}
+
+fn default_heartbeat_timeout() -> u64 {
+    180
+}
+
+impl Default for HeartbeatSettings {
+    fn default() -> Self {
+        Self {
+            default_timeout_secs: default_heartbeat_timeout(),
+        }
+    }
 }
 
 /// Dashboard authentication (username/password login).
@@ -1200,6 +1229,10 @@ pub struct McpServerConfigEntry {
     /// Environment variables to pass through (e.g., ["GITHUB_PERSONAL_ACCESS_TOKEN"]).
     #[serde(default)]
     pub env: Vec<String>,
+    /// Extra HTTP headers for SSE / Streamable-HTTP transports.
+    /// Each entry is `"Header-Name: value"` (e.g., `"Authorization: Bearer <token>"`).
+    #[serde(default)]
+    pub headers: Vec<String>,
 }
 
 fn default_mcp_timeout() -> u64 {
@@ -1218,6 +1251,8 @@ pub enum McpTransportEntry {
     },
     /// HTTP Server-Sent Events.
     Sse { url: String },
+    /// Streamable HTTP (MCP 2025-03-26+).
+    Http { url: String },
 }
 
 /// A2A (Agent-to-Agent) protocol configuration.
@@ -1308,6 +1343,7 @@ impl Default for KernelConfig {
             oauth: OAuthConfig::default(),
             auth: AuthConfig::default(),
             workflows_dir: None,
+            heartbeat: HeartbeatSettings::default(),
         }
     }
 }
@@ -1488,10 +1524,24 @@ pub struct MemoryConfig {
     /// How often to run memory consolidation (hours). 0 = disabled.
     #[serde(default = "default_consolidation_interval")]
     pub consolidation_interval_hours: u64,
+    /// Memory backend: "sqlite" (default) or "http".
+    #[serde(default = "default_memory_backend")]
+    pub backend: String,
+    /// HTTP memory API URL (when backend = "http").
+    /// e.g., "http://127.0.0.1:5500"
+    #[serde(default)]
+    pub http_url: Option<String>,
+    /// Env var name holding the HTTP memory API bearer token.
+    #[serde(default)]
+    pub http_token_env: Option<String>,
 }
 
 fn default_consolidation_interval() -> u64 {
     24
+}
+
+fn default_memory_backend() -> String {
+    "sqlite".to_string()
 }
 
 impl Default for MemoryConfig {
@@ -1504,6 +1554,9 @@ impl Default for MemoryConfig {
             embedding_provider: None,
             embedding_api_key_env: None,
             consolidation_interval_hours: default_consolidation_interval(),
+            backend: default_memory_backend(),
+            http_url: None,
+            http_token_env: None,
         }
     }
 }
@@ -1647,6 +1700,8 @@ pub struct ChannelsConfig {
     pub linkedin: Option<LinkedInConfig>,
     /// WeCom/WeChat Work configuration (None = disabled).
     pub wecom: Option<WeComConfig>,
+    /// MQTT pub/sub configuration (None = disabled).
+    pub mqtt: Option<MqttConfig>,
 }
 
 /// Telegram channel adapter configuration.
@@ -2376,6 +2431,17 @@ impl Default for BlueskyConfig {
     }
 }
 
+/// Feishu inbound event receive mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FeishuMode {
+    /// Receive events via HTTP webhook callback.
+    Webhook,
+    /// Receive events via WebSocket long connection.
+    #[default]
+    Websocket,
+}
+
 /// Feishu/Lark Open Platform channel adapter configuration.
 ///
 /// Supports both Feishu (China domestic, `open.feishu.cn`) and Lark
@@ -2387,6 +2453,8 @@ pub struct FeishuConfig {
     pub app_id: String,
     /// Env var name holding the app secret.
     pub app_secret_env: String,
+    /// Inbound receive mode (`webhook` or `websocket`).
+    pub mode: FeishuMode,
     /// Port for the incoming webhook.
     pub webhook_port: u16,
     /// Region: "cn" for Feishu (open.feishu.cn), "intl" for Lark (open.larksuite.com).
@@ -2412,6 +2480,7 @@ impl Default for FeishuConfig {
         Self {
             app_id: String::new(),
             app_secret_env: "FEISHU_APP_SECRET".to_string(),
+            mode: FeishuMode::Websocket,
             webhook_port: 8453,
             region: "cn".to_string(),
             webhook_path: "/feishu/webhook".to_string(),
@@ -2456,6 +2525,59 @@ impl Default for WeComConfig {
             webhook_port: 8454,
             token: None,
             encoding_aes_key: None,
+            default_agent: None,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
+/// MQTT channel adapter configuration.
+///
+/// Provides a generic MQTT pub/sub interface for IoT and messaging integration.
+/// Supports standard MQTT 3.1.1/5.0 brokers with optional TLS and authentication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MqttConfig {
+    /// MQTT broker URL (e.g., `"tcp://broker.hivemq.com:1883"` or `"ssl://broker.example.com:8883"`).
+    pub broker_url: String,
+    /// Client identifier (empty = auto-generated).
+    pub client_id: String,
+    /// Topic to subscribe to for incoming messages.
+    pub subscribe_topic: String,
+    /// Topic to publish responses to (empty = same as subscribe_topic).
+    pub publish_topic: String,
+    /// Env var name holding the username (optional).
+    pub username_env: String,
+    /// Env var name holding the password (optional).
+    pub password_env: String,
+    /// Use TLS/SSL connection.
+    pub use_tls: bool,
+    /// Keep-alive interval in seconds.
+    pub keep_alive_secs: u16,
+    /// Clean session flag.
+    pub clean_session: bool,
+    /// QoS level for subscriptions (0, 1, or 2).
+    pub qos: u8,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for MqttConfig {
+    fn default() -> Self {
+        Self {
+            broker_url: "tcp://broker.hivemq.com:1883".to_string(),
+            client_id: String::new(),
+            subscribe_topic: "openfang/inbox".to_string(),
+            publish_topic: String::new(),
+            username_env: "MQTT_USERNAME".to_string(),
+            password_env: "MQTT_PASSWORD".to_string(),
+            use_tls: false,
+            keep_alive_secs: 60,
+            clean_session: true,
+            qos: 1,
             default_agent: None,
             overrides: ChannelOverrides::default(),
         }
@@ -3923,6 +4045,31 @@ mod tests {
     }
 
     #[test]
+    fn test_feishu_mode_defaults_to_websocket() {
+        let toml_str = r#"
+            [channels.feishu]
+            app_id = "cli_test"
+            app_secret_env = "FEISHU_APP_SECRET"
+        "#;
+        let config: KernelConfig = toml::from_str(toml_str).unwrap();
+        let feishu = config.channels.feishu.unwrap();
+        assert_eq!(feishu.mode, FeishuMode::Websocket);
+    }
+
+    #[test]
+    fn test_feishu_mode_parses_websocket() {
+        let toml_str = r#"
+            [channels.feishu]
+            app_id = "cli_test"
+            app_secret_env = "FEISHU_APP_SECRET"
+            mode = "websocket"
+        "#;
+        let config: KernelConfig = toml::from_str(toml_str).unwrap();
+        let feishu = config.channels.feishu.unwrap();
+        assert_eq!(feishu.mode, FeishuMode::Websocket);
+    }
+
+    #[test]
     fn test_resolve_api_key_env_convention() {
         let config = KernelConfig::default();
         // Unknown provider falls back to convention
@@ -4008,5 +4155,38 @@ mod tests {
     fn test_slack_config_unfurl_links_explicit_true() {
         let config: SlackConfig = toml::from_str("unfurl_links = true").unwrap();
         assert!(config.unfurl_links);
+    }
+
+    #[test]
+    fn test_heartbeat_settings_default() {
+        let settings = HeartbeatSettings::default();
+        assert_eq!(settings.default_timeout_secs, 180);
+    }
+
+    #[test]
+    fn test_heartbeat_settings_deserialization() {
+        let toml_str = r#"default_timeout_secs = 600"#;
+        let settings: HeartbeatSettings = toml::from_str(toml_str).unwrap();
+        assert_eq!(settings.default_timeout_secs, 600);
+    }
+
+    #[test]
+    fn test_heartbeat_settings_omitted_uses_default() {
+        // When [heartbeat] section is omitted entirely, KernelConfig should use defaults
+        let toml_str = r#"
+            log_level = "debug"
+        "#;
+        let config: KernelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.heartbeat.default_timeout_secs, 180);
+    }
+
+    #[test]
+    fn test_heartbeat_settings_in_kernel_config() {
+        let toml_str = r#"
+            [heartbeat]
+            default_timeout_secs = 300
+        "#;
+        let config: KernelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.heartbeat.default_timeout_secs, 300);
     }
 }

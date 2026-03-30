@@ -40,6 +40,8 @@ function agentsPage() {
     },
 
     // -- Multi-step wizard state --
+    spawnProviders: [],       // populated from /api/providers on wizard open
+    spawnProvidersLoading: false,
     spawnStep: 1,
     spawnIdentity: { emoji: '', color: '#FF5C00', archetype: '' },
     selectedPreset: '',
@@ -92,98 +94,12 @@ function agentsPage() {
     selectedCategory: 'All',
     searchQuery: '',
 
-    builtinTemplates: [
-      {
-        name: 'General Assistant',
-        description: 'A versatile conversational agent that can help with everyday tasks, answer questions, and provide recommendations.',
-        category: 'General',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'full',
-        system_prompt: 'You are a helpful, friendly assistant. Provide clear, accurate, and concise responses. Ask clarifying questions when needed.'
-      },
-      {
-        name: 'Code Helper',
-        description: 'A programming-focused agent that writes, reviews, and debugs code across multiple languages.',
-        category: 'Development',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'coding',
-        system_prompt: 'You are an expert programmer. Help users write clean, efficient code. Explain your reasoning. Follow best practices and conventions for the language being used.'
-      },
-      {
-        name: 'Researcher',
-        description: 'An analytical agent that breaks down complex topics, synthesizes information, and provides cited summaries.',
-        category: 'Research',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'research',
-        system_prompt: 'You are a research analyst. Break down complex topics into clear explanations. Provide structured analysis with key findings. Cite sources when available.'
-      },
-      {
-        name: 'Writer',
-        description: 'A creative writing agent that helps with drafting, editing, and improving written content of all kinds.',
-        category: 'Writing',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'full',
-        system_prompt: 'You are a skilled writer and editor. Help users create polished content. Adapt your tone and style to match the intended audience. Offer constructive suggestions for improvement.'
-      },
-      {
-        name: 'Data Analyst',
-        description: 'A data-focused agent that helps analyze datasets, create queries, and interpret statistical results.',
-        category: 'Development',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'coding',
-        system_prompt: 'You are a data analysis expert. Help users understand their data, write SQL/Python queries, and interpret results. Present findings clearly with actionable insights.'
-      },
-      {
-        name: 'DevOps Engineer',
-        description: 'A systems-focused agent for CI/CD, infrastructure, Docker, and deployment troubleshooting.',
-        category: 'Development',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'automation',
-        system_prompt: 'You are a DevOps engineer. Help with CI/CD pipelines, Docker, Kubernetes, infrastructure as code, and deployment. Prioritize reliability and security.'
-      },
-      {
-        name: 'Customer Support',
-        description: 'A professional, empathetic agent for handling customer inquiries and resolving issues.',
-        category: 'Business',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'messaging',
-        system_prompt: 'You are a professional customer support representative. Be empathetic, patient, and solution-oriented. Acknowledge concerns before offering solutions. Escalate complex issues appropriately.'
-      },
-      {
-        name: 'Tutor',
-        description: 'A patient educational agent that explains concepts step-by-step and adapts to the learner\'s level.',
-        category: 'General',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'full',
-        system_prompt: 'You are a patient and encouraging tutor. Explain concepts step by step, starting from fundamentals. Use analogies and examples. Check understanding before moving on. Adapt to the learner\'s pace.'
-      },
-      {
-        name: 'API Designer',
-        description: 'An agent specialized in RESTful API design, OpenAPI specs, and integration architecture.',
-        category: 'Development',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'coding',
-        system_prompt: 'You are an API design expert. Help users design clean, consistent RESTful APIs following best practices. Cover endpoint naming, request/response schemas, error handling, and versioning.'
-      },
-      {
-        name: 'Meeting Notes',
-        description: 'Summarizes meeting transcripts into structured notes with action items and key decisions.',
-        category: 'Business',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
-        profile: 'minimal',
-        system_prompt: 'You are a meeting summarizer. When given a meeting transcript or notes, produce a structured summary with: key decisions, action items (with owners), discussion highlights, and follow-up questions.'
-      }
-    ],
+    builtinTemplates: [],
+    
+    // Load templates from API
+    async init() {
+      await this.loadTemplates();
+    },
 
     // ── Profile Descriptions ──
     profileDescriptions: {
@@ -280,6 +196,7 @@ function agentsPage() {
       this.loadError = '';
       try {
         await Alpine.store('app').refreshAgents();
+        await this.loadTemplates();
       } catch(e) {
         this.loadError = e.message || 'Could not load agents. Is the daemon running?';
       }
@@ -317,10 +234,73 @@ function agentsPage() {
           OpenFangAPI.get('/api/templates'),
           OpenFangAPI.get('/api/providers').catch(function() { return { providers: [] }; })
         ]);
-        this.tplTemplates = results[0].templates || [];
+        // Combine static and dynamic templates
+        this.builtinTemplates = [
+          {
+            name: 'General Assistant',
+            description: 'A versatile conversational agent that can help with everyday tasks, answer questions, and provide recommendations.',
+            category: 'General',
+            provider: 'groq',
+            model: 'llama-3.3-70b-versatile',
+            profile: 'full',
+            system_prompt: 'You are a helpful, friendly assistant. Provide clear, accurate, and concise responses. Ask clarifying questions when needed.',
+            manifest_toml: 'name = "General Assistant"\ndescription = "A versatile conversational agent that can help with everyday tasks, answer questions, and provide recommendations."\nmodule = "builtin:chat"\nprofile = "full"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are a helpful, friendly assistant. Provide clear, accurate, and concise responses. Ask clarifying questions when needed.\n"""'
+          },
+          {
+            name: 'Code Helper',
+            description: 'A programming-focused agent that writes, reviews, and debugs code across multiple languages.',
+            category: 'Development',
+            provider: 'groq',
+            model: 'llama-3.3-70b-versatile',
+            profile: 'coding',
+            system_prompt: 'You are an expert programmer. Help users write clean, efficient code. Explain your reasoning. Follow best practices and conventions for the language being used.',
+            manifest_toml: 'name = "Code Helper"\ndescription = "A programming-focused agent that writes, reviews, and debugs code across multiple languages."\nmodule = "builtin:chat"\nprofile = "coding"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are an expert programmer. Help users write clean, efficient code. Explain your reasoning. Follow best practices and conventions for the language being used.\n"""'
+          },
+          {
+            name: 'Researcher',
+            description: 'An analytical agent that breaks down complex topics, synthesizes information, and provides cited summaries.',
+            category: 'Research',
+            provider: 'groq',
+            model: 'llama-3.3-70b-versatile',
+            profile: 'research',
+            system_prompt: 'You are a research analyst. Break down complex topics into clear explanations. Provide structured analysis with key findings. Cite sources when available.',
+            manifest_toml: 'name = "Researcher"\ndescription = "An analytical agent that breaks down complex topics, synthesizes information, and provides cited summaries."\nmodule = "builtin:chat"\nprofile = "research"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are a research analyst. Break down complex topics into clear explanations. Provide structured analysis with key findings. Cite sources when available.\n"""'
+          },
+          {
+            name: 'Writer',
+            description: 'A creative writing agent that helps with drafting, editing, and improving written content of all kinds.',
+            category: 'Writing',
+            provider: 'groq',
+            model: 'llama-3.3-70b-versatile',
+            profile: 'full',
+            system_prompt: 'You are a skilled writer and editor. Help users create polished content. Adapt your tone and style to match the intended audience. Offer constructive suggestions for improvement.',
+            manifest_toml: 'name = "Writer"\ndescription = "A creative writing agent that helps with drafting, editing, and improving written content of all kinds."\nmodule = "builtin:chat"\nprofile = "full"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are a skilled writer and editor. Help users create polished content. Adapt your tone and style to match the intended audience. Offer constructive suggestions for improvement.\n"""'
+          },
+          {
+            name: 'Data Analyst',
+            description: 'A data-focused agent that helps analyze datasets, create queries, and interpret statistical results.',
+            category: 'Development',
+            provider: 'groq',
+            model: 'llama-3.3-70b-versatile',
+            profile: 'coding',
+            system_prompt: 'You are a data analysis expert. Help users understand their data, write SQL/Python queries, and interpret results. Present findings clearly with actionable insights.',
+            manifest_toml: 'name = "Data Analyst"\ndescription = "A data-focused agent that helps analyze datasets, create queries, and interpret statistical results."\nmodule = "builtin:chat"\nprofile = "coding"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are a data analysis expert. Help users understand their data, write SQL/Python queries, and interpret results. Present findings clearly with actionable insights.\n"""'
+          },
+          {
+            name: 'DevOps Engineer',
+            description: 'A systems-focused agent for CI/CD, infrastructure, Docker, and deployment troubleshooting.',
+            category: 'Development',
+            provider: 'groq',
+            model: 'llama-3.3-70b-versatile',
+            profile: 'automation',
+            system_prompt: 'You are a DevOps engineer. Help with CI/CD pipelines, Docker, Kubernetes, infrastructure as code, and deployment. Prioritize reliability and security.',
+            manifest_toml: 'name = "DevOps Engineer"\ndescription = "A systems-focused agent for CI/CD, infrastructure, Docker, and deployment troubleshooting."\nmodule = "builtin:chat"\nprofile = "automation"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are a DevOps engineer. Help with CI/CD pipelines, Docker, Kubernetes, infrastructure as code, and deployment. Prioritize reliability and security.\n"""'
+          },
+          ...results[0].templates || []
+        ];
         this.tplProviders = results[1].providers || [];
       } catch(e) {
-        this.tplTemplates = [];
+        this.builtinTemplates = [];
         this.tplLoadError = e.message || 'Could not load templates.';
       }
       this.tplLoading = false;
@@ -407,14 +387,22 @@ function agentsPage() {
       this.spawnForm.model = 'llama-3.3-70b-versatile';
       this.spawnForm.systemPrompt = 'You are a helpful assistant.';
       this.spawnForm.profile = 'full';
+      // Fetch status defaults and dynamic provider list concurrently
+      this.spawnProvidersLoading = true;
       try {
-        var res = await fetch('/api/status');
-        if (res.ok) {
-          var status = await res.json();
-          if (status.default_provider) this.spawnForm.provider = status.default_provider;
-          if (status.default_model) this.spawnForm.model = status.default_model;
-        }
-      } catch(e) { /* keep hardcoded defaults */ }
+        var results = await Promise.all([
+          OpenFangAPI.get('/api/status').catch(function() { return {}; }),
+          OpenFangAPI.get('/api/providers').catch(function() { return { providers: [] }; })
+        ]);
+        var status = results[0];
+        var provData = results[1];
+        if (status.default_provider) this.spawnForm.provider = status.default_provider;
+        if (status.default_model) this.spawnForm.model = status.default_model;
+        this.spawnProviders = provData.providers || [];
+      } catch(e) {
+        this.spawnProviders = [];
+      }
+      this.spawnProvidersLoading = false;
     },
 
     nextStep() {
@@ -590,15 +578,20 @@ function agentsPage() {
     },
 
     // -- Template methods --
-    async spawnFromTemplate(name) {
+    async spawnFromTemplate(template) {
       try {
-        var data = await OpenFangAPI.get('/api/templates/' + encodeURIComponent(name));
-        if (data.manifest_toml) {
-          var res = await OpenFangAPI.post('/api/agents', { manifest_toml: data.manifest_toml });
+        var manifestToml = template.manifest_toml;
+        if (!manifestToml) {
+          // If template doesn't have manifest_toml, fetch it from the API
+          var data = await OpenFangAPI.get('/api/templates/' + encodeURIComponent(template.name));
+          manifestToml = data.manifest_toml;
+        }
+        if (manifestToml) {
+          var res = await OpenFangAPI.post('/api/agents', { manifest_toml: manifestToml });
           if (res.agent_id) {
-            OpenFangToast.success('Agent "' + (res.name || name) + '" spawned from template');
+            OpenFangToast.success('Agent "' + (res.name || template.name) + '" spawned from template');
             await Alpine.store('app').refreshAgents();
-            this.chatWithAgent({ id: res.agent_id, name: res.name || name, model_provider: '?', model_name: '?' });
+            this.chatWithAgent({ id: res.agent_id, name: res.name || template.name, model_provider: '?', model_name: '?' });
           }
         }
       } catch(e) {

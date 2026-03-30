@@ -11,7 +11,7 @@ command = "npx"
 args = ["-y", "@notionhq/notion-mcp-server"]
 
 [[required_env]]
-name = "NOTION_API_KEY"
+name = "NOTION_TOKEN"
 label = "Notion Integration Token"
 help = "An internal integration token created in your Notion workspace settings"
 is_secret = true
@@ -24,5 +24,5 @@ unhealthy_threshold = 3
 setup_instructions = """
 1. Go to https://www.notion.so/my-integrations and click 'New integration'.
 2. Give it a name, select your workspace, and grant the required capabilities (Read/Update/Insert content).
-3. Copy the Internal Integration Token and paste it into the NOTION_API_KEY field above. Then share relevant pages with the integration in Notion.
+3. Copy the Internal Integration Token and paste it into the NOTION_TOKEN field above. Then share relevant pages with the integration in Notion.
 """

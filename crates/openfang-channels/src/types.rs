@@ -23,6 +23,8 @@ pub enum ChannelType {
     Mattermost,
     WebChat,
     CLI,
+    /// MQTT pub/sub messaging.
+    Mqtt,
     Custom(String),
 }
 

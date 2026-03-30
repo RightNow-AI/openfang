@@ -146,6 +146,9 @@ mod tests {
                 crate::McpTransportTemplate::Sse { .. } => {
                     panic!("{} unexpectedly uses SSE transport", id);
                 }
+                crate::McpTransportTemplate::Http { .. } => {
+                    panic!("{} unexpectedly uses HTTP transport", id);
+                }
             }
         }
     }

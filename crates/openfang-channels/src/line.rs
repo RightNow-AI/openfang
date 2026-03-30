@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
 /// LINE push message API endpoint.
@@ -62,8 +62,8 @@ impl LineAdapter {
     pub fn new(channel_secret: String, access_token: String, webhook_port: u16) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
-            channel_secret: Zeroizing::new(channel_secret),
-            access_token: Zeroizing::new(access_token),
+            channel_secret: Zeroizing::new(channel_secret.trim().to_string()),
+            access_token: Zeroizing::new(access_token.trim().to_string()),
             webhook_port,
             client: reqwest::Client::new(),
             shutdown_tx: Arc::new(shutdown_tx),
@@ -96,11 +96,34 @@ impl LineAdapter {
 
         // Constant-time comparison to prevent timing attacks
         if result.len() != expected.len() {
+            debug!(
+                "LINE: signature length mismatch: computed={} received={}",
+                result.len(),
+                expected.len()
+            );
             return false;
         }
         let mut diff = 0u8;
         for (a, b) in result.iter().zip(expected.iter()) {
             diff |= a ^ b;
+        }
+        if diff != 0 {
+            let computed = base64::engine::general_purpose::STANDARD.encode(&result);
+            // Log first/last 4 chars of each signature for debugging without leaking full HMAC
+            let comp_redacted = format!(
+                "{}...{}",
+                &computed[..4.min(computed.len())],
+                &computed[computed.len().saturating_sub(4)..]
+            );
+            let recv_redacted = format!(
+                "{}...{}",
+                &signature[..4.min(signature.len())],
+                &signature[signature.len().saturating_sub(4)..]
+            );
+            debug!(
+                "LINE: signature mismatch: computed={comp_redacted} received={recv_redacted} body_len={}",
+                body.len()
+            );
         }
         diff == 0
     }
@@ -359,17 +382,17 @@ impl ChannelAdapter for LineAdapter {
                     let secret = Arc::clone(&channel_secret);
                     let tx = Arc::clone(&tx);
                     move |headers: axum::http::HeaderMap,
-                          body: axum::extract::Json<serde_json::Value>| {
+                          body: axum::body::Bytes| {
                         let secret = Arc::clone(&secret);
                         let tx = Arc::clone(&tx);
                         async move {
-                            // Verify X-Line-Signature
+                            // Verify X-Line-Signature using the raw request
+                            // body bytes — NOT re-serialized JSON — because the
+                            // HMAC must be computed over the exact bytes LINE sent.
                             let signature = headers
                                 .get("x-line-signature")
                                 .and_then(|v| v.to_str().ok())
                                 .unwrap_or("");
-
-                            let body_bytes = serde_json::to_vec(&body.0).unwrap_or_default();
 
                             // Create a temporary adapter-like verifier
                             let adapter = LineAdapter {
@@ -382,14 +405,23 @@ impl ChannelAdapter for LineAdapter {
                             };
 
                             if !signature.is_empty()
-                                && !adapter.verify_signature(&body_bytes, signature)
+                                && !adapter.verify_signature(&body, signature)
                             {
                                 warn!("LINE: invalid webhook signature");
                                 return axum::http::StatusCode::UNAUTHORIZED;
                             }
 
+                            // Parse the raw bytes into JSON after signature verification
+                            let parsed: serde_json::Value = match serde_json::from_slice(&body) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    warn!("LINE: failed to parse webhook body as JSON: {e}");
+                                    return axum::http::StatusCode::BAD_REQUEST;
+                                }
+                            };
+
                             // Parse events array
-                            if let Some(events) = body.0["events"].as_array() {
+                            if let Some(events) = parsed["events"].as_array() {
                                 for event in events {
                                     if let Some(msg) = parse_line_event(event) {
                                         let _ = tx.send(msg).await;
@@ -624,6 +656,71 @@ mod tests {
         });
 
         assert!(parse_line_event(&event).is_none());
+    }
+
+    #[test]
+    fn test_verify_signature_with_raw_body() {
+        // Verify that HMAC-SHA256 signature validation works with raw body bytes
+        let secret = "test-channel-secret";
+        let adapter = LineAdapter::new(secret.to_string(), "token".to_string(), 9000);
+
+        // Compute the expected signature manually
+        use base64::Engine;
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        type HmacSha256 = Hmac<Sha256>;
+
+        let body = br#"{"events":[{"type":"message"}]}"#;
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let expected_sig =
+            base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+
+        assert!(adapter.verify_signature(body, &expected_sig));
+
+        // Re-serialized JSON should NOT match (this was the bug)
+        let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
+        let reserialized = serde_json::to_vec(&parsed).unwrap();
+        // The re-serialized form may differ in whitespace/key order
+        // If it happens to be identical for this input, the test still validates
+        // the core mechanism works with raw bytes
+        if reserialized != body.to_vec() {
+            assert!(!adapter.verify_signature(&reserialized, &expected_sig));
+        }
+    }
+
+    #[test]
+    fn test_channel_secret_trimmed() {
+        // Environment variables often have trailing newlines or spaces
+        let adapter = LineAdapter::new(
+            "  my-secret\n".to_string(),
+            "  my-token\r\n".to_string(),
+            9000,
+        );
+        assert_eq!(adapter.channel_secret.as_str(), "my-secret");
+        assert_eq!(adapter.access_token.as_str(), "my-token");
+    }
+
+    #[test]
+    fn test_verify_signature_bad_base64() {
+        let adapter = LineAdapter::new("secret".to_string(), "token".to_string(), 9000);
+        assert!(!adapter.verify_signature(b"body", "not-valid-base64!!!"));
+    }
+
+    #[test]
+    fn test_verify_signature_wrong_secret() {
+        use base64::Engine;
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        type HmacSha256 = Hmac<Sha256>;
+
+        let body = b"test body";
+        let mut mac = HmacSha256::new_from_slice(b"wrong-secret").unwrap();
+        mac.update(body);
+        let sig = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+
+        let adapter = LineAdapter::new("correct-secret".to_string(), "token".to_string(), 9000);
+        assert!(!adapter.verify_signature(body, &sig));
     }
 
     #[test]

@@ -269,8 +269,8 @@ mod tests {
 
     #[test]
     fn test_embedded_files_not_empty() {
-        assert!(!GATEWAY_INDEX_JS.is_empty());
-        assert!(!GATEWAY_PACKAGE_JSON.is_empty());
+        assert_ne!(GATEWAY_INDEX_JS, "");
+        assert_ne!(GATEWAY_PACKAGE_JSON, "");
         assert!(GATEWAY_INDEX_JS.contains("WhatsApp"));
         assert!(GATEWAY_PACKAGE_JSON.contains("@openfang/whatsapp-gateway"));
     }

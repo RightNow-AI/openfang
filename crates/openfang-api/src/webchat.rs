@@ -15,7 +15,13 @@
 use axum::http::header;
 use axum::response::IntoResponse;
 
+/// Nonce placeholder in compile-time HTML, replaced at request time.
+const NONCE_PLACEHOLDER: &str = "__NONCE__";
+
 /// Compile-time ETag based on the crate version.
+/// Not used for the dashboard page (nonce prevents caching) but retained
+/// for potential future use by static asset handlers.
+#[allow(dead_code)]
 const ETAG: &str = concat!("\"openfang-", env!("CARGO_PKG_VERSION"), "\"");
 
 /// Embedded logo PNG for single-binary deployment.
@@ -76,18 +82,35 @@ pub async fn sw_js() -> impl IntoResponse {
 
 /// GET / — Serve the OpenFang Dashboard single-page application.
 ///
-/// Returns the full SPA with ETag header based on package version for caching.
+/// Generates a unique CSP nonce on every request and injects it into both
+/// the `<script>` tags and the `Content-Security-Policy` header. This
+/// replaces `'unsafe-inline'` so only our own scripts execute.
 pub async fn webchat_page() -> impl IntoResponse {
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let html = WEBCHAT_HTML.replace(NONCE_PLACEHOLDER, &nonce);
+    let csp = format!(
+        "default-src 'self'; \
+         script-src 'self' 'nonce-{nonce}' 'unsafe-eval'; \
+         style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; \
+         img-src 'self' data: blob:; \
+         connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; \
+         font-src 'self' https://fonts.gstatic.com; \
+         media-src 'self' blob:; \
+         frame-src 'self' blob:; \
+         object-src 'none'; \
+         base-uri 'self'; \
+         form-action 'self'"
+    );
     (
         [
-            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (header::ETAG, ETAG),
+            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
             (
-                header::CACHE_CONTROL,
-                "public, max-age=3600, must-revalidate",
+                header::HeaderName::from_static("content-security-policy"),
+                csp,
             ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
         ],
-        WEBCHAT_HTML,
+        html,
     )
 }
 
@@ -110,17 +133,17 @@ const WEBCHAT_HTML: &str = concat!(
     "\n</style>\n",
     include_str!("../static/index_body.html"),
     // Vendor libs: marked + highlight first (used by app.js), then Chart.js
-    "<script>\n",
+    "<script nonce=\"__NONCE__\">\n",
     include_str!("../static/vendor/marked.min.js"),
     "\n</script>\n",
-    "<script>\n",
+    "<script nonce=\"__NONCE__\">\n",
     include_str!("../static/vendor/highlight.min.js"),
     "\n</script>\n",
-    "<script>\n",
+    "<script nonce=\"__NONCE__\">\n",
     include_str!("../static/vendor/chart.umd.min.js"),
     "\n</script>\n",
     // App code
-    "<script>\n",
+    "<script nonce=\"__NONCE__\">\n",
     include_str!("../static/js/api.js"),
     "\n",
     include_str!("../static/js/app.js"),
@@ -162,7 +185,7 @@ const WEBCHAT_HTML: &str = concat!(
     include_str!("../static/js/pages/runtime.js"),
     "\n</script>\n",
     // Alpine.js MUST be last — it processes x-data and fires alpine:init
-    "<script>\n",
+    "<script nonce=\"__NONCE__\">\n",
     include_str!("../static/vendor/alpine.min.js"),
     "\n</script>\n",
     "</body></html>"

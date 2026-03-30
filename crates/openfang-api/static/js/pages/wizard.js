@@ -254,6 +254,15 @@ function wizardPage() {
       this.error = '';
       try {
         await this.loadProviders();
+        // Pre-select first unconfigured provider, or first one
+        var unconfigured = this.providers.filter(function(p) {
+          return p.auth_status !== 'configured' && p.api_key_env;
+        });
+        if (unconfigured.length > 0) {
+          this.selectedProvider = unconfigured[0].id;
+        } else if (this.providers.length > 0) {
+          this.selectedProvider = this.providers[0].id;
+        }
       } catch(e) {
         this.error = e.message || 'Could not load setup data.';
       }
@@ -313,15 +322,6 @@ function wizardPage() {
       try {
         var data = await OpenFangAPI.get('/api/providers');
         this.providers = data.providers || [];
-        // Pre-select first unconfigured provider, or first one
-        var unconfigured = this.providers.filter(function(p) {
-          return p.auth_status !== 'configured' && p.api_key_env;
-        });
-        if (unconfigured.length > 0) {
-          this.selectedProvider = unconfigured[0].id;
-        } else if (this.providers.length > 0) {
-          this.selectedProvider = this.providers[0].id;
-        }
       } catch(e) { this.providers = []; }
     },
 

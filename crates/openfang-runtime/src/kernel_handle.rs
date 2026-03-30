@@ -238,6 +238,12 @@ pub trait KernelHandle: Send + Sync {
         Err("Channel file data send not available".to_string())
     }
 
+    /// Refresh an agent's last_active timestamp without changing any other state.
+    /// Called by the agent loop before long LLM calls to prevent heartbeat false-positives.
+    fn touch_agent(&self, agent_id: &str) {
+        let _ = agent_id;
+    }
+
     /// Spawn an agent with capability inheritance enforcement.
     /// `parent_caps` are the parent's granted capabilities. The kernel MUST verify
     /// that every capability in the child manifest is covered by `parent_caps`.

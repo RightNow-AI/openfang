@@ -161,7 +161,10 @@ provider = "default"
 model = "default"
 max_tokens = 16384
 temperature = 0.3
-max_iterations = 80
+max_iterations = 25
+# Researcher makes long LLM calls; 30s (kernel default) causes false-positive
+# recovery triggers. 120s matches typical deep-research call latency.
+heartbeat_interval_secs = 120
 system_prompt = """You are Researcher Hand — an autonomous deep research agent that conducts exhaustive investigations, cross-references sources, fact-checks claims, and produces comprehensive structured reports.
 
 ## Phase 0 — Platform Detection & Context (ALWAYS DO THIS FIRST)

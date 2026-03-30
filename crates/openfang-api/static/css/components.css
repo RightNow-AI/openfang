@@ -647,6 +647,11 @@ mark.search-highlight {
   color: var(--text);
 }
 
+.message-bubble.markdown-body ul,
+.message-bubble.markdown-body ol {
+  padding-left: 2em;
+}
+
 .copy-btn {
   position: absolute;
   top: 6px;
@@ -1274,8 +1279,11 @@ mark.search-highlight {
 /* Utility */
 .flex { display: flex; }
 .flex-col { flex-direction: column; }
+.flex-wrap { flex-wrap: wrap; }
 .items-center { align-items: center; }
 .justify-between { justify-content: space-between; }
+.grid { display: grid; }
+.grid-cols-4 { grid-template-columns: repeat(4, 1fr); }
 .gap-2 { gap: 8px; }
 .gap-3 { gap: 12px; }
 .gap-4 { gap: 16px; }
@@ -1283,6 +1291,7 @@ mark.search-highlight {
 .mt-4 { margin-top: 16px; }
 .mb-2 { margin-bottom: 8px; }
 .mb-4 { margin-bottom: 16px; }
+.mb-6 { margin-bottom: 24px; }
 .text-dim { color: var(--text-dim); }
 .text-sm { font-size: 11px; }
 .text-xs { font-size: 10px; }

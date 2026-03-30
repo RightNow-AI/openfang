@@ -191,6 +191,9 @@ impl IntegrationRegistry {
                     crate::McpTransportTemplate::Sse { url } => {
                         McpTransportEntry::Sse { url: url.clone() }
                     }
+                    crate::McpTransportTemplate::Http { url } => {
+                        McpTransportEntry::Http { url: url.clone() }
+                    }
                 };
                 let env: Vec<String> = template
                     .required_env
@@ -202,6 +205,7 @@ impl IntegrationRegistry {
                     transport,
                     timeout_secs: 30,
                     env,
+                    headers: Vec::new(),
                 })
             })
             .collect()

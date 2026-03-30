@@ -1,0 +1,10 @@
+# Add this section to your ~/.openfang/config.toml
+# to register the LangChain code review agent.
+
+[a2a]
+enabled = true
+listen_path = "/a2a"
+
+[[a2a.external_agents]]
+name = "langchain-code-reviewer"
+url = "http://127.0.0.1:9100"

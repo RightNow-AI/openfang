@@ -52,7 +52,7 @@ install() {
         echo "  Using specified version: $VERSION"
     else
         echo "  Fetching latest release..."
-        VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | head -1 | cut -d '"' -f 4)
+        VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed 's/.*"tag_name": *"//' | sed 's/".*//')
     fi
 
     if [ -z "$VERSION" ]; then

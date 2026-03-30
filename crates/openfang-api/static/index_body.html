@@ -201,7 +201,7 @@
   <!-- Main Content -->
   <main class="main-content">
     <!-- Mobile menu button -->
-    <button class="mobile-menu-btn btn btn-ghost" @click="mobileMenuOpen = !mobileMenuOpen" style="position:fixed;top:8px;left:8px;z-index:98;padding:6px 10px">
+    <button class="mobile-menu-btn btn btn-ghost" @click="mobileMenuOpen = !mobileMenuOpen">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
 
@@ -881,7 +881,7 @@
             <div class="text-sm font-bold mb-2" style="color:var(--text-dim);letter-spacing:0.5px;font-size:11px;text-transform:uppercase" x-text="agents.length ? 'Or Start a New Agent' : 'Start Chatting'"></div>
             <div class="card-grid">
               <template x-for="t in builtinTemplates" :key="t.name">
-                <div class="card" style="cursor:pointer" @click="spawnBuiltin(t)">
+                <div class="card" style="cursor:pointer" @click="t.manifest_toml ? spawnFromTemplate(t) : spawnBuiltin(t)">
                   <div class="flex justify-between items-center mb-1">
                     <div class="card-header" style="margin:0;font-size:14px;font-weight:600" x-text="t.name"></div>
                     <span class="badge badge-dim" x-text="t.category"></span>
@@ -898,7 +898,7 @@
           <!-- Agent detail modal with tabs (Info / Files / Config) -->
           <template x-if="showDetailModal && detailAgent">
             <div class="modal-overlay" @click.self="showDetailModal = false" @keydown.escape.window="showDetailModal = false">
-              <div class="modal" style="max-width:600px">
+              <div class="modal" style="max-width:700px">
                 <div class="modal-header">
                   <h3>
                     <span x-show="detailAgent.identity && detailAgent.identity.emoji" x-text="detailAgent.identity && detailAgent.identity.emoji" style="margin-right:6px"></span>
@@ -962,13 +962,13 @@
                     <!-- Fallback Model Chain -->
                     <div class="detail-row" style="align-items:flex-start">
                       <span class="detail-label">Fallbacks</span>
-                      <div style="flex:1">
+                      <div style="flex:1;display:flex;flex-direction:column;gap:6px;min-width:0;margin-left:16px">
                         <template x-if="detailAgent._fallbacks && detailAgent._fallbacks.length > 0">
-                          <div>
+                          <div style="display:flex;flex-direction:column;gap:4px">
                             <template x-for="(fb, idx) in detailAgent._fallbacks" :key="idx">
-                              <div class="flex gap-1 items-center" style="margin-bottom:4px">
-                                <span class="badge" style="font-size:11px;font-family:var(--font-mono)" x-text="(idx+1) + '. ' + fb.provider + '/' + fb.model"></span>
-                                <button class="btn btn-ghost btn-sm" style="padding:1px 4px;font-size:10px;color:var(--danger)" @click="removeFallback(idx)">&times;</button>
+                              <div class="flex gap-1 items-center" style="min-width:0">
+                                <span class="badge" style="font-size:11px;font-family:var(--font-mono);word-break:break-all;white-space:normal" x-text="(idx+1) + '. ' + fb.provider + '/' + fb.model"></span>
+                                <button class="btn btn-ghost btn-sm" style="padding:1px 4px;font-size:10px;color:var(--danger);flex-shrink:0" @click="removeFallback(idx)">&times;</button>
                               </div>
                             </template>
                           </div>
@@ -977,10 +977,12 @@
                           <span class="text-dim" style="font-size:12px">None — add a fallback chain</span>
                         </template>
                         <template x-if="!editingFallback">
-                          <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;margin-top:4px" @click="editingFallback = true; newFallbackValue = ''">+ Add</button>
+                          <div>
+                            <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" @click="editingFallback = true; newFallbackValue = ''">+ Add</button>
+                          </div>
                         </template>
                         <template x-if="editingFallback">
-                          <div class="flex gap-1 mt-1" style="align-items:center">
+                          <div class="flex gap-1" style="align-items:center">
                             <input class="form-input" style="width:220px;font-size:12px" x-model="newFallbackValue" placeholder="provider/model" @keydown.enter="addFallback()" @keydown.escape="editingFallback = false">
                             <button class="btn btn-primary btn-sm" @click="addFallback()" style="padding:2px 10px;font-size:11px">Add</button>
                             <button class="btn btn-ghost btn-sm" @click="editingFallback = false" style="padding:2px 8px;font-size:11px">Cancel</button>
@@ -1155,28 +1157,26 @@
                     <div class="form-group">
                       <label>Provider</label>
                       <select class="form-select" x-model="spawnForm.provider">
-                        <optgroup label="Cloud">
-                          <option value="anthropic">Anthropic</option>
-                          <option value="openai">OpenAI</option>
-                          <option value="gemini">Google Gemini</option>
-                          <option value="groq">Groq</option>
-                          <option value="deepseek">DeepSeek</option>
-                          <option value="openrouter">OpenRouter</option>
-                          <option value="mistral">Mistral</option>
-                          <option value="xai">xAI</option>
-                          <option value="together">Together</option>
-                          <option value="fireworks">Fireworks</option>
-                          <option value="cerebras">Cerebras</option>
-                          <option value="sambanova">SambaNova</option>
-                          <option value="azure">Azure OpenAI</option>
-                          <option value="nvidia">NVIDIA NIM</option>
-                        </optgroup>
-                        <optgroup label="Local">
-                          <option value="ollama">Ollama</option>
-                          <option value="lmstudio">LM Studio</option>
-                          <option value="vllm">vLLM</option>
-                          <option value="lemonade">Lemonade</option>
-                        </optgroup>
+                        <template x-if="spawnProvidersLoading">
+                          <option disabled>Loading providers…</option>
+                        </template>
+                        <template x-if="!spawnProvidersLoading && spawnProviders.length === 0">
+                          <option disabled>No providers available</option>
+                        </template>
+                        <template x-if="!spawnProvidersLoading && spawnProviders.filter(p => !p.is_local).length > 0">
+                          <optgroup label="Cloud">
+                            <template x-for="p in spawnProviders.filter(p => !p.is_local)" :key="p.id">
+                              <option :value="p.id" x-text="p.display_name"></option>
+                            </template>
+                          </optgroup>
+                        </template>
+                        <template x-if="!spawnProvidersLoading && spawnProviders.filter(p => p.is_local).length > 0">
+                          <optgroup label="Local">
+                            <template x-for="p in spawnProviders.filter(p => p.is_local)" :key="p.id">
+                              <option :value="p.id" x-text="p.display_name"></option>
+                            </template>
+                          </optgroup>
+                        </template>
                       </select>
                     </div>
                     <div class="form-group">
@@ -1342,7 +1342,7 @@
 
         <!-- Tab: List -->
         <template x-if="wfTab === 'list'">
-        <div x-data="workflowsPage">
+        <div x-data="workflowsPage" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden">
         <div class="page-body" x-init="loadWorkflows()">
           <div x-show="loading" class="loading-state"><div class="spinner"></div><span>Loading workflows...</span></div>
           <div x-show="!loading && loadError" class="error-state">
@@ -3471,8 +3471,8 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                               <select class="form-select" style="width:180px"
                                 :value="configValues[section] && configValues[section][field.name]"
                                 @change="configValues[section] = configValues[section] || {}; configValues[section][field.name] = $event.target.value; markConfigDirty(section, field.name)">
-                                <template x-for="opt in field.options" :key="opt">
-                                  <option :value="opt" x-text="opt" :selected="configValues[section] && configValues[section][field.name] === opt"></option>
+                                <template x-for="opt in field.options" :key="typeof opt === 'object' ? opt.id : opt">
+                                  <option :value="typeof opt === 'object' ? opt.id : opt" x-text="typeof opt === 'object' ? (opt.name || opt.display_name || opt.id) : opt" :selected="configValues[section] && configValues[section][field.name] === (typeof opt === 'object' ? opt.id : opt)"></option>
                                 </template>
                               </select>
                             </template>
@@ -4314,7 +4314,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
       <div x-data="logsPage">
         <div class="page-header">
           <h2>Logs</h2>
-          <div class="flex gap-2 items-center" x-show="tab === 'live'">
+          <div class="flex gap-2 items-center flex-wrap" x-show="tab === 'live'">
             <!-- Connection status indicator -->
             <span class="live-indicator" :class="connectionClass">
               <span class="live-dot"></span>
@@ -4990,7 +4990,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
         <div class="page-body" x-init="loadData()">
           <div x-show="loading" class="loading-state"><div class="spinner"></div><span>Loading runtime info...</span></div>
           <div x-show="!loading">
-            <div class="grid grid-cols-4" style="gap:16px;margin-bottom:24px">
+            <div class="grid grid-cols-4 gap-4 mb-6">
               <div class="card stat-card">
                 <div class="stat-label">Uptime</div>
                 <div class="stat-value" x-text="uptime"></div>

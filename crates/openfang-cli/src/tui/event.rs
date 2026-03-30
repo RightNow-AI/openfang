@@ -1417,14 +1417,24 @@ pub fn spawn_fetch_skills(backend: BackendRef, tx: mpsc::Sender<AppEvent>) {
             let client = daemon_client();
             if let Ok(resp) = client.get(format!("{base_url}/api/skills")).send() {
                 if let Ok(body) = resp.json::<serde_json::Value>() {
-                    let skills: Vec<SkillInfo> = body
-                        .as_array()
+                    // API returns {"skills": [...], "total": N} — extract the inner array.
+                    // Fall back to bare array for backward compat.
+                    let items = body
+                        .get("skills")
+                        .and_then(|v| v.as_array())
+                        .or_else(|| body.as_array());
+                    let skills: Vec<SkillInfo> = items
                         .map(|arr| {
                             arr.iter()
                                 .map(|s| SkillInfo {
                                     name: s["name"].as_str().unwrap_or("").to_string(),
                                     runtime: s["runtime"].as_str().unwrap_or("").to_string(),
-                                    source: s["source"].as_str().unwrap_or("").to_string(),
+                                    // "source" is an object {"type": "..."} — extract the type string
+                                    source: s["source"]["type"]
+                                        .as_str()
+                                        .or_else(|| s["source"].as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
                                     description: s["description"]
                                         .as_str()
                                         .unwrap_or("")

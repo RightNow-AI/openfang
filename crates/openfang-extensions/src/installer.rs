@@ -327,7 +327,7 @@ mod tests {
 
         // Provide key directly
         let mut keys = HashMap::new();
-        keys.insert("NOTION_API_KEY".to_string(), "ntn_test_key_123".to_string());
+        keys.insert("NOTION_TOKEN".to_string(), "ntn_test_key_123".to_string());
 
         let result = install_integration(&mut registry, &mut resolver, "notion", &keys).unwrap();
         assert_eq!(result.id, "notion");

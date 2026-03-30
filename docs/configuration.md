@@ -126,7 +126,7 @@ shared_secret = ""                   # Required when network_enabled = true
 
 # --- Web Tools ---
 [web]
-search_provider = "auto"             # auto | brave | tavily | perplexity | duckduckgo
+search_provider = "auto"             # auto | brave | tavily | perplexity | duck_duck_go
 cache_ttl_minutes = 15
 
 [web.brave]
@@ -341,7 +341,7 @@ cache_ttl_minutes = 15
 | `brave` | Brave Search API. Requires `BRAVE_API_KEY`. |
 | `tavily` | Tavily AI-native search. Requires `TAVILY_API_KEY`. |
 | `perplexity` | Perplexity AI search. Requires `PERPLEXITY_API_KEY`. |
-| `duckduckgo` | DuckDuckGo HTML scraping. No API key needed. |
+| `duck_duck_go` | DuckDuckGo HTML scraping. No API key needed. |
 
 #### `[web.brave]`
 
@@ -1419,7 +1419,7 @@ For **web search providers**, the validator checks:
 | `brave` | `web.brave.api_key_env` |
 | `tavily` | `web.tavily.api_key_env` |
 | `perplexity` | `web.perplexity.api_key_env` |
-| `duckduckgo` | (no check -- no API key needed) |
+| `duck_duck_go` | (no check -- no API key needed) |
 | `auto` | (no check -- cascading fallback handles missing keys) |
 
 ### What is NOT validated
@@ -1466,6 +1466,22 @@ Configured in agent manifests via `ModelRoutingConfig`:
 | `complex_model` | `"claude-sonnet-4-20250514"` | Model for complex queries. |
 | `simple_threshold` | `100` | Token count below which a query is classified as simple. |
 | `complex_threshold` | `500` | Token count above which a query is classified as complex. |
+
+### Heartbeat Monitor
+
+Global heartbeat settings in `[heartbeat]`:
+
+```toml
+[heartbeat]
+# Seconds of inactivity before a reactive agent is marked as unresponsive.
+# Increase this if you have hands that sit idle between infrequent requests.
+# Default: 180
+default_timeout_secs = 300
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `default_timeout_secs` | `180` | Seconds of inactivity before marking an agent as unresponsive. Per-agent `heartbeat_interval_secs` in autonomous config overrides this. |
 
 ### Autonomous Guardrails (per-agent manifest)
 

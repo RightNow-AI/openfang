@@ -20,6 +20,15 @@ use tracing::{debug, info, warn};
 /// Maximum consecutive errors before a job is auto-disabled.
 const MAX_CONSECUTIVE_ERRORS: u32 = 5;
 
+/// Error returned by [`CronScheduler::try_claim_for_run`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimError {
+    /// Job ID does not exist.
+    NotFound,
+    /// Job exists but is disabled.
+    Disabled,
+}
+
 // ---------------------------------------------------------------------------
 // JobMeta — extra runtime state not stored in CronJob itself
 // ---------------------------------------------------------------------------
@@ -306,6 +315,33 @@ impl CronScheduler {
         due
     }
 
+    /// Atomically look up a job, verify it is enabled, pre-advance `next_run`
+    /// if overdue, and return a snapshot of the job for execution.
+    ///
+    /// This combines the existence check, enabled guard, and scheduler
+    /// reservation into a single `DashMap::get_mut` hold so no concurrent
+    /// request can disable/delete the job between the check and the claim.
+    ///
+    /// `next_run` is only advanced when the job is already due
+    /// (`next_run <= now`), matching `due_jobs()`, so triggering a manual run
+    /// on a not-yet-due job won't skip the upcoming scheduled fire.
+    pub fn try_claim_for_run(&self, id: CronJobId) -> Result<CronJob, ClaimError> {
+        match self.jobs.get_mut(&id) {
+            None => Err(ClaimError::NotFound),
+            Some(mut entry) => {
+                let meta = entry.value_mut();
+                if !meta.job.enabled {
+                    return Err(ClaimError::Disabled);
+                }
+                let now = Utc::now();
+                if meta.job.next_run.map(|t| t <= now).unwrap_or(false) {
+                    meta.job.next_run = Some(compute_next_run_after(&meta.job.schedule, now));
+                }
+                Ok(meta.job.clone())
+            }
+        }
+    }
+
     // -- Outcome recording --------------------------------------------------
 
     /// Record a successful execution for a job.
@@ -351,7 +387,13 @@ impl CronScheduler {
                 );
                 meta.job.enabled = false;
             } else {
-                meta.job.next_run = Some(compute_next_run_after(&meta.job.schedule, Utc::now()));
+                // Only recompute next_run if the job was already overdue. This
+                // preserves the scheduled fire time when a manual (on-demand) run
+                // fails before the job's natural next_run.
+                let now = Utc::now();
+                if meta.job.next_run.map(|t| t <= now).unwrap_or(true) {
+                    meta.job.next_run = Some(compute_next_run_after(&meta.job.schedule, now));
+                }
             }
         }
     }
@@ -1206,5 +1248,78 @@ mod tests {
             assert!(sched.list_jobs(agent).is_empty());
             assert_eq!(sched.list_jobs(other).len(), 1);
         }
+    }
+
+    // -- try_claim_for_run ---------------------------------------------------
+
+    #[test]
+    fn try_claim_not_found() {
+        let (sched, _tmp) = make_scheduler(100);
+        let id = CronJobId::new();
+        assert!(matches!(
+            sched.try_claim_for_run(id),
+            Err(ClaimError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn try_claim_disabled() {
+        let (sched, _tmp) = make_scheduler(100);
+        let agent = AgentId::new();
+        let mut job = make_job(agent);
+        job.enabled = false;
+        let id = sched.add_job(job, false).unwrap();
+        assert!(matches!(
+            sched.try_claim_for_run(id),
+            Err(ClaimError::Disabled)
+        ));
+    }
+
+    #[test]
+    fn try_claim_skips_not_yet_due_job() {
+        let (sched, _tmp) = make_scheduler(100);
+        let agent = AgentId::new();
+        let mut job = make_job(agent);
+        job.schedule = CronSchedule::Every { every_secs: 3600 };
+        let id = sched.add_job(job, false).unwrap();
+
+        let original_next_run = sched.get_job(id).unwrap().next_run;
+        assert!(original_next_run.is_some());
+
+        // Manual trigger on a not-yet-due job should NOT move next_run.
+        let claimed = sched.try_claim_for_run(id).unwrap();
+        assert_eq!(claimed.id, id);
+
+        let after = sched.get_job(id).unwrap().next_run;
+        assert_eq!(
+            original_next_run, after,
+            "try_claim must not move next_run for a job that is not yet due"
+        );
+    }
+
+    #[test]
+    fn try_claim_advances_overdue_job() {
+        let (sched, _tmp) = make_scheduler(100);
+        let agent = AgentId::new();
+        let mut job = make_job(agent);
+        job.schedule = CronSchedule::Every { every_secs: 3600 };
+        let id = sched.add_job(job, false).unwrap();
+
+        // Force next_run into the past to simulate an overdue job.
+        if let Some(mut meta) = sched.jobs.get_mut(&id) {
+            meta.job.next_run = Some(Utc::now() - Duration::seconds(10));
+        }
+
+        let before = sched.get_job(id).unwrap().next_run.unwrap();
+        assert!(before < Utc::now(), "precondition: job should be overdue");
+
+        let claimed = sched.try_claim_for_run(id).unwrap();
+        assert_eq!(claimed.id, id);
+
+        let after = sched.get_job(id).unwrap().next_run.unwrap();
+        assert!(
+            after > Utc::now(),
+            "try_claim should advance next_run past now for overdue jobs"
+        );
     }
 }

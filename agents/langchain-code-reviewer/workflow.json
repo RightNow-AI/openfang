@@ -1,0 +1,23 @@
+{
+  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "name": "langchain-code-review-pipeline",
+  "description": "Code review pipeline: uses LangChain external agent for deep review, then OpenFang Writer agent to format the final report.",
+  "created_at": "2026-03-16T00:00:00Z",
+  "steps": [
+    {
+      "name": "review-code",
+      "agent": { "name": "a2a-proxy" },
+      "prompt_template": "Use the a2a_send tool to send the following code to the external agent for code review. Set agent_name to langchain-code-reviewer and set message to the code below. Return the complete review result:\n\n{{input}}",
+      "mode": "sequential",
+      "timeout_secs": 300,
+      "output_var": "review_result"
+    },
+    {
+      "name": "format-report",
+      "agent": { "name": "Writer" },
+      "prompt_template": "Format the following code review into a clean, professional report. Preserve all severity levels and scores. Add a brief executive summary at the top:\n\n{{review_result}}",
+      "mode": "sequential",
+      "timeout_secs": 120
+    }
+  ]
+}

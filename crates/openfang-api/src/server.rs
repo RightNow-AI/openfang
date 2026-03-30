@@ -51,6 +51,7 @@ pub async fn build_router(
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        budget_config: Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone())),
     });
 
     // CORS: allow localhost origins by default. If API key is set, the API
@@ -336,6 +337,10 @@ pub async fn build_router(
             axum::routing::post(routes::uninstall_skill),
         )
         .route(
+            "/api/skills/reload",
+            axum::routing::post(routes::reload_skills),
+        )
+        .route(
             "/api/marketplace/search",
             axum::routing::get(routes::marketplace_search),
         )
@@ -585,6 +590,10 @@ pub async fn build_router(
         .route(
             "/api/cron/jobs/{id}/status",
             axum::routing::get(routes::cron_job_status),
+        )
+        .route(
+            "/api/cron/jobs/{id}/run",
+            axum::routing::post(routes::run_cron_job),
         )
         // Webhook trigger endpoints (external event injection)
         .route("/hooks/wake", axum::routing::post(routes::webhook_wake))
