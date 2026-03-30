@@ -10,6 +10,7 @@ pub mod copilot;
 pub mod fallback;
 pub mod gemini;
 pub mod openai;
+pub mod opencode;
 pub mod qwen_code;
 pub mod vertex;
 
@@ -148,6 +149,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             key_required: true,
         }),
         "claude-code" => Some(ProviderDefaults {
+            base_url: "",
+            api_key_env: "",
+            key_required: false,
+        }),
+        "opencode" => Some(ProviderDefaults {
             base_url: "",
             api_key_env: "",
             key_required: false,
@@ -320,6 +326,15 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
     if provider == "claude-code" {
         let cli_path = config.base_url.clone();
         return Ok(Arc::new(claude_code::ClaudeCodeDriver::new(
+            cli_path,
+            config.skip_permissions,
+        )));
+    }
+
+    // OpenCode CLI — subprocess-based, no API key needed
+    if provider == "opencode" {
+        let cli_path = config.base_url.clone();
+        return Ok(Arc::new(opencode::OpenCodeDriver::new(
             cli_path,
             config.skip_permissions,
         )));
@@ -589,6 +604,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "nvidia",
         "codex",
         "claude-code",
+        "opencode",
         "qwen-code",
         "azure",
     ]
@@ -693,9 +709,10 @@ mod tests {
         assert!(providers.contains(&"nvidia"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
+        assert!(providers.contains(&"opencode"));
         assert!(providers.contains(&"qwen-code"));
         assert!(providers.contains(&"azure"));
-        assert_eq!(providers.len(), 37);
+        assert_eq!(providers.len(), 38);
     }
 
     #[test]

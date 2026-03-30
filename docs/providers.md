@@ -38,6 +38,16 @@ OpenFang auto-detects which providers have API keys configured at boot. Any mode
 
 For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 
+CLI-based providers are also supported without API keys:
+
+```bash
+# Claude Code
+npm install -g @anthropic-ai/claude-code && claude auth
+
+# OpenCode
+npm install -g opencode-ai && opencode auth
+```
+
 ---
 
 ## Provider Reference

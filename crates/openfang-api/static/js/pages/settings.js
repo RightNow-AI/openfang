@@ -353,7 +353,7 @@ function settingsPage() {
     providerAuthText(p) {
       if (p.auth_status === 'configured') return 'Configured';
       if (p.auth_status === 'not_set' || p.auth_status === 'missing') {
-        if (p.id === 'claude-code') return 'Not Installed';
+        if (p.id === 'claude-code' || p.id === 'opencode') return 'Not Installed';
         return 'Not Set';
       }
       return 'No Key Needed';

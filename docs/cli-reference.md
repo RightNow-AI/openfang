@@ -1350,5 +1350,10 @@ The following providers are recognized by `openfang config set-key` and `openfan
 | Perplexity | `PERPLEXITY_API_KEY` | -- |
 | Cohere | `COHERE_API_KEY` | -- |
 | xAI | `XAI_API_KEY` | -- |
+| OpenCode (CLI) | _No API key env required_ | `opencode/mimo-v2-omni-free` |
+
+CLI providers (no API key needed):
+- `claude-code`: `npm install -g @anthropic-ai/claude-code && claude auth`
+- `opencode`: `npm install -g opencode-ai`
 
 Additional search/fetch provider keys: `BRAVE_API_KEY`, `TAVILY_API_KEY`.

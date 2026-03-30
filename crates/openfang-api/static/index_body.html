@@ -3258,6 +3258,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <template x-if="p.id === 'claude-code' && p.auth_status !== 'configured'">
                     <div class="mt-2 text-xs text-dim">Install: <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">npm install -g @anthropic-ai/claude-code</code></div>
                   </template>
+                  <template x-if="p.id === 'opencode' && p.auth_status !== 'configured'">
+                    <div class="mt-2 text-xs text-dim">Install: <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">npm install -g opencode-ai</code></div>
+                  </template>
                   <!-- Actions for configured providers -->
                   <template x-if="p.auth_status === 'configured'">
                     <div class="flex gap-2 mt-2">
@@ -4731,7 +4734,29 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 </div>
               </template>
 
-              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj) && selectedProvider !== 'claude-code'">
+              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj) && selectedProvider === 'opencode'">
+                <div class="card" style="border-left:3px solid var(--accent);margin-top:16px">
+                  <div class="card-header">Configure OpenCode</div>
+                  <div class="text-xs text-dim mb-2" style="line-height:1.8">
+                    OpenCode uses its own CLI authentication &mdash; no API key needed.
+                  </div>
+                  <div style="background:var(--bg);border-radius:4px;padding:10px 12px;margin-bottom:12px;font-size:12px;line-height:1.8">
+                    <div><span style="color:var(--accent)">1.</span> Install: <code style="color:var(--accent-light);background:var(--bg-secondary);padding:1px 4px;border-radius:2px">npm install -g opencode-ai</code></div>
+                    <div><span style="color:var(--accent)">2.</span> Authenticate: <code style="color:var(--accent-light);background:var(--bg-secondary);padding:1px 4px;border-radius:2px">opencode auth</code></div>
+                    <div><span style="color:var(--accent)">3.</span> Click <strong>Detect</strong> below to verify</div>
+                  </div>
+                  <button class="btn btn-primary btn-sm" @click="detectOpenCode()" :disabled="testingProvider">
+                    <span x-show="!testingProvider">Detect OpenCode</span>
+                    <span x-show="testingProvider" class="spinner" style="width:10px;height:10px;border-width:2px"></span>
+                  </button>
+                  <div x-show="testResult" class="mt-2">
+                    <div x-show="testResult && testResult.status === 'ok'" class="badge badge-success" style="padding:6px 12px">OpenCode detected<span x-show="testResult && testResult.latency_ms" x-text="' (' + (testResult ? testResult.latency_ms : '') + 'ms)'"></span></div>
+                    <div x-show="testResult && testResult.status !== 'ok'" class="badge badge-error" style="padding:6px 12px">OpenCode CLI not detected. Make sure you&rsquo;ve run: <code>npm install -g opencode-ai &amp;&amp; opencode auth</code></div>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj) && selectedProvider !== 'claude-code' && selectedProvider !== 'opencode'">
                 <div class="card" style="border-left:3px solid var(--accent);margin-top:16px">
                   <div class="card-header" x-text="'Configure ' + selectedProviderObj.display_name"></div>
                   <div class="text-xs text-dim mb-2" x-show="selectedProviderObj.api_key_env">

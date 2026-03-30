@@ -302,12 +302,13 @@ function wizardPage() {
     },
 
     get canGoNext() {
-      if (this.step === 2) return this.keySaved || this.hasConfiguredProvider || this.claudeCodeDetected;
+      if (this.step === 2) return this.keySaved || this.hasConfiguredProvider || this.claudeCodeDetected || this.openCodeDetected;
       if (this.step === 3) return this.agentName.trim().length > 0;
       return true;
     },
 
     claudeCodeDetected: false,
+    openCodeDetected: false,
 
     get hasConfiguredProvider() {
       var self = this;
@@ -332,7 +333,7 @@ function wizardPage() {
     },
 
     get popularProviders() {
-      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code'];
+      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code', 'opencode'];
       return this.providers.filter(function(p) {
         return popular.indexOf(p.id) >= 0;
       }).sort(function(a, b) {
@@ -341,7 +342,7 @@ function wizardPage() {
     },
 
     get otherProviders() {
-      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code'];
+      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code', 'opencode'];
       return this.providers.filter(function(p) {
         return popular.indexOf(p.id) < 0;
       });
@@ -352,6 +353,8 @@ function wizardPage() {
       this.apiKeyInput = '';
       this.testResult = null;
       this.keySaved = false;
+      this.claudeCodeDetected = false;
+      this.openCodeDetected = false;
     },
 
     providerHelp: function(id) {
@@ -368,7 +371,8 @@ function wizardPage() {
         perplexity: { url: 'https://www.perplexity.ai/settings/api', text: 'Get your key from Perplexity Settings' },
         cohere: { url: 'https://dashboard.cohere.com/api-keys', text: 'Get your key from the Cohere Dashboard' },
         xai: { url: 'https://console.x.ai/', text: 'Get your key from the xAI Console' },
-        'claude-code': { url: 'https://docs.anthropic.com/en/docs/claude-code', text: 'Install: npm install -g @anthropic-ai/claude-code && claude auth (no API key needed)' }
+        'claude-code': { url: 'https://docs.anthropic.com/en/docs/claude-code', text: 'Install: npm install -g @anthropic-ai/claude-code && claude auth (no API key needed)' },
+        opencode: { url: 'https://opencode.ai/docs', text: 'Install: npm install -g opencode-ai && opencode auth (no API key needed)' }
       };
       return help[id] || null;
     },
@@ -443,6 +447,28 @@ function wizardPage() {
       this.testingProvider = false;
     },
 
+    async detectOpenCode() {
+      this.testingProvider = true;
+      this.testResult = null;
+      try {
+        var result = await OpenFangAPI.post('/api/providers/opencode/test', {});
+        this.testResult = result;
+        if (result.status === 'ok') {
+          this.openCodeDetected = true;
+          this.keySaved = true;
+          this.setupSummary.provider = 'OpenCode';
+          OpenFangToast.success('OpenCode detected (' + (result.latency_ms || '?') + 'ms)');
+        } else {
+          this.testResult = { status: 'error', error: 'OpenCode CLI not detected' };
+          OpenFangToast.error('OpenCode CLI not detected. Make sure you\'ve run: npm install -g opencode-ai && opencode auth');
+        }
+      } catch(e) {
+        this.testResult = { status: 'error', error: e.message };
+        OpenFangToast.error('OpenCode CLI not detected. Make sure you\'ve run: npm install -g opencode-ai && opencode auth');
+      }
+      this.testingProvider = false;
+    },
+
     // ── Step 3: Agent creation ──
 
     selectTemplate(index) {
@@ -510,7 +536,8 @@ function wizardPage() {
         perplexity: 'llama-3.1-sonar-large-128k-online',
         cohere: 'command-r-plus',
         xai: 'grok-2',
-        'claude-code': 'claude-code/sonnet'
+        'claude-code': 'claude-code/sonnet',
+        opencode: 'opencode/mimo-v2-omni-free'
       };
       return defaults[providerId] || '';
     },

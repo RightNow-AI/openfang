@@ -74,6 +74,14 @@ impl ModelCatalog {
                 };
                 continue;
             }
+            if provider.id == "opencode" {
+                provider.auth_status = if crate::drivers::opencode::opencode_available() {
+                    AuthStatus::Configured
+                } else {
+                    AuthStatus::Missing
+                };
+                continue;
+            }
 
             if !provider.key_required {
                 provider.auth_status = AuthStatus::NotRequired;
@@ -906,6 +914,16 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::NotRequired,
             model_count: 0,
         },
+        // ── OpenCode CLI ────────────────────────────────────────────
+        ProviderInfo {
+            id: "opencode".into(),
+            display_name: "OpenCode".into(),
+            api_key_env: String::new(),
+            base_url: String::new(),
+            key_required: false,
+            auth_status: AuthStatus::NotRequired,
+            model_count: 0,
+        },
         // ── Qwen Code CLI ──────────────────────────────────────────
         ProviderInfo {
             id: "qwen-code".into(),
@@ -993,6 +1011,11 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("claude-code-opus", "claude-code/opus"),
         ("claude-code-sonnet", "claude-code/sonnet"),
         ("claude-code-haiku", "claude-code/haiku"),
+        // OpenCode aliases
+        ("opencode", "opencode/mimo-v2-omni-free"),
+        ("opencode-opus", "opencode/big-pickle"),
+        ("opencode-sonnet", "opencode/mimo-v2-omni-free"),
+        ("opencode-haiku", "opencode/gpt-5-nano"),
         // Qwen Code aliases
         ("qwen-code", "qwen-code/qwen3-coder"),
         ("qwen-coder", "qwen-code/qwen3-coder"),
@@ -3727,6 +3750,51 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["claude-code-haiku".into()],
         },
         // ══════════════════════════════════════════════════════════════
+        // OpenCode CLI (3) — subprocess-based
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "opencode/big-pickle".into(),
+            display_name: "Big Pickle (OpenCode CLI)".into(),
+            provider: "opencode".into(),
+            tier: ModelTier::Frontier,
+            context_window: 200_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["opencode-opus".into()],
+        },
+        ModelCatalogEntry {
+            id: "opencode/mimo-v2-omni-free".into(),
+            display_name: "MiMo V2 Omni Free (OpenCode CLI)".into(),
+            provider: "opencode".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 64_000,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["opencode".into(), "opencode-sonnet".into()],
+        },
+        ModelCatalogEntry {
+            id: "opencode/gpt-5-nano".into(),
+            display_name: "GPT-5 Nano (OpenCode CLI)".into(),
+            provider: "opencode".into(),
+            tier: ModelTier::Fast,
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["opencode-haiku".into()],
+        },
+        // ══════════════════════════════════════════════════════════════
         // Qwen Code CLI (3) — subprocess-based, free via Qwen OAuth
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
@@ -3905,7 +3973,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 41);
+        assert_eq!(catalog.list_providers().len(), 42);
     }
 
     #[test]
@@ -4310,6 +4378,31 @@ mod tests {
         let catalog = ModelCatalog::new();
         let entry = catalog.find_model("qwen-code").unwrap();
         assert_eq!(entry.id, "qwen-code/qwen3-coder");
+    }
+
+    #[test]
+    fn test_opencode_provider() {
+        let catalog = ModelCatalog::new();
+        let oc = catalog.get_provider("opencode").unwrap();
+        assert_eq!(oc.display_name, "OpenCode");
+        assert!(!oc.key_required);
+    }
+
+    #[test]
+    fn test_opencode_models() {
+        let catalog = ModelCatalog::new();
+        let models = catalog.models_by_provider("opencode");
+        assert_eq!(models.len(), 3);
+        assert!(models.iter().any(|m| m.id == "opencode/big-pickle"));
+        assert!(models.iter().any(|m| m.id == "opencode/mimo-v2-omni-free"));
+        assert!(models.iter().any(|m| m.id == "opencode/gpt-5-nano"));
+    }
+
+    #[test]
+    fn test_opencode_aliases() {
+        let catalog = ModelCatalog::new();
+        let entry = catalog.find_model("opencode").unwrap();
+        assert_eq!(entry.id, "opencode/mimo-v2-omni-free");
     }
 
     #[test]
